@@ -48,6 +48,8 @@ mod sidebar_collab_growth;
 mod sidebar_dnd;
 #[path = "slash_menu_focus.rs"]
 mod slash_menu_focus;
+#[path = "tab_nesting.rs"]
+mod tab_nesting;
 #[path = "tree_operations.rs"]
 mod tree_operations;
 #[path = "two_peer_sync.rs"]

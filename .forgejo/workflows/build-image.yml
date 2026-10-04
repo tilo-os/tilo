@@ -2740,6 +2740,15 @@ jobs:
           ./os/dev/vm.sh type "$typed_sentence"
           ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing"
 
+          # Tab in a note nests the line under the one above instead of
+          # moving focus away; the second block must read as nested.
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-nesting'
+          ./os/dev/vm.sh type one
+          ./os/dev/vm.sh keys ret
+          ./os/dev/vm.sh type two
+          ./os/dev/vm.sh keys tab
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh described "Paragraph block 2" "Level 2" --state /tmp/notes-nesting'
+
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
           # protected password field and instructions on the session bus.

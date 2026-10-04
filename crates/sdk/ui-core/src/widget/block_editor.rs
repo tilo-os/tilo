@@ -639,6 +639,9 @@ pub struct BlockEditor {
     formula_preview_rects: Vec<Option<Rect>>,
     table_preview_rects: Vec<Option<Rect>>,
     table_editors: HashMap<String, crate::widget::table::Table>,
+    /// Escape handed Tab back to the window's focus order; see
+    /// `release_tab`.
+    tab_released: bool,
     table_mode_controls: HashMap<String, TableModeControl>,
     image_preview_rects: Vec<Option<Rect>>,
     image_store: Option<crate::ImageStore>,
@@ -758,6 +761,7 @@ impl BlockEditor {
             formula_preview_rects: Vec::new(),
             table_preview_rects: Vec::new(),
             table_editors: HashMap::new(),
+            tab_released: false,
             table_mode_controls: HashMap::new(),
             image_preview_rects: Vec::new(),
             image_store: None,
@@ -2516,29 +2520,58 @@ impl BlockEditor {
     /// Shift an item and all descendants together, preserving their relative
     /// depths. Clamp the entire operation rather than flattening deep children.
     pub fn try_indent(&mut self, idx: usize, delta: i8) -> bool {
-        let (idx, last) = self.fenced_code_run(idx).unwrap_or((idx, idx));
+        self.try_indent_range(idx, idx, delta)
+    }
+
+    /// [`try_indent`](Self::try_indent) for the blocks `first..=last` (a
+    /// selection across blocks) and the descendants of the last, shifted
+    /// together by one amount so their relative depths hold. A block that is
+    /// not a list item nests under the block before it; the first block and
+    /// one after a divider have nothing to nest under.
+    pub fn try_indent_range(&mut self, first: usize, last: usize, delta: i8) -> bool {
+        let idx = self
+            .fenced_code_run(first)
+            .map_or(first, |(start, _)| start);
+        let last = self
+            .fenced_code_run(last)
+            .map_or(last, |(_, end)| end)
+            .max(idx);
         let Some(parent) = self.blocks.get(idx) else {
             return false;
         };
-        if !parent.kind.supports_indent() && parent.indent() == 0 {
-            let can_join_outline = idx
-                .checked_sub(1)
-                .and_then(|idx| self.blocks.get(idx))
-                .is_some_and(|previous| previous.indent() > 0 || previous.kind.supports_indent());
-            if !can_join_outline {
-                return false;
-            }
-        }
         let depth = parent.indent();
+        let previous = idx.checked_sub(1).and_then(|idx| self.blocks.get(idx));
+        // How deep the first block may go. Inside an outline (after a list
+        // item or a nested block) as deep as the outline goes; after plain
+        // prose, one level under it; with nothing above, not at all.
+        let nesting_limit = match previous {
+            _ if parent.kind.supports_indent() => MAX_LIST_INDENT,
+            Some(previous) if previous.kind.supports_indent() || previous.indent() > 0 => {
+                MAX_LIST_INDENT
+            }
+            Some(previous) if !matches!(previous.kind, BlockKind::Divider) => 1,
+            _ => 0,
+        };
         let end = self.list_subtree_end(last);
         let Some(subtree) = self.blocks.get(idx..end) else {
             return false;
         };
         let deepest = subtree.iter().map(Block::indent).max().unwrap_or(depth);
-        let minimum_shift = i8::try_from(depth).unwrap_or(i8::MAX).saturating_neg();
-        let maximum_shift =
-            i8::try_from(MAX_LIST_INDENT.saturating_sub(deepest)).unwrap_or(i8::MAX);
-        let shift = delta.max(minimum_shift).min(maximum_shift);
+        let shallowest = subtree
+            .get(..=last.saturating_sub(idx))
+            .unwrap_or(subtree)
+            .iter()
+            .map(Block::indent)
+            .min()
+            .unwrap_or(depth);
+        let minimum_shift = i8::try_from(shallowest).unwrap_or(i8::MAX).saturating_neg();
+        let maximum_shift = i8::try_from(
+            MAX_LIST_INDENT
+                .saturating_sub(deepest)
+                .min(nesting_limit.saturating_sub(depth)),
+        )
+        .unwrap_or(i8::MAX);
+        let shift = delta.max(minimum_shift).min(maximum_shift.max(0));
         if shift == 0 {
             return false;
         }
@@ -8010,8 +8043,9 @@ impl Widget for BlockEditor {
 
     fn wants_tab_input(&self) -> bool {
         // Both prose/list nesting and code indentation belong to this editor;
-        // the host must route Tab here before traversing other controls.
-        true
+        // the host must route Tab here before traversing other controls,
+        // until Escape hands it back.
+        !self.tab_released
     }
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
@@ -8524,7 +8558,8 @@ impl Widget for BlockEditor {
                         .with_state(AccessState::new().focusable(true)),
                 );
             }
-            AccessNode::new(Role::Group)
+            let level = usize::from(block.indent()).saturating_add(1);
+            let group = AccessNode::new(Role::Group)
                 .with_name(format!(
                     "{} block {position}",
                     accessible_kind_name(&block.kind)
@@ -8532,9 +8567,16 @@ impl Widget for BlockEditor {
                 .with_semantic_key(format!("notes.block:{}", block.id))
                 .with_hashed_key(format!("notes.block:group:{}", block.id))
                 .with_position(position, total)
-                .with_level(usize::from(block.indent()) + 1)
+                .with_level(level)
                 .with_bounds(block.line.get_rect())
-                .with_children(block_children)
+                .with_children(block_children);
+            // Also in words, which every screen reader reads: the platform
+            // bridge does not carry a group's level.
+            if level > 1 {
+                group.with_description(format!("Level {level}"))
+            } else {
+                group
+            }
         }));
         if let Some(mut menu) = Widget::accessibility(&self.slash_menu) {
             fn namespace_targets(node: &mut AccessNode) {
@@ -8553,7 +8595,7 @@ impl Widget for BlockEditor {
         Some(
             AccessNode::new(Role::Document)
                 .with_description(
-                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block.",
+                    "Drag a block's six-dot handle to reorder it. Alt+Up and Alt+Down move the focused block. Tab nests it under the block above and Shift+Tab moves it back out; press Escape, then Tab, to leave the editor.",
                 )
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
@@ -9493,24 +9535,36 @@ impl BlockEditor {
         else {
             return false;
         };
-        let Some(focused_idx) = self.focused else {
-            return false;
-        };
         if !self.is_focused || ctx.modifiers.state().alt_key() {
             return false;
         }
+        // Every block a selection touches, or the block with the caret.
+        let (first, last) = match self.document_selection {
+            Some(selection) => {
+                let (start, end) = selection.ordered();
+                (start.block, end.block)
+            }
+            None => match self.focused {
+                Some(focused) => (focused, focused),
+                None => return false,
+            },
+        };
         let command = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
         let delta = match logical_key {
             Key::Character(key) if command && key == "]" => 1,
             Key::Character(key) if command && key == "[" => -1,
+            // Tab in a single code block or table is that block's own
+            // (indentation, the next cell).
             Key::Named(NamedKey::Tab)
                 if !command
-                    && self.blocks.get(focused_idx).is_some_and(|b| {
-                        !matches!(
-                            b.kind,
-                            BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
-                        )
-                    }) =>
+                    && !self.tab_released
+                    && (first != last
+                        || self.blocks.get(first).is_some_and(|b| {
+                            !matches!(
+                                b.kind,
+                                BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
+                            )
+                        })) =>
             {
                 if ctx.modifiers.state().shift_key() {
                     -1
@@ -9520,9 +9574,61 @@ impl BlockEditor {
             }
             _ => return false,
         };
-        self.try_indent(focused_idx, delta);
+        self.try_indent_range(first, last, delta);
         *ctx.handled = true;
         true
+    }
+
+    /// Any key but Escape, Tab or Shift, a click or committed text takes Tab
+    /// back for the editor after [`release_tab`](Self::release_tab).
+    fn reclaim_tab(&mut self, event: &WindowEvent) {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::{Key, NamedKey};
+
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if !matches!(
+                logical_key,
+                Key::Named(NamedKey::Escape | NamedKey::Tab | NamedKey::Shift)
+            ) =>
+            {
+                self.tab_released = false;
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::Ime(winit::event::Ime::Commit(_)) => self.tab_released = false,
+            _ => {}
+        }
+    }
+
+    /// Escape that nothing else in the editor dismissed hands Tab back to the
+    /// window's focus order, so the next Tab leaves the editor instead of
+    /// indenting: the way out for a keyboard user.
+    fn release_tab(&mut self, event: &WindowEvent) {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::{Key, NamedKey};
+
+        if let WindowEvent::KeyboardInput {
+            event:
+                KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    state: ElementState::Pressed,
+                    ..
+                },
+            ..
+        } = event
+        {
+            self.tab_released = true;
+        }
     }
 
     /// The leading `/` still falls through to `TextInput` (visible
@@ -9809,6 +9915,10 @@ mod retained_layout_tests;
 #[cfg(test)]
 #[path = "block_editor_outline_tests.rs"]
 mod outline_tests;
+
+#[cfg(test)]
+#[path = "block_editor_nesting_tests.rs"]
+mod nesting_tests;
 
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
@@ -10831,6 +10941,7 @@ impl BlockEditor {
     fn handle_event_unscoped(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         use winit::event::{ElementState, MouseButton};
 
+        self.reclaim_tab(event);
         if self.handle_find_event(event, ctx) {
             return;
         }
@@ -10934,6 +11045,7 @@ impl BlockEditor {
         }
         self.handle_cursor_moved(event, ctx.scale_factor);
 
+        self.release_tab(event);
         // TextInput does NOT handle Tab, but intercept anyway so future
         // TextInput changes don't break the contract.
         if self.try_tab_indent(event, ctx) {
