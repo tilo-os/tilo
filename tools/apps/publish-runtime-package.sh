@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Offer a runtime package (pack-runtime-package.sh output) in the registry.
+#
+#   publish-runtime-package.sh <package-dir> <arch> <package-id> <artifact-name> <metadata.json>
+#
+# Uploads the thin package and its content-addressed payload objects side by
+# side as the immutable generic package <artifact-name>/$VERSION, then submits
+# the publisher-signed registry entry naming the runtime it provides. A runtime
+# the registry already offers for <arch> is left alone. Environment: VERSION,
+# TILO_PACKAGE_TOKEN, PACKAGE_API (the authenticated generic-package base),
+# REGISTRY_URL, OWNER, REGISTRY_CLI (tilo-app-package), REGISTRY_IDENTITY
+# (publisher identity file), RUNNER_TEMP.
+set -euo pipefail
+dir=$1
+arch=$2
+package_id=$3
+artifact=$4
+metadata=$5
+: "${VERSION:?}" "${TILO_PACKAGE_TOKEN:?}" "${PACKAGE_API:?}" "${REGISTRY_URL:?}" \
+  "${OWNER:?}" "${REGISTRY_CLI:?}" "${REGISTRY_IDENTITY:?}"
+temp=${RUNNER_TEMP:-${TMPDIR:-/tmp}}
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+tapp=$(find "$dir" -maxdepth 1 -name '*.tapp' -print -quit)
+[[ -n $tapp ]] || { printf 'no runtime package in %s\n' "$dir" >&2; exit 1; }
+provides=$("$REGISTRY_CLI" inspect "$tapp" \
+  | sed -n 's/^provides *= *"\(tilo-runtime\/[^"]*\)".*/\1/p' | head -1)
+[[ -n $provides ]] || { printf '%s names no runtime it provides\n' "$tapp" >&2; exit 1; }
+
+snapshot="$temp/tilo-runtime-snapshot.json"
+response="$temp/tilo-runtime-response.txt"
+fetch_snapshot() {
+  curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+    --retry 3 --retry-all-errors "$REGISTRY_URL/entries" --output "$snapshot"
+  jq -e '.entries | type == "array"' "$snapshot" >/dev/null
+}
+fetch_snapshot
+if jq -e --arg pkg "$package_id" --arg id "$provides" --arg arch "$arch" \
+    '[.entries[] | select(.package_id == $pkg) | .versions[]
+      | select(.target.runtime == $id and .target.architecture == $arch)] | length > 0' \
+    "$snapshot" >/dev/null; then
+  echo "::notice::the Tilo registry already offers $provides for $arch"
+  exit 0
+fi
+
+uploads="$temp/tilo-runtime-uploads-$arch.tsv"
+: > "$uploads"
+while IFS= read -r object; do
+  printf '%s\t%s\n' "$object" "$PACKAGE_API/$artifact/$VERSION/${object##*/}" >> "$uploads"
+done < <(find "$dir" -maxdepth 1 -type f | sort)
+TILO_PACKAGE_UPLOAD_WORKERS=8 "$here/../upload_immutable_packages.sh" "$uploads"
+
+for attempt in 1 2 3; do
+  (( attempt == 1 )) || fetch_snapshot
+  previous="$temp/tilo-runtime-previous.json"
+  request="$temp/tilo-runtime-request.json"
+  rm -f "$previous" "$request"
+  # A request still waiting for review is replaced by this one and must keep
+  # its versions (the other architecture's, say), so build on it.
+  "$REGISTRY_CLI" pending --registry "$REGISTRY_URL" \
+    --identity "$REGISTRY_IDENTITY" "$package_id" > "$previous"
+  [[ -s $previous ]] || jq --arg pkg "$package_id" \
+    '.entries[] | select(.package_id == $pkg)' "$snapshot" > "$previous"
+  args=(entry --arch "$arch" --identity "$REGISTRY_IDENTITY" --metadata "$metadata"
+    --url "$REGISTRY_URL/artifacts/$OWNER/generic/$artifact/$VERSION/${tapp##*/}"
+    --objects "$dir"
+    # Each runtime build is hundreds of megabytes the registry keeps; an app
+    # version whose build has been pruned is refused, not broken.
+    --keep-releases 5)
+  if [[ -s $previous ]]; then
+    args+=(--action update --previous-entry "$previous")
+  else
+    args+=(--action add)
+  fi
+  "$REGISTRY_CLI" "${args[@]}" "$tapp" > "$request"
+  status=$(curl --silent --show-error --connect-timeout 10 --max-time 60 \
+    --retry 3 --retry-all-errors \
+    --output "$response" --write-out '%{http_code}' --request POST \
+    --header 'Content-Type: application/json' --data-binary "@$request" \
+    "$REGISTRY_URL/entries")
+  if [[ $status == 202 ]]; then
+    echo "::notice::submitted $provides ($arch) to the Tilo registry as $package_id"
+    exit 0
+  fi
+  printf 'registry answered %s (%s) with HTTP %s: %s\n' \
+    "$package_id" "$arch" "$status" "$(head -c 1000 "$response")" >&2
+  [[ $status == 409 || $status == 429 || $status == 5?? ]] || exit 1
+  sleep "$attempt"
+done
+printf 'registry did not accept %s after bounded retries\n' "$provides" >&2
+exit 1

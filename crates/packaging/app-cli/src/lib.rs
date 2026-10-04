@@ -137,7 +137,7 @@ pub fn entry_to_app_for_channel(
     registry_name: &str,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> Option<CatalogueApp> {
-    if !v.trust.is_offerable() {
+    if !v.trust.is_offerable() || registry_types::is_runtime_package_id(&v.entry.package_id) {
         return None;
     }
     // Artifact version orders releases. A later publication timestamp must
@@ -152,11 +152,65 @@ fn installable_versions(
     entry: &registry_types::RegistryEntry,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> impl Iterator<Item = &registry_types::RegistryVersion> {
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
     entry.versions.iter().filter(move |version| {
         !version.tapp_url.trim().is_empty()
             && target_supported(version)
+            && (runtime_package || runtime_named(version))
             && channel.accepts(&version.version)
     })
+}
+
+/// Whether an app version says which runtime build it needs, when it needs
+/// one. A thin app links the runtime's Rust dylibs, which have no stable
+/// ABI, so a version that names only a release (`tilo-runtime/2026.07`)
+/// cannot be matched to a runtime this device can provide; installing it is
+/// how every system app once stopped starting.
+fn runtime_named(version: &registry_types::RegistryVersion) -> bool {
+    version.target.runtime.is_none() || version.target.native_runtime().is_some()
+}
+
+/// Whether the runtime `runtime` (`<name>/<version>`) is installed where the
+/// launcher looks for it: the user's runtime directory or the system image.
+pub fn runtime_installed(runtime: &str) -> bool {
+    runtime
+        .split_once('/')
+        .is_some_and(|(_, version)| runtime_bundle::resolve_bundle_path(version).is_some())
+}
+
+/// The registry `registry_name`'s offer of the runtime `runtime`: a version
+/// of one of its runtime packages that provides exactly that runtime for
+/// this machine.
+///
+/// # Errors
+///
+/// Returns an error when no enabled registry has that name or it cannot be
+/// read or fails a proof.
+pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<CatalogueApp>, String> {
+    let registries = config::load_registries();
+    let registry = registries
+        .enabled()
+        .find(|registry| registry.name == registry_name)
+        .ok_or_else(|| format!("no enabled repository is named '{registry_name}'"))?;
+    let snapshot = client::fetch_snapshot(registry).map_err(|error| error.to_string())?;
+    let runtime_packages: Vec<String> = snapshot
+        .entries()
+        .into_iter()
+        .map(|listed| listed.entry.package_id.clone())
+        .filter(|id| registry_types::is_runtime_package_id(id))
+        .collect();
+    for package_id in runtime_packages {
+        let verified =
+            client::fetch_all_versions(registry, &package_id).map_err(|error| error.to_string())?;
+        if let Some(offer) = installable_versions(&verified.entry, registry.channel)
+            .filter(|version| version.target.runtime.as_deref() == Some(runtime))
+            .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
+            .and_then(|version| app_for_version(&verified, version, registry_name))
+        {
+            return Ok(Some(offer));
+        }
+    }
+    Ok(None)
 }
 
 /// The catalogue row offering exactly `version` of a verified entry.

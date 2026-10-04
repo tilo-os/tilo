@@ -15,6 +15,8 @@
 //!   checks beyond TOML decode.
 //! - [`BlobHash`], [`Collection`] and the streaming [`BlobSource`] /
 //!   [`BlobSink`] edges — see [`blobs`].
+//! - [`chunks`] — the payload objects (`<blob>.blob`, `<blob>.chunks`) that
+//!   complete a thin package, chunked and verified with bounded memory.
 //! - [`PackageMeta`] — the signed root, manifest and collection with every
 //!   hash link checked. See [`package`].
 //! - [`pack()`], [`unpack()`], [`verify()`] and the [`tapp`] archive codec
@@ -47,6 +49,7 @@
 )]
 
 pub mod blobs;
+pub mod chunks;
 pub mod desktop;
 pub mod id;
 pub mod image;
@@ -134,6 +137,21 @@ pub const MAX_DESKTOP_APP_TAPP_BYTES: u64 = 64 * 1024 * 1024;
 /// Bound filesystem work/inodes independently of bytes. Empty files are not
 /// allowed to bypass the materialized-byte limit indefinitely.
 pub const MAX_APP_PAYLOAD_ENTRIES: usize = 4096;
+
+/// Distinct payload bytes a `kind = "runtime"` package may reference. Runtime
+/// bundles are shared by every app built against them, so they travel thin,
+/// their payload hosted as chunked objects (see [`chunks`]).
+pub const MAX_RUNTIME_PAYLOAD_BYTES: u64 = 1024 * 1024 * 1024;
+
+/// The ceiling on the distinct payload bytes the package `manifest`
+/// describes may reference: its [`app_size_limit`] for an application,
+/// [`MAX_RUNTIME_PAYLOAD_BYTES`] for a runtime, `None` for other kinds.
+pub fn payload_size_limit(manifest: &Manifest) -> Option<u64> {
+    if manifest.package.kind == Kind::Runtime {
+        return Some(MAX_RUNTIME_PAYLOAD_BYTES);
+    }
+    app_size_limit(manifest)
+}
 
 /// Whether a package of `kind` and wire `size` satisfies the thin-app limit.
 /// Non-app bundles are shared infrastructure and use their own distribution

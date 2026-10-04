@@ -149,6 +149,20 @@ pub enum RunError {
         runtime: String,
         paths: Vec<PathBuf>,
     },
+    #[error(
+        "`{package}` was built for a different Tilo runtime than the one installed, so it cannot \
+         start: it needs the library `{library}`, which the installed runtime `{runtime}` does \
+         not provide (looked in {searched}). Update it with `app update {package}` or reinstall \
+         it with `app install {package}`, which also fetches the runtime it needs, or remove it \
+         with `app remove {package}` to go back to the system build.",
+        searched = display_paths(.searched)
+    )]
+    RuntimeLibraryMissing {
+        package: String,
+        runtime: String,
+        library: String,
+        searched: Vec<PathBuf>,
+    },
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
     #[error(
@@ -219,6 +233,14 @@ impl RunError {
             _ => 1,
         }
     }
+}
+
+fn display_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Where a launch finds the identity record it brokers to the app.
@@ -2095,6 +2117,72 @@ type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 /// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
 /// `cli_bin()` (falling back to `bin`) and splices `TILO_CLI_COMMAND` /
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
+/// The payload-relative binary a launch in `mode` executes; `None` for a host
+/// application, which has no payload.
+fn launch_entry_bin<'a>(manifest: &'a MinimalManifest, mode: &LaunchMode) -> Option<&'a str> {
+    match mode {
+        LaunchMode::Gui => Some(
+            manifest
+                .entrypoint
+                .gui_bin()
+                .unwrap_or(&manifest.entrypoint.bin),
+        ),
+        LaunchMode::Cli { .. } | LaunchMode::Service { .. } => Some(
+            manifest
+                .entrypoint
+                .cli_bin()
+                .unwrap_or(&manifest.entrypoint.bin),
+        ),
+        LaunchMode::Host { .. } => None,
+    }
+}
+
+/// Refuse a launch whose entrypoint links against a library the sandboxed
+/// loader will not find in the runtime bundle, the payload or the host's
+/// library directories. Without this the app dies in the loader before
+/// `main`, and the only trace is one loader line on stderr. Only a launch on
+/// a runtime bundle is checked: the host-library modes have no bundle the app
+/// could have been built against.
+fn preflight_runtime_libraries(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    runtime: Option<(&Path, &str)>,
+) -> Result<(), RunError> {
+    let Some((runtime_root, version)) = runtime else {
+        return Ok(());
+    };
+    let Some(entry_bin) = launch_entry_bin(manifest, &opts.mode) else {
+        return Ok(());
+    };
+    let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
+    let runtime_mount = crate::sandbox::runtime_mount_for(version);
+    let view = crate::loader_preflight::LoaderView::for_sandbox(
+        (&payload_mount, payload_root),
+        (&runtime_mount, runtime_root),
+        vec![crate::sandbox::runtime_library_path(version)],
+    );
+    view.check(&payload_mount.join(entry_bin))
+        .map_err(|missing| {
+            tracing::error!(
+                package = %manifest.package_id,
+                library = %missing.library,
+                needed_by = %missing.needed_by.display(),
+                runtime = %runtime_root.display(),
+                "app links against a library its runtime does not provide"
+            );
+            RunError::RuntimeLibraryMissing {
+                package: manifest.package_id.clone(),
+                runtime: manifest
+                    .runtime
+                    .clone()
+                    .unwrap_or_else(|| format!("tilo-runtime/{version}")),
+                library: missing.library,
+                searched: missing.searched,
+            }
+        })
+}
+
 fn build_initial_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2125,9 +2213,7 @@ fn build_initial_argv(
             command,
             passthrough_argv,
         } => {
-            let entry_bin_owned = manifest
-                .entrypoint
-                .cli_bin()
+            let entry_bin_owned = launch_entry_bin(manifest, &opts.mode)
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string();
             let v = crate::sandbox::build_bwrap_argv_for_entry(
@@ -2147,9 +2233,7 @@ fn build_initial_argv(
             ))
         }
         LaunchMode::Service { passthrough_argv } => {
-            let entry_bin_owned = manifest
-                .entrypoint
-                .cli_bin()
+            let entry_bin_owned = launch_entry_bin(manifest, &opts.mode)
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string();
             let argv = crate::sandbox::build_bwrap_argv_for_entry(
@@ -2285,6 +2369,7 @@ fn run_with_context(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+    preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
@@ -2914,6 +2999,7 @@ fn run_with_capture_spawn<T>(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+    preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
     // D-Bus plan (same decision path as `run_with`).
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());

@@ -9,7 +9,11 @@
 //! Six platform families are accepted:
 //!
 //! - `tilo-os` — native thin apps; `architecture` is `x86_64` or `aarch64`,
-//!   `isa` is the native feature level and `runtime` is optional.
+//!   `isa` is the native feature level and `runtime`, when present, is the
+//!   exact runtime build the app links against ([`parse_native_runtime`]).
+//!   A thin app links Rust dylibs, which have no stable ABI, so the release
+//!   name alone (`tilo-runtime/2026.07`) says nothing about whether a device's
+//!   runtime can load it; only the build digest does.
 //! - `linux`, `windows` and `macos` — the same app as a self-contained native
 //!   executable for another desktop, under the same architecture and `isa`
 //!   rules. A `linux` build is for Linux desktops other than Tilo OS, which
@@ -93,6 +97,33 @@ pub const MAX_TARGET_RUNTIME_BYTES: usize = 256;
 pub const WEB_RUNTIME_ID_HEX_LEN: usize = 32;
 const MAX_RUNTIME_VERSION_LEN: usize = 64;
 
+/// Separates a native runtime's release from its ABI digest:
+/// `tilo-runtime/2026.07+native.<32 hex>`.
+pub const NATIVE_RUNTIME_MARKER: &str = "+native.";
+
+/// Hex digits of the ABI digest after [`NATIVE_RUNTIME_MARKER`]: 128 bits of
+/// the runtime bundle's content digest.
+pub const NATIVE_RUNTIME_ID_HEX_LEN: usize = 32;
+
+/// The registry package that offers builds of the `tilo-runtime` family for
+/// Tilo OS. An app's `runtime` names the exact build; the versions of this
+/// package each provide one, so a device that lacks the build an app needs
+/// fetches it from the same registry before the app.
+pub const NATIVE_RUNTIME_PACKAGE_ID: &str = "so.tilo.runtime";
+
+/// Whether a registry package is a runtime rather than an app: the runtime
+/// thin apps link ([`NATIVE_RUNTIME_PACKAGE_ID`]) or a further one an app
+/// mounts, such as a browser engine (`so.tilo.runtime.<name>`). A version of
+/// one records in `target.runtime` the runtime it provides; a store lists
+/// none of them as apps and installs them for the apps that need them.
+#[must_use]
+pub fn is_runtime_package_id(package_id: &str) -> bool {
+    package_id == NATIVE_RUNTIME_PACKAGE_ID
+        || package_id
+            .strip_prefix(NATIVE_RUNTIME_PACKAGE_ID)
+            .is_some_and(|rest| rest.starts_with('.') && rest.len() > 1)
+}
+
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TargetError {
     #[error("unsupported platform {0:?}")]
@@ -113,6 +144,8 @@ pub enum TargetError {
     MissingRuntime,
     #[error("web runtime {0:?} is not `tilo-runtime/<version>+wasm.<32 hex>`")]
     WebRuntime(String),
+    #[error("native runtime {0:?} is not `<name>/<version>+native.<32 hex>`")]
+    NativeRuntime(String),
 }
 
 /// A validated web `isa`: the post-MVP features the module requires.
@@ -256,6 +289,77 @@ pub fn parse_web_runtime(runtime: &str) -> Result<WebRuntime<'_>, TargetError> {
     })
 }
 
+/// A validated native runtime id: the runtime release and the digest of the
+/// exact build (`tilo-runtime/<version>+native.<32 hex>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NativeRuntime<'a> {
+    /// The whole id, exactly as an app manifest's `package.runtime` and the
+    /// registry target carry it.
+    pub id: &'a str,
+    /// Runtime family, e.g. `tilo-runtime`.
+    pub name: &'a str,
+    /// Release, e.g. `2026.07`.
+    pub release: &'a str,
+    /// ABI digest after [`NATIVE_RUNTIME_MARKER`].
+    pub digest: &'a str,
+}
+
+impl NativeRuntime<'_> {
+    /// The runtime bundle's version: its directory name under
+    /// `/usr/lib/tilo-runtime` and the per-user runtime root, and the
+    /// `version` its signed `bundle.toml` records.
+    pub fn bundle_version(&self) -> &str {
+        self.id
+            .split_once('/')
+            .map_or(self.id, |(_, version)| version)
+    }
+
+    /// `<name>/<release>`, the runtime an app's authored manifest declares.
+    pub fn release_ref(&self) -> String {
+        format!("{}/{}", self.name, self.release)
+    }
+}
+
+/// Parse a native runtime id:
+///
+/// ```text
+/// runtime = name "/" version "+native." digest
+/// name    = 1*( ALPHA / DIGIT / "-" / "_" / "." )
+/// version = 1*DIGIT 1*2( "." 1*DIGIT ) [ "-" pre ]   ; CalVer or SemVer core
+/// digest  = 32( DIGIT / %x61-66 )                    ; lower-case hex
+/// ```
+///
+/// e.g. `tilo-runtime/2026.07+native.4b1d0c7e9a2f3b5c6d7e8f9012345678`.
+///
+/// # Errors
+///
+/// Returns [`TargetError::NativeRuntime`] for any other spelling.
+pub fn parse_native_runtime(runtime: &str) -> Result<NativeRuntime<'_>, TargetError> {
+    let invalid = || TargetError::NativeRuntime(runtime.to_string());
+    if runtime.len() > MAX_TARGET_RUNTIME_BYTES {
+        return Err(invalid());
+    }
+    let (name, rest) = runtime.split_once('/').ok_or_else(invalid)?;
+    let name_ok = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
+    let (release, digest) = rest.split_once(NATIVE_RUNTIME_MARKER).ok_or_else(invalid)?;
+    let digest_ok = digest.len() == NATIVE_RUNTIME_ID_HEX_LEN
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    if !name_ok || !valid_web_runtime_version(release) || !digest_ok {
+        return Err(invalid());
+    }
+    Ok(NativeRuntime {
+        id: runtime,
+        name,
+        release,
+        digest,
+    })
+}
+
 fn valid_web_runtime_version(version: &str) -> bool {
     if version.is_empty() || version.len() > MAX_RUNTIME_VERSION_LEN {
         return false;
@@ -321,6 +425,19 @@ impl RegistryTarget {
 
     pub fn is_web(&self) -> bool {
         self.platform == WEB_PLATFORM
+    }
+
+    /// The exact native runtime build a `tilo-os` target binds, when it names
+    /// one in canonical form. A `tilo-os` version without one cannot say
+    /// which runtime it links, so a device cannot know whether it can load
+    /// it.
+    pub fn native_runtime(&self) -> Option<NativeRuntime<'_>> {
+        if self.platform != TILO_OS_PLATFORM {
+            return None;
+        }
+        self.runtime
+            .as_deref()
+            .and_then(|runtime| parse_native_runtime(runtime).ok())
     }
 
     /// The web runtime this target binds, when it is a valid web target.
@@ -426,6 +543,54 @@ mod tests {
         ] {
             assert!(parse_web_runtime(&bad).is_err(), "{bad:?} must be refused");
         }
+    }
+
+    const DIGEST: &str = "4b1d0c7e9a2f3b5c6d7e8f9012345678";
+
+    #[test]
+    fn native_runtime_binds_release_and_build() {
+        let id = format!("tilo-runtime/2026.07+native.{DIGEST}");
+        let runtime = parse_native_runtime(&id).unwrap();
+        assert_eq!(runtime.id, id);
+        assert_eq!(runtime.name, "tilo-runtime");
+        assert_eq!(runtime.release, "2026.07");
+        assert_eq!(runtime.digest, DIGEST);
+        assert_eq!(runtime.bundle_version(), format!("2026.07+native.{DIGEST}"));
+        assert_eq!(runtime.release_ref(), "tilo-runtime/2026.07");
+        for bad in [
+            "tilo-runtime/2026.07".to_string(),
+            "tilo-runtime/2026.07+native.".to_string(),
+            format!("tilo-runtime/2026.07+wasm.{DIGEST}"),
+            format!("tilo-runtime/2026.07+native.{}", &DIGEST[1..]),
+            format!("tilo-runtime/2026.07+native.{DIGEST}0"),
+            format!("tilo-runtime/2026.07+native.{}", DIGEST.to_uppercase()),
+            format!("/2026.07+native.{DIGEST}"),
+            format!("tilo runtime/2026.07+native.{DIGEST}"),
+            format!("tilo-runtime/2026+native.{DIGEST}"),
+            format!("tilo-runtime/+native.{DIGEST}"),
+        ] {
+            assert!(
+                parse_native_runtime(&bad).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        let target = RegistryTarget {
+            platform: TILO_OS_PLATFORM.into(),
+            architecture: "aarch64".into(),
+            isa: "aarch64".into(),
+            runtime: Some(id.clone()),
+        };
+        assert_eq!(target.native_runtime().map(|r| r.digest), Some(DIGEST));
+        let release_only = RegistryTarget {
+            runtime: Some("tilo-runtime/2026.07".into()),
+            ..target
+        };
+        assert_eq!(release_only.native_runtime(), None);
+        assert!(is_runtime_package_id("so.tilo.runtime"));
+        assert!(is_runtime_package_id("so.tilo.runtime.chromium"));
+        assert!(!is_runtime_package_id("so.tilo.runtimes"));
+        assert!(!is_runtime_package_id("so.tilo.runtime."));
+        assert!(!is_runtime_package_id("so.tilo.notes"));
     }
 
     #[test]

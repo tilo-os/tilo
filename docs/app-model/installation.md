@@ -376,6 +376,23 @@ Manages the shared `tilo-runtime/<version>` bundles. See
 [`packaging.md`](./packaging.md) for what a runtime bundle is
 (essentially: ld-linux + libc + libgcc_s + friends, content-addressed).
 
+The runtime thin apps link is named by its build, not only its release:
+`tilo-runtime/2026.07+native.<abi digest>`, where the digest covers the
+bundle's payload (`libruntime_dylib.so`, the Rust `libstd-<hash>.so`, the
+loader set). Those Rust dylibs have no stable ABI, so a packaged app names the
+exact build it was linked against (packaging stamps it over the authored
+`tilo-runtime/2026.07`), and `tilo-install` refuses an app whose build is not
+installed. The registry offers each build as the `so.tilo.runtime` package
+(`kind = "runtime"`, `package.provides = "tilo-runtime/<build>"`), whose large
+libraries travel as content-addressed, chunked payload blobs; `app install`
+and `app update` install the build an app needs before the app, and refuse —
+changing nothing — when no registry offers it. Installing a runtime package
+(`tilo-install install <runtime.tapp> --payload-from <registry>`) verifies the
+bundle the way the launcher does (signature, a publisher from
+`/etc/tilo/runtime-bundle-trusted-publishers.txt`, architecture, and that its
+payload has the digest it is named by) and places it in the per-user runtime
+directory below.
+
 ```
 $ tilo-install runtime install --version 2026.07 --from-host --force
 installed runtime bundle: tilo-runtime/2026.07
@@ -407,8 +424,8 @@ pairs — any byte change flips the root hash.
 
 Discovery order the launcher uses:
 
-1. `$XDG_DATA_HOME/tilo-runtime/<version>/` — per-user (installed via
-   `tilo-install runtime install`).
+1. `$XDG_DATA_HOME/tilo-runtime/<version>/` — per-user (installed from a
+   runtime package, or built with `tilo-install runtime install`).
 2. `/usr/lib/tilo-runtime/<version>/` — system-wide (baked into an OS
    image).
 

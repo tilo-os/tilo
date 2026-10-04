@@ -36,6 +36,8 @@ package-store = { path = "../package-store" }
 # Canonical application tapp wire-size ceiling; catalogue downloads enforce
 # the same boundary as the installer rather than duplicating a number.
 tilo-app-package = { path = "../tilo-app-package" }
+# Where an installed runtime build lives, the lookup the launcher makes.
+runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true
 clap_complete.workspace = true
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
