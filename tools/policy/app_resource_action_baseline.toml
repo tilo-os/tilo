@@ -30,7 +30,6 @@
 "apps/settings/src/resource.rs" = 2
 "apps/slides/src/app.rs" = 1
 "apps/video-editor/src/resource.rs" = 1
-"apps/video-player/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 "apps/chat/src/main.rs" = 1
@@ -66,8 +65,6 @@
 "apps/settings/src/panes/users.rs" = 1
 "apps/settings/src/resource.rs" = 1
 "apps/video-editor/src/project_file.rs" = 2
-"apps/video-player/src/actions.rs" = 1
-"apps/video-player/src/resource.rs" = 1
 "apps/word-processor/src/actions/editing.rs" = 1
 "apps/word-processor/src/actions.rs" = 1
 
