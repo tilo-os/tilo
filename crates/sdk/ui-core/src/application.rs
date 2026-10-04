@@ -714,7 +714,16 @@ pub struct AppComponent {
     report_drained: bool,
     registry_owner: Rc<()>,
     providers: Rc<RefCell<ProviderPayloads>>,
+    /// The durability last delivered to the root, and when it was sampled.
+    record_save: Option<(crate::record::RecordSaveStatus, crate::time::Instant)>,
 }
+
+/// How soon the host samples a record's durability again while its writes
+/// are in flight. A store commits on its own thread and tells no one, so
+/// without this an idle window would keep showing "Saving…" after the write
+/// landed, until some unrelated input ran another frame.
+const RECORD_SAVE_POLL: crate::time::Duration = crate::time::Duration::from_millis(100);
+
 impl AppComponent {
     /// Set how the hosting window treats this component's tree.
     pub const fn set_behaviour(&mut self, behaviour: ComponentBehaviour) {
@@ -828,11 +837,33 @@ impl AppComponent {
     /// The same checked callback lifetime owns both the sample and the hook.
     pub(crate) fn project_record_save_status(&mut self) {
         let captured = self.callback_binding();
-        let _ = self.with_live_component(&captured, |binding, root, _registry| {
-            if let Ok(status) = binding.records.save_status(&binding.checkout.id) {
-                root.record_save_status(status);
+        let Ok(Some(status)) = self.with_live_component(&captured, |binding, root, _registry| {
+            let status = binding.records.save_status(&binding.checkout.id).ok()?;
+            root.record_save_status(status.clone());
+            Some(status)
+        }) else {
+            return;
+        };
+        let changed = self
+            .record_save
+            .as_ref()
+            .is_some_and(|(previous, _)| *previous != status);
+        self.record_save = Some((status, crate::time::now()));
+        if changed {
+            // The root synced before it heard; a frame of its own shows it.
+            self.context.wake_handle().wake();
+        }
+    }
+
+    /// When the host should sample durability again: soon after the last
+    /// sample while the record's latest edits are still being written.
+    pub(crate) fn record_save_deadline(&self) -> Option<crate::time::Instant> {
+        match &self.record_save {
+            Some((crate::record::RecordSaveStatus::Saving, sampled)) => {
+                sampled.checked_add(RECORD_SAVE_POLL)
             }
-        });
+            _ => None,
+        }
     }
 
     pub fn new(
@@ -873,6 +904,7 @@ impl AppComponent {
                 payloads: HashMap::new(),
             })),
             registry_owner,
+            record_save: None,
         }
     }
 
