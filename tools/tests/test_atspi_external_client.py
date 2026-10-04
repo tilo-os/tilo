@@ -269,6 +269,66 @@ class FakeShell:
         raise AssertionError(method)
 
 
+class FakeSettings(CLIENT.AtspiClient):
+    """Settings on the shared shell: wide, the category list sits beside the
+    pane; narrow, it opens on the Network pane with a Back arrow to the list.
+    Each screen maps a name to whether it can be clicked."""
+
+    LIST = {"Personal Settings": False, "Network": True, "Appearance": True, "Accessibility": True}
+    PANE = {"Personal Settings": False, "Back": True, "Network": False, "Connectivity": False}
+
+    def __init__(self, narrow: bool):
+        super().__init__("unix:path=/x", ":1.2")
+        wide = {**self.PANE, **self.LIST}
+        del wide["Back"]
+        self.screen = self.PANE if narrow else wide
+        self.clicked: list[str] = []
+
+    def tree(self, limit=0):
+        return {f"/{index}": f"(<'{name}'>,)" for index, name in enumerate(self.screen)}
+
+    def call(self, path, method, *args, check=True):
+        name = list(self.screen)[int(path[1:])]
+        if method.endswith("GetActions"):
+            return "([('click', '', '')],)" if self.screen[name] else "([],)"
+        if method.endswith("DoAction"):
+            self.clicked.append(name)
+            if name == "Back":
+                self.screen = self.LIST
+            return "(true,)"
+        raise AssertionError(method)
+
+
+class NarrowWindowTests(unittest.TestCase):
+    def test_a_wide_window_clicks_the_category_in_place(self):
+        settings = FakeSettings(narrow=False)
+        tree = CLIENT.wait_for_reachable(settings, ("Network",), "settings", clickable=True)
+        settings.click(tree, "Network")
+        self.assertEqual(settings.clicked, ["Network"])
+
+    def test_a_narrow_window_goes_back_to_the_list_for_the_category(self):
+        # The pane's heading is named "Network" too; only the list entry clicks.
+        settings = FakeSettings(narrow=True)
+        tree = CLIENT.wait_for_reachable(settings, ("Network",), "settings", clickable=True)
+        settings.click(tree, "Network")
+        self.assertEqual(settings.clicked, ["Back", "Network"])
+
+    def test_manifest_names_on_the_list_are_reached_from_a_narrow_pane(self):
+        settings = FakeSettings(narrow=True)
+        CLIENT.wait_for_reachable(settings, ("Personal Settings", "Appearance", "Accessibility"), "settings")
+        self.assertEqual(settings.clicked, ["Back"])
+
+    def test_a_name_missing_from_both_screens_fails_after_one_back(self):
+        from unittest import mock
+
+        settings = FakeSettings(narrow=True)
+        with mock.patch.object(CLIENT, "START_TIMEOUT_SECONDS", 0.05), \
+                mock.patch.object(CLIENT, "POLL_SECONDS", 0.001):
+            with self.assertRaisesRegex(CLIENT.GateError, "click-capable Sound .also not after going Back"):
+                CLIENT.wait_for_reachable(settings, ("Sound",), "settings", clickable=True)
+        self.assertEqual(settings.clicked, ["Back"])
+
+
 class TabListTests(unittest.TestCase):
     def test_window_group_strips_list_only_their_tabs(self):
         lists = CLIENT.tab_lists(FakeShell())
