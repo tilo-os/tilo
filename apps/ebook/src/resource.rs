@@ -12,13 +12,12 @@
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, Fixture, LaunchInput, ResourceApp, ResourceSurface, SeedCx,
-    SurfaceCx, ViewCx,
+    EffectAnswer, EffectCx, Fixture, LaunchInput, ResourceApp, ResourceSurface, SeedCx, SurfaceCx,
+    ViewCx,
 };
 use ui::prelude::Effect;
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource as PublishedResource};
+use ui::tilo_actions::{ActionSpec, OperationKind, Resource as PublishedResource};
 use ui::tilo_resource::{self, ActionRef, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
@@ -127,7 +126,7 @@ impl ResourceApp for EbookShell {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Ebook>) -> Element {
-        cx.surface(BooksApp::new(bundled_library()))
+        cx.surface(BooksApp::new(cx.dispatcher(), bundled_library()))
     }
 
     fn label(state: &EbookState) -> String {
@@ -227,7 +226,6 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
 
     fn attach(&mut self, cx: SurfaceCx<Ebook>) {
         self.attach_host(&cx);
-        self.attach_framework(cx.dispatcher());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -247,111 +245,12 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
     }
 }
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Ebook>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Ebook>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &EbookAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[allow(
-        dead_code,
-        reason = "BooksApp tests read the last dispatch; the hosted path does not"
-    )]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
-/// The library's dispatcher as the framework hands it to the reader, for
-/// tests that drive the reader (or one of its editors) on a document of
-/// their own: its edits go through the same permission check and executor.
-/// The headless app it came from is returned too, to outlive the test.
+/// A dispatcher of the library for tests that drive the reader (or one of
+/// its editors) on a document of their own: its edits go through the same
+/// permission check and executor a hosted reader's do.
 #[cfg(test)]
-pub(crate) fn library_dispatcher_for_test() -> (
-    ui::framework::testing::TestApp<impl ResourceApp<Resource = Ebook>>,
-    Dispatcher<Ebook>,
-) {
-    use std::cell::RefCell;
-
-    thread_local! {
-        static ATTACHED: RefCell<Option<Dispatcher<Ebook>>> = const { RefCell::new(None) };
-    }
-
-    struct Probe;
-
-    impl ResourceApp for Probe {
-        type Resource = Ebook;
-        const ID: &'static str = EbookShell::ID;
-        const TITLE: &'static str = EbookShell::TITLE;
-
-        fn view(cx: &mut ViewCx<Ebook>) -> Element {
-            ATTACHED.with(|attached| *attached.borrow_mut() = Some(cx.dispatcher()));
-            Box::new(ui::widget::Column::new())
-        }
-    }
-
-    let app = ui::framework::testing::TestApp::<Probe>::new().expect("the library opens");
-    let dispatcher = ATTACHED
-        .with(|attached| attached.borrow_mut().take())
-        .expect("the library's view was built");
-    (app, dispatcher)
+pub(crate) fn library_dispatcher_for_test() -> ui::framework::Dispatcher<Ebook> {
+    ui::framework::testing::dispatcher::<Ebook>(EbookShell::ID)
 }
 
 /// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
@@ -366,6 +265,7 @@ pub fn provide_resources(state: &EbookState) -> Vec<PublishedResource> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use ui::widget::Widget;
 
     #[test]
@@ -435,25 +335,12 @@ mod tests {
             "reading-theme Document ops must be on settings"
         );
 
-        let mut app = BooksApp::with_library(crate::content::load_sample_library());
+        let mut app = BooksApp::with_library(
+            library_dispatcher_for_test(),
+            crate::content::load_sample_library(),
+        );
         let mut seeded = doc.clone();
         app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert!(
-            standalone.iter().any(|r| r.id.as_str() == "ebook.library"),
-            "standalone keeps the library root"
-        );
-        assert!(
-            standalone
-                .iter()
-                .find(|r| r.id.as_str() == "ebook.library")
-                .is_some_and(|r| r.actions.iter().any(|a| a.id == "toggle-hide-read")),
-            "standalone library keeps Document prefs"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
         assert!(ui::resources::resource(&app, &seeded, "ebook.library").is_none());
         let hosted_settings = ui::resources::resource(&app, &seeded, "ebook.settings")
             .expect("hosted settings stay the published row");
@@ -540,7 +427,10 @@ mod tests {
         );
 
         // Empty present must not wipe a local library that has not been published.
-        let mut local = BooksApp::with_library(crate::content::load_sample_library());
+        let mut local = BooksApp::with_library(
+            library_dispatcher_for_test(),
+            crate::content::load_sample_library(),
+        );
         let before = local.library().len();
         assert!(before > 0, "sample app starts with a local library");
         local.adopt_resource_state(&EbookState::default());
@@ -559,7 +449,7 @@ mod tests {
         use tilo_document::{RichText, RichTextAction};
         use ui::tilo_resource::Invoke;
 
-        let (mut app, _) = library_dispatcher_for_test();
+        let mut app = ui::framework::testing::TestApp::<EbookShell>::new().unwrap();
         let entry = LibraryEntry {
             id: "book:0123456789abcdef0123456789abcdef".into(),
             shared: false,
