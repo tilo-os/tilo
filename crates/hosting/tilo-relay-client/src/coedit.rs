@@ -167,6 +167,15 @@ pub enum Inbound {
         /// The remote-action frame, as the sender encoded it.
         frame: Vec<u8>,
     },
+    /// A piece of a record's content another device of the workspace
+    /// addressed to this one. The relay stamped the sender from its
+    /// authenticated connection.
+    RecordContent {
+        /// The sending device's public key.
+        from: [u8; 32],
+        /// The piece, as the sender encoded it.
+        frame: Vec<u8>,
+    },
     /// A live-plane frame (presence, previews) another live member of the
     /// workspace published: a native shell, a browser, an agent. The host
     /// checked its sealed form and stamped the sender from its
