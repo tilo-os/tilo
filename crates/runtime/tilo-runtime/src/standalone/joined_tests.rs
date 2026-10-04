@@ -269,8 +269,17 @@ impl HostedRoom {
 
 fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
     let mut custody = joined.custody.clone();
-    custody.workspace_device_certs.clear();
-    let probe = Joined {
+    let room_cert = custody.device_cert.clone();
+    let default_root = SigningKey::from_bytes(&[95; 32]);
+    custody.device_cert.user_public_key = default_root.verifying_key().to_bytes();
+    sign_device_cert(&mut custody.device_cert, &default_root).unwrap();
+    let default_actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
+        custody.device_cert.user_public_key,
+    );
+    custody
+        .workspace_device_certs
+        .insert(room_topic(room).unwrap(), room_cert);
+    let mut probe = Joined {
         owner: joined.owner.clone(),
         custody,
         endpoint: joined.endpoint.clone(),
@@ -281,6 +290,17 @@ fn assert_changed_custody_refused(joined: &Joined, room: RoomId, actor: &str) {
         governance: Mutex::new(Vec::new()),
         keys: joined.keys.clone(),
     };
+    assert!(
+        probe.action_room(actor, &room.to_string()).is_ok(),
+        "the admitted selected root is independent of the default root"
+    );
+    assert!(
+        probe
+            .action_room(&default_actor, &room.to_string())
+            .is_err(),
+        "a default root must not borrow the selected root's admission"
+    );
+    probe.custody.workspace_device_certs.clear();
     assert!(
         probe.action_room(actor, &room.to_string()).is_err(),
         "changed selected custody must not reuse the retained roster identity"
@@ -413,20 +433,10 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     sign_device_cert(&mut device, &root_key).unwrap();
     let invitation = governing.invite(device.user_public_key);
 
-    let default_root = SigningKey::from_bytes(&[95; 32]);
-    let mut default_cert = device.clone();
-    default_cert.user_public_key = default_root.verifying_key().to_bytes();
-    sign_device_cert(&mut default_cert, &default_root).unwrap();
-    let default_actor = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
-        default_cert.user_public_key,
-    );
     let custody = HostIdentity {
-        device_cert: default_cert,
+        device_cert: device.clone(),
         device_signing_key: device_key.clone(),
-        workspace_device_certs: std::collections::HashMap::from([(
-            governing.topic,
-            device.clone(),
-        )]),
+        workspace_device_certs: std::collections::HashMap::default(),
         workspace_revocations: std::collections::HashMap::default(),
         identity_paths: None,
     };
@@ -457,12 +467,6 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
         joined
             .action_room("forged-profile-actor", &room.to_string())
             .is_err()
-    );
-    assert!(
-        joined
-            .action_room(&default_actor, &room.to_string())
-            .is_err(),
-        "a default profile root must not borrow its selected room root's admission"
     );
     assert!(joined.action_room(&actor, &own_room.to_string()).is_err());
     assert!(joined.action_room(&actor, "not-a-room").is_err());
