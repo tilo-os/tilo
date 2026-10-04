@@ -217,18 +217,19 @@ impl ResourceApp for FirewallShell {
 
     /// A new record starts with what firewalld on the creating device
     /// already has, which that device therefore need not apply again. A
-    /// device without a readable firewalld starts empty and offers a retry.
+    /// device without a readable firewalld starts empty and offers a retry,
+    /// and so does a record created without a window: it is no device's.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Firewall>> {
-        if cx.host().capture().is_some() {
+        let Some(host) = cx.host().filter(|host| host.capture().is_none()) else {
             return Vec::new();
-        }
+        };
         let Ok(config) = read_device() else {
             return Vec::new();
         };
         let applied = AppliedConfig {
             config: Some(config.canonical().to_json()),
         };
-        if let Err(error) = cx.host().settings::<AppliedConfig>().set(&applied) {
+        if let Err(error) = host.settings::<AppliedConfig>().set(&applied) {
             tracing::warn!(%error, "could not remember the imported firewall configuration");
         }
         Invoke::apply(&FirewallAction::Import { config })
