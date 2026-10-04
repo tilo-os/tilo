@@ -8,12 +8,11 @@
 //! document state — never a second hand-built `mail.mailbox` Document door
 //! beside [`tilo_resource::publish`].
 
-use automerge::AutoCommit;
 use tilo_document::RichText;
 use ui::framework::{
     Dispatcher, Fixture, ResourceApp, ResourceSurface, RunMode, SurfaceCx, ViewCx,
 };
-use ui::tilo_actions::{ActionSpec, EncodedAction, Resource as PublishedResource};
+use ui::tilo_actions::{ActionSpec, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry, publish_child};
 use ui::widget::Element;
 
@@ -266,85 +265,6 @@ impl ResourceSurface<Mail> for MailApp {
     }
 }
 
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Mail>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Mail>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &MailAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        let _ = self.try_dispatch_with_context(doc, type_id, action, context);
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &MailAction,
-        context: ui::tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,9 +272,9 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
-    fn resource_publish_owns_folder_and_message_document_ops_and_hosted_keeps_no_second_door() {
+    fn resource_publish_owns_folder_and_message_document_ops_and_the_window_keeps_no_second_door() {
         let mut app = MailApp::new_sample();
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
 
         let state = Mail::read(&doc).expect("seeded mail state");
@@ -407,17 +327,6 @@ mod tests {
             );
         }
 
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&doc);
-        assert!(
-            standalone
-                .iter()
-                .any(|resource| resource.kind == "mail.mailbox"),
-            "standalone keeps the mailbox root"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
         assert!(ui::resources::resource(&app, &doc, "mail.mailbox").is_none());
         assert!(
             ui::resources::resource(&app, &doc, "mail.folder:inbox").is_some(),
@@ -500,6 +409,27 @@ mod tests {
             assert_eq!(trashed, sample_trash + 2);
             let frame = app.harness().inspection_json().unwrap();
             assert!(frame.contains("Delete permanently"), "{frame}");
+        }
+
+        /// A keyboard triage goes through the framework's door: the starred
+        /// message is in the document, and one undo takes it back.
+        #[test]
+        fn a_shortcut_is_one_undo_step_through_the_framework() {
+            ui::i18n::I18nManager::init("en-US");
+            let mut app = TestApp::<MailShell>::capture(Some("wide")).unwrap();
+            let starred = |app: &TestApp<MailShell>| {
+                app.state()
+                    .messages
+                    .iter()
+                    .filter(|message| message.starred)
+                    .count()
+            };
+            let before = starred(&app);
+            app.harness().type_text("s");
+            let after = starred(&app);
+            assert_ne!(after, before, "S toggled the selected message's star");
+            assert!(app.undo());
+            assert_eq!(starred(&app), before);
         }
 
         /// A capture is the same on every run: the sample mailbox's ids do

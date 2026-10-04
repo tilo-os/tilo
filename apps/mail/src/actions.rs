@@ -543,10 +543,12 @@ impl Action for MailAction {
         ExecutionLocus::ClientLocal
     }
 
-    /// Whether a message was read is state about it, not a change to it.
+    /// Whether a message was read is state about it, not a change to it; what
+    /// a mail server reports is content from outside, which no undo takes back.
     fn change_kind(&self) -> tilo_actions::ChangeKind {
         match self {
             MailAction::SetRead { .. } => tilo_actions::ChangeKind::Housekeeping,
+            MailAction::IngestBaselines { .. } => tilo_actions::ChangeKind::External,
             _ => tilo_actions::ChangeKind::Content,
         }
     }
@@ -1743,7 +1745,7 @@ mod tests {
         // delete, and surfaces them in the one palette. Drives the real resource hook.
         {
             let (app, state) = seeded_app();
-            let resources = ui::resources::resources(&app, &state.doc);
+            let resources = app.publish_resources(&state.doc);
             let handlers: std::collections::HashSet<String> = app
                 .local_resource_operation_handlers()
                 .iter()
@@ -1833,7 +1835,7 @@ mod tests {
             );
 
             app.inject_mail_search_snapshot_failure();
-            let resources = ui::resources::resources(&app, &state.doc);
+            let resources = app.publish_resources(&state.doc);
             let mailbox = resources
                 .iter()
                 .find(|resource| resource.id.as_str() == "mail.mailbox")
@@ -1856,7 +1858,7 @@ mod tests {
                 "only a successful replacement clears the retained error"
             );
             assert!(
-                !ui::resources::resources(&app, &state.doc)
+                !app.publish_resources(&state.doc)
                     .iter()
                     .flat_map(|root| &root.children)
                     .any(|resource| resource.id.as_str() == "mail.search-status")
@@ -2136,7 +2138,7 @@ mod tests {
         // Phase `mailbox_batch_actions_bind_stable_ids_and_purge_is_confirmed`.
         {
             let (app, state) = seeded_app();
-            let resources = ui::resources::resources(&app, &state.doc);
+            let resources = app.publish_resources(&state.doc);
             let id = app.mail_resource_ctx(&state.doc).messages[0].id.clone();
             let address = tilo_actions::ActionAddress::new("mail.mailbox", "archive-messages");
             let args = serde_json::json!({"ids": [id.clone(), id]});
@@ -2375,7 +2377,7 @@ mod tests {
         // registry.
         {
             let (app, state) = seeded_app();
-            let resources = ui::resources::resources(&app, &state.doc);
+            let resources = app.publish_resources(&state.doc);
             let spec = resources[0]
                 .actions
                 .iter()
@@ -2393,24 +2395,23 @@ mod tests {
 
         // Phase `affordance_dispatches_the_palette_action`.
         // Single source of truth #2: the on-screen message affordance
-        // ([`MailState::apply_message_action`]) dispatches the byte-identical action
-        // the palette's archive spec builds — proven on the real dispatch path via
-        // the framework [`ui::ActionHost`].
+        // ([`MailState::apply_message_action`]) writes what the palette's
+        // archive action writes, through the framework dispatcher.
         {
             let mut st = MailState::new_sample(avatar_store_offline());
             let mut doc = AutoCommit::new();
             let id = an_inbox_id(&st);
 
             st.apply_message_action(&mut doc, id.parse().unwrap(), CtxAction::Archive);
-            let dispatched = st
-                .actions
-                .last_dispatched()
-                .expect("archive dispatched an action");
-            let expected = encode(&move_action(vec![id.clone()], Folder::Archive));
-            assert_eq!(dispatched.type_id, expected.type_id);
+            let mut palette = AutoCommit::new();
+            MailDoc::register_message(&mut palette, &id);
+            move_action(vec![id.clone()], Folder::Archive)
+                .apply(&mut palette)
+                .unwrap();
             assert_eq!(
-                dispatched.payload, expected.payload,
-                "the archive affordance and the palette build the identical action"
+                MailDoc::list_message_flags(&doc),
+                MailDoc::list_message_flags(&palette),
+                "the archive affordance and the palette make the identical edit"
             );
             // And it really moved the message in the document.
             assert_eq!(MailDoc::get_folder_for(&doc, &id), Some(Folder::Archive));
