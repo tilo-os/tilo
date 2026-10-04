@@ -2453,7 +2453,16 @@ impl State {
         let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
             return false;
         };
-        session.deposit_captured_rgba(frame.rgba);
+        // The stream carries the window as its tab shows it, at the size its
+        // first frame (the tab's snapshot) set: without the shadow and resize
+        // border a client-side-decorating toolkit draws around it.
+        let rgba = crate::compositor::foreign::store().crop_to_window(
+            surface_id,
+            frame.rgba,
+            frame.width,
+            frame.height,
+        );
+        session.deposit_captured_rgba(rgba);
         if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
             && self.legacy_stream_publisher.is_some()
         {
