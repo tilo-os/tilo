@@ -34,6 +34,8 @@ pub struct SessionState {
     pub target: Option<crate::target::SessionTarget>,
     /// The process whose screen this is.
     pub local_session: Option<String>,
+    /// The session on a relay this session re-attaches to.
+    pub relay_session: Option<String>,
     pub screen: Screen,
     pub(crate) objects: ScreenObjects,
 }
@@ -53,6 +55,9 @@ pub enum TerminalAction {
     /// [`SessionTarget`](crate::target::SessionTarget)). The target outlives
     /// every process that runs in it, so reopening goes back to it.
     SetTarget { target: String },
+    /// Record (or, with `None`, forget) the relay session this session
+    /// re-attaches to.
+    SetRelaySession { session: Option<String> },
     /// What one batch of the process's output did to its screen.
     Output { edits: Vec<ScreenEdit> },
 }
@@ -98,6 +103,21 @@ impl TerminalAction {
                 }
                 doc.put(obj, crate::target::TARGET_KEY, target.as_str())?;
             }
+            Self::SetRelaySession { session } => match session {
+                Some(session)
+                    if session.len() == 32 && session.bytes().all(|b| b.is_ascii_hexdigit()) =>
+                {
+                    doc.put(obj, crate::target::RELAY_SESSION_KEY, session.as_str())?;
+                }
+                Some(_) => {
+                    return Err(ActionError::Refused("relay session id is invalid".into()));
+                }
+                None => {
+                    if doc.get(obj, crate::target::RELAY_SESSION_KEY)?.is_some() {
+                        doc.delete(obj, crate::target::RELAY_SESSION_KEY)?;
+                    }
+                }
+            },
             Self::Output { edits } => crate::screen::apply(doc, obj, edits)?,
         }
         Ok(())
@@ -264,7 +284,8 @@ fn target_operations() -> Vec<ActionSpec> {
                 "target",
                 ParamType::Text,
                 "Where the session runs: `environment` (the default environment), \
-                     `environment:<record>`, or `legacy:<vm>`. The device's own shell \
+                     `environment:<record>`, or `legacy:<vm>`; append `@<relay endpoint id>` \
+                     to an environment to run it on that relay. The device's own shell \
                      (`host`) can only be chosen by the person.",
             )],
             |args| {
@@ -468,6 +489,7 @@ fn session_fields(doc: &Doc, obj: &ObjId) -> SessionState {
             .as_deref()
             .and_then(crate::target::SessionTarget::decode),
         local_session: read_string(doc, obj, LOCAL_SESSION),
+        relay_session: read_string(doc, obj, crate::target::RELAY_SESSION_KEY),
         ..SessionState::default()
     }
 }

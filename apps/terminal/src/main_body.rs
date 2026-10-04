@@ -560,6 +560,8 @@ pub struct TerminalWidget {
     pending_actions: Vec<crate::resource::TerminalAction>,
     /// Where the session record says this session runs.
     recorded_target: Option<crate::target::SessionTarget>,
+    /// The relay session the record says this session re-attaches to.
+    recorded_relay_session: Option<String>,
 
     current_attr: Attr,
     pending_wrap: bool,
@@ -799,6 +801,7 @@ impl TerminalWidget {
             synced: None,
             pending_actions: Vec::new(),
             recorded_target: None,
+            recorded_relay_session: None,
             current_attr: Attr::default(),
             pending_wrap: false,
             alt_active: false,
@@ -2186,6 +2189,7 @@ impl TerminalWidget {
     /// a session running elsewhere, a screenshot before its output.
     pub(crate) fn present_session(&mut self, state: &crate::resource::SessionState) {
         self.recorded_target.clone_from(&state.target);
+        self.recorded_relay_session.clone_from(&state.relay_session);
         if !state.pane_id.is_empty() {
             self.pane_id.clone_from(&state.pane_id);
         }
@@ -2270,6 +2274,7 @@ impl TerminalWidget {
     pub(crate) fn stage_scenario(&mut self, name: &str) {
         if let Some((target, environments)) = crate::scenarios::target(name) {
             self.show_target(target, environments);
+            self.set_relays(crate::scenarios::relays(name));
         }
         self.feed(&crate::scenarios::output(name));
         if name == "ended" {
