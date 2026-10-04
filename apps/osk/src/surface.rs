@@ -1,8 +1,10 @@
-//! The keyboard as the surface of its [`Osk`] preferences.
+//! The keyboard as the surface of [`Osk`].
 //!
-//! [`OskSurface`] presents the preferences to the [`OskWidget`] and submits
-//! the changes the keyboard makes itself (a layout key, an emoji pick)
-//! through the dispatcher, like every other edit. What typing teaches the
+//! [`OskSurface`] presents the person's keyboard preferences — their
+//! settings — to the [`OskWidget`], stores the changes the keyboard makes
+//! itself (a layout key, an emoji pick) and the ones a palette, agent or
+//! script asks for through an [`OskEffect`], and publishes the preferences
+//! as live rows beside the resource. What typing teaches the
 //! keyboard is kept in the person's own [`Learned`] record, which follows
 //! them to their other devices and never reaches a collaborator. In the
 //! keyboard's own
@@ -13,11 +15,11 @@
 use std::rc::Rc;
 
 use ui::framework::{
-    Dispatcher, EffectAnswer, EffectCx, Effected, PersonRecord, ResourceSurface, SurfaceCx,
+    EffectAnswer, EffectCx, Effected, LiveRow, PersonRecord, ResourceSurface, Setting, SurfaceCx,
 };
 use ui::widget::{AppModel, Decorator, ModelPath, Widget};
 
-use crate::actions::OskEffect;
+use crate::actions::{OskEffect, SetPreference};
 use crate::learned::{Learned, LearnedAction};
 use crate::resource::{
     HIT_OVERLAY_FLAG, INPUT_METHOD_FLAG, NO_INPUT_METHOD_FLAG, Osk, OskPreferences, PURPOSE_OPTION,
@@ -41,7 +43,9 @@ pub(crate) const SCENARIOS: &[&str] = &[
 /// The on-screen keyboard over its preferences.
 pub struct OskSurface {
     keyboard: OskWidget,
-    dispatch: Option<Dispatcher<Osk>>,
+    /// The person's keyboard preferences, and the revision of them the
+    /// keyboard was last presented.
+    preferences: Option<(Setting<OskPreferences>, Option<OskPreferences>)>,
     /// What the keyboard learned from this person, and the revision of it
     /// the keyboard was last presented.
     learned: Option<(PersonRecord<Learned>, u64)>,
@@ -65,7 +69,7 @@ impl OskSurface {
     pub fn with_keyboard(keyboard: OskWidget) -> Self {
         Self {
             keyboard,
-            dispatch: None,
+            preferences: None,
             learned: None,
             focus: None,
         }
@@ -76,14 +80,53 @@ impl OskSurface {
         &self.keyboard
     }
 
-    /// Submit the preference changes the keyboard made itself, and save
-    /// what typing taught it.
+    /// Store `edits` in the person's preferences.
+    fn store(&mut self, edits: &[SetPreference]) -> Result<(), String> {
+        if edits.is_empty() {
+            return Ok(());
+        }
+        let Some((setting, _)) = &self.preferences else {
+            return Err("the keyboard keeps no preferences here".into());
+        };
+        let mut preferences = setting.get();
+        for edit in edits {
+            edit.apply(&mut preferences)?;
+        }
+        setting
+            .set(preferences)
+            .map_err(|error| format!("the keyboard preferences could not be stored: {error}"))?;
+        self.present_preferences();
+        Ok(())
+    }
+
+    /// Present the preferences when they changed here or on another of the
+    /// person's devices. Personalization turned off forgets what was learned
+    /// everywhere.
+    fn present_preferences(&mut self) {
+        let Some((setting, presented)) = &mut self.preferences else {
+            return;
+        };
+        let current = setting.get();
+        if presented.as_ref() == Some(&current) {
+            return;
+        }
+        *presented = Some(current.clone());
+        self.keyboard.present_preferences(&current);
+        if !current.personalization
+            && let Some((learned, _)) = &self.learned
+            && !learned.with(crate::learned::LearnedTyping::is_empty)
+            && let Err(error) = learned.apply(&LearnedAction::Forget)
+        {
+            tracing::warn!(%error, "osk: what the keyboard learned could not be forgotten");
+        }
+    }
+
+    /// Store the preference changes the keyboard made itself, and save what
+    /// typing taught it.
     fn submit_edits(&mut self) {
         let edits = self.keyboard.take_preference_edits();
-        if let Some(dispatch) = &self.dispatch {
-            for edit in &edits {
-                dispatch.apply(edit);
-            }
+        if let Err(error) = self.store(&edits) {
+            tracing::warn!(%error, "osk: a preference change was not kept");
         }
         let forget = self.keyboard.take_forget_learned();
         let lesson = self.keyboard.take_lesson();
@@ -170,23 +213,13 @@ impl Decorator for OskSurface {
         }
         self.keyboard.sync(state, path);
         self.submit_edits();
+        self.present_preferences();
         self.present_learned();
     }
 }
 
 impl ResourceSurface<Osk, OskEffect> for OskSurface {
-    fn present(&mut self, state: &Rc<OskPreferences>) {
-        self.keyboard.present_preferences(state);
-        // Personalization turned off, here or on another device, forgets
-        // what was learned everywhere.
-        if !state.personalization
-            && let Some((learned, _)) = &self.learned
-            && !learned.with(crate::learned::LearnedTyping::is_empty)
-            && let Err(error) = learned.apply(&LearnedAction::Forget)
-        {
-            tracing::warn!(%error, "osk: what the keyboard learned could not be forgotten");
-        }
-    }
+    fn present(&mut self, _state: &Rc<()>) {}
 
     fn attach(&mut self, cx: SurfaceCx<Osk>) {
         if let Some(purpose) = cx.launch_option(PURPOSE_OPTION).and_then(purpose_from_str) {
@@ -194,19 +227,32 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
         }
         self.keyboard
             .set_hit_overlay(cx.launch_flag(HIT_OVERLAY_FLAG));
-        self.dispatch = Some(cx.dispatcher());
+        self.preferences = Some((cx.settings::<OskPreferences>(), None));
         if cx.mode().is_live()
             && let Some(learned) = cx.person::<Learned>()
         {
             self.keyboard.present_learned(learned.get());
             self.learned = Some((learned.clone(), learned.revision()));
         }
+        self.present_preferences();
         if cx.mode().is_live() && service::serving() {
             self.connect(&cx);
         }
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
+        let staged = match scenario {
+            Some("french") => Some(SetPreference::Layout("azerty".into())),
+            Some("emoji") => Some(SetPreference::EmojiRecents(
+                ["👍", "😂", "❤️", "🎉"].map(str::to_owned).to_vec(),
+            )),
+            _ => None,
+        };
+        if let Some(staged) = staged
+            && let Err(error) = self.store(&[staged])
+        {
+            tracing::warn!(%error, "osk: a scenario's preference was not staged");
+        }
         match scenario {
             Some("emoji") => self.keyboard.open_emoji_panel(),
             Some("composing") => {
@@ -224,13 +270,22 @@ impl ResourceSurface<Osk, OskEffect> for OskSurface {
     }
 
     fn effect(&mut self, effect: OskEffect, _cx: &mut EffectCx<Osk, Self>) -> EffectAnswer {
-        match effect {
-            OskEffect::ClearPersonal => {
-                self.keyboard.clear_personalization();
-                self.submit_edits();
-            }
+        if let Some(change) = effect.preference() {
+            self.store(&[change])?;
+        } else {
+            self.keyboard.clear_personalization();
+            self.submit_edits();
         }
         Ok(Effected::done())
+    }
+
+    fn live_rows(&self) -> Vec<LiveRow> {
+        let current = self
+            .preferences
+            .as_ref()
+            .map(|(setting, _)| setting.get())
+            .unwrap_or_default();
+        crate::actions::preference_rows(&current)
     }
 }
 
