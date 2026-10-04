@@ -5,23 +5,24 @@
 //! folder survives restart without putting a path into the Automerge
 //! document.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
-
-use serde_json::{Map, Value};
 
 #[cfg(test)]
 const APP_ID: &str = "so.tilo.ebook";
-const BOOKS: &str = "books";
-const WATCHED: &str = "watched_folders";
 const MAX_ENTRIES: usize = 200;
 const MAX_PATH_BYTES: usize = 4096;
 
-/// The library as stored: the app's device-local settings, kept as the raw
-/// keys [`LocalLibrary::from_section`] validates one by one.
-#[derive(Default, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub(crate) struct Stored(Map<String, Value>);
+/// The library as stored in the app's device-local settings: where each
+/// book's file is on this device, and the folders it watches. Read back
+/// through [`LocalLibrary::from_stored`], which keeps only what is valid.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Stored {
+    #[serde(default)]
+    books: BTreeMap<String, PathBuf>,
+    #[serde(default)]
+    watched_folders: Vec<PathBuf>,
+}
 
 impl ui::storage::SettingsSchema for Stored {
     const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
@@ -39,7 +40,7 @@ pub(crate) struct LocalLibrary {
 impl LocalLibrary {
     /// The grants kept in `store`, which [`Self::save`] writes back to.
     pub(crate) fn load(store: ui::storage::Settings<Stored>) -> Self {
-        let stored = Self::from_section(&store.get().0);
+        let stored = Self::from_stored(&store.get());
         Self {
             store: Some(store),
             ..stored
@@ -74,62 +75,43 @@ impl LocalLibrary {
         let Some(store) = &self.store else {
             return;
         };
-        if let Err(error) = store.set(&Stored(self.section())) {
+        if let Err(error) = store.set(&self.stored()) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
         }
     }
 
-    fn from_section(section: &Map<String, Value>) -> Self {
+    fn from_stored(stored: &Stored) -> Self {
         let mut out = Self::default();
-        if let Some(Value::Object(books)) = section.get(BOOKS) {
-            for (id, value) in books.iter().take(MAX_ENTRIES) {
-                let Some(path) = value.as_str().map(PathBuf::from) else {
-                    continue;
-                };
-                if valid_book_id(id) && valid_path(&path) {
-                    out.books.insert(id.clone(), path);
-                }
+        for (id, path) in stored.books.iter().take(MAX_ENTRIES) {
+            if valid_book_id(id) && valid_path(path) {
+                out.books.insert(id.clone(), path.clone());
             }
         }
-        if let Some(Value::Array(watched)) = section.get(WATCHED) {
-            for value in watched.iter().take(MAX_ENTRIES) {
-                let Some(path) = value.as_str().map(PathBuf::from) else {
-                    continue;
-                };
-                if valid_path(&path) && !out.watched_folders.contains(&path) {
-                    out.watched_folders.push(path);
-                }
+        for path in stored.watched_folders.iter().take(MAX_ENTRIES) {
+            if valid_path(path) && !out.watched_folders.contains(path) {
+                out.watched_folders.push(path.clone());
             }
         }
         out
     }
 
-    fn section(&self) -> Map<String, Value> {
-        let books = self
-            .books
-            .iter()
-            .filter(|(id, path)| valid_book_id(id) && valid_path(path))
-            .take(MAX_ENTRIES)
-            .map(|(id, path)| {
-                (
-                    id.clone(),
-                    Value::String(path.to_string_lossy().into_owned()),
-                )
-            })
-            .collect();
-        let watched_folders = self
-            .watched_folders
-            .iter()
-            .filter(|path| valid_path(path))
-            .take(MAX_ENTRIES)
-            .map(|path| Value::String(path.to_string_lossy().into_owned()))
-            .collect();
-        [
-            (BOOKS.to_string(), Value::Object(books)),
-            (WATCHED.to_string(), Value::Array(watched_folders)),
-        ]
-        .into_iter()
-        .collect()
+    fn stored(&self) -> Stored {
+        Stored {
+            books: self
+                .books
+                .iter()
+                .filter(|(id, path)| valid_book_id(id) && valid_path(path))
+                .take(MAX_ENTRIES)
+                .map(|(id, path)| (id.clone(), path.clone()))
+                .collect(),
+            watched_folders: self
+                .watched_folders
+                .iter()
+                .filter(|path| valid_path(path))
+                .take(MAX_ENTRIES)
+                .cloned()
+                .collect(),
+        }
     }
 
     #[cfg(test)]
@@ -175,7 +157,7 @@ mod tests {
 
             assert!(
                 ui::storage::settings_at(&path)["app_device_local"][APP_ID]
-                    .get(BOOKS)
+                    .get("books")
                     .is_some(),
                 "the paths are the device's own"
             );
@@ -192,14 +174,15 @@ mod tests {
         {
             let directory = tempfile::tempdir().unwrap();
             let safe = directory.path().join("safe");
-            let section = serde_json::json!({
-                BOOKS: {
+            let stored: Stored = serde_json::from_value(serde_json::json!({
+                "books": {
                     "book:not-an-id": "/books/nope.epub",
                     "book:0123456789abcdef0123456789abcdef": "relative.epub"
                 },
-                WATCHED: [PathBuf::from("../private"), &safe, &safe]
-            });
-            let registry = LocalLibrary::from_section(section.as_object().unwrap());
+                "watched_folders": [PathBuf::from("../private"), &safe, &safe]
+            }))
+            .unwrap();
+            let registry = LocalLibrary::from_stored(&stored);
             assert!(registry.books.is_empty());
             assert_eq!(registry.watched_folders, vec![safe]);
         }
