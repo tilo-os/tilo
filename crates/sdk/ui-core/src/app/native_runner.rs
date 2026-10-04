@@ -1204,7 +1204,9 @@ impl AppHandler {
                         primary.request_redraw();
                     }
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
+                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop => {}
             }
         }
         changed

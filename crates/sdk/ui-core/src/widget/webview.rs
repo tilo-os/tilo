@@ -119,6 +119,42 @@ impl WebView {
         }
     }
 
+    /// While the session shares this window's page with someone watching,
+    /// hand it the page as a paint stream — the view on screen is the page
+    /// the window shows. Payloads the app → shell channel cannot carry are
+    /// dropped; a dropped whole frame is asked for again.
+    fn share_page(&self) {
+        use crate::webview::paint;
+        if !paint::share_watched() {
+            return;
+        }
+        let keyframe = paint::take_share_keyframe();
+        let page = [
+            self.rect.x0,
+            self.rect.y0,
+            self.rect.width(),
+            self.rect.height(),
+        ];
+        for payload in self.engine.take_paint_stream(keyframe) {
+            let whole = matches!(
+                payload,
+                crate::webview::paint::stream::wire::Payload::Key(_)
+            );
+            match payload.encode() {
+                Ok(bytes) if bytes.len() <= paint::MAX_SHARE_PAYLOAD => {
+                    paint::queue_share(paint::SharedFrame {
+                        payload: bytes,
+                        page,
+                        scale: f64::from(self.scale_factor),
+                    });
+                }
+                _ => {
+                    tracing::debug!(whole, "paint payload too large to share; skipped");
+                }
+            }
+        }
+    }
+
     /// Seed the window DPI before the first layout of a rebuilt view.
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f32) -> Self {
@@ -339,6 +375,7 @@ impl Widget for WebView {
             &self.rect,
         );
 
+        self.share_page();
         // A display list replaces pixels: draw it like any other widget
         // content, in this toolkit's own text and Vello.
         if let Some(page) = self.engine.paint_frame() {
@@ -1336,5 +1373,25 @@ mod tests {
             assert!(cmds.contains(&WebViewCommand::GoBack));
             assert!(cmds.contains(&WebViewCommand::GoForward));
         }
+    }
+}
+
+/// A web view is a window of its own where a page is all there is to show:
+/// a browser tab a host streams to this desktop. It keeps no record here.
+impl crate::widget::AppWidget for WebView {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+    fn app_kind(&self) -> crate::widget::AppKind {
+        crate::widget::AppKind::Browser
+    }
+    fn app_title(&self) -> &str {
+        &self.accessible_name
+    }
+    fn app_icon(&self) -> crate::widget::IconDescriptor {
+        crate::widget::IconDescriptor::Glyph("W")
+    }
+    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
+        Some(crate::widget::AppKind::Browser)
     }
 }
