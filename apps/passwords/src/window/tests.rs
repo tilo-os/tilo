@@ -880,9 +880,15 @@ fn shared_layout_and_long_list_keep_selected_items_reachable() {
 #[test]
 fn expiration_rebuilds_the_actual_retained_secret_property() {
     use ui::headless::Framed;
+    let directory = tempfile::tempdir().unwrap();
+    let _secrets = ui::secrets::scope_thread(ui::secrets::memory_backend());
+    let _host = ui::host::enter(&ui::host::HostServices::null());
+    let mut model = crate::PasswordsModel::open_in(directory.path());
+    let mut item = SecretItem::login("Expiry fixture", "ada", "expiry-only-secret-7A");
+    model.save_item(&mut item).unwrap();
     let mut app = Framed::new(
         ui::State::new(),
-        PasswordsSurface::demo(),
+        PasswordsSurface::with_model(model),
         (1100, 720),
         ui::theme::Theme::dark(),
     );
@@ -911,5 +917,5 @@ fn expiration_rebuilds_the_actual_retained_secret_property() {
         "expiration replaced the retained revealed row: {frame}"
     );
     assert!(!frame.contains("Hide password"));
-    assert!(!frame.contains("Harbor-Lights-2019"));
+    assert!(!frame.contains("expiry-only-secret-7A"));
 }

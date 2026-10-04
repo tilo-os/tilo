@@ -3092,6 +3092,10 @@ impl FrameHarness {
             });
             return order;
         }
+        let (generic_order, trapped) = self.generic_focus_order();
+        if trapped && !self.framework_history_captures_input() {
+            return generic_order;
+        }
         if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
         {
             let root = self
@@ -3122,17 +3126,35 @@ impl FrameHarness {
                 );
             }
         } else {
-            order =
-                crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
+            order = self.generic_focus_order().0;
         }
         order
+    }
+
+    fn generic_focus_order(&self) -> (Vec<NodeId>, bool) {
+        let live = self
+            .history
+            .as_ref()
+            .and_then(|history| history.live_layout_node())
+            .unwrap_or(self.child_node);
+        crate::focus_navigation::order(live, self.root.as_ref(), &self.taffy)
+    }
+
+    fn framework_history_captures_input(&self) -> bool {
+        self.history
+            .as_ref()
+            .is_some_and(|history| history.captures_input())
+            || crate::history_mode::embedded::captures_input(self.root.as_ref())
     }
 
     fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        let (mut order, trapped) = self.generic_focus_order();
+        if (self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref()))
+            && (!trapped || self.framework_history_captures_input())
         {
             // A generic modal can hide retained editors with framework history.
             // Returning to those editors must restore the exact prior owner;
@@ -3154,8 +3176,6 @@ impl FrameHarness {
             self.focus_before_trap = None;
             return;
         }
-        let (mut order, trapped) =
-            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy);
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
             // through the portable host's complete layout rebuilds.
@@ -8381,6 +8401,134 @@ mod tests {
             .perform_named("history-open", &crate::a11y::Action::Activate)
             .expect("public History target activates");
         assert!(driver.targets().contains_key("activity_timeline"));
+    }
+
+    #[test]
+    fn hosted_history_keeps_generic_modal_keyboard_focus_and_restores_background() {
+        struct ControlledModal {
+            inner: crate::widget::ModalDialog<Column>,
+            open: std::rc::Rc<std::cell::Cell<bool>>,
+        }
+        impl crate::widget::Decorator for ControlledModal {
+            type Inner = crate::widget::ModalDialog<Column>;
+            fn inner(&self) -> &Self::Inner {
+                &self.inner
+            }
+            fn inner_mut(&mut self) -> &mut Self::Inner {
+                &mut self.inner
+            }
+            fn sync(
+                &mut self,
+                state: &mut crate::widget::AppModel,
+                root: &crate::widget::ModelPath,
+            ) {
+                self.inner.set_open(self.open.get());
+                self.inner.sync(state, root);
+            }
+        }
+        let open = std::rc::Rc::new(std::cell::Cell::new(false));
+        let root = Column::new()
+            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(ControlledModal {
+                inner: crate::widget::ModalDialog::new(
+                    "Keyboard modal",
+                    Column::new()
+                        .push(Box::new(Button::new("modal-a", "First choice", None)))
+                        .push(Box::new(Button::new("modal-b", "Second choice", None))),
+                ),
+                open: open.clone(),
+            }));
+        let mut driver = Driver::from_managed_root_with_controlled_inputs(
+            State::new(),
+            crate::history_mode::ManagedRoot::new(
+                Box::new(root),
+                controlled_history_registration(912),
+            ),
+            (900, 650),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("modal-keyboard-author".into()),
+        )
+        .unwrap();
+        driver
+            .perform_named("background", &crate::a11y::Action::Focus)
+            .unwrap();
+        open.set(true);
+        driver.relayout();
+        assert!(driver.focus_trap_active);
+        assert_eq!(driver.focus_order().len(), 2);
+        assert_eq!(
+            driver.focused_access_node().unwrap().name.as_deref(),
+            Some("First choice")
+        );
+        for expected in ["Second choice", "First choice", "Second choice"] {
+            driver.key("Tab");
+            let (_, focused) = driver
+                .a11y_focus()
+                .expect("modal keyboard focus is exported");
+            assert_eq!(focused.label(), Some(expected));
+            assert!(
+                focused.bounds().is_some(),
+                "native focus includes painted geometry"
+            );
+        }
+        open.set(false);
+        driver.relayout();
+        assert!(!driver.focus_trap_active);
+        assert_eq!(
+            driver.focused_access_node().unwrap().name.as_deref(),
+            Some("Background")
+        );
+        driver
+            .perform_named("history-open", &crate::a11y::Action::Activate)
+            .unwrap();
+        assert!(driver.framework_history_captures_input());
+        // Opening History is a view operation, not a keyboard focus request.
+        // Establish focus through the exported AT route before a background
+        // dialog appears, then prove History keeps custody of real Tab input.
+        let history_control = driver.focus_order()[0];
+        let history_access = driver
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(id, _)| {
+                matches!(resolve_node_id_bound(
+                driver.history.as_deref().expect("registered History"), &driver.node_map, id,
+            ), Some(crate::accesskit_bridge::A11yTarget::Widget(node)) if node == history_control)
+                .then_some(id)
+            })
+            .expect("the first eligible History control has an exported accessibility node");
+        driver
+            .perform_a11y_action(history_access, &crate::a11y::Action::Focus)
+            .unwrap();
+        assert!(
+            driver
+                .focused()
+                .is_some_and(|node| driver.focus_order().contains(&node))
+        );
+        open.set(true);
+        driver.relayout();
+        assert!(driver.framework_history_captures_input());
+        let history_order = driver.focus_order();
+        assert!(!history_order.is_empty());
+        for node in &history_order {
+            assert!(
+                !driver
+                    .inspect_node(*node, |widget| {
+                        matches!(widget.test_id(), Some("modal-a" | "modal-b"))
+                    })
+                    .unwrap_or(false),
+                "background dialog cannot take focus from active History"
+            );
+        }
+        driver.key("Tab");
+        assert!(
+            driver
+                .focused()
+                .is_some_and(|node| driver.focus_order().contains(&node))
+        );
+        let (native_focus, native_node) = driver.a11y_focus().expect("History focus is exported");
+        assert_ne!(native_focus, crate::accesskit_bridge::ROOT_ID);
+        assert_ne!(native_node.role(), accesskit::Role::Window);
     }
 
     #[test]

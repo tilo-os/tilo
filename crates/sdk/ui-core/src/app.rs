@@ -2356,6 +2356,13 @@ impl App {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
         let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
+        if !self.accessibility.focus_trap_active {
+            // The old map may already contain removed controls. Preserve only
+            // the exact live semantic/owner identity before rebuilding clears
+            // focus; a new modal will retain this as its return target.
+            self.accessibility.focus_before_trap =
+                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref());
+        }
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {

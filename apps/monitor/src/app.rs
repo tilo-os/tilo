@@ -2039,7 +2039,6 @@ mod tests {
     use crate::view::Stat;
     use ui::headless::FrameHarness;
     use ui::tilo_actions::ConfirmationPolicy;
-    use ui::tilo_resource::Resource as _;
 
     fn app() -> MonitorApp {
         MonitorApp::new()

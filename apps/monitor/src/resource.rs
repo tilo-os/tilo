@@ -364,16 +364,21 @@ mod tests {
 
     /// Click the control named `name` where a person sees it.
     fn click(app: &mut TestApp<MonitorShell>, name: &str) {
-        let node = named_node(app, name);
-        let bounds = &node["bounds"];
-        let coordinate = |low: &str, high: &str| {
-            f64::midpoint(
-                bounds[low].as_f64().unwrap(),
-                bounds[high].as_f64().unwrap(),
-            )
-        };
-        let (x, y) = (coordinate("x0", "x1"), coordinate("y0", "y1"));
-        app.harness().click_at(x, y);
+        // The native export supplies widget geometry when its raw semantic
+        // node leaves bounds implicit (for example the cadence Button).
+        let nodes = app.harness().a11y_nodes();
+        let (_, node) = nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(name))
+            .unwrap_or_else(|| panic!("the control `{name}` is announced"));
+        let bounds = node
+            .bounds()
+            .unwrap_or_else(|| panic!("the control `{name}` has exported bounds"));
+        assert!(bounds.x1 > bounds.x0 && bounds.y1 > bounds.y0);
+        app.harness().click_at(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
         app.harness().relayout();
     }
 

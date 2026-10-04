@@ -2031,8 +2031,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
             (Some(_), None) => heading_band,
             (None, None) => 0.0,
         };
-        self.refresh_row_estimate();
-        self.apply_nav_metrics(theme);
+        // Choose the final presentation's row metrics once. Temporarily
+        // shrinking navigation rows to the generic estimate can clamp the
+        // bottom scroll offset; restoring their height cannot undo that loss.
+        if self.nav.is_some() {
+            self.apply_nav_metrics(theme);
+        } else {
+            self.refresh_row_estimate();
+        }
     }
 
     /// The one place the viewport's estimated row height is set, from the

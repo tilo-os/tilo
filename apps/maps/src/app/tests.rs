@@ -1,6 +1,45 @@
 use super::*;
 use crate::model::Category;
 
+/// Keep the production resource/effect door live, with external map services
+/// disabled before the surface's first frame and an explicitly owned cache.
+struct OfflineEffectMapsShell;
+
+impl ui::framework::ResourceApp for OfflineEffectMapsShell {
+    type Resource = crate::resource::Maps;
+    const ID: &'static str = <crate::resource::MapsShell as ui::framework::ResourceApp>::ID;
+    const TITLE: &'static str = <crate::resource::MapsShell as ui::framework::ResourceApp>::TITLE;
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
+        let cache =
+            std::path::PathBuf::from(cx.launch_arguments().first().expect("explicit test cache"));
+        cx.surface(MapsApp::build(
+            sample::default_model(),
+            sample::basemap(),
+            TileLayer::offline_with_cache_dir(cache),
+            true,
+            false,
+        ))
+    }
+}
+
+struct EffectMapCache(std::path::PathBuf);
+
+impl EffectMapCache {
+    fn new() -> Self {
+        let path = region_test_cache("canonical-open");
+        std::fs::create_dir(&path).expect("create an exclusively owned map cache");
+        Self(path)
+    }
+}
+
+impl Drop for EffectMapCache {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Effects answer from the window's state: locating reports what the
 /// location service really answered, and is unavailable while it can't be
 /// asked; a search an agent runs never writes the shared history.
@@ -897,9 +936,44 @@ fn platform_search_opens_finds_and_activates_places() {
             address,
             ui::tilo_actions::ActionAddress::new("maps.place:cafe-glueck", "open-place")
         );
-        let mut hosted =
-            ui::prelude::TestApp::<crate::resource::MapsShell>::capture(Some("directions"))
-                .unwrap();
+        let services = ui::host::HostServices::null();
+        let _host = ui::host::enter(&services);
+        let cache = EffectMapCache::new();
+        let mut hosted = ui::prelude::TestApp::<OfflineEffectMapsShell>::launched(&[cache
+            .0
+            .to_str()
+            .expect("test cache path is UTF-8")])
+        .unwrap();
+        for action in crate::scenario::actions(Some("directions")) {
+            hosted.invoke(action).unwrap();
+        }
+        assert!(hosted.state().place("cafe-glueck").is_some_and(|p| p.saved));
+        hosted
+            .harness()
+            .with_widget_mut::<MapsApp, _>(|app| {
+                assert!(!app.online, "the effect fixture starts offline");
+                assert_eq!(app.tiles.cache_dir(), cache.0.as_path());
+                assert!(app.model.place("cafe-glueck").is_some_and(|p| p.saved));
+                let providers = ui::search::capability::SearchSource::search_providers(app);
+                let page = providers[0].search_page(&SearchQuery::new("coffee"), None, 10, 10);
+                assert!(
+                    page.pending.is_none(),
+                    "the hosted fixture asks no geocoder"
+                );
+            })
+            .unwrap();
+        assert!(
+            hosted
+                .agent_surface()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["resource"] == address.resource.as_str() && row["action"] == address.action
+                }),
+            "the live offline fixture publishes the exact canonical open action"
+        );
+        let before = hosted.read_document(|doc| doc.clone().get_heads());
         hosted
             .call_on(
                 &address.resource,
@@ -913,6 +987,11 @@ fn platform_search_opens_finds_and_activates_places() {
                 assert_eq!(app.model.selected.as_deref(), Some("cafe-glueck"))
             })
             .unwrap();
+        assert_eq!(
+            hosted.read_document(|doc| doc.clone().get_heads()),
+            before,
+            "opening a place changes only this device's view"
+        );
         let poi = beer
             .results
             .iter()

@@ -1455,6 +1455,13 @@ impl ui::widget::Decorator for SnippetsApp {
             || Widget::needs_animation_frame(&self.shell)
     }
 
+    fn has_pending_visual_work(&self) -> bool {
+        // Capture staging waits for visual readiness, independently of the
+        // animation clock. The requested scene is incomplete until its
+        // geometry-dependent view state has been applied.
+        self.pending_scenario.is_some() || Widget::has_pending_visual_work(&self.shell)
+    }
+
     fn ime_cursor_rect(&self) -> Option<Rect> {
         let core = self.core.borrow();
         if let Some(modal) = &core.expand {

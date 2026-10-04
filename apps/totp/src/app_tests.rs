@@ -291,6 +291,33 @@ fn accessibility_names_accounts_and_the_sheet_owns_the_window() {
     // Case `the_open_sheet_is_a_modal_dialog_with_named_fields`.
     {
         let mut app = framed(app_with_state(), 900, 800);
+        fn collect_names(node: &AccessNode, names: &mut Vec<String>) {
+            if let Some(name) = &node.name {
+                names.push(name.clone());
+            }
+            for child in &node.children {
+                collect_names(child, names);
+            }
+        }
+        let background = app.accessibility().expect("the account list is described");
+        let account_list = background
+            .children
+            .iter()
+            .find(|node| node.role == Role::List)
+            .expect("the fixture exposes its account list before the modal");
+        assert!(!account_list.children.is_empty());
+        let mut background_names = Vec::new();
+        collect_names(account_list, &mut background_names);
+        let background_ids: Vec<_> = Framed::harness(&app)
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| {
+                node.label()
+                    .is_some_and(|name| background_names.iter().any(|expected| expected == name))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        assert!(!background_ids.is_empty());
         app.open_add();
         settle(&mut app);
         let nodes = Framed::harness(&app).a11y_nodes();
@@ -305,22 +332,26 @@ fn accessibility_names_accounts_and_the_sheet_owns_the_window() {
         assert!(named("TextInput", "Secret key"));
         assert!(named("Button", "Cancel"));
         assert!(named("Button", "Show"), "Advanced options");
+        assert!(named("ListItem", "Scan a QR image"));
+        assert!(named("ListItem", "Paste a setup link"));
         let tree = app.accessibility().expect("the root stays described");
         assert!(
             tree.children.is_empty(),
             "the root omits every synthetic background control while the sheet is open"
         );
-        assert!(
-            !nodes.iter().any(|(_, node)| {
-                matches!(format!("{:?}", node.role()).as_str(), "List" | "ListItem")
+        let background: Vec<_> = nodes
+            .iter()
+            .filter(|(id, node)| {
+                background_ids.contains(id)
                     || node.label().is_some_and(|name| {
-                        name.starts_with("Copy code for ")
-                            || name.starts_with("Edit ")
-                            || name.starts_with("Delete ")
-                            || name.starts_with("Move ")
+                        background_names.iter().any(|expected| expected == name)
                     })
-            }),
-            "the mounted modal exposes no background account rows or actions"
+            })
+            .map(|(_, node)| (node.role(), node.label()))
+            .collect();
+        assert!(
+            background.is_empty(),
+            "the mounted modal exposes no background account rows or actions: {background:?}"
         );
     }
 

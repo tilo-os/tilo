@@ -561,17 +561,84 @@ fn retained_row_actions_dispatch_one_undo_step_without_connecting() {
 fn retained_form_saves_and_keeps_credentials_out_of_document() {
     let mut app = TestApp::<RemoteShell>::new().unwrap();
     activate(&mut app, "New connection");
-    for (field, value) in [("name", "Test"), ("host", "1.2.3.4"), ("secret", "hunter2")] {
+    for (field, label, value) in [
+        ("name", "Name", "Test"),
+        ("host", "Host", "1.2.3.4"),
+        ("secret", secret_label(AuthMethod::Password), "hunter2"),
+    ] {
+        // This regression proves retained editing and credential custody.
+        // Address the real input through its assistive Focus action; pointer
+        // entry is covered by the dedicated typing and paste regressions.
+        let role = if field == "secret" {
+            ui::accesskit::Role::PasswordInput
+        } else {
+            ui::accesskit::Role::TextInput
+        };
+        let input = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(id, node)| {
+                (node.role() == role && node.label() == Some(label)).then_some(id)
+            })
+            .unwrap_or_else(|| panic!("the actual {field} input is accessible"));
         app.harness()
-            .click_named(&format!("remote.field:{field}"))
+            .perform_a11y_action(input, &ui::a11y::Action::Focus)
             .unwrap();
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .and_then(|node| node.name),
+            Some(label.to_owned()),
+            "the actual assistive action focuses {field}"
+        );
         app.harness().type_text(value);
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .and_then(|node| node.name),
+            Some(label.to_owned()),
+            "typing keeps focus in {field}"
+        );
+        if field == "secret" {
+            let (_, protected) = app
+                .harness()
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.role() == ui::accesskit::Role::PasswordInput && node.label() == Some(label)
+                })
+                .expect("the typed secret remains a native protected input");
+            assert_eq!(
+                protected.value(),
+                None,
+                "the secret is never published to AT"
+            );
+            let local = app.harness().focused_access_node().unwrap();
+            assert!(local.state.protected);
+            assert_eq!(local.value, None);
+        }
+        app.harness()
+            .with_widget_mut::<RemoteApp, _>(|surface| {
+                let state = match field {
+                    "name" => &surface.fields.name,
+                    "host" => &surface.fields.host,
+                    "secret" => &surface.fields.secret,
+                    _ => unreachable!("the fixture lists only these three fields"),
+                };
+                assert!(
+                    state.with(|text| text == value),
+                    "typing updates the actual {field} value"
+                );
+            })
+            .unwrap();
     }
     app.harness().click_named("remote.form.save").unwrap();
     app.settle();
     let saved = app.state();
     assert_eq!(saved.len(), 1);
     assert_eq!(saved[0].name, "Test");
+    assert_eq!(saved[0].host, "1.2.3.4");
     assert_eq!(saved[0].port, 22);
     let bytes = app.read_document(|doc| doc.clone().save());
     assert!(!bytes.windows(b"hunter2".len()).any(|s| s == b"hunter2"));

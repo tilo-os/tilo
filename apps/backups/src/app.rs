@@ -1889,14 +1889,21 @@ mod retained_tests {
         let mut app = TestApp::<crate::resource::BackupsShell>::capture(Some("restore")).unwrap();
         for _ in 0..4 {
             app.harness().key("Tab");
-            let focused = app
+            let (_, focused) = app
                 .harness()
-                .focused_access_node()
-                .expect("the restore contents own keyboard focus");
+                .a11y_focus()
+                .expect("the restore contents own native keyboard focus");
+            assert!(
+                matches!(
+                    focused.role(),
+                    ui::accesskit::Role::Tree | ui::accesskit::Role::TreeItem
+                ),
+                "native focus belongs to the restore file tree, not the window fallback"
+            );
             let bounds = focused
-                .bounds
-                .expect("the focused contents have geometry")
-                .to_rect();
+                .bounds()
+                .expect("the focused contents have native geometry");
+            let center = Point::new((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
             let card = app
                 .harness()
                 .with_widget_mut::<BackupsApp, _>(|surface| {
@@ -1904,7 +1911,7 @@ mod retained_tests {
                 })
                 .unwrap();
             assert!(
-                card.contains(bounds.center()),
+                card.contains(center),
                 "Tab cannot reach the background: {focused:?}"
             );
         }

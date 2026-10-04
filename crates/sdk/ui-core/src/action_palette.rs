@@ -2924,6 +2924,26 @@ impl Widget for ActionPalette {
                     .with_bounds(self.field.get_rect()),
             );
         }
+        if !self.in_argument_mode() && !self.history_review_required {
+            // SearchResultsView owns row identity and activation. Qualify its
+            // synthetic targets with this palette incarnation so stale IDs
+            // cannot address a newly opened search/confirmation presenter.
+            fn qualify(mut node: crate::a11y::AccessNode, prefix: &str) -> crate::a11y::AccessNode {
+                if let Some(target) = node.action_target.take() {
+                    let target = format!("{prefix}{target}");
+                    node = node.with_hashed_key(&target).with_action_target(target);
+                }
+                node.children = node
+                    .children
+                    .into_iter()
+                    .map(|child| qualify(child, prefix))
+                    .collect();
+                node
+            }
+            if let Some(results) = self.results.accessibility() {
+                children.push(qualify(results, &self.target("result:")));
+            }
+        }
         if self.confirm.is_some() || self.history_review_required {
             for (button, part) in self
                 .controls
@@ -2943,7 +2963,11 @@ impl Widget for ActionPalette {
         }
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name("Action confirmation")
+                .with_name(if self.confirm.is_some() || self.history_review_required {
+                    "Action confirmation"
+                } else {
+                    "Search"
+                })
                 .with_state(crate::a11y::AccessState::new().modal(true))
                 .with_children(children),
         )
@@ -2962,10 +2986,22 @@ impl Widget for ActionPalette {
             if matches!(action, crate::a11y::Action::Focus) {
                 self.focus_part(0);
             }
+            if self.confirm.is_none() && !self.history_review_required {
+                let (doc, path) = crate::doc::document(doc, path);
+                return self.perform_host_semantic(false, None, action, doc, path);
+            }
             return self.field.perform_action(action, doc, path);
         }
         if self.confirm.is_none() && !self.history_review_required {
-            return false;
+            if self.arg.is_some() {
+                return false;
+            }
+            let prefix = self.target("result:");
+            let Some(row) = target.strip_prefix(&prefix) else {
+                return false;
+            };
+            let (doc, path) = crate::doc::document(doc, path);
+            return self.perform_host_semantic(true, Some(row), action, doc, path);
         }
         for (index, part) in ["submit", "cancel"].into_iter().enumerate() {
             if target == self.target(part) {

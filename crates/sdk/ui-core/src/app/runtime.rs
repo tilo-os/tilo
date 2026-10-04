@@ -211,7 +211,7 @@ pub(super) struct AccessibilityRuntime {
     pub(super) screen_reader_modifier_down: bool,
     pub(super) live_region_last: std::collections::HashMap<String, String>,
     pub(super) focus_trap_active: bool,
-    pub(super) focus_before_trap: Option<NodeId>,
+    pub(super) focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
     /// Separate from the effective theme so disabling high contrast restores
     /// the configured theme exactly.
     pub(super) base_theme: Theme,

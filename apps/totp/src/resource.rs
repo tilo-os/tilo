@@ -347,6 +347,7 @@ mod tests {
         let label = match target {
             "totp.dialog.link" => Some("Paste a setup link"),
             "totp.dialog.uri" => Some("Setup link"),
+            "totp-issuer" => Some("Issuer"),
             "totp.dialog.secret" => Some("Secret key"),
             "totp.dialog.advanced" => Some("Show"),
             "totp.dialog.digits:8" => Some("8"),
@@ -524,9 +525,11 @@ mod tests {
         // Both paste operations use the fixture's in-process clipboard. The
         // second replaces a complete link with another of exactly its length.
         for uri in [FIRST, SECOND] {
-            app.harness().key("Ctrl+a");
+            app.harness().set_modifiers(&["ctrl".into()]);
+            app.harness().key("a");
             ui::text_selection::clipboard_copy(uri);
-            app.harness().key("Ctrl+v");
+            app.harness().key("v");
+            app.harness().set_modifiers(&[]);
             let focus = app
                 .harness()
                 .focused_access_node()
@@ -536,7 +539,9 @@ mod tests {
         }
         // A person can refine the previewed metadata before committing it.
         click(&mut app, "totp-issuer");
-        app.harness().key("Ctrl+a");
+        app.harness().set_modifiers(&["ctrl".into()]);
+        app.harness().key("a");
+        app.harness().set_modifiers(&[]);
         for ch in "Reviewed issuer".chars() {
             app.harness().key(&ch.to_string());
         }

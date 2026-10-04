@@ -523,37 +523,22 @@ mod tests {
         );
     }
 
-    /// The accessibility node named `name`, depth first.
-    fn announced(node: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
-        if node.get("name").and_then(serde_json::Value::as_str) == Some(name) {
-            return Some(node.clone());
-        }
-        match node {
-            serde_json::Value::Object(fields) => {
-                fields.values().find_map(|child| announced(child, name))
-            }
-            serde_json::Value::Array(items) => {
-                items.iter().find_map(|child| announced(child, name))
-            }
-            _ => None,
-        }
-    }
-
     #[test]
     fn an_action_bar_button_runs_the_operation_its_row_offers() {
         let mut app = TestApp::<SampleDisks>::new().unwrap();
-        let inspection: serde_json::Value =
-            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
-        let bounds =
-            announced(&inspection, "Benchmark").expect("the Benchmark button")["bounds"].clone();
-        let middle = |low: &str, high: &str| {
-            f64::midpoint(
-                bounds[low].as_f64().unwrap(),
-                bounds[high].as_f64().unwrap(),
-            )
-        };
-        let (x, y) = (middle("x0", "x1"), middle("y0", "y1"));
-        app.harness().click_at(x, y);
+        let bounds = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::Button && node.label() == Some("Benchmark")
+            })
+            .and_then(|(_, node)| node.bounds())
+            .expect("the real Benchmark button has host accessibility bounds");
+        app.harness().click_at(
+            f64::midpoint(bounds.x0, bounds.x1),
+            f64::midpoint(bounds.y0, bounds.y1),
+        );
         app.settle();
         app.harness().relayout();
         assert!(
@@ -633,10 +618,45 @@ mod tests {
         ) {
             let mut app = TestApp::<DisksShell>::capture(scenario).unwrap();
             let inspection = app.harness().inspection_json().unwrap();
+            let resources = app.harness().resources();
             if scenario == Some("empty") {
                 assert!(!inspection.contains("nvme0n1"), "{scenario:?}");
+                assert!(find(&resources, "disk:nvme0n1").is_none());
             } else {
-                assert!(inspection.contains("nvme0n1"), "{scenario:?}");
+                let sample = Topology::sample();
+                for drive in &sample.drives {
+                    assert!(
+                        find(&resources, &drive_row_id(&drive.name)).is_some(),
+                        "{scenario:?} publishes sample drive {}",
+                        drive.name
+                    );
+                    for part in &drive.partitions {
+                        assert!(
+                            find(&resources, &partition_row_id(&part.name)).is_some(),
+                            "{scenario:?} publishes sample partition {}",
+                            part.name
+                        );
+                    }
+                }
+                let selected = if scenario == Some("removable") {
+                    sample.drives.iter().find(|drive| drive.removable).unwrap()
+                } else {
+                    &sample.drives[0]
+                };
+                if scenario == Some("narrow") {
+                    // The open drawer owns the visible/modal presentation;
+                    // its selected destination uses the friendly drive model.
+                    assert!(
+                        app.harness().a11y_nodes().iter().any(|(_, node)| {
+                            node.role() == ui::accesskit::Role::TreeItem
+                                && node.label() == Some(selected.model.as_str())
+                                && node.is_selected() == Some(true)
+                        }),
+                        "the narrow drawer shows the selected sample drive"
+                    );
+                } else {
+                    assert!(inspection.contains(&selected.name), "{scenario:?}");
+                }
             }
         }
         let mut named = TestApp::<DisksShell>::capture(Some("named")).unwrap();
@@ -702,10 +722,11 @@ mod tests {
             "format waits for confirmation"
         );
         assert!(
-            app.harness()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.label() == Some("Type nvme0n1p3 to confirm")),
+            app.harness().a11y_nodes().iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::TextInput
+                    && node.label() == Some("Confirmation")
+                    && node.description() == Some("Type nvme0n1p3 to confirm")
+            }),
             "the selected partition's real phrase prompt is open: {inspection}"
         );
         let resources = app.harness().resources();

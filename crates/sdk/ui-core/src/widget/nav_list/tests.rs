@@ -343,3 +343,41 @@ fn a_rail_stacks_icons_over_labels() {
         "rail tiles hold an icon over a caption"
     );
 }
+
+#[test]
+fn rebuilding_selected_navigation_preserves_the_bottom_scroll_anchor() {
+    for scale in [1.0, 2.0] {
+        let items = (0..30)
+            .map(|index| NavItem::new(format!("drive:{index}"), format!("Drive {index}")))
+            .collect();
+        let mut h = harness(
+            NavList::new(vec![NavSection::untitled("drives", items)]),
+            Theme::dark().with_text_scale(scale),
+        );
+        let first = h.root::<NavList>().row_rect("drive:0").unwrap();
+        h.click_at(first.center().x, first.center().y);
+        h.scroll(0.0, -100.0);
+        let last = h.root::<NavList>().row_rect("drive:29").unwrap();
+        h.click_at(last.center().x, last.center().y);
+        let before = h.root::<NavList>().tree().scroll_offset();
+        assert!(before > 0.0);
+        assert_eq!(
+            h.root::<NavList>().selected_id().as_deref(),
+            Some("drive:29")
+        );
+        for _ in 0..3 {
+            // A containing view rebuilds after selection or reopening a pane.
+            // Exercise the real host's rebuild, keeping the retained list.
+            h.root_mut::<NavList>().set_selected(Some("drive:29"));
+            h.relayout();
+            let list = h.root::<NavList>();
+            assert_eq!(list.tree().scroll_offset(), before);
+            let viewport = list.tree().get_rect();
+            let last = list.row_rect("drive:29").expect("last row stays visible");
+            let epsilon = f64::from(f32::EPSILON) * viewport.y1.abs().max(1.0);
+            assert!(last.y0 + epsilon >= viewport.y0);
+            assert!(last.y1 <= viewport.y1 + epsilon);
+            assert_eq!(list.selected_id().as_deref(), Some("drive:29"));
+        }
+    }
+}

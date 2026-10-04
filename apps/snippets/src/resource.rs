@@ -218,6 +218,35 @@ mod tests {
             has_control(&mut narrow, "Hide sidebar"),
             "the overlay sidebar is open"
         );
+        narrow
+            .harness()
+            .with_widget_mut::<SnippetsApp, _>(|app| {
+                assert!(app.sidebar_is_overlay_for_test());
+                assert!(app.sidebar_open_for_test());
+                assert!(
+                    !ui::widget::Widget::has_pending_visual_work(app),
+                    "capture returns after the requested scene is staged"
+                );
+            })
+            .unwrap();
+        let toggle = narrow
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| {
+                node.role() == ui::accesskit::Role::Button && node.label() == Some("Hide sidebar")
+            })
+            .and_then(|(_, node)| node.bounds())
+            .expect("the open drawer's native toggle has painted bounds");
+        assert!(
+            toggle.x0 >= 0.0
+                && toggle.x1 <= 720.0
+                && toggle.x1 > toggle.x0
+                && toggle.y0 >= 0.0
+                && toggle.y1 <= 720.0
+                && toggle.y1 > toggle.y0,
+            "the open drawer toggle is reachable inside the capture: {toggle:?}"
+        );
     }
 
     /// Agents and the palette reach every snippet, tag and folder through the

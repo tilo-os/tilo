@@ -552,7 +552,10 @@ impl StoreApp {
         // same edge: each list measures its own label column.
         children.push(Box::new(Section::titled(
             "Details",
-            vec![Box::new(PropertyList::new(detail_properties(item)))],
+            vec![Box::new(
+                PropertyList::new(detail_properties(item))
+                    .with_id(format!("store.detail.properties.{}", item.id)),
+            )],
         )));
         let locally_retained = matches!(
             &item.source,

@@ -299,6 +299,7 @@ fn run_layout_pass(
             // root-owned scroll/mode; persisted Scrollable offsets also survive.
             let autofocus = app.autofocus_on_structure_change;
             app.autofocus_on_structure_change = false;
+            let was_trapped = app.accessibility.focus_trap_active;
             app.rebuild_structure();
             app.autofocus_on_structure_change = autofocus;
             if let Some(view) = &view {
@@ -309,7 +310,11 @@ fn run_layout_pass(
             if app.layout.structure_dirty {
                 return Ok((None, true));
             }
-            if let Some(focus) = &focus {
+            if was_trapped && !app.accessibility.focus_trap_active {
+                // Closing a modal has already restored its saved background
+                // identity (or deliberately refused a removed/replaced one).
+                // Do not overwrite that result with the former modal focus.
+            } else if let Some(focus) = &focus {
                 // SAFETY: rebuild completed, and sync retained this topology.
                 // A trap narrows eligible targets; it must not bypass identity
                 // restoration or send saved selection to a fallback control.

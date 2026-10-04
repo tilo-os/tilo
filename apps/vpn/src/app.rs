@@ -2265,14 +2265,12 @@ mod tests {
         }
         for _ in 0..3 {
             app.harness().key("Tab");
-            let focus = app
+            let (_, focus) = app
                 .harness()
-                .focused_access_node()
+                .a11y_focus()
                 .expect("the modal protocol control owns focus");
-            let bounds = focus
-                .bounds
-                .expect("focused protocol has geometry")
-                .to_rect();
+            let bounds = focus.bounds().expect("focused protocol has geometry");
+            let bounds = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
             let card = app
                 .harness()
                 .with_widget_mut::<VpnApp, _>(|surface| {

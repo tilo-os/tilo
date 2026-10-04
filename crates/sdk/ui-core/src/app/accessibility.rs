@@ -320,27 +320,85 @@ impl App {
             self.focused_node = node;
             return;
         }
+        let Some(root) = self.layout.root_node else {
+            self.focusable_order.clear();
+            return;
+        };
+        let (order, trap_active) = if self.close_admission.dialog.is_none()
+            && let Some(live) = self
+                .history
+                .as_ref()
+                .and_then(|history| history.live_layout_node())
+        {
+            crate::focus_navigation::order(live, self.root_widget.as_ref(), &self.layout.taffy)
+        } else {
+            self.with_native_presentation(|widget, _, _, taffy, _| {
+                crate::focus_navigation::order(root, widget, taffy)
+            })
+            .unwrap_or_default()
+        };
+        if trap_active
+            && !self.accessibility.focus_trap_active
+            && self.accessibility.focus_before_trap.is_none()
+        {
+            // SAFETY: focus refresh reads the current admitted tree. Structural
+            // rebuilds saved the live identity before discarding the old map.
+            self.accessibility.focus_before_trap = unsafe {
+                crate::widget::layout::CompositionFocus::capture(
+                    self.focused_node,
+                    &self.layout.node_map,
+                    &self.bindings,
+                )
+            };
+        }
+        let history_captures = self
+            .history
+            .as_ref()
+            .is_some_and(|history| history.captures_input())
+            || crate::history_mode::embedded::captures_input(self.root_widget.as_ref());
         if self.close_admission.dialog.is_none()
             && (self.history.is_some()
                 || crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref()))
+            && (!trap_active || history_captures)
         {
+            let restore = self.accessibility.focus_before_trap.take();
             self.update_history_focus_order();
+            if !history_captures && let Some(saved) = restore {
+                // SAFETY: resolve the saved owner/key only in this admitted
+                // tree and current focus order, never by recycled layout id.
+                let target = unsafe {
+                    saved.restore(
+                        &self.layout.node_map,
+                        &self.bindings,
+                        Some(&self.focusable_order),
+                    )
+                };
+                self.set_focused_node(target);
+            }
             return;
         }
-        self.focusable_order.clear();
-        let Some(root) = self.layout.root_node else {
-            return;
-        };
-
-        let (order, trap_active) = self
-            .with_native_presentation(|widget, _, _, taffy, _| {
-                crate::focus_navigation::order(root, widget, taffy)
-            })
-            .unwrap_or_default();
         self.focusable_order = order;
+        let mut before = if !trap_active {
+            self.accessibility
+                .focus_before_trap
+                .take()
+                .and_then(|saved| {
+                    // SAFETY: the target must retain its unique semantic identity
+                    // and owner in the current eligible presentation.
+                    unsafe {
+                        saved.restore(
+                            &self.layout.node_map,
+                            &self.bindings,
+                            Some(&self.focusable_order),
+                        )
+                    }
+                })
+        } else {
+            None
+        };
         if let Some(next) = crate::focus_navigation::reconcile_trap(
             &mut self.accessibility.focus_trap_active,
-            &mut self.accessibility.focus_before_trap,
+            &mut before,
             self.focused_node,
             &self.focusable_order,
             trap_active,

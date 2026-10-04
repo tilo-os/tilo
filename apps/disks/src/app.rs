@@ -980,6 +980,18 @@ mod retained_tests {
                 .action_enabled(&Topology::sample().drives[0], ActionKind::Unmount)
         );
     }
+    fn show_sidebar(driver: &mut Driver, budget: Duration) {
+        assert!(driver.wait_until(budget, |frame| {
+            !frame.root::<DisksApp>().shell.needs_animation_frame()
+        }));
+        if !driver.root::<DisksApp>().shell.is_sidebar_open() {
+            click_label(driver, "Show sidebar");
+            assert!(driver.wait_until(budget, |frame| {
+                let shell = &frame.root::<DisksApp>().shell;
+                shell.is_sidebar_open() && !shell.needs_animation_frame()
+            }));
+        }
+    }
     #[test]
     fn sidebar_wheel_keeps_long_device_lists_reachable_at_large_text() {
         let mut topology = Topology::sample();
@@ -992,40 +1004,84 @@ mod retained_tests {
                 drive
             })
             .collect();
-        let mut driver = Driver::for_root(
-            ui::State::new(),
-            DisksApp::with_backend(Backend::Sample, topology),
-            (1280, 600),
-            Theme::dark().with_text_scale(2.0),
-        );
-        let sidebar = driver.root::<DisksApp>().shell.geometry().sidebar_column;
-        driver.click_at(sidebar.center().x, sidebar.center().y);
-        driver.scroll(0.0, -100.0);
-        let last = driver
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.label() == Some("Drive 29"))
-            .and_then(|(_, node)| node.bounds())
-            .unwrap();
-        assert!(
-            last.y0 >= sidebar.y0 && last.y1 <= sidebar.y1,
-            "last drive scrolls into the sidebar viewport"
-        );
-        driver.click_at((last.x0 + last.x1) / 2.0, (last.y0 + last.y1) / 2.0);
-        assert_eq!(driver.root::<DisksApp>().selected, 29);
-        let selected = driver
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.label() == Some("Drive 29"))
-            .map(|(_, node)| node)
-            .expect("the selected drive remains in the scrolled viewport");
-        assert_eq!(selected.is_selected(), Some(true));
-        let bounds = selected.bounds().unwrap();
-        assert!(
-            bounds.y0 >= sidebar.y0 && bounds.y1 <= sidebar.y1,
-            "selecting the last drive retains the sidebar scroll position"
-        );
-        assert_eq!(driver.root::<DisksApp>().drive().unwrap().name, "test29");
+        let theme = Theme::dark().with_text_scale(2.0);
+        let budget = theme.tokens.motion.durations.slow().saturating_mul(4);
+        for (width, placement) in [
+            (1280, SidebarPlacement::Drawer),
+            (1680, SidebarPlacement::Docked),
+        ] {
+            let mut driver = Driver::for_root(
+                ui::State::new(),
+                DisksApp::with_backend(Backend::Sample, topology.clone()),
+                (width, 600),
+                theme.clone(),
+            );
+            assert_eq!(
+                driver.root::<DisksApp>().shell.geometry().sidebar,
+                placement
+            );
+            show_sidebar(&mut driver, budget);
+            let sidebar = driver.root::<DisksApp>().shell.geometry().sidebar_column;
+            driver.click_at(sidebar.center().x, sidebar.center().y);
+            if placement == SidebarPlacement::Drawer {
+                // Selecting a destination closes the responsive drawer. Reopen
+                // it as a person would, then put the wheel over its list again.
+                assert!(!driver.root::<DisksApp>().shell.is_sidebar_open());
+                show_sidebar(&mut driver, budget);
+                driver.send(&WindowEvent::CursorMoved {
+                    device_id: ui::winit::event::DeviceId::dummy(),
+                    position: ui::winit::dpi::PhysicalPosition::new(
+                        sidebar.center().x,
+                        sidebar.center().y,
+                    ),
+                });
+            }
+            // In docked mode this remains an immediate click -> wheel, so a
+            // list replacement that loses its pointer/scroll state still fails.
+            driver.scroll(0.0, -100.0);
+            assert!(driver.wait_until(budget, |frame| {
+                !frame.root::<DisksApp>().shell.needs_animation_frame()
+            }));
+            let sidebar = driver.root::<DisksApp>().shell.geometry().sidebar_column;
+            // TreeView combines f32 row metrics into f64 bounds. Allow only
+            // f32 relative precision at this coordinate scale, not a pixel.
+            let epsilon = f64::from(f32::EPSILON) * sidebar.y0.abs().max(sidebar.y1.abs()).max(1.0);
+            let last = driver
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.role() == ui::accesskit::Role::TreeItem && node.label() == Some("Drive 29")
+                })
+                .and_then(|(_, node)| node.bounds())
+                .expect("the last drive is exported after scrolling the visible sidebar");
+            assert!(
+                last.y0 + epsilon >= sidebar.y0 && last.y1 <= sidebar.y1 + epsilon,
+                "last drive {last:?} scrolls into sidebar {sidebar:?} at width {width}, placement {placement:?}; current sidebar {:?}",
+                driver.root::<DisksApp>().shell.geometry().sidebar_column
+            );
+            driver.click_at((last.x0 + last.x1) / 2.0, (last.y0 + last.y1) / 2.0);
+            assert_eq!(driver.root::<DisksApp>().selected, 29);
+            if placement == SidebarPlacement::Drawer {
+                show_sidebar(&mut driver, budget);
+            }
+            let sidebar = driver.root::<DisksApp>().shell.geometry().sidebar_column;
+            let selected = driver
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.role() == ui::accesskit::Role::TreeItem && node.label() == Some("Drive 29")
+                })
+                .map(|(_, node)| node)
+                .expect("the selected drive remains in the scrolled viewport");
+            assert_eq!(selected.is_selected(), Some(true));
+            let bounds = selected.bounds().unwrap();
+            assert!(
+                bounds.y0 + epsilon >= sidebar.y0 && bounds.y1 <= sidebar.y1 + epsilon,
+                "selected drive {bounds:?} stays in sidebar {sidebar:?} at width {width}, placement {placement:?}; current sidebar {:?}",
+                driver.root::<DisksApp>().shell.geometry().sidebar_column
+            );
+            assert_eq!(driver.root::<DisksApp>().drive().unwrap().name, "test29");
+        }
     }
     #[test]
     fn retained_sidebar_resolves_wide_and_narrow_windows() {

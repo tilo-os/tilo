@@ -316,3 +316,140 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
         assert!(!node.state.hidden);
     }
 }
+
+#[test]
+fn registered_history_preserves_generic_modal_focus_cycle_and_restore() {
+    use crate::history_mode::{
+        HistoryDefinition, HistoryPresentation, HistoryRegistration, HistoryResource,
+        HistoryScopeDefinition, HistorySourceRegistration,
+    };
+    static DEFINITION: HistoryDefinition = HistoryDefinition {
+        app_id: "test.modal-history",
+        scopes: &[HistoryScopeDefinition {
+            key: "document",
+            title: "Modal document",
+            presentation: HistoryPresentation::Domain {
+                create: crate::history_mode::test_preview,
+            },
+            content_schema: None,
+        }],
+    };
+    struct ReplaceableHost {
+        inner: ModalHost,
+        replace: Rc<Cell<bool>>,
+        replaced: bool,
+        dirty: bool,
+    }
+    impl crate::widget::Decorator for ReplaceableHost {
+        type Inner = ModalHost;
+        fn inner(&self) -> &Self::Inner {
+            &self.inner
+        }
+        fn inner_mut(&mut self) -> &mut Self::Inner {
+            &mut self.inner
+        }
+        fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+            if self.replace.get() && !self.replaced {
+                self.inner.outer[0] = Box::new(Button::new("replacement", "Replacement", None));
+                self.replaced = true;
+                self.dirty = true;
+            }
+            self.inner.sync(state, path);
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            let own = std::mem::take(&mut self.dirty);
+            self.inner.take_structure_dirty() || own
+        }
+    }
+    fn frame(app: &mut App) {
+        app.root_widget.sync(&mut app.state.doc, &app.state.root);
+        app.layout.layout_dirty = true;
+        run_layout_pass(
+            app,
+            app.layout.root_node.unwrap(),
+            900,
+            650,
+            1.0,
+            false,
+            None,
+        )
+        .unwrap();
+    }
+    fn named_node(app: &App, name: &str) -> NodeId {
+        *app.layout
+            .node_map
+            .keys()
+            .find(|&&node| {
+                app.inspect_node(node, |widget| widget.test_id() == Some(name))
+                    .unwrap_or(false)
+            })
+            .unwrap()
+    }
+    for replace_while_open in [false, true] {
+        let open = Rc::new(Cell::new(false));
+        let replace = Rc::new(Cell::new(false));
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(ReplaceableHost {
+                inner: ModalHost::new(open.clone()),
+                replace: replace.clone(),
+                replaced: false,
+                dirty: false,
+            }),
+        );
+        app.install_history(
+            HistoryRegistration::new(
+                &DEFINITION,
+                vec![HistorySourceRegistration::HostDocument {
+                    scope: "document",
+                    resource: HistoryResource::new(
+                        "modal-profile",
+                        "modal-workspace",
+                        DEFINITION.app_id,
+                        crate::RecordId::for_tab(991),
+                    ),
+                }],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        app.init_layout();
+        frame(&mut app);
+        let background = named_node(&app, "a");
+        app.set_focused_node(Some(background));
+        open.set(true);
+        frame(&mut app);
+        assert!(app.accessibility.focus_trap_active);
+        assert_eq!(app.focusable_order.len(), 2);
+        assert!(!app.focusable_order.contains(&named_node(&app, "a")));
+        assert_eq!(app.focused_node, Some(named_node(&app, "ok")));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(named_node(&app, "cancel")));
+        assert!(app.focus_tab(false));
+        assert_eq!(app.focused_node, Some(named_node(&app, "ok")));
+        if replace_while_open {
+            replace.set(true);
+            frame(&mut app);
+            assert_eq!(
+                named_node(&app, "replacement"),
+                background,
+                "the replacement deliberately reuses the former raw layout slot"
+            );
+        }
+        open.set(false);
+        frame(&mut app);
+        assert!(!app.accessibility.focus_trap_active);
+        if replace_while_open {
+            assert_eq!(
+                app.focused_node, None,
+                "a removed focus identity cannot restore into a recycled layout slot"
+            );
+        } else {
+            assert_eq!(
+                app.focused_node,
+                Some(named_node(&app, "a")),
+                "the same background control regains focus after real composition"
+            );
+        }
+    }
+}

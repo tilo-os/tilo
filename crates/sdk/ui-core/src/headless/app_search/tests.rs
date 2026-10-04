@@ -87,9 +87,38 @@ fn launcher_opens_scoped_native_palette_and_navigates_its_provider() {
         !labels.iter().any(|s| s == "Invoice to Grace"),
         "{labels:?}"
     );
-    host.key("Enter");
+    let field = host
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label() == Some("Search") && node.role() == accesskit::Role::TextInput
+        })
+        .map(|(id, _)| id)
+        .expect("the real search field is accessible");
+    host.perform_a11y_action(field, &crate::a11y::Action::SetValue("from Ada".into()))
+        .unwrap();
+    assert_eq!(host.app_search_query(), Some("from Ada"));
+    let row = host.a11y_node_named("Invoice from Ada").unwrap();
+    host.perform_a11y_action(row, &crate::a11y::Action::Activate)
+        .unwrap();
     assert_eq!(*opened.borrow(), ["inbox/message:1"]);
     assert!(host.app_search_query().is_none());
+    host.click_at(rect.center().x, rect.center().y);
+    assert_eq!(host.app_search_query(), Some("invoice"));
+    let reopened = host.a11y_node_named("Invoice from Ada").unwrap();
+    assert_ne!(
+        row, reopened,
+        "reopened search gives its rows a new incarnation"
+    );
+    assert!(
+        host.perform_a11y_action(row, &crate::a11y::Action::Activate)
+            .is_err()
+    );
+    assert_eq!(
+        *opened.borrow(),
+        ["inbox/message:1"],
+        "stale row never navigates"
+    );
 }
 
 #[test]
@@ -134,13 +163,29 @@ fn standalone_component_search_uses_provider_and_exact_action_dispatch() {
     assert!(host.app_search_query().is_none());
 }
 
+// The construction-only probe intentionally panics if hosted/synced. These
+// tests mount operational components, with the same explicit owner inputs as
+// the standalone action-dispatch fixture above.
+fn live_probe(fixture: &probe::ProbeHost, instance: u64) -> crate::application::AppComponent {
+    let definition = probe::definition(probe::action_probe_factory);
+    let context = fixture
+        .prepare_with_permissions(
+            &definition,
+            instance,
+            &LaunchTarget::New,
+            probe::runner_permissions(),
+        )
+        .unwrap();
+    definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap()
+}
+
 #[test]
 fn embedded_search_stays_with_the_captured_component_and_drains_once() {
     let fixture = probe::ProbeHost::new();
-    let first =
-        probe::instantiate_probe(&fixture, 11, LaunchTarget::New, RestoreInput::None).unwrap();
-    let second =
-        probe::instantiate_probe(&fixture, 12, LaunchTarget::New, RestoreInput::None).unwrap();
+    let first = live_probe(&fixture, 11);
+    let second = live_probe(&fixture, 12);
     let a = first.callback_binding();
     let b = second.callback_binding();
     let root = crate::widget::Column::new()
@@ -176,10 +221,8 @@ crate::testing::test_app_widget!(Nested, "Nested apps");
 #[test]
 fn standalone_parent_does_not_steal_nested_components_request() {
     let fixture = probe::ProbeHost::new();
-    let mut parent =
-        probe::instantiate_probe(&fixture, 1, LaunchTarget::New, RestoreInput::None).unwrap();
-    let child =
-        probe::instantiate_probe(&fixture, 2, LaunchTarget::New, RestoreInput::None).unwrap();
+    let mut parent = live_probe(&fixture, 1);
+    let child = live_probe(&fixture, 2);
     let parent_binding = parent.callback_binding();
     let child_binding = child.callback_binding();
     parent.root = Some(Box::new(Nested(
@@ -276,9 +319,10 @@ impl SearchProvider for PagedMessages {
 
 #[test]
 fn provider_continuations_advance_through_real_frames_and_stop_scheduling() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
     let root = Mail {
         button: search_button(SearchRequest::this_app().with_query("invoice")),
-        opened: Rc::default(),
+        opened: opened.clone(),
         paged: true,
     };
     let mut host =
@@ -302,14 +346,23 @@ fn provider_continuations_advance_through_real_frames_and_stop_scheduling() {
         "provider pages finish within bounded scheduled frames"
     );
     assert!(
-        host.a11y_nodes()
+        host.action_palette
+            .as_ref()
+            .unwrap()
+            .result_labels()
             .iter()
-            .any(|(_, node)| node.label() == Some("Late invoice")),
-        "scheduled poll_frame reaches the later page"
+            .any(|label| label == "Late invoice"),
+        "scheduled poll_frame reaches the later provider page"
     );
+    let row = host
+        .a11y_node_named("Late invoice")
+        .expect("the later result is exposed to AT");
     let _ = host.poll_frame().unwrap();
     assert!(
         !host.frame_schedule().queued_work,
         "finished pages do not create an endless redraw loop"
     );
+    host.perform_a11y_action(row, &crate::a11y::Action::Activate)
+        .unwrap();
+    assert_eq!(*opened.borrow(), ["late:12"]);
 }
