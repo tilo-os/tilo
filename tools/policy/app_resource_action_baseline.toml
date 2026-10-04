@@ -80,7 +80,6 @@
 "apps/contacts/src/main.rs" = 1
 "apps/diffmerge/src/lib.rs" = 2
 "apps/diffmerge/src/main.rs" = 2
-"apps/ebook/src/main.rs" = 1
 "apps/feeds/src/lib.rs" = 2
 "apps/feeds/src/main.rs" = 2
 "apps/git-client/src/main.rs" = 2
