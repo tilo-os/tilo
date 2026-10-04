@@ -18,12 +18,12 @@ use crate::presence::{PathSegment, PresenceKey};
 use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
 use crate::text_break::line_break_opportunities;
 use crate::text_break::{grapheme_indices, graphemes};
+use crate::text_edit::{Edit, EditCore, Motion, TypingRun};
 use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste,
     clipboard_paste_primary, extend_span_drag, grapheme_boundary_at_or_before, line_boundaries,
-    next_char_boundary, next_word_boundary, prev_char_boundary, prev_word_boundary,
-    word_boundaries,
+    prev_char_boundary, word_boundaries,
 };
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -179,16 +179,15 @@ pub struct TextInput {
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
     text: String,
-    /// Optional per-character admission rule for domain-specific single-line
-    /// fields (for example a spreadsheet cell-reference box). Applied to
+    /// Caret, selection (always on grapheme boundaries), the IME composition,
+    /// and the optional per-character admission rule for domain-specific
+    /// fields (for example a spreadsheet cell-reference box), which applies to
     /// keyboard, IME, paste, accessibility, and programmatic insertion alike.
-    char_filter: Option<fn(char) -> bool>,
-    /// Always on a char boundary.
-    cursor_pos: usize,
-    /// Visual side of `cursor_pos` when a `BiDi` boundary or soft wrap has two.
-    caret_affinity: TextAffinity,
-    /// Visible range is `(min(anchor, cursor), max(anchor, cursor))`.
-    selection_anchor: Option<usize>,
+    /// The composition is shown only in the display layout and never exposed
+    /// through value, clipboard, CRDT, or a11y.
+    core: EditCore,
+    /// Closes a burst of typing into one undo entry.
+    typing: TypingRun,
     /// Forces `wants_pointer_capture` so a drag past the rect edge keeps updating.
     is_dragging: bool,
     /// Exclusive finger ownership for native touch selection. Mouse state is
@@ -243,14 +242,9 @@ pub struct TextInput {
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
     rich_spans: Option<Vec<RichSpan>>,
-    /// In-progress IME composition. It is inserted only in the display
-    /// layout and never exposed through value, clipboard, CRDT, or a11y.
-    preedit: String,
-    preedit_cursor: Option<(usize, usize)>,
     scroll_x: f64,
     /// A wrapped row inside a compound code fence shares its parent's spacing.
     compact_multiline: bool,
-    last_edit_time: Option<Instant>,
     font_size_override: Option<f32>,
     /// Theme scale captured during `build_layout`; direct measurement falls
     /// back to the renderer when no themed layout pass has occurred.
@@ -423,10 +417,8 @@ impl TextInput {
             is_focused: false,
             caret_paint_suppressed: false,
             text: String::new(),
-            char_filter: None,
-            cursor_pos: 0,
-            caret_affinity: TextAffinity::Before,
-            selection_anchor: None,
+            core: EditCore::new(),
+            typing: TypingRun::default(),
             is_dragging: false,
             active_touch: None,
             drag_unit: DragUnit::Char,
@@ -442,11 +434,8 @@ impl TextInput {
             shaped_preparation: None,
             shaped_layout_epoch: None,
             rich_spans: None,
-            preedit: String::new(),
-            preedit_cursor: None,
             scroll_x: 0.0,
             compact_multiline: false,
-            last_edit_time: None,
             dirty: false,
             on_change: None,
             action: None,
@@ -834,9 +823,9 @@ impl TextInput {
         size.to_bits().hash(&mut hash);
         (self.align as u8).hash(&mut hash);
         width.map(f32::to_bits).hash(&mut hash);
-        if !self.preedit.is_empty() {
-            self.cursor_pos.hash(&mut hash);
-            self.preedit_cursor.hash(&mut hash);
+        if self.core.has_preedit() {
+            self.core.caret().hash(&mut hash);
+            self.core.preedit_cursor().hash(&mut hash);
         }
         hash.finish()
     }
@@ -939,10 +928,10 @@ impl TextInput {
     }
 
     fn insert_preedit_span(&self, spans: Vec<RichSpan>) -> Vec<RichSpan> {
-        if self.preedit.is_empty() {
+        if !self.core.has_preedit() {
             return spans;
         }
-        let at = self.cursor_pos.min(self.text.len());
+        let at = self.core.caret().min(self.text.len());
         let mut display = Vec::with_capacity(spans.len().saturating_add(2));
         let mut consumed = 0usize;
         let mut inserted = false;
@@ -958,7 +947,7 @@ impl TextInput {
                         before.text = before_str.to_string();
                         display.push(before);
                     }
-                    display.push(RichSpan::new(&self.preedit));
+                    display.push(RichSpan::new(self.core.preedit()));
                     if !after_str.is_empty() {
                         let mut after = span.clone();
                         after.text = after_str.to_string();
@@ -966,11 +955,11 @@ impl TextInput {
                     }
                 } else {
                     // `local` didn't land on a char boundary — shouldn't
-                    // happen since `cursor_pos` is always kept on one, but
+                    // happen since the core keeps the caret on one, but
                     // fall back to keeping the span intact rather than
                     // panicking on a slice.
                     display.push(span);
-                    display.push(RichSpan::new(&self.preedit));
+                    display.push(RichSpan::new(self.core.preedit()));
                 }
                 inserted = true;
             } else {
@@ -979,7 +968,7 @@ impl TextInput {
             consumed = end;
         }
         if !inserted {
-            display.push(RichSpan::new(&self.preedit));
+            display.push(RichSpan::new(self.core.preedit()));
         }
         display
     }
@@ -1022,8 +1011,8 @@ impl TextInput {
     /// Preedit is its own run: adjacent committed decorations do not expand
     /// over it. An insertion inside a marked run splits its decoration.
     fn display_ranges(&self, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
-        let at = self.cursor_pos.min(self.text.len());
-        let extra = self.preedit.len();
+        let at = self.core.caret().min(self.text.len());
+        let extra = self.core.preedit().len();
         let mut display = Vec::new();
         for &(start, end) in ranges {
             if start >= end
@@ -1096,7 +1085,7 @@ impl TextInput {
     /// the field is submitted.
     #[must_use]
     pub fn with_char_filter(mut self, filter: fn(char) -> bool) -> Self {
-        self.char_filter = Some(filter);
+        self.core.set_filter(Some(filter));
         self.text.retain(filter);
         self.clamp_to_text();
         self.last_notified_text.clone_from(&self.text);
@@ -1110,8 +1099,7 @@ impl TextInput {
     #[must_use]
     pub fn with_initial_value(mut self, s: &str) -> Self {
         self.text = s.to_string();
-        self.cursor_pos = self.text.len();
-        self.caret_affinity = TextAffinity::Before;
+        self.core.set_caret(self.text.len());
         self.dirty = false;
         self.last_notified_text.clone_from(&self.text);
         self.publish_local_state();
@@ -1127,11 +1115,11 @@ impl TextInput {
             self.last_notified_text.zeroize();
         }
         self.text = s.to_string();
-        self.selection_anchor = None;
+        self.core.collapse();
         self.clamp_to_text();
         self.dirty = false;
         self.model_layout_dirty = self.multiline || self.single_attributes.is_some();
-        self.last_edit_time = None;
+        self.typing.close();
         self.last_notified_text.clone_from(&self.text);
         if self.action.is_none() {
             self.publish_local_state();
@@ -1207,27 +1195,27 @@ impl TextInput {
     }
 
     pub fn cursor_pos(&self) -> usize {
-        self.cursor_pos
+        self.core.caret()
     }
 
     /// The caret's document offset and visual side at an ambiguous boundary.
     pub fn caret_position(&self) -> TextPosition {
-        TextPosition::with_affinity(self.cursor_pos, self.caret_affinity)
+        self.core.caret_position()
     }
 
     /// Does not count as a user edit (dirty stays false).
     pub fn set_cursor_pos(&mut self, pos: usize) {
-        self.cursor_pos = grapheme_boundary_at_or_before(&self.text, pos);
-        self.caret_affinity = TextAffinity::Before;
-        self.selection_anchor = None;
+        self.core
+            .set_caret(grapheme_boundary_at_or_before(&self.text, pos));
         self.goal_x = None;
     }
 
     /// Seat the caret at an exact shaped position without counting as an edit.
     pub fn set_caret_position(&mut self, position: TextPosition) {
-        self.cursor_pos = grapheme_boundary_at_or_before(&self.text, position.byte);
-        self.caret_affinity = position.affinity;
-        self.selection_anchor = None;
+        self.core.set_caret_position(TextPosition::with_affinity(
+            grapheme_boundary_at_or_before(&self.text, position.byte),
+            position.affinity,
+        ));
         self.goal_x = None;
     }
 
@@ -1239,8 +1227,9 @@ impl TextInput {
     /// bridges. Unlike [`Self::selection_range_public`], this preserves the
     /// direction in which the user extended the selection.
     pub fn selection_anchor_focus_public(&self) -> Option<(usize, usize)> {
-        let anchor = self.selection_anchor?;
-        (anchor != self.cursor_pos).then_some((anchor, self.cursor_pos))
+        self.core
+            .has_selection()
+            .then(|| (self.core.anchor(), self.core.caret()))
     }
 
     /// `len()` is `text.len() + 1`; empty until the first draw lands.
@@ -1621,7 +1610,7 @@ impl TextInput {
         if self.lines.is_empty() {
             return;
         }
-        let (i, cur_x) = self.locate_ml(self.cursor_pos);
+        let (i, cur_x) = self.locate_ml(self.core.caret());
         let goal = self.goal_x.unwrap_or(cur_x);
         let target = if down {
             if let Some(next) = i.checked_add(1).filter(|&n| n < self.lines.len()) {
@@ -1679,8 +1668,10 @@ impl TextInput {
     /// Restore a document selection's active endpoint after its per-block
     /// bands have been painted, retaining wrap/bidi affinity.
     pub(super) fn set_selection_at(&mut self, anchor: usize, cursor: TextPosition) {
-        self.set_selection(anchor, cursor.byte);
-        self.caret_affinity = cursor.affinity;
+        let anchor = anchor.min(self.text.len());
+        let byte = cursor.byte.min(self.text.len());
+        self.core
+            .set_selection_position(anchor, TextPosition::with_affinity(byte, cursor.affinity));
     }
 
     /// Whether arrow navigation can stay within this shaped paragraph.
@@ -1694,7 +1685,7 @@ impl TextInput {
                 top > 0.5
             };
         }
-        let (row, _) = self.locate_ml(self.cursor_pos);
+        let (row, _) = self.locate_ml(self.core.caret());
         if down {
             row.saturating_add(1) < self.lines.len()
         } else {
@@ -1917,9 +1908,9 @@ impl TextInput {
             layout.discard_prepared_inputs();
         }
         tr.note_browser_rich_layout(&layout);
-        if !self.preedit.is_empty() {
-            let start = self.cursor_pos.min(self.text.len());
-            layout.add_underline(start..start.saturating_add(self.preedit.len()));
+        if self.core.has_preedit() {
+            let start = self.core.caret().min(self.text.len());
+            layout.add_underline(start..start.saturating_add(self.core.preedit().len()));
         }
         self.single_layout = Some(layout);
         self.shaped_layout_signature = signature;
@@ -1964,7 +1955,7 @@ impl TextInput {
     /// it sticks.
     fn update_ml_scroll(&mut self, caret_top: f32, caret_height: f32, layout_height: f32) {
         let view_height = (self.rect.height() - self.multiline_padding_y() * 2.0).max(1.0);
-        if self.is_focused && self.last_scroll_caret != Some(self.cursor_pos) {
+        if self.is_focused && self.last_scroll_caret != Some(self.core.caret()) {
             if f64::from(caret_top) - self.scroll_y < 0.0 {
                 self.scroll_y = f64::from(caret_top);
             } else if f64::from(caret_top + caret_height) - self.scroll_y > view_height {
@@ -1973,7 +1964,7 @@ impl TextInput {
         } else if !self.is_focused && !self.preserve_unfocused_scroll {
             self.scroll_y = 0.0;
         }
-        self.last_scroll_caret = Some(self.cursor_pos);
+        self.last_scroll_caret = Some(self.core.caret());
         let max_scroll = (f64::from(layout_height) - view_height).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
     }
@@ -2195,10 +2186,10 @@ impl TextInput {
         let available_width = (self.rect.width() - left - ML_PAD_X).max(1.0) as f32;
         self.ensure_shaped_layout(tr, theme, &style, available_width);
 
-        let caret_position = if self.preedit.is_empty() {
-            self.text_to_layout_position(self.caret_position())
-        } else {
+        let caret_position = if self.core.has_preedit() {
             TextPosition::new(self.preedit_layout_caret())
+        } else {
+            self.text_to_layout_position(self.caret_position())
         };
         let caret_byte = caret_position.byte;
         let Some((caret_top, caret_height, layout_height)) =
@@ -2281,11 +2272,11 @@ impl TextInput {
     /// only on caret movement (matches [`Self::update_ml_scroll`]'s policy
     /// for the shaped path).
     fn update_ml_body_scroll(&mut self, lh: f64) {
-        let (caret_row, _) = self.locate_ml(self.cursor_pos);
+        let (caret_row, _) = self.locate_ml(self.core.caret());
         let caret_top = self.lines.get(caret_row).map_or(0.0, |r| r.y);
         let caret_bot = caret_top + lh;
         let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let caret_moved = self.last_scroll_caret != Some(self.cursor_pos);
+        let caret_moved = self.last_scroll_caret != Some(self.core.caret());
         if self.is_focused {
             if caret_moved {
                 if caret_top - self.scroll_y < 0.0 {
@@ -2297,7 +2288,7 @@ impl TextInput {
         } else if !self.preserve_unfocused_scroll {
             self.scroll_y = 0.0;
         }
-        self.last_scroll_caret = Some(self.cursor_pos);
+        self.last_scroll_caret = Some(self.core.caret());
         let rows = f64::from(u32::try_from(self.lines.len()).unwrap_or(u32::MAX));
         let content_h = rows * lh;
         let max_scroll = (content_h - view_h).max(0.0);
@@ -2321,7 +2312,7 @@ impl TextInput {
             is_line_start.push(starts_new_line);
             prev_hard_break = line.hard_break;
         }
-        let caret_idx = self.cursor_pos.min(self.text.len());
+        let caret_idx = self.core.caret().min(self.text.len());
         let caret_line = self
             .text
             .get(..caret_idx)
@@ -2531,7 +2522,7 @@ impl TextInput {
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
 
         if !self.caret_paint_suppressed && self.is_focused && !self.effectively_disabled() {
-            let caret = self.caret_rect_ml(self.cursor_pos, theme.caret_width);
+            let caret = self.caret_rect_ml(self.core.caret(), theme.caret_width);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -3004,31 +2995,18 @@ impl TextInput {
     /// Text passed to the shaped single-line layout. IME preedit occupies a
     /// temporary display-only byte range at the committed caret.
     fn layout_display_text(&self) -> String {
-        let committed = self.display_text();
-        if self.preedit.is_empty() || self.masked() {
-            return committed;
+        if self.masked() {
+            return self.display_text();
         }
-        // `masked()` is false here, so `committed == self.text` byte-for-byte
-        // and `caret` (already clamped to a char boundary of `self.text`) is
-        // a valid boundary of `committed` too.
-        let caret = self.cursor_pos.min(self.text.len());
-        let Some(before) = committed.get(..caret) else {
-            return committed;
-        };
-        let after = committed.get(caret..).unwrap_or("");
-        let mut display = String::with_capacity(committed.len().saturating_add(self.preedit.len()));
-        display.push_str(before);
-        display.push_str(&self.preedit);
-        display.push_str(after);
-        display
+        self.core.display_text(&self.text).into_owned()
     }
 
     fn text_to_layout_byte(&self, byte: usize) -> usize {
         let byte = grapheme_boundary_at_or_before(&self.text, byte);
-        if self.preedit.is_empty() || self.masked() || byte <= self.cursor_pos {
+        if self.masked() {
             byte
         } else {
-            byte.saturating_add(self.preedit.len())
+            self.core.to_display(&self.text, byte)
         }
     }
 
@@ -3037,17 +3015,10 @@ impl TextInput {
     }
 
     fn layout_to_text_byte(&self, byte: usize) -> usize {
-        if self.preedit.is_empty() || self.masked() {
+        if !self.core.has_preedit() || self.masked() {
             return grapheme_boundary_at_or_before(&self.text, byte);
         }
-        let caret = self.cursor_pos.min(self.text.len());
-        if byte <= caret {
-            byte
-        } else if byte < caret.saturating_add(self.preedit.len()) {
-            caret
-        } else {
-            byte.saturating_sub(self.preedit.len())
-        }
+        self.core.from_display(&self.text, byte)
     }
 
     fn layout_to_text_position(&self, position: TextPosition) -> TextPosition {
@@ -3055,15 +3026,10 @@ impl TextInput {
     }
 
     fn preedit_layout_caret(&self) -> usize {
-        if self.preedit.is_empty() || self.masked() {
-            return self.text_to_layout_byte(self.cursor_pos);
+        if !self.core.has_preedit() || self.masked() {
+            return self.text_to_layout_byte(self.core.caret());
         }
-        let within = self
-            .preedit_cursor
-            .map_or(self.preedit.len(), |(_, end)| end.min(self.preedit.len()));
-        self.cursor_pos
-            .min(self.text.len())
-            .saturating_add(grapheme_boundary_at_or_before(&self.preedit, within))
+        self.core.display_caret(&self.text)
     }
 
     /// Keyed by real-text byte offsets so caret placement stays correct against the masked glyph run.
@@ -3090,20 +3056,17 @@ impl TextInput {
     }
 
     fn selection_range(&self) -> Option<(usize, usize)> {
-        let anchor = self.selection_anchor?;
-        if anchor == self.cursor_pos {
-            return None;
-        }
-        Some((anchor.min(self.cursor_pos), anchor.max(self.cursor_pos)))
+        self.core
+            .selected_range()
+            .map(|range| (range.start, range.end))
     }
 
     fn has_selection(&self) -> bool {
-        self.selection_range().is_some()
+        self.core.has_selection()
     }
 
     fn selected_str(&self) -> Option<&str> {
-        let (s, e) = self.selection_range()?;
-        self.text.get(s..e)
+        self.core.selected(&self.text)
     }
 
     fn set_cursor(&mut self, pos: usize, extend: bool) {
@@ -3112,113 +3075,74 @@ impl TextInput {
 
     fn set_cursor_position(&mut self, position: TextPosition, extend: bool) {
         let pos = position.byte.min(self.text.len());
-        if extend {
-            if self.selection_anchor.is_none() {
-                self.selection_anchor = Some(self.cursor_pos);
-            }
-        } else {
-            self.selection_anchor = None;
-        }
-        self.cursor_pos = pos;
-        self.caret_affinity = position.affinity;
+        self.core
+            .place_position(TextPosition::with_affinity(pos, position.affinity), extend);
         // `move_vertical` re-sets this right after calling here, so a run of
         // Up/Down still tracks its column despite the reset.
         self.goal_x = None;
     }
 
-    /// No-op if there's no selection.
-    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
-        let Some((start, end)) = self.selection_range() else {
-            return;
+    /// Apply an [`Edit`] from the core to the mirror and, when bound, the
+    /// CRDT text, stamping the local author over inserted text. Returns
+    /// whether the edit landed.
+    fn apply_edit(&mut self, edit: &Edit, state: &mut AutoCommit, obj_id: Option<&ObjId>) -> bool {
+        if edit.is_noop() {
+            return false;
+        }
+        let Some(splice) = edit.char_splice(&self.text) else {
+            // Computed against text that has since moved under the caret.
+            self.clamp_to_text();
+            return false;
         };
-        let (Some(before), Some(selected)) = (self.text.get(..start), self.text.get(start..end))
-        else {
-            return;
-        };
-        let char_start = before.chars().count();
-        let char_count = selected.chars().count();
-        self.text.replace_range(start..end, "");
-        self.cursor_pos = start;
-        self.caret_affinity = TextAffinity::Before;
-        self.selection_anchor = None;
-        self.goal_x = None;
-        self.last_edit_time = Some(crate::time::now());
         if let Some(obj_id) = obj_id {
-            let del = isize::try_from(char_count).unwrap_or(isize::MAX);
-            let _ = state.splice_text(obj_id, char_start, del, "");
-        }
-        self.dirty = true;
-    }
-
-    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
-        let filtered;
-        let s = if let Some(filter) = self.char_filter {
-            filtered = s.chars().filter(|ch| filter(*ch)).collect::<String>();
-            filtered.as_str()
-        } else {
-            s
-        };
-        if s.is_empty() {
-            return;
-        }
-        self.last_autocorrection = None;
-        // Char index the inserted text lands at, to stamp the authorship mark over it.
-        let insert_char_at;
-        if let Some((start, end)) = self.selection_range() {
-            let (Some(before), Some(selected)) =
-                (self.text.get(..start), self.text.get(start..end))
-            else {
-                return;
-            };
-            let char_start = before.chars().count();
-            let char_count = selected.chars().count();
-            self.text.replace_range(start..end, s);
-            self.cursor_pos = start.saturating_add(s.len());
-            self.caret_affinity = TextAffinity::Before;
-            self.selection_anchor = None;
-            if let Some(obj_id) = obj_id {
-                let del = isize::try_from(char_count).unwrap_or(isize::MAX);
-                let _ = state.splice_text(obj_id, char_start, del, s);
-            }
-            insert_char_at = char_start;
-        } else {
-            let Some(before) = self.text.get(..self.cursor_pos) else {
-                return;
-            };
-            let char_idx = before.chars().count();
-            self.text.insert_str(self.cursor_pos, s);
-            if let Some(obj_id) = obj_id {
-                let _ = state.splice_text(obj_id, char_idx, 0, s);
-            }
-            self.cursor_pos = self.cursor_pos.saturating_add(s.len());
-            self.selection_anchor = None;
-            self.caret_affinity = TextAffinity::Before;
-            insert_char_at = char_idx;
-        }
-        // A drag can leave an anchor equal to the old caret. Insertion must
-        // collapse that anchor too, or the newly inserted text becomes selected.
-        self.selection_anchor = None;
-        // Latest-wins per position, so a peer typing into another's text splits their run correctly.
-        if let (Some(obj_id), Some(author)) = (obj_id, &self.local_author) {
-            let nchars = s.chars().count();
-            if nchars > 0 {
+            edit.splice_automerge(state, obj_id, &self.text);
+            // Latest-wins per position, so a peer typing into another's text
+            // splits their run correctly.
+            if let Some(author) = &self.local_author
+                && splice.inserted > 0
+            {
                 let mark = automerge::marks::Mark::new(
                     AUTHOR_MARK.to_string(),
                     author.clone(),
-                    insert_char_at,
-                    insert_char_at.saturating_add(nchars),
+                    splice.at,
+                    splice.at.saturating_add(splice.inserted),
                 );
                 let _ = state.mark(obj_id, mark, automerge::marks::ExpandMark::None);
             }
         }
+        edit.apply(&mut self.text);
         self.goal_x = None;
-        self.last_edit_time = Some(crate::time::now());
+        self.typing.touch();
         self.dirty = true;
+        true
+    }
+
+    /// No-op if there's no selection.
+    fn delete_selection(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        if !self.core.has_selection() {
+            return;
+        }
+        let edit = self.core.delete_selection();
+        self.apply_edit(&edit, state, obj_id);
+    }
+
+    fn insert_str(&mut self, s: &str, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        let edit = self.core.insert(s);
+        self.apply_insert(&edit, state, obj_id);
+    }
+
+    fn apply_insert(&mut self, edit: &Edit, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        if edit.inserted.is_empty() {
+            return;
+        }
+        self.last_autocorrection = None;
+        self.apply_edit(edit, state, obj_id);
     }
 
     /// `width == 0` removes a single leading whitespace char instead of a tab-stop.
     fn outdent(&mut self, width: usize, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
-        let Some(before_caret) = self.text.get(..self.cursor_pos) else {
+        let caret = self.core.caret();
+        let Some(before_caret) = self.text.get(..caret) else {
             return;
         };
         let line_start = before_caret.rfind('\n').map_or(0, |i| i.saturating_add(1));
@@ -3240,26 +3164,15 @@ impl TextInput {
         if remove == 0 {
             return;
         }
-        let del_end = line_start.saturating_add(remove);
-        let (Some(before_line), Some(removed)) = (
-            self.text.get(..line_start),
-            self.text.get(line_start..del_end),
-        ) else {
-            return;
+        let edit = Edit {
+            at: line_start,
+            removed: remove,
+            inserted: String::new(),
         };
-        let char_start = before_line.chars().count();
-        let char_count = removed.chars().count();
-        self.text.replace_range(line_start..del_end, "");
-        if let Some(obj_id) = obj_id {
-            let del = isize::try_from(char_count).unwrap_or(isize::MAX);
-            let _ = state.splice_text(obj_id, char_start, del, "");
+        if self.apply_edit(&edit, state, obj_id) {
+            self.core
+                .set_caret(caret.saturating_sub(remove).max(line_start));
         }
-        self.cursor_pos = self.cursor_pos.saturating_sub(remove).max(line_start);
-        self.caret_affinity = TextAffinity::Before;
-        self.selection_anchor = None;
-        self.goal_x = None;
-        self.last_edit_time = Some(crate::time::now());
-        self.dirty = true;
     }
 
     /// For `BlockEditor`'s cross-block drag coordinator.
@@ -3271,15 +3184,7 @@ impl TextInput {
     /// band on a block being dragged through without it being the click
     /// target. `anchor == cursor` clears.
     pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
-        let a = anchor.min(self.text.len());
-        let c = cursor.min(self.text.len());
-        if a == c {
-            self.selection_anchor = None;
-        } else {
-            self.selection_anchor = Some(a);
-        }
-        self.cursor_pos = c;
-        self.caret_affinity = TextAffinity::Before;
+        self.set_selection_at(anchor, TextPosition::new(cursor));
     }
 
     /// Public counterpart to `cursor_from_x`, for `BlockEditor`'s cross-block drag.
@@ -3326,17 +3231,12 @@ impl TextInput {
         } else {
             paste.chars().filter(|c| !c.is_control()).collect()
         };
-        match self.char_filter {
-            Some(filter) => cleaned.chars().filter(|ch| filter(*ch)).collect(),
-            None => cleaned,
-        }
+        self.core.admit(&cleaned).into_owned()
     }
 
     fn do_select_all(&mut self) {
         if !self.text.is_empty() {
-            self.selection_anchor = Some(0);
-            self.cursor_pos = self.text.len();
-            self.caret_affinity = TextAffinity::Before;
+            self.core.select_all(&self.text);
         }
     }
 
@@ -3365,7 +3265,7 @@ impl TextInput {
         state: &mut AutoCommit,
         obj_id: Option<&ObjId>,
     ) -> Option<Autocorrection> {
-        if !self.autocorrect_enabled() || self.has_selection() || self.cursor_pos == 0 {
+        if !self.autocorrect_enabled() || self.has_selection() || self.core.caret() == 0 {
             return None;
         }
         self.refresh_autocorrection_preview();
@@ -3379,8 +3279,7 @@ impl TextInput {
             .or_else(|| self.autocorrection_candidate())?;
         let (start, end) = (preview.start, preview.end);
         let (original, replacement) = (preview.original, preview.replacement);
-        self.selection_anchor = Some(start);
-        self.cursor_pos = end;
+        self.core.set_selection(start, end);
         self.insert_str(&replacement, state, obj_id);
         let replacement_end = start.saturating_add(replacement.len());
         Some(Autocorrection {
@@ -3393,23 +3292,24 @@ impl TextInput {
     }
 
     fn word_ending_at_caret(&self) -> Option<(usize, usize)> {
-        if self.has_selection() || self.cursor_pos == 0 {
+        if self.has_selection() || self.core.caret() == 0 {
             return None;
         }
-        let probe = prev_char_boundary(&self.text, self.cursor_pos);
+        let probe = prev_char_boundary(&self.text, self.core.caret());
         let (start, end) = word_boundaries(&self.text, probe);
-        (start < end && end == self.cursor_pos).then_some((start, end))
+        (start < end && end == self.core.caret()).then_some((start, end))
     }
 
     fn refresh_autocorrection_preview(&mut self) {
-        if !self.autocorrect_enabled() || !self.is_focused || !self.preedit.is_empty() {
+        if !self.autocorrect_enabled() || !self.is_focused || self.core.has_preedit() {
             self.autocorrection_preview_key = None;
             self.autocorrection_preview = None;
             return;
         }
         if !spellcheck::checks_in_process(&self.spell_language)
             && self
-                .last_edit_time
+                .typing
+                .last_edit()
                 .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
         {
             self.autocorrection_preview_key = None;
@@ -3468,7 +3368,7 @@ impl TextInput {
         let correction = self.autocorrect_previous_word(state, obj_id);
         self.insert_str(boundary, state, obj_id);
         if let Some(mut correction) = correction {
-            correction.boundary_end = self.cursor_pos;
+            correction.boundary_end = self.core.caret();
             self.last_autocorrection = Some(correction);
         }
     }
@@ -3487,7 +3387,7 @@ impl TextInput {
             return false;
         }
         let replace_end = if remove_boundary {
-            if self.cursor_pos != correction.boundary_end {
+            if self.core.caret() != correction.boundary_end {
                 return false;
             }
             let Some(boundary) = self.text.get(correction.end..correction.boundary_end) else {
@@ -3500,8 +3400,7 @@ impl TextInput {
         } else {
             correction.end
         };
-        self.selection_anchor = Some(correction.start);
-        self.cursor_pos = replace_end;
+        self.core.set_selection(correction.start, replace_end);
         self.insert_str(&correction.original, state, obj_id);
         true
     }
@@ -3519,7 +3418,8 @@ impl TextInput {
         if !spellcheck::checks_in_process(&self.spell_language)
             && self.is_focused
             && self
-                .last_edit_time
+                .typing
+                .last_edit()
                 .is_some_and(|edited| edited.elapsed() < EXTERNAL_SPELLCHECK_DELAY)
         {
             return;
@@ -3548,7 +3448,8 @@ impl TextInput {
         if !self.is_focused
             || self.has_selection()
             || self
-                .last_edit_time
+                .typing
+                .last_edit()
                 .is_none_or(|edited| edited.elapsed() >= SPELL_EDIT_SETTLE)
         {
             return None;
@@ -3558,13 +3459,13 @@ impl TextInput {
             |character: char| character.is_alphabetic() || matches!(character, '\'' | '\u{2019}');
         let at_caret = self
             .text
-            .get(self.cursor_pos..)
+            .get(self.core.caret()..)
             .and_then(|tail| tail.chars().next())
             .filter(|character| is_word_char(*character))
-            .map(|_| self.cursor_pos);
+            .map(|_| self.core.caret());
         let before_caret = self
             .text
-            .get(..self.cursor_pos)
+            .get(..self.core.caret())
             .and_then(|head| head.char_indices().next_back())
             .filter(|(_, character)| is_word_char(*character))
             .map(|(byte, _)| byte);
@@ -3710,12 +3611,10 @@ impl TextInput {
             let byte = self.resolve_cursor(Point::new(f64::from(pos[0]), f64::from(pos[1])));
             let (start, end) = word_boundaries(&self.text, byte);
             if start == end {
-                self.cursor_pos = byte.min(self.text.len());
+                self.core.set_caret(byte.min(self.text.len()));
             } else {
-                self.selection_anchor = Some(start);
-                self.cursor_pos = end;
+                self.core.set_selection(start, end);
             }
-            self.caret_affinity = TextAffinity::Before;
         }
 
         let has_sel = self.has_selection();
@@ -3818,8 +3717,7 @@ impl TextInput {
                 end,
                 replacement,
             } => {
-                self.selection_anchor = Some(start);
-                self.cursor_pos = end;
+                self.core.set_selection(start, end);
                 self.insert_str(&replacement, state, obj_id);
                 self.spell_cache_key = None;
             }
@@ -3929,10 +3827,7 @@ impl TextInput {
     }
 
     fn clamp_to_text(&mut self) {
-        self.cursor_pos = grapheme_boundary_at_or_before(&self.text, self.cursor_pos);
-        if let Some(a) = self.selection_anchor {
-            self.selection_anchor = Some(grapheme_boundary_at_or_before(&self.text, a));
-        }
+        self.core.clamp_to(&self.text);
     }
 }
 
@@ -3941,8 +3836,8 @@ impl Drop for TextInput {
         if self.secret {
             self.text.zeroize();
             self.last_notified_text.zeroize();
-            self.preedit.zeroize();
         }
+        self.core.clear_preedit();
     }
 }
 
@@ -4006,8 +3901,7 @@ impl Widget for TextInput {
             Ok(None) if self.path_was_present => {
                 self.path_was_present = false;
                 self.adopt_model_text(String::new());
-                self.cursor_pos = 0;
-                self.selection_anchor = None;
+                self.core.set_caret(0);
                 self.goal_x = None;
             }
             Ok(None) | Err(_) => {
@@ -4142,9 +4036,9 @@ impl Widget for TextInput {
                     browser_emoji,
                 );
                 text_renderer.note_browser_rich_layout(&layout);
-                if !self.preedit.is_empty() {
-                    let start = self.cursor_pos.min(self.text.len());
-                    layout.add_underline(start..start.saturating_add(self.preedit.len()));
+                if self.core.has_preedit() {
+                    let start = self.core.caret().min(self.text.len());
+                    layout.add_underline(start..start.saturating_add(self.core.preedit().len()));
                 }
                 self.single_layout = Some(layout);
                 self.shaped_layout_signature = signature;
@@ -4468,8 +4362,7 @@ impl Widget for TextInput {
             self.spell_active = true;
         }
         if !focused {
-            self.preedit.clear();
-            self.preedit_cursor = None;
+            self.core.clear_preedit();
         }
     }
     fn is_focused(&self) -> bool {
@@ -4483,16 +4376,16 @@ impl Widget for TextInput {
             return None;
         }
         if self.multiline && !self.multiline_shaped {
-            return Some(self.caret_rect_ml(self.cursor_pos, self.last_caret_width));
+            return Some(self.caret_rect_ml(self.core.caret(), self.last_caret_width));
         }
         let (x, top, height) = if (!self.multiline || self.multiline_shaped)
             && !self.masked()
             && let Some(layout) = &self.single_layout
         {
-            let position = if self.preedit.is_empty() {
-                self.text_to_layout_position(self.caret_position())
-            } else {
+            let position = if self.core.has_preedit() {
                 TextPosition::new(self.preedit_layout_caret())
+            } else {
+                self.text_to_layout_position(self.caret_position())
             };
             let (x, top, height) = layout.caret_geometry_at(position);
             (
@@ -4503,7 +4396,7 @@ impl Widget for TextInput {
         } else {
             let offset = self
                 .char_x_positions
-                .get(self.cursor_pos)
+                .get(self.core.caret())
                 .copied()
                 .unwrap_or(0.0);
             (
@@ -4550,10 +4443,7 @@ impl Widget for TextInput {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
         if !self.secret {
-            node = node.with_text_selection(
-                self.selection_anchor.unwrap_or(self.cursor_pos),
-                self.cursor_pos,
-            );
+            node = node.with_text_selection(self.core.anchor(), self.core.caret());
         }
         if !self.accessible_name.is_empty() {
             node = node.with_name(crate::i18n!(&self.accessible_name));
@@ -4591,8 +4481,7 @@ impl Widget for TextInput {
                 } else {
                     value.chars().filter(|c| !c.is_control()).collect()
                 };
-                self.selection_anchor = (!self.text.is_empty()).then_some(0);
-                self.cursor_pos = self.text.len();
+                self.core.select_all(&self.text);
                 let obj = self.resolve_text_obj(state, root);
                 // SetValue replaces the complete value, including an empty
                 // replacement. insert_str intentionally ignores empty typing.
@@ -4615,9 +4504,7 @@ impl Widget for TextInput {
                 };
                 let anchor = byte_at(*anchor);
                 let focus = byte_at(*focus);
-                self.selection_anchor = (anchor != focus).then_some(anchor);
-                self.cursor_pos = focus;
-                self.caret_affinity = TextAffinity::Before;
+                self.core.set_selection(anchor, focus);
                 self.goal_x = None;
                 self.dirty = true;
                 true
@@ -4636,7 +4523,8 @@ impl Widget for TextInput {
         if !self.checks_spelling() || !self.spell_active || !self.is_focused {
             return None;
         }
-        self.last_edit_time
+        self.typing
+            .last_edit()
             .map(|edited| edited + SPELL_EDIT_SETTLE)
             .filter(|deadline| *deadline > crate::time::now())
     }
@@ -4646,7 +4534,7 @@ impl Widget for TextInput {
         if !self.is_focused || self.secret {
             return None;
         }
-        Some((self.cursor_pos, self.text.clone()))
+        Some((self.core.caret(), self.text.clone()))
     }
 
     fn draw_with_presence(
@@ -4752,29 +4640,26 @@ impl Widget for TextInput {
 
 impl crate::undo::UndoPoints for TextInput {
     fn needs_commit(&self) -> bool {
-        if let Some(t) = self.last_edit_time {
-            t.elapsed() >= Duration::from_secs(1)
-        } else {
-            false
-        }
+        self.typing.needs_commit()
     }
     fn on_commit(&mut self) {
-        self.last_edit_time = None;
+        self.typing.close();
     }
     fn get_state(&self) -> Option<String> {
-        if let Some(anchor) = self.selection_anchor {
-            let affinity = if self.caret_affinity == TextAffinity::After {
+        if self.core.has_selection() {
+            let anchor = self.core.anchor();
+            let affinity = if self.core.affinity() == TextAffinity::After {
                 "a"
             } else {
                 "b"
             };
-            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
+            return Some(format!("{}:{affinity}:{anchor}", self.core.caret()));
         }
-        Some(match self.caret_affinity {
+        Some(match self.core.affinity() {
             // Keep the historical state shape for the overwhelmingly common
             // unambiguous/default caret.
-            TextAffinity::Before => self.cursor_pos.to_string(),
-            TextAffinity::After => format!("{}:a", self.cursor_pos),
+            TextAffinity::Before => self.core.caret().to_string(),
+            TextAffinity::After => format!("{}:a", self.core.caret()),
         })
     }
     fn set_state(&mut self, state: &str) {
@@ -4783,13 +4668,15 @@ impl crate::undo::UndoPoints for TextInput {
         let affinity = parts.next().unwrap_or("b");
         let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
         if let Ok(pos) = byte.parse::<usize>() {
-            self.cursor_pos = pos;
-            self.selection_anchor = anchor;
-            self.caret_affinity = if affinity == "a" {
+            let affinity = if affinity == "a" {
                 TextAffinity::After
             } else {
                 TextAffinity::Before
             };
+            self.core.set_selection_position(
+                anchor.unwrap_or(pos),
+                TextPosition::with_affinity(pos, affinity),
+            );
         }
     }
 }
@@ -4817,15 +4704,13 @@ impl crate::presence::capability::PublishesPresence for TextInput {
             return None;
         }
         let key = self.presence_key()?;
-        let payload = match self.selection_anchor {
-            Some(anchor) if anchor != self.cursor_pos => {
-                crate::collaboration::PresencePayload::Selection {
-                    start: anchor.min(self.cursor_pos),
-                    end: anchor.max(self.cursor_pos),
-                }
-            }
-            _ => crate::collaboration::PresencePayload::Caret {
-                pos: self.cursor_pos,
+        let payload = match self.core.selected_range() {
+            Some(range) => crate::collaboration::PresencePayload::Selection {
+                start: range.start,
+                end: range.end,
+            },
+            None => crate::collaboration::PresencePayload::Caret {
+                pos: self.core.caret(),
             },
         };
         Some((key, payload))
@@ -5007,9 +4892,9 @@ impl TextInput {
                     layout.discard_prepared_inputs();
                 }
                 text_renderer.note_browser_rich_layout(&layout);
-                if !self.preedit.is_empty() {
-                    let start = self.cursor_pos.min(self.text.len());
-                    layout.add_underline(start..start.saturating_add(self.preedit.len()));
+                if self.core.has_preedit() {
+                    let start = self.core.caret().min(self.text.len());
+                    layout.add_underline(start..start.saturating_add(self.core.preedit().len()));
                 }
                 self.single_layout = Some(layout);
                 self.shaped_layout_signature = signature;
@@ -5039,8 +4924,8 @@ impl TextInput {
     }
 
     fn single_line_cursor_x_offset(&self, total_w: f32) -> f64 {
-        let cursor_pos = self.cursor_pos.min(self.text.len());
-        if !self.preedit.is_empty()
+        let cursor_pos = self.core.caret().min(self.text.len());
+        if self.core.has_preedit()
             && !self.masked()
             && let Some(layout) = &self.single_layout
         {
@@ -5231,7 +5116,7 @@ impl TextInput {
         if self.caret_paint_suppressed {
             return;
         }
-        let cursor_rect = if !self.preedit.is_empty()
+        let cursor_rect = if self.core.has_preedit()
             && !self.masked()
             && let Some(layout) = &self.single_layout
         {
@@ -5295,17 +5180,14 @@ impl TextInput {
                 extend_span_drag(anchor_lo, anchor_hi, raw, line_start, line_end)
             }
         };
-        if new_anchor != self.cursor_pos
-            || self.selection_anchor != Some(new_anchor)
-            || new_cursor != self.cursor_pos
-        {
-            self.selection_anchor = Some(new_anchor);
-            self.cursor_pos = new_cursor;
-            self.caret_affinity = if self.drag_unit == DragUnit::Char {
-                raw_position.affinity
-            } else {
-                TextAffinity::Before
-            };
+        let affinity = if self.drag_unit == DragUnit::Char {
+            raw_position.affinity
+        } else {
+            TextAffinity::Before
+        };
+        let cursor = TextPosition::with_affinity(new_cursor, affinity);
+        if (self.core.anchor(), self.core.caret_position()) != (new_anchor, cursor) {
+            self.core.set_selection_position(new_anchor, cursor);
             *handled = true;
         }
     }
@@ -5329,16 +5211,10 @@ impl TextInput {
     }
 
     fn click_place_caret(&mut self, pos: usize, affinity: TextAffinity, modifiers: Modifiers) {
-        let anchor = if modifiers.state().shift_key() {
-            let anchor = self.selection_anchor.unwrap_or(self.cursor_pos);
-            self.selection_anchor = Some(anchor);
-            anchor
-        } else {
-            self.selection_anchor = None;
-            pos
-        };
-        self.cursor_pos = pos;
-        self.caret_affinity = affinity;
+        let extend = modifiers.state().shift_key();
+        self.core
+            .place_position(TextPosition::with_affinity(pos, affinity), extend);
+        let anchor = self.core.anchor();
         self.drag_unit = DragUnit::Char;
         self.drag_anchor_span = (anchor, anchor);
         self.is_dragging = true;
@@ -5346,23 +5222,17 @@ impl TextInput {
 
     /// Arms a word-granularity drag so dragging beyond it extends by whole words.
     fn click_select_word(&mut self, pos: usize) {
-        let (start, end) = word_boundaries(&self.text, pos);
-        self.selection_anchor = Some(start);
-        self.cursor_pos = end;
-        self.caret_affinity = TextAffinity::Before;
+        self.core.select_word(&self.text, pos);
         self.drag_unit = DragUnit::Word;
-        self.drag_anchor_span = (start, end);
+        self.drag_anchor_span = (self.core.anchor(), self.core.caret());
         self.is_dragging = true;
         self.publish_primary_selection();
     }
 
     fn click_select_line(&mut self, pos: usize) {
-        let (start, end) = line_boundaries(&self.text, pos);
-        self.selection_anchor = Some(start);
-        self.cursor_pos = end;
-        self.caret_affinity = TextAffinity::Before;
+        self.core.select_line(&self.text, pos);
         self.drag_unit = DragUnit::Line;
-        self.drag_anchor_span = (start, end);
+        self.drag_anchor_span = (self.core.anchor(), self.core.caret());
         self.is_dragging = true;
         self.publish_primary_selection();
     }
@@ -5485,9 +5355,7 @@ impl TextInput {
             *focus_target = Some(node_id);
         }
         let position = self.resolve_position(self.last_mouse_pos);
-        self.cursor_pos = position.byte;
-        self.caret_affinity = position.affinity;
-        self.selection_anchor = None;
+        self.core.set_caret_position(position);
         self.goal_x = None;
 
         let previous_text = self.text.clone();
@@ -5504,57 +5372,36 @@ impl TextInput {
         *handled = true;
     }
 
-    fn handle_arrow_left(&mut self, shift: bool, ctrl: bool, handled: &mut bool) {
-        let new_position =
-            if ctrl {
-                TextPosition::new(prev_word_boundary(&self.text, self.cursor_pos))
-            } else if (!self.multiline || self.multiline_shaped)
-                && !self.masked()
-                && let Some(layout) = &self.single_layout
-            {
-                self.layout_to_text_position(layout.visual_motion_position(
-                    self.text_to_layout_position(self.caret_position()),
-                    false,
-                ))
-            } else {
-                TextPosition::new(prev_char_boundary(&self.text, self.cursor_pos))
-            };
-        // An unmodified or Ctrl-arrow with a selection collapses to the
-        // selection edge rather than moving past it (native editor behaviour).
-        if !shift && let Some((s, _)) = self.selection_range() {
-            self.cursor_pos = s;
-            self.caret_affinity = TextAffinity::Before;
-            self.selection_anchor = None;
-            *handled = true;
-            return;
+    /// One step left or right in visual order through the shaped layout,
+    /// when the field has one (bidi runs move the way they read).
+    fn visual_step(&self, forward: bool) -> Option<TextPosition> {
+        if (self.multiline && !self.multiline_shaped) || self.masked() {
+            return None;
         }
-        self.set_cursor_position(new_position, shift);
-        *handled = true;
+        let layout = self.single_layout.as_ref()?;
+        let target =
+            self.layout_to_text_position(layout.visual_motion_position(
+                self.text_to_layout_position(self.caret_position()),
+                forward,
+            ));
+        Some(TextPosition::with_affinity(
+            target.byte.min(self.text.len()),
+            target.affinity,
+        ))
     }
 
-    fn handle_arrow_right(&mut self, shift: bool, ctrl: bool, handled: &mut bool) {
-        let new_position =
-            if ctrl {
-                TextPosition::new(next_word_boundary(&self.text, self.cursor_pos))
-            } else if (!self.multiline || self.multiline_shaped)
-                && !self.masked()
-                && let Some(layout) = &self.single_layout
-            {
-                self.layout_to_text_position(layout.visual_motion_position(
-                    self.text_to_layout_position(self.caret_position()),
-                    true,
-                ))
-            } else {
-                TextPosition::new(next_char_boundary(&self.text, self.cursor_pos))
-            };
-        if !shift && let Some((_, e)) = self.selection_range() {
-            self.cursor_pos = e;
-            self.caret_affinity = TextAffinity::Before;
-            self.selection_anchor = None;
-            *handled = true;
-            return;
+    fn handle_arrow(&mut self, forward: bool, shift: bool, ctrl: bool, handled: &mut bool) {
+        let motion = match (forward, ctrl) {
+            (false, false) => Motion::Left,
+            (true, false) => Motion::Right,
+            (false, true) => Motion::WordLeft,
+            (true, true) => Motion::WordRight,
+        };
+        match (!ctrl).then(|| self.visual_step(forward)).flatten() {
+            Some(target) => self.core.motion_to(motion, target, shift),
+            None => self.core.motion(&self.text, motion, shift),
         }
-        self.set_cursor_position(new_position, shift);
+        self.goal_x = None;
         *handled = true;
     }
 
@@ -5564,10 +5411,10 @@ impl TextInput {
         } else if self.multiline_shaped
             && let Some(layout) = &self.single_layout
         {
-            let (home, _) = layout.visual_line_edges(self.text_to_layout_byte(self.cursor_pos));
+            let (home, _) = layout.visual_line_edges(self.text_to_layout_byte(self.core.caret()));
             self.layout_to_text_byte(home)
         } else if self.multiline && !self.lines.is_empty() {
-            let (i, _) = self.locate_ml(self.cursor_pos);
+            let (i, _) = self.locate_ml(self.core.caret());
             self.lines.get(i).map_or(0, |r| r.start)
         } else {
             0
@@ -5582,10 +5429,10 @@ impl TextInput {
         } else if self.multiline_shaped
             && let Some(layout) = &self.single_layout
         {
-            let (_, end) = layout.visual_line_edges(self.text_to_layout_byte(self.cursor_pos));
+            let (_, end) = layout.visual_line_edges(self.text_to_layout_byte(self.core.caret()));
             self.layout_to_text_byte(end)
         } else if self.multiline && !self.lines.is_empty() {
-            let (i, _) = self.locate_ml(self.cursor_pos);
+            let (i, _) = self.locate_ml(self.core.caret());
             self.lines.get(i).map_or(self.text.len(), |r| r.end)
         } else {
             self.text.len()
@@ -5612,7 +5459,7 @@ impl TextInput {
             *handled = true;
         }
         if let Some(mut correction) = correction {
-            correction.boundary_end = self.cursor_pos;
+            correction.boundary_end = self.core.caret();
             self.last_autocorrection = Some(correction);
         }
     }
@@ -5649,31 +5496,8 @@ impl TextInput {
             return;
         }
         self.last_autocorrection = None;
-        if self.has_selection() {
-            self.delete_selection(state, obj_id);
-        } else if self.cursor_pos > 0 {
-            let start = if ctrl {
-                prev_word_boundary(&self.text, self.cursor_pos)
-            } else {
-                prev_char_boundary(&self.text, self.cursor_pos)
-            };
-            let end = self.cursor_pos;
-            if let (Some(before), Some(removed)) =
-                (self.text.get(..start), self.text.get(start..end))
-            {
-                let char_start = before.chars().count();
-                let char_count = removed.chars().count();
-                self.text.replace_range(start..end, "");
-                self.cursor_pos = start;
-                self.caret_affinity = TextAffinity::Before;
-                self.last_edit_time = Some(crate::time::now());
-                if let Some(obj_id) = obj_id {
-                    let del = isize::try_from(char_count).unwrap_or(isize::MAX);
-                    let _ = state.splice_text(obj_id, char_start, del, "");
-                }
-                self.dirty = true;
-            }
-        }
+        let edit = self.core.delete_backward(&self.text, ctrl);
+        self.apply_edit(&edit, state, obj_id);
         *handled = true;
     }
 
@@ -5684,29 +5508,8 @@ impl TextInput {
         obj_id: Option<&ObjId>,
         handled: &mut bool,
     ) {
-        if self.has_selection() {
-            self.delete_selection(state, obj_id);
-        } else if self.cursor_pos < self.text.len() {
-            let start = self.cursor_pos;
-            let end = if ctrl {
-                next_word_boundary(&self.text, self.cursor_pos)
-            } else {
-                next_char_boundary(&self.text, self.cursor_pos)
-            };
-            if let (Some(before), Some(removed)) =
-                (self.text.get(..start), self.text.get(start..end))
-            {
-                let char_start = before.chars().count();
-                let char_count = removed.chars().count();
-                self.text.replace_range(start..end, "");
-                self.last_edit_time = Some(crate::time::now());
-                if let Some(obj_id) = obj_id {
-                    let del = isize::try_from(char_count).unwrap_or(isize::MAX);
-                    let _ = state.splice_text(obj_id, char_start, del, "");
-                }
-                self.dirty = true;
-            }
-        }
+        let edit = self.core.delete_forward(&self.text, ctrl);
+        self.apply_edit(&edit, state, obj_id);
         *handled = true;
     }
 
@@ -5813,8 +5616,8 @@ impl TextInput {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
         match logical_key {
-            Key::Named(NamedKey::ArrowLeft) => self.handle_arrow_left(shift, ctrl, handled),
-            Key::Named(NamedKey::ArrowRight) => self.handle_arrow_right(shift, ctrl, handled),
+            Key::Named(NamedKey::ArrowLeft) => self.handle_arrow(false, shift, ctrl, handled),
+            Key::Named(NamedKey::ArrowRight) => self.handle_arrow(true, shift, ctrl, handled),
             Key::Named(NamedKey::ArrowUp) if self.multiline => {
                 self.move_vertical(false, shift);
                 *handled = true;
@@ -5868,28 +5671,32 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
-        self.preedit.clear();
-        self.preedit_cursor = None;
         let previous_text = self.text.clone();
         let obj_id_opt: Option<ObjId> = self.resolve_text_obj(state, root);
-        if !t.chars().all(char::is_control) {
-            if let Some((boundary_at, boundary)) = t.char_indices().next_back()
-                && is_autocorrect_boundary(boundary)
+        let trailing_boundary = t
+            .char_indices()
+            .next_back()
+            .filter(|&(_, boundary)| is_autocorrect_boundary(boundary));
+        if t.chars().all(char::is_control) {
+            self.core.clear_preedit();
+        } else if let Some((boundary_at, boundary)) = trailing_boundary {
+            // A committed word plus its boundary autocorrects like typing.
+            self.core.clear_preedit();
+            if let Some(prefix) = t.get(..boundary_at)
+                && !prefix.is_empty()
             {
-                if let Some(prefix) = t.get(..boundary_at)
-                    && !prefix.is_empty()
-                {
-                    self.insert_str(prefix, state, obj_id_opt.as_ref());
-                }
-                let mut encoded = [0; 4];
-                self.insert_word_boundary(
-                    boundary.encode_utf8(&mut encoded),
-                    state,
-                    obj_id_opt.as_ref(),
-                );
-            } else {
-                self.insert_str(t, state, obj_id_opt.as_ref());
+                self.insert_str(prefix, state, obj_id_opt.as_ref());
             }
+            let mut encoded = [0; 4];
+            self.insert_word_boundary(
+                boundary.encode_utf8(&mut encoded),
+                state,
+                obj_id_opt.as_ref(),
+            );
+            *handled = true;
+        } else {
+            let edit = self.core.commit(t);
+            self.apply_insert(&edit, state, obj_id_opt.as_ref());
             *handled = true;
         }
         if obj_id_opt.is_none() {
@@ -5901,14 +5708,7 @@ impl TextInput {
         if !self.is_focused {
             return;
         }
-        if let Some(filter) = self.char_filter {
-            let filtered = t.chars().filter(|ch| filter(*ch)).collect::<String>();
-            self.preedit_cursor = if filtered == t { cursor } else { None };
-            self.preedit = filtered;
-        } else {
-            t.clone_into(&mut self.preedit);
-            self.preedit_cursor = cursor;
-        }
+        self.core.set_preedit(t, cursor);
         *handled = true;
     }
 }

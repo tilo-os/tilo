@@ -28,7 +28,6 @@
 //! [`text_selection`]: crate::text_selection
 //! [`TextInput`]: crate::widget::TextInput
 
-use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -47,7 +46,7 @@ use crate::color_compat::ColorCompat;
 use crate::gesture::{DragSelect, Granularity};
 use crate::presence::PresenceCtx;
 use crate::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
-use crate::text_edit::{EditCore, Motion};
+use crate::text_edit::{EditCore, Motion, TypingRun};
 use crate::text_render::TextRenderer;
 use crate::text_selection::{
     TextAffinity, TextPosition, clipboard_copy, clipboard_paste, extend_span_drag, line_boundaries,
@@ -176,13 +175,11 @@ pub struct RichTextEditor {
     drag_anchor_span: (usize, usize),
 
     // --- IME ---
-    preedit: String,
-    preedit_cursor: Option<(usize, usize)>,
     last_caret_width: f64,
 
     // --- persistence / undo ---
     dirty: bool,
-    last_edit_time: Option<Instant>,
+    typing: TypingRun,
 }
 
 impl RichTextEditor {
@@ -210,11 +207,9 @@ impl RichTextEditor {
             last_cursor: Point::ZERO,
             drag_select: DragSelect::new(),
             drag_anchor_span: (0, 0),
-            preedit: String::new(),
-            preedit_cursor: None,
             last_caret_width: 2.0,
             dirty: false,
-            last_edit_time: None,
+            typing: TypingRun::default(),
         }
     }
 
@@ -291,7 +286,7 @@ impl RichTextEditor {
         self.dirty = true;
         self.redraw = true;
         self.layout_dirty = true;
-        self.last_edit_time = Some(crate::time::now());
+        self.typing.touch();
     }
 
     /// `None` when the document write itself fails (e.g. `parent` turned out
@@ -341,21 +336,16 @@ impl RichTextEditor {
         if e.is_noop() {
             return;
         }
-        let end = e.at.saturating_add(e.removed);
-        // `e.at`/`end` must land on `self.text`'s char boundaries — `EditCore`
-        // guarantees this, but a slice that didn't would panic, so an edit
-        // that doesn't land cleanly is dropped rather than trusted blindly.
-        let (Some(before), Some(removed_slice)) = (self.text.get(..e.at), self.text.get(e.at..end))
-        else {
+        // `e` must land on `self.text`'s char boundaries — `EditCore`
+        // guarantees this, but an edit that doesn't fit is dropped rather
+        // than trusted blindly.
+        if e.char_splice(&self.text).is_none() {
             return;
-        };
-        if let Some(tid) = self.text_obj.clone() {
-            let char_pos = before.chars().count();
-            let char_del = removed_slice.chars().count();
-            let char_del = isize::try_from(char_del).unwrap_or(isize::MAX);
-            let _ = state.splice_text(&tid, char_pos, char_del, &e.inserted);
         }
-        self.text.replace_range(e.at..end, &e.inserted);
+        if let Some(tid) = self.text_obj.clone() {
+            e.splice_automerge(state, &tid, &self.text);
+        }
+        e.apply(&mut self.text);
         marks::shift_after_edit(&mut self.marks, e.at, e.inserted.len(), e.removed);
         self.goal_x = None;
         self.mark_dirty();
@@ -416,56 +406,32 @@ impl RichTextEditor {
                 None,
             )
         };
-        if self.preedit.is_empty() {
-            return no_preedit();
-        }
-        let c = self.core.caret().min(self.text.len());
-        // `c` must land on `self.text`'s char boundaries — `EditCore` keeps the
-        // caret aligned, but a slice that didn't would panic, so a misaligned
-        // caret reports the committed text with no preedit splice rather than
-        // build a string that doesn't match the coordinates below.
-        let Some((head, tail)) = self.text.get(..c).zip(self.text.get(c..)) else {
+        let Some(preedit) = self.core.preedit_display_range(&self.text) else {
             return no_preedit();
         };
-        let dt_capacity = self.text.len().saturating_add(self.preedit.len());
-        let mut dt = String::with_capacity(dt_capacity);
-        dt.push_str(head);
-        dt.push_str(&self.preedit);
-        dt.push_str(tail);
         let mut dm = self.marks.clone();
-        marks::shift_after_edit(&mut dm, c, self.preedit.len(), 0);
-        let within = self
-            .preedit_cursor
-            .map_or(self.preedit.len(), |(_, end)| end.min(self.preedit.len()));
-        let within = crate::text_selection::grapheme_boundary_at_or_before(&self.preedit, within);
-        let caret = c.saturating_add(within);
-        let preedit_end = c.saturating_add(self.preedit.len());
-        (dt, dm, caret, Some(c..preedit_end))
+        marks::shift_after_edit(&mut dm, preedit.start, preedit.len(), 0);
+        (
+            self.core.display_text(&self.text).into_owned(),
+            dm,
+            self.core.display_caret(&self.text),
+            Some(preedit),
+        )
     }
 
     /// Map a byte offset in the display text back to the committed text.
     fn display_to_text_byte(&self, disp: usize) -> usize {
-        if self.preedit.is_empty() {
-            return disp.min(self.text.len());
-        }
-        let c = self.core.caret().min(self.text.len());
-        let plen = self.preedit.len();
-        let preedit_end = c.saturating_add(plen);
-        if disp <= c {
-            disp
-        } else if disp >= preedit_end {
-            disp.saturating_sub(plen)
-        } else {
-            c
-        }
+        self.core
+            .from_display(&self.text, disp)
+            .min(self.text.len())
     }
 
     fn display_caret_position(&self) -> TextPosition {
         let (_, _, byte, _) = self.display_state();
-        if self.preedit.is_empty() {
-            TextPosition::with_affinity(byte, self.core.caret_position().affinity)
-        } else {
+        if self.core.has_preedit() {
             TextPosition::new(byte)
+        } else {
+            TextPosition::with_affinity(byte, self.core.caret_position().affinity)
         }
     }
 
@@ -809,7 +775,7 @@ impl RichTextEditor {
         }
         // Clear any in-flight preedit before hit-testing so byte offsets are
         // in committed-text space.
-        self.preedit.clear();
+        self.core.clear_preedit();
         let intent = self.drag_select.press(point, shift);
         let position = self.position_at(point);
         let byte = position.byte;
@@ -973,7 +939,7 @@ impl Widget for RichTextEditor {
         }
 
         // Selection (only in the committed, non-preedit state).
-        if self.preedit.is_empty() {
+        if !self.core.has_preedit() {
             let r = self.core.range();
             if r.start < r.end {
                 let sel = theme.accent_primary.with_alpha_factor(0.30);
@@ -987,7 +953,7 @@ impl Widget for RichTextEditor {
 
         // Placeholder when empty and unfocused.
         if self.text.is_empty()
-            && self.preedit.is_empty()
+            && !self.core.has_preedit()
             && !self.focused
             && !self.placeholder.is_empty()
         {
@@ -1046,8 +1012,7 @@ impl Widget for RichTextEditor {
                 if !self.focused {
                     return;
                 }
-                self.preedit.clear();
-                self.preedit_cursor = None;
+                self.core.clear_preedit();
                 self.insert_str(ctx.state, s);
                 *ctx.handled = true;
             }
@@ -1055,8 +1020,7 @@ impl Widget for RichTextEditor {
                 if !self.focused {
                     return;
                 }
-                s.clone_into(&mut self.preedit);
-                self.preedit_cursor = *cursor;
+                self.core.set_preedit(s, *cursor);
                 self.redraw = true;
                 self.layout_dirty = true;
                 *ctx.handled = true;
@@ -1108,8 +1072,7 @@ impl Widget for RichTextEditor {
         if self.focused != focused {
             self.focused = focused;
             if !focused {
-                self.preedit.clear();
-                self.preedit_cursor = None;
+                self.core.clear_preedit();
             }
             self.redraw = true;
         }
@@ -1199,11 +1162,10 @@ impl Widget for RichTextEditor {
 
 impl crate::undo::UndoPoints for RichTextEditor {
     fn needs_commit(&self) -> bool {
-        self.last_edit_time
-            .is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
+        self.typing.needs_commit()
     }
     fn on_commit(&mut self) {
-        self.last_edit_time = None;
+        self.typing.close();
     }
     fn get_state(&self) -> Option<String> {
         let affinity = match self.core.caret_position().affinity {
@@ -1510,7 +1472,7 @@ mod tests {
                 mods(false, false),
             );
             assert_eq!(ed.text(), "a漢字b");
-            assert!(ed.preedit.is_empty());
+            assert!(!ed.core.has_preedit());
         }
     }
 
