@@ -200,24 +200,18 @@ fn for_early_boot(keyfile: &str, mac_of: impl Fn(&str) -> Option<String>) -> Str
         let kind = kept
             .iter()
             .find_map(|line| line.trim().strip_prefix("type="))
-            .map(|kind| {
-                if kind == "802-11-wireless" {
-                    "wifi"
-                } else if kind == "802-3-ethernet" {
-                    "ethernet"
-                } else {
-                    kind
-                }
+            .map_or("ethernet", |kind| match kind {
+                "802-11-wireless" => "wifi",
+                "802-3-ethernet" => "ethernet",
+                other => other,
             })
-            .unwrap_or("ethernet")
             .to_owned();
         let header = format!("[{kind}]");
-        match kept.iter().position(|line| line.trim() == header) {
-            Some(at) => kept.insert(at.saturating_add(1), format!("mac-address={mac}")),
-            None => {
-                kept.push(header);
-                kept.push(format!("mac-address={mac}"));
-            }
+        if let Some(at) = kept.iter().position(|line| line.trim() == header) {
+            kept.insert(at.saturating_add(1), format!("mac-address={mac}"));
+        } else {
+            kept.push(header);
+            kept.push(format!("mac-address={mac}"));
         }
     }
     kept.iter().fold(String::new(), |mut out, line| {

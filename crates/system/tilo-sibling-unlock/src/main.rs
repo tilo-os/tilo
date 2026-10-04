@@ -120,13 +120,14 @@ async fn unlock(device: &Path) -> Result<ExitCode> {
         transcript: Some(Path::new(exchange::TRANSCRIPT)),
     };
     let ask_dir = unlock::ask_dir();
+    let volume = RealVolume(device);
     let attempt = unlock::attempt(
         device,
         &token,
         &material,
         boot_id,
         &peers,
-        &RealVolume(device),
+        &volume,
         &ask_dir,
         Duration::from_secs(600),
     );
