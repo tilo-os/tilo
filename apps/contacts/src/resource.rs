@@ -22,7 +22,8 @@ use uuid::Uuid;
 
 use crate::actions::{
     CONTACTS_ACTION_TYPE, ContactsAction, book_effect_specs, contact_resource_id,
-    create_contact_action, publish_children, register, resolve_child, split_name,
+    create_contact_action, open_contact_address, open_group_address, ordered_groups,
+    publish_children, register, resolve_child, split_name,
 };
 use crate::app::ContactsApp;
 use crate::doc::ContactsDoc;
@@ -93,22 +94,49 @@ impl Resource for Contacts {
             .collect()
     }
 
+    /// Every contact is found by anything it holds — name, organisation,
+    /// numbers, addresses, notes, groups — and opens; every group reveals
+    /// its members.
     fn search(state: &ContactsState) -> Vec<SearchEntry> {
-        state
-            .contacts
-            .iter()
-            .map(|contact| SearchEntry {
-                anchor: Some(contact_resource_id(contact.id)),
-                title: contact.display_name(),
-                text: contact
-                    .emails
-                    .first()
-                    .map(|email| email.value.clone())
-                    .unwrap_or_default(),
-                action: None,
-            })
-            .collect()
+        let contacts = state.contacts.iter().map(|contact| {
+            SearchEntry::new(contact.display_name(), searchable_text(contact))
+                .anchored(contact_resource_id(contact.id))
+                .invoking(open_contact_address(contact.id))
+        });
+        let groups = ordered_groups(&state.contacts).into_iter().map(|group| {
+            SearchEntry::new(format!("Group: {group}"), "Filter contacts in this group")
+                .invoking(open_group_address(&group))
+        });
+        contacts.chain(groups).collect()
     }
+}
+
+/// What a person may look a contact up by, one field per line so a query
+/// never matches across two of them.
+fn searchable_text(contact: &Contact) -> String {
+    let mut fields = vec![
+        contact.first.clone(),
+        contact.last.clone(),
+        contact.org.clone(),
+        contact.title.clone(),
+        contact.website.clone(),
+        contact.notes.clone(),
+    ];
+    if let Some(birthday) = contact.birthday {
+        fields.extend([birthday.iso(), birthday.pretty()]);
+    }
+    for row in contact.phones.iter().chain(&contact.emails) {
+        fields.extend([row.label.clone(), row.value.clone()]);
+    }
+    fields.extend(
+        contact
+            .addresses
+            .iter()
+            .map(crate::model::Address::one_line),
+    );
+    fields.extend(contact.groups.iter().map(|group| group.value.clone()));
+    fields.retain(|field| !field.trim().is_empty());
+    fields.join("\n")
 }
 
 /// The sample address book a capture shows, with stable ids so every run
