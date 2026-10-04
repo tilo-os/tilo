@@ -19,7 +19,6 @@
 # for every table is empty.
 
 [ratchets.app_action_host]
-"apps/browser/src/resource.rs" = 2
 "apps/chat/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
 "apps/music/src/resource.rs" = 2
@@ -48,7 +47,6 @@
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
-"apps/browser/src/browser_widget.rs" = 1
 "apps/music/src/doc.rs" = 1
 "apps/notes/src/search_provider.rs" = 1
 "apps/notes/src/storage.rs" = 2
