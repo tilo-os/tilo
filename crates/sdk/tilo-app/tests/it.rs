@@ -21,6 +21,8 @@ pub mod identity;
 pub mod incremental;
 #[path = "item_actions.rs"]
 pub mod item_actions;
+#[path = "kinds.rs"]
+pub mod kinds;
 #[path = "launch.rs"]
 pub mod launch;
 #[path = "live_permissions.rs"]
@@ -29,6 +31,8 @@ pub mod live_permissions;
 pub mod live_rows;
 #[path = "model_contract.rs"]
 pub mod model_contract;
+#[path = "participant.rs"]
+pub mod participant;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "scenarios.rs"]

@@ -1,77 +1,63 @@
-//! Disks as a [`tilo_resource::Resource`]: format/mount/eject are Effects; the
-//! shared document holds a topology projection plus view selection.
+//! Disks as a [`tilo_resource::Resource`].
+//!
+//! The block devices of this machine are live device state: the surface
+//! probes them and publishes each drive and partition as a
+//! [`LiveRow`] beneath the storage resource, offering the
+//! [`DisksEffect`]s that apply to it. Mounting, formatting or ejecting
+//! changes one machine, never the document; the effects run where they are
+//! invoked, and only in a live window.
+//!
+//! The document holds what the person authors: the names they give their
+//! drives, keyed by serial number, which follow them to every device.
+
+use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
-use ui::automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{
-    Action, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Availability,
-    ConfirmationPolicy, ExecutionMode, OperationKind, ParamType, PermissionRequirement,
-    Resource as PublishedResource, ResultSpec, RetryPolicy, RiskLevel,
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
 };
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
+use ui::tilo_actions::{
+    Action, ActionError, ActionParam, ActionRegistry, ConfirmationPolicy, ParamType,
+};
+use ui::tilo_resource::{self, ActionDecl, Doc, Effect, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::app::{ActionKind, DisksApp};
 use crate::doc::DisksDoc;
-use crate::model::Topology;
+use crate::model::{Drive, Partition, Topology};
 
-/// Shared disks document mutations: selection, tab, confirmation, status, and
-/// the probed topology snapshot. Mount and format stay effects; they change
-/// one machine, not the document.
+/// The one edit the document takes: a drive's name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DisksAction {
-    SetSelected {
-        index: u64,
-    },
-    /// `-1` is the whole disk.
-    SetSelectedPart {
-        part: i64,
-    },
-    SetTab {
-        tab: String,
-    },
-    SetPending {
-        pending: String,
-    },
-    SetStatus {
-        status: String,
-    },
-    WriteTopology {
-        json: String,
+    /// Name the drive with `serial`, or forget its name (`None` or blank).
+    NameDrive {
+        serial: String,
+        name: Option<String>,
     },
 }
 
 impl Action for DisksAction {
     fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
         match self {
-            Self::SetSelected { index } => DisksDoc::set_selected(doc, *index as usize),
-            Self::SetSelectedPart { part } => {
-                let part = (*part >= 0).then_some(*part as usize);
-                DisksDoc::set_selected_part(doc, part);
+            Self::NameDrive { serial, name } => {
+                let name = name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty());
+                DisksDoc::set_name(doc, serial, name)?;
             }
-            Self::SetTab { tab } => DisksDoc::set_tab(doc, tab),
-            Self::SetPending { pending } => DisksDoc::set_pending(doc, pending),
-            Self::SetStatus { status } => DisksDoc::set_status(doc, status),
-            Self::WriteTopology { json } => DisksDoc::write_topology_json(doc, json),
         }
         Ok(())
     }
 }
 
-/// Selection / tab / topology projection from the shared document.
-#[derive(Clone, Debug, Default)]
+/// What the document holds.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DisksState {
-    pub topology: Topology,
-    pub selected: usize,
-    pub selected_part: Option<usize>,
-    pub tab: String,
-    pub pending: String,
-    pub status: String,
-    /// Whether this surface may run privileged block-device jobs. Not document
-    /// state: the widget sets it before publish, and a bare read uses the
-    /// process `DISKS_LIVE` flag.
-    pub live: bool,
+    /// Drive serial number to the name the person gave it.
+    pub names: BTreeMap<String, String>,
 }
 
 /// The storage-devices resource.
@@ -90,236 +76,226 @@ impl Resource for Disks {
     }
 
     fn read(doc: &Doc) -> Result<DisksState, ModelError> {
-        let topology = DisksDoc::topology_json(doc)
-            .and_then(|json| serde_json::from_str(&json).ok())
-            .unwrap_or_default();
         Ok(DisksState {
-            topology,
-            selected: DisksDoc::selected(doc),
-            selected_part: DisksDoc::selected_part(doc),
-            tab: DisksDoc::tab(doc),
-            pending: DisksDoc::pending(doc),
-            status: DisksDoc::status(doc),
-            live: live_disk_access(),
+            names: DisksDoc::names(doc),
         })
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
         vec![
             ActionDecl::new(
-                "select-drive",
-                "Select drive",
-                vec![ActionParam::required(
-                    "index",
-                    ParamType::Integer,
-                    "Drive index in the topology",
-                )],
+                "name-drive",
+                "Name drive",
+                vec![
+                    ActionParam::required("serial", ParamType::Text, "The drive's serial number"),
+                    ActionParam::optional(
+                        "name",
+                        ParamType::Text,
+                        "The name to show, or omit to forget it",
+                    ),
+                ],
                 |args, _| {
-                    let index = args
-                        .integer("index")
-                        .ok_or_else(|| "missing drive index".to_owned())?;
-                    if index < 0 {
-                        return Err("drive index must be ≥ 0".into());
-                    }
-                    Ok(DisksAction::SetSelected {
-                        index: index as u64,
+                    let serial = args
+                        .text("serial")
+                        .ok_or_else(|| "missing serial number".to_owned())?
+                        .to_owned();
+                    Ok(DisksAction::NameDrive {
+                        serial,
+                        name: args.text("name").map(str::to_owned),
                     })
                 },
             )
-            .describe("Focus a drive in the shared selection."),
-            ActionDecl::new(
-                "select-partition",
-                "Select partition",
-                vec![ActionParam::required(
-                    "part",
-                    ParamType::Integer,
-                    "Partition index, or -1 for the whole disk",
-                )],
-                |args, _| {
-                    let part = args
-                        .integer("part")
-                        .ok_or_else(|| "missing partition index".to_owned())?;
-                    Ok(DisksAction::SetSelectedPart { part })
-                },
-            )
-            .describe("Focus a partition (or the whole disk) in the shared selection."),
-            ActionDecl::new(
-                "set-tab",
-                "Set detail tab",
-                vec![
-                    ActionParam::required("tab", ParamType::Text, "overview | smart | partitions")
-                        .with_choices(["overview", "smart", "partitions"]),
-                ],
-                |args, _| {
-                    let tab = args
-                        .text("tab")
-                        .ok_or_else(|| "missing tab".to_owned())?
-                        .to_owned();
-                    Ok(DisksAction::SetTab { tab })
-                },
-            )
-            .describe("Switch the shared detail tab."),
+            .describe("Give a drive a name that follows it to every device."),
         ]
     }
+}
 
-    fn children(state: &DisksState) -> Vec<PublishedResource> {
-        topology_children(state, state.live)
+/// What Disks does to this machine, and how it shows it. Device effects
+/// name their target by its kernel name (`sda`, `nvme0n1p2`) and are
+/// checked against the latest probe before anything runs.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "disks.device")]
+pub enum DisksEffect {
+    /// Rescan storage devices.
+    #[effect(permission = "read")]
+    Rescan,
+    /// Select.
+    #[effect(permission = "read")]
+    Select {
+        #[param("Kernel name of a drive or partition, e.g. sda or sda1")]
+        device: String,
+    },
+    /// Show detail tab.
+    #[effect(permission = "read")]
+    ShowTab {
+        #[param("overview | smart | partitions")]
+        tab: String,
+    },
+    /// Mount.
+    #[effect(job, permission = "admin")]
+    Mount {
+        #[param("Kernel name of the partition")]
+        device: String,
+    },
+    /// Unmount.
+    #[effect(job, permission = "admin")]
+    Unmount {
+        #[param("Kernel name of the partition")]
+        device: String,
+    },
+    /// Format.
+    #[effect(job, destructive, permission = "admin")]
+    Format {
+        #[param("Kernel name of the drive or partition to erase")]
+        device: String,
+    },
+    /// Benchmark.
+    #[effect(job, permission = "admin")]
+    Benchmark {
+        #[param("Kernel name of the drive or partition")]
+        device: String,
+    },
+    /// Eject.
+    #[effect(job, permission = "admin")]
+    Eject {
+        #[param("Kernel name of the removable drive")]
+        device: String,
+    },
+}
+
+impl DisksEffect {
+    /// The device operation `kind` on `device`.
+    pub(crate) fn operation(kind: ActionKind, device: &str) -> Self {
+        let device = device.to_owned();
+        match kind {
+            ActionKind::Mount => Self::Mount { device },
+            ActionKind::Unmount => Self::Unmount { device },
+            ActionKind::Format => Self::Format { device },
+            ActionKind::Benchmark => Self::Benchmark { device },
+            ActionKind::Eject => Self::Eject { device },
+        }
     }
+}
 
-    fn local_operations() -> Vec<ActionSpec> {
-        // Per-drive format/mount/eject Effects are bound to topology children.
-        Vec::new()
+/// The published row of the drive named `leaf`.
+pub(crate) fn drive_row_id(leaf: &str) -> String {
+    format!("disk:{leaf}")
+}
+
+/// The published row of the partition named `leaf`.
+pub(crate) fn partition_row_id(leaf: &str) -> String {
+    format!("partition:{leaf}")
+}
+
+/// `kind` on `device`, as a row offers it. Formatting asks the caller to
+/// type the device's name, as erasing it deserves.
+fn row_operation(kind: ActionKind, device: &str) -> ui::tilo_actions::ActionSpec {
+    let mut spec = DisksEffect::operation(kind, device).bound();
+    if kind.destructive() {
+        spec.contract.confirmation = ConfirmationPolicy::Phrase {
+            phrase: device.to_owned(),
+        };
     }
+    spec
 }
 
-/// Whether this process may run privileged block-device jobs (`DISKS_LIVE`).
-fn live_disk_access() -> bool {
-    std::env::var("DISKS_LIVE").is_ok()
-}
-
-/// Drive and partition children for [`tilo_resource::publish`]: document
-/// select actions plus machine-local Effects (mount/format/eject/benchmark).
-pub(crate) fn topology_children(state: &DisksState, live: bool) -> Vec<PublishedResource> {
-    state
-        .topology
-        .drives
-        .iter()
-        .enumerate()
-        .map(|(index, drive)| {
-            let mut disk = PublishedResource::new(
-                format!("disk:{}", drive.name),
-                "disks.drive",
-                drive.model.clone(),
-            );
-            if let Ok(select) = ActionSpec::immediate(
-                "select",
-                "Select drive",
-                Disks::ACTION_TYPE,
-                &DisksAction::SetSelected {
-                    index: index as u64,
-                },
-            ) {
-                disk.actions.push(select.reversible());
-            }
-            // Whole-drive operations are meaningful independently of any
-            // partition selection. Publishing them here lets search, history,
-            // collaboration and agents address the same operation contract.
-            for action in [ActionKind::Format, ActionKind::Benchmark] {
-                if let Some(spec) = effect_operation_spec(action, &drive.name, None, live) {
-                    disk.actions.push(spec);
-                }
-            }
-            if drive.removable
-                && let Some(spec) =
-                    effect_operation_spec(ActionKind::Eject, &drive.name, None, live)
-            {
-                disk.actions.push(spec);
-            }
-            for (part_index, part) in drive.partitions.iter().enumerate() {
-                let mut partition = PublishedResource::new(
-                    format!("partition:{}", part.name),
-                    "disks.partition",
-                    part.name.clone(),
-                );
-                if let Ok(select) = ActionSpec::immediate(
-                    "select",
-                    "Select partition",
-                    Disks::ACTION_TYPE,
-                    &DisksAction::SetSelectedPart {
-                        part: part_index as i64,
-                    },
-                ) {
-                    partition.actions.push(select.reversible());
-                }
-                let mount_action = if part.mountpoint.is_some() {
-                    ActionKind::Unmount
-                } else {
-                    ActionKind::Mount
-                };
-                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
-                    if let Some(spec) =
-                        effect_operation_spec(action, &part.name, part.fstype.as_deref(), live)
-                    {
-                        partition.actions.push(spec);
-                    }
-                }
-                disk.children.push(partition);
-            }
-            disk
-        })
-        .collect()
-}
-
-/// Canonical Effect descriptor for a disk or partition job.
-pub(crate) fn effect_operation_spec(
-    action: ActionKind,
-    leaf: &str,
-    fstype: Option<&str>,
-    live: bool,
-) -> Option<ActionSpec> {
-    let payload = vec![
-        action.key().to_string(),
-        leaf.to_string(),
-        fstype.unwrap_or_default().to_string(),
-    ];
-    let spec = ActionSpec::operation(
-        action.key(),
-        action.label().trim_end_matches('…'),
-        OperationKind::Effect,
-        "disks.operation",
-        &payload,
+/// The row of one partition: select it, and the operations that apply.
+fn partition_row(part: &Partition) -> LiveRow {
+    let mount = if part.mountpoint.is_some() {
+        ActionKind::Unmount
+    } else {
+        ActionKind::Mount
+    };
+    LiveRow::new(
+        partition_row_id(&part.name),
+        "disks.partition",
+        part.name.clone(),
     )
-    .ok()?;
-    let destructive = action.destructive();
-    Some(spec.with_contract(ActionContract {
-        availability: if live {
-            Availability::Available
-        } else {
-            Availability::Unavailable {
-                code: "live_access_disabled".into(),
-                reason: "Live disk access is disabled".into(),
-            }
-        },
-        permission: PermissionRequirement::Admin,
-        risk: if destructive {
-            RiskLevel::Destructive
-        } else {
-            RiskLevel::Privileged
-        },
-        confirmation: if destructive {
-            ConfirmationPolicy::Phrase {
-                phrase: leaf.to_string(),
-            }
-        } else {
-            ConfirmationPolicy::Confirm
-        },
-        retry: if action == ActionKind::Benchmark {
-            RetryPolicy::Idempotent
-        } else {
-            RetryPolicy::AtMostOnce
-        },
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    }))
+    .effect(&DisksEffect::Select {
+        device: part.name.clone(),
+    })
+    .operation(row_operation(mount, &part.name))
+    .operation(row_operation(ActionKind::Benchmark, &part.name))
+    .operation(row_operation(ActionKind::Format, &part.name))
 }
 
-/// Hosted-only extras that are not on the framework resource. Confirm dialogs
-/// and in-flight mount jobs are widget state today, not published resources.
-pub(crate) fn live_extras(_app: &DisksApp) -> Vec<PublishedResource> {
-    Vec::new()
+/// The row of one drive, with its partitions beneath it.
+pub(crate) fn drive_row(drive: &Drive, names: &BTreeMap<String, String>) -> LiveRow {
+    let label = drive
+        .serial
+        .as_ref()
+        .and_then(|serial| names.get(serial))
+        .cloned()
+        .unwrap_or_else(|| drive.model.clone());
+    let mut row = LiveRow::new(drive_row_id(&drive.name), "disks.drive", label)
+        .effect(&DisksEffect::Select {
+            device: drive.name.clone(),
+        })
+        .operation(row_operation(ActionKind::Format, &drive.name))
+        .operation(row_operation(ActionKind::Benchmark, &drive.name));
+    if drive.removable {
+        row = row.operation(row_operation(ActionKind::Eject, &drive.name));
+    }
+    for part in &drive.partitions {
+        row = row.row(partition_row(part));
+    }
+    row
 }
 
-/// Framework app.
+/// The framework app.
 pub struct DisksShell;
+
+/// Screenshot scenarios: the sample machine, staged.
+const SCENARIOS: &[&str] = &[
+    "smart",
+    "partitions",
+    "partition",
+    "removable",
+    "named",
+    "status-ok",
+    "status-fail",
+    "narrow",
+    "empty",
+];
 
 impl ResourceApp for DisksShell {
     type Resource = Disks;
     const ID: &'static str = "so.tilo.disks";
     const TITLE: &'static str = "Disks";
     const ICON: Option<&'static str> = Some("disks");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        // Below the 900px breakpoint the drive list collapses to an overlay.
+        if scenario == Some("narrow") {
+            (640, 800)
+        } else {
+            (1280, 800)
+        }
+    }
+
+    fn fixture(fixture: &mut Fixture<Disks>) {
+        let topology = if fixture.scenario() == Some("empty") {
+            Topology::default()
+        } else {
+            Topology::sample()
+        };
+        fixture.provide(topology);
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Disks>> {
+        if name != Some("named") {
+            return Vec::new();
+        }
+        Invoke::apply(&DisksAction::NameDrive {
+            serial: "S6Z1NJ0T934217X".into(),
+            name: Some("Workstation".into()),
+        })
+        .into_iter()
+        .collect()
     }
 
     fn view(cx: &mut ViewCx<Disks>) -> Element {
@@ -327,145 +303,330 @@ impl ResourceApp for DisksShell {
     }
 }
 
-impl ResourceSurface<Disks> for DisksApp {
-    fn present(&mut self, state: &std::rc::Rc<DisksState>) {
-        self.adopt_shared(state);
+impl ResourceSurface<Disks, DisksEffect> for DisksApp {
+    fn present(&mut self, state: &Rc<DisksState>) {
+        self.adopt_names(&state.names);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Disks>) {
-        self.attach_framework(cx.dispatcher());
+        let fixture = cx.fixture::<Topology>().map(|topology| (*topology).clone());
+        self.attach_framework(cx.dispatcher(), cx.mode(), fixture);
     }
-}
 
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Disks>>,
-    hosted: bool,
-}
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
 
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
+    fn effect(&mut self, effect: DisksEffect, cx: &mut EffectCx<Disks, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if !self.is_running() {
+            return Vec::new();
         }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Disks>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    /// Test-only: mark hosted without a real framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+        let busy = |effect| {
+            EffectStatus::unavailable(
+                effect,
+                "disks.busy",
+                "Another disk operation is still running",
+            )
+        };
+        vec![
+            busy(DisksEffect::MOUNT),
+            busy(DisksEffect::UNMOUNT),
+            busy(DisksEffect::FORMAT),
+            busy(DisksEffect::BENCHMARK),
+            busy(DisksEffect::EJECT),
+        ]
     }
 
-    pub(crate) fn dispatch(&mut self, doc: &mut AutoCommit, action: &DisksAction) {
-        let context = ui::tilo_actions::ActionContext::for_action("so.tilo.disks", "Disks", action);
-        match &self.framework {
-            Some(dispatcher) => {
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, Disks::ACTION_TYPE, action, context),
-        }
+    fn bound_declarations(&self) -> Vec<ActionDecl<Disks>> {
+        let Some(serial) = self.selected_serial() else {
+            return Vec::new();
+        };
+        vec![
+            ActionDecl::new(
+                "name-selected-drive",
+                "Name this drive",
+                vec![ActionParam::optional(
+                    "name",
+                    ParamType::Text,
+                    "The name to show, or omit to forget it",
+                )],
+                move |args, _| {
+                    Ok(DisksAction::NameDrive {
+                        serial: serial.clone(),
+                        name: args.text("name").map(str::to_owned),
+                    })
+                },
+            )
+            .describe("Give the selected drive a name that follows it to every device."),
+        ]
+    }
+
+    /// Every drive on this machine with its partitions; a handful at most,
+    /// so the whole set is published.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.drive_rows()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Topology;
-    use ui::widget::Widget;
+    use ui::framework::testing::TestApp;
+    use ui::tilo_actions::OperationKind;
+
+    /// A live window over the sample machine: effects run, devices are
+    /// never touched.
+    struct SampleDisks;
+
+    impl ResourceApp for SampleDisks {
+        type Resource = Disks;
+        const ID: &'static str = "so.tilo.disks";
+        const TITLE: &'static str = "Disks";
+
+        fn view(cx: &mut ViewCx<Disks>) -> Element {
+            cx.surface(DisksApp::sample())
+        }
+    }
+
+    fn find<'a>(
+        resources: &'a [ui::tilo_actions::Resource],
+        id: &str,
+    ) -> Option<&'a ui::tilo_actions::Resource> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource)
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+
+    fn action_ids(resource: &ui::tilo_actions::Resource) -> Vec<&str> {
+        resource
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect()
+    }
 
     #[test]
-    fn resource_publish_owns_topology_door_and_hosted_keeps_no_duplicate_root() {
-        let mut doc = AutoCommit::new();
-        DisksDoc::seed(&mut doc, &Topology::sample());
-        let state = Disks::read(&doc).expect("seeded disks state");
-        let published = ui::tilo_resource::publish::<Disks>("disks", "Storage devices", &state);
-        assert_eq!(published.kind, "disks.system");
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "select-drive"),
-            "document select-drive must be on the framework resource"
-        );
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "set-tab"),
-            "document set-tab must be on the framework resource"
-        );
-        assert!(
-            !published.children.is_empty(),
-            "topology children must be on the framework resource"
-        );
-        let disk = published
-            .children
+    fn drives_and_partitions_are_live_rows_offering_only_effects() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        let resources = app.harness().resources();
+        let root = find(&resources, Disks::KIND).expect("the storage resource");
+        let root_ids = action_ids(root);
+        for id in [
+            "name-drive",
+            "rescan",
+            "select",
+            "show-tab",
+            "format",
+            "mount",
+        ] {
+            assert!(root_ids.contains(&id), "{id} in {root_ids:?}");
+        }
+
+        let disk = find(&resources, "disk:nvme0n1").expect("the sample nvme drive");
+        assert_eq!(disk.kind, "disks.drive");
+        assert_eq!(action_ids(disk), ["select", "format", "benchmark"]);
+        let format = disk
+            .actions
             .iter()
-            .find(|child| child.id.as_str() == "disk:nvme0n1")
-            .expect("sample nvme drive");
-        let disk_ids: Vec<&str> = disk.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(disk_ids.contains(&"select"), "{disk_ids:?}");
-        assert!(disk_ids.contains(&"format"), "{disk_ids:?}");
-        assert!(disk_ids.contains(&"benchmark"), "{disk_ids:?}");
-        let partition = disk
-            .children
+            .find(|action| action.id == "format")
+            .unwrap();
+        assert_eq!(
+            format.contract.confirmation,
+            ConfirmationPolicy::Phrase {
+                phrase: "nvme0n1".into()
+            },
+            "erasing a drive asks for its name"
+        );
+        let partition = find(&resources, "partition:nvme0n1p2").expect("a partition row");
+        assert!(
+            action_ids(partition)
+                .iter()
+                .any(|id| matches!(*id, "mount" | "unmount"))
+        );
+        for row in [disk, partition] {
+            assert!(
+                row.actions
+                    .iter()
+                    .all(|action| action.kind != OperationKind::Document),
+                "a device row never changes the document"
+            );
+        }
+        let removable = app
+            .harness()
+            .resources()
             .iter()
-            .find(|child| child.kind == "disks.partition")
-            .expect("partition child");
-        let part_ids: Vec<&str> = partition.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(part_ids.contains(&"select"), "{part_ids:?}");
+            .flat_map(|root| root.children.clone())
+            .filter(|row| row.actions.iter().any(|action| action.id == "eject"))
+            .count();
+        assert_eq!(removable, 1, "only the removable drive ejects");
+    }
+
+    #[test]
+    fn selecting_a_row_and_running_its_operations_reach_the_surface() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        app.call_on("partition:sda1", "select", serde_json::json!({}))
+            .unwrap();
+        app.effect(&DisksEffect::ShowTab {
+            tab: "partitions".into(),
+        })
+        .unwrap();
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(inspection.contains("sda1"), "the partition is selected");
+
+        // A benchmark on the sample machine reports what it would run.
+        let output = app
+            .effect(&DisksEffect::Benchmark {
+                device: "sda".into(),
+            })
+            .unwrap();
         assert!(
-            part_ids.iter().any(|id| matches!(*id, "mount" | "unmount")),
-            "{part_ids:?}"
+            output
+                .value
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .is_some_and(|status| status.contains("/dev/sda")),
         );
 
-        let mut fresh = DisksApp::new();
-        let mut empty = AutoCommit::new();
-        fresh.sync(&mut empty, &ui::automerge::ROOT);
-        assert!(DisksDoc::topology_json(&empty).is_some());
-        assert_eq!(DisksDoc::tab(&empty), "overview");
-        assert_eq!(DisksDoc::selected(&empty), 0);
-
-        let mut app = DisksApp::new();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "disks.system");
+        // A target the probe does not know is refused before anything runs.
         assert!(
-            !standalone[0].children.is_empty(),
-            "standalone publishes the topology tree"
+            app.effect(&DisksEffect::Mount {
+                device: "nvme0n1".into()
+            })
+            .is_err(),
+            "a whole disk is not mounted"
         );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        assert!(ui::resources::resource(&app, &seeded, "disks").is_none());
         assert!(
-            ui::resources::resource(&app, &seeded, "disk:nvme0n1")
-                .is_some_and(|disk| disk.actions.iter().any(|action| action.id == "select")),
-            "a hosted drive stays the published row"
+            app.effect_confirmed(&DisksEffect::Format {
+                device: "gone0".into()
+            })
+            .is_err()
         );
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
+    }
+
+    /// The accessibility node named `name`, depth first.
+    fn announced(node: &serde_json::Value, name: &str) -> Option<serde_json::Value> {
+        if node.get("name").and_then(serde_json::Value::as_str) == Some(name) {
+            return Some(node.clone());
+        }
+        match node {
+            serde_json::Value::Object(fields) => {
+                fields.values().find_map(|child| announced(child, name))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter().find_map(|child| announced(child, name))
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn an_action_bar_button_runs_the_operation_its_row_offers() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        let inspection: serde_json::Value =
+            serde_json::from_str(&app.harness().inspection_json().unwrap()).unwrap();
+        let bounds =
+            announced(&inspection, "Benchmark").expect("the Benchmark button")["bounds"].clone();
+        let middle = |low: &str, high: &str| {
+            f64::midpoint(
+                bounds[low].as_f64().unwrap(),
+                bounds[high].as_f64().unwrap(),
+            )
+        };
+        let (x, y) = (middle("x0", "x1"), middle("y0", "y1"));
+        app.harness().click_at(x, y);
+        app.settle();
+        app.harness().relayout();
         assert!(
-            extras.is_empty(),
-            "hosted must not republish disks.system beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+            app.harness()
+                .inspection_json()
+                .unwrap()
+                .contains("benchmark on /dev/nvme0n1"),
+            "the click reached the effect on the selected drive"
+        );
+    }
+
+    #[test]
+    fn formatting_waits_for_confirmation() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        assert!(matches!(
+            app.effect(&DisksEffect::Format {
+                device: "sdb1".into()
+            }),
+            Err(ui::tilo_actions::DoorError::ConfirmationRequired)
+        ));
+        let output = app
+            .effect_confirmed(&DisksEffect::Format {
+                device: "sdb1".into(),
+            })
+            .unwrap();
+        assert!(format!("{:?}", output.value).contains("Block.Format"));
+    }
+
+    #[test]
+    fn drive_names_are_document_state_shown_on_the_rows() {
+        let mut app = TestApp::<SampleDisks>::new().unwrap();
+        app.invoke(
+            Invoke::apply(&DisksAction::NameDrive {
+                serial: "S6Z1NJ0T934217X".into(),
+                name: Some("Workstation".into()),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            app.state().names.get("S6Z1NJ0T934217X").map(String::as_str),
+            Some("Workstation")
+        );
+        let resources = app.harness().resources();
+        assert_eq!(
+            find(&resources, "disk:nvme0n1").map(|row| row.label.as_str()),
+            Some("Workstation")
+        );
+        assert!(app.undo(), "naming a drive is an undo step");
+        assert!(app.state().names.is_empty());
+
+        // The selected drive (the first) is named through its bound action.
+        app.call("name-selected-drive", serde_json::json!({ "name": "Fast" }))
+            .unwrap();
+        assert_eq!(
+            app.state().names.get("S6Z1NJ0T934217X").map(String::as_str),
+            Some("Fast")
+        );
+    }
+
+    #[test]
+    fn every_scenario_captures_the_sample_machine_without_touching_it() {
+        for scenario in std::iter::once(None).chain(SCENARIOS.iter().copied().map(Some)) {
+            let mut app = TestApp::<DisksShell>::capture(scenario).unwrap();
+            let inspection = app.harness().inspection_json().unwrap();
+            if scenario == Some("empty") {
+                assert!(!inspection.contains("nvme0n1"), "{scenario:?}");
+            } else {
+                assert!(inspection.contains("nvme0n1"), "{scenario:?}");
+            }
+        }
+        let mut named = TestApp::<DisksShell>::capture(Some("named")).unwrap();
+        assert!(
+            named
+                .harness()
+                .inspection_json()
+                .unwrap()
+                .contains("Workstation")
+        );
+        let mut failed = TestApp::<DisksShell>::capture(Some("status-fail")).unwrap();
+        assert!(
+            failed
+                .harness()
+                .inspection_json()
+                .unwrap()
+                .contains("failed")
         );
     }
 }
