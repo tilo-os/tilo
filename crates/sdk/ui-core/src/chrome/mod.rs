@@ -15,8 +15,9 @@ pub mod status_bar;
 pub use header_row::{HeaderRowFace, HeaderRowMetrics, paint_history_control};
 pub use nav_row::{
     NavCount, NavRowFace, NavRowLayout, NavRowStyle, NavSectionFace, NavSectionLayout,
-    nav_rail_row_height, nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
-    paint_nav_row, paint_nav_section,
+    nav_badge_column, nav_item_height, nav_rail_item_height, nav_rail_row_height,
+    nav_row_description, nav_row_height, nav_row_layout, nav_section_height, nav_section_layout,
+    paint_nav_row, paint_nav_section, rail_caption_lines,
 };
 pub use page::PageGeometry;
 pub use shell::{

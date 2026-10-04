@@ -61,6 +61,16 @@ impl LiveStore {
             worker: Some(StoreWorker::spawn(opened_ref, search_index)),
         }
     }
+
+    /// A Store window over a past version in History: what the document
+    /// holds, with no worker fetching the catalogue and no artwork loading.
+    #[must_use]
+    pub fn past() -> Self {
+        Self {
+            inner: StoreApp::new(),
+            worker: None,
+        }
+    }
 }
 
 impl ui::widget::Decorator for LiveStore {

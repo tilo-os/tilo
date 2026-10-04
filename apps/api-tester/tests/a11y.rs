@@ -108,11 +108,17 @@ fn every_control_is_a_focusable_accessible_node() {
             .any(|n| n.role == Role::Group && n.value.as_deref() == Some("Pretty")),
         "the response-view group announces the active view"
     );
-    // A saved request is an addressable, labelled row that reports selection.
-    let row = nodes
+    // A saved request is an addressable, labelled row of the requests list
+    // that reports selection, led by its method.
+    let requests = nodes
         .iter()
-        .find(|n| n.role == Role::ListItem && n.name.as_deref() == Some("List users"))
-        .expect("a saved request is a focusable, labelled row");
+        .find(|n| n.role == Role::Tree && n.name.as_deref() == Some("Requests"))
+        .expect("the saved requests are one navigation list");
+    let row = requests
+        .children
+        .iter()
+        .find(|n| n.role == Role::TreeItem && n.name.as_deref() == Some("List users"))
+        .expect("a saved request is a labelled row");
     assert!(row.state.selected, "the open request is selected");
     // The parameters are an editable table of named cells.
     assert!(
@@ -254,12 +260,13 @@ fn tab_traverses_every_control_in_order() {
         "Tab visits every focusable node"
     );
 
-    // Focus reaches into the sidebar rows and the table's cells.
+    // Focus reaches the sidebar's list (arrows move through its rows) and
+    // the table's cells.
     assert!(
         stops
             .iter()
-            .any(|(r, n)| *r == Role::ListItem && n.as_deref() == Some("List users")),
-        "Tab reaches the saved-request rows"
+            .any(|(r, n)| *r == Role::Tree && n.as_deref() == Some("Requests")),
+        "Tab reaches the saved requests"
     );
     assert!(
         stops
@@ -274,9 +281,9 @@ fn tab_traverses_every_control_in_order() {
     assert!(back.is_some(), "Shift+Tab moves focus backward");
 }
 
-/// Enter on a focused row activates it through the widget's real handler —
-/// the same path a screen reader's "activate" takes — and the request loads
-/// into the builder.
+/// The arrow keys move through the saved requests once Tab reaches their
+/// list, and the request chosen loads into the builder, through the list's
+/// real handler — the same path a screen reader's "activate" takes.
 /// Case of `keyboard_focus_traverses_activates_and_dismisses_through_real_handlers`.
 fn enter_activates_a_focused_row_through_the_real_handler() {
     let mut d = driver();
@@ -285,21 +292,29 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     let mut reached = false;
     for _ in 0..=d.focus_order().len() {
         d.tab(false);
-        if d.focused_access_node().and_then(|n| n.name).as_deref() == Some(target) {
+        if d.focused_access_node().and_then(|n| n.name).as_deref() == Some("Requests") {
             reached = true;
             break;
         }
     }
-    assert!(reached, "Tab can land on the saved request");
+    assert!(reached, "Tab can land on the saved requests");
+    let chosen = |d: &Driver| {
+        d.focused_access_node().is_some_and(|list| {
+            list.children
+                .iter()
+                .any(|row| row.name.as_deref() == Some(target) && row.state.selected)
+        })
+    };
+    for _ in 0..8 {
+        if chosen(&d) {
+            break;
+        }
+        d.key("ArrowDown");
+    }
     d.key("Enter");
+    assert!(chosen(&d), "the arrows chose the request");
 
     let nodes = d.focus_access_nodes();
-    assert!(
-        nodes
-            .iter()
-            .any(|n| n.name.as_deref() == Some(target) && n.state.selected),
-        "Enter selected the request"
-    );
     assert!(
         nodes
             .iter()
@@ -513,11 +528,18 @@ fn a_sheet_creates_a_collection_through_the_real_controls() {
     d.click_named("api.new-collection").unwrap();
     d.type_text("Billing API");
     d.key("Enter");
+    let listed = d.focus_access_nodes().iter().any(|node| {
+        node.children.iter().any(|row| {
+            row.name.as_deref() == Some("Billing API")
+                && row
+                    .children
+                    .iter()
+                    .any(|action| action.name.as_deref() == Some("Rename collection Billing API"))
+        })
+    });
     assert!(
-        d.focus_access_nodes()
-            .iter()
-            .any(|node| { node.name.as_deref() == Some("Rename collection Billing API") }),
-        "the new collection is listed"
+        listed,
+        "the new collection is listed, with its rename action"
     );
 }
 
@@ -587,7 +609,7 @@ fn native_app_audit_reports_only_widget_callbacks() {
             assert!(
                 matches!(
                     issue.code.as_str(),
-                    "legacy-callback" | "orphan-action-binding" | "stale-action-binding"
+                    "legacy-callback" | "orphan-action-binding"
                 ),
                 "{issue:?}"
             );

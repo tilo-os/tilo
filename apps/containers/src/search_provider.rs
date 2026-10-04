@@ -21,7 +21,7 @@ fn index_containers(catalog: &SearchCatalog, engine: &Engine) {
             ActionAddress::new(&resource_id, "select"),
         )
         .with_subtitle(container.image.clone())
-        .with_icon(Icon::Archive);
+        .with_icon(Icon::Box);
         let searchable = format!(
             "{} {} {} {}",
             container.name,

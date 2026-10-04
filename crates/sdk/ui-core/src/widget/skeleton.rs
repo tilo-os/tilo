@@ -74,9 +74,11 @@ impl SkeletonFace {
                 .secondary("")
                 .height(text, theme),
             SkeletonShape::Media(aspect) => {
+                // A card's full text block: its title and a meta line.
                 crate::widget::MediaCardFace::new(crate::widget::MediaArt::Placeholder)
                     .aspect(aspect)
                     .title(" ")
+                    .meta(" ")
                     .height(text, theme, width)
             }
         }
@@ -154,15 +156,27 @@ impl SkeletonFace {
             SkeletonShape::Media(aspect) => {
                 let art_h = (rect.width() / aspect.ratio()).min(rect.height());
                 let art = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + art_h);
+                let art_radius = if aspect == MediaAspect::Circle {
+                    art.width().min(art.height()) / 2.0
+                } else {
+                    f64::from(theme.tokens.radii.control)
+                };
                 ctx.scene.fill(
                     Fill::NonZero,
                     ctx.transform,
                     tone,
                     None,
-                    &RoundedRect::from_rect(art, f64::from(theme.tokens.radii.control)),
+                    &RoundedRect::from_rect(art, art_radius),
                 );
                 let top = art.y1 + f64::from(theme.tokens.spacing.s2);
                 bar(ctx, rect.x0, top, rect.width() * TITLE_SHARE, body);
+                bar(
+                    ctx,
+                    rect.x0,
+                    top + body,
+                    rect.width() * LAST_LINE_SHARE,
+                    caption,
+                );
             }
         }
     }

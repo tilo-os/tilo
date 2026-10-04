@@ -79,7 +79,9 @@ pub(super) fn with_layout_renderer<R>(theme: &Theme, f: impl FnOnce(&mut TextRen
     LAYOUT_TEXT.with(|cell| {
         let mut tr = cell.borrow_mut();
         tr.set_text_scale(theme.text_scale);
-        f(&mut tr)
+        tr.set_distinct_letters(theme.tokens.typography.distinct_letters);
+        // Laid out as the security surface it is drawn as.
+        tr.security_surface(f)
     })
 }
 

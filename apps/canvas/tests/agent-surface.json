@@ -2516,7 +2516,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2525,7 +2525,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer%2D2",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer%2D2",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2534,7 +2534,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer%2D3",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Aadd%2Dlayer%2D3",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2543,7 +2543,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
     "action": "decrement",
     "resource_kind": "tilo.ui.control",
     "label": "Decrement",
@@ -2552,7 +2552,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2561,7 +2561,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dbrush%2Dsize",
     "action": "increment",
     "resource_kind": "tilo.ui.control",
     "label": "Increment",
@@ -2570,7 +2570,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
     "action": "expand",
     "resource_kind": "tilo.ui.control",
     "label": "Expand",
@@ -2579,7 +2579,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2588,7 +2588,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer",
     "action": "set-value",
     "resource_kind": "tilo.ui.control",
     "label": "Set value",
@@ -2605,7 +2605,7 @@
     ]
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Ddown%2Dlayer%2D1",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Ddown%2Dlayer%2D1",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2614,7 +2614,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dhide%2Dlayer%2D1",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dhide%2Dlayer%2D1",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2623,7 +2623,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dremove%2Dlayer%2D1",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dremove%2Dlayer%2D1",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2632,7 +2632,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dup%2Dlayer%2D1",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acanvas%2Dlayer%2Dup%2Dlayer%2D1",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2641,7 +2641,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acolor%5Fpicker",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acolor%5Fpicker",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",
@@ -2650,7 +2650,7 @@
     "params": []
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Acanvas%2Dinspector%7Ek%3Acolor%5Fpicker",
+    "resource": "ui:root%7Ek%3Acanvas%2Dinspector%7Ek%3Acolor%5Fpicker",
     "action": "set-value",
     "resource_kind": "tilo.ui.control",
     "label": "Set value",
@@ -2667,7 +2667,16 @@
     ]
   },
   {
-    "resource": "ui:root%7Ek%3Acanvas%2Dshell%2Ewindow%7Ek%3Anav%2Dshell%2Dinspector",
+    "resource": "ui:root%7Ek%3Anav%2Dshell%2Dhistory",
+    "action": "focus",
+    "resource_kind": "tilo.ui.control",
+    "label": "Focus",
+    "description": null,
+    "operation": "View",
+    "params": []
+  },
+  {
+    "resource": "ui:root%7Ek%3Anav%2Dshell%2Dinspector",
     "action": "focus",
     "resource_kind": "tilo.ui.control",
     "label": "Focus",

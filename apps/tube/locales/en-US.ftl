@@ -5,7 +5,7 @@
 ## Destinations
 tube-nav-home = Home
 tube-nav-trending = Trending
-tube-nav-channels = Channels
+tube-nav-subscriptions = Subscriptions
 tube-nav-queue = Queue
 tube-nav-history = History
 tube-nav-settings = Settings

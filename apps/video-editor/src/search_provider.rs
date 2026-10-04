@@ -100,7 +100,7 @@ impl ProjectSearchProvider {
                 crate::actions::reveal_marker_address(marker.id),
             )
             .with_subtitle(subtitle)
-            .with_icon(Icon::Star),
+            .with_icon(Icon::Flag),
         );
     }
 
@@ -115,7 +115,7 @@ impl ProjectSearchProvider {
                 crate::actions::reveal_marker_address(marker.id),
             )
             .with_subtitle(format!("{} in {}", timecode::clock(at), media.name))
-            .with_icon(Icon::Star),
+            .with_icon(Icon::Flag),
         );
     }
 
@@ -192,7 +192,7 @@ impl ProjectSearchProvider {
             )
             .with_subtitle(subtitle)
             .with_icon(if item.text.is_some() {
-                Icon::FileText
+                Icon::Type
             } else {
                 Icon::Film
             }),

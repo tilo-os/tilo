@@ -251,7 +251,7 @@ pub fn title(route: &Route) -> String {
     match route {
         Route::Home => t("tube-nav-home"),
         Route::Trending => t("tube-nav-trending"),
-        Route::Subscriptions => t("tube-nav-channels"),
+        Route::Subscriptions => t("tube-nav-subscriptions"),
         Route::Queue => t("tube-nav-queue"),
         Route::History => t("tube-nav-history"),
         Route::Settings => t("tube-nav-settings"),
@@ -554,10 +554,7 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
         .with_gap(ui.theme.tokens.spacing.rhythm.related)
         .push(Box::new(text(&ch.name, TextRole::Title)));
     if ch.verified {
-        name = name.push(Box::new(ui::widget::IconWidget::new(
-            Icon::Check,
-            ui.theme.tokens.metrics.icon_md,
-        )));
+        name = name.push(Box::new(ui::widget::IconWidget::new(Icon::Check)));
     }
     let mut about = stack()
         .with_gap(ui.theme.tokens.spacing.rhythm.tight)

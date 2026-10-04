@@ -149,7 +149,11 @@ impl Metrics {
             pad: f64::from(spacing.s3),
             gap: f64::from(spacing.s3),
             edge,
-            ring: ProgressRingSize::Small.diameter(theme),
+            // A small ring that holds the seconds left.
+            ring: ProgressRingFace::new(0.0)
+                .size(ProgressRingSize::Small)
+                .value("30")
+                .diameter(theme),
             code_w: f64::from(code_w),
             code_h: f64::from(code_h),
             gutter: f64::from(theme.tokens.metrics.scrollbar_gutter),
@@ -690,7 +694,10 @@ impl AccountList {
         } else {
             totp::period_progress(account, now)
         };
-        let mut face = ProgressRingFace::new(fraction).size(ProgressRingSize::Small);
+        let left = seconds.to_string();
+        let mut face = ProgressRingFace::new(fraction)
+            .size(ProgressRingSize::Small)
+            .value(&left);
         if seconds <= EXPIRING_SECONDS {
             face = face.tone(Tone::Warning);
         }

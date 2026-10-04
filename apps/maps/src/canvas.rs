@@ -944,9 +944,8 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
         pal.marker_ring,
     );
     if icons {
-        // White category pictogram on the disc; the disc colour shows through
-        // any cut-outs (train windows, etc.).
-        draw_category_icon(scene, t, p, r, poi.category, pal.marker_ring, col);
+        // The category's icon, light on the disc.
+        draw_category_icon(scene, t, p, r, poi.category, pal.marker_ring);
     }
     if selected {
         draw::stroke_circle(scene, t, p, r + 4.0, 2.0, draw::alpha(col, 0.5));
@@ -979,16 +978,8 @@ fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: 
     }
 }
 
-/// Draw a compact white category pictogram centred at `c` on a disc of radius
-/// `r`. `fg` is the icon colour (the near-white marker ring); `bg` is the disc
-/// colour, used for cut-outs (e.g. train windows) so they read against the fill.
-/// Deliberately built from a handful of primitives — no icon-font dependency, so
-/// it renders identically headless and live and tracks the OS theme.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one match arm per Category variant, each a short, self-contained icon built \
-              from a handful of primitives; splitting per-arm would only relocate the code"
-)]
+/// Draw the category's icon centred at `c` on a marker disc of radius `r`, in
+/// `fg` (the light marker ring), from the one icon set.
 pub fn draw_category_icon(
     scene: &mut Scene,
     t: Affine,
@@ -996,237 +987,16 @@ pub fn draw_category_icon(
     r: f64,
     cat: Category,
     fg: Color,
-    bg: Color,
 ) {
-    let s = r * 0.58;
-    let lw = (r * 0.16).max(1.4);
-    let ln = |scene: &mut Scene, ax: f64, ay: f64, bx: f64, by: f64, w: f64| {
-        draw::line(scene, t, Point::new(ax, ay), Point::new(bx, by), w, fg);
-    };
-    match cat {
-        Category::Hospital => {
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s, c.y - s * 0.32, c.x + s, c.y + s * 0.32),
-                1.5,
-                fg,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.32, c.y - s, c.x + s * 0.32, c.y + s),
-                1.5,
-                fg,
-            );
-        }
-        Category::Landmark => {
-            let mut pts = Vec::with_capacity(10);
-            for k in 0..10 {
-                let ang = -std::f64::consts::FRAC_PI_2 + f64::from(k) * std::f64::consts::PI / 5.0;
-                let rad = if k % 2 == 0 { s } else { s * 0.45 };
-                pts.push(Point::new(c.x + rad * ang.cos(), c.y + rad * ang.sin()));
-            }
-            draw::polygon(scene, t, &pts, fg);
-        }
-        Category::Park => {
-            ln(scene, c.x, c.y + s * 0.1, c.x, c.y + s * 0.8, lw * 1.4);
-            draw::fill_circle(scene, t, Point::new(c.x, c.y - s * 0.2), s * 0.62, fg);
-        }
-        Category::Cafe => {
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x - s * 0.6,
-                    c.y - s * 0.35,
-                    c.x + s * 0.35,
-                    c.y + s * 0.45,
-                ),
-                2.0,
-                fg,
-            );
-            draw::stroke_circle(
-                scene,
-                t,
-                Point::new(c.x + s * 0.5, c.y + s * 0.02),
-                s * 0.3,
-                lw,
-                fg,
-            );
-            ln(
-                scene,
-                c.x - s * 0.8,
-                c.y + s * 0.68,
-                c.x + s * 0.6,
-                c.y + s * 0.68,
-                lw,
-            );
-        }
-        Category::Restaurant => {
-            // Fork (left): three short prongs onto a stem.
-            for dx in [-0.68, -0.45, -0.22] {
-                ln(
-                    scene,
-                    c.x + dx * s,
-                    c.y - s * 0.7,
-                    c.x + dx * s,
-                    c.y - s * 0.18,
-                    lw,
-                );
-            }
-            ln(
-                scene,
-                c.x - s * 0.45,
-                c.y - s * 0.18,
-                c.x - s * 0.45,
-                c.y + s * 0.82,
-                lw * 1.5,
-            );
-            // Knife (right): a single tapering blade+handle.
-            ln(
-                scene,
-                c.x + s * 0.5,
-                c.y - s * 0.7,
-                c.x + s * 0.5,
-                c.y + s * 0.82,
-                lw * 1.7,
-            );
-        }
-        Category::Bar => {
-            let bowl = [
-                Point::new(c.x - s * 0.72, c.y - s * 0.55),
-                Point::new(c.x + s * 0.72, c.y - s * 0.55),
-                Point::new(c.x, c.y + s * 0.18),
-            ];
-            draw::polygon(scene, t, &bowl, fg);
-            ln(scene, c.x, c.y + s * 0.18, c.x, c.y + s * 0.72, lw);
-            ln(
-                scene,
-                c.x - s * 0.4,
-                c.y + s * 0.72,
-                c.x + s * 0.4,
-                c.y + s * 0.72,
-                lw,
-            );
-        }
-        Category::Museum => {
-            let roof = [
-                Point::new(c.x - s * 0.82, c.y - s * 0.18),
-                Point::new(c.x + s * 0.82, c.y - s * 0.18),
-                Point::new(c.x, c.y - s * 0.78),
-            ];
-            draw::polygon(scene, t, &roof, fg);
-            for dx in [-0.45, 0.0, 0.45] {
-                ln(
-                    scene,
-                    c.x + dx * s,
-                    c.y - s * 0.12,
-                    c.x + dx * s,
-                    c.y + s * 0.55,
-                    lw * 1.2,
-                );
-            }
-            ln(
-                scene,
-                c.x - s * 0.78,
-                c.y + s * 0.66,
-                c.x + s * 0.78,
-                c.y + s * 0.66,
-                lw * 1.3,
-            );
-        }
-        Category::Transit => {
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.6, c.y - s * 0.72, c.x + s * 0.6, c.y + s * 0.5),
-                2.5,
-                fg,
-            );
-            // Two windows cut out of the body (disc colour).
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x - s * 0.42,
-                    c.y - s * 0.5,
-                    c.x - s * 0.06,
-                    c.y - s * 0.06,
-                ),
-                1.5,
-                bg,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x + s * 0.06,
-                    c.y - s * 0.5,
-                    c.x + s * 0.42,
-                    c.y - s * 0.06,
-                ),
-                1.5,
-                bg,
-            );
-            draw::fill_circle(
-                scene,
-                t,
-                Point::new(c.x - s * 0.32, c.y + s * 0.62),
-                s * 0.16,
-                fg,
-            );
-            draw::fill_circle(
-                scene,
-                t,
-                Point::new(c.x + s * 0.32, c.y + s * 0.62),
-                s * 0.16,
-                fg,
-            );
-        }
-        Category::Hotel => {
-            ln(
-                scene,
-                c.x - s * 0.72,
-                c.y - s * 0.5,
-                c.x - s * 0.72,
-                c.y + s * 0.5,
-                lw * 1.4,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(
-                    c.x - s * 0.72,
-                    c.y + s * 0.08,
-                    c.x + s * 0.78,
-                    c.y + s * 0.46,
-                ),
-                2.0,
-                fg,
-            );
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.5, c.y - s * 0.2, c.x - s * 0.08, c.y + s * 0.12),
-                2.0,
-                fg,
-            );
-        }
-        Category::Shop => {
-            draw::stroke_circle(scene, t, Point::new(c.x, c.y - s * 0.22), s * 0.32, lw, fg);
-            draw::fill_round(
-                scene,
-                t,
-                Rect::new(c.x - s * 0.6, c.y - s * 0.18, c.x + s * 0.6, c.y + s * 0.72),
-                2.5,
-                fg,
-            );
-        }
-        Category::Other => {
-            draw::fill_circle(scene, t, c, s * 0.4, fg);
-        }
-    }
+    let side = r * 1.25;
+    let stroke = (r * 0.16).max(1.4);
+    cat.icon().draw_with_stroke(
+        scene,
+        t,
+        Rect::from_center_size(c, (side, side)),
+        fg,
+        stroke,
+    );
 }
 
 /// Build a crisp teardrop "map pin" path: a circular head of radius `head_r`
