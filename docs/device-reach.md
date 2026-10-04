@@ -33,10 +33,12 @@ must hold the machine awake explicitly, and that hold must go away by itself.
 What can wake a device depends on its hardware, so the device advertises this
 itself instead of the admin guessing.
 
-- The OS image enables magic-packet wake on every interface that supports it:
-  Ethernet Wake-on-LAN, and WoWLAN on Wi-Fi chips that keep their association
-  in suspend. The wake address is the interface's MAC as the network sees it,
-  which is the per-network stable MAC for Wi-Fi.
+- The OS image enables magic-packet Wake-on-LAN on Ethernet. Wi-Fi WoWLAN
+  stays off unless the machine is known to wake from it. On the Lenovo Yoga
+  Slim 7x the chip stays associated through suspend, but the SoC wakes on
+  neither `deep` nor `s2idle`. A machine that cannot be woken over the network
+  says so in its presence, and an admin keeps it awake instead (the leases
+  above). The wake address is the interface's MAC as the network sees it.
 - A device publishes its wake routes in its certified presence: MAC, interface
   kind and the subnet it was last seen on. Only same-identity devices receive
   them.
