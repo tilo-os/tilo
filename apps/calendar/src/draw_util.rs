@@ -13,6 +13,10 @@ use ui::paint::PaintCtx;
 use ui::surface::edge_on;
 use ui::text_render::TextStyle;
 
+/// How deep an all-day event's calendar colour washes over the ground: a
+/// step past a timed chip's, so the two read apart without a solid fill.
+pub(crate) const ALL_DAY_WASH: f32 = 0.34;
+
 /// A 1 px rule between `p0` and `p1`, derived against `surface` — the
 /// grid line or column edge the calendar draws on its own ground. Painted as
 /// a filled rect snapped to the device pixel that contains the coordinate
@@ -101,4 +105,54 @@ pub(crate) fn text_in_band(
 /// The measured height of one line in `style`.
 pub(crate) fn line_height(ctx: &mut PaintCtx<'_>, style: &TextStyle) -> f64 {
     f64::from(ctx.text.measure_style("Ag", None, style).1)
+}
+
+/// `text` broken at spaces into at most `max_lines` lines no wider than
+/// `width` in `style`; the last line takes the rest of the text, elided.
+/// The timeline's blocks wrap their titles this way where a block is tall
+/// enough, instead of eliding them on one line.
+pub(crate) fn wrap_lines(
+    ctx: &mut PaintCtx<'_>,
+    text: &str,
+    style: &TextStyle,
+    width: f64,
+    max_lines: usize,
+) -> Vec<String> {
+    let fits = |ctx: &mut PaintCtx<'_>, line: &str| {
+        f64::from(ctx.text.measure_style(line, None, style).0) <= width
+    };
+    let elide = |ctx: &mut PaintCtx<'_>, line: &str| {
+        ctx.text
+            .elide_to_width_style(line, ui::num::f32_of_f64(width.max(0.0)), style)
+    };
+    let mut lines = Vec::new();
+    let mut words = text.split_whitespace().peekable();
+    while words.peek().is_some() {
+        if lines.len() + 1 >= max_lines {
+            let rest: Vec<&str> = words.collect();
+            lines.push(elide(ctx, &rest.join(" ")));
+            break;
+        }
+        let mut line = String::new();
+        while let Some(word) = words.peek() {
+            let candidate = if line.is_empty() {
+                (*word).to_string()
+            } else {
+                format!("{line} {word}")
+            };
+            if line.is_empty() || fits(ctx, &candidate) {
+                line = candidate;
+                words.next();
+            } else {
+                break;
+            }
+        }
+        let shown = if fits(ctx, &line) {
+            line
+        } else {
+            elide(ctx, &line)
+        };
+        lines.push(shown);
+    }
+    lines
 }

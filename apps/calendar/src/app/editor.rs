@@ -21,8 +21,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
 use ui::widget::{
-    AvatarFace, Button, ButtonFace, ButtonRole, Checkbox, CheckboxFace, ControlSize, Dropdown,
-    ListRowFace, RowLeading, Toggle, ToggleFace, Widget,
+    AvatarFace, Button, ButtonFace, ButtonRole, Checkbox, CheckboxFace, ColorSwatchFace,
+    ControlSize, Dropdown, ListRowFace, RowLeading, Toggle, ToggleFace, Widget,
 };
 
 use super::{Action, CalTarget, CalendarApp, FormField, Sel, TaskPopover};
@@ -94,7 +94,6 @@ pub(crate) struct Choices {
     pub(super) repeat: Choice,
     pub(super) alert: Choice,
     pub(super) timezone: Choice,
-    pub(super) colour: Choice,
     pub(super) priority: Choice,
     pub(super) project: Choice,
 }
@@ -106,7 +105,6 @@ impl Choices {
             repeat: Choice::new("Repeat"),
             alert: Choice::new("Alert"),
             timezone: Choice::new("Time zone"),
-            colour: Choice::new("Colour"),
             priority: Choice::new("Priority"),
             project: Choice::new("Project"),
         }
@@ -122,7 +120,6 @@ impl Choices {
                 &mut self.repeat,
                 &mut self.alert,
                 &mut self.timezone,
-                &mut self.colour,
             ]
         }
     }
@@ -133,7 +130,6 @@ impl Choices {
             &mut self.repeat,
             &mut self.alert,
             &mut self.timezone,
-            &mut self.colour,
             &mut self.priority,
             &mut self.project,
         ] {
@@ -163,7 +159,9 @@ pub(super) struct FormRects {
     pub(super) repeat: Rect,
     pub(super) alert: Rect,
     pub(super) timezone: Rect,
+    /// The Colour row, and one swatch per calendar colour along it.
     pub(super) colour: Rect,
+    pub(super) swatches: Vec<(Palette, Rect)>,
     pub(super) invite: Rect,
     pub(super) guests: Vec<Rect>,
     pub(super) task_check: Rect,
@@ -175,6 +173,39 @@ pub(super) struct FormRects {
     /// The "Notes" heading and where the notes editor starts.
     pub(super) notes_label: Rect,
     pub(super) notes_top: f64,
+}
+
+impl FormRects {
+    /// The bottom edge of every row of the form, top to bottom: where a
+    /// body that cannot show the whole form may end without cutting a row.
+    fn row_bottoms(&self) -> Vec<f64> {
+        let mut rows: Vec<f64> = [
+            self.title,
+            self.start_date,
+            self.end_date,
+            self.all_day,
+            self.conflict,
+            self.location,
+            self.calendar,
+            self.repeat,
+            self.alert,
+            self.timezone,
+            self.colour,
+            self.invite,
+            self.task_title,
+            self.due,
+            self.priority,
+            self.project,
+        ]
+        .into_iter()
+        .chain(self.guests.iter().copied())
+        .chain(self.subtasks.iter().copied())
+        .filter(|rect| rect.area() > 0.0)
+        .map(|rect| rect.y1)
+        .collect();
+        rows.sort_by(f64::total_cmp);
+        rows
+    }
 }
 
 /// The repeat rule as one choice: a standard rule's value, or `custom` for
@@ -310,13 +341,6 @@ fn timezone_options(event: &Event) -> Vec<(String, String)> {
         options.push((event.timezone.clone(), timezone_label(&event.timezone)));
     }
     options
-}
-
-fn colour_options() -> Vec<(String, String)> {
-    Palette::ALL
-        .iter()
-        .map(|palette| (palette.index().to_string(), palette.name().to_string()))
-        .collect()
 }
 
 fn priority_value(priority: Priority) -> &'static str {
@@ -487,8 +511,29 @@ impl CalendarApp {
                 let probe = self.form_layout(Rect::new(0.0, 0.0, width, 0.0), text, &theme);
                 let content_h = probe.notes_top + self.notes_content_h.max(notes_min);
                 let actions = [ModalAction::primary(DONE)];
-                let spec = self.sheet_spec(&actions, content_h);
-                let layout = modal_dialog::layout(window, &spec, text, &theme);
+                let natural = modal_dialog::layout(
+                    window,
+                    &self.sheet_spec(&actions, content_h),
+                    text,
+                    &theme,
+                );
+                // A form taller than the window scrolls inside a sheet that
+                // keeps the window's header row clear, and whose body ends
+                // between two rows rather than through one.
+                let header = f64::from(theme.tokens.metrics.header_height);
+                let chrome_h = natural.card.height() - natural.body.height();
+                let room = (window.height() - 2.0 * header - chrome_h).max(0.0);
+                let layout = if content_h <= room {
+                    natural
+                } else {
+                    let body_h = probe
+                        .row_bottoms()
+                        .into_iter()
+                        .filter(|y| *y <= room)
+                        .fold(0.0, f64::max);
+                    let body_h = if body_h > 0.0 { body_h } else { room };
+                    modal_dialog::layout(window, &self.sheet_spec(&actions, body_h), text, &theme)
+                };
                 let max = (content_h - layout.body.height()).max(0.0);
                 let scroll = if self.shots_detail_scroll_to_end {
                     max
@@ -539,7 +584,6 @@ impl CalendarApp {
             (&mut c.repeat, f.repeat),
             (&mut c.alert, f.alert),
             (&mut c.timezone, f.timezone),
-            (&mut c.colour, f.colour),
             (&mut c.priority, f.priority),
             (&mut c.project, f.project),
         ] {
@@ -571,8 +615,6 @@ impl CalendarApp {
                 c.repeat.seed(repeat_options(&event), repeat_value(&event));
                 c.alert.seed(alert_options(&event), &alert_value(&event));
                 c.timezone.seed(timezone_options(&event), &event.timezone);
-                c.colour
-                    .seed(colour_options(), &event.color.index().to_string());
             }
             Some(Sel::Task(id)) if self.detail_open => {
                 let Some(task) = self.model.task(id).cloned() else {
@@ -618,11 +660,6 @@ impl CalendarApp {
                 if let Some(value) = self.choices.timezone.take_pick(doc, path) {
                     self.cycle_event(doc, |e| e.timezone.clone_from(&value));
                 }
-                if let Some(value) = self.choices.colour.take_pick(doc, path)
-                    && let Ok(index) = value.parse::<usize>()
-                {
-                    self.cycle_event(doc, |e| e.color = Palette::from_index(index));
-                }
             }
             Some(Sel::Task(_)) => {
                 if let Some(value) = self.choices.priority.take_pick(doc, path) {
@@ -656,6 +693,25 @@ impl CalendarApp {
             .map(|label| f64::from(text.measure_style(label, None, &style).0))
             .fold(0.0, f64::max)
             + f64::from(theme.tokens.spacing.s4)
+    }
+
+    /// One swatch per calendar colour along the Colour row, each centred
+    /// in a pointer target, the first target flush with the field's edge.
+    fn swatch_layout(row: Rect, theme: &Theme) -> Vec<(Palette, Rect)> {
+        let side = f64::from(theme.tokens.metrics.icon_lg);
+        let target = f64::from(theme.tokens.metrics.min_pointer_target).max(side);
+        let mid = row.center().y;
+        Palette::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, palette)| {
+                let x0 = row.x0 + target * i as f64 + (target - side) / 2.0;
+                (
+                    *palette,
+                    Rect::new(x0, mid - side / 2.0, x0 + side, mid + side / 2.0),
+                )
+            })
+            .collect()
     }
 
     /// The form's geometry inside `body` (whose top is already scrolled).
@@ -752,12 +808,21 @@ impl CalendarApp {
         f.alert = flow.row("Alert", row_h);
         f.timezone = flow.row("Time zone", row_h);
         f.colour = flow.row("Colour", row_h);
+        f.swatches = Self::swatch_layout(f.colour, theme);
         flow.gap();
         f.invite = flow.row("Guests", row_h);
+        // A guest row's content lines up with the Guests field above it: the
+        // row reaches past the field by the row's own inset on both sides.
+        let row_inset = f64::from(sp.s3);
         for attendee in &event.attendees {
             let face = ListRowFace::new(&attendee.email).secondary(&attendee.email);
             let height = face.height(text, theme);
-            let rect = Rect::new(flow.field_x, flow.y, body.x1, flow.y + height);
+            let rect = Rect::new(
+                flow.field_x - row_inset,
+                flow.y,
+                body.x1 + row_inset,
+                flow.y + height,
+            );
             f.guests.push(rect);
             flow.y = rect.y1;
         }
@@ -956,6 +1021,10 @@ impl CalendarApp {
         spec: &ModalSpec<'_>,
     ) {
         let delete = match self.selection {
+            // An event that was never saved is discarded, not deleted.
+            Some(Sel::Event(id)) if self.fresh_draft.is_some() => {
+                Some(("Discard", Action::DiscardDraft(id)))
+            }
             Some(Sel::Event(id)) => Some(("Delete event", Action::DeleteEvent(id))),
             Some(Sel::Task(id)) => Some(("Delete task", Action::DeleteTask(id))),
             None => None,
@@ -1088,6 +1157,22 @@ impl CalendarApp {
 
         for choice in self.choices.shown_mut(false) {
             Widget::draw(&mut choice.dropdown, scene, t, text, sheet, presence);
+        }
+
+        // The event's colour is user content: the swatches show the colours
+        // themselves, the chosen one ringed.
+        let target_pad = (f64::from(sheet.tokens.metrics.min_pointer_target)
+            - f64::from(sheet.tokens.metrics.icon_lg))
+        .max(0.0)
+            / 2.0;
+        for (palette, rect) in &f.swatches {
+            let target = rect.inflate(target_pad, target_pad);
+            ColorSwatchFace::new(*rect, palette.color(sheet), palette.name())
+                .selected(event.color == *palette)
+                .hovered(target.contains(mouse))
+                .target_rect(target)
+                .paint(scene, t, text, sheet);
+            hits.push((target, Action::SetEventColor(*palette)));
         }
 
         self.invite_input.draw(scene, t, text, sheet, presence);

@@ -27,16 +27,20 @@ use crate::model::{Event, Id, Model, Priority, Task};
 
 const DAYS_SHOWN: i64 = 21;
 
-/// The empty agenda: one sentence and the action that fills it.
+/// The last day the agenda lists when it starts on `anchor`.
+pub(crate) fn last_day(anchor: NaiveDate) -> NaiveDate {
+    anchor + Duration::days(DAYS_SHOWN - 1)
+}
+
+/// The empty agenda: one sentence. Its action is the header's New event,
+/// which is already on screen.
 const EMPTY_TITLE: &str = "Nothing scheduled in the next three weeks";
-const EMPTY_ACTION: &str = "New event";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AgendaAction {
     OpenEvent(Id),
     OpenTask(Id),
     ToggleTask(Id),
-    NewEvent,
 }
 
 /// One row of the agenda, in list order.
@@ -121,12 +125,9 @@ impl AgendaView {
         if items.is_empty() {
             let content = EmptyStateContent {
                 icon: Some(Icon::Calendar),
-                action_label: Some(EMPTY_ACTION),
                 ..EmptyStateContent::new(EMPTY_TITLE)
             };
-            if let Some(action) = EmptyState::paint(ctx, area, &content, pointer) {
-                hits.push((action, AgendaAction::NewEvent));
-            }
+            EmptyState::paint(ctx, area, &content, pointer);
             return hits;
         }
 
@@ -360,16 +361,19 @@ impl<'a> AgendaSource<'a> {
     }
 
     fn tasks_on(&self, day: NaiveDate) -> Vec<&'a Task> {
-        self.model
+        let mut tasks: Vec<&'a Task> = self
+            .model
             .tasks
             .iter()
             .filter(|task| task.due == Some(day) && task.parent.is_none())
-            .collect()
+            .collect();
+        tasks.sort_by(|a, b| Task::list_order(a, b));
+        tasks
     }
 
     /// Every heading and row the agenda shows, in order.
     fn items(&self) -> Vec<Item<'a>> {
-        let end = self.anchor + Duration::days(DAYS_SHOWN);
+        let end = last_day(self.anchor);
         let mut items = Vec::new();
         let mut day = self.anchor;
         while day <= end {
@@ -562,6 +566,49 @@ mod tests {
             assert_eq!(
                 visible_events_on(&model, anchor, &HashSet::new(), Some("local")).len(),
                 1
+            );
+        }
+    }
+
+    #[test]
+    fn a_days_tasks_list_by_priority_whatever_order_the_document_holds() {
+        let anchor = date(1);
+        let task = |title: &str, priority: Priority| Task {
+            id: Uuid::new_v4(),
+            title: title.into(),
+            done: false,
+            due: Some(anchor),
+            priority,
+            project: None,
+            parent: None,
+        };
+        let tasks = vec![
+            task("Drink water", Priority::None),
+            task("Send meeting notes", Priority::Medium),
+            task("Prepare quarterly report", Priority::High),
+            task("Book a table", Priority::None),
+        ];
+        let hidden = HashSet::new();
+        let mut reversed = tasks.clone();
+        reversed.reverse();
+        for tasks in [tasks, reversed] {
+            let model = Model {
+                tasks,
+                ..Model::default()
+            };
+            let titles: Vec<&str> = source(&model, anchor, &hidden)
+                .tasks_on(anchor)
+                .iter()
+                .map(|task| task.title.as_str())
+                .collect();
+            assert_eq!(
+                titles,
+                [
+                    "Prepare quarterly report",
+                    "Send meeting notes",
+                    "Book a table",
+                    "Drink water"
+                ]
             );
         }
     }

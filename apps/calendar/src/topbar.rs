@@ -419,7 +419,13 @@ fn period_title_variants(view: View, anchor: NaiveDate) -> Vec<String> {
             ]
         }
         View::Day => vec![date::fmt_day_long(anchor), date::fmt_day_short(anchor)],
-        View::Agenda => vec!["Upcoming".into()],
+        View::Agenda => {
+            let last = crate::agenda::last_day(anchor);
+            vec![
+                date::week_range_long(anchor, last),
+                date::week_range_short(anchor, last),
+            ]
+        }
     }
 }
 

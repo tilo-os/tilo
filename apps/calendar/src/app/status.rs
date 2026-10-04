@@ -34,18 +34,15 @@ impl CalendarApp {
         let card = ToastCard::new(&message, kind_of(&message))
             .closable(true)
             .close_hovered(self.status_close.contains(self.last_mouse));
-        let area = if self.modal.is_some() || self.content_rect.area() <= 0.0 {
-            self.rect
-        } else {
-            self.content_rect
-        };
+        // The toast keeps to the window's trailing corner, where it covers
+        // the least of the calendar and never sits mid-grid.
         let hit = toast::paint_transient(
             scene,
             t,
             text,
             theme,
-            area,
-            ToastAnchor::BottomCenter,
+            self.rect,
+            ToastAnchor::BottomRight,
             &card,
         );
         self.status_close = hit.close_rect;
