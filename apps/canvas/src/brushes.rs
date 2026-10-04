@@ -1197,6 +1197,7 @@ mod tests {
                 dabs,
                 scatter: Some(30.0),
                 dab_length: None,
+                hatch: None,
             },
             style: style(brush),
             transform: None,

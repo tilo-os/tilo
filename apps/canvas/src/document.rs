@@ -440,6 +440,31 @@ pub fn save(
     Ok(serde_json::json!({"path": path.display().to_string(), "bytes": size}))
 }
 
+/// Write an export's `bytes` to `path`, an absolute path ending in one of
+/// `extensions`; answers the path written.
+///
+/// # Errors
+/// Says why the path is not one or cannot be written.
+pub fn export_to(path: &str, extensions: &[&str], bytes: &[u8]) -> Result<String, String> {
+    let file = std::path::Path::new(path);
+    let extension = file
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase);
+    if !file.is_absolute()
+        || !extension
+            .as_deref()
+            .is_some_and(|extension| extensions.contains(&extension))
+    {
+        return Err(format!(
+            "path is an absolute path ending in .{}, not {path}",
+            extensions.join(" or .")
+        ));
+    }
+    write(file, bytes)?;
+    Ok(file.display().to_string())
+}
+
 /// Write `bytes` to the file at `path`, replacing it.
 ///
 /// # Errors

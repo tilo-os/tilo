@@ -2544,3 +2544,23 @@ fn visual_formula_cut_waits_for_clipboard_acceptance() {
     assert_eq!(clipboard.text(ClipboardTarget::Clipboard), selected);
     assert!(editor.to_linear().is_empty());
 }
+
+#[test]
+fn a_block_fields_suggestion_timer_wakes_the_editor() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("so beautifull")]);
+    assert_eq!(Widget::next_wake_deadline(&editor), None);
+
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + crate::time::Duration::from_secs(3600);
+    let field = editor.blocks[0].line.inner_mut();
+    Widget::set_focus(field, true);
+    field.set_cursor_pos("so beautifull".len());
+    field.refresh_suggestion_at(now);
+
+    // Block lines are not widget children; their timers still reach the host.
+    assert_eq!(
+        Widget::next_wake_deadline(&editor),
+        Some(now + crate::text_edit::SUGGESTION_SETTLE)
+    );
+}

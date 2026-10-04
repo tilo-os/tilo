@@ -234,3 +234,10 @@ Successful cuts retain their existing single canonical undo boundary.
   increment. This change does not claim rich MIME clipboard or image-paste parity.
 - Independent final review found no remaining safety-diff issues. Shared History,
   browser transport, geometry, runtime and running user applications are unchanged.
+- Main integration `ab9a8c57ae` retained both independently added SDK tests.
+  All five Notes cases, all 60 SDK block-editor tests, the standard WASM build
+  and both browser checks pass again. Main introduced `spellbook 0.4.2`; its
+  exact pinned source fetch was approved before resuming offline validation.
+- Strict all-target Clippy passes again after that integration. The mandatory
+  shell check reproduces the same 22 Darwin errors; both failing compositor
+  modules are unchanged between the proven base and integrated main.
