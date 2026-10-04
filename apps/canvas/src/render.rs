@@ -1628,6 +1628,7 @@ fn dab_key(mark: &Mark, rgb: [u8; 3], scale: f64, cx: &MarkCx<'_>) -> [u8; 32] {
         dabs,
         scatter,
         dab_length,
+        hatch,
     } = &mark.shape
     {
         // Hashed as bytes: this runs for every dabbed stroke every frame.
@@ -1638,7 +1639,9 @@ fn dab_key(mark: &Mark, rgb: [u8; 3], scale: f64, cx: &MarkCx<'_>) -> [u8; 32] {
             key.update(&[0xff]);
         }
         key.update(&size.to_le_bytes());
-        key.update(format!("{forks:?}{spread:?}{dabs:?}{scatter:?}{dab_length:?}").as_bytes());
+        key.update(
+            format!("{forks:?}{spread:?}{dabs:?}{scatter:?}{dab_length:?}{hatch:?}").as_bytes(),
+        );
     }
     key.update(format!("{:?}{:?}{:?}", style.brush, style.params, style.angle).as_bytes());
     key.update(&rgb);
