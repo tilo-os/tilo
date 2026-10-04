@@ -352,6 +352,7 @@ if ! grep -q '^  pull_request:' "$os" \
   && ! grep -Fq '  schedule:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'native-atspi-smoke.sh quick-settings' "$os" \
   && grep -Fq 'native-atspi-smoke.sh auth' "$os" \
   && grep -Fq 'org.freedesktop.PolicyKit1.Authority.CheckAuthorization' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
