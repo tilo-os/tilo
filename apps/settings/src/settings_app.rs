@@ -290,14 +290,18 @@ impl SettingsApp {
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
     /// nav + content, and (on a narrow layout) navigates from the list screen
     /// to the selected category's content screen.
+    ///
+    /// Picking the category that is already selected still opens it: on the
+    /// narrow list screen that row is the checked one, and choosing it must
+    /// show its content rather than do nothing.
     pub fn select(&mut self, category: Category) {
         if self.selected != category {
             self.selected = category;
             self.structure_dirty = true;
             self.refresh_shell_children();
-            if let Some(shell) = &mut self.shell {
-                shell.notify_selection();
-            }
+        }
+        if let Some(shell) = &mut self.shell {
+            shell.notify_selection();
         }
     }
 
