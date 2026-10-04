@@ -371,6 +371,14 @@ impl Icon {
             "accessibility" => Self::Accessibility,
             "link" => Self::Link,
             "unlink" => Self::Unlink,
+            "align-start-vertical" => Self::AlignStartVertical,
+            "align-center-vertical" => Self::AlignCenterVertical,
+            "align-end-vertical" => Self::AlignEndVertical,
+            "align-start-horizontal" => Self::AlignStartHorizontal,
+            "align-center-horizontal" => Self::AlignCenterHorizontal,
+            "align-end-horizontal" => Self::AlignEndHorizontal,
+            "align-horizontal-distribute-center" => Self::AlignHorizontalDistributeCenter,
+            "align-vertical-distribute-center" => Self::AlignVerticalDistributeCenter,
             _ => return None,
         })
     }
@@ -516,6 +524,14 @@ impl Icon {
             Self::Accessibility => "accessibility",
             Self::Link => "link",
             Self::Unlink => "unlink",
+            Self::AlignStartVertical => "align-start-vertical",
+            Self::AlignCenterVertical => "align-center-vertical",
+            Self::AlignEndVertical => "align-end-vertical",
+            Self::AlignStartHorizontal => "align-start-horizontal",
+            Self::AlignCenterHorizontal => "align-center-horizontal",
+            Self::AlignEndHorizontal => "align-end-horizontal",
+            Self::AlignHorizontalDistributeCenter => "align-horizontal-distribute-center",
+            Self::AlignVerticalDistributeCenter => "align-vertical-distribute-center",
         }
     }
 }
