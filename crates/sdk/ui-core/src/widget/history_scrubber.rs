@@ -55,6 +55,8 @@ const BUTTON_H: f64 = 28.0;
 const NAME_FIELD_W: f64 = 300.0;
 const BUTTON_Y_OFFSET: f64 = 24.0;
 const POPOVER_H: f64 = 38.0;
+/// Between the popover and the band below it.
+const POPOVER_BAND_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Breathing room the popover's text stack keeps from its top and bottom
 /// edge — a hairline, half the smallest spacing step; a stack that cannot
 /// keep it drops its second line.
@@ -488,8 +490,14 @@ impl HistoryScrubber {
         let lo = self.rect.x0 + TRACK_INSET;
         let hi = (self.rect.x1 - TRACK_INSET - w).max(lo);
         let x0 = (centre.x - w / 2.0).clamp(lo, hi);
-        let y0 = self.rect.y0 + 8.0;
-        Rect::new(x0, y0, x0 + w, y0 + POPOVER_H)
+        // A clear gap between the popover and the band under it, so the
+        // two read as separate things rather than one stacked block.
+        let y1 = if self.groups.is_empty() {
+            self.rect.y0 + 8.0 + POPOVER_H
+        } else {
+            self.band_rect().y0 - POPOVER_BAND_GAP
+        };
+        Rect::new(x0, y1 - POPOVER_H, x0 + w, y1)
     }
 
     /// Restore is always there. The rest are dropped from the low-priority
@@ -840,6 +848,7 @@ impl HistoryScrubber {
             // shown when it fits: a two-character stub is worse
             // than the block on its own.
             let (label, ink) = match &g.label {
+                Some(l) if contains_handle => (l.as_str(), colors.intent.on_inverted),
                 Some(l) => (l.as_str(), colors.text_primary),
                 None => (g.derived.as_str(), colors.text_dim),
             };
@@ -880,17 +889,6 @@ impl HistoryScrubber {
                     Point::new(bx, track.center().y - TICK_MARK_H / 2.0),
                 ),
             );
-            if g.open {
-                // An open segment has no settled end; mark it as live rather than
-                // drawing a boundary that is not one.
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    colors.intent.inverted_hover,
-                    None,
-                    &Circle::new(Point::new(bx, band.y0 - 4.0), 2.5),
-                );
-            }
         }
     }
 
@@ -1037,14 +1035,18 @@ impl HistoryScrubber {
             &crate::surface::edge_outline(track, 3.0),
         );
 
-        let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.intent.inverted,
-            None,
-            &live_dot,
-        );
+        // The live state is marked only while the handle is away from it;
+        // under the handle it is a stray dot beside the thumb.
+        if self.current_tick + 1 < self.entries.len() {
+            let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.intent.inverted,
+                None,
+                &live_dot,
+            );
+        }
 
         let handle = self.handle_center();
         let radius = if self.is_dragging {
@@ -1096,29 +1098,35 @@ impl HistoryScrubber {
             return;
         };
         let now = self.now();
-        let detail = if entry.is_genesis() {
-            entry.summary.clone()
-        } else {
+        // The title names the version (or the change, outside one); the
+        // caption under it says who and when, and which change within the
+        // version — sentences, not a chain of fields.
+        let by = (!entry.is_genesis()).then(|| {
             format!(
-                "{} by {} \u{00b7} {}",
-                entry.summary,
+                "by {}, {}",
                 entry.author.name,
                 format_relative_time(entry.timestamp, now)
             )
-        };
+        });
         // An unnamed segment of one change derives its title *from* that
         // change, so a two-line popover would print the same words twice —
         // once as the version and once as the change. Say it once.
         let group_line = self.current_group().and_then(|g| {
-            let mut s = g.title().to_string();
-            if g.label.is_none() && !g.open && s == entry.summary {
+            let title = g.title().to_string();
+            if g.label.is_none() && !g.open && title == entry.summary {
                 return None;
             }
-            if g.open {
-                s.push_str(" \u{00b7} still open");
-            }
-            Some(s)
+            Some(if g.open {
+                format!("{title} (still open)")
+            } else {
+                title
+            })
         });
+        let detail = match (&group_line, by) {
+            (Some(_), Some(by)) => format!("{} {by}", entry.summary),
+            (Some(_) | None, None) => entry.summary.clone(),
+            (None, Some(by)) => by,
+        };
         let budget = pop.width() - 12.0;
         let head_style = theme.text(TextRole::Caption).strong();
         let sub_style = theme.text(TextRole::Caption);
@@ -1133,14 +1141,12 @@ impl HistoryScrubber {
             let (w, h) = text_renderer.measure_style(&drawn, None, style);
             (drawn, w, h, ink)
         };
-        if let Some(head) = group_line {
-            let (d, w, h, ink) = push(text_renderer, &head, &head_style, colors.text_primary);
-            lines.push((d, &head_style, ink, w, h));
+        let head = group_line.unwrap_or_else(|| entry.summary.clone());
+        let (d, w, h, ink) = push(text_renderer, &head, &head_style, colors.text_primary);
+        lines.push((d, &head_style, ink, w, h));
+        if detail != head {
             let (d, w, h, ink) = push(text_renderer, &detail, &sub_style, colors.text_dim);
             lines.push((d, &sub_style, ink, w, h));
-        } else {
-            let (d, w, h, ink) = push(text_renderer, &detail, &head_style, colors.text_primary);
-            lines.push((d, &head_style, ink, w, h));
         }
         // The popover cannot grow — below it sit the band and the handle's
         // reach — so when the two-line stack no longer fits its box (2×
@@ -1190,7 +1196,7 @@ impl HistoryScrubber {
             // The field replaced the buttons, so nothing on screen says how to
             // finish. Enter and Escape are the only two things it does; say so
             // where the buttons were, when there is room left over.
-            let hint = "Enter to save \u{00b7} Esc to cancel";
+            let hint = "Enter saves, Esc cancels";
             let hint_style = theme.text(TextRole::Caption);
             let (hw, hh) = text_renderer.measure_style(hint, None, &hint_style);
             if box_rect.x1 + 10.0 + f64::from(hw) <= last {
