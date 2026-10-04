@@ -154,6 +154,7 @@ fn durable_copy(tree: &WorkspaceTree) -> WorkspaceTree {
     symbolise_foreign_surfaces(&mut durable);
     clear_transient_launch_notes(&mut durable);
     durable.prune_local_app_records();
+    durable.prune_package_launches();
     for ws in &mut durable.desktop.workspaces {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
@@ -516,6 +517,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // restores too, and the seed after them records their outcome.
     attach_saved_doc(&mut tree, path, s.as_bytes());
     tree.prune_local_app_records();
+    tree.prune_package_launches();
     // `doc` is `#[serde(skip)]` in `state.json`. The seed is diff-aware: for
     // a current document it writes only what the repairs changed; for a
     // stale one, what `state.json` has that it lacks; with no document it
