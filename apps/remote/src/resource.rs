@@ -4,15 +4,19 @@
 
 use std::rc::Rc;
 
-use ui::framework::{Fixture, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::items::{ItemAction, ItemCollection, item_children, item_resource_id};
 use ui::tilo_resource::{ActionDecl, Doc, Id, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    REMOTE_ACTION_TYPE, RemoteAction, delete_action, register, rename_action, set_favorite_action,
+    REMOTE_ACTION_TYPE, RemoteAction, RemoteEffect, delete_action, register, rename_action,
+    set_favorite_action,
 };
 use crate::app::RemoteApp;
 use crate::doc::{CONNECTIONS, RemoteDoc};
@@ -138,13 +142,6 @@ impl Resource for Remote {
         ]
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::list_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
-    }
-
     /// Every saved connection, with its settings view, its connect effect
     /// and the actions bound to it.
     fn children(state: &Vec<Connection>) -> Vec<tilo_actions::Resource> {
@@ -261,7 +258,7 @@ impl ResourceApp for RemoteShell {
     }
 }
 
-impl ResourceSurface<Remote> for RemoteApp {
+impl ResourceSurface<Remote, RemoteEffect> for RemoteApp {
     fn present(&mut self, state: &Rc<Vec<Connection>>) {
         self.adopt_resource_state(state);
     }
@@ -272,6 +269,22 @@ impl ResourceSurface<Remote> for RemoteApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(&mut self, effect: RemoteEffect, cx: &mut EffectCx<Remote, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    /// Text reaches only a connected SSH terminal.
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.can_send_text() {
+            return Vec::new();
+        }
+        vec![EffectStatus::unavailable(
+            RemoteEffect::SEND_TEXT,
+            "terminal_not_connected",
+            "Text input requires a connected SSH terminal",
+        )]
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
