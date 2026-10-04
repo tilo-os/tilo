@@ -1138,9 +1138,20 @@ fn is_relay(target: &Target) -> bool {
     )
 }
 
+/// The relays a new environment can be opened on, as last heard. When an
+/// answer is older than a minute the relays are asked again in the
+/// background; Terminal reads the list again and sees the answers.
 fn list_relays() -> ServeResponse {
+    let identity = crate::relay::identity_paths();
+    let relays = crate::relay::relays(&identity);
+    if crate::relay::needs_asking(&relays, tilo_clock::unix_now_ms()) {
+        crate::relay::ask_relays_again(&identity);
+    }
     ServeResponse::Relays {
-        relays: crate::relay::offered(&crate::relay::identity_paths()),
+        relays: relays
+            .into_iter()
+            .filter(|peer| peer.runs_environments)
+            .collect(),
     }
 }
 
@@ -1187,13 +1198,19 @@ fn start_relay_bridge(
         other => {
             let _ = child.kill();
             let _ = child.wait();
-            Ok(Err(match other {
+            let reason = match other {
                 Some(crate::relay::BridgeStatus::Ended {
                     reason: Some(reason),
                     ..
                 }) => reason,
                 _ => format!("the session on {} did not open", launch.peer.label),
-            }))
+            };
+            // The relay had no worker for it: what the picker shows is out
+            // of date, so ask the relays again.
+            if reason.contains("NoWorker") {
+                crate::relay::ask_relays_again(&crate::relay::identity_paths());
+            }
+            Ok(Err(reason))
         }
     }
 }

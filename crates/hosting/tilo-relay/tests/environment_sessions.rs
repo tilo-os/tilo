@@ -640,3 +640,134 @@ async fn a_relay_says_whether_its_workers_run_environments() {
     })
     .await;
 }
+
+/// A device asks its relays what they run, within a budget, and Terminal's
+/// relay list follows the answers: a relay without a worker is not offered,
+/// and one that does not answer does not hold the others up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one device's view of its relays as a worker comes, read top to bottom"
+)]
+async fn a_device_asks_its_relays_and_offers_only_those_with_workers() {
+    use tilo_user_identity::{IdentityPaths, persist};
+
+    let owner = TestUser::fresh("Owner");
+    let relay_device = owner.enrol("relay", DeviceCapabilities::host());
+    let worker_device = owner.enrol("worker", DeviceCapabilities::host());
+    let laptop = owner.enrol("laptop", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let worker_root = tempfile::tempdir().unwrap();
+    let relay = Relay::start(
+        RelayConfig {
+            state_root: state.path().to_path_buf(),
+            workspaces: vec![WorkspaceBinding {
+                id: WORKSPACE,
+                pin: true,
+                replication: tilo_relay::ReplicationIntent::FullWorkspace,
+                admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: tilo_relay::CheckpointPrefixRecovery::Disabled,
+            }],
+            ..RelayConfig::default()
+        },
+        tilo_relay::daemon::RelayIdentity {
+            user_public_key: owner.user_pk,
+            device_signing_key: relay_device.sk.clone(),
+            device_cert: relay_device.cert.clone(),
+            revocations: RevocationList::new(),
+        },
+    )
+    .await
+    .unwrap();
+    relay
+        .set_workspace_membership(
+            WORKSPACE,
+            true,
+            vec![worker_device.device_pubkey(), laptop.device_pubkey()],
+            state.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+    // The laptop's identity, and two relays registered: this one, and one
+    // that never answers.
+    let identity = tempfile::tempdir().unwrap();
+    let paths = IdentityPaths::under(identity.path());
+    for file in [
+        &paths.user_pubkey,
+        &paths.device_privkey,
+        &paths.device_cert,
+    ] {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+    }
+    persist::write_public_key(&paths.user_pubkey, &owner.user_pk).unwrap();
+    persist::write_device_key(&paths.device_privkey, &laptop.sk).unwrap();
+    persist::write_device_cert(&paths.device_cert, &laptop.cert).unwrap();
+    let personal = tilo_relay_protocol::personal_continuity_workspace_id(&owner.user_pk);
+    let address = relay.node_addr();
+    let silent = iroh_base::SecretKey::from_bytes(&[9; 32]).public();
+    std::fs::write(
+        identity.path().join("home-peers.json"),
+        serde_json::json!([
+            {"schema_version": 3,
+             "device_node_id": hex::encode(relay_device.device_pubkey()),
+             "relay_service_node_id": hex::encode(address.id.as_bytes()),
+             "relay_endpoint": address, "label": "Home",
+             "user_public_key": hex::encode(owner.user_pk),
+             "relay_workspace_ids": [personal]},
+            {"schema_version": 3,
+             "device_node_id": hex::encode([8u8; 32]),
+             "relay_service_node_id": hex::encode(silent.as_bytes()),
+             "label": "Away",
+             "user_public_key": hex::encode(owner.user_pk),
+             "relay_workspace_ids": [personal]},
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let offers = identity.path().join("cache/relay-offers.json");
+    let budget = Duration::from_millis(1500);
+    let registry = identity.path().join("home-peers.json");
+    let offered = |offers: &tilo_relay_protocol::RelayOffers| -> Vec<String> {
+        ush::relay::relays_with_offers(&registry, &owner.user_pk, offers)
+            .into_iter()
+            .filter(|peer| peer.runs_environments)
+            .map(|peer| peer.label)
+            .collect()
+    };
+
+    // No worker yet: asked, answered, not offered; the silent relay costs
+    // no more than the budget.
+    let started = std::time::Instant::now();
+    let answered =
+        tilo_relay::relay_offers::refresh_offers(identity.path(), &offers, budget, 1_000)
+            .await
+            .unwrap();
+    assert!(started.elapsed() < budget + Duration::from_secs(2));
+    assert_eq!(answered.len(), 2, "every relay was asked");
+    assert!(answered.values().all(|offer| offer.checked_at_ms == 1_000));
+    assert!(offered(&answered).is_empty());
+
+    // A worker attaches: the next ask offers the relay that has it.
+    let worker = start_worker(
+        &relay,
+        &owner,
+        &worker_device,
+        worker_root.path(),
+        Arc::new(WindowVm),
+    )
+    .await;
+    let answered =
+        tilo_relay::relay_offers::refresh_offers(identity.path(), &offers, budget, 2_000)
+            .await
+            .unwrap();
+    assert_eq!(offered(&answered), vec!["Home".to_owned()]);
+    assert_eq!(
+        tilo_relay::relay_offers::load_offers(&offers),
+        answered,
+        "what the picker reads"
+    );
+    worker.serving.abort();
+    worker.client.close().await;
+}
