@@ -581,10 +581,6 @@ fn shift_mods() -> winit::event::Modifiers {
     winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT)
 }
 
-fn ctrl_mods() -> winit::event::Modifiers {
-    winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL)
-}
-
 /// The captured click rect (center) for the first hit matching `action`,
 /// so tests can click a control the real draw pass registered.
 fn hit_center(app: &MusicApp, action: &Action) -> Option<Point> {
@@ -757,7 +753,7 @@ fn request_identities_keep_stale_responses_from_winning() {
 
         // Search has a visible settled failure rather than a pending spinner
         // when no fresh identity can be allocated.
-        app.search_input.set_text("anything");
+        "anything".clone_into(&mut app.search_query);
         app.request_live_search();
         assert!(app.live_search_pending.is_none());
         assert_eq!(app.active_search_request, None);
@@ -767,7 +763,7 @@ fn request_identities_keep_stale_responses_from_winning() {
     // Phase `stale_search_response_cannot_replace_the_current_query`.
     {
         let (mut app, _doc) = app_with_doc();
-        app.search_input.set_text("new query");
+        "new query".clone_into(&mut app.search_query);
         app.active_search_request = Some(8);
         let old = SearchBundle {
             tracks: vec![TrackHit {
@@ -799,7 +795,7 @@ fn request_identities_keep_stale_responses_from_winning() {
     // Phase `current_search_failure_settles_loading_and_exposes_retry_state`.
     {
         let (mut app, _doc) = app_with_doc();
-        app.search_input.set_text("unavailable query");
+        "unavailable query".clone_into(&mut app.search_query);
         app.active_search_request = Some(4);
         app.live_search_pending = Some("unavailable query".into());
         app.apply_search_failure("unavailable query", 4, "network unavailable");
@@ -925,9 +921,7 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         assert!(app.lib.artists.is_empty());
         assert!(app.lib.playlists.is_empty());
         assert!(
-            app.hits
-                .iter()
-                .any(|hit| hit.action == Action::Nav(View::Search)),
+            app.hits.iter().any(|hit| hit.action == Action::OpenSearch),
             "the empty-state Search button is a real action"
         );
 
@@ -945,16 +939,19 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
         let search = empty_library
             .children
             .iter()
-            .find(|node| node.action_target.as_deref() == Some("music.empty-search"))
+            .find(|node| node.action_target.as_deref() == Some("music.open-search"))
             .expect("empty-state Search button has an accessible action");
-        assert_eq!(search.name.as_deref(), Some("Search for music"));
+        assert_eq!(search.name.as_deref(), Some("Search music"));
         assert!(app.perform_semantic_action(
-            "music.empty-search",
+            "music.open-search",
             &A11yAction::Activate,
             &mut doc,
             &automerge::ROOT,
         ));
-        assert_eq!(app.view, View::Search);
+        assert!(
+            app.search_opener.is_pending(),
+            "it opens the platform search"
+        );
     }
 
     // Phase `active_music_page_is_bounded_and_rows_route_to_real_actions`.
@@ -1043,14 +1040,19 @@ fn assistive_routes_use_the_same_reducers_and_actions() {
 
         let (mut app, mut doc) = app_with_doc();
         assert!(app.perform_semantic_action(
-            "music.search",
-            &A11yAction::SetValue("Aurora".into()),
+            "music.open-search",
+            &A11yAction::Activate,
             &mut doc,
             &automerge::ROOT,
         ));
-        assert_eq!(app.view, View::Search);
-        assert_eq!(app.search_input.value(), "Aurora");
-        assert!(app.search_edit_at.is_some());
+        assert!(
+            app.search_opener.is_pending(),
+            "the assistive search action opens the platform search"
+        );
+        assert!(
+            ui::widget::controls::ActionControls::take_control_invocation(&mut app).is_some(),
+            "the request leaves through the app's control intents"
+        );
 
         assert!(app.perform_semantic_action(
             "music.nav.albums",
@@ -1335,10 +1337,11 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
         assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
         sized(&mut app, 480.0);
         assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
-        // Boundary is inclusive at the breakpoint → docked.
-        sized(&mut app, SIDEBAR_BREAKPOINT);
+        // Boundary is inclusive at the drawer's breakpoint → docked.
+        let breakpoint = app.drawer.resolved_breakpoint();
+        sized(&mut app, breakpoint);
         assert_eq!(app.sidebar_layout(), SplitLayout::Docked);
-        sized(&mut app, SIDEBAR_BREAKPOINT - 1.0);
+        sized(&mut app, breakpoint - 1.0);
         assert_eq!(app.sidebar_layout(), SplitLayout::Overlay);
     }
 
@@ -1405,10 +1408,11 @@ fn sidebar_docks_overlays_collapses_and_follows_navigation() {
         // Collapse via the (docked) toggle.
         app.dispatch(Action::ToggleSidebar, &mut doc);
         assert!(!app.drawer.is_open(), "docked sidebar collapses");
-        // Once collapsed, the hamburger reappears so it can be re-expanded.
+        // Once collapsed, the toggle moves to the content's header so the
+        // sidebar can be re-expanded.
         assert!(
-            app.show_hamburger(),
-            "collapsed docked rail offers a re-expand affordance"
+            app.toggle_in_content(),
+            "collapsed docked sidebar offers a re-expand affordance"
         );
         app.dispatch(Action::ToggleSidebar, &mut doc);
         assert!(app.drawer.is_open(), "toggling again re-expands it");
@@ -1454,13 +1458,8 @@ fn large_text_rows_elide_and_keep_one_identity() {
         let mut tr = TextRenderer::new();
         // A width far too narrow for any character + ellipsis: render nothing,
         // never a stray "…" that would overflow into the next column.
-        let out = elide(
-            &mut tr,
-            "Some Long Album Title",
-            13.0,
-            TextWeight::Regular,
-            2.0,
-        );
+        let style = Theme::dark().text(ui::tokens::TextRole::Label);
+        let out = elide(&mut tr, "Some Long Album Title", &style, 2.0);
         assert!(
             out.is_empty(),
             "too-narrow column renders no text, got {out:?}"
@@ -1473,13 +1472,7 @@ fn large_text_rows_elide_and_keep_one_identity() {
         // A genuinely truncating (but non-degenerate) width keeps some glyphs
         // and appends the ellipsis, and the result stays within the budget.
         let mid_w = 90.0;
-        let mid = elide(
-            &mut tr,
-            "Some Long Album Title",
-            13.0,
-            TextWeight::Regular,
-            mid_w,
-        );
+        let mid = elide(&mut tr, "Some Long Album Title", &style, mid_w);
         assert!(
             mid.ends_with('\u{2026}'),
             "a truncation still shows the ellipsis: {mid:?}"
@@ -1489,41 +1482,33 @@ fn large_text_rows_elide_and_keep_one_identity() {
             "at least one real glyph precedes it: {mid:?}"
         );
         assert!(
-            f64::from(tr.measure_weighted(&mid, 13.0, None, TextWeight::Regular).0) <= mid_w,
+            f64::from(tr.measure_style(&mid, None, &style).0) <= mid_w,
             "the elided string fits inside the column budget",
         );
 
         // Fits outright → returned unchanged, no ellipsis.
-        let whole = elide(&mut tr, "OK", 13.0, TextWeight::Regular, 500.0);
+        let whole = elide(&mut tr, "OK", &style, 500.0);
         assert_eq!(whole, "OK");
     }
 
-    // Phase `large_text_search_keeps_the_query_field_visible_and_editable`.
+    // Phase `large_text_header_actions_stay_in_the_header`.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.view = View::Search;
-        app.search_input.set_text("aurora");
-        app.search_input.set_focus(true);
-
+        app.view = View::Browse;
         draw_once_large_text(&mut app, &mut doc);
-
-        let field = app.search_input.get_rect();
-        assert!(
-            field.width() > 200.0,
-            "large-text search has a usable field"
-        );
-        assert!(
-            field.height() >= 40.0,
-            "large-text search gives the scaled type a touchable target"
-        );
-        assert!(
-            field.y1 <= app.body_rect.y0,
-            "the search control sits in header chrome, not beneath result rows"
-        );
-        assert!(
-            app.search_input.is_focused(),
-            "the visible large-text control preserves the active text edit"
-        );
+        for (name, rect) in [
+            ("search", app.search_button.get_rect()),
+            ("open file", app.open_file_button.get_rect()),
+        ] {
+            assert!(
+                rect.width() > 0.0 && rect.height() >= 28.0,
+                "large-text {name} keeps a real target: {rect:?}"
+            );
+            assert!(
+                rect.y1 <= app.body_rect.y0,
+                "the {name} action sits in the header, not over the page"
+            );
+        }
     }
 
     // Phase `dense_track_rows_share_one_queue_snapshot`.
@@ -1568,224 +1553,121 @@ fn large_text_rows_elide_and_keep_one_identity() {
     }
 }
 
-// ---- search categories ------------------------------------------------
+// ---- platform search ---------------------------------------------------
 
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn search_field_chips_and_tabs_filter_results() {
-    // Phase `search_genre_chips_are_clickable_and_filter`.
+fn browse_and_the_live_catalogue_answer_platform_search() {
+    // Phase `browse_cards_open_platform_search_for_their_genre`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.set_offline_for_shot(); // hermetic
         app.playback_loaded = true;
-        // The empty Search screen shows the "Browse all" genre chips.
-        app.view = View::Search;
-        app.search_input.set_text("");
+        app.view = View::Browse;
         draw_once(&mut app, &mut doc);
-        // A genre chip is a real, registered click target (not inert decoration).
-        let chip = app
+        // A genre card is a real, registered click target (not decoration).
+        let (rect, genre) = app
             .hits
             .iter()
             .find_map(|h| match &h.action {
                 Action::BrowseGenre(g) => Some((h.rect, g.clone())),
                 _ => None,
             })
-            .expect("a Browse-all genre chip registered a click target");
-        let (rect, genre) = chip;
-        // Clicking it (real hit-test path) activates the filter.
+            .expect("a genre card registered a click target");
         app.mouse = rect.center();
         assert_eq!(
             app.hit_test(app.mouse),
             Some(Action::BrowseGenre(genre.clone()))
         );
         app.dispatch(Action::BrowseGenre(genre.clone()), &mut doc);
-        // The query is now that genre and the results filter to it (non-empty:
-        // at least the genre's own artist matches).
-        assert_eq!(app.search_input.value(), genre);
-        assert_eq!(app.view, View::Search);
-        let res = app.lib.search(&genre);
+        assert_eq!(
+            app.view,
+            View::Browse,
+            "the app draws no results of its own"
+        );
+        let invocation = ui::widget::controls::ActionControls::take_control_invocation(&mut app)
+            .expect("the card opens the platform search");
         assert!(
-            !res.is_empty(),
-            "clicking the {genre:?} chip surfaces that genre's content",
+            invocation
+                .arguments
+                .values()
+                .any(|value| value.as_str() == Some(genre.as_str())),
+            "the search opens prefilled with {genre:?}: {:?}",
+            invocation.arguments
         );
     }
 
-    // Phase `search_focus_shot_opens_the_search_destination`.
-    {
-        let mut app = MusicApp::new();
-        app.snap_search_focus();
-        assert_eq!(app.view, View::Search);
-        assert!(app.search_input.is_focused());
-        assert!(app.search_input.value().is_empty());
-    }
-
-    // Phase `slash_key_focuses_search`.
+    // Phase `the_app_draws_no_search_field_and_leaves_the_slash_key_alone`.
     {
         let (mut app, mut doc) = app_with_doc();
-        assert_ne!(app.view, View::Search);
+        let before = app.view.clone();
         send(&mut app, &char_key("/"), &mut doc);
-        assert_eq!(app.view, View::Search);
-        assert!(app.search_input.is_focused());
-    }
-
-    // Phase `typing_in_search_builds_query_and_local_results`.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot(); // no live worker thread in tests
-        app.dispatch(Action::FocusSearch, &mut doc);
-        assert!(app.search_input.is_focused());
-        for ch in ["g", "l", "a", "s", "s"] {
-            send(&mut app, &char_key(ch), &mut doc);
-        }
-        assert_eq!(
-            app.search_input.value(),
-            "glass",
-            "typing builds the query through the event path"
-        );
-        // The Search view renders local hits from this exact cache.
-        let res = app.local_search_cached("glass");
+        assert_eq!(app.view, before, "`/` belongs to the platform search");
+        assert!(!app.search_opener.is_pending());
+        draw_once(&mut app, &mut doc);
+        let search = app.search_button.get_rect();
         assert!(
-            res.tracks.contains(&"tk_g1".to_string()),
-            "local search surfaces the matching track (Glasslight)"
-        );
-        send(&mut app, &named_key(NamedKey::Backspace), &mut doc);
-        assert_eq!(
-            app.search_input.value(),
-            "glas",
-            "backspace edits the query"
+            search.width() > 0.0 && search.y1 <= app.body_rect.y0,
+            "the header carries the search launcher: {search:?}"
         );
     }
 
-    // Phase `search_ctrl_a_selects_whole_query_via_event_path`.
-    // The header search field is a real `ui::TextInput`, so Ctrl+A selects the
-    // whole query — driven through the production `handle_event` routing, not
-    // by poking the widget.
+    // Phase `live_catalogue_pages_arrive_after_the_worker_answers`.
     {
         let (mut app, mut doc) = app_with_doc();
+        app.playback_loaded = true;
+        let providers = ui::search::capability::SearchSource::search_providers(&app);
+        assert_eq!(providers.len(), 2, "library and live catalogue");
+        let live = providers.get(1).expect("live catalogue provider");
+        let query = ui::search::SearchQuery::new("daft punk");
+        let page = live.search_page(&query, None, 20, 20);
+        let token = page.pending.expect("the catalogue answers later");
+        assert_eq!(live.poll_page(&token), ui::search::PagePoll::Pending);
+        // From here on nothing may reach the network.
         app.set_offline_for_shot();
-        app.dispatch(Action::FocusSearch, &mut doc);
-        app.search_input.set_text("hello world");
-        // Ctrl+A on the focused field.
-        assert!(
-            send_with(&mut app, &char_key("a"), ctrl_mods(), &mut doc),
-            "Ctrl+A is consumed by the focused search field"
-        );
-        assert_eq!(
-            app.search_input.selection_range_public(),
-            Some((0, "hello world".len())),
-            "Ctrl+A selected the entire query on the real handle_event path"
-        );
-    }
 
-    // Phase `search_drag_selects_range_via_event_path`.
-    // A press-drag across the search field selects a range — proving the real
-    // mouse routing reaches the `TextInput`'s drag-select on the event path.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        app.set_offline_for_shot();
-        app.search_input.set_text("hello world");
-        // Draw once so the field is laid out + its per-char metrics populated
-        // (unfocused, so scroll stays at 0 and the click math is simple).
-        draw_once(&mut app, &mut doc);
-        let rect = app.search_input.get_rect();
-        assert!(rect.width() > 20.0, "the search field laid out with width");
-        let cxp = app.search_input.char_x_positions().to_vec();
-        assert!(cxp.len() >= 10, "per-char metrics populated by the draw");
-        // The widget hit-tests with a 10px inner padding.
-        let x_for = |b: usize| rect.x0 + 10.0 + cxp[b];
-        let y = rect.center().y;
+        // The app's frame hands the query to its worker; stand in for the
+        // worker's reply without touching the network.
+        let asked = app.live_search.take_query().expect("the query was asked");
+        app.search_query = asked;
+        app.active_search_request = Some(41);
+        app.apply_search_results("daft punk", 41, &sample_bundle());
+        let ui::search::PagePoll::Ready(ready) = live.poll_page(&token) else {
+            panic!("the answered token is ready");
+        };
+        let song = ready
+            .results
+            .iter()
+            .find(|row| row.title == "One More Time")
+            .expect("a song row");
+        assert!(matches!(
+            song.row,
+            Some(ui::search::SearchRow::Media { .. })
+        ));
+        let album = ready
+            .results
+            .iter()
+            .find(|row| row.kind == "Albums")
+            .expect("an album row");
 
-        send(&mut app, &cursor_at(Point::new(x_for(2), y)), &mut doc); // hover → is_hovered
-        send(&mut app, &press(MouseButton::Left), &mut doc); // focus + start drag
-        assert!(
-            app.search_input.is_dragging(),
-            "the press began a selection drag"
+        // Activating a hit plays the song, or opens the album's page.
+        ui::search::capability::SearchSource::activate_search_result(
+            &mut app,
+            &song.action_id,
+            &mut doc,
+            &automerge::ROOT,
         );
-        send(&mut app, &cursor_at(Point::new(x_for(9), y)), &mut doc); // extend
-        let sel = app
-            .search_input
-            .selection_range_public()
-            .expect("the drag produced a selection");
-        assert!(sel.1 > sel.0, "drag selected a non-empty range ({sel:?})");
-        send(&mut app, &released(MouseButton::Left), &mut doc);
-        assert!(!app.search_input.is_dragging(), "release ended the drag");
-    }
-
-    // Phase `search_returns_songs_albums_artists_and_playlists`.
-    {
-        let (mut app, mut doc) = search_showing_bundle();
-        // One search populates every result type.
-        let (_, b) = app
-            .live_bundle
-            .as_ref()
-            .expect("bundle stored for the query");
-        assert!(
-            !b.tracks.is_empty()
-                && !b.albums.is_empty()
-                && !b.artists.is_empty()
-                && !b.playlists.is_empty(),
-            "a single search returns songs, albums, artists AND playlists",
+        assert_eq!(app.pb.current.as_deref(), Some("yt:vid_one"));
+        ui::search::capability::SearchSource::activate_search_result(
+            &mut app,
+            &album.action_id,
+            &mut doc,
+            &automerge::ROOT,
         );
-        // On the All tab the real render surfaces each type as a click target.
-        app.search_tab = SearchTab::All;
-        draw_once(&mut app, &mut doc);
-        assert!(has_play_of(&app, "yt:vid_one"), "a song is a playable row");
-        assert!(
-            has_nav(&app, View::Album("MPREdiscovery".into())),
-            "an album is navigable"
-        );
-        assert!(
-            has_nav(&app, View::Artist("UCdaftpunk".into())),
-            "an artist is navigable"
-        );
-        assert!(
-            has_nav(&app, View::Playlist("PLdaftmix".into())),
-            "a playlist is navigable"
-        );
-    }
-
-    // Phase `filter_tabs_are_clickable_and_switch_instantly`.
-    {
-        let (mut app, mut doc) = search_showing_bundle();
-        app.search_tab = SearchTab::All;
-        draw_once(&mut app, &mut doc);
-        // All five Spotify-style filter tabs are real, registered click targets.
-        for tab in SearchTab::ALL {
-            assert!(
-                app.hits
-                    .iter()
-                    .any(|h| h.action == Action::SelectSearchTab(tab)),
-                "the {tab:?} filter tab is a clickable target",
-            );
-        }
-        // Clicking Albums switches instantly (synchronously): the view now shows
-        // albums and drops the song rows — no async wait on the network.
-        app.dispatch(Action::SelectSearchTab(SearchTab::Albums), &mut doc);
-        assert_eq!(
-            app.search_tab,
-            SearchTab::Albums,
-            "the tab switches immediately"
-        );
-        draw_once(&mut app, &mut doc);
-        assert!(
-            has_nav(&app, View::Album("MPREdiscovery".into())),
-            "Albums tab shows the albums"
-        );
-        assert!(
-            !has_play_of(&app, "yt:vid_one"),
-            "Albums tab does not render the song list"
-        );
-        // Songs tab is a clean, flat track list (the album-less listening flow).
-        app.dispatch(Action::SelectSearchTab(SearchTab::Songs), &mut doc);
-        assert_eq!(app.search_tab, SearchTab::Songs);
-        draw_once(&mut app, &mut doc);
-        assert!(
-            has_play_of(&app, "yt:vid_one") && has_play_of(&app, "yt:vid_two"),
-            "Songs tab lists every matching song as a playable row",
-        );
+        assert_eq!(app.view, View::Album("MPREdiscovery".into()));
     }
 }
 
@@ -2841,6 +2723,7 @@ fn stream_operations_settle_exactly_once_for_their_request() {
             &crate::actions::CatalogTrackResource {
                 id: "tk_g1".into(),
                 label: "Track one".into(),
+                artist: String::new(),
                 album_id: String::new(),
                 artist_id: String::new(),
                 offline: false,
@@ -2926,7 +2809,7 @@ fn live_search_top_result(app: &mut MusicApp) -> String {
     use std::time::Duration;
 
     // Submit a real search (spawns the worker + sends the request).
-    app.search_input.set_text("aurora runaway");
+    "aurora runaway".clone_into(&mut app.search_query);
     app.request_live_search();
     assert!(app.worker.is_some(), "search spawned the streaming worker");
 
@@ -3185,8 +3068,7 @@ fn full_track_streams_whole_file_or_reports_the_source_truncation() {
     // Real sound through the system sink is what this proves.
     app.audio = crate::audio::AudioEngine::with_output(crate::audio::AudioOutput::System);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.search_input
-        .set_text("rick astley never gonna give you up");
+    "rick astley never gonna give you up".clone_into(&mut app.search_query);
     app.request_live_search();
     let mut ids = Vec::new();
     for _ in 0..1000 {
@@ -3389,42 +3271,35 @@ fn lyrics_load_bundled_sync_and_balance_the_wide_layout() {
         );
     }
 
-    // Phase `lyrics_wide_layout_is_balanced_with_left_art`.
+    // Phase `lyrics_are_one_readable_column_on_the_gutter`.
     {
-        // Wide: cover art fills the left column and the lyric band shifts right
-        // to balance it — not a centred column with an empty left half.
-        let body = Rect::new(232.0, 72.0, 1280.0, 708.0);
-        let band_top = body.y0 + 92.0;
-        let band_bot = body.y1 - 24.0;
-        let layout = render::lyrics_layout(body, band_top, band_bot);
-        let art = layout.art.expect("wide layout shows cover art on the left");
-        let body_mid = f64::midpoint(body.x0, body.x1);
-        assert!(art.center().x < body_mid, "cover art sits in the left half");
+        // Wide: one column on the content gutter, bounded to a readable
+        // width, not a centred island beside a repeat of the now-playing art.
+        let body = Rect::new(280.0, 57.0, 1280.0, 716.0);
+        let column = render::lyrics_column(body, 640.0, 24.0);
         assert!(
-            art.width() >= 180.0,
-            "the cover art is a substantial square"
+            (column.x0 - body.x0 - 24.0).abs() < 0.5,
+            "lyrics start on the gutter"
         );
         assert!(
-            layout.lyrics.center().x > body_mid,
-            "the lyrics column shifts right to balance the art"
+            column.width() <= 640.0 + 0.5,
+            "lyrics keep a readable measure"
         );
+        assert!(column.y0 >= body.y0 && column.y1 <= body.y1);
+        // Narrow: the column takes the width inside the gutters.
+        let narrow = Rect::new(0.0, 57.0, 500.0, 500.0);
+        let nc = render::lyrics_column(narrow, 640.0, 24.0);
+        assert!((nc.x1 - (narrow.x1 - 24.0)).abs() < 0.5);
+        // Synced lyrics hold the current line a third of the way down;
+        // plain lyrics read from the top.
+        assert!(render::lyrics_scroll(None, 36.0, 600.0).abs() < 1e-9);
+        let first = render::lyrics_scroll(Some(0), 36.0, 600.0);
         assert!(
-            layout.lyrics.x1 <= body.x1,
-            "the lyrics column stays within the body"
+            (-first - 200.0).abs() < 0.5,
+            "the first line sits a third down"
         );
-        assert!(
-            art.x1 < layout.lyrics.x0,
-            "art and lyrics columns don't overlap"
-        );
-
-        // Narrow: a single full-width centred column, no side art.
-        let narrow = Rect::new(0.0, 72.0, 700.0, 708.0);
-        let nl = render::lyrics_layout(narrow, 164.0, 684.0);
-        assert!(nl.art.is_none(), "narrow layout has no side art");
-        assert!(
-            (nl.lyrics.x0 - narrow.x0).abs() < 1.0 && (nl.lyrics.x1 - narrow.x1).abs() < 1.0,
-            "narrow lyrics span the full width"
-        );
+        let tenth = render::lyrics_scroll(Some(10), 36.0, 600.0);
+        assert!((10.0 * 36.0 - tenth - 200.0).abs() < 0.5);
     }
 }
 
@@ -3955,10 +3830,40 @@ fn queue_view_and_volume_controls_are_responsive() {
             app.volume_btn_rect.width() > 0.0,
             "mid bar shows a volume button"
         );
-        // Very small (compact bar): volume hidden entirely.
+        // Very small (compact bar): volume stays a button with its popover.
         draw_at(&mut app, &mut doc, 520.0, 800.0);
         assert_eq!(app.volume_rect, Rect::ZERO);
-        assert_eq!(app.volume_btn_rect, Rect::ZERO, "compact bar hides volume");
+        assert!(
+            app.volume_btn_rect.width() > 0.0,
+            "the compact bar keeps the volume button"
+        );
+        // The rest of the wide bar's controls live in its More menu.
+        let more = app
+            .hits
+            .iter()
+            .find_map(|hit| match hit.action {
+                Action::OpenPlayerMenu(rect) => Some(rect),
+                _ => None,
+            })
+            .expect("the compact bar offers a More menu");
+        app.dispatch(Action::OpenPlayerMenu(more), &mut doc);
+        assert!(app.context.is_open(), "More opens the player menu");
+        let labels: Vec<&str> = app
+            .context
+            .items()
+            .iter()
+            .filter_map(ui::widget::context_menu::MenuItem::label)
+            .collect();
+        for label in ["Shuffle", "Repeat all", "Repeat one", "Lyrics", "Queue"] {
+            assert!(
+                labels.contains(&label),
+                "the More menu offers {label}: {labels:?}"
+            );
+        }
+        assert!(
+            labels.contains(&"Like") || labels.contains(&"Unlike"),
+            "the More menu offers like: {labels:?}"
+        );
     }
 
     // Phase `volume_button_opens_a_slider_popover`.
@@ -3980,13 +3885,18 @@ fn queue_view_and_volume_controls_are_responsive() {
             app.volume_popover_slider.width() > 0.0,
             "the popover hosts a volume slider"
         );
-        assert_eq!(
-            app.volume_rect, app.volume_popover_slider,
-            "the popover slider is the active volume drag target"
+        let (track, slider) = (app.volume_rect, app.volume_popover_slider);
+        assert!(
+            track.width() > 0.0
+                && track.x0 >= slider.x0
+                && track.x1 <= slider.x1
+                && (track.y0 - slider.y0).abs() < 0.5
+                && (track.y1 - slider.y1).abs() < 0.5,
+            "the popover slider is the active volume drag target ({track:?} in {slider:?})"
         );
     }
 
-    // Phase `compact_bar_renders_progress_below_the_status_bar`.
+    // Phase `compact_bar_renders_progress_below_the_song`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.set_offline_for_shot();
@@ -3995,8 +3905,8 @@ fn queue_view_and_volume_controls_are_responsive() {
         app.pb.queue = vec!["tk_g1".into()];
         draw_at(&mut app, &mut doc, 520.0, 800.0); // compact
         assert!(
-            app.scrubber_rect.y1 >= app.rect.y1 - 1.0,
-            "the progress bar sits below the whole status bar (its bottom edge)"
+            app.scrubber_rect.y0 > app.nowplaying_rect().center().y,
+            "the progress bar runs along the bottom of the bar, under the song"
         );
         assert!(
             app.scrubber_rect.width() > 300.0,
@@ -4021,52 +3931,77 @@ fn queue_view_and_volume_controls_are_responsive() {
             sr.height()
         );
         assert!(sr.width() > 300.0, "the scrub bar spans the bar width");
-        // The hit strip still reaches the window's bottom edge (edge press seeks)…
+        // Its top clears the transport row, so a play/pause press never seeks.
         assert!(
-            sr.y1 >= app.rect.y1 - 1.0,
-            "the scrub hit strip reaches the bottom edge"
-        );
-        // …but its top clears the transport row, so a play/pause press never seeks.
-        assert!(
-            sr.y0 > app.rect.y1 - NOWPLAYING_H / 2.0,
+            sr.y0 > app.rect.y1 - app.bar_h / 2.0,
             "the scrub strip stays below the transport buttons"
         );
     }
 
-    // Phase `songs_row_columns_are_balanced_not_cavernous`.
+    // Phase `songs_row_columns_share_the_width_without_a_dead_gap`.
     {
-        // A wide row: the album should sit near the row's horizontal middle
-        // (not bunched against the right-hand control cluster) and the title
-        // column must be bounded — so a row reads as one connected line instead
-        // of "title-left / everything-right" with a cavern between.
-        let left = 260.0;
-        let right = 1372.0;
-        let cols = render::track_row_columns(left, right, true);
-        let mid = f64::midpoint(left, right);
+        // A wide row: the title column is as wide as its widest line (but a
+        // readable column at least), the album follows one column gap
+        // later, so no cavern opens between them; the actions and duration
+        // keep their own trailing columns.
+        let (left, right, gap, min_text) = (304.0, 1256.0, 24.0, 160.0);
+        let widths = render::ColumnWidths {
+            index: 24.0,
+            duration: 32.0,
+            action: 28.0,
+            actions: 2,
+            title: 210.0,
+            gap,
+            min_text,
+        };
+        let cols = render::track_columns(left, right, widths, true);
+        let (album_x, album_x1) = cols.album.expect("a wide row shows the album");
         assert!(
-            (cols.album - mid).abs() < 130.0,
-            "album sits near the row middle (album {} vs mid {mid})",
-            cols.album
+            (album_x - cols.title_x1 - gap).abs() < 0.5,
+            "album follows the title"
         );
         assert!(
-            cols.album + 150.0 < cols.like,
-            "album column leaves room before the control cluster (album {} / like {})",
-            cols.album,
-            cols.like
+            (cols.title_x1 - cols.title_x - 210.0).abs() < 0.5,
+            "the title column fits its widest line"
         );
-        let title_col = cols.album - cols.text;
+        let short = render::track_columns(
+            left,
+            right,
+            render::ColumnWidths {
+                title: 90.0,
+                ..widths
+            },
+            true,
+        );
         assert!(
-            (200.0..=520.0).contains(&title_col),
-            "title column is bounded, not stretched across the row (was {title_col})"
+            (short.title_x1 - short.title_x - min_text).abs() < 0.5,
+            "short titles keep a readable column"
         );
+        let long = render::track_columns(
+            left,
+            right,
+            render::ColumnWidths {
+                title: 2000.0,
+                ..widths
+            },
+            true,
+        );
+        let (long_album, _) = long
+            .album
+            .expect("long titles still leave the album its half");
+        assert!(long_album - long.title_x1 >= gap - 0.5);
+        assert!(long.title_x1 - long.title_x <= (long.actions_x - gap - long.title_x) / 2.0 + 0.5);
+        assert!(album_x1 - album_x >= min_text);
         assert!(
-            cols.album < right - 380.0,
-            "album is not bunched against the right edge (album {})",
-            cols.album
+            (cols.actions_x - album_x1 - gap).abs() < 0.5,
+            "the actions follow the album"
         );
-        // Mid-width rows keep the album ahead of the controls too.
-        let m = render::track_row_columns(60.0, 720.0, true);
-        assert!(m.album >= m.text + 190.0 && m.album <= m.like - 150.0);
+        assert!(cols.duration_x1 <= right);
+
+        // Too narrow for two readable columns: the title keeps the width.
+        let narrow = render::track_columns(0.0, 420.0, widths, true);
+        assert!(narrow.album.is_none());
+        assert!((narrow.actions_x - narrow.title_x1 - gap).abs() < 0.5);
     }
 }
 
@@ -4096,7 +4031,7 @@ fn every_view_renders_and_now_playing_falls_back_to_album_art() {
             View::Playlists,
             View::Downloads,
             View::Liked,
-            View::Search,
+            View::Browse,
             View::Queue,
             View::Lyrics,
             View::Album("al_glasslight".into()),
@@ -4281,7 +4216,7 @@ fn sample_bundle() -> SearchBundle {
             subscriber_count: 5_000_000,
             avatar_url: String::new(),
         }],
-        playlists: vec![PlaylistHit {
+        playlists: vec![crate::backend::PlaylistHit {
             id: "PLdaftmix".into(),
             title: "This Is Daft Punk".into(),
             subtitle: "YouTube Music".into(),
@@ -4291,15 +4226,13 @@ fn sample_bundle() -> SearchBundle {
     }
 }
 
-/// Put the app on the Search screen showing a fed multi-type bundle, offline
-/// (no worker, no network) so the render path is exercised hermetically.
-fn search_showing_bundle() -> (MusicApp, AutoCommit) {
+/// An app that has taken in a multi-type live search reply, offline (no
+/// worker, no network) so the render path is exercised hermetically.
+fn app_with_live_results() -> (MusicApp, AutoCommit) {
     let (mut app, doc) = app_with_doc();
     app.set_offline_for_shot();
     app.playback_loaded = true;
     app.ingest_search_results("daft punk", sample_bundle());
-    app.view = View::Search;
-    app.search_input.set_text("daft punk");
     (app, doc)
 }
 
@@ -4321,14 +4254,14 @@ fn has_nav(app: &MusicApp, view: View) -> bool {
 fn artist_and_album_pages_navigate_and_play() {
     // Phase `artist_page_from_search_result_navigates_and_plays_a_top_track`.
     {
-        let (mut app, mut doc) = search_showing_bundle();
-        app.search_tab = SearchTab::All;
-        draw_once(&mut app, &mut doc);
-        // Click the artist result (real hit-test path) → the artist page opens.
-        let nav = Action::Nav(View::Artist("UCdaftpunk".into()));
-        let p = hit_center(&app, &nav).expect("artist result is a click target");
-        assert_eq!(app.hit_test(p), Some(nav.clone()));
-        app.dispatch(nav, &mut doc);
+        let (mut app, mut doc) = app_with_live_results();
+        // Activating the artist's search hit opens the artist page.
+        ui::search::capability::SearchSource::activate_search_result(
+            &mut app,
+            "music-live:artist:UCdaftpunk",
+            &mut doc,
+            &automerge::ROOT,
+        );
         assert_eq!(app.view, View::Artist("UCdaftpunk".into()));
         // Supply the real artist page (as the worker would) and render it.
         let page = ArtistPage {
@@ -4364,7 +4297,9 @@ fn artist_and_album_pages_navigate_and_play() {
         };
         app.absorb_artist(&page);
         app.artist_pages.insert("UCdaftpunk".into(), page);
-        draw_once(&mut app, &mut doc);
+        // Tall enough that the whole page is on screen: rows scrolled out of
+        // view register no clicks.
+        draw_at(&mut app, &mut doc, 1280.0, 2400.0);
         // The full artist page surfaces a Follow control, related artists, and the
         // album + single as separate discography entries.
         assert!(
