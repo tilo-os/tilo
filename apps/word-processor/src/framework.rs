@@ -52,6 +52,10 @@ impl Resource for Document {
         <RichText as Resource>::locate(state, obj)
     }
 
+    fn lands(state: &Self::State, action: &Self::Action) -> Option<ui::tilo_resource::Place> {
+        <RichText as Resource>::lands(state, action)
+    }
+
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
         <RichText as Resource>::initialize(doc)
     }

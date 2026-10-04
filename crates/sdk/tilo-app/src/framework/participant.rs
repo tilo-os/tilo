@@ -21,7 +21,7 @@
 use tilo_actions::door::{self, ActionAddress, ActionDescriptor, DoorError, InvocationProvenance};
 use tilo_actions::{ActionContext, ActionInvoker, ActionRegistry, LocalTransport, OperationKind};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_resource::{Doc, GROUP, GROUP_PARAM, ModelError, Resource, ResourceKind};
+use tilo_resource::{Doc, GROUP, GROUP_PARAM, ModelError, Place, Resource, ResourceKind};
 use ui_core::automerge;
 use ui_core::permissions::PermissionContext;
 
@@ -38,6 +38,8 @@ pub struct Participant {
     /// The task or run the next edits belong to.
     context: Option<ActionContext>,
     registry: ActionRegistry,
+    /// Where its last invocation left it.
+    place: Option<Place>,
 }
 
 impl Participant {
@@ -57,6 +59,7 @@ impl Participant {
             permissions,
             context: None,
             registry,
+            place: None,
         }
     }
 
@@ -297,8 +300,23 @@ impl Participant {
             &self.registry,
             &mut transport,
         )?;
+        self.place = transport
+            .replicated
+            .last()
+            .and_then(|envelope| self.kind.lands(&self.doc, &envelope.action))
+            .or_else(|| {
+                (address.resource != self.kind.kind())
+                    .then(|| Place::Item(address.resource.clone()))
+            });
         let changes = self.doc.save_incremental();
         Ok((!changes.is_empty()).then_some(changes))
+    }
+
+    /// Where the participant's last invocation left it: where the action
+    /// lands ([`Resource::lands`]), else the item it was taken on, else
+    /// nowhere in particular. What its presence shows collaborators.
+    pub fn place(&self) -> Option<&Place> {
+        self.place.as_ref()
     }
 
     /// History names the app, the participant and the task each edit

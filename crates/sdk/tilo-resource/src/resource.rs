@@ -138,6 +138,16 @@ pub trait Resource: Sized + 'static {
         true
     }
 
+    /// Where `action`, just applied, leaves the participant who took it, read
+    /// off the state after it: the paragraph an append wrote and the caret
+    /// at its end. Every collaborator's view draws that participant there,
+    /// so one with no pointer or caret of its own (an agent) shows where it
+    /// works. The default places it nowhere in particular.
+    fn lands(state: &Self::State, action: &Self::Action) -> Option<Place> {
+        let _ = (state, action);
+        None
+    }
+
     /// The least a participant must be allowed to do for `action` to apply:
     /// [`Write`](PermissionRequirement::Write) by default, `Comment` for a
     /// reply or a note someone who may only comment can still add. The
@@ -488,6 +498,22 @@ impl SearchEntry {
         self.body = Some(body);
         self
     }
+}
+
+/// Where a participant is inside a resource, in the resource's own terms:
+/// the same on every collaborator's screen whatever its layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// An item (a paragraph, a clip, a row).
+    Item(String),
+    /// A caret at a character position inside an item.
+    Caret { item: String, at: usize },
+    /// Characters `start..end` of an item.
+    Range {
+        item: String,
+        start: usize,
+        end: usize,
+    },
 }
 
 /// Builds a resource's action from arguments already bound against the

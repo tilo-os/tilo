@@ -513,10 +513,15 @@ impl ResourceSelection {
     /// The toolkit presence frame for this selection, keyed to the resource
     /// item so peers resolve it against their own layout.
     pub fn presence<R: Resource>(&self, app_id: &str) -> (PresenceKey, PresencePayload) {
+        self.presence_of(R::KIND, app_id)
+    }
+
+    /// [`Self::presence`] for a resource known by its `kind` alone.
+    pub fn presence_of(&self, kind: &str, app_id: &str) -> (PresenceKey, PresencePayload) {
         let key = |item: &str| PresenceKey::Resource {
             app: app_id.to_owned(),
             id: item.to_owned(),
-            kind: R::KIND.to_owned(),
+            kind: kind.to_owned(),
         };
         match self {
             Self::Item(item) => (key(item), PresencePayload::Selection { start: 0, end: 0 }),
@@ -529,6 +534,16 @@ impl ResourceSelection {
                 },
             ),
             Self::Pointer { item, x, y } => (key(item), PresencePayload::Pointer { x: *x, y: *y }),
+        }
+    }
+}
+
+impl From<tilo_resource::Place> for ResourceSelection {
+    fn from(place: tilo_resource::Place) -> Self {
+        match place {
+            tilo_resource::Place::Item(item) => Self::Item(item),
+            tilo_resource::Place::Caret { item, at } => Self::Caret { item, at },
+            tilo_resource::Place::Range { item, start, end } => Self::Range { item, start, end },
         }
     }
 }

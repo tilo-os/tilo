@@ -16,8 +16,11 @@
 use collab_types::DocumentMutation;
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor, DoorError};
+use tilo_browser_peer::transport::presence_anchors;
+use tilo_relay_protocol::live::LiveAnchor;
 use ui::application::ApplicationDefinition;
-use ui::framework::Participant;
+use ui::collaboration::PresencePayload;
+use ui::framework::{Participant, ResourceSelection};
 use ui::permissions::{Actor, PermissionContext, Principal, Role};
 use ui::portable_storage::PortableStorage;
 use ui::record::{RecordCheckout, RecordId, RecordOwners};
@@ -208,6 +211,24 @@ impl Replica {
     #[must_use]
     pub const fn record_id(&self) -> &RecordId {
         &self.record
+    }
+
+    /// Where the agent's last operation left it, as the live plane's
+    /// selection anchors every collaborator's window resolves against the
+    /// record's own items: the paragraph it wrote and the caret at its end,
+    /// the item it acted on. `None` before any operation, or for one that
+    /// lands nowhere in particular.
+    #[must_use]
+    pub fn presence(&self) -> Option<(LiveAnchor, LiveAnchor)> {
+        let place = self.participant.place()?.clone();
+        let (key, payload) =
+            ResourceSelection::from(place).presence_of(self.participant.kind().kind(), self.app_id);
+        let (start, end) = match payload {
+            PresencePayload::Caret { pos } => (pos, pos),
+            PresencePayload::Selection { start, end } => (start, end),
+            _ => return None,
+        };
+        presence_anchors(&key, start, end)
     }
 
     /// Every document operation the participant may perform now, as inert
