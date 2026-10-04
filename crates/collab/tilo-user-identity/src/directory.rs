@@ -71,10 +71,15 @@ pub struct WorkspaceMeta {
     /// its own register, so concurrent moves of different workspaces both
     /// land.
     pub order: Option<f64>,
-    /// Device public keys that hold this workspace. Empty means every
-    /// device of the person does; otherwise devices outside the set keep
-    /// the workspace off their desktop (they still carry the directory).
+    /// Device public keys that hold a full replica of this
+    /// workspace. Every device in this set will project + hydrate;
+    /// devices outside it see nothing.
     pub member_devices: Vec<[u8; 32]>,
+    /// Devices of the person that keep this workspace off their desktop
+    /// (they still carry the directory). Every other device shows it,
+    /// including one linked later. Each device is its own map key, so
+    /// toggles for different devices made at the same time both land.
+    pub kept_off_devices: Vec<[u8; 32]>,
     /// Device public keys marked as always-on hosts for this
     /// workspace. Plural, per the design; empty for a strictly-P2P
     /// workspace.
@@ -82,6 +87,14 @@ pub struct WorkspaceMeta {
     /// Device public keys with this workspace pinned (i.e. cache
     /// eagerly, do not evict). Independent from membership.
     pub pinned_devices: Vec<[u8; 32]>,
+}
+
+/// Key prefix on a workspace entry marking a device that keeps the
+/// workspace off its desktop; the rest of the key is the device's hex key.
+const KEPT_OFF_PREFIX: &str = "kept_off:";
+
+fn hex_key(device: &[u8; 32]) -> String {
+    hex::encode(device)
 }
 
 /// A signed, incremental directory delta. Produced by
@@ -456,6 +469,47 @@ impl WorkspaceDirectory {
         self.replace_pubkey_list(&obj, "members", devices)
     }
 
+    /// Keep workspace `id` off `device`'s desktop, or show it there again.
+    /// Each choice is its own key on the workspace entry (no shared
+    /// container two devices could create at once), so choices for
+    /// different devices made concurrently both land. Idempotent; an
+    /// unchanged choice writes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
+    pub fn set_kept_off(
+        &mut self,
+        id: WorkspaceId,
+        device: [u8; 32],
+        kept_off: bool,
+    ) -> Result<(), DirectoryError> {
+        let obj = self.ensure_workspace_obj(id)?;
+        let key = format!("{KEPT_OFF_PREFIX}{}", hex_key(&device));
+        let present = matches!(self.doc.get(&obj, key.as_str()), Ok(Some(_)));
+        let written = match (kept_off, present) {
+            (true, false) => self.doc.put(&obj, key.as_str(), true),
+            (false, true) => self.doc.delete(&obj, key.as_str()),
+            _ => return Ok(()),
+        };
+        written.map_err(|e| DirectoryError::Automerge(e.to_string()))
+    }
+
+    fn read_kept_off(&self, workspace_obj: &ObjId) -> Vec<[u8; 32]> {
+        let mut out: Vec<[u8; 32]> = self
+            .doc
+            .keys(workspace_obj)
+            .filter_map(|key| {
+                let hex = key.strip_prefix(KEPT_OFF_PREFIX)?;
+                let bytes = hex::decode(hex).ok()?;
+                <[u8; 32]>::try_from(bytes).ok()
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
     /// Replace a workspace's host-device set. Multiple hosts are
     /// allowed and interpreted as redundant replicas that merge —
     /// see design §5.
@@ -552,6 +606,7 @@ impl WorkspaceDirectory {
                 governor,
                 order,
                 member_devices: self.read_pubkey_list(&obj, "members"),
+                kept_off_devices: self.read_kept_off(&obj),
                 host_devices: self.read_pubkey_list(&obj, "hosts"),
                 pinned_devices: self.read_pubkey_list(&obj, "pinned"),
             });
@@ -1213,5 +1268,52 @@ mod tests {
             .unwrap();
         assert_eq!(board.list_workspaces()[0].order, Some(2.5));
         assert_eq!(board.devices(), vec![(a_pk, "Laptop".to_string())]);
+    }
+
+    /// A workspace kept off one device shows everywhere else, including on
+    /// a device linked afterwards, and concurrent toggles for different
+    /// devices both land.
+    #[test]
+    fn keeping_a_workspace_off_names_only_the_devices_that_opted_out() {
+        let f = fresh_user();
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let (b_sk, b_pk, b_cert) =
+            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+        let (_, later_pk, _) =
+            enrol_device(&f.user_sk, f.user_pk, "phone", DeviceCapabilities::member());
+        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+        laptop.add_workspace(4, "Work").unwrap();
+        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+        board
+            .apply_incremental(
+                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                &a_cert,
+                &RevocationList::new(),
+                1_100,
+            )
+            .unwrap();
+        laptop.set_kept_off(4, a_pk, true).unwrap();
+        board.set_kept_off(4, b_pk, true).unwrap();
+        let revs = RevocationList::new();
+        laptop
+            .apply_incremental(
+                &board.signed_snapshot(&b_sk, 1_200).unwrap(),
+                &b_cert,
+                &revs,
+                1_300,
+            )
+            .unwrap();
+        let mut both = vec![a_pk, b_pk];
+        both.sort_unstable();
+        let entry = &laptop.list_workspaces()[0];
+        assert_eq!(entry.kept_off_devices, both);
+        assert!(!entry.kept_off_devices.contains(&later_pk));
+        laptop.set_kept_off(4, a_pk, false).unwrap();
+        assert_eq!(laptop.list_workspaces()[0].kept_off_devices, vec![b_pk]);
     }
 }

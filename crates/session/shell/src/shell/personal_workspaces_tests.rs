@@ -909,6 +909,43 @@ fn a_workspace_kept_off_a_device_leaves_it_and_returns_when_shown_again() {
 }
 
 #[test]
+fn a_device_linked_after_an_opt_out_shows_every_workspace() {
+    let ((laptop_device, laptop, mut laptop_list), (board_device, _, _)) = two_devices_in_step();
+    let research = room_named(&laptop, "Research");
+    assert!(laptop_list.set_shown(research, board_device.cert.device_public_key, false));
+
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+    let phone_key = ed25519_dalek::SigningKey::from_bytes(&[0x9E; 32]);
+    let mut phone_cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: phone_key.verifying_key().to_bytes(),
+        device_label: "Phone".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: 1,
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut phone_cert, &root).expect("certified device");
+    let phone_device = Device {
+        key: phone_key,
+        cert: phone_cert,
+    };
+    let mut phone = device_tree(0x9E0E, "Phone home");
+    let mut phone_list = list_for(&phone_device);
+    deliver(
+        &mut laptop_list,
+        &laptop_device,
+        &laptop,
+        &mut phone_list,
+        &mut phone,
+    );
+    assert!(
+        phone.desktop.workspaces.iter().any(|w| w.room == research),
+        "only the board opted out; a device linked later shows it"
+    );
+}
+
+#[test]
 fn deleting_from_the_menu_offers_an_undo() {
     let mut tree = device_tree(LAPTOP, "Research");
     add_workspace(&mut tree, LAPTOP, 2, "Thesis");
