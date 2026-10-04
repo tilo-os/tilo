@@ -386,7 +386,7 @@ impl DrainQueues {
     fn drain_once(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
+        announced: &mut Announced,
     ) -> bool {
         if let Some(service) = &self.channel_encryption {
             service.pump(&*self.net);
@@ -429,7 +429,7 @@ impl DrainQueues {
     fn drain_presence(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
+        announced: &mut Announced,
     ) -> bool {
         let drained_presence: Vec<_> = {
             let Ok(mut buf) = self.presence_inbound.lock() else {
@@ -446,6 +446,7 @@ impl DrainQueues {
                 &entry.cluster_id,
                 entry.peer,
                 &|c| self.net.peer_labels(c),
+                &|peer| self.net.peer_colour(peer),
                 &self.table,
                 labels,
                 announced,
@@ -466,7 +467,7 @@ impl DrainQueues {
     fn drain_documents(
         &self,
         labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
+        announced: &mut Announced,
     ) -> bool {
         let drained_signed: Vec<_> = {
             let Ok(mut buf) = self.documents.lock() else {
@@ -495,6 +496,7 @@ impl DrainQueues {
                         &route.cluster_id,
                         peer,
                         &|c| self.net.peer_labels(c),
+                        &|peer| self.net.peer_colour(peer),
                         &self.table,
                         labels,
                         announced,
@@ -644,7 +646,7 @@ fn spawn_inner(
                 // Name already announced per (peer, cluster) — said
                 // again only when it changes, not on every
                 // pointer-rate presence frame.
-                let mut announced: HashMap<(String, u64), (String, u64)> = HashMap::new();
+                let mut announced = Announced::new();
                 // What the room last said, on a re-ask cadence
                 // rather than every frame — the lookup takes the
                 // replica's lock and parses every peer id it holds.
@@ -954,20 +956,26 @@ pub(crate) fn answer_remote_actions(
     }
 }
 
+/// What has been announced per (room, peer): the name, the colour, and the
+/// connection generation it was said in front of.
+type Announced = HashMap<(String, u64), (String, Option<ui::tokens::PresenceHue>, u64)>;
+
 /// The id a remote peer's traffic is attributed under, announcing the
-/// room's name for it first if nobody has said it yet. Every path
-/// showing a remote participant goes through here so they agree. The id
-/// stays the peer handle even once named — a roster entry names a
-/// participant, it does not recolour one. `labels` caches the room's
-/// answer on [`LABEL_TTL`]; `announced` remembers what has been said, so
-/// the roster publishes on change rather than every frame.
+/// room's name for it and the colour its own machine says it wears
+/// (`colour_of`) first if nobody has said them yet. Every path showing a
+/// remote participant goes through here so they agree. The id stays the
+/// peer handle even once named or coloured — a roster entry names and
+/// colours a participant, it does not make it someone else. `labels`
+/// caches the room's answer on [`LABEL_TTL`]; `announced` remembers what has
+/// been said, so the roster publishes on change rather than every frame.
 fn remote_participant_id(
     cluster_id: &str,
     peer: u64,
     labels_of: &dyn Fn(&str) -> PeerLabels,
+    colour_of: &dyn Fn(u64) -> Option<ui::tokens::PresenceHue>,
     table: &FanoutState,
     labels: &mut HashMap<String, (Instant, PeerLabels)>,
-    announced: &mut HashMap<(String, u64), (String, u64)>,
+    announced: &mut Announced,
 ) -> String {
     // Attributed to the publishing host, not a local peer slot: this is
     // what colours the caret, so two peers must never collapse to one id.
@@ -988,22 +996,25 @@ fn remote_participant_id(
         .map(String::as_str);
     let prior = announced.get(&slot);
     let generation = table.connections_seen();
-    let say = roster_announcement(prior.map(|(n, _)| n.as_str()), known, &user_id)
+    let colour = colour_of(peer);
+    let say = roster_announcement(prior.map(|(n, _, _)| n.as_str()), known, &user_id)
         // "Changed" alone misses an app that connected after the name
         // was said — it was never in the audience, and nothing would
         // say it again. A connection this answer hasn't been said in
-        // front of is itself a reason to say it again.
+        // front of is itself a reason to say it again, and so is a
+        // colour the peer wears that has not been said.
         .or_else(|| {
-            let unheard = prior.is_some_and(|(_, at)| *at != generation);
-            unheard.then(|| known.unwrap_or(&user_id).to_string())
+            let unheard = prior.is_some_and(|(_, _, at)| *at != generation);
+            let recoloured = colour.is_some() && prior.is_none_or(|(_, said, _)| *said != colour);
+            (unheard || recoloured).then(|| known.unwrap_or(&user_id).to_string())
         });
     if let Some(name) = say {
-        announced.insert(slot, (name.clone(), generation));
+        announced.insert(slot, (name.clone(), colour, generation));
         let roster = CollabEvent::Context {
             collaborators: vec![ui::collaboration::Collaborator {
                 id: user_id.clone(),
                 name,
-                color: [0.0, 0.0, 0.0],
+                colour,
                 // Always a remote network peer here — an agent joins
                 // over the local socket and is marked there instead.
                 is_agent: false,
@@ -1260,6 +1271,7 @@ mod tests {
                     "room-1",
                     HANDLE,
                     &room,
+                    &|_| None,
                     &table,
                     &mut labels,
                     &mut announced,
@@ -1323,6 +1335,7 @@ mod tests {
                 "room-1",
                 HANDLE,
                 &room,
+                &|_| None,
                 &table,
                 &mut labels,
                 &mut announced,
@@ -1331,6 +1344,7 @@ mod tests {
                 "room-1",
                 HANDLE,
                 &room,
+                &|_| None,
                 &table,
                 &mut labels,
                 &mut announced,
@@ -1357,8 +1371,68 @@ mod tests {
             );
         }
 
+        fn the_colour_a_peer_wears_reaches_every_app_once() {
+            const HANDLE: u64 = 77;
+
+            type Heard = Arc<Mutex<Vec<(String, Option<ui::tokens::PresenceHue>)>>>;
+            let table = Arc::new(super::FanoutState::new());
+            let heard: Heard = Arc::new(Mutex::new(Vec::new()));
+            let sink = Arc::clone(&heard);
+            let _sub = table.subscribe_rooms(
+                vec!["room-1".to_string()],
+                Box::new(move |event, _route| {
+                    if let CollabEvent::Context { collaborators, .. } = event {
+                        for c in collaborators {
+                            if let Ok(mut g) = sink.lock() {
+                                g.push((c.name.clone(), c.colour));
+                            }
+                        }
+                    }
+                }),
+            );
+            let unnamed = |_c: &str| PeerLabels::new();
+            let colour = Mutex::new(None);
+            let colour_of = |_peer: u64| *colour.lock().unwrap();
+            let mut labels = HashMap::new();
+            let mut announced = super::Announced::new();
+            let mut say = || {
+                super::remote_participant_id(
+                    "room-1",
+                    HANDLE,
+                    &unnamed,
+                    &colour_of,
+                    &table,
+                    &mut labels,
+                    &mut announced,
+                )
+            };
+
+            say();
+            assert!(
+                heard.lock().unwrap().is_empty(),
+                "an unnamed peer that said no colour is not announced"
+            );
+            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Violet);
+            say();
+            say();
+            let id = format!("peer@{HANDLE}");
+            assert_eq!(
+                heard.lock().unwrap().clone(),
+                vec![(id.clone(), Some(ui::tokens::PresenceHue::Violet))],
+                "the colour is said once, under the id"
+            );
+            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Teal);
+            say();
+            assert_eq!(
+                heard.lock().unwrap().last().cloned(),
+                Some((id, Some(ui::tokens::PresenceHue::Teal))),
+                "a new choice is said again"
+            );
+        }
+
         a_named_peer_is_announced_and_then_left_alone();
         an_unnamed_peer_is_not_announced();
+        the_colour_a_peer_wears_reaches_every_app_once();
         a_revoked_name_reverts_the_peer_to_its_id();
         a_name_already_announced_is_said_again_for_an_app_that_missed_it();
         a_remote_peer_is_one_id_across_presence_and_deltas();

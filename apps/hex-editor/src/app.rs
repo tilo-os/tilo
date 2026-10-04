@@ -3,7 +3,8 @@
 //! The editor surface is a single custom-drawn [`HexView`] that fills the
 //! window; this module is the thin entry point that decides what buffer to
 //! open onto. The live app with no file argument opens the honest empty state
-//! ([`HexView::empty`]); the bundled sample buffer is reserved for `--shots`.
+//! ([`HexView::empty`]); the bundled sample buffer is only a screenshot
+//! scenario.
 
 use std::path::Path;
 
@@ -14,10 +15,10 @@ use crate::view::HexView;
 ///
 /// The cursor starts on the IHDR width field (offset `0x10`) with the
 /// inspector in big-endian — PNG's native byte order — so the data
-/// inspector immediately reads the image's `2 × 2` dimensions as clean
+/// inspector immediately reads the image's `16 × 16` dimensions as clean
 /// `u32` values rather than landing on the signature byte.
 pub fn sample_view() -> HexView {
-    HexView::new(sample::png_header(), "sample.png")
+    HexView::new(sample::png_image(), "sample.png")
         .with_big_endian()
         .with_cursor(0x10)
 }

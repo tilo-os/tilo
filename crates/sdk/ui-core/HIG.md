@@ -45,6 +45,17 @@ leading button, the column's actions at its trailing end, and one hairline
 under the content columns. An app never draws a band of its own above a
 column.
 
+**History is the window's, at the trailing edge of the header row.** Where
+the app has History, the host gives the shell its History control: one Plain
+icon button with `Icon::History`, named and tooltipped "History" with its
+shortcut (`HostShortcut::History`), in the window's top-trailing corner after
+the column's actions and the inspector toggle. While History shows it reads
+as on (the selection lift) and closes History; the History pane or bar shows
+the mode itself. It is the same door as the shortcut, the palette and agents.
+An app never adds a History button, text or glyph, of its own. Where the
+host's chrome presents History (the Tilo shell, a native menu bar) the row
+shows none.
+
 ### 1a. Genuine sidebar / menu  (pure navigation)
 
 Chrome that lists destinations. Examples: a calendar's list of *calendars*; an
@@ -313,7 +324,13 @@ completeness does not exempt a screen from these requirements.
   text.
 
 Validate these requirements with `--shots` for the primary screens (populated,
-empty, and a mid-interaction state), then inspect the output. When a pattern
+empty, and a mid-interaction state), then inspect the output. The toolkit's
+own review grid is `cargo run -p ui-examples --example ui-shots --
+widget_states OUT_DIR`: every control, input, row, navigation and content
+composite in rest, hover, pressed, focused, disabled, selected and error, at
+each `ControlSize`, and every overlay over a busy page with and without the
+blurred material, dark and light. A change to a widget's look is checked
+there first. When a pattern
 recurs (a media/participant grid, a stat tile, a huddle overlay, a segmented
 control), promote it to a `ui` primitive so the shared version is the default.
 
@@ -508,10 +525,12 @@ floating Panel over the picture; text drawn straight onto media sits on
 `colors.media.letterbox` in every theme. No stepped bands, no theme surface
 behind a frame.
 
-**The History bar is the window's, unless the app owns the button.** It sits
-on the content region with one hairline under it and shows the History
-button only. An app that places `ui::widget::history_button()` in its own
-toolbar gets the same action and no separate bar.
+**The History bar is the window's, only where the app has no header row.**
+An app with a `NavShell` header row gets the History control in that row
+(§1) and no bar. Any other app gets a bar on the content region with one
+hairline under it, holding the same one History glyph at its trailing edge,
+on while History shows. A framework History that is open keeps its bar,
+with the control on, because the live app beside it is inert.
 
 **Captures are the live window, exactly.** `--shots` writes the frame on
 `surfaces.content` after it has settled (`FrameHarness::settle_for_capture`:
@@ -679,9 +698,12 @@ Chrome reads `colors.surfaces.*`. It does **not** reach into
 about contrast* that every material keeps, at every temperature.
 
 The neutral material is defined in OKLCH and shares one hue
-(`colors.neutral_hue`, chroma at most 0.010), so a theme or a workspace can
+(`colors.palette.hue`, chroma at most 0.010), so a theme or a workspace can
 shift its temperature without moving contrast (`Theme::with_neutral_hue`;
-each workspace takes the hue of its wallpaper, `ui::workspace_hue`).
+each workspace takes the hue of its wallpaper, `ui::workspace_hue`). A
+palette without a hue (`Palette::hue == None`, the light preset) is pure
+grey until the window's workspace gives it one; nothing falls back to a
+default hue.
 
 | Surface | Dark L | Light L | Use |
 |---|---|---|---|
@@ -757,14 +779,20 @@ draws a placeholder image under the tint and records what is below it; the
 renderer renders that backdrop at half resolution, halves it until the blur
 fits a short kernel (`surfaces.material_blur_px` is the standard deviation),
 blurs it separably and substitutes it for the placeholder. The live DRM,
-headless and nested compositors and the offscreen `shots` path all run the
-same pass, so captures match the screen.
+headless and nested compositors, an app's own window (`ui::App`'s render
+thread), the headless `FrameHarness` and `ShotFrame` behind every app's
+`--shots`, and the offscreen `shots` path all run the same pass, so a menu
+over content blurs it identically live and in a capture. A floating surface
+painted in the main pass inside a `Column` or `Row` blurs too: their subtree
+caches carry it (`backdrop::nest_scene`, `backdrop::append_nested`) and are
+redrawn while they hold one.
 
 The material falls back to opaque `panel_ground` whenever the blur is not
 there: under the reduced-transparency setting
 (`appearance.accessibility.reduce_transparency`), with forced colours or a
 theme without blur (the high-contrast track), in a renderer without the pass
-(an app's own window, a scene capture), and for surfaces past the per-frame
+(a raw scene rendered without its recorded backdrop), for a surface drawn
+into a scratch scene no host composes, and for surfaces past the per-frame
 budget (`MAX_BACKDROP_REGIONS`). The placeholder's own pixels are that ground,
 so a missed substitution is the opaque material, never a hole. Never paint
 unblurred translucency: a translucent fill without the blur is not glass but
@@ -813,8 +841,13 @@ defect.
 will activate in a menu, popover, dropdown, slash menu or palette result list
 is an inverted control (`intent.inverted` fill, `intent.on_inverted` label),
 concentric inside the panel: a lift was measured too weak to find (ΔL* 11.6
-read as "no highlighting"). A state row ("Copy on select", a sort order) is
-`MenuItem::with_checked(bool)`; the row a context menu acts on is ringed in
+read as "no highlighting"). Every menu paints it with
+`widget::floating_surface::paint_armed_row`, its rows inset
+`floating_surface::menu_inset` (`s2`) from the panel on every side and
+`metrics.menu_row_height` tall, so popover menus, dropdown lists and context
+menus are one shape. A state row ("Copy on select", a sort order) is
+`MenuItem::with_checked(bool)`, and the applied option of a popover menu or a
+dropdown list carries a check; the row a context menu acts on is ringed in
 your colour while it is open (`ContextMenu::anchor_row`).
 
 **A control with its own floor** (a filled rest face rather than a
@@ -871,9 +904,14 @@ inactive one secondary ink.
 **Your colour** is the local person's presence colour — one of the twelve
 presence hues (`PresenceHue`), the colour their cursor has for
 collaborators. It is identity, not theme: stored as `identity.colour` or
-derived from the identity, applied with `Theme::with_your_colour(hue)` (the
-shell from the person's identity, a standalone app from the hue nearest the
-host accent). The theme sets only its lightness and chroma.
+derived from the stable identity, never read by `Theme::configured`. The
+host that shows a window applies it with the workspace's temperature
+(`ui::WindowAppearance`, `Theme::in_window`): the shell resolves both and
+sends each app window its own over the shell-ui channel
+(`FloatingSurfaceHostMessage::Appearance`, applied by
+`App::set_window_appearance`); a standalone app starts from the stored
+choice, or the hue nearest the host accent, and stays neutral. The theme
+sets only its lightness and chroma.
 
 **Emphasis** is the one theme role that may colour controls: under
 `Emphasis::Tinted { hue }` the `intent.inverted` fill (primary actions, on
@@ -921,22 +959,24 @@ edge kept at full strength, so rest and disabled never look the same.
 | Control | Rest fill | Rest edge |
 |---|---|---|
 | Button `Secondary` / `Destructive` / disabled, Dropdown field, NumberInput steppers | `surfaces.raised` (hover `lift_on(raised, 0.5)`, press `1.0`) | `edge_on(raised)`; `Destructive` letters it in danger ink |
-| Button `Primary` | `intent.inverted` (hover `inverted_hover`) | none; label `intent.on_inverted` |
-| Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toolbar toggle that is on is `intent.selection` |
+| Button `Primary` | `intent.inverted` (hover `inverted_hover`, press `Colors::inverted_pressed`, the hover step taken twice) | none; label `intent.on_inverted` |
+| Button `Plain`, toolbar commands, icon buttons | transparent (hover `intent.selection_hover`, press `selection`) | none; a toggle that is on (`Button::toggled(true)`, a toolbar toggle) is `intent.selection` |
 | Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |
 | Card / Container (objects only) | `surfaces.raised`; a pressable one lifts on hover and press | `edge_on(fill)`; a section inside a card gets space, not a second edge |
-| TextInput / NumberInput / SearchField | field fill | `edge_on(fill)`; focus `border_focus` |
-| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating` | `panel_border`, `floating_edge` on dark |
+| TextInput / NumberInput / SearchField | field fill (hover `lift_on(fill, 0.5)`, focus `1.0`) | `edge_on(fill)`; focus `border_focus`; a value `Field::with_error` rejected edges the field in danger ink (`Widget::set_invalid`) and its message is danger ink |
+| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating`; what stands on it is drawn with `theme.on_ground(panel_ground)`, whose `surfaces.raised` stays off the panel (`Colors::raised_on`) | `panel_border`, `floating_edge` on dark; a toast's severity is its leading icon's colour, as on a banner |
 | Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
 | Banner, ConflictBanner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
-| Tooltip | as today | `edge_on(fill)` |
+| Tooltip | the blurred material (`surface::panel`) at `radii.control`, ink measured on the panel ground | `panel_border`, `floating_edge` on dark |
 | Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a thumb `selection_tier_on(raised)` inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track, a 2 px primary-ink underline. `Quiet`: no track, a lift of the ground |
 | Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
 | Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
 | Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
 | Toggle | off `intent.selection`, on `intent.inverted` | `edge_on(track)`; on, the knob is `on_inverted`; off, a raised white knob with a ring that clears 3:1 on a light material and `text_dim` on a dark one |
 | Slider | unfilled `intent.selection`, filled `intent.inverted` | `edge_on(unfilled)`; the thumb is a raised white object with a ring on a light material and primary ink on a dark one, clearing both halves; never collapses below six knob widths |
-| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)` |
+| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
+| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.inverted`, `radii.detail` | none |
+| TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
 | Scroll thumb | `text_tertiary` at rest, `text_dim` active, each stepped to 3:1 on the ground | none; a vertical `Scrollable` keeps `metrics.scrollbar_gutter` free on its trailing edge |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |
 | StatTile, PropertyList, Section | the ground | none: separated by space |
@@ -1022,8 +1062,8 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   `sidebar_width + content_min_width` (720) without an overview — fits; the
   overview and detail stand side by side while `overview_width +
   detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
-  inspector toggle) are Plain icon buttons of `min_pointer_target` in the
-  `s3` inset.
+  inspector toggle, the window's History control) are Plain icon buttons of
+  `min_pointer_target` in the `s3` inset.
 - **One text-scale rule (`Theme::responsive_scale`).** The shell grows its
   text-sized widths and breakpoints by `ui_scale × text_scale.max(1.0)`
   (`Metrics::text_growth`): at 200 % text the panes stop fitting side by side

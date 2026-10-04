@@ -7,9 +7,12 @@
 use std::rc::Rc;
 
 use automerge::AutoCommit;
+use std::sync::Mutex;
+
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::launch::{LaunchArgs, LaunchError};
 use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{self, annotation_resource_id, playlist_resource_id};
@@ -65,7 +68,10 @@ impl Resource for VideoPlayer {
         let annotations = state.annotations.iter().map(|annotation| SearchEntry {
             anchor: Some(annotation_resource_id(&annotation.id)),
             title: annotation.text.clone(),
-            text: format!("{} ms", annotation.time_ms),
+            text: format!(
+                "Bookmark at {}",
+                ui::format::timecode(annotation.time_ms / 1000)
+            ),
         });
         playlists.chain(annotations).collect()
     }
@@ -82,25 +88,47 @@ impl ResourceApp for VideoPlayerShell {
     const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
 
     fn view(cx: &mut ViewCx<VideoPlayer>) -> Element {
-        cx.surface(PlayerApp::new().with_collab())
+        cx.surface(launch_player())
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &[
-            "empty",
-            "loading",
-            "error",
-            "native-error",
-            "playing",
-            "paused",
-            "settings",
-            "metadata",
-            "library",
-            "library-focus",
-            "recent",
-            "shared",
-            "fullscreen",
-        ]
+        crate::app::CAPTURE_SCENARIOS
+    }
+
+    /// The shared tab shows playlists and bookmarks, which live in the
+    /// document: a capture writes them through the same typed action a
+    /// script would use.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<VideoPlayer>> {
+        if name != Some("shared") {
+            return Vec::new();
+        }
+        let media_ref = crate::app::demo_media_ref();
+        let actions = [
+            SharedAction::CreatePlaylist {
+                id: "watch-later".into(),
+                name: "Watch later".into(),
+            },
+            SharedAction::CreatePlaylist {
+                id: "weekend-films".into(),
+                name: "Weekend films".into(),
+            },
+            SharedAction::CreateAnnotation {
+                id: "opening".into(),
+                media_ref: media_ref.clone(),
+                time_ms: 8_000,
+                text: "Opening detail".into(),
+            },
+            SharedAction::CreateAnnotation {
+                id: "bookmark".into(),
+                media_ref,
+                time_ms: 45_000,
+                text: String::new(),
+            },
+        ];
+        actions
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
     }
 
     fn label(_state: &SharedLibrary) -> String {
@@ -117,6 +145,59 @@ impl ResourceSurface<VideoPlayer> for PlayerApp {
         self.set_framework_hosted(true);
         self.attach_framework(cx.dispatcher());
     }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.detach_collab();
+        self.stage_capture(scenario);
+    }
+}
+
+/// What a live launch asked to play (`--open PATH`, a path or a URL), kept
+/// for the first window the framework builds.
+static LAUNCH_SOURCE: Mutex<Option<media::Source>> = Mutex::new(None);
+
+/// The source named on the command line of a live launch (`--open PATH`, a
+/// path or a URL). Captures name theirs through the scenario instead.
+fn requested_source_from_env() -> Option<media::Source> {
+    let mut args = std::env::args().skip(1);
+    let mut positional: Option<String> = None;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return None,
+            "--open" => {
+                return args
+                    .next()
+                    .map(|path| crate::source_for_path(std::path::Path::new(&path)));
+            }
+            "--size" | "--viewport" | "--scenario" | "--data-dir" | "--theme" => {
+                let _ = args.next();
+            }
+            flag => {
+                if let Some(path) = flag.strip_prefix("--open=") {
+                    return Some(crate::source_for_path(std::path::Path::new(path)));
+                }
+                if !flag.starts_with('-') && positional.is_none() {
+                    positional = Some(flag.to_owned());
+                }
+            }
+        }
+    }
+    positional.map(|value| {
+        if value.starts_with("http://") || value.starts_with("https://") {
+            media::Source::Remote { url: value }
+        } else {
+            crate::source_for_path(std::path::Path::new(&value))
+        }
+    })
+}
+
+/// The player a live window shows: the one the launch asked for.
+fn launch_player() -> PlayerApp {
+    let requested = LAUNCH_SOURCE
+        .lock()
+        .ok()
+        .and_then(|mut source| source.take());
+    crate::live_player(requested, std::env::var("TILO_MEDIA_HANDOFF_TITLE").ok())
 }
 
 /// Framework dispatcher for shared playlists and annotations. Transport stays local.
@@ -178,11 +259,71 @@ impl ActionSink {
     }
 }
 
-/// Live launch on the framework host. Capture modes keep the standalone path.
+/// The launch on the framework host, live and captured. A capture plays a
+/// real file when `--open PATH` names one, and fails when that file does not
+/// decode, so a failed capture is never mistaken for a screenshot of the
+/// player.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<VideoPlayerShell>()
+        .capture_scenario(capture)
+        .allowed_options(&["--data-dir", "--open"])
         .allowed_live_options(&["--data-dir", "--open"])
         .max_positionals(1)
+}
+
+/// Remember what the command line asked to play, for the window about to
+/// open. Call once, before launching.
+pub fn remember_launch_request() {
+    if let (Some(source), Ok(mut slot)) = (requested_source_from_env(), LAUNCH_SOURCE.lock()) {
+        *slot = Some(source);
+    }
+}
+
+/// How long a capture waits for a real decoder's first picture.
+const CAPTURE_FRAME_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn capture(harness: &mut ui::headless::FrameHarness, args: &LaunchArgs) -> Result<(), LaunchError> {
+    let open = args
+        .value("--open")
+        .map(|path| format!("{}{path}", crate::app::OPEN_CAPTURE));
+    let scenario = open.as_deref().or(args.scenario.as_deref());
+    ui::framework::stage::<VideoPlayerShell>(harness, scenario)?;
+    if open.is_none() {
+        return Ok(());
+    }
+    // Real decode prerolls asynchronously: wait for its first picture (or
+    // its error), then insist the file actually played unless the scenario
+    // asks for a failure.
+    let deadline = ui::time::now() + CAPTURE_FRAME_WAIT;
+    loop {
+        let settled = harness
+            .with_widget_mut(|app: &mut PlayerApp| app.capture_settled())
+            .unwrap_or(true);
+        if settled || ui::time::now() >= deadline {
+            break;
+        }
+        harness.wait_until(std::time::Duration::from_millis(40), |_| false);
+    }
+    let expects_picture = !matches!(
+        args.scenario.as_deref(),
+        Some("empty" | "error" | "native-error" | "loading")
+    );
+    if expects_picture {
+        let (real, picture) = harness
+            .with_widget_mut(|app: &mut PlayerApp| (app.decodes_for_real(), app.has_media_frame()))
+            .unwrap_or_default();
+        if !real {
+            return Err(LaunchError::Operation(
+                "A real video capture requires the GStreamer decoder and runtime".into(),
+            ));
+        }
+        if !picture {
+            return Err(LaunchError::Operation(
+                "The video decoder did not produce a frame for the requested file".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
