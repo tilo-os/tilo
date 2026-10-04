@@ -72,6 +72,20 @@ enum Command {
         #[arg(required = true)]
         packages: Vec<String>,
     },
+    /// Build a tool for `publisher`, whose key is elsewhere: the image is
+    /// written to `--out` with a placeholder signature for the key holder
+    /// to sign. What a relay's worker runs as a member, in their quota.
+    BuildFor {
+        /// The key holder's public key (hex).
+        #[arg(long)]
+        publisher: String,
+        #[arg(long)]
+        runtime: PackageId,
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
     /// Merge catalog documents into one.
     MergeCatalogs {
         #[arg(long)]
@@ -171,6 +185,29 @@ fn main() -> anyhow::Result<()> {
             let builder = store::device_builder()?;
             let built = builder.build_reporting(&runtime, &packages, &mut std::io::stderr())?;
             print(&report(built, packages, None))
+        }
+        Command::BuildFor {
+            publisher,
+            runtime,
+            out,
+            packages,
+        } => {
+            let publisher: [u8; 32] = hex::decode(&publisher)
+                .ok()
+                .and_then(|bytes| bytes.try_into().ok())
+                .context("--publisher is not 32 hex bytes")?;
+            let state = store::default_state_dir()
+                .ok_or_else(|| anyhow::anyhow!("no cache directory for the tool builder"))?;
+            let builder = Builder::new(
+                env_tools::delegated::UnsignedStore::new(Store::from_env()?, publisher, out)?,
+                NoCatalog,
+                state,
+            );
+            let built = builder.build_reporting(&runtime, &packages, &mut std::io::stderr())?;
+            print(&serde_json::json!({
+                "unsigned": built.tool.to_string(),
+                "key": built.key,
+            }))
         }
         Command::MergeCatalogs { out, inputs } => {
             let mut merged = Catalog::default();
