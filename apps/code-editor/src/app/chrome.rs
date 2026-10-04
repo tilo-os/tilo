@@ -31,21 +31,19 @@ impl CodeApp {
         let local = self.drawer.paint_panel(scene, transform, theme);
         let (header, body) = self.sidebar_header_and_body(theme);
 
-        // The toggle leads the header, where `NavShell` puts it.
-        self.toggle_rect = Self::toggle_rect_in(header, theme);
-        self.drawer.draw_toggle(
-            scene,
-            transform,
-            text_renderer,
-            &local,
-            self.toggle_rect,
-            self.toggle_hovered,
-        );
-
+        // A docked column holds the toggle at its header's leading corner,
+        // where the window's header row put it; a floating drawer opens under
+        // that row, so its header carries the name alone.
+        let gap = f64::from(local.tokens.spacing.s2);
+        let x = if self.toggle_in_tab_strip() {
+            header.x0 + f64::from(local.tokens.spacing.s4)
+        } else {
+            self.drawer
+                .paint_toggle(scene, transform, text_renderer, &local);
+            self.drawer.toggle_rect().x1 + gap
+        };
         // The project's name, beside it; with no project there is none to
         // name.
-        let gap = f64::from(local.tokens.spacing.s2);
-        let x = self.toggle_rect.x1 + gap;
         let room = (header.x1 - f64::from(local.tokens.spacing.s3) - x).max(0.0);
         let name = if self.has_project() {
             text_renderer.elide_to_width_style(
