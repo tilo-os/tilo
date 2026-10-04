@@ -422,10 +422,26 @@ impl SettingsApp {
 
     /// Hand the panes their host: panes built from now on bind their
     /// controls to its door.
-    pub(crate) fn attach_host(&mut self, cx: crate::host::PaneCx) {
+    pub(crate) fn attach_host(
+        &mut self,
+        cx: crate::host::PaneCx,
+        accounts: Option<ui::framework::PersonRecord<accounts::person::PersonAccounts>>,
+    ) {
         // A screenshot never opens the person's accounts.
         if let Some(root) = cx.scene().and_then(|scene| scene.account_root.clone()) {
             self.account_root = crate::accounts::AccountRoot::at(root);
+        } else if let Some(record) = accounts {
+            self.account_root = self.account_root.clone().with_person(record);
+            // Accounts the device's file holds and the record does not are
+            // taken in; then the services outside any app read the file as
+            // the record's projection.
+            if let Err(error) = self
+                .account_root
+                .take_in_device_accounts()
+                .and_then(|()| self.account_root.project())
+            {
+                tracing::warn!(%error, "the device's account file could not follow the person's accounts");
+            }
         }
         self.notifications = panes::notifications::NotificationsArea::new(&cx);
         self.default_apps = panes::personal_apps::DefaultAppsArea::new(&cx);
