@@ -27,6 +27,7 @@ emoji = { path = "../../text/emoji" }
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
+tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-copy-lint = { path = "../../dev/copy-lint" }
 word-processor = { path = "../../../apps/word-processor" }
 chat = { path = "../../../apps/chat", default-features = false }

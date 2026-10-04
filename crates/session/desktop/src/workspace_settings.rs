@@ -4673,7 +4673,10 @@ mod members_pane_tests {
                         owner_public,
                         recipient_public,
                         500,
-                        &owner_key,
+                        &collab_types::ownership_transfer::fixture_device_signer(
+                            &owner_key,
+                            tilo_user_identity::DeviceCapabilities::joined(),
+                        ),
                     )
                     .unwrap(),
                 );
@@ -4729,7 +4732,10 @@ mod members_pane_tests {
                     owner_public,
                     recipient_public,
                     u64::MAX,
-                    &owner_key,
+                    &collab_types::ownership_transfer::fixture_device_signer(
+                        &owner_key,
+                        tilo_user_identity::DeviceCapabilities::joined(),
+                    ),
                 )
                 .ok();
 
