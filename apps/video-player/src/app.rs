@@ -794,6 +794,11 @@ struct Together {
     /// Whether what was seen is over (left paused long ago, run past the
     /// end): nothing to follow or to compare with.
     over: bool,
+    /// Whether what was seen is this player's own: it leads, so there is
+    /// nothing to ride along with. Correcting its engine toward its own
+    /// announcement would seek it back every frame while it starts playing
+    /// or resumes, before its playhead moves.
+    leading: bool,
 }
 
 impl Together {
@@ -821,10 +826,12 @@ impl Together {
         if shared != self.seen.as_ref() {
             self.seen = shared.cloned();
             self.over = false;
+            self.leading = false;
             if let Some(shared) = shared {
                 let state = shared.state();
                 if self.said.is_some_and(|said| same(said, state)) {
                     // This player's own change, come back.
+                    self.leading = true;
                     return TogetherStep::Stay;
                 }
                 self.settling_until = now.saturating_add(TOGETHER_SETTLE_MS);
@@ -851,8 +858,9 @@ impl Together {
             return TogetherStep::Publish(local);
         }
         match joined {
-            // Ride along with small drift; the engine corrects larger drift.
-            Some(shared) if shared.playing => TogetherStep::Follow(shared.state()),
+            // Ride along with a peer's playback: small drift rides, the
+            // engine corrects larger drift.
+            Some(shared) if shared.playing && !self.leading => TogetherStep::Follow(shared.state()),
             _ => TogetherStep::Stay,
         }
     }
@@ -5038,6 +5046,19 @@ mod tests {
             here.step("clip", Some(&shared(playing)), playing, start + 20, 60_000),
             TogetherStep::Stay,
             "its own change is not followed back"
+        );
+        // Its engine still starting: the playhead has not moved yet. A
+        // leader never seeks itself toward its own announcement.
+        assert_eq!(
+            here.step(
+                "clip",
+                Some(&shared(playing)),
+                transport(true, 0, start + 900),
+                start + 900,
+                60_000
+            ),
+            TogetherStep::Stay,
+            "a leader does not ride along with itself"
         );
 
         // Another player joins the same video and follows; while its engine
