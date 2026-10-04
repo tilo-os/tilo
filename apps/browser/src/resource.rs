@@ -15,7 +15,7 @@ use ui::tilo_resource::{
 };
 use ui::widget::Element;
 
-use crate::BrowserTabs;
+use crate::BrowserWindow;
 use crate::actions::{
     BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, bookmarks_from_doc, register,
 };
@@ -261,7 +261,6 @@ const SCENARIOS: &[&str] = &[
     "downloads-completed",
     "downloads-error",
     "downloads-empty",
-    "tabs",
 ];
 
 /// The page a launch names: one absolute http(s) URL, the only schemes the
@@ -313,7 +312,6 @@ impl ResourceApp for BrowserShell {
             Some("pip-empty" | "suggestions") => (1000, 650),
             Some("settings" | "history-paused") => (900, 700),
             Some("loading" | "error") => (900, 620),
-            Some("tabs") => (800, 620),
             Some(name) if name.starts_with("library-") || name.starts_with("downloads-") => {
                 (1000, 700)
             }
@@ -358,34 +356,26 @@ impl ResourceApp for BrowserShell {
         } else {
             BrowserWidget::new_headless()
         };
-        let widget = match launch_target(cx.launch_arguments()) {
+        // One window, one page. A launch without a page to show starts in
+        // the address field; other pages are other windows, in the
+        // desktop's tabs.
+        let target = launch_target(cx.launch_arguments());
+        let focus_address = live && target.is_none();
+        let widget = match target {
             Some(uri) => widget.with_initial_uri(uri),
             None => widget,
         };
-        let mut tabs = BrowserTabs::new(widget);
-        if live && mode.allows_session_recovery() {
-            let restored = crate::storage::data_dir()
-                .ok_or_else(|| "Cannot locate the browser's data".to_owned())
-                .and_then(|root| {
-                    crate::session::SessionStore::open(&root, crate::session::SessionMode::Normal)
-                })
-                // A normal window always has a store; only private ones lack it.
-                .and_then(|store| store.map_or(Ok(()), |store| tabs.attach_session(store)));
-            if let Err(error) = restored {
-                tracing::error!(%error, "Cannot restore the browser session");
-            }
-        }
-        cx.surface(tabs)
+        cx.surface(BrowserWindow::new(widget, focus_address))
     }
 }
 
-impl ResourceSurface<Browser, BrowserEffect> for BrowserTabs {
+impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
     fn present(&mut self, state: &Rc<BrowserState>) {
         self.present_state(state);
     }
 
     fn attach(&mut self, cx: SurfaceCx<Browser>) {
-        self.attach_dispatcher(&cx.dispatcher());
+        self.attach_dispatcher(cx.dispatcher());
         if cx.mode().is_live() {
             // Visits and addresses are the person's own: they follow them to
             // their other devices and never reach a collaborator. A private
@@ -393,12 +383,12 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserTabs {
             if !cx.is_private()
                 && let Some(history) = cx.person::<crate::history::BrowsingHistory>()
             {
-                self.attach_history(&history);
+                self.attach_history(history);
             }
             if !cx.is_private()
                 && let Some(book) = cx.person::<crate::autofill::AddressBook>()
             {
-                self.attach_address_book(&book);
+                self.attach_address_book(book);
             }
             // The engine publishes frames and navigation from its own
             // threads; each wakes the window so pages paint and finish
@@ -425,41 +415,37 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserTabs {
         self.stage_scenario(scenario);
     }
 
-    /// Every effect acts on the page the person is looking at; one that
-    /// waits (a page loading, the engine answering) is answered from that
-    /// tab once it settles, even if another tab is shown by then.
+    /// Every effect acts on the window's page; one that waits (a page
+    /// loading, the engine answering) is answered once it settles.
     fn effect(&mut self, effect: BrowserEffect, cx: &mut EffectCx<Browser, Self>) -> EffectAnswer {
         let invocation = cx.invocation().unwrap_or_default();
-        match self
-            .active_page_mut()
-            .admit(invocation, effect.operation())?
-        {
+        match self.page_mut().admit(invocation, effect.operation())? {
             ui::widget::ResourceOperationStart::Completed(output) => Ok(Effected::Done(output)),
             ui::widget::ResourceOperationStart::Accepted => {
                 let reply = cx.reply();
-                self.active_page_mut().answer_later(invocation, reply);
+                self.page_mut().answer_later(invocation, reply);
                 Ok(Effected::Pending)
             }
         }
     }
 
     fn bound_declarations(&self) -> Vec<ActionDecl<Browser>> {
-        self.active_page().page_declarations()
+        self.page().page_declarations()
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {
-        self.active_page().live_rows()
+        self.page().live_rows()
     }
 
     /// A history page or download a search hit names, past the published
     /// page of rows.
     fn live_row(&self, id: &str) -> Option<LiveRow> {
-        self.active_page().search_row(id)
+        self.page().search_row(id)
     }
 
     /// The person's browsing history and this device's downloads.
     fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
-        self.active_page().search_entries()
+        self.page().search_entries()
     }
 }
 
