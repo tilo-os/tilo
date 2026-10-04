@@ -480,10 +480,14 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         &mut self.surface
     }
 
-    // A harness reaches a hosted surface by its own type, as it would the
-    // surface mounted alone.
+    // A surface is found by its own type (`FrameHarness::with_widget_mut`),
+    // so a test reaches the widget the host wraps.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(&self.surface)
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
-        self.surface.as_any_mut()
+        Some(&mut self.surface)
     }
 
     fn build_layout(
