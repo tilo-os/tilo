@@ -161,6 +161,18 @@ impl DateStyle {
         }
     }
 
+    /// Today's date in this style, read through the toolkit clock.
+    pub fn today(self) -> String {
+        ui::clock::today()
+            .format(match self {
+                DateStyle::Iso => "%Y-%m-%d",
+                DateStyle::Us => "%m/%d/%Y",
+                DateStyle::Eu => "%d/%m/%Y",
+                DateStyle::Long => "%-d %b %Y",
+            })
+            .to_string()
+    }
+
     /// User-facing name for the dropdown.
     pub fn label(self) -> &'static str {
         match self {
@@ -189,6 +201,16 @@ impl TimeStyle {
             TimeStyle::H24 => "14:05",
             TimeStyle::H12 => "2:05 PM",
         }
+    }
+
+    /// The time now in this style, read through the toolkit clock.
+    pub fn now(self) -> String {
+        ui::clock::local_now()
+            .format(match self {
+                TimeStyle::H24 => "%H:%M",
+                TimeStyle::H12 => "%-I:%M %p",
+            })
+            .to_string()
     }
 
     pub fn label(self) -> &'static str {

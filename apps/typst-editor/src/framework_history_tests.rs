@@ -29,7 +29,7 @@ fn verify_restored(doc: &AutoCommit) {
 /// which the window draws only when the app has no History button of its own;
 /// the app's toolbar button is exercised separately below.
 fn test_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(crate::app::TypstApp::from_library(None).without_history_button())
+    Box::new(crate::app::TypstApp::from_library(None))
 }
 
 #[test]
@@ -195,8 +195,7 @@ fn production_library_persisted_restore_and_fresh_reopen() {
             // The managed host opens History from its own bar, which the window
             // draws only for an app without a History button of its own.
             drop(root);
-            let managed: Box<dyn ui::widget::Widget> =
-                Box::new(crate::app::TypstApp::new().without_history_button());
+            let managed: Box<dyn ui::widget::Widget> = Box::new(crate::app::TypstApp::new());
             let mut driver = ui::headless::Driver::from_managed_root(
                 state,
                 ManagedRoot::new(managed, reg),
