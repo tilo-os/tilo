@@ -260,3 +260,48 @@ fn a_device_that_was_away_catches_up_when_its_route_returns() {
     assert_eq!(watched(&phone), watched(&laptop));
     assert!(watched(&phone).contains(&"while-away".to_owned()));
 }
+
+/// The same app open in a second window of the device, while the first
+/// holds the stored record: the second keeps an in-memory copy on the very
+/// same route, so what the person's host replays there — and what the first
+/// window publishes — reaches it too.
+#[test]
+fn a_second_window_holding_an_in_memory_copy_hears_what_reaches_the_route() {
+    let store: Rc<dyn durable_store::DurableStore> = Rc::new(durable_store::MemoryStore::new());
+    let open = |store: &Rc<dyn durable_store::DurableStore>| {
+        let mut owners = RecordOwners::with_store(Rc::clone(store));
+        PersonRecords::open(&mut owners, APP, person())
+            .unwrap()
+            .open_record(RecordKind::new("test.watched"), |doc| {
+                doc.put_object(automerge::ROOT, "watched", automerge::ObjType::Map)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap()
+    };
+    let first = open(&store);
+    let second = open(&store);
+    assert_eq!(
+        first.route(),
+        second.route(),
+        "the in-memory copy names the stored record's route"
+    );
+    let route = second.route().unwrap();
+    let mut second_app = app_holding(&second);
+
+    // What the person's host kept from another device arrives on the route.
+    let laptop = device();
+    watch(&laptop, "kept-by-the-host");
+    second_app
+        .apply_signed_document_envelope(&from_device(&route, laptop.document().unwrap()), None);
+    assert_eq!(watched(&second), ["kept-by-the-host"]);
+
+    // What the first window publishes on the route reaches it as well.
+    watch(&first, "in-the-first-window");
+    second_app
+        .apply_signed_document_envelope(&from_device(&route, first.document().unwrap()), None);
+    assert_eq!(
+        watched(&second),
+        ["in-the-first-window", "kept-by-the-host"]
+    );
+}
