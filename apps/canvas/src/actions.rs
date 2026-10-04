@@ -984,6 +984,13 @@ fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), ActionErro
     if !matches!(mark.shape, Shape::Stroke { .. }) {
         return Ok(());
     }
+    if mark.erases()
+        && let Shape::Stroke { forks: Some(_), .. } = mark.shape
+    {
+        return Err(refuse(
+            "an eraser does not fork; give it dabs to clear broken patches, or erase along plain strokes",
+        ));
+    }
     let plain = art.layer(layer).is_none_or(|layer| layer.medium.is_empty());
     match crate::brushes::problem(mark.style.brush.as_deref(), &mark.style.params, plain) {
         Some(problem) => Err(refuse(problem)),
