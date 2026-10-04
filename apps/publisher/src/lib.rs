@@ -484,12 +484,6 @@ fn footer(pane: &Pane, bindings: &Bindings) -> Element {
     Box::new(column.push(Box::new(ButtonGroup::new(apply).secondary(check))))
 }
 
-/// The most the pinned outcome and actions may take of the window. The footer
-/// sits in a viewport of its own so that it keeps the same scrollbar gutter as
-/// the form above it and lines up with it; it scrolls only in a window too
-/// short to show it.
-const FOOTER_MAX_HEIGHT: f32 = 4096.0;
-
 /// The readable measure the form and its pinned actions share.
 fn readable(child: Element) -> Element {
     Box::new(
@@ -568,10 +562,13 @@ impl ResourceApp for App {
                         .fill_parent_height()
                         .with_child(readable(Box::new(form))),
                 ))
+                // The pinned outcome and actions sit in a viewport of their own
+                // so they keep the form's scrollbar gutter and line up with it;
+                // they scroll only in a window too short to show them.
                 .push(Box::new(
                     Scrollable::new_vertical()
                         .without_sequential_focus()
-                        .with_max_height(FOOTER_MAX_HEIGHT)
+                        .fit_content_height()
                         .with_child(readable(Box::new(footer))),
                 )),
         );

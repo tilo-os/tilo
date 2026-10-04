@@ -82,7 +82,8 @@ pub fn spacing_ratchet() -> Ratchet {
             .keep(nonzero),
             Pattern::new(
                 "literal_gap",
-                r"\.with_(?:gap|padding|row_gap|column_gap)\(\s*\d+(?:\.\d+)?\s*\)",
+                // Zero is "no space", not a spacing value, so it is not counted.
+                r"\.with_(?:gap|padding|row_gap|column_gap)\(\s*(?:\d*[1-9]\d*(?:\.\d+)?|\d+\.\d*[1-9]\d*)\s*\)",
                 "literal gap or padding on a container — pass a spacing token, or drop it and \
                  let the composition space its children",
             ),
@@ -183,6 +184,18 @@ fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
         assert_eq!(count(gap, "col.with_padding(16)"), 1);
         assert_eq!(count(gap, "grid.with_row_gap( 8.0 )"), 1);
         assert_eq!(count(gap, "grid.with_column_gap(4.0)"), 1);
+        assert_eq!(count(gap, "row.with_gap(0.5)"), 1);
+        assert_eq!(count(gap, "row.with_gap(10)"), 1);
+        assert_eq!(
+            count(gap, "Column::new().with_gap(0.0)"),
+            0,
+            "no gap is not a spacing value"
+        );
+        assert_eq!(
+            count(gap, "col.with_padding(0)"),
+            0,
+            "no padding is not a spacing value"
+        );
         assert_eq!(
             count(gap, "Row::new().with_gap(spacing.s3)"),
             0,
