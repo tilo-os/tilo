@@ -658,8 +658,8 @@ impl Table {
                 if let Some((start, end)) = input.selection_range_public()
                     && let Some(selected) = input.value().get(start..end)
                 {
-                    crate::text_selection::clipboard_copy(selected);
-                    if command == "cut" {
+                    let accepted = crate::text_selection::clipboard_copy_accepted(selected);
+                    if command == "cut" && accepted {
                         input.delete_local_selection();
                     }
                 }
