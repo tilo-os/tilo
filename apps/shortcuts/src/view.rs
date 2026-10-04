@@ -185,7 +185,11 @@ pub(crate) fn root(cx: &ViewCx<Workbench>) -> Element {
         ui.door.clone(),
         cx.live().clone(),
     )));
-    core.borrow_mut().refresh(None);
+    // A past version or a capture shows the door as staged, never the
+    // session's.
+    if cx.mode().is_live() {
+        core.borrow_mut().refresh(None);
+    }
     crate::samples::stage(cx, &ui.door, &ui.selected, &ui.narrow, &ui.sheet);
 
     let follow = Rc::new(RefCell::new(follow(cx.live().clone(), &ui)));
