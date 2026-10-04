@@ -54,3 +54,39 @@ Authenticated semantic receipt/locus integration and the two-run Writer
 acceptance case are still required before a director can call such markers
 real agent work. Synthetic codec, key-lifecycle and pointer-isolation tests
 establish no real-model activity, concurrency or frame-rate result.
+
+## Authenticated browser opening
+
+`PeerHandle::open_semantic_live_then(route, publisher, frame, done)` and the WASM
+`openSemanticLive(optionsJson, frame)` accept an explicit exact record and the
+publisher supplied by an authenticated carrier subscription. Options name
+`room`, `app`, `record` and the publisher's device hex. The payload cannot select
+that publisher. The callback returns no frame while the session is disconnected,
+before current room admission, without a currently valid publisher certificate,
+or without local and publisher membership in the current exact-record MLS epoch.
+Old cached decryption keys do not restore authority after removal or a governor
+change. This reader never opens a new route or requests keys and never queues
+semantic frames for later replay.
+
+The reader validates canonical interaction bounds, a nonnil invocation and
+nonzero sequence, and the actor against the root that certified the carrier
+publisher. Runs and source app peers remain that authenticated publisher's
+assertions; neither is a credential or independent proof of app mutation.
+Root-signed revocations received during the session are additive and scoped by
+root; a foreign root cannot revoke another root's certificate. Revocation
+knowledge is only as current as received evidence, not a fresh global attestation.
+Verified revocations and fail-closed overflow state persist in channel storage
+version3; version2 membership and held edits migrate without requesting access.
+A failed save blocks semantic reads and retries the same state. Present but
+undecodable saved authority blocks semantic reads and ordinary channel saves for
+the session, preserving the original bytes for explicit recovery. Invalid saved
+revocation signatures also fail closed. The bounded
+revocation store refuses semantic opening if its capacity is exceeded; exhaustion
+is an availability limit, not permission to forget prior revocations.
+
+The returned receipt identifies publisher, principal, exact record, current
+membership epoch, source sequence/time, execution, peer and canonical interaction.
+Browser integration must recheck its active subscription and exact mount generation
+after awaiting it, clear on authority/lifetime changes, and bind target geometry
+to a genuine presentation. This API does not activate a publisher, a cursor,
+or panorama semantics; generic pointer decoding still refuses semantic frames.

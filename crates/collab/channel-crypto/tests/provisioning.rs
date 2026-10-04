@@ -119,6 +119,124 @@ fn opens(
         .is_some_and(|keys| keys.open_content(artifact, &sealed.0, &sealed.1).is_ok())
 }
 
+fn member_files(device: &Device) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+    std::fs::read_dir(device.dir.path())
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect()
+}
+
+#[test]
+fn admitted_epoch_for_tracks_the_actual_roster_without_changing_membership() {
+    let channel = ChannelId::new();
+    let owner = Device::new(60);
+    let observer = Device::new(61);
+    let publisher = Device::new(62);
+    let outsider = Device::new(63);
+    let mut steward = steward(&owner, channel);
+    let mut member = observer.member(channel, &owner);
+    let before = member_files(&observer);
+    for device in [&owner, &observer, &publisher, &outsider] {
+        assert_eq!(member.admitted_epoch_for(device.public()), None);
+    }
+    assert_eq!(member.access(), Access::Waiting);
+    assert_eq!(member_files(&observer), before);
+
+    let mut source = publisher.member(channel, &owner);
+    let pending = requests(vec![
+        (&observer, request(&mut member, &observer, 1)),
+        (&publisher, request(&mut source, &publisher, 1)),
+    ]);
+    steward
+        .reconcile(&allowed(&[&observer, &publisher]), &pending, &vault())
+        .unwrap();
+    deliver(&mut steward, &mut member, &observer);
+    let before = member_files(&observer);
+    for device in [&owner, &observer, &publisher] {
+        assert_eq!(
+            member.admitted_epoch_for(device.public()),
+            Some(steward.epoch())
+        );
+    }
+    assert_eq!(member.admitted_epoch_for(outsider.public()), None);
+    assert_eq!(member_files(&observer), before);
+    let prior_epoch = steward.epoch();
+
+    steward
+        .reconcile(&allowed(&[&observer]), &pending, &vault())
+        .unwrap();
+    deliver(&mut steward, &mut member, &observer);
+    assert!(steward.epoch() > prior_epoch);
+    assert_eq!(member.admitted_epoch_for(publisher.public()), None);
+    assert_eq!(
+        member.admitted_epoch_for(owner.public()),
+        Some(steward.epoch())
+    );
+    assert_eq!(
+        member.admitted_epoch_for(observer.public()),
+        Some(steward.epoch())
+    );
+
+    steward
+        .reconcile(&allowed(&[]), &pending, &vault())
+        .unwrap();
+    deliver(&mut steward, &mut member, &observer);
+    assert_eq!(member.access(), Access::Removed);
+    let before = member_files(&observer);
+    for device in [&owner, &observer, &publisher, &outsider] {
+        assert_eq!(member.admitted_epoch_for(device.public()), None);
+    }
+    assert_eq!(member.access(), Access::Removed);
+    assert_eq!(member_files(&observer), before);
+}
+
+#[test]
+fn admitted_epoch_for_refuses_a_desynchronised_membership() {
+    let channel = ChannelId::new();
+    let owner = Device::new(64);
+    let observer = Device::new(65);
+    let mut steward = steward(&owner, channel);
+    let mut member = observer.member(channel, &owner);
+    let pending = requests(vec![(&observer, request(&mut member, &observer, 1))]);
+    steward
+        .reconcile(&allowed(&[&observer]), &pending, &vault())
+        .unwrap();
+    deliver(&mut steward, &mut member, &observer);
+    assert_eq!(
+        member.admitted_epoch_for(owner.public()),
+        Some(steward.epoch())
+    );
+
+    let invalid_commit = MlsGovernanceFrameV1::signed(
+        channel,
+        [66; 32],
+        2,
+        member.journal().head_digest(),
+        steward.epoch() + 1,
+        collab_types::MlsGovernanceAction::Remove {
+            removed: owner.public(),
+            commit: vec![0],
+        },
+        &owner.key,
+    )
+    .unwrap();
+    assert!(
+        member
+            .receive(invalid_commit, &vault())
+            .unwrap()
+            .contains(&MemberEvent::Desynchronised)
+    );
+    let before = member_files(&observer);
+    assert_eq!(member.admitted_epoch_for(owner.public()), None);
+    assert_eq!(member.admitted_epoch_for(observer.public()), None);
+    assert_eq!(member.access(), Access::Waiting);
+    assert_eq!(member_files(&observer), before);
+}
+
 #[test]
 fn genesis_closes_the_plaintext_gate_on_the_steward_and_every_member() {
     let channel = ChannelId::new();
