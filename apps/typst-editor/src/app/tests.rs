@@ -45,6 +45,13 @@ fn file_effects_save_export_and_portal_round_trip() {
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
         assert!(destination.exists());
+        // The save reports on the framework's save status surface.
+        assert!(app.save_status.is_visible(ui::time::now()));
+        assert!(app.save_status.failure().is_none());
+        // A save that cannot be written is a failure to act on, kept until
+        // it succeeds or is dismissed.
+        assert!(app.save_typ_to(&doc, &destination.join("x.typ")).is_err());
+        assert!(app.save_status.failure().is_some());
         std::fs::remove_dir_all(dir).ok();
     }
     // Case `export_pdf_writes_a_real_pdf_file`:
