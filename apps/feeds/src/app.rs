@@ -463,7 +463,11 @@ pub struct FeedsApp {
     stage_menu_shot: bool,
 
     // --- article reading settings (reader pane) -------------------------
+    /// How articles read here: the person's [`ReadSettings`] once the host
+    /// lent them, followed every frame.
     settings: ReadSettings,
+    /// The person's reading preferences; `None` outside a framework host.
+    read_settings: Option<ui::framework::Setting<ReadSettings>>,
     /// Whether the reader's reading-settings popover is open.
     show_reader_settings: bool,
     /// Gear button (toggles the popover) + popover hit rects, recomputed each
@@ -569,6 +573,7 @@ impl FeedsApp {
             hover_tooltip: None,
             stage_menu_shot: false,
             settings: ReadSettings::default(),
+            read_settings: None,
             show_reader_settings: false,
             settings_btn_rect: Rect::ZERO,
             tags_btn_rect: Rect::ZERO,
@@ -596,7 +601,7 @@ impl FeedsApp {
     #[cfg(test)]
     pub(crate) fn presenting(store: Store) -> Self {
         let mut app = Self::new();
-        app.present_library(store, ReadSettings::default());
+        app.present_library(store);
         app
     }
 
@@ -646,9 +651,17 @@ impl FeedsApp {
             "sidebar-open" => self.sidebar.snap(true),
             // The narrow master→detail reader with its Back affordance.
             "detail" => self.detail_pushed = true,
-            // The reading-settings popover over the scenario's serif, sepia
-            // page, showing the controls and the body together.
-            "reader-settings" => self.show_reader_settings = true,
+            // The reading-settings popover over a serif, sepia page, showing
+            // the controls and the body together.
+            "reader-settings" => {
+                if let Err(error) = self.change_read_settings(|s| {
+                    s.font = ReadFont::Serif;
+                    s.theme = ReadTheme::Sepia;
+                }) {
+                    self.set_toast(error);
+                }
+                self.show_reader_settings = true;
+            }
             // A "Refresh all" mid-flight: total queued, some done, a mix of
             // updated and failed feeds, and a running new-item count.
             "refresh" => {
@@ -943,31 +956,60 @@ impl FeedsApp {
 
     // --- reading settings -----------------------------------------------
 
-    /// Mutate the reading settings and persist them to the CRDT (so the change
-    /// survives restarts and converges with collaborators). All reader-settings
-    /// changes funnel through here.
-    fn bump_setting(&mut self, f: impl FnOnce(&mut ReadSettings)) {
+    /// Follow the person's reading preferences: this window shows them and
+    /// takes what another window or device changed.
+    pub(crate) fn follow_read_settings(&mut self, setting: ui::framework::Setting<ReadSettings>) {
+        self.settings = setting.get().clamped();
+        self.read_settings = Some(setting);
+    }
+
+    /// Show the reading preferences another window or device stored.
+    fn adopt_read_settings(&mut self) {
+        if let Some(setting) = &self.read_settings {
+            let stored = setting.state().with(|s| s.clamped());
+            if stored != self.settings {
+                self.settings = stored;
+            }
+        }
+    }
+
+    /// Change the person's reading preferences and keep them. Every reader
+    /// setting change, from the popover, the palette or an agent, funnels
+    /// through here.
+    pub(crate) fn change_read_settings(
+        &mut self,
+        change: impl FnOnce(&mut ReadSettings),
+    ) -> Result<(), String> {
         let mut s = self.settings;
-        f(&mut s);
-        s = s.clamped();
+        change(&mut s);
+        let s = s.clamped();
+        if let Some(setting) = &self.read_settings {
+            setting
+                .set(s)
+                .map_err(|error| format!("Couldn't save the reading settings: {error}"))?;
+        }
         self.settings = s;
-        self.submit(&actions::set_read_settings_action(s));
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn read_settings_for_test(&self) -> ReadSettings {
+        self.settings
     }
 
     fn apply_settings_action(&mut self, action: SettingsAction) {
-        match action {
+        let changed = match action {
             SettingsAction::FontDec => {
-                self.bump_setting(|s| s.font_scale -= 0.1);
+                self.change_read_settings(|s| s.font_scale -= ReadSettings::FONT_STEP)
             }
             SettingsAction::FontInc => {
-                self.bump_setting(|s| s.font_scale += 0.1);
+                self.change_read_settings(|s| s.font_scale += ReadSettings::FONT_STEP)
             }
-            SettingsAction::SetFont(f) => {
-                self.bump_setting(|s| s.font = f);
-            }
-            SettingsAction::SetTheme(th) => {
-                self.bump_setting(|s| s.theme = th);
-            }
+            SettingsAction::SetFont(f) => self.change_read_settings(|s| s.font = f),
+            SettingsAction::SetTheme(th) => self.change_read_settings(|s| s.theme = th),
+        };
+        if let Err(error) = changed {
+            self.set_toast(error);
         }
     }
 
@@ -1630,9 +1672,8 @@ impl FeedsApp {
     /// own edit, a collaborator's, an undo, or the last subscription going
     /// away. A source or an article the library no longer has stops being
     /// shown; the first library presented opens its newest article.
-    pub(crate) fn present_library(&mut self, store: Store, settings: ReadSettings) {
+    pub(crate) fn present_library(&mut self, store: Store) {
         self.store = store;
-        self.settings = settings;
         let source_gone = match self.filter {
             Filter::Folder(id) => self.store.folder(id).is_none(),
             Filter::Feed(id) => self.store.feed(id).is_none(),
@@ -4317,6 +4358,7 @@ impl Widget for FeedsApp {
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.background_poll_deadline.set(None);
+        self.adopt_read_settings();
         self.now = chrono::Utc::now().timestamp();
         self.drain_modal_actions();
         // Submit what the live (doc-less) drain queued, then drain again here
@@ -5347,7 +5389,7 @@ mod tests {
         // collaborator: the rows, the open article and the feed's filter go.
         let feed = a.store.feeds[0].id;
         a.set_filter(Filter::Feed(feed));
-        a.present_library(Store::new(), ReadSettings::default());
+        a.present_library(Store::new());
         assert!(a.store.feeds.is_empty());
         assert!(
             a.selected.is_none(),

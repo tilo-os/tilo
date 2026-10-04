@@ -6,6 +6,8 @@
 //! [`Resource::bound_actions`] / [`Resource::children`]. Refreshing and OPML
 //! import/export change nothing by themselves: they are the reader's
 //! [`FeedsEffect`]s, whose results reach the library as ordinary actions.
+//! How articles read (text size, face, paper) is the person's
+//! [`ReadSettings`], a personal setting the reader's effects change.
 
 use std::rc::Rc;
 
@@ -32,11 +34,10 @@ use crate::model::{Filter, ReadFont, ReadSettings, ReadTheme, Store};
 /// Stable id for the published reader root.
 pub const READER_RESOURCE_ID: &str = "feeds.reader";
 
-/// Shared library projection: subscriptions plus durable reading settings.
+/// Shared library projection: folders, subscriptions and their articles.
 #[derive(Clone, Debug, Default)]
 pub struct FeedsState {
     pub store: Store,
-    pub settings: ReadSettings,
 }
 
 /// The feeds reader resource.
@@ -57,7 +58,6 @@ impl Resource for Feeds {
     fn read(doc: &Doc) -> Result<FeedsState, ModelError> {
         Ok(FeedsState {
             store: FeedsDoc::load(doc),
-            settings: FeedsDoc::read_settings(doc),
         })
     }
 
@@ -109,11 +109,11 @@ impl Resource for Feeds {
     }
 
     fn children(state: &FeedsState) -> Vec<PublishedResource> {
-        publish_children(&resource_ctx_from_library(&state.store, state.settings))
+        publish_children(&resource_ctx_from_library(&state.store))
     }
 
     fn child(state: &FeedsState, id: &str) -> Option<PublishedResource> {
-        resolve_child(&state.store, state.settings, id)
+        resolve_child(&state.store, id)
     }
 
     /// Every subscription, article and tag, each opening where it is shown.
@@ -175,6 +175,36 @@ pub enum FeedsEffect {
     Open {
         #[param("The feed, article or tag's resource id")]
         item: String,
+    },
+    /// Increase reader text size
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(permission = "read")]
+    ReaderTextLarger,
+    /// Decrease reader text size
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(permission = "read")]
+    ReaderTextSmaller,
+    /// Use reader font
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(permission = "read", idempotent)]
+    ReaderFont {
+        #[param("Reader font", choices = ["sans", "serif", "mono"])]
+        font: String,
+    },
+    /// Use reader paper
+    ///
+    /// A reading preference of this person, which follows them to their
+    /// other devices.
+    #[effect(permission = "read", idempotent)]
+    ReaderPaper {
+        #[param("Reader paper", choices = ["light", "sepia", "dark"])]
+        paper: String,
     },
 }
 
@@ -250,13 +280,6 @@ impl ResourceApp for FeedsShell {
             },
         ];
         match name.unwrap_or_default() {
-            "reader-settings" => {
-                actions.push(crate::actions::set_read_settings_action(ReadSettings {
-                    font: ReadFont::Serif,
-                    theme: ReadTheme::Sepia,
-                    ..ReadSettings::default()
-                }));
-            }
             // Titles long enough that the sidebar elides them to one line
             // with a fade instead of wrapping into the next row.
             "long-titles" => actions.extend(
@@ -304,11 +327,12 @@ impl ResourceApp for FeedsShell {
 
 impl ResourceSurface<Feeds, FeedsEffect> for FeedsApp {
     fn present(&mut self, state: &Rc<FeedsState>) {
-        self.present_library(state.store.clone(), state.settings);
+        self.present_library(state.store.clone());
     }
 
     fn attach(&mut self, cx: SurfaceCx<Feeds>) {
         self.attach_dispatcher(cx.dispatcher());
+        self.follow_read_settings(cx.settings::<ReadSettings>());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -336,6 +360,30 @@ impl ResourceSurface<Feeds, FeedsEffect> for FeedsApp {
                 self.reveal(&item)?;
                 Ok(Effected::done())
             }
+            FeedsEffect::ReaderTextLarger => {
+                self.change_read_settings(|s| s.font_scale += ReadSettings::FONT_STEP)?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderTextSmaller => {
+                self.change_read_settings(|s| s.font_scale -= ReadSettings::FONT_STEP)?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderFont { font } => {
+                let font = ReadFont::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.as_str() == font)
+                    .ok_or_else(|| format!("no reader font {font:?}: sans, serif or mono"))?;
+                self.change_read_settings(|s| s.font = font)?;
+                Ok(Effected::done())
+            }
+            FeedsEffect::ReaderPaper { paper } => {
+                let theme = ReadTheme::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.as_str() == paper)
+                    .ok_or_else(|| format!("no reader paper {paper:?}: light, sepia or dark"))?;
+                self.change_read_settings(|s| s.theme = theme)?;
+                Ok(Effected::done())
+            }
         }
     }
 
@@ -350,10 +398,7 @@ impl ResourceSurface<Feeds, FeedsEffect> for FeedsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{
-        add_subscription_action, remove_subscription_action, rename_feed_action,
-        set_read_settings_action,
-    };
+    use crate::actions::{add_subscription_action, remove_subscription_action, rename_feed_action};
     use crate::model::{Article, Feed, FeedKind, Folder};
     use ui::framework::testing::TestApp;
 
@@ -387,15 +432,61 @@ mod tests {
         }
     }
 
-    /// Opening the app writes nothing: the default reading settings stand
-    /// unwritten and there is no library to show.
+    /// Opening the app writes nothing: there is no library to show.
     #[test]
     fn opening_writes_nothing() {
         let mut app = TestApp::<FeedsShell>::new().unwrap();
         app.settle();
         assert!(app.state().store.is_empty());
-        assert!(!app.read_document(FeedsDoc::has_settings));
         assert!(!app.undo(), "there is nothing to undo");
+    }
+
+    /// How articles read is the person's setting: the palette's effects and
+    /// another window's write reach the reader, change no document and are
+    /// nobody's undo step.
+    #[test]
+    fn reading_preferences_are_personal_settings() {
+        let mut app = sample_app();
+        let before = app.peer_document().get_heads();
+        app.effect(&FeedsEffect::ReaderFont {
+            font: "serif".into(),
+        })
+        .unwrap();
+        app.effect(&FeedsEffect::ReaderPaper {
+            paper: "sepia".into(),
+        })
+        .unwrap();
+        app.effect(&FeedsEffect::ReaderTextLarger).unwrap();
+        app.settle();
+        let stored = app.settings::<ReadSettings>().get();
+        assert_eq!(stored.font, ReadFont::Serif);
+        assert_eq!(stored.theme, ReadTheme::Sepia);
+        assert!(stored.font_scale > ReadSettings::default().font_scale);
+        assert!(
+            app.effect(&FeedsEffect::ReaderFont {
+                font: "comic".into()
+            })
+            .is_err(),
+            "an unknown font is refused"
+        );
+        assert_eq!(
+            app.peer_document().get_heads(),
+            before,
+            "no document change"
+        );
+
+        // A preference written by another window or device shows here.
+        app.settings::<ReadSettings>()
+            .set(&ReadSettings {
+                font: ReadFont::Mono,
+                ..stored
+            })
+            .unwrap();
+        app.settle();
+        let shown = app
+            .with_surface(|feeds: &mut FeedsApp| feeds.read_settings_for_test())
+            .unwrap();
+        assert_eq!(shown.font, ReadFont::Mono);
     }
 
     /// The reader's keys, the palette and an agent all edit the library
@@ -497,14 +588,6 @@ mod tests {
                 .count(),
             1
         );
-
-        // A reading preference written by another window shows here.
-        app.invoke(apply(&set_read_settings_action(ReadSettings {
-            font: ReadFont::Serif,
-            ..ReadSettings::default()
-        })))
-        .unwrap();
-        assert_eq!(app.state().settings.font, ReadFont::Serif);
     }
 
     /// Unsubscribing the last feed — here, through the palette, or by a
@@ -642,8 +725,9 @@ mod tests {
         );
 
         let settings = TestApp::<FeedsShell>::capture(Some("reader-settings")).unwrap();
-        assert_eq!(settings.state().settings.font, ReadFont::Serif);
-        assert_eq!(settings.state().settings.theme, ReadTheme::Sepia);
+        let staged = settings.settings::<ReadSettings>().get();
+        assert_eq!(staged.font, ReadFont::Serif);
+        assert_eq!(staged.theme, ReadTheme::Sepia);
 
         let long = TestApp::<FeedsShell>::capture(Some("long-titles")).unwrap();
         assert!(
