@@ -4,16 +4,17 @@
 //! Every document-mutating operation on the saved fleet is a [`VpnAction`]: a
 //! small serializable value that deterministically mutates the shared Automerge
 //! document (see [`crate::doc`]). The stored collaborative metadata is only a
-//! profile id, display name, protocol, per-connection Tor routing preference,
-//! and global "route everything over Tor" toggle. `NetworkManager` UUIDs,
+//! profile id, display name, protocol and per-connection Tor routing
+//! preference. `NetworkManager` UUIDs,
 //! endpoint/routing facts and credentials stay in the owner-local store. The exact same
-//! [`EncodedAction`] an on-screen affordance dispatches (a completed import, a
+//! action an on-screen affordance dispatches (a completed import, a
 //! connection's Tor toggle) is what the Ctrl+K palette dispatches — one source
 //! of truth, one replay path, undo for free.
 //!
-//! The resource tree mirrors the model: the vault owns its connections. The
-//! vault exports profile import (per protocol) and the global Tor toggle; each
-//! connection exports connect / disconnect / rename / toggle-Tor / delete.
+//! The resource tree mirrors the model: the vault owns its connections, each
+//! exporting its Tor preference; renaming is a declaration on the vault. What
+//! a profile does on this device (connect, disconnect, set up, delete) is a
+//! [`crate::effects::VpnEffect`] the app publishes on the same child.
 //!
 //! ## What is *not* an action
 //!
@@ -42,13 +43,10 @@
 //! requested state — is a **no-op** rather than an error, so a bad replay can't
 //! wedge a peer.
 
-use automerge::AutoCommit;
-
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    ActionContract, ActionError, ActionRegistry, ActionSpec, ConfirmationPolicy, Doc,
-    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, PermissionRequirement, Resource,
-    ResultSpec, RetryPolicy, RiskLevel,
+    ActionContract, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus,
+    Resource, RetryPolicy,
 };
 
 use crate::doc::VpnDoc;
@@ -56,10 +54,6 @@ use crate::model::{ConnId, Connection, Vault};
 
 /// Registry `type_id` for every VPN action.
 pub const VPN_ACTION_TYPE: &str = "vpn.action";
-pub const VPN_IMPORT_TYPE: &str = "vpn.import-profile";
-pub const VPN_DELETE_TYPE: &str = "vpn.delete-profile";
-pub const VPN_PROVISION_TYPE: &str = "vpn.provision-profile";
-pub const VPN_TOGGLE_TYPE: &str = "vpn.toggle-tunnel";
 
 /// Every collaborative operation the VPN client exports on its saved fleet.
 ///
@@ -86,9 +80,6 @@ pub enum VpnAction {
     /// state is resolved at authoring time and carried, so replay is order-free.
     /// Absent id or an already-satisfied value → no-op.
     SetConnTor { id: ConnId, on: bool },
-    /// Set the global "route everything over Tor" master preference. An
-    /// already-satisfied value → no-op.
-    SetTorGlobal { on: bool },
 }
 
 impl tilo_actions::Action for VpnAction {
@@ -124,11 +115,6 @@ impl tilo_actions::Action for VpnAction {
                     && c.tor != *on
                 {
                     VpnDoc::set_conn_tor(doc, *id, *on);
-                }
-            }
-            VpnAction::SetTorGlobal { on } => {
-                if vault.tor_global != *on {
-                    VpnDoc::set_tor_global(doc, *on);
                 }
             }
         }
@@ -187,10 +173,6 @@ pub fn set_conn_tor_action(id: ConnId, on: bool) -> VpnAction {
     VpnAction::SetConnTor { id, on }
 }
 
-pub fn set_tor_global_action(on: bool) -> VpnAction {
-    VpnAction::SetTorGlobal { on }
-}
-
 // ===========================================================================
 // Resource tree
 // ===========================================================================
@@ -214,174 +196,57 @@ fn config_contract() -> ActionContract {
     }
 }
 
-/// Connect / disconnect Effects for one saved profile. Live surfaces overlay
-/// availability from local `NetworkManager` provisioning; the resource door
-/// always advertises both so [`tilo_resource::publish`] owns the palette row.
-pub fn tunnel_toggle_specs(id: ConnId) -> Vec<ActionSpec> {
-    [("connect", "Connect"), ("disconnect", "Disconnect")]
-        .into_iter()
-        .filter_map(|(action_id, label)| {
-            ActionSpec::operation(
-                action_id,
-                label,
-                OperationKind::Effect,
-                VPN_TOGGLE_TYPE,
-                &id.to_string(),
-            )
-            .ok()
-            .map(|spec| {
-                spec.with_contract(ActionContract {
-                    permission: PermissionRequirement::Admin,
-                    risk: RiskLevel::Privileged,
-                    confirmation: ConfirmationPolicy::Confirm,
-                    retry: RetryPolicy::AtMostOnce,
-                    execution: ExecutionMode::Background { cancellable: true },
-                    result: ResultSpec::Job,
-                    tags: vec!["vpn".into(), "tunnel".into()],
-                    ..ActionContract::default()
-                })
-            })
+/// A one-line label for a connection in the palette.
+fn connection_label(c: &Connection) -> String {
+    // The tunnel's state is this device's, not the shared profile's.
+    format!("{} — {}", c.name, c.kind.long_name())
+}
+
+/// Saved profiles as children of the published vault.
+pub(crate) fn connection_resources(vault: &Vault) -> Vec<Resource> {
+    vault
+        .connections
+        .iter()
+        .map(|c| {
+            let id = c.id;
+            let mut cr = Resource::new(
+                crate::effects::connection_resource_id(id),
+                "vpn.connection",
+                connection_label(c),
+            );
+            cr.children.push(Resource::new(
+                format!("vpn.connection:{id}:protocol"),
+                "vpn.protocol",
+                c.kind.long_name(),
+            ));
+            // Never make endpoint, routing, address, certificate/key or other
+            // tunnel material searchable. A peer can navigate the stable
+            // profile id, then set it up with its exact local credentials.
+            cr.children.push(Resource::new(
+                format!("vpn.connection:{id}:provisioning"),
+                "vpn.local-provisioning",
+                "Provisioning is local to this device",
+            ));
+            let tor_label = if c.tor {
+                "Stop routing over Tor"
+            } else {
+                "Route over Tor"
+            };
+            cr.with_action(immediate_spec(
+                "toggle-tor",
+                tor_label,
+                &set_conn_tor_action(id, !c.tor),
+            ))
         })
         .collect()
 }
 
-/// A one-line label for a connection in the palette.
-fn connection_label(c: &Connection) -> String {
-    format!("{} — {} · {}", c.name, c.kind.long_name(), c.status.label())
-}
-
-/// Global Tor preference. The label follows the saved setting.
-pub(crate) fn tor_global_spec(vault: &Vault) -> ActionSpec {
-    let tor_label = if vault.tor_global {
-        "Stop routing all traffic over Tor"
-    } else {
-        "Route all traffic over Tor"
-    };
-    immediate_spec(
-        "toggle-tor-global",
-        tor_label,
-        &set_tor_global_action(!vault.tor_global),
-    )
-}
-
-/// Saved profiles as children of the published vault.
-#[allow(
-    clippy::too_many_lines,
-    reason = "one resource-tree builder keeps profile actions and their contracts together"
-)]
-pub(crate) fn connection_resources(vault: &Vault) -> Vec<Resource> {
-    let mut children = Vec::new();
-    for c in &vault.connections {
-        let id = c.id;
-        let mut cr = Resource::new(
-            format!("vpn.connection:{id}"),
-            "vpn.connection",
-            connection_label(c),
-        );
-
-        cr.children.push(Resource::new(
-            format!("vpn.connection:{id}:protocol"),
-            "vpn.protocol",
-            c.kind.long_name(),
-        ));
-        if let Ok(mut provision) = ActionSpec::operation(
-            "provision-local",
-            "Set up on this device",
-            OperationKind::Effect,
-            VPN_PROVISION_TYPE,
-            &(id.to_string(), c.kind.as_str()),
-        ) {
-            provision.contract = ActionContract {
-                permission: PermissionRequirement::Admin,
-                risk: RiskLevel::Privileged,
-                confirmation: ConfirmationPolicy::Confirm,
-                retry: RetryPolicy::AtMostOnce,
-                execution: ExecutionMode::Background { cancellable: true },
-                result: ResultSpec::Job,
-                tags: vec!["vpn".into(), "provisioning".into()],
-                ..ActionContract::default()
-            };
-            cr = cr.with_action(provision);
-        }
-        for toggle in tunnel_toggle_specs(id) {
-            cr = cr.with_action(toggle);
-        }
-        // Never make endpoint, routing, address, certificate/key or other
-        // tunnel material searchable. A peer can navigate the stable profile
-        // id, then provision its exact local credentials through the portal.
-        cr.children.push(Resource::new(
-            format!("vpn.connection:{id}:provisioning"),
-            "vpn.local-provisioning",
-            "Provisioning is local to this device",
-        ));
-
-        // Toggle this tunnel's Tor routing preference.
-        let tor_label = if c.tor {
-            "Stop routing over Tor"
-        } else {
-            "Route over Tor"
-        };
-        cr = cr.with_action(immediate_spec(
-            "toggle-tor",
-            tor_label,
-            &set_conn_tor_action(id, !c.tor),
-        ));
-
-        // Removal must delete the real NetworkManager profile before the
-        // shared secret-free summary disappears.
-        if let Ok(mut delete) = ActionSpec::operation(
-            "delete",
-            "Delete connection",
-            OperationKind::Effect,
-            VPN_DELETE_TYPE,
-            &(id, c.name.clone()),
-        ) {
-            delete.contract = ActionContract {
-                permission: PermissionRequirement::Admin,
-                risk: RiskLevel::Destructive,
-                confirmation: ConfirmationPolicy::Confirm,
-                retry: RetryPolicy::AtMostOnce,
-                execution: ExecutionMode::Background { cancellable: false },
-                result: ResultSpec::Job,
-                tags: vec!["configuration".into(), "vpn".into(), "delete".into()],
-                ..ActionContract::default()
-            };
-            cr = cr.with_action(delete);
-        }
-
-        children.push(cr);
-    }
-    children
-}
-
-/// The published vault. Import effects and the Tor toggle ride that resource;
-/// each saved profile is a child.
-pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
-    vec![ui::tilo_resource::publish::<crate::resource::Vpn>(
-        "vpn.vault",
-        "VPN",
-        vault,
-    )]
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::VpnApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        vec![self.published_vault(&VpnDoc::read_vault(doc))]
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::model::ConnKind;
-
     use super::*;
-    use crate::app::VpnApp;
-    use crate::model::draft_connection;
-    use automerge::ROOT;
+    use crate::model::{ConnKind, draft_connection, sample_vault};
     use tilo_actions::LocalTransport;
-    use ui::testing::action_contract::{find_spec, spec_encoding};
-    use ui::widget::Widget;
+    use ui::automerge::AutoCommit;
     use uuid::Uuid;
 
     fn registry() -> ActionRegistry {
@@ -390,177 +255,31 @@ mod tests {
         r
     }
 
-    #[test]
-    fn vpn_profile_effects_declare_exact_privileged_contracts() {
-        // Case `published_delete_declares_destructive_confirmation`.
-        {
-            let vault = crate::model::sample_vault();
-            let resources = provide_resources(&vault);
-            let delete = resources[0].children[0]
-                .actions
-                .iter()
-                .find(|action| action.id == "delete")
-                .expect("saved connection exports delete");
-            assert_eq!(delete.contract.risk, RiskLevel::Destructive);
-            assert_eq!(delete.contract.confirmation, ConfirmationPolicy::Confirm);
-        }
-        // Case `setup_resource_carries_exact_profile_id_and_protocol`.
-        {
-            let vault = crate::model::sample_vault();
-            let profile = &vault.connections[0];
-            let resources = provide_resources(&vault);
-            let resource = resources[0]
-                .children
-                .iter()
-                .find(|resource| resource.id.0 == format!("vpn.connection:{}", profile.id))
-                .expect("profile resource");
-            let action = resource
-                .actions
-                .iter()
-                .find(|action| action.id == "provision-local")
-                .expect("exact setup action");
-            let encoded = spec_encoding(action, None);
-            assert_eq!(encoded.type_id, VPN_PROVISION_TYPE);
-            let (id, kind): (String, String) = serde_json::from_slice(&encoded.payload).unwrap();
-            assert_eq!(id, profile.id.to_string());
-            assert_eq!(kind, profile.kind.as_str());
-        }
-        // Case `delete_spec_is_the_privileged_profile_effect`:
-        // Profile removal is a privileged OS effect, not a document action.
-        {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
-            let (_, delete_spec) = find_spec(&resources, "vpn.connection", "delete");
-            assert_eq!(spec_encoding(delete_spec, None).type_id, VPN_DELETE_TYPE);
-        }
-    }
-
-    /// The demo (sample-seeded) VPN app synced into a fresh document, plus the
-    /// app that owns it. `sync` seeds the sample fleet into the document (which
-    /// is empty here) and reads it back, so the document is the source of truth
-    /// every action reads.
-    fn seeded() -> (VpnApp, AutoCommit) {
-        let mut app = VpnApp::new_demo();
+    /// A document holding the sample fleet.
+    fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        (app, doc)
+        VpnDoc::write_vault(&mut doc, &sample_vault());
+        doc.commit();
+        doc
     }
 
-    fn home_id(root: &Resource) -> ConnId {
-        root.children
-            .iter()
-            .find(|r| r.label.starts_with("Home"))
-            .expect("a Home connection resource")
-            .id
-            .as_str()
-            .trim_start_matches("vpn.connection:")
-            .parse()
-            .expect("a uuid connection id")
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        vec![ui::tilo_resource::publish::<crate::resource::Vpn>(
+            "vpn.vault",
+            "VPN",
+            &VpnDoc::read_vault(doc),
+        )]
     }
 
     #[test]
-    fn vpn_palette_publishes_tree_and_dispatches_actions() {
-        // Case `ctrl_k_publishes_the_vpn_tree`:
-        // Ctrl+K on the VPN client yields the tree: the vault (add-per-protocol +
-        // global Tor) and a `vpn.connection` child per saved connection exporting
-        // rename / toggle-Tor / delete. Drives the real resource hook and the real
-        // palette.
-        {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
-            assert_eq!(resources.len(), 1, "one vault root");
-            let root = &resources[0];
-            assert_eq!(root.kind, "vpn.vault");
-
-            let root_actions: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(
-                root_actions.contains(&"toggle-tor-global"),
-                "{root_actions:?}"
-            );
-            assert!(
-                root_actions.contains(&"import-wireguard"),
-                "{root_actions:?}"
-            );
-            assert!(root_actions.contains(&"import-openvpn"), "{root_actions:?}");
-            assert!(
-                !root.children.is_empty(),
-                "the sample connections are published"
-            );
-
-            let home = root
-                .children
-                .iter()
-                .find(|r| r.label.starts_with("Home"))
-                .expect("a Home connection resource");
-            assert_eq!(home.kind, "vpn.connection");
-            let h_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
-            assert!(h_actions.contains(&"toggle-tor"), "{h_actions:?}");
-            assert!(h_actions.contains(&"delete"), "{h_actions:?}");
-            assert!(h_actions.contains(&"connect"), "{h_actions:?}");
-            assert!(h_actions.contains(&"disconnect"), "{h_actions:?}");
-
-            // The flattened tree exports every action, including the per-connection
-            // operations that sort after the vault-level ones.
-            let flat: Vec<&str> = tilo_actions::flatten(&resources)
-                .iter()
-                .map(|f| f.action.label.as_str())
-                .collect();
-            assert!(flat.contains(&"Delete connection"), "{flat:?}");
-            assert!(flat.contains(&"Import WireGuard profile"), "{flat:?}");
-            assert!(flat.contains(&"Connect"), "{flat:?}");
-            assert!(flat.contains(&"Disconnect"), "{flat:?}");
-        }
-        // Case `out_of_range_action_is_a_no_op`:
-        // A malformed / out-of-range payload is a no-op, not an error: deleting a
-        // connection id that isn't there leaves the document (its heads) untouched.
-        {
-            let (_app, mut doc) = seeded();
-            let before = doc.get_heads();
-            let action = remove_connection_action(Uuid::from_u128(0xDEAD_BEEF));
-            let encoded = encode(&action);
-            let decoded = registry().decode(&encoded).unwrap();
-            let mut tx = LocalTransport::new();
-            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-            assert_eq!(
-                doc.get_heads(),
-                before,
-                "a delete of an absent connection changed nothing"
-            );
-        }
-        // Case `tor_toggle_button_dispatches_the_palette_action`:
-        // Single source of truth on the *real* affordance path: the on-screen
-        // per-connection Tor toggle (`toggle_conn_tor`) dispatches the byte-identical
-        // action the palette's `toggle-tor` spec exports.
-        {
-            let (mut app, mut doc) = seeded();
-
-            // Read the palette spec for Home's toggle-Tor, capturing the owned
-            // encoded action before we mutate the app.
-            let (id, spec_encoded) = {
-                let resources = ui::resources::resources(&app, &doc);
-                let root = &resources[0];
-                let id = home_id(root);
-                let home = root
-                    .children
-                    .iter()
-                    .find(|r| r.label.starts_with("Home"))
-                    .unwrap();
-                let spec = home.actions.iter().find(|a| a.id == "toggle-tor").unwrap();
-                (id, spec_encoding(spec, None))
-            };
-
-            // Drive the real on-screen affordance.
-            app.toggle_conn_tor(&mut doc, id);
-
-            let dispatched = app
-                .last_dispatched()
-                .expect("the real toggle dispatched an action");
-            assert_eq!(dispatched.type_id, spec_encoded.type_id);
-            assert_eq!(
-                dispatched.payload, spec_encoded.payload,
-                "the button and the palette are one action"
-            );
-        }
+    fn an_action_naming_an_absent_connection_changes_nothing() {
+        let mut doc = seeded();
+        let before = doc.get_heads();
+        let encoded = encode(&remove_connection_action(Uuid::from_u128(0xDEAD_BEEF)));
+        let decoded = registry().decode(&encoded).unwrap();
+        let mut tx = LocalTransport::new();
+        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+        assert_eq!(doc.get_heads(), before);
     }
 
     fn first_conn(doc: &AutoCommit) -> Connection {
@@ -580,14 +299,12 @@ mod tests {
     }
 
     ui::action_contract_tests! {
-        seed: seeded().1,
+        seed: seeded(),
         registry: registry(),
-        resources: |doc| VpnApp::new_demo().publish_resources(doc),
+        resources: |doc| published(doc),
         palette: [
-            "Route all traffic over Tor",
-            "Import WireGuard profile",
-            "Import OpenVPN profile",
-            "Set up on this device",
+            "Rename connection",
+            "Route over Tor",
         ],
         replay: [
             toggle_conn_tor => |doc| {
@@ -605,14 +322,8 @@ mod tests {
         ],
         undo: [
             remove_connection => |doc| encode(&remove_connection_action(first_conn(doc).id)),
-            toggle_tor_global => |doc| encode(&set_tor_global_action(
-                !VpnDoc::read_vault(doc).tor_global,
-            )),
         ],
         encodes: [
-            toggle_tor_global => ("vpn.vault", "toggle-tor-global", |doc, _| {
-                encode(&set_tor_global_action(!VpnDoc::read_vault(doc).tor_global))
-            }),
             toggle_conn_tor => ("vpn.connection", "toggle-tor", |doc, res| {
                 let id = conn_id(res);
                 let on = VpnDoc::read_vault(doc).get(id).expect("published connection").tor;

@@ -734,11 +734,6 @@ inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/sdk/ui-core/tests/support/
 readers = ["apps/containers/src/framework_history_tests.rs"]
 
 [[cargo]]
-package = "vpn"
-inputs = ["crates/sdk/ui-core/assets/fonts/"]
-readers = ["apps/vpn/src/app.rs"]
-
-[[cargo]]
 package = "word-processor"
 inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["apps/word-processor/tests/canonical_component.rs"]
