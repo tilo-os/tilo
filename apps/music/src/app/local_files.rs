@@ -256,7 +256,7 @@ mod tests {
     fn local_file_intents_are_canonical_and_uris_are_validated() {
         // Phase `raw_path_operation_is_not_remotely_decodable`.
         {
-            let mut app = MusicApp::new_for_shot();
+            let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
             let payload = br#"{"OpenLocalFile":{"source":"private.wav"}}"#;
             assert!(
@@ -281,8 +281,8 @@ mod tests {
         {
             use ui::widget::Widget;
             for scale in [1.0, 2.0] {
-                let mut app = MusicApp::new_for_shot();
-                app.set_offline_for_shot();
+                let mut app = MusicApp::without_profile();
+                app.disconnect();
                 let mut doc = automerge::AutoCommit::new();
                 app.sync(&mut doc, &automerge::ROOT);
                 app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1000.0, 850.0);
@@ -359,8 +359,8 @@ mod tests {
 
         // Phase `home_picker_is_in_host_focus_order_only_while_visible`.
         {
-            let mut music = MusicApp::new_for_shot();
-            music.set_offline_for_shot();
+            let mut music = MusicApp::without_profile();
+            music.disconnect();
             let (services, recorder) = ui::host::HostServices::recording();
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
@@ -429,7 +429,7 @@ mod tests {
     #[cfg(feature = "audio")]
     fn picker_cancel_failure_and_single_pending_request_use_operation_receipts() {
         for cancelled in [true, false] {
-            let mut app = MusicApp::new_for_shot();
+            let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let before = doc.get_heads();
@@ -512,7 +512,7 @@ mod tests {
             bytes[4..8].copy_from_slice(&16036u32.to_le_bytes());
             bytes[40..44].copy_from_slice(&16000u32.to_le_bytes());
             std::fs::write(&path, bytes).unwrap();
-            let mut app = MusicApp::new_for_shot();
+            let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.open_local_file(path.to_str().unwrap()).unwrap();
             wait_for_audio(&mut app);
@@ -622,7 +622,7 @@ mod tests {
             wav(&path);
             let file = crate::local_file::LocalFile::open(path.to_str().unwrap(), None).unwrap();
             for route in ["row", "previous", "repeat-one", "canonical"] {
-                let mut app = MusicApp::new_for_shot();
+                let mut app = MusicApp::without_profile();
                 let mut doc = automerge::AutoCommit::new();
                 app.sync(&mut doc, &automerge::ROOT);
                 let id = file.track.id.clone();
@@ -701,10 +701,10 @@ mod tests {
         } else {
             b"Hash-valid cache content is not necessarily decodable audio".to_vec()
         };
-        let mut app = MusicApp::new_for_shot();
-        app.set_offline_for_shot();
-        app.seed_sample_library();
+        let mut app = MusicApp::without_profile();
+        app.disconnect();
         let mut doc = automerge::AutoCommit::new();
+        crate::doc::seed(&mut doc, &crate::seed::sample_library());
         app.sync(&mut doc, &automerge::ROOT);
         let id = app.lib.tracks.keys().next().unwrap().clone();
         app.media_cache
@@ -783,10 +783,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cached.wav");
         wav(&path);
-        let mut app = MusicApp::new_for_shot();
-        app.set_offline_for_shot();
-        app.seed_sample_library();
+        let mut app = MusicApp::without_profile();
+        app.disconnect();
         let mut doc = automerge::AutoCommit::new();
+        crate::doc::seed(&mut doc, &crate::seed::sample_library());
         app.sync(&mut doc, &automerge::ROOT);
         app.open_local_file(path.to_str().unwrap()).unwrap();
         wait_for_audio(&mut app);
@@ -872,10 +872,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("old-local.wav");
         wav(&path);
-        let mut app = MusicApp::new_for_shot();
-        app.set_offline_for_shot();
-        app.seed_sample_library();
+        let mut app = MusicApp::without_profile();
+        app.disconnect();
         let mut doc = automerge::AutoCommit::new();
+        crate::doc::seed(&mut doc, &crate::seed::sample_library());
         app.sync(&mut doc, &automerge::ROOT);
         app.open_local_file(path.to_str().unwrap()).unwrap();
         wait_for_audio(&mut app);
@@ -1058,8 +1058,10 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("local song.wav");
             wav(&path);
-            let mut app =
-                crate::app_for_launch_source(Some(path.to_str().unwrap()), 0, false).unwrap();
+            let mut app = MusicApp::without_profile();
+            let arguments = [path.to_str().unwrap().to_owned()];
+            app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
+            assert!(app.playback_error.is_none());
             let mut doc = automerge::AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             assert!(app.lib.tracks.is_empty());
@@ -1158,7 +1160,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("effect.wav");
             wav(&path);
-            let mut app = MusicApp::new_for_shot();
+            let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let before = doc.get_heads();
@@ -1240,7 +1242,7 @@ mod tests {
                     std::fs::remove_file(&path).unwrap();
                 }
                 let restored = crate::storage::load_device_profile_from(&profile_path);
-                let mut app = MusicApp::new_for_shot();
+                let mut app = MusicApp::without_profile();
                 app.local_file = restored.local_file;
                 app.pb = restored.playback;
                 let mut doc = automerge::AutoCommit::new();
@@ -1298,7 +1300,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("short.wav");
             wav(&path);
-            let mut app = MusicApp::new_for_shot();
+            let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let request = app.open_local_file(path.to_str().unwrap()).unwrap();
@@ -1320,7 +1322,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("corrupt.wav");
             std::fs::write(&path, b"not a WAV stream").unwrap();
-            let mut app = MusicApp::new_for_shot();
+            let mut app = MusicApp::without_profile();
             let mut doc = automerge::AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let invocation = tilo_actions::InvocationId::new();
@@ -1374,7 +1376,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("source.wav");
         wav(&path);
-        assert!(crate::app_for_launch_source(Some(path.to_str().unwrap()), 0, false).is_err());
+        let mut app = MusicApp::without_profile();
+        let arguments = [path.to_str().unwrap().to_owned()];
+        app.open_launch(&ui::framework::LaunchInput::new(&arguments, None));
+        assert!(app.playback_error.is_some());
+        assert!(app.pb.current.is_none());
     }
 
     #[test]
@@ -1383,7 +1389,7 @@ mod tests {
         const CHILD: &str = "TILO_TEST_LOCAL_FILE_PROFILE_FAILURE";
         if let Some(path) = std::env::var_os(CHILD) {
             assert_eq!(unsafe { gstreamer::ffi::gst_is_initialized() }, 0);
-            let mut app = MusicApp::new_for_shot();
+            let mut app = MusicApp::without_profile();
             app.persist_device_profile = true;
             assert!(app.open_local_file(path.to_str().unwrap()).is_err());
             assert!(app.local_file.is_none());

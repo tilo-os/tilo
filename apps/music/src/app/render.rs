@@ -939,7 +939,6 @@ impl Widget for MusicApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
-        self.ensure_seeded(state);
         if self.playback_loaded {
             self.reload_library(state);
         } else {
@@ -1885,6 +1884,11 @@ impl Widget for MusicApp {
             // Keep frames flowing so the download spinner spins + progresses.
             || !self.downloads.is_empty()
             || !self.offline_resolves.is_empty()
+    }
+
+    fn has_pending_visual_work(&self) -> bool {
+        // A capture waits for the covers it shows.
+        !self.images.is_idle()
     }
 
     fn needs_redraw(&self) -> bool {

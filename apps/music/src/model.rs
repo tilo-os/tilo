@@ -63,6 +63,16 @@ impl Track {
     }
 }
 
+/// A track from the streaming catalogue (a search hit, a chart entry, an
+/// album page) with the album and artist it belongs to: what the library
+/// imports once the track is played.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogueTrack {
+    pub track: Track,
+    pub album: Album,
+    pub artist: Artist,
+}
+
 /// A user-curated playlist: an ordered list of track ids.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Playlist {
@@ -83,7 +93,7 @@ pub struct Playlist {
 }
 
 impl Playlist {
-    const ORDER_STEP: i64 = 1_048_576;
+    pub(crate) const ORDER_STEP: i64 = 1_048_576;
 
     /// Absolute sparse rank for appending a new membership.
     pub fn append_rank(&self) -> i64 {
