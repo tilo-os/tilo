@@ -100,6 +100,8 @@ pub struct DeviceFabricView {
     pub revertible_calibrations: Vec<crate::shell::personal_continuity::DeviceId>,
     pub tethering: Vec<crate::shell::personal_tethering_runtime::TetheringStatusView>,
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
+    /// Boots of the person's devices waiting for `device.unlock` here.
+    pub device_unlocks: Vec<crate::shell::device_unlock_runtime::DeviceUnlockConsentView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,6 +215,15 @@ pub enum DeviceFabricUiAction {
     },
     DisconnectPhoneTethering {
         request_id: [u8; 16],
+    },
+    /// The owner's `device.unlock` decision for a waiting boot.
+    AuthorizeDeviceUnlock {
+        request_digest: [u8; 32],
+        approved: bool,
+    },
+    /// Remove a device from the person's fleet.
+    RemoveDevice {
+        device: crate::shell::personal_continuity::DeviceId,
     },
     Place {
         device: crate::shell::personal_continuity::DeviceId,

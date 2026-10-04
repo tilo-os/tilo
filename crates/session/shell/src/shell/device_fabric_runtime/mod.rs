@@ -1231,6 +1231,7 @@ impl DeviceFabricRuntime {
     const POLICY_STORE_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
     pub fn new(network: &ShellNetwork, notification_bridge: NotificationBridge) -> Self {
+        crate::shell::device_unlock_runtime::spawn_enrol_socket();
         let counter = network.device_fabric().max_counter();
         Self {
             counter,
@@ -1443,6 +1444,7 @@ impl DeviceFabricRuntime {
             }
         }
         self.merge_remote_state(network, selection, &device, policy);
+        crate::shell::device_unlock_runtime::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
         {
@@ -5666,6 +5668,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         revertible_calibrations,
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
         remote_capture: crate::shell::remote_capture::runtime::active_view(),
+        device_unlocks: crate::shell::device_unlock_runtime::pending_device_unlocks(),
     }
 }
 
@@ -6274,6 +6277,8 @@ fn build_local_snapshot(
         settings,
         wifi,
         display,
+        // Enrolments are authored once, by `device_unlock_runtime`, and kept.
+        unlock: previous.map_or_else(Default::default, |state| state.unlock.clone()),
         speakers: crate::shell::speaker_group_runtime::authored_state(
             device,
             previous.map(|state| &state.speakers),
@@ -7075,6 +7080,7 @@ mod tests {
                 .collect(),
             wifi: Vec::new(),
             display: None,
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
@@ -7636,6 +7642,7 @@ mod tests {
                 settings: Vec::new(),
                 wifi: Vec::new(),
                 display: None,
+                unlock: crate::shell::device_unlock::UnlockFabricState::default(),
                 speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
             };
             let stamp = FabricStamp { counter: 9, device };
@@ -7671,6 +7678,7 @@ mod tests {
                 }],
                 wifi: Vec::new(),
                 display: None,
+                unlock: crate::shell::device_unlock::UnlockFabricState::default(),
                 speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
             };
             let next_stamp = FabricStamp { counter: 9, device };

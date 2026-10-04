@@ -99,6 +99,7 @@ impl Device {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: self.core.authored(endpoints, &stamp(self.name)),
         };
         assert_eq!(fabric.upsert(snapshot), Ok(true));

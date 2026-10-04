@@ -518,6 +518,21 @@ struct HostRuntime {
     replaying: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Early boot of another of the person's devices asking for its sibling
+/// half. The peer is not authenticated by transport: the boot key
+/// certificate and the challenge are what the sibling checks.
+#[derive(Clone, Debug)]
+struct DeviceUnlockProtocol;
+
+impl ProtocolHandler for DeviceUnlockProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        tokio::spawn(crate::shell::device_unlock_runtime::serve_connection(
+            connection,
+        ));
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -3215,6 +3230,7 @@ async fn run(
                 next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
+        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .spawn();
     let mut state = ActorState {
         endpoint,
