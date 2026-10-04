@@ -81,6 +81,7 @@ history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität
 history-mode-back-to-live = Zurück zur aktuellen Version
+history-mode-earlier = Frühere Änderungen anzeigen
 history-mode-before = Vorher
 history-mode-after = Nachher
 history-mode-showing-before = Frühere Version: Vorher
