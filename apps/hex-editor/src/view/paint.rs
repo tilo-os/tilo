@@ -97,6 +97,7 @@ impl HexView {
     ) {
         if !self.has_file {
             self.paint_empty_state(scene, transform, tr, theme, presence);
+            self.paint_history(scene, transform, tr, theme);
             self.paint_notices(scene, transform, tr, theme);
             return;
         }
@@ -118,7 +119,27 @@ impl HexView {
         }
         self.paint_status(scene, transform, tr, theme);
         self.paint_inspector_region(scene, transform, tr, theme, presence);
+        self.paint_history(scene, transform, tr, theme);
         self.paint_notices(scene, transform, tr, theme);
+    }
+
+    /// The window's History control in the header row, on the ground it
+    /// stands on (the docked inspector's region, else the content).
+    fn paint_history(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let g = &self.geo;
+        let ground = if g.docked && g.inspector_visible && g.inspector.contains(g.history.center())
+        {
+            theme.in_region(ui::surface::Region::Inspector)
+        } else {
+            theme.clone()
+        };
+        self.history.paint(scene, transform, tr, &ground, g.history);
     }
 
     /// The file name and the edit-mode strip, standing on the content with

@@ -647,10 +647,7 @@ impl PlayerApp {
             open_button_rect: Rect::ZERO,
             library_button_rect: Rect::ZERO,
             status_action_rect: Rect::ZERO,
-            drawer: SidebarDrawer::new()
-                .right()
-                .closed()
-                .breakpoint(f64::INFINITY),
+            drawer: SidebarDrawer::new().right().closed().overlay_only(),
             library_scroll: 0.0,
             library_max_scroll: 0.0,
             library_list_rect: Rect::ZERO,

@@ -2609,11 +2609,7 @@ impl MusicApp {
         let look = Look::of(ctx.theme);
         self.drawer.scale_for(ctx.theme);
         self.drawer.tick(ctx.theme);
-        let mut content = self.drawer.resolve(self.rect);
-        if let Some(open) = self.staged_sidebar.take() {
-            self.drawer.snap(open);
-            content = self.drawer.resolve(self.rect);
-        }
+        let content = self.drawer.resolve(self.rect);
         let r = self.rect;
         let header_h = Self::header_height(ctx, &look);
         let compact = Self::compact_bar(ctx.theme, &self.drawer, content.width());

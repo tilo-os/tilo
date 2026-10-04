@@ -64,11 +64,21 @@ impl ResourceApp for App {
         });
 
         let inspector = inspector(cx, &tools);
+        // The narrow capture shows the inspector as the drawer it is there.
+        let inspector_open = LocalState::new(false);
+        let stage_open = inspector_open.clone();
+        cx.on_stage(move |scenario| {
+            if scenario == Some("inspector-narrow") {
+                stage_open.set(true);
+            }
+        });
         Box::new(
             NavShell::new()
                 .with_id("canvas-shell")
                 .content(canvas)
-                .content_header("", vec![Box::new(rail)])
+                // The tool switcher is the content's mode: it leads the row.
+                .content_header_leading(Box::new(rail))
+                .with_inspector_state(&inspector_open)
                 .inspector(Box::new(
                     Scrollable::new_vertical()
                         // The inspector is taller than a short window: the
@@ -82,14 +92,18 @@ impl ResourceApp for App {
     }
 
     fn scenarios() -> &'static [&'static str] {
-        &["landscape"]
+        &["landscape", "inspector-narrow"]
+    }
+
+    fn scenario_viewport(name: &str) -> Option<(u32, u32)> {
+        (name == "inspector-narrow").then_some((800, 600))
     }
 
     /// The landscape screenshot paints the sample through the same actions
     /// an agent would; a plain `--shots` shows the empty sheet a new
     /// artwork is.
     fn scenario(name: Option<&str>) -> Vec<Invoke<ArtworkResource>> {
-        if name != Some("landscape") {
+        if !matches!(name, Some("landscape" | "inspector-narrow")) {
             return Vec::new();
         }
         sample::landscape()

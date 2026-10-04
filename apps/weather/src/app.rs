@@ -1214,13 +1214,17 @@ mod interaction_tests {
             let mut h = Harness::new(1280.0, 720.0);
             h.key(Key::Named(NamedKey::ArrowDown), None);
             let second = h.app.core.borrow().model.locations[1].name.clone();
-            let tree = h
+            // The column titles are the header row's headings.
+            let headings: Vec<_> = h
                 .app
                 .nav
-                .accessibility()
-                .expect("the header row has titles");
+                .children()
+                .iter()
+                .filter_map(|child| child.accessibility())
+                .filter(|node| matches!(node.role, ui::a11y::Role::Heading { .. }))
+                .collect();
             assert!(
-                tree.children
+                headings
                     .iter()
                     .any(|heading| heading.name.as_deref() == Some(second.as_str())),
                 "the forecast's header names the selected place"
