@@ -1339,6 +1339,17 @@ impl TextInput {
         }
     }
 
+    /// Where the field's text starts inside its rect: the multiline inset
+    /// (and code gutter) of a wrapping field, the horizontal padding of a
+    /// single-line one.
+    pub fn text_inset_x(&self, theme: &Theme) -> f64 {
+        if self.multiline {
+            self.ml_left()
+        } else {
+            self.text_padding_x(theme)
+        }
+    }
+
     /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
         if !self.multiline
@@ -4665,7 +4676,7 @@ impl Widget for TextInput {
         presence: &crate::presence::PresenceCtx,
     ) {
         if self.context_menu.is_open() {
-            Widget::draw(
+            Widget::draw_overlay(
                 &mut self.context_menu,
                 scene,
                 transform,

@@ -1448,7 +1448,7 @@ impl Widget for DocumentTable {
             let fill = if is_header {
                 crate::widget::data_table::tier_on(ground, crate::chrome::HAIRLINE_ALPHA)
             } else if r % 2 == 1 {
-                crate::widget::data_table::tier_on(ground, crate::widget::data_table::ZEBRA_ALPHA)
+                crate::widget::data_table::zebra_on(theme, ground)
             } else {
                 continue;
             };

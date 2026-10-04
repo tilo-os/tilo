@@ -499,37 +499,17 @@ impl Widget for SunburstChart {
             None,
             &Circle::new(base_center, (inner - 2.0).max(0.0)),
         );
-        let title_style = theme.text(TextRole::LargeTitle);
-        let (width, height) = tr.measure_style(
-            &self.center_title,
-            None,
-            &title_style.clone().with_weight(TextWeight::Bold),
-        );
-        tr.draw_style(
+        // The centre copy at the largest size the hole holds; left out
+        // where even a heading does not fit (the tooltip carries it).
+        let _ = crate::widget::chart_labels::paint_centre_label(
             scene,
+            transform,
+            tr,
+            theme,
+            base_center,
+            (inner - 2.0).max(0.0),
             &self.center_title,
-            theme.tokens.colors.text_primary,
-            transform
-                * Affine::translate((
-                    base_center.x - f64::from(width) / 2.0,
-                    base_center.y - f64::from(height),
-                )),
-            None,
-            &title_style.clone().with_weight(TextWeight::Bold),
-        );
-        let (sub_width, _) =
-            tr.measure_style(&self.center_subtitle, None, &theme.text(TextRole::Caption));
-        tr.draw_style(
-            scene,
             &self.center_subtitle,
-            theme.tokens.colors.text_dim,
-            transform
-                * Affine::translate((
-                    base_center.x - f64::from(sub_width) / 2.0,
-                    base_center.y + 8.0,
-                )),
-            None,
-            &theme.text(TextRole::Caption),
         );
         if let Some(id) = self.hovered.as_deref().filter(|_| self.style.tooltip)
             && let Some(segment) = self.segments().into_iter().find(|segment| segment.id == id)

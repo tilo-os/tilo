@@ -232,21 +232,9 @@ impl ShellLayer for TabMenuLayer {
         if !self.is_open() {
             return;
         }
-        // Settle the rows at the live text metrics before reading the rect
-        // (`ContextMenu::draw` does the same), so the shadow follows exactly
-        // the outline the widget is about to paint.
-        self.menu.layout_within(cx.text_renderer, cx.theme);
-        let rect = self.menu.get_rect();
-        // A popover is a Panel (HIG §9.1): `e4`, following the radius the
-        // shared widget paints itself with (`radii.control` today — F4-16).
-        ui::surface::shadow(
-            cx.scene,
-            cx.transform,
-            rect,
-            f64::from(cx.theme.tokens.radii.control),
-            &cx.theme.tokens.elevation.floating,
-        );
-        self.menu.draw(
+        // The menu is a floating Panel: this layer is the shell's top layer,
+        // so it paints its whole Panel (shadow, material, rows) here.
+        self.menu.draw_overlay(
             cx.scene,
             cx.transform,
             cx.text_renderer,

@@ -517,7 +517,10 @@ never covers content. A change worth noticing once (a page turn, "Saved") is
 the transient `StatusBubble`: it shows on change, hides by itself and floats
 in its area's bottom-trailing corner. An error the person must act on is a
 `Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
-button).
+button). A document's save state is `SaveStatusSurface`: "Saving…" and
+"Saved" in the transient bubble, a failed save an error card with Try again
+that stays until the save succeeds; an app never pins a bubble open or paints
+its own save pill.
 
 **Chrome over media uses the material on the media.** Video controls are a
 floating Panel over the picture; text drawn straight onto media sits on
@@ -837,18 +840,34 @@ stripe. `TreeView`, `NavList`, `paint_nav_row`, `ListRow`, `VirtualList` and
 `DataTable` use it; a painted list calls it. A private `selected_on` / `row_tier_on` / `selection_fill` is a
 defect.
 
-**The armed row of a menu is inverted, not lifted.** The row Enter or a click
-will activate in a menu, popover, dropdown, slash menu or palette result list
-is an inverted control (`intent.inverted` fill, `intent.on_inverted` label),
-concentric inside the panel: a lift was measured too weak to find (ΔL* 11.6
-read as "no highlighting"). Every menu paints it with
-`widget::floating_surface::paint_armed_row`, its rows inset
-`floating_surface::menu_inset` (`s2`) from the panel on every side and
-`metrics.menu_row_height` tall, so popover menus, dropdown lists and context
-menus are one shape. A state row ("Copy on select", a sort order) is
-`MenuItem::with_checked(bool)`, and the applied option of a popover menu or a
-dropdown list carries a check; the row a context menu acts on is ringed in
-your colour while it is open (`ContextMenu::anchor_row`).
+**The armed row of a menu is a lift too, one step stronger.** The row Enter
+or a click will activate in a menu, popover, dropdown, slash menu or palette
+result list is the panel's **overlay lift**: `colors.lift_on(panel_ground,
+OVERLAY_LIFT)` with primary ink, no hue, concentric inside the panel
+(`widget::floating_surface::armed_row` / `paint_armed_row`). A floating panel
+takes one and a half surface steps instead of one, because a single step
+measured ΔL* 11.6 on the dark panel and read as "no highlighting"; the
+stronger step clears ΔL* 15 on every
+material and stays a quiet grey on a light panel, the weight of the sidebar
+lift rather than an inverted slab. Pointer hover and the keyboard arm the
+same row, so a menu has one highlight. Every menu paints it with
+`paint_armed_row`, its rows inset `floating_surface::menu_inset` (`s2`) from
+the panel on every side and `metrics.menu_row_height` tall, so popover
+menus, dropdown lists and context menus are one shape. A state row ("Copy on
+select", a sort order) is `MenuItem::with_checked(bool)`, and the applied
+option of a popover menu or a dropdown list carries a check; the row a
+context menu acts on is ringed in your colour while it is open
+(`ContextMenu::anchor_row`).
+
+**A menu opens at its trigger, in the top layer.** Every anchored Panel
+(context menu, popover, dropdown list) is placed by
+`floating_surface::place_anchored`: under its trigger with the leading edges
+aligned (at the pointer for a right-click), flipped above when there is more
+room there, aligned to the trigger's trailing edge when it would run off the
+window, then shifted along the trigger into the window. A menu paints only
+in `Widget::draw_overlay`, like a popover or a modal, so no later sibling,
+pane or the window's chrome covers it; a painted host draws its menu from
+its own `draw_overlay` or returns it from `children_mut` while it is open.
 
 **A control with its own floor** (a filled rest face rather than a
 transparent one) takes all of its states from one ordered ramp against the
@@ -891,8 +910,8 @@ these intents (`colors.intent`):
 
 | Intent | Token | For |
 |---|---|---|
-| inverted | `intent.inverted` / `inverted_hover` + `intent.on_inverted` | a primary action, a switch that is on, a checked box, a slider's filled track, a progress fill, a menu's armed row |
-| selection | `intent.selection` / `lift_on(ground, t)` | a selected row, tab, segment or item (§9.3) |
+| inverted | `intent.inverted` / `inverted_hover` + `intent.on_inverted` | a primary action, a switch that is on, a checked box, a slider's filled track, a progress fill |
+| selection | `intent.selection` / `lift_on(ground, t)` | a selected row, tab, segment or item, and a menu's armed row at the overlay step (§9.3) |
 | your colour | `intent.you` (= `border_focus`) | the focus ring, the text caret, selection handles, a drop or insertion indicator |
 | selection tint | `intent.selection_tint` | the text-selection highlight (your colour, translucent) |
 | status | `semantic.{danger, warning, success, info}` | status only, muted (chroma at most 0.13), never decoration. A destructive button is danger ink on a neutral control, filled only inside the confirmation step |
@@ -1053,13 +1072,15 @@ is a field of `theme.tokens.metrics` (`ui::tokens::Metrics`), scaled by
   | `rail_width` | 76 | a docked icon rail (`NavMode::Docked`, `NavList::rail`) |
   | `overview_width` | 340 | the overview column |
   | `detail_min_width` | 360 | narrowest the detail beside an overview may get before they push |
-  | `content_min_width` | 440 | narrowest the content beside a sidebar may get before the sidebar becomes a drawer (`compact_breakpoint` 720 − `sidebar_width`) |
+  | `content_min_width` | 560 | the room the content beside a sidebar needs, a readable column the width of a sheet; narrower, the sidebar becomes a drawer (`compact_breakpoint` 840 − `sidebar_width`) |
   | `inspector_width` | 300 | the inspector; it floats from the trailing edge when it does not fit |
   | `nav_row_height` | 32 | a navigation row (`NavList`, `paint_nav_row`) |
 
   The breakpoints follow from them: the sidebar docks while
   `sidebar_width + overview_width + detail_min_width` (980) — or
-  `sidebar_width + content_min_width` (720) without an overview — fits; the
+  `sidebar_width + content_min_width` (840) without an overview — fits, so
+  collapse follows the room the content needs: an 800 × 600 window shows its
+  sidebar as a drawer rather than squeeze a document to 520; the
   overview and detail stand side by side while `overview_width +
   detail_min_width` (700) fits. The shell's buttons (sidebar toggle, Back,
   inspector toggle, the window's History control) are Plain icon buttons of
