@@ -1202,6 +1202,7 @@ mod tests {
             transform: None,
             group: String::new(),
             clip: String::new(),
+            area: String::new(),
         };
         for preset in ["pen", "marker", "calligraphy"] {
             let plain = silhouette(&pieces(&mark(preset, None, None)), &style(preset));
