@@ -246,7 +246,26 @@ impl CalcScreen {
     /// Pick the keypad layout for `keypad_w` and rebuild the key list if the
     /// breakpoint changed. Cheap when unchanged (the common case).
     fn ensure_layout(&mut self, keypad_w: f64) {
-        let want = KeypadLayout::for_width(keypad_w);
+        self.adopt_layout(KeypadLayout::for_width(keypad_w));
+    }
+
+    /// Pick the widest layout for a `keypad_w` × `keypad_h` pad whose rows
+    /// still keep `key_min_h`: a short pad trades function keys for key
+    /// height before its keys shrink. The compact pad is the floor.
+    fn ensure_layout_within(&mut self, keypad_w: f64, keypad_h: f64) {
+        self.ensure_layout(keypad_w);
+        for narrower in [KeypadLayout::Standard, KeypadLayout::Compact] {
+            if self.grid_min_h() <= keypad_h {
+                break;
+            }
+            if narrower.cols() < self.cols {
+                self.adopt_layout(narrower);
+            }
+        }
+    }
+
+    /// Switch to `want`, rebuilding the key list only when it changes.
+    fn adopt_layout(&mut self, want: KeypadLayout) {
         if want != self.layout_kind {
             self.layout_kind = want;
             self.cols = want.cols();
@@ -339,7 +358,7 @@ impl CalcScreen {
             // Beside the pad: the display takes what the memory row leaves.
             let chrome = Rect::new(left.x0, left.y0, left.x0 + side_w, left.y1);
             let grid = Rect::new(chrome.x1 + m.gap, left.y0, left.x1, left.y1);
-            self.ensure_layout(grid.width());
+            self.ensure_layout_within(grid.width(), grid.height());
             let height = (chrome.height() - m.mem_h - m.gap).clamp(m.display_short, m.display_tall);
             (chrome, grid, height)
         } else {
