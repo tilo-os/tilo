@@ -623,6 +623,13 @@ jobs:
             exit 1
           fi
           (cd "$work" && sha256sum --check --strict SHA256SUMS)
+          # Apps name the runtime build they link (`<release>+native.<digest>`).
+          # A collection from before that names only the release, and its apps
+          # could not be matched to a runtime; compile instead.
+          if ! find "$work/runtime/tilo-runtime" -mindepth 1 -maxdepth 1 -type d -name '*+native.*' | grep -q .; then
+            echo "::notice::the pinned app collection does not name its runtime build; compiling the apps"
+            exit 0
+          fi
           find os/app-artifacts -mindepth 1 ! -name .gitignore -delete
           find os/app-runtime -mindepth 1 ! -name .gitignore -delete
           cp "$work"/tapp/*.tapp os/app-artifacts/
