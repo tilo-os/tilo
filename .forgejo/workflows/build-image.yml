@@ -1078,8 +1078,12 @@ jobs:
           # both take the commit time instead and their configs can agree.
           echo "SOURCE_DATE_ISO=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
           if [[ $DEV_BUILD == true ]]; then
+            # Every rootfs step is keyed on the epoch, and the kernel enters
+            # only near the end of it: with the kernel snapshot (refreshed
+            # several times a day) in the epoch, each refresh rebuilt the
+            # whole rootfs and the dev build toolchain on every slot.
             epoch=0
-            for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do
+            for ref in "$BASE_REF" "$RPMS_REF"; do
               created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
               if (( created > epoch )); then epoch=$created; fi
             done
@@ -2740,6 +2744,12 @@ jobs:
           done
           ./os/dev/vm.sh keys tab ret
 
+          # A desktop that reached its first session can still be degraded.
+          # No unit may have failed by now, and the rollback confirmation
+          # (which refuses to confirm a degraded generation) must have run and
+          # succeeded. Before the app checks, so none of them can mask it.
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
+
           ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
           # Optional AirPlay encrypted-media acceptance (#57): phase-bounded
           # deadlines on the shipped script, independent of Containerfile
@@ -2763,6 +2773,11 @@ jobs:
           # opens Notes itself rather than a launcher pre-filled with "Notes".
           ./os/dev/vm.sh ssh /usr/libexec/tilo/installed-atspi-apps.sh card Notes Notes
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # The system authentication sheet is drawn by the compositor, not
+          # an app window. A real polkit request from the graphical session
+          # must reach an external reader as a dialog with password text it
+          # can focus, type into and cancel.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh auth
           # The greetd login left the display manager's SELinux domain: the
           # compositor and the apps it launched run as the user, in the
           # session's logind scope and their own app scopes, and nothing of
@@ -2811,6 +2826,9 @@ jobs:
             # What makes the disk a dev VM: tilo-vm reaches tilo-vmd as root,
             # on this architecture, built on exactly this lane's image.
             ./os/dev/check-dev-vm.sh --arch '${{ matrix.arch }}' --base-digest "$dev_base_digest"
+            # The image's apps are installed packages: Settings updates from
+            # a registry, launches as the new version, and rolls back.
+            RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh
           fi
           else
             # A Lenovo DTB cannot describe QEMU virt hardware. The sealed

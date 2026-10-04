@@ -435,6 +435,8 @@ portal-email-attachments = { $count ->
    *[other] { $count } Anhänge werden über das Dokumentportal verfügbar sein.
 }
 portal-remember-device = Auf diesem Gerät merken
+portal-a11y-name = Name
+portal-a11y-answer = Antwort
 portal-secret-required = Fülle alle Pflichtfelder aus.
 portal-secret-wifi-length = Ein WLAN-Passwort hat 8 bis 63 Zeichen oder 64 Hexadezimalziffern.
 portal-network-heading = Netzwerk

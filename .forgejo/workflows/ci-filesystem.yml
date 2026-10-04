@@ -182,7 +182,6 @@ env:
   # unit by all CARGO_* variables, and this workflow never runs on main, so it
   # only reuses compiler outputs that main's check runs store.
   CARGO_BUILD_JOBS: "8"
-  CARGO_HOME: /cargo-home
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"

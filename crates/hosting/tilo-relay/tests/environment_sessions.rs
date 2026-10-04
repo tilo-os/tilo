@@ -193,6 +193,29 @@ pub(crate) async fn start_worker(
     root: &std::path::Path,
     legacy: Arc<dyn LegacyVmHost>,
 ) -> Worker {
+    start_worker_with(relay, provider, worker, root, WORKSPACE, legacy).await
+}
+
+/// [`start_worker`] for the workspace `workspace`.
+pub(crate) async fn start_worker_in(
+    relay: &Relay,
+    provider: &TestUser,
+    worker: &TestDevice,
+    root: &std::path::Path,
+    workspace: u64,
+) -> Worker {
+    start_worker_with(relay, provider, worker, root, workspace, Arc::new(WindowVm)).await
+}
+
+/// [`start_worker`] for `workspace`, running legacy apps with `legacy`.
+pub(crate) async fn start_worker_with(
+    relay: &Relay,
+    provider: &TestUser,
+    worker: &TestDevice,
+    root: &std::path::Path,
+    workspace: u64,
+    legacy: Arc<dyn LegacyVmHost>,
+) -> Worker {
     let mut client = ComputeClient::connect(
         client_endpoint().await,
         relay.node_addr(),
@@ -204,7 +227,7 @@ pub(crate) async fn start_worker(
     )
     .await
     .unwrap();
-    client.attach(WORKSPACE).await.unwrap();
+    client.attach(workspace).await.unwrap();
     assert!(matches!(
         client.receive().await.unwrap().envelope,
         ComputeEnvelope::Ready { .. }
@@ -212,11 +235,11 @@ pub(crate) async fn start_worker(
     let issued_at_ms = unix_now_ms();
     client
         .send(&ComputeEnvelope::Advertise {
-            workspace_id: WORKSPACE,
+            workspace_id: workspace,
             advertisement: ComputeWorkerAdvertisement {
                 version: 1,
                 worker: worker.device_pubkey(),
-                workspace_id: WORKSPACE,
+                workspace_id: workspace,
                 apps: BTreeSet::new(),
                 accelerators: BTreeSet::from([ComputeAccelerator::Kvm]),
                 assignment_capacity: 1,

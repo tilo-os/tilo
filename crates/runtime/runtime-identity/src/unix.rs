@@ -297,19 +297,12 @@ impl IdentityLock {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(dir.join(LOCK_FILE))?;
-        let mut meta = file.metadata()?;
+        let meta = file.metadata()?;
         if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "identity lifecycle lock must be a private user-owned regular file",
             ));
-        }
-        // Older releases created this non-secret advisory file under a
-        // shared-group umask. Tighten an otherwise valid, user-owned lock in
-        // place so the security check does not strand upgraded identities.
-        if meta.permissions().mode() & 0o077 != 0 {
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-            meta = file.metadata()?;
         }
         if meta.permissions().mode() & 0o077 != 0 {
             return Err(io::Error::new(
@@ -360,12 +353,26 @@ fn read_private_selector(path: &std::path::Path) -> io::Result<String> {
 
 /// Inspect all valid records without exposing their signing shares.
 ///
+/// Listing never writes: it takes no lock and creates or re-modes nothing.
+/// Every writer replaces a record by rename, so each record is read whole. A
+/// store that does not exist yet lists nothing.
+///
 /// # Errors
 ///
-/// Returns an error if the lifecycle lock can't be acquired, or `dir` can't
-/// be read.
+/// Returns an error if `dir` is not a real directory owned by this user, or
+/// can't be read.
 pub fn list_identities(dir: &std::path::Path) -> io::Result<Vec<IdentitySummary>> {
-    let _lock = IdentityLock::acquire(dir)?;
+    let meta = match fs::symlink_metadata(dir) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error),
+    };
+    if !meta.file_type().is_dir() || meta.uid() != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "identity root must be a real directory owned by the current user",
+        ));
+    }
     list_identities_unlocked(dir)
 }
 
@@ -474,8 +481,9 @@ fn import_identity_unlocked(
         ));
     }
     // Stage the legacy bytes only after validation, then immediately migrate
-    // under the same lock. A crash leaves a valid v1 record that the next
-    // launch can retry; it never leaves half a v2 record.
+    // under the same lock. A crash leaves a valid v1 record that sign-in or
+    // Settings secures (a launch refuses it); it never leaves half a v2
+    // record.
     write_private_atomic(&path, bytes)?;
     let secured = match provider {
         Some(provider) => secure_record_with_provider_unlocked(dir, &path, provider),
@@ -497,8 +505,9 @@ fn import_identity_unlocked(
     Ok(path)
 }
 
-/// Migrate one legacy identity into broker-only storage. Idempotent and safe
-/// to call at every launch.
+/// Move one record's inline key into its secret provider. Idempotent. Only
+/// provisioning and Settings secure records; an app launch reads them through
+/// [`load_for_launch`] and never writes the store.
 ///
 /// # Errors
 ///
@@ -584,7 +593,7 @@ fn secure_record_unlocked(
 fn tracing_warning_for_secret_service(error: &io::Error) {
     // This crate deliberately has no tracing dependency. Keep the fallback
     // observable to Settings via KeyProtection rather than writing a possibly
-    // sensitive backend error to stderr from every app launch.
+    // sensitive backend error to stderr from every sign-in.
     let _ = error;
 }
 
@@ -921,6 +930,9 @@ enum LoadFailure {
     JsonMalformed(serde_json::Error),
     UnknownSchemaVersion(u32),
     SecuredRecordNeedsProvider,
+    /// A store record still carries its signing key inline: it was never
+    /// secured by provisioning.
+    KeyNotSecured,
     SecretSizeMismatch {
         got: usize,
     },
@@ -942,6 +954,11 @@ impl std::fmt::Display for LoadFailure {
             Self::SecuredRecordNeedsProvider => {
                 write!(f, "secured identity record needs its host secret provider")
             }
+            Self::KeyNotSecured => write!(
+                f,
+                "this identity's signing key is not secured yet, so apps cannot use it; \
+                 choose \"Protect now\" for it in Settings > Users, then open the app again"
+            ),
             Self::SecretSizeMismatch { got } => {
                 write!(f, "identity secret_bytes must be 32 bytes, got {got}")
             }
@@ -969,6 +986,7 @@ impl LoadFailure {
             LoadFailure::JsonMalformed(_)
             | LoadFailure::UnknownSchemaVersion(_)
             | LoadFailure::SecuredRecordNeedsProvider
+            | LoadFailure::KeyNotSecured
             | LoadFailure::SecretSizeMismatch { .. }
             | LoadFailure::PublicKeyMismatch { .. } => io::ErrorKind::InvalidData,
         };
@@ -1464,7 +1482,13 @@ fn shared_service_connection(
 pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
     let bytes =
         read_record_bytes(&path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
-    let record = parse_record(&bytes)?;
+    load_record(&path, parse_record(&bytes)?)
+}
+
+fn load_record(
+    path: &std::path::Path,
+    record: ondisk::IdentityRecord,
+) -> Result<SigningIdentity, NotAvailable> {
     if record.schema_version == 1 {
         return identity_from_record(record, None);
     }
@@ -1488,6 +1512,28 @@ pub fn load_from_path(path: PathBuf) -> Result<SigningIdentity, NotAvailable> {
         .load(&reference.locator)
         .map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
     identity_from_record(record, Some(secret.as_slice()))
+}
+
+/// Load a record from the identity store for an app launch, strictly
+/// read-only.
+///
+/// The record must already be in the form provisioning leaves it: a secured
+/// record whose key its secret provider holds, or a joined device's public
+/// record. One still carrying its key inline is refused, never rewritten:
+/// securing it belongs to provisioning and Settings, not to a launch.
+///
+/// # Errors
+///
+/// As [`load_from_path`], and [`NotAvailable::ConnectionFailed`] naming
+/// Settings when the record's key is not secured.
+pub fn load_for_launch(path: &std::path::Path) -> Result<SigningIdentity, NotAvailable> {
+    let bytes =
+        read_record_bytes(path).map_err(|e| LoadFailure::ReadFailed(e).into_not_available())?;
+    let record = parse_record(&bytes)?;
+    if record.protection() == KeyProtection::LegacyPlaintext {
+        return Err(LoadFailure::KeyNotSecured.into_not_available());
+    }
+    load_record(path, record)
 }
 
 /// Read the public presentation and quorum fields of a private identity
@@ -1870,26 +1916,26 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn identity_files_stay_owner_only() {
-        // phase: legacy_group_writable_lifecycle_lock_is_tightened
+        // phase: a_shared_lifecycle_lock_is_refused_and_listing_takes_none
         {
             let dir = tempfile::tempdir().expect("identity directory");
             let lock = dir.path().join(LOCK_FILE);
-            fs::write(&lock, []).expect("legacy lock");
-            fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("legacy mode");
+            fs::write(&lock, []).expect("shared lock");
+            fs::set_permissions(&lock, fs::Permissions::from_mode(0o660)).expect("shared mode");
 
+            assert!(import_identity(dir.path(), "personal", &record_bytes("Ada", 25)).is_err());
+            assert_eq!(list_identities(dir.path()).expect("list").len(), 0);
+            assert_eq!(
+                fs::metadata(&lock).expect("lock").permissions().mode() & 0o777,
+                0o660,
+                "listing never touches the lock"
+            );
             assert!(
-                list_identities(dir.path())
-                    .expect("upgrade lock")
+                list_identities(&dir.path().join("missing"))
+                    .unwrap()
                     .is_empty()
             );
-            assert_eq!(
-                fs::metadata(lock)
-                    .expect("lock metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600
-            );
+            assert!(!dir.path().join("missing").exists());
         }
         // phase: imported_secrets_and_selector_are_private
         {
@@ -2710,6 +2756,28 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_refuses_an_unsecured_record_without_rewriting_it() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_private_dir(dir.path()).unwrap();
+        let bytes = record_bytes("Ada", 27);
+        let path = dir.path().join("primary.json");
+        write_private_atomic(&path, &bytes).unwrap();
+
+        let Err(error) = load_for_launch(&path) else {
+            panic!("an inline key must be refused");
+        };
+        assert!(error.to_string().contains("Settings > Users"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(!dir.path().join("secrets").exists());
+        assert!(!dir.path().join(LOCK_FILE).exists());
+
+        // Once secured, the same record launches.
+        secure_identity_with_provider(dir.path(), "primary", &BrokerFileProvider::new(dir.path()))
+            .unwrap();
+        assert!(load_for_launch(&path).unwrap().sign(b"secured").is_ok());
+    }
+
+    #[test]
     fn the_identity_store_keeps_explicit_safe_records() {
         // phase: multi_identity_store_has_explicit_active_record
         {
@@ -2767,7 +2835,7 @@ mod tests {
             let path = dir.path().join("identity-joined.json");
             write_private_atomic(&path, &bytes).unwrap();
 
-            // An app launch secures the selected record before brokering it.
+            // Sign-in and Settings may secure the selected record again.
             for _ in 0..2 {
                 assert_eq!(
                     secure_identity(dir.path(), "identity-joined").unwrap(),
