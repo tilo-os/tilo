@@ -55,15 +55,13 @@ pub mod search_provider;
 pub mod shortcuts_overlay;
 pub mod sidebar;
 pub mod status_bar;
-pub mod storage;
 
 pub use app::NotesApp;
-pub use app::WELCOME_BODY;
 pub use main_panel::MainPanel;
 pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
 pub use resource::{Notebook, NotesShell};
 pub use shortcuts_overlay::ShortcutsOverlay;
-pub use status_bar::{StatusBarState, StatusModel};
+pub use status_bar::{SaveStatus, StatusBarState, StatusModel};
 
 #[cfg(test)]
 extern crate self as notes;
