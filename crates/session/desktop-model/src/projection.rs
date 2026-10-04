@@ -1097,13 +1097,17 @@ pub fn hydrate_tab(rep: ReplicatedTab) -> Tab {
 /// app id survives as [`TileContent::PeerWindow`]. `current` is
 /// preferred once a local instance is bound, or the peer's
 /// re-projection would take the window away again every round.
+///
+/// A peer's [`TileContent::LocalApp`] (a window it is still restoring) is
+/// the same news as its live window. A [`TileContent::HostedWindow`] stays
+/// exactly as published: that window runs only on its host.
 pub fn localise_tile(
     tile: TileContent,
     current: Option<&TileContent>,
     tab_title: &str,
 ) -> TileContent {
     match tile {
-        TileContent::Foreign { app_id, .. } => {
+        TileContent::Foreign { app_id, .. } | TileContent::LocalApp { app_id, .. } => {
             // Already resolved here, to our own instance or the same
             // waypoint — the remote tile has nothing to add.
             match current {
@@ -1124,6 +1128,7 @@ pub fn localise_tile(
                 app_id,
                 label,
                 note: String::new(),
+                missing: None,
             }
         }
         // A governed room's owner places in-process kinds; a member that bound
@@ -1502,6 +1507,7 @@ mod tests {
             app_id: "so.tilo.notes".into(),
             label: "Notes".into(),
             note: String::new(),
+            missing: None,
         };
         assert_eq!(
             localise_tile(placeholder.clone(), Some(&waiting), "Notes"),
@@ -1518,6 +1524,49 @@ mod tests {
         assert_eq!(
             localise_tile(placeholder.clone(), None, "Notes"),
             placeholder
+        );
+    }
+
+    #[test]
+    fn a_hosted_window_arrives_as_itself_and_a_restoring_one_as_a_peer_window() {
+        let hosted = TileContent::HostedWindow {
+            app_id: "org.gimp.GIMP".into(),
+            label: "Poster.xcf".into(),
+            host: "ab".repeat(32),
+            host_label: "Laptop".into(),
+        };
+        // Neither a fresh arrival nor a later round turns it into
+        // something this device would launch.
+        assert_eq!(localise_tile(hosted.clone(), None, "Poster.xcf"), hosted);
+        assert_eq!(
+            localise_tile(hosted.clone(), Some(&hosted), "Poster.xcf"),
+            hosted
+        );
+        let tab = hydrate_tab(ReplicatedTab {
+            id: 9,
+            order: 0,
+            title: "Poster.xcf".into(),
+            tile: Some(hosted.clone()),
+        });
+        assert_eq!(tab.tile, hosted);
+        assert_eq!(
+            crate::apps::canonical_app_id(&hosted).as_deref(),
+            Some("org.gimp.GIMP")
+        );
+
+        let restoring = TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        };
+        assert_eq!(
+            localise_tile(restoring, None, "Groceries"),
+            TileContent::PeerWindow {
+                app_id: "so.tilo.notes".into(),
+                label: "Groceries".into(),
+                note: String::new(),
+                missing: None,
+            }
         );
     }
 

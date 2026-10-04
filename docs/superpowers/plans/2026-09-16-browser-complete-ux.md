@@ -13,7 +13,6 @@
 ## Global Constraints
 
 - Implement the full ten-requirement scope; no reduced success definition.
-- Preserve unrelated working-tree and staged edits. Commit only owned paths/hunks. No push or merge.
 - Keep sandbox, TLS verification and encrypted storage enabled.
 - Tests use isolated profiles and synthetic data; leave the user's original browser/profile untouched.
 - Keep data and protocol messages bounded. Validate origin-sensitive actions at execution time.

@@ -510,6 +510,7 @@ impl TileSource for Tiles {
                     app_id: window.app.clone(),
                     label: window.title.clone(),
                     note: String::new(),
+                    missing: None,
                 },
             };
             self.shared.peer_windows.borrow_mut().insert(id, window);

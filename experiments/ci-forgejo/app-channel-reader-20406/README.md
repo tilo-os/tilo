@@ -35,7 +35,7 @@ The existing verifier is
 `../tilo-artifact-replay/tools/replay_app_artifact.py` in the neighboring retained
 worktree. The archive/tree live under that worktree's
 `dist/replay-20406/output/`; crypto runs with
-`/tmp/tilo-artifact-replay-venv/bin/python` in WSL FedoraLinux-42. Its reviewed helper
+an isolated replay virtualenv under WSL Fedora Linux 42. Its reviewed helper
 was not copied into the production reader or silently made a trust authority.
 
 Nine schema/reader tests independently cover successful architecture-specific
