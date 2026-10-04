@@ -15,7 +15,7 @@
 #
 #   * The components that declare `dev_features` in os/components.toml (the
 #     compositor today) are rebuilt as release builds with those features. The
-#     dev-only components (`dev-*` layers), tilo-control and tilo-vmd, are
+#     dev-only components (`dev-*` layers), such as tilo-vmd, are
 #     built alongside them. The cargo arguments and the install both come from
 #     os/scripts/install-components.py --dev, so this file names no binary.
 #   * A build toolchain, installed into the image. The binaries above are

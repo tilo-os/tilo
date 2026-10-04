@@ -743,3 +743,160 @@ fn a_participantless_invocation_builds_at_the_windows_own_view() {
         crate::actions::RichTextAction::InsertTable { ref after, .. } if *after == ids[0]
     ));
 }
+
+fn invoke_opening_action(
+    wp: &mut WordProcessorWidget,
+    state: &mut ui::State,
+    participant: &ParticipantId,
+    action: &str,
+    arguments: &serde_json::Value,
+) {
+    let actor = "person:opening-rehearsal";
+    let context =
+        tilo_actions::ActionContext::default().with_host_invoker(actor, Some(participant.clone()));
+    let _scope =
+        ui::invocation_scope::InvokerScope::enter(ActionInvoker::delivered(actor, Some(&context)));
+    let resources = ui::resources::resources(wp, &state.doc);
+    let descriptor = tilo_actions::door::survey(&resources)
+        .into_iter()
+        .find(|descriptor| descriptor.address.action == action)
+        .expect("Writer publishes the opening action for this participant");
+    assert_eq!(descriptor.address.resource, "word-processor.document");
+    let arguments = arguments.as_object().unwrap();
+    if descriptor.kind == tilo_actions::OperationKind::View {
+        let encoded =
+            tilo_actions::door::encode_json(&resources, &descriptor.address, arguments).unwrap();
+        assert!(
+            wp.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    descriptor.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut state.doc,
+                &state.root,
+            )
+            .unwrap()
+            .is_some()
+        );
+    } else {
+        assert_eq!(descriptor.kind, tilo_actions::OperationKind::Document);
+        let mut registry = tilo_actions::ActionRegistry::new();
+        crate::actions::register(&mut registry);
+        tilo_actions::door::invoke_json(
+            &mut state.doc,
+            &resources,
+            &descriptor.address,
+            arguments,
+            tilo_actions::door::InvocationProvenance::caller(actor.as_bytes()).within(&context),
+            &registry,
+            &mut tilo_actions::LocalTransport::new(),
+        )
+        .unwrap();
+    }
+    wp.sync(&mut state.doc, &state.root);
+}
+
+/// Synthetic opening proof only: two host-minted person executions drive actual
+/// Writer actions on one document. No Photos export or MCP transport is involved.
+#[test]
+fn two_person_executions_type_the_opening_and_place_real_png_independently() {
+    let callers = [
+        tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
+        tilo_actions::remote::Caller::local_person("person:opening-rehearsal").in_new_execution(),
+    ];
+    assert_eq!(callers[0].principal(), callers[1].principal());
+    assert_ne!(callers[0].execution_id(), callers[1].execution_id());
+    let participants =
+        callers.map(|caller| ParticipantId::for_execution(caller.execution_id().unwrap()));
+    assert_ne!(participants[0], participants[1]);
+    let (mut wp, mut state, ids) = widget_with(&["", "", ""]);
+    ui::collaboration::participants::set_participant_host(&mut wp, true);
+    let local_before = wp.local_participant_view();
+    for (participant, block) in participants.iter().zip(&ids) {
+        invoke_opening_action(
+            &mut wp,
+            &mut state,
+            participant,
+            "move-caret",
+            &serde_json::json!({"to": "point", "block": block, "offset": 0}),
+        );
+        assert_eq!(
+            wp.participant_view(participant, &state.doc),
+            Some(caret(block, 0))
+        );
+    }
+    assert_eq!(wp.local_participant_view(), local_before);
+    invoke_opening_action(
+        &mut wp,
+        &mut state,
+        &participants[0],
+        "type-text",
+        &serde_json::json!({"text": "Hello to Tilo"}),
+    );
+    assert_eq!(
+        wp.model().block_texts(&state.doc),
+        ["Hello to Tilo", "", ""]
+    );
+    let typed_view = wp.participant_view(&participants[0], &state.doc).unwrap();
+    assert_eq!(typed_view, caret(&ids[0], "Hello to Tilo".len()));
+    assert_eq!(
+        wp.participant_view(&participants[1], &state.doc),
+        Some(caret(&ids[1], 0))
+    );
+    assert_eq!(wp.local_participant_view(), local_before);
+
+    // Real PNG bytes in the content store, not a stand-in hash or image metadata.
+    let png = ui::png::encode_rgba8(2, 1, &[255, 160, 40, 255, 30, 70, 180, 255]).unwrap();
+    let content = wp.inner.content_store().clone();
+    let hash = content.put(&png).unwrap();
+    assert_eq!(hash, tilo_content::hash_bytes(&png));
+    invoke_opening_action(
+        &mut wp,
+        &mut state,
+        &participants[1],
+        "place-image",
+        &serde_json::json!({tilo_actions::PROMPTED_PARAM: hash}),
+    );
+    let containers = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+    let blocks = tilo_doc::model::materialize(&state.doc, &containers).blocks;
+    assert_eq!(blocks.len(), 5);
+    assert_eq!(blocks[0].id, ids[0]);
+    assert_eq!(blocks[0].text, "Hello to Tilo");
+    assert_eq!(blocks[1].id, ids[1]);
+    assert_eq!(blocks[1].text, "");
+    assert_eq!(blocks[2].kind, "image");
+    assert_eq!(
+        blocks[2].attrs.get("blob"),
+        Some(&tilo_doc::AttrVal::Str(hash.clone()))
+    );
+    assert_eq!(
+        blocks[2].attrs.get("width"),
+        Some(&tilo_doc::AttrVal::Int(2))
+    );
+    assert_eq!(
+        blocks[2].attrs.get("height"),
+        Some(&tilo_doc::AttrVal::Int(1))
+    );
+    assert_eq!(blocks[3].kind, "paragraph");
+    assert!(blocks[3].text.is_empty());
+    assert_eq!(blocks[4].id, ids[2]);
+    assert_eq!(blocks[4].kind, "paragraph");
+    assert!(blocks[4].text.is_empty());
+    assert!(tilo_doc::model::referenced_content(&state.doc, &containers).contains(&hash));
+    let meta = tilo_doc::model::blob_meta(&state.doc, &containers, &hash).unwrap();
+    assert_eq!(meta.mime, "image/png");
+    assert_eq!((meta.w, meta.h), (2, 1));
+    assert_eq!(meta.len, u64::try_from(png.len()).unwrap());
+    assert_eq!(content.read(&hash).unwrap(), png);
+    assert_eq!(
+        wp.participant_view(&participants[0], &state.doc),
+        Some(typed_view)
+    );
+    assert_eq!(
+        wp.participant_view(&participants[1], &state.doc),
+        Some(caret(&ids[1], 0))
+    );
+    assert_eq!(wp.local_participant_view(), local_before);
+}

@@ -7025,6 +7025,7 @@ mod tests {
                     PageRequest::Fill {
                         element: "d3e7".into(),
                         text: String::new(),
+                        secret: false,
                     },
                     PageRequest::Select {
                         element: "d3e8".into(),
@@ -7058,6 +7059,7 @@ mod tests {
                 url: "https://shop.test/cart".into(),
                 message: "Clicked button \"Checkout\"".into(),
                 outline: None,
+                data: None,
                 navigated: true,
                 loading: true,
             }));
