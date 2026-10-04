@@ -83,19 +83,52 @@ pub(crate) struct ViewStorage {
     /// The person's own records, when the host keeps them: not in a view of
     /// a past version, which shows the record it is a version of.
     person: Option<super::person::PersonState>,
+    /// This device, in a live window.
+    device: Option<String>,
+}
+
+/// What the host gives a live window beside its record: the person's own
+/// records and this device's id. Neither reaches a view of a past version.
+#[derive(Default)]
+pub(crate) struct Hosted {
+    pub(crate) person: Option<ui_core::record::person::PersonRecords>,
+    pub(crate) device: Option<String>,
+}
+
+/// [`Hosted`], with the person's records opened for one app.
+pub(crate) struct Attached {
+    person: Option<super::person::PersonState>,
+    device: Option<String>,
+}
+
+impl Hosted {
+    pub(crate) fn attach(self, app_id: &'static str, app_title: &'static str) -> Attached {
+        Attached {
+            person: self
+                .person
+                .map(|records| super::person::PersonState::new(records, app_id, app_title)),
+            device: self.device,
+        }
+    }
 }
 
 impl ViewStorage {
-    pub(crate) fn new(storage: AppStorage, person: Option<super::person::PersonState>) -> Rc<Self> {
+    pub(crate) fn new(storage: AppStorage, hosted: Attached) -> Rc<Self> {
         Rc::new(Self {
             storage,
             followed: RefCell::default(),
-            person,
+            person: hosted.person,
+            device: hosted.device,
         })
     }
 
     pub(crate) fn storage(&self) -> &AppStorage {
         &self.storage
+    }
+
+    /// This device's id, in a live window.
+    pub(crate) fn device(&self) -> Option<&str> {
+        self.device.as_deref()
     }
 
     /// The person's record of `P`, opened on first use.

@@ -28,6 +28,7 @@ pub(crate) struct ChannelSettings {
     app_id: String,
     state: Mutex<State>,
     revision: AtomicU64,
+    changes: settings_store::ChangeSignal,
 }
 
 #[derive(Default)]
@@ -83,6 +84,7 @@ impl ChannelSettings {
             app_id: app_id.to_owned(),
             state: Mutex::new(State::default()),
             revision: AtomicU64::new(1),
+            changes: settings_store::ChangeSignal::default(),
         }
     }
 
@@ -98,6 +100,7 @@ impl ChannelSettings {
         }
         state.view = view;
         self.revision.fetch_add(1, Ordering::AcqRel);
+        self.changes.ring();
         true
     }
 
@@ -183,12 +186,17 @@ impl SettingsSource for ChannelSettings {
             state.outbox.push((name.to_owned(), values));
             self.revision.fetch_add(1, Ordering::AcqRel);
         }
+        self.changes.ring();
         super::broker::flush_settings();
         Ok(())
     }
 
     fn revision(&self) -> u64 {
         self.revision.load(Ordering::Acquire)
+    }
+
+    fn changes(&self) -> &settings_store::ChangeSignal {
+        &self.changes
     }
 }
 
