@@ -31,9 +31,13 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
                 action,
             )
             self.assertIn("continue-on-error: true", action)
-            self.assertEqual(action.count("/cargo-home/registry/index"), 1)
-            self.assertEqual(action.count("/cargo-home/registry/cache"), 1)
-            self.assertEqual(action.count("/cargo-home/git/db"), 1)
+            # The cached directories follow the job's CARGO_HOME, so a save
+            # step reuses the restore step's paths and the cache version.
+            self.assertIn("home=${CARGO_HOME:-$HOME/.cargo}", action)
+            for directory in ("registry/index", "registry/cache", "git/db"):
+                self.assertEqual(action.count("%s/" + directory), 1)
+            self.assertIn("path: ${{ steps.home.outputs.paths }}", action)
+            self.assertIn("value: ${{ steps.home.outputs.paths }}", action)
             self.assertIn("default: Cargo.lock", action)
             self.assertIn("key: cargo-deps-${{ hashFiles(inputs.lockfile) }}", action)
             self.assertIn("value: ${{ steps.restore.outputs.cache-primary-key }}", action)
@@ -73,6 +77,16 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
                 for path in workflows.glob("*.y*ml")
             )
             self.assertEqual(remaining_keys, 3)
+            for path in workflows.glob("*.y*ml"):
+                with self.subTest(workflow=path.name):
+                    source = path.read_text(encoding="utf-8")
+                    self.assertNotIn("/cargo-home", source)
+                    for save in source.split("uses: actions/cache/save@")[1:]:
+                        save = save.split("\n      - ", 1)[0]
+                        if "cargo-deps-" not in save and "downloads.outputs" not in save:
+                            continue
+                        self.assertRegex(save,
+                                         r"path: \$\{\{ steps\.[a-z-]+\.outputs\.(cargo-cache-)?paths \}\}")
         with self.subTest(phase='builder cold canary seeds a missing architecture cache'):
             workflow = (
                 ROOT / ".forgejo" / "workflows" / "build-ci-builder.yml"
