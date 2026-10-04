@@ -972,7 +972,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     );
     std::fs::remove_file(&observed_acl).unwrap();
     std::fs::remove_file(&observed_state).unwrap();
-    stale.flush_to_disk();
+    stale.queue_save();
     settle_publication("stale flush must leave publication idle");
     assert_eq!(std::fs::read(&acl).unwrap(), committed_acl);
     assert!(

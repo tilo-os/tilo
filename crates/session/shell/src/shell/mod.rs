@@ -59,6 +59,7 @@ pub mod display_confirm;
 pub mod display_identify;
 pub mod doc_open;
 pub mod document_import;
+pub mod durable_writer;
 pub mod editor_app;
 pub mod emoji_recents;
 pub mod fabric_clock;
@@ -79,6 +80,7 @@ pub mod hosted_inputs;
 pub mod i18n;
 pub mod identity_provisioning;
 pub mod input_policy;
+pub mod install_card;
 pub mod keyboard_shortcuts;
 pub mod launch_gate;
 pub mod launcher;
@@ -978,15 +980,17 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
 /// [`overlay_host::ShellOverlayHost`]'s per-revision resync.
 pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
     match t {
-        ShellTile::WorkspaceActivity => UiKind::Settings,
         ShellTile::Stub { kind, .. } | ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
         // No `AppKind` describes "arbitrary external client", so both a
         // foreign surface and a peer window wear the catch-all `Settings`
         // glyph — and keep wearing it when a `PeerWindow` binds in and
         // becomes `Foreign`, so the pill doesn't change under the user.
-        ShellTile::Foreign { .. } | ShellTile::PeerWindow { .. } | ShellTile::LocalApp { .. } => {
-            UiKind::Settings
-        }
+        // The device-local activity tile has no app of its own either.
+        ShellTile::WorkspaceActivity
+        | ShellTile::Foreign { .. }
+        | ShellTile::PeerWindow { .. }
+        | ShellTile::HostedWindow { .. }
+        | ShellTile::LocalApp { .. } => UiKind::Settings,
     }
 }
 
@@ -1066,9 +1070,51 @@ fn try_to_ui_tile_for_tab(
         )),
         // A window someone else has open that this machine hasn't got its
         // own instance of yet; becomes a `Foreign` above once it arrives.
+        ShellTile::PeerWindow {
+            label,
+            missing: Some(tilo_desktop_model::MissingApp::Installable { display_name }),
+            ..
+        } if tab.is_some() => UiTile::App(Box::new(install_card::InstallCard::new(
+            tab.unwrap_or_default(),
+            label,
+            display_name,
+        ))),
+        ShellTile::PeerWindow {
+            label,
+            missing: Some(tilo_desktop_model::MissingApp::Unavailable),
+            ..
+        } => UiTile::Notice {
+            title: label.clone(),
+            detail: crate::shell::i18n::t_args(
+                "peer-window-unavailable",
+                &[("app", label.clone().into())],
+            ),
+        },
         ShellTile::PeerWindow { label, note, .. } => UiTile::Notice {
             title: label.clone(),
             detail: note.clone(),
+        },
+        // A legacy window runs only on its host; until a stream of it is
+        // attached here, the tab says where it is.
+        ShellTile::HostedWindow {
+            label,
+            host,
+            host_label,
+            ..
+        } => UiTile::Notice {
+            title: label.clone(),
+            detail: crate::shell::i18n::t_args(
+                "hosted-window-running-on",
+                &[(
+                    "device",
+                    if host_label.trim().is_empty() {
+                        host.chars().take(8).collect::<String>()
+                    } else {
+                        host_label.clone()
+                    }
+                    .into(),
+                )],
+            ),
         },
         ShellTile::LocalApp { label, note, .. } => UiTile::Notice {
             title: label.clone(),
@@ -1305,7 +1351,7 @@ fn open_legacy_document_from_files(
                             path: path.clone(),
                         },
                     );
-                    tree.flush_to_disk();
+                    tree.queue_save();
                 }
                 state.hosted_inputs.bind_document(
                     tab,
@@ -1385,7 +1431,7 @@ pub(crate) fn open_document_from_files(
                             path: path.clone(),
                         },
                     );
-                    tree.flush_to_disk();
+                    tree.queue_save();
                 }
                 state.hosted_inputs.bind_document(
                     tab,

@@ -29,6 +29,7 @@ runtime="${TILO_ROOT_RUNTIME:-/run}"
 lsblk_bin="${TILO_ROOT_LSBLK:-lsblk}"
 cryptsetup_bin="${TILO_ROOT_CRYPTSETUP:-systemd-cryptsetup}"
 cryptsetup_probe="${TILO_ROOT_CRYPTSETUP_PROBE:-cryptsetup}"
+plymouth_bin="${TILO_ROOT_PLYMOUTH:-plymouth}"
 unlock_bin="${TILO_ROOT_UNLOCK:-/usr/libexec/tilo-rollback-initrd-unlock}"
 
 die() { printf 'tilo-root: %s\n' "$*" >&2; exit 1; }
@@ -88,9 +89,20 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
   # Keep the graphical prompt available after a typo. Do not recycle a failed
   # passphrase from the agent cache into the remaining attempts. TPM/FIDO
   # enrollments and recovery keys remain available on functioning platforms.
-  "$cryptsetup_bin" attach root "$root" - \
-    'tpm2-device=auto,fido2-device=auto,tries=0,timeout=0,password-cache=no' \
-    || die "encrypted Tilo root did not unlock"
+  # systemd-cryptsetup sends rejection details to its log, not to the
+  # graphical password agent. Preserve those logs and forward only an opaque
+  # retry event to Plymouth; no password is read or retained by this wrapper.
+  LC_ALL=C SYSTEMD_LOG_TARGET=console "$cryptsetup_bin" attach root "$root" - \
+    'tpm2-device=auto,fido2-device=auto,tries=0,timeout=0,password-cache=no' 2>&1 | \
+    while IFS= read -r message; do
+      printf '%s\n' "$message" >&2
+      case "$message" in
+        *'Failed to activate with specified passphrase. (Passphrase incorrect?)'*)
+          "$plymouth_bin" display-message --text=tilo-unlock-retry 2>/dev/null || true
+          ;;
+      esac
+    done || die "encrypted Tilo root did not unlock"
+  "$plymouth_bin" display-message --text=tilo-unlock-success 2>/dev/null || true
   target="$devroot/mapper/root"
 else
   target="$root"
