@@ -1,19 +1,21 @@
 //! Themes as a [`tilo_resource::Resource`]: one action vocabulary, one publish
-//! path for the theme library.
+//! path for the theme library, and the effects that reach outside it.
 
-use automerge::{AutoCommit, ROOT};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource as PublishedResource};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use automerge::ROOT;
+use ui::framework::{ResourceApp, SeedCx, ViewCx};
+use ui::prelude::{Effect, tilo_resource};
+use ui::tilo_actions::Resource as PublishedResource;
+use ui::tilo_resource::{Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
-    THEMES_ACTION_TYPE, ThemesAction, document_bound_actions, document_children, register,
-    root_local_operations,
+    THEMES_ACTION_TYPE, ThemesAction, document_children, set_active_theme_action,
+    upsert_custom_theme_action,
 };
 use crate::app::ThemesApp;
 use crate::doc::{self, KEY_ACTIVE};
-use crate::model::ThemeSpec;
+use crate::model::{ThemeSpec, default_catalog, demo_catalog};
+use crate::store;
 
 /// Catalog plus the active theme id.
 #[derive(Clone, Debug, Default)]
@@ -33,8 +35,12 @@ impl Resource for Themes {
     type State = ThemesState;
     type Action = ThemesAction;
 
-    fn register(registry: &mut tilo_actions::ActionRegistry) {
-        register(registry);
+    /// The custom-theme map and its tombstones exist from the genesis, so
+    /// two devices that each add a theme before they sync add them to one
+    /// map rather than to two competing ones.
+    fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
+        doc::initialize_catalog(doc, &ROOT);
+        Ok(())
     }
 
     fn read(doc: &Doc) -> Result<ThemesState, ModelError> {
@@ -44,21 +50,14 @@ impl Resource for Themes {
         })
     }
 
-    fn bound_actions(state: &ThemesState) -> Vec<ActionSpec> {
-        document_bound_actions(state)
+    /// A slider, the colour picker or the name field edits one field of one
+    /// theme a value at a time; every value of one gesture is one step.
+    fn coalesces(previous: &ThemesAction, next: &ThemesAction) -> bool {
+        next.continues(previous)
     }
 
     fn children(state: &ThemesState) -> Vec<PublishedResource> {
         document_children(state)
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        // New / apply-selected / export-selected are Effects with no document
-        // delta. Per-theme apply / export ride each child from [`children`].
-        root_local_operations()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
     }
 
     fn search(state: &ThemesState) -> Vec<SearchEntry> {
@@ -75,21 +74,58 @@ impl Resource for Themes {
     }
 }
 
-/// Hosted-only extras that are not document state: an in-flight apply job and
-/// the last export preview. The library door stays on [`tilo_resource::publish`].
-pub(crate) fn live_extras(app: &ThemesApp) -> Vec<PublishedResource> {
-    let mut extras = Vec::new();
-    if let Some(label) = app.live_apply_job_label() {
-        extras.push(PublishedResource::new(
-            "themes.apply-job",
-            "themes.apply-job",
-            label,
-        ));
+/// What the studio does beyond its document: create a theme it then shows,
+/// make a theme the system's look, and hand a theme out as JSON.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "themes.effect")]
+pub enum ThemesEffect {
+    /// New theme
+    New {
+        #[param("Name of the new theme")]
+        name: Option<String>,
+    },
+    /// Apply as system theme
+    #[effect(job, cancellable)]
+    ApplyTheme {
+        #[param("Id of the theme to apply; the selected one when left out")]
+        theme: Option<String>,
+    },
+    /// Export theme JSON
+    #[effect(returns, permission = "read")]
+    Export {
+        #[param("Id of the theme to export; the selected one when left out")]
+        theme: Option<String>,
+    },
+}
+
+/// Screenshot scenarios. Every one but [`LIVE`] shows the library with one
+/// custom theme beside the presets.
+pub mod scenario {
+    /// A preset on a phone-sized window: its full specimen, scrolled.
+    pub const LIVE: &str = "live";
+    /// The custom theme's full specimen on a phone-sized window, scrolled.
+    pub const PREVIEW: &str = "preview";
+    /// The custom theme's controls on a phone-sized window.
+    pub const CUSTOMIZE: &str = "customize";
+    /// The library's actions menu on the custom theme's row.
+    pub const MENU: &str = "menu";
+    /// The custom theme's controls, scrolled partway.
+    pub const SCROLL: &str = "scroll";
+    /// A preset whose specimen is set in a monospace font.
+    pub const FONT: &str = "font";
+    /// The library sliding over a phone-sized window.
+    pub const GALLERY: &str = "gallery";
+
+    /// Every scenario.
+    pub const ALL: &[&str] = &[LIVE, PREVIEW, CUSTOMIZE, MENU, SCROLL, FONT, GALLERY];
+
+    /// Whether `name` is captured on a phone-sized window.
+    pub fn narrow(name: Option<&str>) -> bool {
+        matches!(
+            name,
+            Some(LIVE | PREVIEW | CUSTOMIZE | MENU | SCROLL | GALLERY)
+        )
     }
-    if let Some(preview) = app.live_export_preview_resource() {
-        extras.push(preview);
-    }
-    extras
 }
 
 /// Framework app: the themes widget is the surface over [`Themes`].
@@ -100,179 +136,200 @@ impl ResourceApp for ThemesShell {
     const ID: &'static str = "so.tilo.themes";
     const TITLE: &'static str = "Themes";
     const ICON: Option<&'static str> = Some("themes");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1280, 800)
-    }
 
     fn view(cx: &mut ViewCx<Themes>) -> Element {
         cx.surface(ThemesApp::new())
     }
-}
 
-impl ResourceSurface<Themes> for ThemesApp {
-    fn present(&mut self, state: &std::rc::Rc<ThemesState>) {
-        self.adopt_resource_state(state);
+    fn scenarios() -> &'static [&'static str] {
+        scenario::ALL
     }
 
-    fn attach(&mut self, cx: SurfaceCx<Themes>) {
-        self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<Dispatcher<Themes>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    pub(crate) hosted: bool,
-    pub(crate) last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Themes>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &ThemesAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
+    fn shot_viewport(name: Option<&str>) -> (u32, u32) {
+        if scenario::narrow(name) {
+            (480, 900)
         } else {
-            self.local.last_dispatched()
+            (1280, 800)
         }
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    /// The custom themes the library shows beside the presets.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Themes>> {
+        if name == Some(scenario::LIVE) {
+            return Vec::new();
+        }
+        demo_catalog()
+            .iter()
+            .filter(|spec| !spec.builtin)
+            .filter_map(|spec| Invoke::apply(&upsert_custom_theme_action(spec)).ok())
+            .collect()
+    }
+
+    /// The theme this device already shows: the one applied here before
+    /// (imported with its definition when it is a custom theme), else the
+    /// first preset.
+    fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Themes>> {
+        let applied = store::applied(cx.host().storage().settings_document());
+        let mut actions = Vec::new();
+        let active = match applied {
+            Some(spec) if !spec.builtin => {
+                actions.push(upsert_custom_theme_action(&spec));
+                Some(spec.id)
+            }
+            Some(spec) => Some(spec.id),
+            None => default_catalog().first().map(|spec| spec.id.clone()),
+        };
+        actions.extend(active.map(set_active_theme_action));
+        actions
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{provide_resources, state_from_doc};
-    use crate::doc;
-    use crate::model::demo_catalog;
-    use automerge::ROOT;
-    use ui::widget::Widget;
+    use crate::actions::{ThemesAction, set_custom_theme_radius_action};
+    use crate::model::TokenId;
+    use ui::prelude::TestApp;
 
     #[test]
-    fn resource_publish_owns_library_door_and_hosted_keeps_only_live_extras() {
-        let mut doc = AutoCommit::new();
-        doc::save_catalog(&mut doc, &ROOT, &demo_catalog());
-        doc.commit();
+    fn edits_of_one_field_continue_one_another_and_nothing_else_does() {
+        let radius = |id: &str, value| set_custom_theme_radius_action(id, value);
+        assert!(Themes::coalesces(&radius("a", 0.1), &radius("a", 0.2)));
+        assert!(!Themes::coalesces(&radius("a", 0.1), &radius("b", 0.2)));
+        assert!(!Themes::coalesces(
+            &radius("a", 0.1),
+            &ThemesAction::SetCustomThemeSpacing {
+                id: "a".into(),
+                spacing_norm: 0.2
+            }
+        ));
+        let token = |token| ThemesAction::SetCustomThemeToken {
+            id: "a".into(),
+            token,
+            rgb: [1, 2, 3],
+        };
+        assert!(Themes::coalesces(
+            &token(TokenId::Accent),
+            &token(TokenId::Accent)
+        ));
+        assert!(!Themes::coalesces(
+            &token(TokenId::Accent),
+            &token(TokenId::Border)
+        ));
+        let delete = ThemesAction::DeleteCustomTheme { id: "a".into() };
+        assert!(!Themes::coalesces(&delete, &delete));
+    }
 
-        let state = Themes::read(&doc).expect("seeded themes state");
-        let published = ui::tilo_resource::publish::<Themes>("themes.library", "Themes", &state);
-        assert_eq!(published.kind, "themes.library");
-        assert!(
-            published
-                .actions
-                .iter()
-                .any(|action| action.id == "new-theme"),
-            "new-theme bound_action must be on the framework resource"
+    /// A new library shows the theme this device applied, and the seed that
+    /// put it there is nobody's undo step.
+    #[test]
+    fn a_new_library_starts_on_the_theme_this_device_applied() {
+        let mut fresh = TestApp::<ThemesShell>::new().unwrap();
+        assert_eq!(
+            fresh.state().active.as_deref(),
+            default_catalog().first().map(|theme| theme.id.as_str())
         );
+        assert!(!fresh.undo(), "the seed is not an undo step");
+
+        // A custom theme applied on this device comes along with its
+        // definition.
+        let profile = tempfile::tempdir().unwrap();
+        let mut sunset = crate::model::seed_custom();
+        sunset.name = "Dusk".into();
+        store::save(
+            &ui::storage::SettingsDocument::File(profile.path().join("settings.json")),
+            &sunset,
+        )
+        .unwrap();
+        let imported = TestApp::<ThemesShell>::open_data_dir(profile.path()).unwrap();
+        let state = imported.state();
+        assert_eq!(state.active.as_deref(), Some("sunset"));
         assert!(
-            published.actions.iter().any(|action| action.id == "new"),
-            "new Effect must be on the framework resource"
-        );
-        assert!(
-            published
-                .actions
+            state
+                .catalog
                 .iter()
-                .any(|action| action.id == "apply-selected"),
-            "apply-selected Effect must be on the framework resource"
+                .any(|theme| theme.id == "sunset" && theme.name == "Dusk" && !theme.builtin)
         );
+    }
+
+    /// The library with the custom theme "sunset" beside the presets, in a
+    /// window someone uses, on a profile whose settings file the test reads.
+    fn demo() -> (TestApp<ThemesShell>, tempfile::TempDir) {
+        let profile = tempfile::tempdir().unwrap();
+        let mut app = TestApp::<ThemesShell>::open_data_dir(profile.path()).unwrap();
+        for invoke in ThemesShell::scenario(None) {
+            app.invoke(invoke).unwrap();
+        }
+        (app, profile)
+    }
+
+    #[test]
+    fn effects_create_export_and_apply_themes() {
+        let (mut app, profile) = demo();
+        let before = app.state().catalog.len();
+
+        app.effect(&ThemesEffect::New {
+            name: Some("Ocean".into()),
+        })
+        .unwrap();
+        app.settle();
+        let catalog = app.state().catalog;
+        assert_eq!(catalog.len(), before + 1);
         assert!(
-            published
-                .actions
+            catalog
                 .iter()
-                .any(|action| action.id == "export-selected"),
-            "export-selected Effect must be on the framework resource"
-        );
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|child| child.kind == "themes.theme"),
-            "theme children must be on the framework resource"
-        );
-        assert!(
-            published
-                .children
-                .iter()
-                .all(|child| child.kind != "themes.apply-job"),
-            "shared projection must not carry live apply jobs"
+                .any(|theme| theme.name == "Ocean" && !theme.builtin)
         );
 
-        let mut app = ThemesApp::new_demo();
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
-        assert!(!app.is_hosted(), "standalone stays on the local host");
-        let standalone = app.publish_resources(&seeded);
-        assert_eq!(standalone[0].kind, "themes.library");
-        assert!(
-            standalone[0]
-                .children
-                .iter()
-                .any(|child| child.kind == "themes.theme"),
-            "standalone publishes theme children"
-        );
+        // Export hands the theme out and leaves the library as it is.
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        let exported = app
+            .effect(&ThemesEffect::Export {
+                theme: Some("sunset".into()),
+            })
+            .unwrap();
+        let exported: ThemeSpec =
+            serde_json::from_value(exported.value.expect("the exported theme")).unwrap();
+        assert_eq!(exported.id, "sunset");
+        assert_eq!(app.read_document(|doc| doc.clone().get_heads()), heads);
 
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "themes.library"),
-            "hosted must not republish themes.library beside ResourceRoot: {:?}",
-            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
-        );
+        // Apply makes the theme the device's look and the library's active one.
+        app.effect(&ThemesEffect::ApplyTheme {
+            theme: Some("dracula".into()),
+        })
+        .unwrap();
+        app.settle();
+        assert_eq!(app.state().active.as_deref(), Some("dracula"));
+        let settings = ui::storage::SettingsDocument::File(profile.path().join("settings.json"));
+        assert_eq!(store::load_active_id(&settings).as_deref(), Some("dracula"));
 
-        let door = provide_resources(&seeded);
-        assert_eq!(door[0].kind, "themes.library");
-        assert_eq!(state_from_doc(&seeded).catalog.len(), state.catalog.len());
+        // A theme that is not in the library is refused.
+        assert!(
+            app.effect(&ThemesEffect::ApplyTheme {
+                theme: Some("missing".into()),
+            })
+            .is_err()
+        );
+    }
+
+    /// Every screenshot scenario stages and settles, at its viewport, and
+    /// the menu scenario shows the custom theme's actions.
+    #[test]
+    fn every_scenario_captures() {
+        for name in scenario::ALL {
+            let mut app = TestApp::<ThemesShell>::capture(Some(name)).unwrap();
+            let (width, height) = ThemesShell::shot_viewport(Some(name));
+            assert_eq!(app.harness().inspection().viewport, [width, height]);
+            let custom = app.state().catalog.iter().any(|theme| !theme.builtin);
+            assert_eq!(custom, *name != scenario::LIVE, "{name}");
+        }
+        let mut menu = TestApp::<ThemesShell>::capture(Some(scenario::MENU)).unwrap();
+        assert_eq!(
+            menu.surface(|app: &mut ThemesApp| app.gallery_menu_is_open()),
+            Some(true)
+        );
     }
 }

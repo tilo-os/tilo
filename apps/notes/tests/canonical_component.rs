@@ -9,8 +9,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
     // Catches accidental starter pages, shared New identities, and legacy-source effects.
     eprintln!("phase new_is_empty_schema_ready_and_instances_have_distinct_records");
     {
-        let f = LegacyFixture::rich();
-        let source = f.source_bytes();
+        let f = NotebookFixture::rich();
         let mut a = component(&f, 11, LaunchTarget::New);
         let mut b = component(&f, 12, LaunchTarget::New);
         assert_ne!(a.record().id, b.record().id);
@@ -23,7 +22,6 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
                 })
                 .unwrap();
         }
-        assert_eq!(source, f.source_bytes());
         assert_closed(&a.close());
         assert_closed(&b.close());
     }
@@ -48,8 +46,8 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
                     .iter()
                     .any(|child| has_resource(*child, doc, id))
         }
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         // The accepted importer preserves one blank Markdown paragraph. Exercise
         // the canonical empty-list state after explicitly deleting that block.
         f.records
@@ -59,7 +57,6 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
                 doc.commit();
             })
             .unwrap();
-        let source = f.source_bytes();
         let heads = f
             .records
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
@@ -89,7 +86,6 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
             .unwrap();
         assert!(outer.base_heads().is_empty());
         assert_eq!(outer.pending_ops(), 0);
-        assert_eq!(source, f.source_bytes());
         close_widget(&mut a);
         close_widget(&mut b);
     }
@@ -97,9 +93,8 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
     // Catches resurrecting an emptied notebook from a still-present legacy workspace.
     eprintln!("phase reopening_an_emptied_import_never_resurrects_legacy_pages");
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
-        let source = f.source_bytes();
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut live = driver(&f, 11, &checkout);
         let address = ui::bound_dispatch::BoundActionAddress {
             instance_id: 11,
@@ -158,7 +153,6 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
                 assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
             })
             .unwrap();
-        assert_eq!(source, f.source_bytes());
         close_widget(&mut tile);
     }
 }
@@ -170,7 +164,6 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
     {
         use automerge::transaction::Transactable;
         use ui::record::RecordSaveStatus;
-        use ui::widget::AppWidget;
         let mut doc = AutoCommit::new();
         notebook::initialize_empty(&mut doc).unwrap();
         doc.commit();
@@ -178,6 +171,8 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         let mut app =
             notes::NotesApp::from_document(&doc, &ui::permissions::UserId("same-author".into()))
                 .unwrap();
+        let saved = ui::LocalState::new(RecordSaveStatus::Saved);
+        app.follow_save_status(saved.clone());
         for (status, label) in [
             (RecordSaveStatus::MemoryOnly, "Session only"),
             (RecordSaveStatus::Saving, "Saving…"),
@@ -187,7 +182,8 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
             ),
             (RecordSaveStatus::Saved, "Saved"),
         ] {
-            app.record_save_status(status);
+            saved.set(status);
+            app.sync(&mut doc, &ROOT);
             assert_eq!(app.status_bar_for_test().save_text(), label);
             app.refresh_status_for_test();
             assert_eq!(app.status_bar_for_test().save_text(), label);
@@ -199,8 +195,8 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         "phase canonical_binding_hydrates_and_clears_marks_and_reconciles_empty_selection_readonly"
     );
     {
-        let f = LegacyFixture::rich();
-        let checkout = imported(&f);
+        let f = NotebookFixture::rich();
+        let checkout = notebook(&f);
         let mut doc = f.records.read(&checkout.id, Clone::clone).unwrap();
         let before = (doc.base_heads(), doc.pending_ops());
         let mut app = notes::NotesApp::from_document(&doc, &f.author).unwrap();

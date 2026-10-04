@@ -16,10 +16,12 @@
 use ui_core::application::OpenFile;
 
 /// What a launch handed the app: the arguments of its command line or of an
-/// "open with" (paths, URLs), and the file a host lent it.
+/// "open with" (paths, URLs), the file a host lent it, and the content store
+/// where the app keeps what a launch hands it.
 pub struct LaunchInput<'a> {
     arguments: &'a [String],
     file: Option<&'a OpenFile>,
+    content: Option<&'a tilo_content::ContentStore>,
 }
 
 impl<'a> LaunchInput<'a> {
@@ -27,7 +29,18 @@ impl<'a> LaunchInput<'a> {
     /// asks [`ResourceApp::launch`](super::ResourceApp::launch) about, and
     /// what a test of an app's launch builds.
     pub fn new(arguments: &'a [String], file: Option<&'a OpenFile>) -> Self {
-        Self { arguments, file }
+        Self {
+            arguments,
+            file,
+            content: None,
+        }
+    }
+
+    /// The same launch on a host that lends the app `content`.
+    #[must_use]
+    pub fn with_content(mut self, content: Option<&'a tilo_content::ContentStore>) -> Self {
+        self.content = content;
+        self
     }
 
     /// The launch's arguments, in order; at most
@@ -46,6 +59,14 @@ impl<'a> LaunchInput<'a> {
     /// [opens](super::ResourceApp::OPENS) reaches it.
     pub fn file(&self) -> Option<&'a OpenFile> {
         self.file
+    }
+
+    /// The content store of the host the app is launched in: a handed
+    /// file's bytes are kept there, and the launch's actions name them by
+    /// hash, so the record never carries a file and every device that holds
+    /// the bytes reads them. `None` where the host lends none.
+    pub fn content(&self) -> Option<&'a tilo_content::ContentStore> {
+        self.content
     }
 
     /// Whether the launch named nothing: a plain start of the app.

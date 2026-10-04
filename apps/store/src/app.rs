@@ -478,7 +478,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
         format!("{source} · v{latest}")
     };
     let mut row = LiveRow::new(app_row_id(&item.id), "store.app", item.name.clone())
-        .presented(ResourcePresentation {
+        .presentation(ResourcePresentation {
             detail: (!detail.is_empty()).then_some(detail),
             badge: Some(badge),
             preview: None,

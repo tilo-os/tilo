@@ -578,6 +578,12 @@ impl Resource for RichText {
         Ok(())
     }
 
+    /// Only typing and deleting text continue into the next keystroke; a
+    /// split, a move or a format is a step of its own.
+    fn continuable(action: &RichTextAction) -> bool {
+        matches!(action, RichTextAction::SpliceText { .. })
+    }
+
     /// Typing a word is one undo step: an insertion right after the previous
     /// one in the same paragraph continues it, until a space or a line of
     /// punctuation ends the word. Deleting runs the same way.

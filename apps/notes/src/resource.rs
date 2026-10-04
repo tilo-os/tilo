@@ -6,14 +6,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ChangeHash};
-use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
+use tilo_actions::{ActionSpec, EncodedAction, OperationKind};
 use tilo_document::{RichText, RichTextAction};
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::application::OpenFile;
+use ui::framework::{Dispatcher, LaunchInput, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::headless::FrameHarness;
 use ui::permissions::UserId;
-use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 // `Resource` is in scope for both `Notebook` and nested `RichText`.
 use crate::actions::{
-    NOTES_ACTION_TYPE, NOTES_OPERATION_TYPE, NotesAction, NotesOperation, encode, new_page_action,
+    NOTES_ACTION_TYPE, NOTES_OPERATION_TYPE, NotesAction, NotesOperation, encode,
 };
 use crate::app::NotesApp;
 use crate::doc::NotesDoc;
@@ -44,6 +46,7 @@ impl Resource for Notebook {
             .into_iter()
             .map(|(page, tag)| crate::model::TagAssignment { page, tag })
             .collect();
+        workspace.bodies = std::sync::Arc::new(crate::actions::read_bodies(doc, workspace.pages()));
         Ok(workspace)
     }
 
@@ -52,27 +55,18 @@ impl Resource for Notebook {
         Ok(())
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        vec![
-            ActionDecl::new(
-                "new-page",
-                "New note",
-                vec![ActionParam::required(
-                    tilo_actions::PROMPTED_PARAM,
-                    ParamType::Text,
-                    "Title",
-                )],
-                |args, _| {
-                    let title = args
-                        .text(tilo_actions::PROMPTED_PARAM)
-                        .unwrap_or_default()
-                        .trim()
-                        .to_owned();
-                    Ok(new_page_action(PageId::new_v4(), None, 0, &title))
-                },
-            )
-            .describe("Create a new root note."),
-        ]
+    // The notebook's own edits never continue one another; typing in a
+    // note continues through its body's rich text.
+    fn continuable(_action: &NotesAction) -> bool {
+        false
+    }
+
+    fn bound_declarations(state: &Workspace) -> Vec<ActionDecl<Self>> {
+        crate::actions::notebook_bound_declarations(state)
+    }
+
+    fn bound_actions(state: &Workspace) -> Vec<ActionSpec> {
+        crate::actions::notebook_bound_actions(state)
     }
 
     fn local_operations() -> Vec<ActionSpec> {
@@ -91,28 +85,19 @@ impl Resource for Notebook {
             )
             .ok()
         })
+        .chain([
+            crate::actions::file_operation("import-markdown", "Import Markdown", None),
+            crate::actions::markdown_content_operation(),
+        ])
         .collect()
     }
 
     fn children(state: &Workspace) -> Vec<tilo_actions::Resource> {
-        // Page tree with each note's rich-text body nested underneath, plus
-        // the tag catalogue.
-        let mut children = crate::actions::notebook_page_children(state.pages(), None);
-        let ctx = crate::actions::NotesResourceCtx {
-            pages: state.pages().to_vec(),
-            blocks: std::collections::HashMap::new(),
-            tags: state.tags().to_vec(),
-            tag_assignments: state
-                .data
-                .tag_assignments
-                .iter()
-                .map(|assignment| (assignment.page, assignment.tag))
-                .collect(),
-            can_go_back: false,
-            can_go_forward: false,
-        };
-        children.push(crate::actions::tags_resource(&ctx));
-        children
+        crate::actions::notebook_children(state)
+    }
+
+    fn child(state: &Workspace, id: &str) -> Option<tilo_actions::Resource> {
+        crate::actions::notebook_child(state, id)
     }
 
     fn search(state: &Workspace) -> Vec<SearchEntry> {
@@ -137,17 +122,89 @@ impl ResourceApp for NotesShell {
     const ID: &'static str = "so.tilo.notes";
     const TITLE: &'static str = "Notes";
     const ICON: Option<&'static str> = Some("notes");
-    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
-        (1100, 720)
-    }
+    const OPENS: &'static [&'static str] = &["text/markdown", "text/x-markdown"];
+    const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Notebook>) -> Element {
-        // Empty shell; `present` installs the framework workspace. Do not open
-        // a fresh AutoCommit here — that would ignore the hosted document.
-        let author = UserId("local".into());
-        let app = NotesApp::empty_surface(&author);
+        // `present` installs the framework's workspace before the first frame.
+        let author = UserId(cx.me().unwrap_or("local").to_owned());
+        let mut app = NotesApp::empty_surface(&author, cx.save_status());
+        if let Some((page, _)) = launched_note(&cx.launch()) {
+            app.open_when_present(page);
+        }
         cx.surface(app)
     }
+
+    /// A Markdown file the app is launched on becomes a note.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Notebook>> {
+        let Some((page, file)) = launched_note(input) else {
+            return Vec::new();
+        };
+        let Ok(markdown) = std::str::from_utf8(file.bytes()) else {
+            tracing::warn!(
+                file = file.name(),
+                "notes: the launched file is not UTF-8 Markdown"
+            );
+            return Vec::new();
+        };
+        let title = std::path::Path::new(file.name())
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.trim().is_empty())
+            .unwrap_or("Imported note");
+        // Images next to a file named on the command line come with it.
+        let (markdown, assets) = input
+            .argument()
+            .map(std::path::Path::new)
+            .and_then(|path| {
+                crate::app::adopt_canonical_markdown_assets(path, markdown, None)
+                    .map_err(|error| tracing::warn!(%error, "notes: launched images stay behind"))
+                    .ok()
+            })
+            .unwrap_or_else(|| (markdown.to_owned(), Vec::new()));
+        Invoke::apply(&crate::actions::import_markdown_action(
+            page, title, &markdown, assets,
+        ))
+        .into_iter()
+        .collect()
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenario::SCENARIOS
+    }
+
+    fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
+        match scenario {
+            // The drawer only exists below the narrow breakpoint.
+            Some("drawer") => (430, 860),
+            _ => crate::scenario::VIEWPORT,
+        }
+    }
+
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Notebook>> {
+        crate::scenario::actions(name)
+            .iter()
+            .filter_map(|action| Invoke::apply(action).ok())
+            .collect()
+    }
+
+    fn scenario_input(name: Option<&str>, input: &mut FrameHarness) -> Result<(), String> {
+        crate::scenario::input(name, input)
+    }
+}
+
+/// The note a launch on a Markdown file imports. The same file always names
+/// the same note, so launching on it again opens the note it became rather
+/// than importing it twice.
+fn launched_note<'a>(input: &LaunchInput<'a>) -> Option<(PageId, &'a OpenFile)> {
+    let file = input.file()?;
+    let digest = blake3::Hasher::new()
+        .update(file.name().as_bytes())
+        .update(&[0])
+        .update(file.bytes())
+        .finalize();
+    let bytes = *digest.as_bytes().first_chunk::<16>()?;
+    Some((uuid::Builder::from_random_bytes(bytes).into_uuid(), file))
 }
 
 /// Framework dispatcher when hosted; otherwise the local action host, for
@@ -315,5 +372,9 @@ impl ResourceSurface<Notebook> for NotesApp {
 
     fn attach(&mut self, cx: SurfaceCx<Notebook>) {
         self.attach_framework(cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
     }
 }

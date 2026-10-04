@@ -50,25 +50,29 @@ fn seeding_and_scenarios_start_only_where_asked() {
             "nothing selected in a blank project"
         );
     }
-    // Case `demo_build_seeds_a_project`.
-    {
-        // The demo builder is the sole source of the sample project.
-        let mut app = VideoEditorApp::new_demo();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            !app.project.clips.is_empty(),
-            "demo build seeds sample clips"
-        );
-        assert!(
-            !app.project.media.is_empty(),
-            "demo build seeds sample media"
-        );
-    }
 }
 
 use super::*;
+
+/// A blank editor that imports `paths` on its first sync, as a launch naming
+/// them does; `placed` also puts the first on the timeline.
+fn importing(paths: Vec<PathBuf>, placed: bool) -> VideoEditorApp {
+    let mut app = VideoEditorApp::new();
+    app.pending_imports = paths;
+    app.media_pipeline.auto_place_imports = placed;
+    app
+}
+
+/// An editor arranged for `scenario` as a capture arranges it: hermetic,
+/// applying the scenario once its project has loaded.
+fn staged(scenario: ShotScenario) -> VideoEditorApp {
+    let mut app = VideoEditorApp::new();
+    app.seed.hermetic = true;
+    app.seed.capture = true;
+    app.render_pipeline.warm_waveforms_sync = true;
+    app.shot_scenario = scenario;
+    app
+}
 
 fn app_with_sample() -> VideoEditorApp {
     let mut doc = AutoCommit::new();
@@ -1457,7 +1461,7 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         let src = write_real_png(640, 360);
         let f = std::env::temp_dir().join(format!("tilo-ve-absent-{}.png", std::process::id()));
         std::fs::copy(&src, &f).unwrap();
-        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], false);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
@@ -1768,7 +1772,7 @@ fn imports_add_real_clips_through_the_document() {
         // A real file on disk (not a mock) becomes a real MediaItem with real,
         // probed metadata, replicated into the CRDT.
         let f = write_real_png(320, 240);
-        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], false);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
@@ -1854,7 +1858,7 @@ fn imports_add_real_clips_through_the_document() {
         // The `--shots`/preload placed import also lands the clip on a freshly
         // created track with the playhead inside it, so the preview has content.
         let f = write_real_png(640, 360);
-        let mut app = VideoEditorApp::new_import_placed(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], true);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
@@ -6251,7 +6255,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         for w in [
             420.0_f64, 500.0, 640.0, 760.0, 900.0, 1100.0, 1280.0, 1920.0,
         ] {
-            let mut app = VideoEditorApp::new_demo();
+            let mut app = VideoEditorApp::new();
             app.rect = Rect::new(0.0, 0.0, w, 800.0);
             let r = app.regions();
             let hist = app.history_buttons(&r);
@@ -6579,10 +6583,10 @@ fn scrolled_clips_and_hud_keep_their_labels_visible() {
     // is exactly where `Transform::pip()` places a corner inset — so every
     // top-right picture-in-picture had "1920x1080" burned across it.
     {
-        let mut app = VideoEditorApp::new_for_shot(ShotScenario::Composed);
+        let mut app = staged(ShotScenario::Composed);
         let (w, h) = (900.0_f64, 700.0_f64);
         let mut doc = AutoCommit::new();
-        VideoDoc::seed_sample(&mut doc);
+        VideoDoc::write_project(&mut doc, &super::composed_project());
         app.rect = Rect::new(0.0, 0.0, w, h);
         app.sync(&mut doc, &automerge::ROOT);
         let px = render_pixels(&mut app, w as u32, h as u32, &Theme::dark());
@@ -7015,7 +7019,7 @@ fn bin_menus_and_gestures_edit_the_crdt() {
         // A blank live project with one imported media and no tracks: double-
         // clicking a bin item must create a matching track and place the clip.
         let f = write_real_png(320, 240);
-        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        let mut app = importing(vec![f.clone()], false);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
@@ -10743,7 +10747,8 @@ fn mixer_lane_reset_and_capture_are_stable() {
         let theme = Theme::dark();
         let (w, h) = (960u32, 640u32);
         let mut doc = AutoCommit::new();
-        let mut app = VideoEditorApp::new_for_shot(ShotScenario::Mix);
+        VideoDoc::seed_sample(&mut doc);
+        let mut app = staged(ShotScenario::Mix);
         app.rect = Rect::new(0.0, 0.0, f64::from(w), f64::from(h));
         // Two syncs to settle the scenario, so the comparison below is of a
         // staged state rather than of one still arriving.

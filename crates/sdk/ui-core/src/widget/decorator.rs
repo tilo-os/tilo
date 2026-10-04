@@ -153,6 +153,10 @@ pub trait Decorator {
         self.inner().history_owner()
     }
 
+    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        self.inner().record_owners()
+    }
+
     #[doc(hidden)]
     #[allow(
         private_interfaces,
@@ -716,6 +720,10 @@ impl<T: Decorator> Widget for T {
 
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
         Decorator::history_owner(self)
+    }
+
+    fn record_owners(&self) -> Vec<crate::history_mode::HistoryOwner> {
+        Decorator::record_owners(self)
     }
 
     #[doc(hidden)]

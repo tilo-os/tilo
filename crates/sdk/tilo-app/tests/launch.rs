@@ -43,7 +43,21 @@ impl ResourceApp for SketchApp {
     const ARGUMENTS: usize = 1;
 
     fn view(cx: &mut ViewCx<Sketch>) -> Element {
-        Box::new(cx.text(|sketch| sketch.source.clone()))
+        // The view shows what the launch named, as an app opens what its
+        // launch actions made.
+        let launch = cx.launch();
+        let named = launch
+            .file()
+            .map(|file| file.name().to_owned())
+            .or_else(|| launch.argument().map(str::to_owned))
+            .unwrap_or_default();
+        Box::new(
+            Column::new()
+                .push(Box::new(cx.text(|sketch| sketch.source.clone())))
+                .push(Box::new(Text::dynamic(move || {
+                    format!("Launched on {named}")
+                }))),
+        )
     }
 
     /// One sketch per traced image.
@@ -74,10 +88,20 @@ fn a_path_argument_opens_the_record_of_that_path() {
         &RecordId::derived("sketch", &RecordId::for_file("/pictures/harbour.png"))
     );
     assert_eq!(app.state().source, "/pictures/harbour.png");
+    let frame = app.harness().inspection_json().unwrap();
+    assert!(
+        frame.contains("Launched on /pictures/harbour.png"),
+        "{frame}"
+    );
 
-    let plain = TestApp::<SketchApp>::new().unwrap();
+    let mut plain = TestApp::<SketchApp>::new().unwrap();
     assert_eq!(plain.record(), &RecordId::room_default());
     assert_eq!(plain.state().source, "");
+    let frame = plain.harness().inspection_json().unwrap();
+    assert!(
+        frame.contains("Launched on") && !frame.contains("Launched on /"),
+        "{frame}"
+    );
 }
 
 #[test]
@@ -132,6 +156,8 @@ fn a_handed_file_reaches_the_app_and_learns_the_resource_that_holds_it() {
         .collect();
     assert_eq!(notes, ["keeper"]);
     assert_eq!(receipt.opened_resource().as_deref(), Some("test.sketch"));
+    let frame = app.harness().inspection_json().unwrap();
+    assert!(frame.contains("Launched on lighthouse.txt"), "{frame}");
 }
 
 #[test]
@@ -223,4 +249,54 @@ fn an_app_that_opens_every_file_is_handed_one_of_no_known_type_and_its_view_sees
         TestApp::<InspectorApp>::launched(&[directory.path().to_str().unwrap()]).unwrap();
     plain.harness().relayout();
     assert!(plain.state().notes.is_empty());
+}
+
+thread_local! {
+    static VIEW_CONTENT: std::cell::RefCell<Option<tilo_content::ContentStore>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Keeps a handed picture's bytes in the launch's content store and traces
+/// over them by hash.
+struct KeepApp;
+
+impl ResourceApp for KeepApp {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-keep";
+    const TITLE: &'static str = "Keep";
+    const OPENS: &'static [&'static str] = &["image/png"];
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        VIEW_CONTENT.with(|content| *content.borrow_mut() = cx.content());
+        Box::new(cx.text(|sketch| sketch.source.clone()))
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Sketch>> {
+        let (Some(file), Some(content)) = (input.file(), input.content()) else {
+            return Vec::new();
+        };
+        content
+            .put(file.bytes())
+            .map(|hash| Sketch::TRACE.with(hash))
+            .into_iter()
+            .collect()
+    }
+}
+
+#[test]
+fn a_handed_file_is_kept_in_the_content_store_the_view_reads() {
+    let bytes = b"\x89PNG harbour".to_vec();
+    let (file, _receipt) = OpenFile::new("harbour.png", "image/png", bytes.clone()).unwrap();
+    let mut app = TestApp::<KeepApp>::handed(file).unwrap();
+    app.harness().relayout();
+    let hash = app.state().source;
+    assert_eq!(
+        hash,
+        tilo_content::hash_bytes(&bytes),
+        "the record names the bytes"
+    );
+    let content = VIEW_CONTENT
+        .with(|content| content.borrow_mut().take())
+        .expect("the view reads the content store the launch kept the bytes in");
+    assert_eq!(content.read(&hash), Some(bytes));
 }

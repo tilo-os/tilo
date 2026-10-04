@@ -3,70 +3,136 @@
 //! dispatcher; View/Effect ops come from [`Resource::local_operations`].
 
 use std::rc::Rc;
+use std::sync::{Arc, OnceLock};
 
-use tilo_actions::{Action, ActionParam, ActionSpec, OperationKind, ParamType};
+use automerge::ObjId;
+use tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
+use ui::tilo_resource::{ActionDecl, Delta, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
     SHEETS_ACTION_TYPE, SHEETS_OPERATION_TYPE, SearchableCell, SheetsAction, SheetsOperation,
-    SheetsResourceCtx, add_sheet_action, document_children, encode,
+    add_sheet_action, document_children,
 };
 use crate::app::SheetsApp;
-use crate::doc::{ChartSnapshot, CommentThread, SheetsDoc};
+use crate::doc::{ChartSnapshot, CommentThread, SheetSnapshot, SheetsDoc};
 use crate::model::{CellFormat, Currency, format_value};
 
-/// Lightweight workbook projection for search and the published tree.
+/// The currency a stored currency format without its own reads as.
+const READ_CURRENCY: Currency = Currency::USD;
+
+/// The workbook as stored: its sheets in order, each with its cells, charts
+/// and comments. A change re-reads only the sheets it touched, and of those
+/// only the cells it touched ([`Resource::refresh`]).
 #[derive(Clone, Debug, Default)]
 pub struct SheetsState {
-    pub sheets: Vec<SheetInfo>,
+    pub sheets: Vec<Arc<SheetInfo>>,
 }
 
-#[derive(Clone, Debug)]
+/// One sheet. What its formulas compute is worked out the first time
+/// something asks ([`Self::cells`]) and kept until the sheet changes, so
+/// reading the workbook never recalculates it.
+#[derive(Debug)]
 pub struct SheetInfo {
     pub id: String,
     pub name: String,
-    /// Populated cells used by sheet-level actions (sort) at publish time.
-    pub cells: Vec<SearchableCell>,
+    /// The stored cells: raw inputs, formats and bold.
+    pub snapshot: SheetSnapshot,
     pub charts: Vec<ChartSnapshot>,
     pub comments: Vec<CommentThread>,
+    /// The sheet's map, which a change names when it touches the sheet.
+    object: ObjId,
+    computed: OnceLock<Vec<SearchableCell>>,
 }
 
-impl SheetsState {
-    /// Build from the live app / test presentation context when the document
-    /// projection is empty (standalone fixtures that author sheets in `ctx`).
-    pub(crate) fn from_ctx(ctx: &SheetsResourceCtx) -> Self {
+impl SheetInfo {
+    fn read(doc: &Doc, idx: usize, object: ObjId) -> Self {
+        let snapshot = SheetsDoc::snapshot_sheet(doc, idx, READ_CURRENCY);
+        Self::with_snapshot(doc, idx, object, snapshot)
+    }
+
+    fn with_snapshot(doc: &Doc, idx: usize, object: ObjId, snapshot: SheetSnapshot) -> Self {
+        let id = SheetsDoc::sheet_resource_id(doc, idx).unwrap_or_default();
+        let name = if snapshot.name.trim().is_empty() {
+            format!("Sheet{}", idx.saturating_add(1))
+        } else {
+            snapshot.name.clone()
+        };
         Self {
-            sheets: ctx
-                .searchable_sheets
-                .iter()
-                .map(|sheet| SheetInfo {
-                    id: sheet.id.clone(),
-                    name: sheet.name.clone(),
-                    cells: sheet.cells.clone(),
-                    charts: Vec::new(),
-                    comments: Vec::new(),
-                })
-                .collect(),
+            id,
+            name,
+            charts: SheetsDoc::charts(doc, idx),
+            comments: SheetsDoc::comments(doc, idx),
+            snapshot,
+            object,
+            computed: OnceLock::new(),
         }
     }
 
-    /// Prefer live searchable cells from `ctx` when the ids still match.
-    pub(crate) fn with_ctx_cells(mut self, ctx: &SheetsResourceCtx) -> Self {
-        for sheet in &mut self.sheets {
-            if let Some(live) = ctx
-                .searchable_sheets
-                .iter()
-                .find(|candidate| candidate.id == sheet.id)
-            {
-                sheet.cells = live.cells.clone();
-                if !live.name.is_empty() {
-                    sheet.name = live.name.clone();
+    /// Re-read what `delta` changed in this sheet, now at `idx`: its cells
+    /// key by key, its name, charts and comments.
+    fn refreshed(&self, doc: &Doc, idx: usize, delta: &Delta) -> Self {
+        let snapshot = match SheetsDoc::cells_object(doc, &self.object) {
+            Some(cells) if !delta.under(&self.object).is_all() => {
+                let touched = delta.under(&cells);
+                if touched.is_all() {
+                    SheetsDoc::snapshot_sheet(doc, idx, READ_CURRENCY)
+                } else {
+                    let mut snapshot = self.snapshot.clone();
+                    snapshot.name = SheetsDoc::sheet_names(doc)
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_default();
+                    for key in touched.keys() {
+                        SheetsDoc::read_cell_into(doc, &cells, key, &mut snapshot, READ_CURRENCY);
+                    }
+                    snapshot
                 }
             }
-        }
-        self
+            _ => SheetsDoc::snapshot_sheet(doc, idx, READ_CURRENCY),
+        };
+        Self::with_snapshot(doc, idx, self.object.clone(), snapshot)
+    }
+
+    /// Every populated cell with what it shows, row by row: formulas are
+    /// calculated on the first call and kept until the sheet changes.
+    pub fn cells(&self) -> &[SearchableCell] {
+        self.computed.get_or_init(|| {
+            let values = crate::formula::recalculate(&self.snapshot.raw);
+            let mut cells = self
+                .snapshot
+                .raw
+                .iter()
+                .map(|(&(col, row), raw)| {
+                    // A formula without a format of its own shows in its
+                    // operands' (a sum of amounts is an amount).
+                    let fmt = self
+                        .snapshot
+                        .fmt
+                        .get(&(col, row))
+                        .copied()
+                        .unwrap_or_else(|| {
+                            raw.strip_prefix('=')
+                                .and_then(|body| {
+                                    crate::formula::infer_result_format(body, &self.snapshot.fmt)
+                                })
+                                .unwrap_or(CellFormat::General)
+                        });
+                    let display = values
+                        .get(&(col, row))
+                        .map_or_else(String::new, |value| format_value(value, fmt));
+                    SearchableCell {
+                        col,
+                        row,
+                        raw: raw.clone(),
+                        display,
+                    }
+                })
+                .collect::<Vec<_>>();
+            cells.sort_by_key(|cell| (cell.row, cell.col));
+            cells
+        })
     }
 }
 
@@ -77,6 +143,13 @@ pub struct SheetsWorkbook;
 /// change on every device, so two people creating the room's workbook before
 /// they sync converge on one first sheet rather than two.
 const FIRST_SHEET_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+/// The sheet maps of the workbook, in order.
+fn sheet_objects(doc: &Doc) -> Vec<ObjId> {
+    (0..SheetsDoc::sheet_count(doc))
+        .filter_map(|idx| SheetsDoc::sheet_object(doc, idx))
+        .collect()
+}
 
 impl Resource for SheetsWorkbook {
     const KIND: &'static str = "sheets.workbook";
@@ -91,90 +164,76 @@ impl Resource for SheetsWorkbook {
     }
 
     fn read(doc: &Doc) -> Result<SheetsState, ModelError> {
-        let mut projection = doc.clone();
-        let count = SheetsDoc::sheet_count_readonly(doc);
-        let names = SheetsDoc::sheet_names_readonly(doc);
-        let mut sheets = Vec::with_capacity(count);
-        for idx in 0..count {
-            let id = SheetsDoc::sheet_resource_id(doc, idx)
-                .unwrap_or_else(|| format!("sheets.sheet:{idx}"));
-            let name = names
-                .get(idx)
-                .cloned()
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| format!("Sheet{}", idx.saturating_add(1)));
-            let snap = SheetsDoc::snapshot_sheet(&mut projection, idx, Currency::USD);
-            let values = crate::formula::recalculate(&snap.raw);
-            let mut cells = snap
-                .raw
-                .iter()
-                .map(|(&(col, row), raw)| {
-                    let fmt = snap
-                        .fmt
-                        .get(&(col, row))
-                        .copied()
-                        .unwrap_or(CellFormat::General);
-                    let display = values
-                        .get(&(col, row))
-                        .map_or_else(String::new, |value| format_value(value, fmt));
-                    SearchableCell {
-                        col,
-                        row,
-                        raw: raw.clone(),
-                        display,
-                    }
-                })
-                .collect::<Vec<_>>();
-            cells.sort_by_key(|cell| (cell.row, cell.col));
-            sheets.push(SheetInfo {
-                id,
-                name,
-                cells,
-                charts: SheetsDoc::charts(&mut projection, idx),
-                comments: SheetsDoc::comments(&mut projection, idx),
-            });
+        Ok(SheetsState {
+            sheets: sheet_objects(doc)
+                .into_iter()
+                .enumerate()
+                .map(|(idx, object)| Arc::new(SheetInfo::read(doc, idx, object)))
+                .collect(),
+        })
+    }
+
+    fn refresh(state: &mut SheetsState, doc: &Doc, delta: &Delta) -> Result<(), ModelError> {
+        if delta.is_empty() {
+            return Ok(());
         }
-        Ok(SheetsState { sheets })
+        if delta.is_everything() {
+            *state = Self::read(doc)?;
+            return Ok(());
+        }
+        // A sheet nothing touched is kept as it was, wherever it moved; a
+        // touched one re-reads what changed in it.
+        let sheets = sheet_objects(doc)
+            .into_iter()
+            .enumerate()
+            .map(
+                |(idx, object)| match state.sheets.iter().find(|sheet| sheet.object == object) {
+                    Some(sheet) if !delta.touches(&object) => Arc::clone(sheet),
+                    Some(sheet) => Arc::new(sheet.refreshed(doc, idx, delta)),
+                    None => Arc::new(SheetInfo::read(doc, idx, object)),
+                },
+            )
+            .collect();
+        state.sheets = sheets;
+        Ok(())
     }
 
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
         if SheetsDoc::is_empty(doc) {
-            SheetsAction::AddSheet {
-                name: "Sheet1".into(),
-                new_sheet_id: FIRST_SHEET_ID.into(),
-            }
-            .apply(doc)
+            tilo_actions::Action::apply(
+                &SheetsAction::AddSheet {
+                    name: "Sheet1".into(),
+                    new_sheet_id: FIRST_SHEET_ID.into(),
+                },
+                doc,
+            )
             .map_err(|error| ModelError::invalid(error.to_string()))?;
         }
         Ok(())
     }
 
-    fn declarations() -> Vec<ActionDecl<Self>> {
-        // `new-sheet` needs the open sheet count for its default name — see
-        // [`bound_actions`].
-        Vec::new()
-    }
-
-    fn bound_actions(state: &SheetsState) -> Vec<ActionSpec> {
+    fn bound_declarations(state: &SheetsState) -> Vec<ActionDecl<Self>> {
         let count = state.sheets.len();
         vec![
-            ActionSpec::prompted(
+            ActionDecl::new(
                 "new-sheet",
                 "New sheet",
-                "Name",
-                "sheet name…",
-                tilo_actions::ExecutionLocus::ClientLocal,
-                move |name: &str| {
-                    let name = name.trim();
+                vec![ActionParam::optional(
+                    "name",
+                    ParamType::Text,
+                    "The new sheet's name; omit for the next free SheetN",
+                )],
+                move |args, _| {
+                    let name = args.text("name").map_or("", str::trim);
                     let name = if name.is_empty() {
                         format!("Sheet{}", count + 1)
                     } else {
-                        name.to_string()
+                        name.to_owned()
                     };
-                    encode(&add_sheet_action(&name))
+                    Ok(add_sheet_action(&name))
                 },
             )
-            .reversible(),
+            .describe("Add a sheet at the end of the workbook."),
         ]
     }
 
@@ -182,21 +241,51 @@ impl Resource for SheetsWorkbook {
         document_children(state)
     }
 
+    /// A cell is not published with its sheet (a sheet of a hundred thousand
+    /// rows would make the tree as large); its address resolves here, while
+    /// its sheet exists and it is inside the grid.
+    fn child(state: &SheetsState, id: &str) -> Option<tilo_actions::Resource> {
+        let (sheet_id, col, row) = crate::actions::parse_cell_resource_id(id)?;
+        state
+            .sheets
+            .iter()
+            .any(|sheet| sheet.id == sheet_id)
+            .then(|| crate::actions::open_cell_resource(sheet_id, col, row))
+    }
+
     fn local_operations() -> Vec<ActionSpec> {
         workbook_local_operations()
     }
 
+    /// Every sheet by name and every populated cell by reference, input and
+    /// what it shows; a hit opens it.
     fn search(state: &SheetsState) -> Vec<SearchEntry> {
-        state
-            .sheets
-            .iter()
-            .map(|sheet| SearchEntry {
-                anchor: Some(sheet.id.clone()),
-                title: sheet.name.clone(),
-                text: sheet.name.clone(),
-                action: None,
-            })
-            .collect()
+        let mut entries = Vec::new();
+        for sheet in &state.sheets {
+            if sheet.id.is_empty() {
+                continue;
+            }
+            entries.push(
+                SearchEntry::new(sheet.name.clone(), sheet.name.clone())
+                    .anchored(sheet.id.clone())
+                    .invoking(crate::actions::open_sheet_address(&sheet.id)),
+            );
+            for cell in sheet.cells() {
+                let reference = crate::model::addr_to_a1(cell.col, cell.row);
+                let title = format!("{}!{reference}", sheet.name);
+                let text = format!("{reference} {title} {} {}", cell.raw, cell.display);
+                entries.push(
+                    SearchEntry::new(title, text)
+                        .anchored(crate::actions::cell_resource_id(
+                            &sheet.id, cell.col, cell.row,
+                        ))
+                        .invoking(crate::actions::open_cell_address(
+                            &sheet.id, cell.col, cell.row,
+                        )),
+                );
+            }
+        }
+        entries
     }
 }
 
@@ -387,94 +476,15 @@ impl ResourceSurface<SheetsWorkbook> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<SheetsWorkbook>) {
         self.attach_framework(cx.dispatcher());
+        self.follow_locale(cx.settings::<crate::settings::Locale>());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
     }
 
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    pub(crate) local: ui::ActionHost,
-    pub(crate) framework: Option<ui::framework::Dispatcher<SheetsWorkbook>>,
-    #[cfg(test)]
-    pub(crate) last: Option<tilo_actions::EncodedAction>,
-    /// Test-only: hosted lookup without a framework dispatcher.
-    #[cfg(test)]
-    hosted: bool,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            #[cfg(test)]
-            last: None,
-            #[cfg(test)]
-            hosted: false,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: ui::framework::Dispatcher<SheetsWorkbook>) {
-        self.framework = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        #[cfg(test)]
-        if self.hosted {
-            return true;
-        }
-        self.framework.is_some()
-    }
-
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-    }
-
-    pub(crate) fn try_dispatch_with_context(
-        &mut self,
-        doc: &mut automerge::AutoCommit,
-        action: &SheetsAction,
-        context: tilo_actions::ActionContext,
-    ) -> Result<(), tilo_actions::ActionError> {
-        match &self.framework {
-            Some(dispatcher) => {
-                #[cfg(test)]
-                {
-                    self.last = Some(encode(action));
-                }
-                dispatcher.apply_now_with(doc, action, context)
-            }
-            None => self
-                .local
-                .try_dispatch_with_context(doc, SHEETS_ACTION_TYPE, action, context),
-        }
-    }
-
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        #[cfg(test)]
-        if self.is_hosted() {
-            return self.last.as_ref();
-        }
-        self.local.last_dispatched()
+    fn bound_declarations(&self) -> Vec<ActionDecl<SheetsWorkbook>> {
+        self.selection_declarations()
     }
 }
 
@@ -494,7 +504,7 @@ mod tests {
             .map(|sheet| sheet.name.as_str())
             .collect();
         assert_eq!(names, ["Sheet1"]);
-        assert!(state.sheets[0].cells.is_empty());
+        assert!(state.sheets[0].snapshot.raw.is_empty());
         assert_eq!(state.sheets[0].id, FIRST_SHEET_ID);
     }
 
@@ -525,12 +535,8 @@ mod tests {
     fn document_scenarios_edit_through_the_dispatcher() {
         let fill = TestApp::<SheetsShell>::capture(Some("fillseries")).unwrap();
         let raw = |app: &TestApp<SheetsShell>, a1: &str| {
-            let (col, row) = crate::model::a1_to_addr(a1).unwrap();
-            app.state().sheets[0]
-                .cells
-                .iter()
-                .find(|cell| (cell.col, cell.row) == (col, row))
-                .map(|cell| cell.raw.clone())
+            let addr = crate::model::a1_to_addr(a1).unwrap();
+            app.state().sheets[0].snapshot.raw.get(&addr).cloned()
         };
         assert_eq!(raw(&fill, "B21").as_deref(), Some("6"));
         assert_eq!(raw(&fill, "C21").as_deref(), Some("Sat"));
@@ -541,5 +547,86 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let paste = TestApp::<SheetsShell>::capture(Some("pasteformula")).unwrap();
         assert_eq!(raw(&paste, "F2").as_deref(), Some("=SUM(C2:E2)"));
+    }
+
+    /// A change re-reads what it touched: an edit to one cell keeps every
+    /// other sheet as it was read, and refreshing arrives where reading the
+    /// whole workbook again would.
+    #[test]
+    fn a_change_refreshes_only_what_it_touched() {
+        use tilo_actions::Action as _;
+
+        let mut doc = Doc::new();
+        crate::sample::write(&mut doc);
+        let mut state = SheetsWorkbook::read(&doc).unwrap();
+        let sales = Arc::clone(&state.sheets[1]);
+        let _ = state.sheets[0].cells();
+
+        let mut tracker = ui::tilo_resource::Tracker::new();
+        tracker.start(&mut doc);
+        SheetsAction::SetCell {
+            sheet: 0,
+            sheet_id: crate::sample::BUDGET_SHEET_ID.into(),
+            col: 1,
+            row: 1,
+            raw: "1300".into(),
+            fmt: None,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        SheetsAction::RenameSheet {
+            idx: 0,
+            sheet_id: crate::sample::BUDGET_SHEET_ID.into(),
+            name: "Plan".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let delta = tracker.delta(&mut doc);
+        SheetsWorkbook::refresh(&mut state, &doc, &delta).unwrap();
+
+        assert!(
+            Arc::ptr_eq(&state.sheets[1], &sales),
+            "Sales was not touched"
+        );
+        let budget = &state.sheets[0];
+        assert_eq!(budget.name, "Plan");
+        let total = budget
+            .cells()
+            .iter()
+            .find(|cell| (cell.col, cell.row) == (4, 1))
+            .unwrap();
+        assert_eq!(total.display, "$3,700.00", "the edit is recalculated");
+
+        let fresh = SheetsWorkbook::read(&doc).unwrap();
+        for (refreshed, read) in state.sheets.iter().zip(&fresh.sheets) {
+            assert_eq!(refreshed.id, read.id);
+            assert_eq!(refreshed.name, read.name);
+            assert_eq!(refreshed.snapshot.raw, read.snapshot.raw);
+            assert_eq!(refreshed.snapshot.fmt, read.snapshot.fmt);
+        }
+    }
+
+    /// Search finds sheets and cells by what they hold and what they show,
+    /// and a hit opens the cell through the workbook's own tree.
+    #[test]
+    fn search_hits_open_cells_the_workbook_resolves() {
+        let mut doc = Doc::new();
+        crate::sample::write(&mut doc);
+        let state = SheetsWorkbook::read(&doc).unwrap();
+        let entries = SheetsWorkbook::search(&state);
+        let rent = entries
+            .iter()
+            .find(|entry| entry.title == "Budget!A2")
+            .expect("a cell hit");
+        assert!(rent.text.contains("Rent"));
+        let total = entries
+            .iter()
+            .find(|entry| entry.title == "Budget!E2")
+            .expect("a formula hit");
+        assert!(total.text.contains("=SUM(B2:D2)") && total.text.contains("$3,600.00"));
+        let open = rent.action.clone().expect("a hit opens its cell");
+        let cell = SheetsWorkbook::child(&state, &open.resource).expect("the cell resolves");
+        assert!(tilo_actions::door::resolve(&[cell], &open).is_some());
+        assert!(entries.iter().any(|entry| entry.title == "Sales"));
     }
 }

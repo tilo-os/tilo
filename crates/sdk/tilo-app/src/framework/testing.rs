@@ -27,6 +27,7 @@ use super::app::{
     role_permissions, settle_launch,
 };
 use super::launch::LaunchInput;
+use super::root::ResourceRoot;
 
 const INSTANCE: u64 = 7;
 
@@ -49,6 +50,13 @@ pub(crate) fn with_settings_file(
     prepared
 }
 
+/// The content store of a `--data-dir` profile.
+pub(crate) fn data_dir_content(directory: &std::path::Path) -> tilo_content::ContentStore {
+    super::app::profile_content(
+        &std::path::absolute(directory).unwrap_or_else(|_| directory.to_path_buf()),
+    )
+}
+
 /// The settings document of a `--data-dir` profile.
 pub(crate) fn data_dir_settings(directory: &std::path::Path) -> std::path::PathBuf {
     std::path::absolute(directory)
@@ -65,6 +73,15 @@ impl Profile {
             Self::DataDir(directory) => data_dir_settings(directory),
         }
     }
+
+    /// The profile's content store, which the app keeps handed files and
+    /// other bytes its record names in, instead of the person's.
+    fn content(&self) -> tilo_content::ContentStore {
+        match self {
+            Self::Temporary(directory) => super::app::profile_content(directory.path()),
+            Self::DataDir(directory) => data_dir_content(directory),
+        }
+    }
 }
 
 /// One framework app mounted headlessly: a test, a fixture seeder or an
@@ -76,6 +93,9 @@ pub struct HeadlessApp<A: ResourceApp> {
     instance: u64,
     profile: Profile,
     role: Role,
+    /// Who the app is open for: the author of its edits and the person its
+    /// person records belong to.
+    author: String,
     /// The last effect [`Self::effect`] invoked.
     last_effect: Option<tilo_actions::InvocationId>,
     /// Shared with the host: changing it is a role change the running app
@@ -106,7 +126,33 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(Profile::Temporary(profile), role, &[], None, None)
+        Self::open(Profile::Temporary(profile), role, AUTHOR, &[], None, None)
+    }
+
+    /// The app as `person` (the hex of a root public key) opens it on a
+    /// fresh profile: one of that person's devices, whose person records
+    /// ([`ViewCx::person`](super::ViewCx::person)) are theirs.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure.
+    pub fn for_person(person: &str) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            person,
+            &[],
+            None,
+            None,
+        )
+    }
+
+    /// The person's own record of `P` the running app keeps, as its views
+    /// open it.
+    pub fn person<P: Resource>(&mut self) -> Option<super::PersonRecord<P>> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| root.person::<P>())
+            .flatten()
     }
 
     /// The frame `--shots --scenario` writes for `scenario` (`None` for a
@@ -126,11 +172,34 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// As [`Self::capture`].
     pub fn capture_at(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Self, LaunchError> {
+        Self::capture_on(scenario, viewport, &[])
+    }
+
+    /// [`Self::capture`] of the app launched with `arguments`, as
+    /// `--shots --scenario NAME ARGUMENTS` draws it: a capture of a file the
+    /// app was launched on.
+    ///
+    /// # Errors
+    /// As [`Self::capture`].
+    pub fn capture_launched(
+        scenario: Option<&str>,
+        arguments: &[&str],
+    ) -> Result<Self, LaunchError> {
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::capture_on(scenario, A::shot_viewport(scenario), &arguments)
+    }
+
+    fn capture_on(
+        scenario: Option<&str>,
+        viewport: (u32, u32),
+        arguments: &[String],
+    ) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
         let mut app = Self::open(
             Profile::Temporary(profile),
             Role::Owner,
-            &[],
+            AUTHOR,
+            arguments,
             None,
             Some((Capture::new(scenario.map(str::to_owned)), viewport)),
         )?;
@@ -150,6 +219,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(
             Profile::Temporary(profile),
             Role::Owner,
+            AUTHOR,
             &arguments,
             None,
             None,
@@ -167,6 +237,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(
             Profile::Temporary(profile),
             Role::Owner,
+            AUTHOR,
             &[],
             Some(file),
             None,
@@ -183,6 +254,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Self::open(
             Profile::DataDir(directory.to_path_buf()),
             Role::Owner,
+            AUTHOR,
             &[],
             None,
             None,
@@ -192,12 +264,14 @@ impl<A: ResourceApp> HeadlessApp<A> {
     fn open(
         profile: Profile,
         role: Role,
+        author: &str,
         arguments: &[String],
         file: Option<OpenFile>,
         capture: Option<(Capture, (u32, u32))>,
     ) -> Result<Self, LaunchError> {
-        let author = UserId(AUTHOR.into());
-        let permissions = role_permissions(AUTHOR, role);
+        let person = author.to_owned();
+        let author = UserId(person.clone());
+        let permissions = role_permissions(&person, role);
         let (mut host, instance) = match &profile {
             Profile::Temporary(directory) => (
                 ApplicationHost::new_with_profile_lifetime(
@@ -238,6 +312,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             }
             None => A::shot_viewport(None),
         };
+        prepared.context.provide_content(profile.content());
         let prepared = with_settings_file(prepared, profile.settings());
         let component =
             definition.instantiate(prepared.context, prepared.target, prepared.restore)?;
@@ -251,6 +326,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             instance,
             profile,
             role,
+            author: person,
             last_effect: None,
             permissions,
             marker: std::marker::PhantomData,
@@ -269,7 +345,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// which this runs.
     pub fn set_role(&mut self, role: Role) {
         *self.permissions.borrow_mut() =
-            PermissionContext::from_capabilities(Actor::person(Some(role), AUTHOR), vec![]);
+            PermissionContext::from_capabilities(Actor::person(Some(role), &self.author), vec![]);
         self.role = role;
         self.harness().relayout();
     }
@@ -295,10 +371,11 @@ impl<A: ResourceApp> HeadlessApp<A> {
             Profile::DataDir(directory) => Profile::DataDir(directory.clone()),
         };
         let role = self.role;
+        let author = std::mem::take(&mut self.author);
         // Release this instance's record writer before the next one opens it.
         drop(self);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
-        Self::open(profile, role, &arguments, None, None)
+        Self::open(profile, role, &author, &arguments, None, None)
     }
 
     /// The record the app shows.
@@ -330,6 +407,25 @@ impl<A: ResourceApp> HeadlessApp<A> {
     #[allow(clippy::expect_used, reason = "closing consumes the TestApp")]
     pub fn harness(&mut self) -> &mut FrameHarness {
         self.harness.as_mut().expect("app is open")
+    }
+
+    /// Visit the custom surface of type `S` the app's view hosts
+    /// ([`ViewCx::surface`](super::ViewCx::surface)), as the frame shows it
+    /// now; `None` when the view hosts none. The frame is laid out again
+    /// after the visit, so what the visit changed is what the next frame
+    /// draws.
+    pub fn with_surface<S: 'static, T>(&mut self, visit: impl FnOnce(&mut S) -> T) -> Option<T> {
+        fn find<S: 'static>(widget: &mut dyn ui_core::widget::Widget) -> Option<&mut S> {
+            if widget.as_any_mut().is_some_and(|any| any.is::<S>()) {
+                return widget.as_any_mut()?.downcast_mut::<S>();
+            }
+            widget.children_mut().into_iter().find_map(find::<S>)
+        }
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                find::<S>(ui_core::widget::Decorator::inner_mut(root)).map(visit)
+            })
+            .flatten()
     }
 
     /// Invoke a declared action through the host door, exactly as a control,
@@ -534,6 +630,18 @@ impl<A: ResourceApp> HeadlessApp<A> {
                 "`{id}` did not finish"
             ))),
         }
+    }
+
+    /// Run `visit` on the app's widget of type `T` — a custom surface, a
+    /// widget its view built — for assertions about view state the
+    /// accessibility tree does not show, then run the frame after it.
+    /// `None` when the view has no such widget.
+    pub fn with_widget<T: 'static, O>(&mut self, visit: impl FnOnce(&mut T) -> O) -> Option<O> {
+        self.harness()
+            .with_widget_mut(|root: &mut super::root::ResourceRoot<A::Resource>| {
+                root.find_mut::<T>().map(visit)
+            })
+            .flatten()
     }
 
     /// Run the frame the app runs after an event: edits the views and
@@ -755,6 +863,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         self.harness().relayout();
     }
 
+    /// Run `visit` on the app's custom surface of type `S` — its view state,
+    /// which no action reaches — then the frames that follow. `None` when the
+    /// app's view is not an `S`.
+    pub fn surface<S: 'static, O>(&mut self, visit: impl FnOnce(&mut S) -> O) -> Option<O> {
+        self.harness()
+            .with_widget_mut(|root: &mut ResourceRoot<A::Resource>| {
+                root.content
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<S>())
+                    .map(visit)
+            })
+            .flatten()
+    }
+
     /// Undo the local participant's last action, as Ctrl+Z does.
     pub fn undo(&mut self) -> bool {
         let harness = self.harness();
@@ -804,6 +926,15 @@ pub fn inspect_live_window<A: ResourceApp, T>(
     let seen = inspect(&app);
     app.close_components();
     Ok(seen)
+}
+
+/// A dispatcher of `R` for testing a surface's own methods without a host:
+/// the edits it applies now ([`Dispatcher::apply_now`]) go through the same
+/// replayable executor a hosted surface's do, attributed to a test author,
+/// onto the document the test hands the surface. Invocations it queues are
+/// resolved by a host only; test those through [`TestApp`].
+pub fn dispatcher<R: Resource>(app_id: &'static str) -> super::Dispatcher<R> {
+    super::Dispatcher::new(app_id, R::KIND, false, Some(AUTHOR))
 }
 
 impl<A: ResourceApp> Drop for HeadlessApp<A> {

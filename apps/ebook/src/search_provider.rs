@@ -9,7 +9,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use tilo_actions::{
     ActionAddress, ActionContract, ActionSpec, ConfirmationPolicy, ExecutionMode, OperationKind,
@@ -18,7 +17,7 @@ use tilo_actions::{
 use ui::icons::Icon;
 use ui::search::{
     BodyPiece, CatalogSearchProvider, FieldWeight, SearchBody, SearchBodySource, SearchCatalog,
-    SearchCatalogStats, SearchCursor, SearchPage, SearchProvider, SearchRecord, SearchResult,
+    SearchCatalogStats, SearchRecord, SearchResult,
 };
 
 use crate::actions::{
@@ -35,7 +34,6 @@ pub const ANNOTATION_KIND: &str = "Annotations";
 /// the exact immutable block that satisfied a query, so activating a search
 /// hit never guesses at a nearby reading location.
 pub const LOCATION_KIND: &str = "Reading locations";
-const ACTION_KIND: &str = "Book actions";
 
 fn chapter_label(chapter: &crate::model::Chapter, index: usize) -> String {
     if chapter.title.trim().is_empty() {
@@ -158,8 +156,6 @@ pub struct BookSearchProvider {
     /// that keeps the book.
     bodies: Arc<HashMap<usize, Arc<[SearchBody]>>>,
     catalog: SearchCatalog,
-    actions: SearchCatalog,
-    generation: u64,
     available: bool,
 }
 
@@ -304,7 +300,7 @@ impl BookSearchProvider {
                 ],
                 None,
             ) {
-                return Self::unavailable(books, annotations, registry, generation);
+                return Self::unavailable(books, annotations, registry);
             }
             let chapter_bodies = prior
                 .and_then(|prior| prior.bodies.get(&book_key(book)))
@@ -344,7 +340,7 @@ impl BookSearchProvider {
                     ],
                     chapter_bodies.get(chapter_index).cloned(),
                 ) {
-                    return Self::unavailable(books, annotations, registry, generation);
+                    return Self::unavailable(books, annotations, registry);
                 }
             }
             bodies.insert(book_key(book), chapter_bodies);
@@ -374,7 +370,7 @@ impl BookSearchProvider {
                 ],
                 None,
             ) {
-                return Self::unavailable(books, annotations, registry, generation);
+                return Self::unavailable(books, annotations, registry);
             }
         }
         let mut emitted_highlights = HashSet::new();
@@ -428,26 +424,16 @@ impl BookSearchProvider {
                 ],
                 None,
             ) {
-                return Self::unavailable(books, annotations, registry, generation);
+                return Self::unavailable(books, annotations, registry);
             }
         }
         let Some(predecessor) = generation.checked_sub(1) else {
-            return Self::unavailable(books, annotations, registry, generation);
+            return Self::unavailable(books, annotations, registry);
         };
         if catalog.replace_all_records(records).is_err()
             || catalog.advance_after(predecessor).is_err()
         {
-            return Self::unavailable(books, annotations, registry, generation);
-        }
-        let actions = SearchCatalog::new(ACTION_KIND);
-        let action_records = entries
-            .iter()
-            .flat_map(|entry| Self::action_records(entry, &annotations))
-            .collect::<Vec<_>>();
-        if actions.replace_all_records(action_records).is_err()
-            || actions.advance_after(predecessor).is_err()
-        {
-            return Self::unavailable(books, annotations, registry, generation);
+            return Self::unavailable(books, annotations, registry);
         }
         Self {
             books,
@@ -457,74 +443,14 @@ impl BookSearchProvider {
             resource_rows: Arc::new(resource_rows),
             bodies: Arc::new(bodies),
             catalog,
-            actions,
-            generation,
             available: true,
         }
-    }
-
-    /// The indexed action rows of one entry: every action its exact resource
-    /// exports, found by the action label and the entry's title.
-    fn action_records(entry: &SearchEntry, annotations: &[Annotation]) -> Vec<SearchRecord> {
-        let Some(address) = entry.result.action_address() else {
-            return Vec::new();
-        };
-        let actions: &[(&str, &str)] = match entry.target {
-            SearchTarget::Book(_) => &[
-                ("Open", "open"),
-                ("Share with workspace", "share"),
-                ("Remove from library", "remove-from-library"),
-            ],
-            SearchTarget::RemoteBook(_) => &[
-                ("Download and open", "open"),
-                ("Remove from library", "remove-from-library"),
-            ],
-            SearchTarget::Chapter { .. } => &[("Open", "open")],
-            SearchTarget::Annotation {
-                hydrated: true,
-                comment,
-                index,
-            } => match annotations.get(index).map(|annotation| annotation.kind) {
-                Some(AnnoKind::Highlight) => &[
-                    ("Open", "open"),
-                    ("Change colour", "change-color"),
-                    ("Delete highlight", "delete-highlight"),
-                    ("Add comment", "add-comment"),
-                ],
-                Some(AnnoKind::Bookmark) => &[("Open", "open"), ("Delete bookmark", "delete")],
-                Some(AnnoKind::Note) if comment => &[
-                    ("Open", "open"),
-                    ("Edit comment", "edit-comment"),
-                    ("Delete comment", "delete-comment"),
-                ],
-                Some(AnnoKind::Note) => &[
-                    ("Open", "open"),
-                    ("Edit note", "edit"),
-                    ("Delete note", "delete"),
-                ],
-                None => &[],
-            },
-            SearchTarget::Annotation {
-                hydrated: false, ..
-            } => &[],
-        };
-        actions
-            .iter()
-            .map(|(label, action)| {
-                action_record(
-                    label,
-                    &entry.result.title,
-                    ActionAddress::new(address.resource.clone(), *action),
-                )
-            })
-            .collect()
     }
 
     fn unavailable(
         books: Arc<Vec<Arc<Book>>>,
         annotations: Arc<Vec<Annotation>>,
         registry: Arc<Vec<LibraryEntry>>,
-        generation: u64,
     ) -> Self {
         Self {
             books,
@@ -534,8 +460,6 @@ impl BookSearchProvider {
             resource_rows: Arc::new(BTreeMap::new()),
             bodies: Arc::new(HashMap::new()),
             catalog: SearchCatalog::new(BOOK_KIND),
-            actions: SearchCatalog::new(ACTION_KIND),
-            generation,
             available: false,
         }
     }
@@ -890,27 +814,6 @@ impl BookSearchProvider {
         }
         Some(resource)
     }
-
-    pub(crate) fn action_search_provider(&self) -> BookActionSearchProvider {
-        BookActionSearchProvider {
-            books: self.clone(),
-            catalog: self.actions.clone(),
-            live_resources: Arc::new(BTreeMap::new()),
-            live_epoch: Arc::new(AtomicU64::new(self.generation)),
-            snapshot_epoch: self.generation,
-        }
-    }
-}
-
-/// One action row, keyed by its full canonical address so every action of a
-/// resource is its own record.
-fn action_record(label: &str, subject: &str, address: ActionAddress) -> SearchRecord {
-    SearchRecord::new(
-        address.encode(),
-        SearchResult::for_action(ACTION_KIND, label, address).with_subtitle(subject),
-    )
-    .field(label, FieldWeight::TITLE)
-    .field(subject, FieldWeight::SUBTITLE)
 }
 
 impl CatalogSearchProvider for BookSearchProvider {
@@ -940,120 +843,10 @@ impl CatalogSearchProvider for BookSearchProvider {
     }
 }
 
-/// Compact action-label search. It retains labels and canonical addresses
-/// only; exact resources are still rebuilt from the live book snapshot on
-/// activation.
-#[derive(Clone)]
-pub(crate) struct BookActionSearchProvider {
-    books: BookSearchProvider,
-    catalog: SearchCatalog,
-    live_resources: Arc<BTreeMap<String, Resource>>,
-    live_epoch: Arc<AtomicU64>,
-    snapshot_epoch: u64,
-}
-
-impl BookActionSearchProvider {
-    /// A palette session over the indexed actions plus the app's live
-    /// resources. The session searches a private copy of the action index,
-    /// so live rows never leak into the published catalogue.
-    pub(crate) fn with_live_resources(
-        mut self,
-        resources: Vec<Resource>,
-        live_epoch: Arc<AtomicU64>,
-        snapshot_epoch: u64,
-    ) -> Self {
-        let catalog = self.catalog.detached();
-        let mut exact = BTreeMap::new();
-        for resource in resources {
-            for action in &resource.actions {
-                let address = ActionAddress::new(resource.id.as_str(), action.id.as_str());
-                if catalog.contains(&address.encode()) {
-                    continue;
-                }
-                // A row that cannot be indexed stays reachable through the
-                // exact resource; it simply is not listed.
-                let _ =
-                    catalog.upsert_record(action_record(&action.label, &resource.label, address));
-            }
-            exact.insert(resource.id.as_str().to_string(), resource);
-        }
-        self.catalog = catalog;
-        self.live_resources = Arc::new(exact);
-        self.live_epoch = live_epoch;
-        self.snapshot_epoch = snapshot_epoch;
-        self
-    }
-
-    /// A palette session is a snapshot. A caller may start a page without a
-    /// cursor, so every entry point checks the live revision; otherwise an
-    /// old provider could quietly serve a fresh search after its live
-    /// actions changed.
-    fn current(&self) -> bool {
-        self.books.available && self.live_epoch.load(Ordering::Acquire) == self.snapshot_epoch
-    }
-}
-
-impl SearchProvider for BookActionSearchProvider {
-    fn name(&self) -> &'static str {
-        ACTION_KIND
-    }
-
-    fn action_directory_generation(&self) -> Option<u64> {
-        self.current().then_some(self.snapshot_epoch)
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.current() && self.catalog.cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, ui::search::DEFAULT_SEARCH_RESULT_LIMIT)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.search_page(
-            query,
-            None,
-            ui::search::DEFAULT_SEARCH_CANDIDATE_LIMIT,
-            limit,
-        )
-        .results
-    }
-
-    fn search_page(
-        &self,
-        query: &str,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        if !self.current() {
-            return SearchPage::empty();
-        }
-        self.catalog
-            .query_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        if !self.current() {
-            return None;
-        }
-        self.live_resources
-            .get(&address.resource)
-            .filter(|resource| {
-                resource
-                    .actions
-                    .iter()
-                    .any(|action| action.id == address.action)
-            })
-            .cloned()
-            .or_else(|| self.books.resolve_action_resource(address))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider;
     use ui::search::testing::{CorpusRow, LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn sample_books() -> Vec<Book> {
@@ -1752,90 +1545,6 @@ mod tests {
                 actions.sort_unstable();
                 assert_eq!(actions, expected, "{query}");
             }
-        }
-
-        // --- phase: action_labels_are_compactly_indexed_and_resolve_exact_resources ---
-        {
-            let book = Book {
-                id: "book".into(),
-                title: "Action book".into(),
-                ..Book::default()
-            };
-            let group = uuid::Uuid::from_u128(8);
-            let highlight = Annotation::new("book", AnnoKind::Highlight, 0, 0)
-                .with_group(group)
-                .with_excerpt("marked passage");
-            let comment = Annotation::new("book", AnnoKind::Note, 0, 0)
-                .with_group(group)
-                .with_note("comment text");
-            let provider = BookSearchProvider::new(&[book], &[highlight, comment]);
-            let actions = provider.action_search_provider();
-            for query in [
-                "Change colour",
-                "Add comment",
-                "Delete highlight",
-                "Delete comment",
-            ] {
-                let hit = actions.search(query).into_iter().next().expect(query);
-                let address = hit.action_address().expect("canonical action address");
-                let resource = actions
-                    .resolve_action_resource(&address)
-                    .expect("exact resource");
-                assert!(
-                    resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == address.action)
-                );
-            }
-        }
-
-        // --- phase: annotation_publication_invalidates_existing_action_sessions ---
-        {
-            let book = Book {
-                id: "book".into(),
-                title: "Live book".into(),
-                ..Book::default()
-            };
-            let highlight = Annotation::new("book", AnnoKind::Highlight, 0, 0)
-                .with_group(uuid::Uuid::from_u128(9));
-            let provider = BookSearchProvider::new(&[book], &[highlight]);
-            let address = ActionAddress::new(
-                "ebook.highlight:00000000-0000-0000-0000-000000000009",
-                "delete-highlight",
-            );
-            let resource = provider
-                .resolve_action_resource(&address)
-                .expect("book resource");
-            let epoch = Arc::new(AtomicU64::new(9));
-            let actions = provider.action_search_provider().with_live_resources(
-                vec![resource],
-                Arc::clone(&epoch),
-                9,
-            );
-            let opens = actions
-                .search("delete highlight")
-                .into_iter()
-                .filter(|result| result.action_address().as_ref() == Some(&address))
-                .count();
-            assert_eq!(
-                opens, 1,
-                "a live exact resource must not duplicate indexed actions"
-            );
-            epoch.store(10, Ordering::Release);
-            assert!(
-                !actions.action_directory_cursor_is_current(&SearchCursor::opaque(
-                    9,
-                    "open",
-                    None,
-                    Some(0)
-                ))
-            );
-            assert!(
-                actions.search("delete highlight").is_empty(),
-                "a stale provider must reject a fresh search as well as continuations"
-            );
-            assert!(actions.resolve_action_resource(&address).is_none());
         }
     }
 }

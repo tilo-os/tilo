@@ -40,7 +40,6 @@ use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::peniko::Color;
-use video_editor::app::ShotScenario;
 use video_editor::doc::VideoDoc;
 use video_editor::model::{ClipId, MediaKind};
 use video_editor::presence as vp;
@@ -62,10 +61,9 @@ impl Participant {
     /// The participant who opens the project.
     fn opening() -> Self {
         ui::host::install_default(ui::host::HostServices::recording().0);
-        Self::mount(
-            VideoEditorApp::new_for_shot(ShotScenario::Live),
-            AutoCommit::new(),
-        )
+        let mut doc = AutoCommit::new();
+        VideoDoc::seed_sample(&mut doc);
+        Self::mount(VideoEditorApp::new(), doc)
     }
 
     /// A participant who joins and is handed the project, the way a late

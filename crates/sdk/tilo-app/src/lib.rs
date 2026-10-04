@@ -139,8 +139,9 @@ pub mod prelude {
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
         ActionControl, Actions, Command, Dispatcher, Each, EditsText, EffectCx, EffectStatus,
-        Effected, Fixture, LaunchInput, Live, LiveRow, ResourceApp, ResourceSelection,
-        ResourceSurface, RunMode, SeedCx, Setting, SurfaceCx, TextControl, ViewCx,
+        Effected, Fixture, Jobs, LaunchInput, Live, LiveRow, PersonRecord, ResourceApp,
+        ResourceSelection, ResourceSurface, RunMode, SeedCx, Setting, SurfaceCx, TextControl,
+        ViewCx,
     };
     pub use tilo_resource::{
         self, ActionCx, ActionDecl, Atom, Collection, Delta, Demand, Effect, Id, Invoke, Json,

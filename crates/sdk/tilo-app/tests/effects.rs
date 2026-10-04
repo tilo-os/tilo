@@ -8,6 +8,7 @@
 use std::cell::RefCell;
 
 use tilo_app::framework::{EffectCx, EffectStatus, Effected};
+use tilo_app::portal::{PickRequest, PortalOutcome};
 use tilo_app::prelude::tilo_actions::Action as _;
 use tilo_app::prelude::*;
 use tilo_resource::Effect;
@@ -504,4 +505,186 @@ fn a_projection_looks_again_when_the_outside_it_compares_against_changed() {
     MIRROR.with(|mirror| mirror.borrow().as_ref().unwrap().outside_changed());
     app.settle();
     assert_eq!(mirrored(), ["hello"]);
+}
+
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "test.mailbox.files")]
+pub enum FileEffect {
+    /// Import a message from a file.
+    #[effect(job)]
+    Import,
+    /// Export what was fetched to a file.
+    #[effect(job, returns)]
+    Export,
+}
+
+/// Imports and exports through the host's file chooser.
+struct FilesApp;
+
+impl ResourceApp for FilesApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-mailbox-files";
+    const TITLE: &'static str = "Mailbox files";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.effects(move |effect: FileEffect, cx| match effect {
+            FileEffect::Import => Ok(cx.choose_file(
+                PickRequest::open("Import a message", "Import"),
+                |(), chosen, cx| {
+                    let Some(file) = chosen else {
+                        return Err("no file was chosen".into());
+                    };
+                    cx.invoke(Mailbox::FETCHED.with(String::from_utf8_lossy(&file.bytes).into()));
+                    Ok(Effected::done())
+                },
+            )),
+            FileEffect::Export => {
+                let fetched = cx.live().with(|mail| mail.fetched.clone());
+                Ok(cx.save_file(
+                    PickRequest::save("Export the message", "Export", "message.txt"),
+                    fetched.into_bytes(),
+                    |(), saved, _| Ok(Effected::value(saved)),
+                ))
+            }
+        });
+        Box::new(cx.text(|mail| mail.fetched.clone()))
+    }
+}
+
+#[test]
+fn an_effect_imports_and_exports_through_the_hosts_file_chooser() {
+    let directory = tempfile::tempdir().unwrap();
+    let incoming = directory.path().join("incoming.txt");
+    std::fs::write(&incoming, "from a file").unwrap();
+    let (services, recorder) = tilo_app::host::HostServices::recording();
+    let _host = tilo_app::host::enter(&services);
+    let mut app = TestApp::<FilesApp>::new().unwrap();
+
+    recorder.respond_to_pick(PortalOutcome::Opened(incoming));
+    app.effect(&FileEffect::Import).unwrap();
+    app.settle();
+    assert_eq!(app.state().fetched, "from a file");
+    assert_eq!(recorder.pick_requests()[0].title(), "Import a message");
+
+    let outgoing = directory.path().join("outgoing.txt");
+    recorder.respond_to_pick(PortalOutcome::Opened(outgoing.clone()));
+    let saved = app.effect(&FileEffect::Export).unwrap();
+    assert_eq!(saved.value, Some(serde_json::json!(true)));
+    assert_eq!(std::fs::read_to_string(&outgoing).unwrap(), "from a file");
+
+    recorder.respond_to_pick(PortalOutcome::Cancelled);
+    let cancelled = app.effect(&FileEffect::Import).unwrap_err();
+    app.settle();
+    assert!(
+        cancelled.to_string().contains("no file was chosen"),
+        "{cancelled}"
+    );
+    assert_eq!(
+        app.state().fetched,
+        "from a file",
+        "a cancelled import changes nothing"
+    );
+}
+
+/// A surface that fetches on its own as soon as it is attached.
+#[derive(Default)]
+struct Fetcher {
+    tally: Tally,
+    fetches: u32,
+}
+
+impl Widget for Fetcher {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        self.tally.build_layout(taffy, theme, nodes)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.tally.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
+    }
+
+    fn name(&self) -> &'static str {
+        "Fetcher"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.tally.get_rect()
+    }
+}
+
+impl ResourceSurface<Mailbox> for Fetcher {
+    fn present(&mut self, _: &std::rc::Rc<Mailbox>) {}
+
+    fn attach(&mut self, cx: SurfaceCx<Mailbox>) {
+        let jobs = cx.jobs();
+        // Two requests under one key: the later one wins.
+        for text in ["stale", "fresh"] {
+            jobs.start::<Self>("fetch", move |cx| {
+                Ok(cx.thread(
+                    move |_| format!("{text} by the surface"),
+                    |fetcher: &mut Self, text, cx| {
+                        fetcher.fetches = fetcher.fetches.saturating_add(1);
+                        cx.invoke(Mailbox::FETCHED.with(format!("{text} ({})", fetcher.fetches)));
+                        Ok(Effected::done())
+                    },
+                ))
+            });
+        }
+        assert!(jobs.is_running("fetch") || cx.mode() != RunMode::Live);
+    }
+}
+
+struct FetcherApp;
+
+impl ResourceApp for FetcherApp {
+    type Resource = Mailbox;
+    const ID: &'static str = "so.tilo.test-fetcher";
+    const TITLE: &'static str = "Fetcher";
+
+    fn view(cx: &mut ViewCx<Mailbox>) -> Element {
+        cx.jobs().start::<()>("outbox", |cx| {
+            Ok(cx.thread(
+                |_| "queued by the view".to_owned(),
+                |(), text, cx| {
+                    cx.invoke(Mailbox::SEND.with(text));
+                    Ok(Effected::done())
+                },
+            ))
+        });
+        cx.surface(Fetcher::default())
+    }
+}
+
+#[test]
+fn a_view_and_a_surface_start_jobs_nobody_invoked_and_the_latest_wins() {
+    let mut app = TestApp::<FetcherApp>::new().unwrap();
+    for _ in 0..500 {
+        app.settle();
+        let state = app.state();
+        if !state.fetched.is_empty() && !state.outbox.is_empty() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let state = app.state();
+    assert_eq!(
+        state.fetched, "fresh by the surface (1)",
+        "the stale fetch was stopped"
+    );
+    assert_eq!(
+        state.outbox.values().cloned().collect::<Vec<_>>(),
+        ["queued by the view"]
+    );
+
+    // A capture starts no job: what it shows is its fixture.
+    let capture = TestApp::<FetcherApp>::capture(None).unwrap();
+    assert_eq!(capture.state().fetched, "");
+    assert!(capture.state().outbox.is_empty());
 }

@@ -196,7 +196,10 @@ pub fn decode_workspace(bytes: &[u8]) -> Result<Workspace, String> {
     };
     let json = doc.text(&text_id).map_err(|e| e.to_string())?;
     let data: WorkspaceData = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-    Ok(Workspace { data })
+    Ok(Workspace {
+        data,
+        ..Workspace::default()
+    })
 }
 
 /// Load the workspace metadata from `root/workspace.automerge`. Returns
