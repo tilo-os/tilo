@@ -430,6 +430,12 @@ pub struct RetainedGpuTarget {
     phase_wait_override: Option<Duration>,
     /// The vello renderer parented to the same wgpu device as `texture`, cached across frames so we don't pay the pipeline-compile cost on every paint.
     renderer: Renderer,
+    /// Client frames `renderer` draws straight from their GPU textures.
+    client_frames: crate::shell::gpu_frames::AppliedFrames,
+    /// The presenting-device generation client frames are imported on, when
+    /// this target renders on that device.
+    present_generation: Option<u64>,
+
     /// Offscreen render target. Recreated on resize.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -513,6 +519,9 @@ impl RetainedGpuTarget {
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             renderer,
+            client_frames: crate::shell::gpu_frames::AppliedFrames::default(),
+            present_generation: None,
+
             texture,
             view,
             band: None,
@@ -796,6 +805,11 @@ impl RetainedGpuTarget {
         F: Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     {
         let sparse = damage.and_then(|damage| self.eligible_sparse_damage(damage));
+        crate::shell::gpu_frames::apply(
+            &mut self.renderer,
+            self.present_generation,
+            &mut self.client_frames,
+        );
         self.invalidate();
         self.reset_attempts();
         self.check_live(policy)?;
@@ -1703,7 +1717,13 @@ impl VelloDrmBridge {
         );
 
         let device_errors = DeviceErrorLatch::install(device);
-        let target = RetainedGpuTarget::new(dev_handle, width, height)?;
+        let mut target = RetainedGpuTarget::new(dev_handle, width, height)?;
+        // Client buffers are imported where the scene is drawn, so their
+        // frames reach the panel without crossing the CPU.
+        target.present_generation = Some(crate::shell::gpu_frames::publish_present_device(
+            device,
+            &dev_handle.queue,
+        ));
         let bgra_blitter = TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm);
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
 
@@ -3824,6 +3844,7 @@ impl VelloDrmBridge {
             height,
         )?;
         target.set_base_color(color);
+        target.present_generation = self.target.present_generation;
         self.target = target;
         (self.readback_buf, self.padded_bytes_per_row) =
             Self::allocate_staging(&self.target.device, width, height);
@@ -8240,6 +8261,81 @@ mod tests {
         );
         drop(mapped);
         buffer.unmap();
+    }
+
+    /// A client frame kept on the GPU is drawn by the presenting renderer from its texture, and
+    /// by a renderer on another device from pixels read back on demand: both show the client.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_client_frame_on_the_gpu_reaches_every_renderer() {
+        let (width, height) = (64, 48);
+        let mut presenting = required_bridge(width, height);
+        presenting.wait_for_gpu_completion_for_test();
+        let (device, queue) = presenting.gpu();
+        let red = [0xE0, 0x10, 0x20, 0xFF];
+        let generation = presenting
+            .target
+            .present_generation
+            .expect("a presenting device");
+        let frame = crate::shell::gpu_frames::frame_for_test(
+            device,
+            queue,
+            generation,
+            (40, 30),
+            red,
+            9_001,
+        );
+        let image = frame.image((4, 2, 32, 24));
+        assert!(image.data.is_empty(), "the frame carries no CPU pixels");
+        let mut scene = rect_scene(width, height, Color::WHITE);
+        scene.fill(
+            Fill::NonZero,
+            Affine::translate((8.0, 8.0)),
+            &vello::peniko::ImageBrush::new(image),
+            None,
+            &vello::kurbo::Rect::new(0.0, 0.0, 32.0, 24.0),
+        );
+        let target = direct_target(&presenting, width, height);
+        presenting
+            .paint_imported_until(
+                &scene,
+                version(1, None, None),
+                &target,
+                tilo_test_env::hang_deadline(),
+                crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
+                &[],
+            )
+            .expect("the presenting renderer draws the frame");
+        let (device, queue) = presenting.gpu();
+        let (buffer, stride) = VelloDrmBridge::allocate_staging(device, width, height);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        VelloDrmBridge::append_full_copy(
+            &mut encoder,
+            &target.texture,
+            &buffer,
+            stride,
+            width,
+            height,
+        );
+        queue.submit([encoder.finish()]);
+        let mapped = VelloDrmBridge::map_device_readback(device, &buffer).expect("readback");
+        let at = (20 * stride + 20 * 4) as usize;
+        assert_eq!(
+            &mapped[at..at + 4],
+            &[0x20, 0x10, 0xE0, 0xFF],
+            "BGRA target"
+        );
+        drop(mapped);
+        buffer.unmap();
+
+        let mut elsewhere = required_bridge(width, height);
+        elsewhere.wait_for_gpu_completion_for_test();
+        let rgba = elsewhere
+            .paint(&scene)
+            .expect("a renderer without the texture still draws the frame")
+            .to_vec();
+        let at = ((20 * width + 20) * 4) as usize;
+        assert_eq!(&rgba[at..at + 4], &red);
     }
 
     /// One direct frame that missed its deadline -- a cold shader cache, a busy GPU -- poisons
