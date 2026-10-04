@@ -4994,7 +4994,7 @@ async fn dispatch_sdk_request(
         }
         CollabRequest::OfferContent { hash, bytes } => {
             if let Err(error) = route.channel.offer_blob(&hash, &bytes).await {
-                tracing::warn!(%error, %hash, "collab: offering record content failed");
+                tracing::debug!(%error, %hash, "collab: offering record content failed");
             }
         }
         CollabRequest::WantContent { hash } => {
