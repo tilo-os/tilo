@@ -154,10 +154,10 @@ fn entries_of(directory: &WorkspaceDirectory) -> Vec<(RoomId, WorkspaceMeta)> {
     out
 }
 
-/// Whether `entry` shows on `device`: an empty member list means every
-/// device of the person.
+/// Whether `entry` shows on `device`: every device shows it unless it
+/// opted out, so a device linked later shows every workspace.
 fn shows_on(entry: &WorkspaceMeta, device: &[u8; 32]) -> bool {
-    entry.member_devices.is_empty() || entry.member_devices.contains(device)
+    !entry.kept_off_devices.contains(device)
 }
 
 impl PersonalWorkspaces {
@@ -416,37 +416,21 @@ impl PersonalWorkspaces {
             .collect()
     }
 
-    /// Show or keep `room`'s workspace off `device`. An empty member list
-    /// stands for every device, so hiding names all the others explicitly,
-    /// and showing it on all of them again empties the list. Returns
+    /// Show or keep `room`'s workspace off `device`. Only the devices that
+    /// opted out are named, so a device linked later shows it. Returns
     /// whether the directory changed.
     pub fn set_shown(&mut self, room: RoomId, device: [u8; 32], shown: bool) -> bool {
-        let Some(current) = entries_of(&self.directory)
+        let Some(entry) = entries_of(&self.directory)
             .into_iter()
             .find(|(candidate, _)| *candidate == room)
-            .map(|(_, entry)| entry.member_devices)
+            .map(|(_, entry)| entry)
         else {
             return false;
         };
-        let choices = self.device_choices(room);
-        let mut members: Vec<[u8; 32]> = choices
-            .iter()
-            .filter(|choice| {
-                if choice.device == device {
-                    shown
-                } else {
-                    choice.shown
-                }
-            })
-            .map(|choice| choice.device)
-            .collect();
-        if members.len() == choices.len() {
-            members.clear();
-        }
-        if current == members
+        if shows_on(&entry, &device) == shown
             || self
                 .directory
-                .set_member_devices(entry_id(room), &members)
+                .set_kept_off(entry_id(room), device, !shown)
                 .is_err()
         {
             return false;
