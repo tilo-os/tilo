@@ -1413,7 +1413,7 @@ impl App {
         Self::with_parts(Some(scope), state, root, inputs)
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn from_scoped_parts_with_controlled_custody(
         scope: crate::WakeScope,
         state: State,
