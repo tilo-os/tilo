@@ -40,7 +40,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -1150,6 +1149,14 @@ impl ApiTesterApp {
                     }
                     None => Err("no such variable".into()),
                 }
+            }
+            ApiTesterEffect::RequestMenu { action } => {
+                self.open_request_menu_action(&action)?;
+                Ok(Effected::done())
+            }
+            ApiTesterEffect::EnvironmentMenu { action } => {
+                self.open_environment_menu_action(&action)?;
+                Ok(Effected::done())
             }
         }
     }
@@ -3329,10 +3336,6 @@ fn draw_fold_caret(scene: &mut Scene, t: Affine, center: Point, color: Color, ex
 // ===========================================================================
 
 impl Widget for ApiTesterApp {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::API_TESTER_OPERATION_TYPE]
-    }
-
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // The URL and body show the workspace's texts.
         self.url_input.sync(state, path);
@@ -3802,39 +3805,6 @@ impl Widget for ApiTesterApp {
         self.rect
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_menu_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.children_mut_ref().into_iter().find_map(|child| {
-            child.poll_resource_operation(invocation, cancellation_requested, doc, path)
-        })
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         // Drain child structure-dirty flags per the trait contract, then add
         // our own child-set changes. A plain loop, not `.any()`: every child
@@ -3871,38 +3841,6 @@ impl Widget for ApiTesterApp {
 
     fn needs_idle_sync(&self) -> bool {
         self.sending
-    }
-}
-
-impl ApiTesterApp {
-    /// Open a contextual menu's form, from the menu control, the palette or
-    /// an agent.
-    fn answer_menu_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::API_TESTER_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let operation: crate::actions::ApiTesterOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match operation {
-            crate::actions::ApiTesterOperation::RequestMenu { action } => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Ok(false);
-                }
-                self.open_request_menu_action(&action)?;
-            }
-            crate::actions::ApiTesterOperation::EnvironmentMenu { action } => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Ok(false);
-                }
-                self.open_environment_menu_action(&action)?;
-            }
-        }
-        Ok(true)
     }
 }
 
@@ -4147,7 +4085,6 @@ mod tests {
     #[test]
     fn ui_commands_dispatch_canonical_actions_or_stay_device_local() {
         folding_a_collection_is_view_state();
-        visible_context_menus_open_real_request_and_environment_workflows();
         composition_view_commands_never_change_document_heads_or_leave_hidden_rects();
     }
 
@@ -4293,57 +4230,45 @@ mod tests {
         );
     }
 
-    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
+    /// The request and environment menus are children whose choice opens
+    /// the real form in this window, from the palette or an agent.
+    #[test]
     fn visible_context_menus_open_real_request_and_environment_workflows() {
-        let mut a = app();
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-
-        let request = serde_json::to_vec(&crate::actions::ApiTesterOperation::RequestMenu {
-            action: "Rename request…".to_string(),
-        })
-        .expect("operation encodes");
+        let mut app = sample();
+        app.call_on(
+            "api_tester.request_menu",
+            "request-menu",
+            serde_json::json!({"action": "Rename request…"}),
+        )
+        .expect("the request menu opens its form");
+        app.settle();
+        let shown = app
+            .with_surface(|a: &mut ApiTesterApp| (a.form, a.request_actions.selected().to_owned()))
+            .expect("the builder is shown");
         assert_eq!(
-            a.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::API_TESTER_OPERATION_TYPE,
-                    &request
-                ),
-                &mut doc,
-                &root
-            ),
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                ui::tilo_actions::ActionOutput::default()
-            )))
+            shown,
+            (Some(FormMode::RenameRequest), "Request actions".to_owned())
         );
-        assert_eq!(a.form, Some(FormMode::RenameRequest));
-        assert_eq!(a.request_actions.selected(), "Request actions");
 
-        a.form = None;
-        let environment =
-            serde_json::to_vec(&crate::actions::ApiTesterOperation::EnvironmentMenu {
-                action: "Add variable…".to_string(),
+        app.call_on(
+            "api_tester.environment_menu",
+            "environment-menu",
+            serde_json::json!({"action": "Add variable…"}),
+        )
+        .expect("the environment menu opens its form");
+        app.settle();
+        let shown = app
+            .with_surface(|a: &mut ApiTesterApp| {
+                (a.form, a.environment_actions.selected().to_owned())
             })
-            .expect("operation encodes");
+            .expect("the builder is shown");
         assert_eq!(
-            a.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::API_TESTER_OPERATION_TYPE,
-                    &environment
-                ),
-                &mut doc,
-                &root
-            ),
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                ui::tilo_actions::ActionOutput::default()
-            )))
+            shown,
+            (
+                Some(FormMode::NewVariable),
+                "Environment actions".to_owned()
+            )
         );
-        assert_eq!(a.form, Some(FormMode::NewVariable));
-        assert_eq!(a.environment_actions.selected(), "Environment actions");
     }
 
     /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
