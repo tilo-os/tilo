@@ -2801,19 +2801,6 @@ impl Widget for TerminalWidget {
         if !self.alt_active && !self.ever_nonblank && (self.headless || self.is_disconnected()) {
             self.draw_empty_state(scene, transform, text_renderer, theme);
             self.draw_top_bands(scene, transform, text_renderer, theme, presence);
-            // An empty first-run surface is still fully interactive. In
-            // particular, right-click's shared Copy/Paste menu must remain
-            // visible rather than being hidden by this early return.
-            if self.context_menu.is_open() {
-                Widget::draw(
-                    &mut self.context_menu,
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                );
-            }
             return;
         }
 
@@ -2837,10 +2824,21 @@ impl Widget for TerminalWidget {
         // when the buffer overflows the viewport.
         self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
         self.draw_top_bands(scene, transform, text_renderer, theme, presence);
+    }
 
-        // The right-click Copy/Paste menu draws on top of everything when open.
+    /// The right-click Copy/Paste menu is a floating Panel: it paints in the
+    /// top layer, over the grid and its bands, and on the empty first-run
+    /// surface as well.
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         if self.context_menu.is_open() {
-            Widget::draw(
+            Widget::draw_overlay(
                 &mut self.context_menu,
                 scene,
                 transform,

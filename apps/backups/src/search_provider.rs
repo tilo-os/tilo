@@ -32,27 +32,32 @@ impl BackupsSearchIndex {
     pub fn sync(&self, backups: &Catalog) {
         let rows = backups.snapshots.iter().map(|snapshot| {
             let resource_id = snapshot_resource_id(snapshot);
+            let source = backups
+                .source(&snapshot.source_id)
+                .map_or("Snapshot", |source| source.name.as_str());
+            let title = snapshot.label.as_deref().unwrap_or(source);
+            let taken = crate::actions::taken_label(snapshot);
             let result = SearchResult::for_action(
                 SNAPSHOT_KIND,
-                format!("{} backup", snapshot.time),
+                title.to_owned(),
                 ActionAddress::new(&resource_id, "open"),
             )
             .with_subtitle(format!(
-                "{} · {} · {}",
+                "{} snapshot of {}, {taken}",
                 snapshot.kind.label(),
-                snapshot.retention.label(),
-                ui::format::bytes(snapshot.size_bytes)
+                ui::format::bytes_si(snapshot.size_bytes)
             ))
             .with_icon(Icon::History);
             let searchable = format!(
-                "{} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {}",
                 snapshot.id,
-                snapshot.time,
+                title,
+                taken,
                 snapshot.source_id,
                 snapshot.dest_id,
                 snapshot.kind.label(),
                 snapshot.retention.label(),
-                snapshot.status_label()
+                snapshot.status.label()
             );
             (resource_id, searchable, result)
         });
@@ -98,16 +103,6 @@ pub fn snapshot_resource_id(snapshot: &Snapshot) -> String {
     format!("backups.snapshot:{}", snapshot.id)
 }
 
-impl Snapshot {
-    fn status_label(&self) -> &'static str {
-        match self.status {
-            crate::model::SnapStatus::Complete => "complete",
-            crate::model::SnapStatus::Verifying => "verifying",
-            crate::model::SnapStatus::Failed => "failed",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,13 +110,13 @@ mod tests {
     use ui::search::testing::{Corpus, LATE_HIT_NEEDLE, assert_late_hit_reachable};
 
     fn large_catalog(corpus: Corpus) -> Catalog {
-        let mut catalog = Catalog::sample();
+        let mut catalog = Catalog::sample(ui::clock::local_now().naive_local());
         let template = catalog.snapshots[0].clone();
         catalog.snapshots = corpus
             .map(|row| {
                 let mut snapshot = template.clone();
                 snapshot.id = format!("snapshot-{:06}", row.index);
-                snapshot.time = row.text;
+                snapshot.label = Some(row.text);
                 snapshot
             })
             .collect();
@@ -151,7 +146,7 @@ mod tests {
             3_000,
         );
         let catalog = loaded.expect("the corpus was loaded");
-        let page = provider.search_page(LATE_HIT_NEEDLE, None, 8, 4);
+        let page = provider.search_page(&ui::search::SearchQuery::new(LATE_HIT_NEEDLE), None, 8, 4);
         assert_eq!(page.inspected, 1, "unique posting avoids a corpus scan");
         let address = hit.action_address().expect("canonical address");
         assert_eq!(address.resource, "backups.snapshot:snapshot-002999");
@@ -171,7 +166,7 @@ mod tests {
         );
         assert!(resource.actions.iter().any(|action| action.id == "verify"));
         assert!(resource.actions.iter().any(|action| action.id == "restore"));
-        let page = provider.search_page("snapshot", None, 17, 5);
+        let page = provider.search_page(&ui::search::SearchQuery::new("snapshot"), None, 17, 5);
         assert!(page.inspected <= 17);
         assert!(page.results.len() <= 5);
         assert!(page.next.is_some(), "the complete history remains pageable");
@@ -179,15 +174,15 @@ mod tests {
 
     /// Case of `snapshot_search_is_bounded_and_invalidated_by_catalog_refresh`.
     fn catalog_refresh_invalidates_existing_search_cursors() {
-        let catalog = Catalog::sample();
+        let catalog = Catalog::sample(ui::clock::local_now().naive_local());
         let index = BackupsSearchIndex::new(&catalog);
         let provider = index.provider();
-        let first = provider.search_page("", None, 1, 1);
+        let first = provider.search_page(&ui::search::SearchQuery::new(""), None, 1, 1);
         let cursor = first.next.expect("a multi-snapshot catalogue pages");
         let generation = index.stats().generation;
 
         let mut refreshed = catalog;
-        refreshed.snapshots[0].time = "changed recovery time".into();
+        refreshed.snapshots[0].label = Some("Changed recovery point".into());
         index.sync(&refreshed);
 
         assert!(index.stats().generation > generation);
