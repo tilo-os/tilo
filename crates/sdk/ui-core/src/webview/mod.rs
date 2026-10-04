@@ -592,6 +592,14 @@ pub trait WebViewEngine: Send + Sync {
     fn paint_blob(&self, _hash: &[u8; 32]) -> Option<Arc<Vec<u8>>> {
         None
     }
+
+    /// The page as a stream for a session to share: a whole frame when
+    /// `keyframe` (or when the consumer must start over), else the patches
+    /// since the last call, followed by images not sent yet. Empty for an
+    /// engine without a display list.
+    fn take_paint_stream(&self, _keyframe: bool) -> Vec<tilo_paint_stream::wire::Payload> {
+        Vec::new()
+    }
 }
 
 /// Shared engine handle, as stored by the widget and the host app.

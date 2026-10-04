@@ -172,6 +172,9 @@ fn desired_legacy_shares(
                 }
             }
             if !peers.is_empty() {
+                // Hosts bridge the window to web members, which draw pages
+                // themselves; any other viewer decodes video.
+                let paint = peers.iter().all(|peer| viewer_hosts.contains(peer));
                 desired.insert(
                     *surface_id,
                     (
@@ -180,6 +183,7 @@ fn desired_legacy_shares(
                             tab: tab.id,
                             viewers: peers,
                             decode_limits,
+                            paint,
                         },
                         workspace.room,
                     ),
@@ -1466,17 +1470,53 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
+                    // The app id is the launcher's, so an app can only ever
+                    // offer its own windows' pages.
+                    state.note_paint_app(&app_id, connection);
+                    changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintStream {
+                    payload,
+                    page,
+                    scale,
+                } => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(payload.as_bytes()) {
+                        Ok(payload) => state.receive_paint_frame(
+                            &app_id,
+                            crate::compositor::state::PaintFrame {
+                                payload,
+                                page,
+                                scale,
+                            },
+                        ),
+                        Err(error) => {
+                            tracing::debug!(connection, %app_id, %error, "malformed paint stream frame");
+                        }
+                    }
+                }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }
                 state.dismiss_floating_connection(connection);
+                state.drop_paint_connection(connection);
                 foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
             }
         }
+    }
+    // Apps whose pages someone started or stopped watching.
+    for (connection, watched) in state.paint_watch_changes() {
+        let message = if watched {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+        } else {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintStop
+        };
+        service.send(connection, &message);
     }
     changed
 }
@@ -12837,18 +12877,20 @@ mod tests {
         workspace.shared_surfaces.share(7, 9);
         let none = std::collections::HashSet::new();
         let nobody = std::collections::BTreeMap::new();
-        let share =
-            |app_id: &str, tab: u64, viewers: &[u64]| crate::compositor::state::LegacyShare {
+        let share = |app_id: &str, tab: u64, viewers: &[u64], paint: bool| {
+            crate::compositor::state::LegacyShare {
                 app_id: app_id.to_string(),
                 tab,
                 viewers: viewers.iter().copied().collect(),
                 decode_limits: HashMap::new(),
-            };
+                paint,
+            }
+        };
 
         let watched = desired_legacy_shares(&tree, true, &none, &nobody);
         assert_eq!(
             watched.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9]))
+            Some(&share("org.gimp.GIMP", 12, &[9], false))
         );
         assert!(
             !watched.contains_key(&8),
@@ -12858,11 +12900,11 @@ mod tests {
         let through_host = desired_legacy_shares(&tree, true, &hosts, &nobody);
         assert_eq!(
             through_host.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9, 42]))
+            Some(&share("org.gimp.GIMP", 12, &[9, 42], false))
         );
         assert_eq!(
             through_host.get(&8).map(|(share, _)| share),
-            Some(&share("org.chromium.Chromium", 14, &[42])),
+            Some(&share("org.chromium.Chromium", 14, &[42], true)),
             "a viewer host receives every legacy window of the active workspace"
         );
         assert!(
