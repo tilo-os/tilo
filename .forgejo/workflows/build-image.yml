@@ -2707,6 +2707,12 @@ jobs:
           done
           ./os/dev/vm.sh keys tab ret
 
+          # A desktop that reached its first session can still be degraded.
+          # No unit may have failed by now, and the rollback confirmation
+          # (which refuses to confirm a degraded generation) must have run and
+          # succeeded. Before the app checks, so none of them can mask it.
+          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
+
           ./os/dev/vm.sh ssh /usr/libexec/tilo/projection-boot-check.sh
           # Optional AirPlay encrypted-media acceptance (#57): phase-bounded
           # deadlines on the shipped script, independent of Containerfile
@@ -2731,11 +2737,6 @@ jobs:
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
-
-          # Everything above can pass on a degraded system. No unit may have
-          # failed by now, and the rollback confirmation (which refuses to
-          # confirm a degraded generation) must have run and succeeded.
-          ./os/dev/vm.sh ssh "printf '%s\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/boot-units-gate.sh"
 
           if [[ $DEV_GATE == true ]]; then
             # What makes the disk a dev VM: tilo-vm reaches tilo-vmd as root,
