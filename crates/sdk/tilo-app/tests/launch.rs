@@ -513,6 +513,12 @@ fn a_window_opens_another_record_in_its_own_place() {
         "the view is built for the launch: {frame}"
     );
 
+    // A record that cannot be opened is refused with the reason, and the
+    // window keeps the one it shows.
+    let refused = app.open_here(&["/no/such/folder/notes.txt"]).unwrap_err();
+    assert!(refused.contains("cannot be read"), "{refused}");
+    assert_eq!(app.record(), &harbour);
+
     // Edits go to the record shown now, through the same door.
     app.invoke(Sketch::NOTE.with("on the harbour".into()))
         .unwrap();

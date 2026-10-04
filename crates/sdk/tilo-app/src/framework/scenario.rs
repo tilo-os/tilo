@@ -164,11 +164,15 @@ impl Run {
     }
 
     /// Open what a launch naming `arguments` opens in this window.
-    pub(crate) fn open_here(&self, arguments: &[String]) -> Result<(), String> {
-        self.opener
+    pub(crate) fn open_here(
+        &self,
+        arguments: &[String],
+    ) -> Result<ui_core::application::ReplacementOutcome, String> {
+        Ok(self
+            .opener
             .as_ref()
             .ok_or_else(|| "this window shows the record it was opened on".to_owned())?
-            .open(arguments)
+            .open(arguments))
     }
 
     /// The same run, for the participant `me`.

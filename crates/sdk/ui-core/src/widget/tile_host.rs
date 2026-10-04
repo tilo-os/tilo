@@ -1963,7 +1963,9 @@ impl Widget for TileHost {
         if let TileContent::App(widget) = &mut self.content
             && let Some(replacement) = crate::component_lifecycle::take_replacement(widget.as_mut())
         {
-            let reports = self.replace_component(replacement.component);
+            let (component, outcome) = replacement.into_parts();
+            outcome.answer(Ok(()));
+            let reports = self.replace_component(component);
             self.close_reports.extend(reports);
         }
         let Ok(live) = self.resolve_record() else {
