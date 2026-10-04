@@ -39,6 +39,10 @@ use crate::view_ops;
 /// The largest SVG `export-svg` also answers inline, in bytes.
 const MAX_INLINE_SVG: usize = 48 * 1024;
 
+/// The brush starts loaded with ultramarine: a paint colour the artwork may
+/// keep, not chrome, so it does not follow the theme.
+pub const ULTRAMARINE: Color = Color::from_rgba8(0x2b, 0x3f, 0x8f, 255); // document paint
+
 /// What the pointer does on the canvas.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
@@ -78,9 +82,7 @@ impl Default for Tools {
     fn default() -> Self {
         Self {
             tool: LocalState::new(Tool::Brush),
-            // The brush starts loaded with ultramarine: a paint colour, not
-            // chrome, so it does not follow the theme.
-            colour: LocalState::new(Color::from_rgba8(0x2b, 0x3f, 0x8f, 255)), // paint
+            colour: LocalState::new(ULTRAMARINE),
             size: LocalState::new(0.2),
             layer: LocalState::new(String::new()),
         }
@@ -164,9 +166,7 @@ impl CanvasSurface {
             art: Rc::new(Artwork::default()),
             dispatcher: None,
             read_only: false,
-            viewport: ui::widget::ViewportState::new()
-                .with_zoom_bounds(0.05, 32.0)
-                .with_padding(24.0),
+            viewport: ui::widget::ViewportState::new().with_zoom_bounds(0.05, 32.0),
             fitted_to: None,
             moved_by_hand: false,
             renderer: Renderer::default(),
@@ -618,7 +618,7 @@ impl CanvasSurface {
     }
 
     fn paint_overlay(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
-        let accent = theme.accent_primary;
+        let accent = theme.tokens.colors.intent.you;
         let zoom = self.viewport.zoom().max(1e-6);
         let hair = Stroke::new(1.5 / zoom);
         if let Some(frame) = self.frame() {
@@ -770,17 +770,19 @@ impl Widget for CanvasSurface {
             transform,
             &self.rect,
         );
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
         let to_screen = transform * self.viewport.content_to_screen();
         let board = self.art.bounds();
-        let zoom = self.viewport.zoom().max(1e-6);
-        let shadow = theme.border_standard.multiply_alpha(0.5);
-        scene.fill(
-            Fill::NonZero,
-            to_screen,
-            shadow,
-            None,
-            &(board + ui::vello::kurbo::Vec2::new(3.0 / zoom, 4.0 / zoom)),
+        // The paper is an object lifted off the content ground: the one
+        // soft shadow a floating thing casts, and an edge measured against
+        // the ground it sits on.
+        let colors = &theme.tokens.colors;
+        let paper = to_screen.transform_rect_bbox(board);
+        ui::surface::shadow(
+            scene,
+            transform,
+            paper,
+            0.0,
+            &theme.tokens.elevation.floating,
         );
         let options = Options {
             reference: self
@@ -793,21 +795,15 @@ impl Widget for CanvasSurface {
         self.renderer
             .draw(&self.art, scene, to_screen, text_renderer, &options);
         scene.stroke(
-            &Stroke::new(1.0 / zoom),
-            to_screen,
-            theme.border_standard,
+            &Stroke::new(1.0),
+            transform,
+            ui::surface::edge_on(colors.surfaces.content),
             None,
-            &board,
+            &paper,
         );
         self.paint_overlay(scene, to_screen, theme);
         if self.focused {
-            scene.stroke(
-                &Stroke::new(2.0),
-                transform,
-                theme.border_focus,
-                None,
-                &self.rect.inset(-1.0),
-            );
+            ui::widget::paint_focus_ring(scene, transform, self.rect.inset(-2.0), 0.0, theme);
         }
         scene.pop_layer();
     }

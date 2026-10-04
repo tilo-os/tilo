@@ -3,8 +3,8 @@
 
 use serde_json::{Value, json};
 use tilo_automation::{
-    AGENT_APP_ID, AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND, ActionCatalog, SHORTCUTS_APP_ID,
-    Shortcut,
+    AGENT_APP_ID, AGENT_FREEFORM_ACTION, AGENT_SUMMARISE_ACTION, AGENT_TRANSFORM_KIND,
+    ActionCatalog, SHORTCUTS_APP_ID, Shortcut,
 };
 use ui::LocalState;
 use ui::prelude::*;
@@ -14,11 +14,15 @@ use ui::tilo_actions::{
     OperationKind, ParamType, PermissionRequirement, ResultSpec,
 };
 
-use crate::door::{DoorState, Loaded, RunRecord, RunStatus};
+use crate::door::{DoorState, Drafting, Loaded, RunRecord, RunStatus};
+use crate::drafting::Drafted;
 use crate::model::Workbench;
+use crate::view;
 
 /// The `--shots` scenarios.
-pub const SCENARIOS: &[&str] = &["library", "editor", "review"];
+pub const SCENARIOS: &[&str] = &[
+    "library", "editor", "review", "saved", "empty", "blocks", "drafted", "picker",
+];
 
 const NOTES: &str = "so.tilo.notes";
 const MAIL: &str = "so.tilo.mail";
@@ -131,6 +135,27 @@ pub fn catalog() -> ActionCatalog {
     ])
 }
 
+/// The catalogue a captured window shows: [`catalog`] and the agent's
+/// free-form transform, so the window offers to draft a shortcut.
+fn staged_catalog() -> ActionCatalog {
+    let mut rows = catalog().rows().to_vec();
+    rows.push(row(
+        AGENT_APP_ID,
+        resource("agent.transform:text", AGENT_TRANSFORM_KIND, "Text"),
+        (AGENT_FREEFORM_ACTION, "Ask the agent"),
+        vec![
+            ActionParam::required("prompt", ParamType::Text, "Prompt"),
+            ActionParam::required("input", ParamType::Text, "Text"),
+            ActionParam::required("schema", ParamType::Object, "Shape of the answer"),
+        ],
+        contract(
+            PermissionRequirement::Read,
+            ResultSpec::Json { schema: json!({}) },
+        ),
+    ));
+    ActionCatalog::new(rows)
+}
+
 fn morning_digest() -> Value {
     json!({
         "id": "morning-digest",
@@ -147,62 +172,208 @@ fn morning_digest() -> Value {
     })
 }
 
+/// A draft being worked on: a shortcut no one has saved yet.
+fn weekly_summary() -> Value {
+    json!({
+        "id": "weekly-summary",
+        "name": "Weekly summary",
+        "steps": [
+            {"id": "list", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "ai", "step": "ai", "transform": "summarise",
+             "input": {"template": "{{step.list/titles}}"}},
+            {"id": "send", "step": "invoke", "app_id": MAIL,
+             "resource": {"fixed": "mail.outbox"}, "action": "send",
+             "args": {"to": {"literal": "me@example.org"}, "body": {"step_output": {"step": "ai"}}}}
+        ]
+    })
+}
+
+fn quick_note() -> Value {
+    json!({
+        "id": "quick-note",
+        "name": "Quick note",
+        "inputs": [{
+            "name": "title", "ty": "text", "required": true,
+            "description": "Note title", "nullable": false
+        }],
+        "steps": [
+            {"id": "create", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+             "args": {"title": {"input": "title"}, "pinned": {"literal": false}}}
+        ]
+    })
+}
+
+fn mail_me_my_notes() -> Value {
+    json!({
+        "id": "mail-me-my-notes",
+        "name": "Mail me my notes",
+        "steps": [
+            {"id": "list", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "send", "step": "invoke", "app_id": MAIL,
+             "resource": {"fixed": "mail.outbox"}, "action": "send",
+             "args": {"to": {"literal": "me@example.org"},
+                      "body": {"template": "Today's notes: {{step.list/titles}}"}}}
+        ]
+    })
+}
+
+/// What the agent drafted from a description: a complete shortcut, offered
+/// to open as a draft.
+fn drafted() -> Option<Drafting> {
+    let shortcut = json!({
+        "id": "note-the-inbox",
+        "name": "Note the inbox",
+        "steps": [
+            {"id": "list", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "create", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+             "args": {"title": {"literal": "Inbox today"}, "pinned": {"literal": false}}}
+        ]
+    });
+    let shortcut = serde_json::from_value(shortcut).ok()?;
+    Some(Drafting::Ready(Box::new(Drafted {
+        shortcut,
+        problems: Vec::new(),
+    })))
+}
+
+/// A shortcut with a repeat and a condition.
+fn tidy_notes() -> Value {
+    json!({
+        "id": "tidy-notes",
+        "name": "Tidy notes",
+        "inputs": [{
+            "name": "keyword", "ty": "text", "required": true,
+            "description": "Keyword", "nullable": false
+        }],
+        "steps": [
+            {"id": "list", "step": "invoke", "app_id": NOTES,
+             "resource": {"fixed": "notes.folder:inbox"}, "action": "list"},
+            {"id": "each", "step": "for_each",
+             "items": {"step_output": {"step": "list", "pointer": "/titles"}},
+             "item": "title",
+             "body": [
+                {"id": "create", "step": "invoke", "app_id": NOTES,
+                 "resource": {"fixed": "notes.folder:inbox"}, "action": "create",
+                 "args": {"title": {"var": "title"}, "pinned": {"literal": false}}}
+             ]},
+            {"id": "if", "step": "if", "cond": {"truthy": {"input": "keyword"}},
+             "then": [
+                {"id": "ai", "step": "ai", "transform": "summarise",
+                 "input": {"input": "keyword"}}
+             ],
+             "else": []}
+        ]
+    })
+}
+
 /// The drafts a scenario starts with.
 #[must_use]
 pub fn drafts(name: Option<&str>) -> Vec<Invoke<Workbench>> {
+    let weekly = Workbench::NEW_DRAFT.with(String::from("Standup notes"));
     match name {
-        Some("editor" | "review") => vec![Workbench::OPEN_SHORTCUT.with(morning_digest())],
+        Some("editor" | "review") => vec![weekly, Workbench::OPEN_SHORTCUT.with(weekly_summary())],
+        Some("blocks" | "picker") => vec![Workbench::OPEN_SHORTCUT.with(tidy_notes())],
+        Some("library" | "saved") => vec![weekly],
         _ => Vec::new(),
     }
 }
 
 /// Stage a scenario's view: a library, a catalogue and recent runs as a
-/// workspace would have them, and the first draft open.
+/// workspace would have them, and the page the scenario shows open.
 pub fn stage(
     cx: &ViewCx<Workbench>,
     door: &LocalState<DoorState>,
     selected: &LocalState<Option<String>>,
-    narrow: &LocalState<NarrowScreen>,
+    pane: &LocalState<NavPane>,
     sheet: &LocalState<bool>,
+    picker: &LocalState<Option<String>>,
 ) {
     let door = door.clone();
     let selected = selected.clone();
-    let narrow = narrow.clone();
+    let pane = pane.clone();
     let sheet = sheet.clone();
+    let picker = picker.clone();
     let live = cx.live().clone();
     cx.on_stage(move |scenario| {
-        let saved: Vec<Shortcut> = [
-            morning_digest(),
-            json!({
-                "id": "tidy-inbox", "name": "Tidy the inbox", "steps": []
-            }),
-        ]
-        .into_iter()
-        .filter_map(|value| serde_json::from_value(value).ok())
-        .collect();
+        let saved: Vec<Shortcut> = [morning_digest(), quick_note(), mail_me_my_notes()]
+            .into_iter()
+            .filter_map(|value| serde_json::from_value(value).ok())
+            .collect();
+        let first_run = scenario == Some("empty");
+        let run = |serial, id: &str, name: &str, status, started: &str| RunRecord {
+            serial,
+            shortcut_id: id.into(),
+            name: name.into(),
+            status,
+            started: started.into(),
+        };
         door.set(DoorState {
-            catalogue: Loaded::Ready(catalog()),
-            library: Loaded::Ready(saved),
-            runs: vec![RunRecord {
-                serial: 1,
-                shortcut_id: "morning-digest".into(),
-                name: "Morning digest".into(),
-                status: RunStatus::Completed(None),
-            }],
+            catalogue: Loaded::Ready(staged_catalog()),
+            library: Loaded::Ready(if first_run { Vec::new() } else { saved }),
+            runs: if first_run {
+                Vec::new()
+            } else {
+                vec![
+                    run(
+                        3,
+                        "morning-digest",
+                        "Morning digest",
+                        RunStatus::Completed(Some(json!("Three new notes, one needs a reply"))),
+                        "10:31",
+                    ),
+                    run(
+                        2,
+                        "quick-note",
+                        "Quick note",
+                        RunStatus::Completed(None),
+                        "09:58",
+                    ),
+                    run(
+                        1,
+                        "mail-me-my-notes",
+                        "Mail me my notes",
+                        RunStatus::Failed("the outbox is not reachable".into()),
+                        "08:12",
+                    ),
+                ]
+            },
             notice: None,
-            drafted: None,
+            drafted: if scenario == Some("drafted") {
+                drafted()
+            } else {
+                None
+            },
         });
-        if matches!(scenario, Some("editor" | "review")) {
-            let first = live.with(|workbench| {
+        let draft = |name: &str| {
+            live.with(|workbench| {
                 workbench
                     .drafts
-                    .ids()
-                    .next()
-                    .map(|id| id.as_str().to_owned())
-            });
-            selected.set(first);
-            narrow.set(NarrowScreen::Content);
-            sheet.set(scenario == Some("review"));
-        }
+                    .iter()
+                    .find(|(_, draft)| draft.name == name)
+                    .map(|(id, _)| format!("{}{}", view::DRAFT, id.as_str()))
+            })
+        };
+        let open = match scenario {
+            Some("editor" | "review") => draft("Weekly summary"),
+            Some("blocks" | "picker") => draft("Tidy notes"),
+            Some("saved") => Some(format!("{}quick-note", view::SAVED)),
+            _ => None,
+        };
+        // The overview is where a window starts; the sidebar is the first
+        // screen of a narrow one.
+        pane.set(if open.is_some() {
+            NavPane::Content
+        } else {
+            NavPane::Sidebar
+        });
+        selected.set(Some(open.unwrap_or_else(|| view::OVERVIEW.to_owned())));
+        sheet.set(scenario == Some("review"));
+        // The picker of the top-level block, open.
+        picker.set((scenario == Some("picker")).then(String::new));
     });
 }

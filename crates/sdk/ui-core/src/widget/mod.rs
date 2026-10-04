@@ -1154,6 +1154,12 @@ pub trait Widget {
 
     fn set_focus(&mut self, _focused: bool) {}
 
+    /// The form's validation verdict for this control, set by
+    /// [`Field::with_error`]: an invalid control edges itself in danger ink
+    /// and reports `invalid` to assistive technology. Controls without a
+    /// field face ignore it.
+    fn set_invalid(&mut self, _invalid: bool) {}
+
     /// An explicit runner focus request, after resolving the actual keyboard
     /// owner. Retained flags and layout restoration are not user gestures.
     /// Containers can observe this to reveal the owning viewport.
@@ -2213,6 +2219,7 @@ pub use sidebar::{
     SidebarSide,
 };
 mod nav_shell;
+pub(crate) mod window_header;
 pub use nav_shell::{
     InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, SidebarPlacement,
 };
@@ -2354,7 +2361,6 @@ pub mod color_swatch;
 pub use color_picker::{ColorPicker, ColorPickerOutcome};
 pub use color_swatch::{ColorSwatch, ColorSwatchFace, ColorSwatchPicker};
 pub mod popover;
-pub use crate::standalone_history_host::history_button;
 pub use popover::{Popover, PopoverSide};
 pub mod modal_dialog;
 pub use modal_dialog::{ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSpec};
