@@ -27,11 +27,6 @@ pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::launch::LaunchSpec::new("so.tilo.clocks", app_root).as_definition("Clocks")
 }
 
-#[must_use]
-pub fn app_root_for_shot(scenario: &str) -> Box<dyn ui::widget::Widget> {
-    Box::new(ClocksApp::scenario(scenario))
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorldClock {
     pub id: Uuid,
