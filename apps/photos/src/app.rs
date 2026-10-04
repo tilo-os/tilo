@@ -1479,9 +1479,7 @@ pub struct PhotosApp {
     library_cards: Vec<(String, Rect, bool)>,
     pointer: Point,
     library_mode: bool,
-    /// What the window was launched on, opened once the document is at hand:
-    /// a photograph is imported into the library and opened, a folder is
-    /// imported.
+    /// The folder the window was launched on, imported on the first sync.
     launched: Option<std::path::PathBuf>,
     /// The screenshot scenario whose view state the next sync stages.
     staged: Option<String>,
@@ -2265,11 +2263,11 @@ impl PhotosApp {
         }
     }
 
-    /// This app, launched naming `path`: a photograph to open or a folder to
-    /// import into the library the window shows.
+    /// This app, launched naming `folder`: a folder of photographs to import
+    /// into the library the window shows.
     #[must_use]
-    pub fn launched_on(mut self, path: Option<std::path::PathBuf>) -> Self {
-        self.launched = path;
+    pub fn launched_on(mut self, folder: Option<std::path::PathBuf>) -> Self {
+        self.launched = folder;
         self
     }
 
@@ -2279,17 +2277,13 @@ impl PhotosApp {
         self.staged = Some(scenario.to_owned());
     }
 
-    /// Open what the launch named.
-    fn open_launched(&mut self, doc: &mut AutoCommit) {
-        let Some(path) = self.launched.take() else {
+    /// Import the folder the launch named.
+    fn import_launched(&mut self) {
+        let Some(folder) = self.launched.take() else {
             return;
         };
-        if path.is_dir() {
-            self.show_library();
-            self.begin_directory_import(path, None, DirectoryImportMode::Import, true);
-        } else {
-            self.open_path(doc, &path.to_string_lossy());
-        }
+        self.show_library();
+        self.begin_directory_import(folder, None, DirectoryImportMode::Import, true);
     }
 
     /// Pose the view for `scenario`, whose photographs the scenario's
@@ -2504,6 +2498,11 @@ impl PhotosApp {
     /// The status line as it currently reads.
     pub fn status(&self) -> &str {
         &self.status
+    }
+
+    /// Whether the library, rather than one photograph, is shown.
+    pub fn shows_library(&self) -> bool {
+        self.library_mode
     }
 
     /// Whether a photograph is loaded and rendered.
@@ -14608,7 +14607,7 @@ impl Widget for PhotosApp {
     )]
     fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document(doc, path);
-        self.open_launched(doc);
+        self.import_launched();
         self.reconcile_content(doc);
         self.apply_staged(doc);
         self.drain_action_control_pending(doc);

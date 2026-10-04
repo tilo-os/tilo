@@ -27,7 +27,6 @@
 
 [ratchets.standalone_launch]
 "apps/imager/src/main.rs" = 1
-"apps/photos/src/lib.rs" = 2
 "apps/settings/src/main.rs" = 1
 
 [ratchets.direct_document_api]
@@ -39,7 +38,6 @@
 
 [ratchets.widget_owned_document]
 "apps/agent/src/apply.rs" = 2
-"apps/photos/src/framework_history.rs" = 2
 "apps/settings/src/actions/mod.rs" = 17
 "apps/settings/src/panes/agent_models.rs" = 1
 "apps/settings/src/panes/audio.rs" = 2
