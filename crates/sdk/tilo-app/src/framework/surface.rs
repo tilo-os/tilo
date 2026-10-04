@@ -480,6 +480,17 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         &mut self.surface
     }
 
+    // The host is its surface to a typed lookup (a test reaching the
+    // surface's state, a scenario staging it), as a decorator's children
+    // are its inner widget's.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        self.surface.as_any()
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        self.surface.as_any_mut()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut ui_core::taffy::TaffyTree<()>,

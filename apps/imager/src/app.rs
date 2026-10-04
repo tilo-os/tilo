@@ -53,7 +53,6 @@ use ui::widget::{Badge, Button, ButtonFace, TextInput, Widget};
 
 use crate::actions::ImagerAction;
 use crate::customize::{CustomizePanel, CzField};
-use crate::doc::ImagerDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TargetKind,
@@ -638,6 +637,37 @@ impl ImagerApp {
         };
         app.estimate_bands();
         app
+    }
+
+    /// The wizard over the sample drives and releases, its startup review
+    /// done: what tests drive in a framework host.
+    #[cfg(test)]
+    pub(crate) fn sample() -> Self {
+        let mut app = Self::new();
+        app.targets = crate::model::sample_targets();
+        app.releases = crate::model::sample_releases();
+        app.startup_write_state_reconciled = true;
+        app.seeded = true;
+        app
+    }
+
+    /// Show the Customize step for the first sample drive.
+    #[cfg(test)]
+    pub(crate) fn show_customize_for_test(&mut self) {
+        self.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        self.select_target(0);
+        self.goto(Step::Customize);
+    }
+
+    /// Give `field` of the profile panel keyboard focus.
+    #[cfg(test)]
+    pub(crate) fn focus_profile_field_for_test(&mut self, field: CzField) {
+        self.customize.focus_for_test(field);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn profile_for_test(&self) -> &InstallProfile {
+        &self.profile
     }
 
     /// Every band at its unmeasured 1× estimate, so a layout taken before
@@ -5193,6 +5223,10 @@ impl Widget for ImagerApp {
         "ImagerApp"
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -5429,7 +5463,7 @@ impl ImagerApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
+        _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
@@ -5446,8 +5480,7 @@ impl ImagerApp {
         if kind != expected_kind {
             return Err("Imager operation kind does not match its contract".into());
         }
-        let mut local_doc = doc.clone();
-        self.perform_operation(&operation, &mut local_doc)?;
+        self.perform_operation(&operation)?;
         Ok(true)
     }
 
@@ -5732,6 +5765,7 @@ impl ImagerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::doc::ImagerDoc;
 
     /// Present `doc` as the framework presents the imager resource, then run
     /// the widget's own sync.
@@ -5780,7 +5814,7 @@ mod tests {
                 before,
                 "selection, station, status, and job progress are local"
             );
-            let mut peer = AutoCommit::load(&before).unwrap();
+            let peer = AutoCommit::load(&before).unwrap();
             let mut peer_app = ImagerApp::new();
             present(&mut peer_app, &peer);
             assert_eq!(peer_app.step, Step::Source);
@@ -5803,7 +5837,7 @@ mod tests {
             // The live path (no demo seed) starts genuinely empty: no drives are
             // invented and no image is pre-selected.
             let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             present(&mut app, &doc);
             assert!(app.targets.is_empty(), "no fabricated drives");
             assert!(app.source.is_none(), "no fabricated image");
@@ -5826,7 +5860,7 @@ mod tests {
             app.status = "Writing locally".into();
             let saved = doc.save();
             let mut restarted = ImagerApp::new();
-            let mut restored_doc = AutoCommit::load(&saved).unwrap();
+            let restored_doc = AutoCommit::load(&saved).unwrap();
             present(&mut restarted, &restored_doc);
             assert_eq!(restarted.step, Step::Source);
             assert_eq!(restarted.progress.phase, JobPhase::Idle);
@@ -5837,20 +5871,17 @@ mod tests {
 
         // Phase `write_operations_are_blocked_until_startup_state_is_reconciled`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, doc) = seeded_app();
             app.select_target(0);
             app.startup_write_state_reconciled = false;
             app.confirm_input.set_text("sdb");
 
             assert!(!app.can_advance_with_writer(Step::Confirm, true));
             let error = app
-                .perform_operation(
-                    &crate::actions::ImagerOperation::Write {
-                        device: app.target().unwrap().dev_path(),
-                        confirmation: "sdb".into(),
-                    },
-                    &mut doc,
-                )
+                .perform_operation(&crate::actions::ImagerOperation::Write {
+                    device: app.target().unwrap().dev_path(),
+                    confirmation: "sdb".into(),
+                })
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
 
@@ -5873,7 +5904,7 @@ mod tests {
         // opt-in via `--demo` / `--shots` like every other sample surface here.
         {
             let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             present(&mut app, &doc);
             assert!(app.releases().is_empty(), "no fabricated Tilo releases");
 
@@ -6166,43 +6197,6 @@ mod tests {
                 );
             }
 
-            assert!(app.perform_semantic_action(
-                "imager:profile:hostname",
-                &AccessAction::SetValue("accessible-host".into()),
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
-
-            for (target, chosen, expected) in [
-                ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
-                ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
-                ("imager:profile:keyboard", "German (QWERTZ)", "de"),
-            ] {
-                assert!(app.perform_semantic_action(
-                    target,
-                    &AccessAction::SetValue(chosen.into()),
-                    &mut doc,
-                    &automerge::ROOT,
-                ));
-                let profile = ImagerDoc::profile(&doc);
-                let actual = match target {
-                    "imager:profile:locale" => profile.locale,
-                    "imager:profile:timezone" => profile.timezone,
-                    _ => profile.keyboard,
-                };
-                assert_eq!(actual, expected);
-            }
-            let timezone_before = ImagerDoc::profile(&doc).timezone;
-            assert!(app.perform_semantic_action(
-                "imager:profile:timezone",
-                &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
-            assert!(app.status.contains("Choose a listed Time zone"));
-
             app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
             app.scroll_y = 0.0;
             assert!(app.perform_semantic_action(
@@ -6342,7 +6336,7 @@ mod tests {
 
         // Phase `compact_step_targets_use_the_same_on_screen_rects_as_the_rail`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
             app.select_target(0);
             app.goto(Step::Confirm);
@@ -6366,7 +6360,7 @@ mod tests {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut tr = TextRenderer::new();
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
 
             let browse_top = |app: &ImagerApp| {
@@ -6584,7 +6578,7 @@ mod tests {
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut tr = TextRenderer::new();
             for width in [1200.0, 320.0] {
-                let (mut app, mut doc) = seeded_app();
+                let (mut app, _doc) = seeded_app();
                 app.rect = Rect::new(0.0, 0.0, width, 800.0);
                 app.select_target(0);
                 app.goto(Step::Confirm);
@@ -6632,7 +6626,7 @@ mod tests {
 
         // Phase `compact_body_controls_reserve_space_for_wrapped_headings`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
 
             let source = app.compute_layout();
@@ -6662,7 +6656,7 @@ mod tests {
 
         // Phase `compact_footer_actions_never_overlap`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
 
             for step in [Step::Drive, Step::Customize, Step::Confirm] {
@@ -6736,7 +6730,7 @@ mod tests {
     fn wizard_advance_and_confirm_require_valid_choices_and_capability() {
         // Phase `advancing_requires_selections`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             // Source is seeded → can advance to Drive.
             app.advance();
             assert_eq!(app.step, Step::Drive);
@@ -6753,7 +6747,7 @@ mod tests {
 
         // Phase `privileged_helper_capability_enables_confirm_but_disabled_backend_does_not`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.goto(Step::Confirm);
             app.confirm_input.set_text("sdb");
@@ -6771,7 +6765,7 @@ mod tests {
 
         // Phase `invalid_media_profile_blocks_confirm_and_direct_write`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.profile.hostname = "bad host".into();
             app.goto(Step::Customize);
@@ -6792,7 +6786,7 @@ mod tests {
 
         // Phase `plain_iso_skips_customize`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let iso = app
                 .recent
                 .iter()
@@ -6809,7 +6803,7 @@ mod tests {
 
         // Phase `local_tilo_claim_cannot_unlock_preconfiguration`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let official = crate::model::sample_source();
             let mut local = official.clone();
             local.kind = SourceKind::IsoFile;
@@ -6829,7 +6823,7 @@ mod tests {
         // then stop at the disabled write backend, never at an installer-stick
         // refusal.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             assert!(app.customizable(), "seeded source is official");
             assert!(
                 app.offers_write_setup(),
@@ -6841,13 +6835,10 @@ mod tests {
             app.profile.wifi_ssid = "studio".into();
             app.wifi_psk = "correct-horse".into();
             let err = app
-                .perform_operation(
-                    &crate::actions::ImagerOperation::Write {
-                        device: "/dev/sdb".into(),
-                        confirmation: "sdb".into(),
-                    },
-                    &mut doc,
-                )
+                .perform_operation(&crate::actions::ImagerOperation::Write {
+                    device: "/dev/sdb".into(),
+                    confirmation: "sdb".into(),
+                })
                 .expect_err("privileged writer is off in unit tests");
             assert!(
                 !err.to_lowercase().contains("installer stick"),
@@ -6863,7 +6854,7 @@ mod tests {
 
         // Phase `write_refused_without_matching_confirmation`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0); // sdb
             app.goto(Step::Confirm);
             app.confirm_input.set_text("wrong");
@@ -6925,7 +6916,7 @@ mod tests {
 
         // Phase `release_progress_is_local_visible_and_terminal_events_clear_the_job`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let (tx, rx) = std::sync::mpsc::channel();
             app.release_rx = Some(rx);
             app.release_control = Some(crate::release::DownloadControl::default());
@@ -7020,7 +7011,7 @@ mod tests {
         if crate::write::allow_write() {
             return;
         }
-        let (mut app, mut doc) = seeded_app();
+        let (mut app, _doc) = seeded_app();
         app.select_target(0); // sdb
         app.goto(Step::Confirm);
         app.confirm_input.set_text("sdb");
@@ -7040,7 +7031,7 @@ mod tests {
     fn source_and_target_selection_accept_only_inspected_external_media() {
         // Phase `portal_open_selects_inspected_source`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             // The recording host answers with a real Tilo-looking image.
             let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
             std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
@@ -7065,7 +7056,7 @@ mod tests {
 
         // Phase `authoritative_empty_rescan_clears_stale_target_and_consent`.
         {
-            let (mut app, doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.confirm_input.set_text("sdb");
 
@@ -7078,7 +7069,7 @@ mod tests {
 
         // Phase `rescan_preserves_only_the_same_physical_target`.
         {
-            let (mut app, doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.confirm_input.set_text("sdb");
             let selected = app.target().unwrap().clone();
@@ -7127,7 +7118,7 @@ mod tests {
             let mut targets = crate::model::sample_targets();
             targets[1].is_system = true; // the internal NVMe is the system disk
             app.targets = targets.clone();
-            ImagerDoc::seed(&mut doc, &targets);
+            ImagerDoc::seed(&mut doc);
             ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
             present(&mut app, &doc);
 
@@ -7137,73 +7128,12 @@ mod tests {
         }
     }
 
-    /// Set the Customize step up with one field cleared and focused, ready for
-    /// the shared panel to receive keystrokes through the real event path.
-    fn customize_with_field_focused(field: crate::customize::CzField) -> (ImagerApp, AutoCommit) {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        // Clear the target field so the typed assertion is exact.
-        let mut p = ImagerDoc::profile(&doc);
-        if field == crate::customize::CzField::Hostname {
-            p.hostname.clear();
-        }
-        ImagerDoc::set_profile(&mut doc, &p);
-        app.step = Step::Customize;
-        present(&mut app, &doc); // reads the profile + step back
-        assert_eq!(
-            app.step,
-            Step::Customize,
-            "the panel only handles events on this step"
-        );
-        assert!(app.customizable(), "the seeded Tilo image is customizable");
-        app.customize.focus_for_test(field);
-        (app, doc)
-    }
-
     /// Hostname typing, keyboard chooser and preview.
     #[test]
     fn profile_panel_edits_persist_through_the_real_event_path() {
-        // Phase `typing_into_hostname_persists_to_profile_through_the_panel`.
-        {
-            use crate::customize::CzField;
-            let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
-            for s in ["l", "a", "b", "0", "1"] {
-                feed(&mut app, &mut doc, &char_ev(s));
-            }
-            assert_eq!(
-                ImagerDoc::profile(&doc).hostname,
-                "lab01",
-                "persisted to the doc"
-            );
-            assert_eq!(
-                app.customize.field_value(CzField::Hostname),
-                "lab01",
-                "the input holds it"
-            );
-        }
-
-        // Phase `keyboard_chooser_filters_and_commits_through_the_real_event_path`.
-        {
-            use crate::customize::CzField;
-            use winit::keyboard::NamedKey;
-
-            let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
-            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-            for character in ["g", "e", "r", "m", "a", "n"] {
-                feed(&mut app, &mut doc, &char_ev(character));
-            }
-            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-
-            assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
-            assert_eq!(
-                app.customize.field_value(CzField::Keyboard),
-                "German (QWERTZ)"
-            );
-        }
-
         // Phase `preview_shows_the_embedded_profile`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(1);
             app.export_config();
             let text = app.export_dialog.text();
@@ -7223,7 +7153,7 @@ mod tests {
     fn write_completion_failure_and_cancel_return_to_a_truthful_state() {
         // Phase `write_another_resets_to_source`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.progress = Progress {
                 phase: JobPhase::Success,
@@ -7239,7 +7169,7 @@ mod tests {
 
         // Phase `failed_write_keeps_its_cause_and_returns_to_a_fresh_review`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.select_target(0);
             app.goto(Step::Write);
             app.progress = Progress {
@@ -7293,7 +7223,7 @@ mod tests {
 
         // Phase `active_write_cancel_operation_requests_a_safe_stop`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let control = JobControl::new();
             app.job_control = Some(control.clone());
             app.goto(Step::Write);
@@ -7313,7 +7243,7 @@ mod tests {
 
         // Phase `cancel_wins_a_race_with_an_already_queued_success`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let control = JobControl::new();
             control.cancel();
             app.job_control = Some(control);

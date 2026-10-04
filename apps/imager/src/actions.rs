@@ -312,7 +312,10 @@ impl ImagerAction {
     /// Whether `self` and `next` set the same text field of the profile, so
     /// the keystrokes of one value are one undo step.
     pub(crate) fn same_text_field(&self, next: &Self) -> bool {
-        use ImagerAction::*;
+        use ImagerAction::{
+            SetDeviceLabel, SetFullName, SetHostname, SetKeyboard, SetLocale, SetTimezone,
+            SetUsername, SetWifiSsid,
+        };
         matches!(
             (self, next),
             (SetHostname { .. }, SetHostname { .. })
@@ -1328,6 +1331,5 @@ mod tests {
         let state = crate::resource::Imager::read(&doc).unwrap();
         assert!(state.source.is_none());
         assert!(state.recent.is_empty());
-        assert_eq!(state.next_recent_rank, 0);
     }
 }
