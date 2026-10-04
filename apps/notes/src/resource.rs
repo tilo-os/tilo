@@ -106,6 +106,7 @@ impl Resource for Notebook {
                 title: page.title.clone(),
                 text: String::new(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }

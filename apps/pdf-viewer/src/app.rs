@@ -796,6 +796,9 @@ pub struct PdfApp {
     /// An in-progress drag of a sticky-note marker (reposition), if any.
     marker_drag: Option<ui::MarkerDrag>,
 
+    /// The names of the participants, as the host's roster has them; the
+    /// markup records ids. Absent outside a host.
+    people: Option<ui::framework::People>,
     /// Where edits go: the resource's dispatcher, attached by the host.
     dispatcher: Option<ui::framework::Dispatcher<crate::resource::PdfViewer>>,
     /// The participant may only view the document.
@@ -1226,6 +1229,7 @@ impl PdfApp {
             #[cfg(not(test))]
             dispatcher: None,
             read_only: false,
+            people: None,
             page_maps: Vec::new(),
             resource_page_rotations: Vec::new(),
             form_fields: Vec::new(),
@@ -1283,7 +1287,26 @@ impl PdfApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::PdfViewer>,
     ) {
         self.read_only = dispatcher.read_only();
+        // What this participant authors is recorded under their id, and
+        // shown under the name the roster has for it.
+        if let Some(me) = dispatcher.me() {
+            me.clone_into(&mut self.author);
+        }
         self.dispatcher = Some(dispatcher);
+    }
+
+    /// Show the participants' names from `people`.
+    pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
+        self.people = Some(people);
+        self.dirty = true;
+    }
+
+    /// The name to show for the participant `id` an annotation, comment or
+    /// reply records.
+    pub(crate) fn author_name(&self, id: &str) -> String {
+        self.people
+            .as_ref()
+            .map_or_else(|| id.to_owned(), |people| people.name(id))
     }
 
     /// Compose with the person's own signature record.
@@ -3368,7 +3391,7 @@ impl PdfApp {
             EditTarget::Signer => {
                 let name = text.trim();
                 self.signer_name = if name.is_empty() {
-                    self.author.clone()
+                    self.author_name(&self.author)
                 } else {
                     name.to_string()
                 };
@@ -5403,7 +5426,7 @@ impl Widget for PdfApp {
                             })
                             .with_description(format!(
                                 "{} on page {}; {} replies",
-                                comment.author,
+                                self.author_name(&comment.author),
                                 comment.page,
                                 comment.replies.len()
                             ))
@@ -8332,6 +8355,34 @@ mod tests {
             assert_eq!(
                 app.signer_name, app.author,
                 "an empty signer name falls back to the author"
+            );
+        }
+
+        eprintln!("phase comment_authors_read_as_the_rosters_names");
+        {
+            let (mut app, mut st) = app_with_state();
+            app.author = "me-id".into();
+            app.attach_people(ui::framework::People::named(
+                Some("me-id"),
+                &[("peer-id", "Bob Builder")],
+            ));
+            app.create_note(&mut st.doc, 2, (120.0, 200.0));
+            let thread = PdfDoc::list_comments(&st.doc)
+                .into_iter()
+                .find(|comment| comment.page == 2)
+                .expect("the new note's thread");
+            assert_eq!(thread.author, "me-id", "the record keeps the id");
+            assert_eq!(app.author_name(&thread.author), "You");
+            assert_eq!(app.author_name("peer-id"), "Bob Builder");
+            assert_eq!(
+                app.author_name("Carol"),
+                "Carol",
+                "an unknown id reads as itself"
+            );
+            let described = format!("{:?}", Widget::accessibility(&app));
+            assert!(
+                described.contains("You on page 2"),
+                "assistive technology hears the name, not the id"
             );
         }
 

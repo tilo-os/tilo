@@ -356,6 +356,15 @@ mod tests {
     }
 
     #[test]
+    fn the_keyboard_service_runs_without_a_workspace_runtime() {
+        assert!(
+            !ui::framework::launch_spec::<OskShell>()
+                .attaches_runtime(&ui::launch::LaunchArgs::component()),
+            "the compositor starts the keyboard without a room; attaching would refuse it"
+        );
+    }
+
+    #[test]
     fn launch_options_pick_the_first_layout() {
         let mut app = TestApp::<OskShell>::launched(&["--purpose", "phone"]).unwrap();
         app.harness().relayout();

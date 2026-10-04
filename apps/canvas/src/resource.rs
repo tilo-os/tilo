@@ -736,6 +736,7 @@ impl Resource for ArtworkResource {
                 .collect::<Vec<_>>()
                 .join(", "),
             action: None,
+            ..Default::default()
         }];
         entries.extend(
             art.marks
@@ -746,6 +747,7 @@ impl Resource for ArtworkResource {
                     title: mark.name.clone(),
                     text: mark.shape.kind().into(),
                     action: None,
+                    ..Default::default()
                 }),
         );
         entries

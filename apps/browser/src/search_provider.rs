@@ -1,5 +1,6 @@
-//! Bounded, cursor-paged global search for browser history, bookmarks, and
-//! device-local download resources.
+//! Bounded, cursor-paged global search for the person's browsing history and
+//! device-local download resources. Bookmarks are the browser resource's own
+//! search entries.
 //!
 //! The retained index is refreshed only after a durable corpus revision.
 //! Providers then clone it cheaply, so opening global search does not clone
@@ -32,7 +33,6 @@ struct Row {
 
 struct IndexState {
     history_revision: u64,
-    bookmark_revision: u64,
     download_revision: u64,
     catalog: SearchCatalog,
     rows: std::collections::BTreeMap<String, Row>,
@@ -42,7 +42,6 @@ impl Default for IndexState {
     fn default() -> Self {
         Self {
             history_revision: u64::MAX,
-            bookmark_revision: u64::MAX,
             download_revision: u64::MAX,
             catalog: SearchCatalog::new("Browser"),
             rows: std::collections::BTreeMap::new(),
@@ -65,29 +64,25 @@ impl BrowserSearchIndex {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.history_revision = u64::MAX;
-        state.bookmark_revision = u64::MAX;
         state.download_revision = u64::MAX;
     }
 
-    pub fn sync(&self, history: &crate::history::History, bookmarks: &crate::library::Bookmarks) {
-        self.sync_all(history, bookmarks, &crate::downloads::Downloads::default());
+    pub fn sync(&self, history: &crate::history::History) {
+        self.sync_all(history, &crate::downloads::Downloads::default());
     }
 
     pub fn sync_all(
         &self,
         history: &crate::history::History,
-        bookmarks: &crate::library::Bookmarks,
         downloads: &crate::downloads::Downloads,
     ) {
         let history_revision = history.revision();
-        let bookmark_revision = bookmarks.revision();
         let download_revision = downloads.revision();
         let current = self
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let unchanged = current.history_revision == history_revision
-            && current.bookmark_revision == bookmark_revision
             && current.download_revision == download_revision;
         drop(current);
         if unchanged {
@@ -96,18 +91,6 @@ impl BrowserSearchIndex {
 
         let catalog = SearchCatalog::new("Browser");
         let mut rows = std::collections::BTreeMap::new();
-        for entry in bookmarks.entries() {
-            let row = Row {
-                resource_id: crate::actions::bookmark_resource_id(&entry.url),
-                title: entry.title.clone(),
-                url: entry.url.clone(),
-                resource_kind: "browser.bookmark",
-                search_kind: "Bookmarks",
-                icon: Icon::Star,
-                score: 40,
-            };
-            Self::index_row(&catalog, &mut rows, row);
-        }
         for entry in history.entries() {
             let row = Row {
                 resource_id: crate::actions::history_resource_id(&entry.url),
@@ -151,7 +134,6 @@ impl BrowserSearchIndex {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.history_revision = history_revision;
-        state.bookmark_revision = bookmark_revision;
         state.download_revision = download_revision;
         state.catalog = catalog;
         state.rows = rows;
@@ -308,7 +290,7 @@ mod tests {
                 );
             }
             let index = BrowserSearchIndex::default();
-            index.sync(&history, &crate::library::Bookmarks::default());
+            index.sync(&history);
             let provider = index.provider();
             let hits = provider.search_limited("Page", 12);
             assert_eq!(hits.len(), 12);
@@ -326,40 +308,20 @@ mod tests {
 
         // Phase `stale_search_addresses_are_refused_after_a_corpus_change`.
         {
-            let mut bookmarks = crate::library::Bookmarks::default();
-            assert!(bookmarks.add("https://stale.example.test", "Stale"));
+            let mut history = crate::history::History::new();
+            history.record_at("https://stale.example.test", "Stale", 1);
             let index = BrowserSearchIndex::default();
-            index.sync(&crate::history::History::new(), &bookmarks);
+            index.sync(&history);
             let provider = index.provider();
             let hit = provider.search_limited("stale", 1).pop().unwrap();
             let address = hit.action_address().unwrap();
-            assert!(bookmarks.remove("https://stale.example.test"));
-            index.sync(&crate::history::History::new(), &bookmarks);
-            assert!(provider.resolve_action_resource(&address).is_none());
-        }
-
-        // Phase `search_uses_the_library_resource_identity_and_contract`.
-        {
-            let mut bookmarks = crate::library::Bookmarks::default();
-            // Legacy profile rows may omit the trailing slash.  The library uses
-            // a normalized resource id, and search must resolve that exact same
-            // object rather than a second raw-URL identity.
-            assert!(bookmarks.add("https://canonical.example.test", "Canonical"));
-            let index = BrowserSearchIndex::default();
-            index.sync(&crate::history::History::new(), &bookmarks);
-            let provider = index.provider();
-            let hit = provider.search_limited("canonical", 1).pop().unwrap();
-            let address = hit.action_address().unwrap();
             assert_eq!(
                 address.resource,
-                crate::actions::bookmark_resource_id("https://canonical.example.test")
+                crate::actions::history_resource_id("https://stale.example.test")
             );
-            let resource = provider.resolve_action_resource(&address).unwrap();
-            assert_eq!(resource.kind, "browser.bookmark");
-            assert!(matches!(
-                resource.actions[0].contract.execution,
-                ExecutionMode::Background { cancellable: false }
-            ));
+            history.clear();
+            index.sync(&history);
+            assert!(provider.resolve_action_resource(&address).is_none());
         }
 
         // Phase `completed_downloads_are_searchable_by_name_source_and_destination`.
@@ -375,11 +337,7 @@ mod tests {
                 "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
             );
             let index = BrowserSearchIndex::default();
-            index.sync_all(
-                &crate::history::History::new(),
-                &crate::library::Bookmarks::default(),
-                &downloads,
-            );
+            index.sync_all(&crate::history::History::new(), &downloads);
             let provider = index.provider();
             let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
             let address = hit.action_address().unwrap();

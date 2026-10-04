@@ -158,6 +158,7 @@ impl Resource for CodeEditor {
                     anchor: Some(anchor),
                     title: file.name.clone(),
                     text: file.path.clone(),
+                    ..Default::default()
                 }
             })
             .collect()

@@ -102,6 +102,7 @@ impl Resource for PdfViewer {
             title,
             text,
             action: Some(ActionAddress::new(&resource, "open")),
+            ..Default::default()
         };
         let mut entries: Vec<SearchEntry> = state
             .annotations
@@ -231,6 +232,7 @@ impl ResourceSurface<PdfViewer> for PdfApp {
 
     fn attach(&mut self, cx: SurfaceCx<PdfViewer>) {
         self.attach_framework(cx.dispatcher());
+        self.attach_people(cx.people());
         // A capture shows the scenario's signature, never the person's.
         if cx.mode().is_live()
             && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()

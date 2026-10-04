@@ -5,6 +5,17 @@ use crate::shots_pattern;
 use automerge::ROOT;
 use tilo_actions::Action;
 
+/// `app`, editing through a test's dispatcher of the library.
+fn editing(app: PhotosApp) -> PhotosApp {
+    app.with_dispatcher(ui::framework::testing::dispatcher("so.tilo.photos"))
+}
+
+/// A surface on an in-memory content store, editing through a test's
+/// dispatcher.
+fn test_app() -> PhotosApp {
+    editing(PhotosApp::new())
+}
+
 /// Stage the screenshot scenario `name` as a capture does: its photographs
 /// in the app's content store, its actions applied, its view state posed on
 /// the next sync.
@@ -114,12 +125,11 @@ fn timeline_layout_stays_legible_justified_and_virtually_bounded() {
 fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
     eprintln!("phase unavailable_bytes_and_bad_bytes_have_distinct_honest_canvas_states");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let waiting =
             OpenImage::from_path("/not-present/yet.png", 1200, 800).with_content("0".repeat(64));
-        PhotosDoc::set_image(&mut doc, Some(&waiting));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &waiting));
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.canvas_state, CanvasState::Loading);
         assert!(!app.has_image());
@@ -135,7 +145,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
         let path = dir.path().join("bad.png");
         std::fs::write(&path, b"not image data").unwrap();
         let bad = OpenImage::from_path(&path.to_string_lossy(), 1200, 800);
-        PhotosDoc::set_image(&mut doc, Some(&bad));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &bad));
         app.sync(&mut doc, &ROOT);
         assert_eq!(app.canvas_state, CanvasState::Error);
         assert_eq!(app.empty_state_text().0, tr("photos-error-title"));
@@ -143,7 +153,7 @@ fn canvas_and_places_feedback_stay_honest_and_presentation_only() {
 
     eprintln!("phase places_camera_feedback_is_presentation_only_and_respects_reduced_motion");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let original = app.places_viewport;
         app.zoom_places_by(1.0);
         assert!(app.places_viewport.zoom > original.zoom);
@@ -196,9 +206,8 @@ fn people_review_commits_only_explicit_canonical_actions() {
 
     eprintln!("phase people_review_commits_only_an_explicit_membership_action");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(
             OpenImage::from_path("/photos/person.png", 20, 10)
                 .with_content(tilo_content::hash_bytes(b"people-review")),
@@ -232,9 +241,8 @@ fn people_review_commits_only_explicit_canonical_actions() {
         "phase people_surface_completes_review_browse_rename_and_merge_through_canonical_actions"
     );
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let first = LibraryPhoto::from_image(
             OpenImage::from_path("/photos/first.png", 20, 10)
                 .with_content(tilo_content::hash_bytes(b"first-person")),
@@ -285,9 +293,8 @@ fn people_review_commits_only_explicit_canonical_actions() {
 
     eprintln!("phase people_rejection_is_reversible_and_accessibility_activates_the_same_control");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         assert!(
             app.people_controller_mut().add_cluster(
                 "dismiss-me",
@@ -380,9 +387,8 @@ fn library_masthead_rows_never_overlap_at_200_percent() {
             left.x0 < right.x1 && left.x1 > right.x0 && left.y0 < right.y1 && left.y1 > right.y0
         }
 
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/header.png", 40, 20));
         let photo_id = photo.id.clone();
         PhotosDoc::set_library(
@@ -441,7 +447,7 @@ fn library_masthead_rows_never_overlap_at_200_percent() {
 fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
     eprintln!("phase date_index_uses_timeline_rows_and_preserves_virtual_scroll_anchor");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.timeline_index_metrics = ScrollMetrics::new(100.0, 10.0, 20.0);
         assert!(app.apply_timeline_index_intent(&DateIndexIntent::ScrollTo { position: 0.5 }));
         assert!((app.timeline_scroll_y - 45.0).abs() < f64::EPSILON);
@@ -496,7 +502,6 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
     eprintln!("phase canonical_timeline_day_operation_jumps_to_its_shared_capture_boundary");
     {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut newer = LibraryPhoto::from_image(OpenImage::from_path("newer.png", 20, 10));
         newer.captured_at = Some("2026-09-07 08:14".into());
         let mut older = LibraryPhoto::from_image(OpenImage::from_path("older.png", 20, 10));
@@ -508,7 +513,7 @@ fn date_index_follows_timeline_rows_boundaries_and_honest_labels() {
                 ..Default::default()
             },
         );
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.view_timeline(
             &doc,
             Some(&crate::actions::TimelineAnchor::Day {
@@ -559,11 +564,10 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
 
     eprintln!("phase cancelled_or_stale_analysis_can_never_persist");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         app.analysis_rx = receiver;
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
 
         let cancelled = tilo_actions::InvocationId::new();
         app.cancelled_analysis.insert(cancelled);
@@ -610,11 +614,10 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
 
     eprintln!("phase drain_preserves_ocr_and_vision_components_from_separate_jobs");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         app.analysis_rx = receiver;
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let content = "a".repeat(64);
         let photo = LibraryPhoto::from_image(
             OpenImage::from_path("drain-components.png", 20, 10).with_content(content.clone()),
@@ -690,9 +693,8 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
 
     eprintln!("phase library_analysis_commits_each_real_result_with_provenance_and_finishes");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let content = "a".repeat(64);
         let image = OpenImage::from_path("/photos/one.png", 20, 10).with_content(&content);
         let photo = LibraryPhoto::from_image(image);
@@ -757,7 +759,6 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             app.resource_result,
             Some(tilo_actions::InvocationUpdate::Succeeded { .. })
         ));
-        assert!(ui::undo::take_committed_action(&mut app).is_some());
     }
 }
 
@@ -769,7 +770,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         use winit::event::{DeviceId, MouseScrollDelta, TouchPhase, WindowEvent};
         use winit::keyboard::ModifiersState;
 
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.library_mode = true;
         app.canvas_rect = Rect::new(0.0, 48.0, 1_280.0, 800.0);
         let mut doc = AutoCommit::new();
@@ -823,7 +824,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
 
     eprintln!("phase density_reanchors_the_same_first_photo");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..90 {
@@ -880,9 +881,8 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
 
     eprintln!("phase enlarged_library_keeps_photos_first_with_density_navigation");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..5 {
             let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
@@ -962,9 +962,8 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         "phase opening_an_album_operation_only_changes_the_local_filter_and_refuses_stale_ids"
     );
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         let mut library = crate::model::PhotoLibrary::default();
         library.photos.push(photo.clone());
@@ -1031,9 +1030,8 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 
     eprintln!("phase opening_favorites_uses_a_local_view_and_refuses_an_empty_stale_collection");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut favorite =
             LibraryPhoto::from_image(OpenImage::from_path("/photos/favorite.png", 20, 10));
         favorite.favorite = true;
@@ -1092,9 +1090,8 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 
     eprintln!("phase metadata_views_are_local_filters_with_honest_stale_results");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut in_folder =
             LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         in_folder.folder = Some("Travel".into());
@@ -1136,9 +1133,8 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 
     eprintln!("phase people_places_and_albums_keep_complete_paged_collections");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..29 {
             let mut photo = LibraryPhoto::from_image(OpenImage::from_path(
@@ -1196,9 +1192,8 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
 fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     eprintln!("phase selection_is_local_but_its_favorite_and_album_results_are_canonical_actions");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
         let second = LibraryPhoto::from_image(OpenImage::from_path("/photos/second.png", 20, 10));
         PhotosDoc::set_library(
@@ -1336,9 +1331,8 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 
     eprintln!("phase destination_chooser_pages_every_album_and_refuses_a_stale_target");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         let albums: Vec<_> = (1..=SELECTION_ALBUMS_PER_PAGE + 1)
             .map(|number| Album {
@@ -1401,9 +1395,8 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 
     eprintln!("phase album_editor_pages_large_libraries_without_changing_shared_membership");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..49 {
             library
@@ -1486,8 +1479,8 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
     eprintln!("phase concurrent_album_drafts_mint_distinct_stable_ids");
     {
         let doc = AutoCommit::new();
-        let mut left = PhotosApp::new();
-        let mut right = PhotosApp::new();
+        let mut left = test_app();
+        let mut right = test_app();
         left.begin_new_album(&doc);
         right.begin_new_album(&doc);
         let left_id = left.album_editor_id.expect("left draft id");
@@ -1499,9 +1492,8 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 
     eprintln!("phase albums_destination_materializes_bounded_covers_and_semantic_routes");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/pictures/cover.png", 800, 600));
         let photo_id = photo.id.clone();
         let album_id = "photos.album:weekend".to_owned();
@@ -1545,9 +1537,8 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
     eprintln!("phase unresolved_share_reference_returns_a_canonical_operation_failure");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let payload = tilo_actions::EncodedAction::encode_operation(
             PHOTOS_OPERATION_TYPE,
             &PhotosOperation::ShareReference {
@@ -1577,7 +1568,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
 
     eprintln!("phase cancelling_a_portal_invocation_is_terminal_and_drops_late_results");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let doc = AutoCommit::new();
         let invocation = tilo_actions::InvocationId::new();
         let (tx, rx) = std::sync::mpsc::channel();
@@ -1610,9 +1601,8 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
 
     eprintln!("phase library_removal_requires_confirmation_and_routes_through_the_action_host");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/remove.png", 20, 10));
         let id = photo.id.clone();
         PhotosDoc::set_library(
@@ -1630,7 +1620,6 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
         assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
         assert!(PhotosDoc::library(&doc).photo(&id).is_none());
-        assert!(ui::undo::take_committed_action(&mut app).is_some());
     }
 }
 
@@ -1639,9 +1628,8 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
 fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     eprintln!("phase accessibility_exposes_and_routes_every_toolbar_control");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         app.sync(&mut doc, &ROOT);
 
         let empty = app.accessibility_tree();
@@ -1679,7 +1667,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         );
 
         let image = OpenImage::from_path("/tmp/accessible.png", 100, 50);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.original = Some(("/tmp/accessible.png".into(), shots_pattern(100, 50)));
         app.original_identity = Some(decode_key(&image));
         app.refresh(&doc);
@@ -1691,10 +1679,9 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             &mut doc,
             &ROOT,
         ));
-        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 1);
-        assert!(
-            ui::undo::take_committed_action(&mut app).is_some(),
-            "the semantic route must create the normal undo boundary"
+        assert_eq!(
+            PhotosDoc::photo_edits(&doc, app.open_photo_id().unwrap()).rotate_quarters,
+            1
         );
 
         app.sync(&mut doc, &ROOT);
@@ -1713,11 +1700,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase compact_more_is_a_keyboard_menu_with_a_share_action");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let image = OpenImage::from_path("/tmp/compact.png", 100, 50);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.original = Some(("/tmp/compact.png".into(), shots_pattern(100, 50)));
         app.original_identity = Some(decode_key(&image));
         app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -1746,7 +1732,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 
     eprintln!("phase metadata_sheet_focus_tracks_each_adaptive_section");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         for focus in 0..5 {
             app.set_metadata_editor_focus(focus);
             assert_eq!(app.metadata_editor_focus, focus);
@@ -1780,7 +1766,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
     eprintln!("phase metadata_sheet_footer_never_covers_a_focused_field");
     {
         for (scale, (w, h)) in [(1.0_f32, (1200.0_f32, 800.0_f32)), (2.0, (800.0, 900.0))] {
-            let mut app = PhotosApp::new();
+            let mut app = test_app();
             let mut doc = AutoCommit::new();
             app.show_library();
             stage(&mut app, &mut doc, "metadata-edit");
@@ -1875,11 +1861,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         "phase opened_viewer_exposes_shared_context_without_creating_a_second_metadata_store"
     );
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let image = OpenImage::from_path("/tmp/harbour.png", 1_200, 800);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         let mut library = PhotosDoc::library(&doc);
         let photo = library
             .photos
@@ -1933,11 +1918,10 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
 fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     eprintln!("phase synchronized_app_registers_the_canonical_photo_search_provider");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let image = OpenImage::from_path("/pictures/München-夏.png", 800, 400);
-        PhotosDoc::set_image(&mut doc, Some(&image));
+        app.show_photo(&PhotosDoc::put_image(&mut doc, &image));
         app.sync(&mut doc, &ROOT);
         let before = app.search_provider.stats();
         app.sync(&mut doc, &ROOT);
@@ -1963,7 +1947,6 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
     eprintln!("phase in_app_full_text_search_advances_in_bounded_index_pages");
     {
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photos = (0..400)
             .map(|index| {
                 let path = format!("needle-photo-{index:03}.png");
@@ -1977,7 +1960,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
                 ..Default::default()
             },
         );
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.search_provider.sync(&doc).unwrap();
         app.library_query = "needle".into();
 
@@ -1997,9 +1980,8 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
 
     eprintln!("phase rejected_search_refresh_keeps_last_good_index_and_exports_diagnostic");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let first = LibraryPhoto::from_image(OpenImage::from_path("/photos/first.png", 20, 10));
         let first_id = first.id.clone();
         PhotosDoc::set_library(
@@ -2040,9 +2022,8 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
 fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
     eprintln!("phase a_large_library_fills_a_bounded_background_thumbnail_queue");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let mut library = crate::model::PhotoLibrary::default();
         for index in 0..500 {
             library
@@ -2068,7 +2049,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
 
     eprintln!("phase a_stale_thumbnail_result_cannot_populate_a_replaced_library_slice");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.thumbnail_generation = Some(8);
         app.thumbnail_visible_ids = vec!["photos.photo:current".into()];
         app.thumbnail_queued.insert("photos.photo:current".into());
@@ -2102,7 +2083,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
                 let _ = sender.send(event);
             })
             .unwrap();
-        let app = PhotosApp::new();
+        let app = test_app();
         for (source, succeeds) in [(path, true), (directory.path().join("missing.png"), false)] {
             let image = OpenImage::from_path(&source.to_string_lossy(), 16, 8);
             let request = thumbnail_request(&image, &app.content);
@@ -2119,7 +2100,7 @@ fn thumbnail_queue_is_bounded_wakes_its_host_and_rejects_stale_results() {
 
     eprintln!("phase exhausted_thumbnail_generation_fails_closed_without_reusing_a_token");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.thumbnail_generation = Some(u64::MAX);
         app.thumbnail_visible_ids = vec!["photos.photo:before".into()];
         app.library_thumbnails.insert(
@@ -2176,7 +2157,7 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
 
     eprintln!("phase library_card_actions_share_one_edge_inset");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
         app.show_library();
         stage(&mut app, &mut doc, "library");
@@ -2241,9 +2222,8 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
 
     eprintln!("phase regular_album_management_keeps_every_visible_control_at_44px");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
         let photo = LibraryPhoto::from_image(OpenImage::from_path("/photos/one.png", 20, 10));
         let mut library = crate::model::PhotoLibrary::default();
         library.photos.push(photo.clone());
@@ -2311,7 +2291,7 @@ fn controls_contain_their_text_share_insets_and_keep_44px_targets() {
 fn background_work_dashboards_pause_cancel_page_and_reflow() {
     eprintln!("phase visible_analysis_pause_uses_the_published_operation_envelope");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         let doc = AutoCommit::new();
         app.library_analysis.begin(
             tilo_actions::InvocationId::new(),
@@ -2337,7 +2317,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
 
     eprintln!("phase analysis_dashboard_reflows_to_phone_width_with_real_shared_controls");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.show_library_analysis();
         app.canvas_rect = Rect::new(0.0, 0.0, 390.0, 760.0);
         app.library_analysis_coverage = (12, 34, 5);
@@ -2372,7 +2352,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
         use winit::dpi::PhysicalPosition;
         use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 720.0);
         app.rect = Rect::new(0.0, 0.0, 1_000.0, 768.0);
         app.show_directory_import_progress_for_shot();
@@ -2474,7 +2454,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
 
     eprintln!("phase folder_issue_details_are_bounded_paged_and_semantically_operable");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.rect = Rect::new(0.0, 0.0, 1_000.0, 760.0);
         app.canvas_rect = Rect::new(0.0, 48.0, 1_000.0, 730.0);
         app.show_directory_import_errors_for_shot();
@@ -2532,7 +2512,7 @@ fn background_work_dashboards_pause_cancel_page_and_reflow() {
 
     eprintln!("phase folder_status_and_details_adapt_to_phone_geometry");
     {
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         app.rect = Rect::new(0.0, 0.0, 390.0, 780.0);
         app.canvas_rect = Rect::new(0.0, 48.0, 390.0, 750.0);
         app.show_directory_import_progress_for_shot();
@@ -2606,10 +2586,8 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             rotate_quarters: 1,
         };
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        PhotosDoc::set_image(&mut doc, Some(&open));
-        PhotosDoc::set_edits(&mut doc, &edits);
-        let resource_id = crate::actions::resource_id(&open);
+        let resource_id = PhotosDoc::put_image(&mut doc, &open);
+        PhotosDoc::set_photo_edits(&mut doc, &resource_id, edits);
 
         let resources = PhotosResources.publish_resources(&doc);
         let exported = tilo_actions::flatten(&resources)
@@ -2640,7 +2618,7 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             },
         )
         .expect("export operation encodes");
-        let mut app = PhotosApp::with_content(store.clone());
+        let mut app = editing(PhotosApp::with_content(store.clone()));
         let started = Widget::start_operation(
             &mut app,
             &ui::widget::ResourceOperation::local(
@@ -2675,12 +2653,12 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         // The rendering is an output: the photograph is still its original plus
         // the edits recorded against it.
         assert_eq!(
-            PhotosDoc::image(&doc).and_then(|image| image.content),
+            PhotosDoc::photo(&doc, &resource_id).and_then(|photo| photo.image.content),
             Some(source_hash)
         );
-        assert_eq!(PhotosDoc::edits(&doc), edits);
+        assert_eq!(PhotosDoc::photo_edits(&doc, &resource_id), edits);
 
-        PhotosDoc::set_edits(&mut doc, &crate::model::Edits::default());
+        PhotosDoc::set_photo_edits(&mut doc, &resource_id, crate::model::Edits::default());
         assert!(
             Widget::start_operation(
                 &mut app,
@@ -2703,9 +2681,8 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
         let missing = "f".repeat(64);
         let open = OpenImage::from_path("missing.png", 3, 2).with_content(missing.clone());
         let mut doc = AutoCommit::new();
-        PhotosDoc::seed(&mut doc);
-        PhotosDoc::set_image(&mut doc, Some(&open));
-        let edits = PhotosDoc::edits(&doc);
+        let photo_id = PhotosDoc::put_image(&mut doc, &open);
+        let edits = PhotosDoc::photo_edits(&doc, &photo_id);
         let encoded = |resource_id: String| {
             tilo_actions::EncodedAction::encode_operation(
                 PHOTOS_OPERATION_TYPE,
@@ -2717,10 +2694,10 @@ fn edited_content_effect_returns_exact_pngs_and_rejects_bad_sources() {
             )
             .expect("export operation encodes")
         };
-        let mut app = PhotosApp::new();
+        let mut app = test_app();
         for payload in [
-            encoded(crate::actions::resource_id(&open)),
-            encoded("photos.image:wrong-target".into()),
+            encoded(photo_id),
+            encoded("photos.photo:wrong-target".into()),
         ] {
             assert!(
                 Widget::start_operation(
