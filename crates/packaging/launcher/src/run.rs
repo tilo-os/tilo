@@ -850,6 +850,20 @@ fn valid_runtime_version(version: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'+' | b'_'))
 }
 
+/// The minimal-libs stopgap and the manifest's optional runtimes, spliced
+/// before the entrypoint. Returns the sandbox paths Landlock must let the app
+/// read.
+fn splice_runtime_mounts(
+    argv: &mut Vec<String>,
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+    resolved_runtime_present: bool,
+) -> Result<Vec<String>, RunError> {
+    let mut paths = splice_minimal_libs(argv, opts, resolved_runtime_present)?;
+    paths.extend(splice_optional_runtimes(argv, manifest, opts)?);
+    Ok(paths)
+}
+
 /// Mount every installed, verified bundle the manifest lists in
 /// `[package].optional-runtimes` read-only at its runtime mount, before the
 /// trailing entrypoint token. A missing bundle is skipped and one that fails
@@ -2310,8 +2324,7 @@ fn run_with_context(
         )?;
     }
     splice_game_ntsync(&mut argv, latency_sensitive)?;
-    let mut extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
-    extra_ro_paths.extend(splice_optional_runtimes(&mut argv, manifest, opts)?);
+    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
     splice_workspace_id_bind(&mut argv, opts)?;
     if enrolled.is_none() {
         splice_tool_context(&mut argv)?;
@@ -2329,7 +2342,7 @@ fn run_with_context(
             manifest,
             net_gate: &net_gate,
             runtime_arg,
-            extra_ro_paths: &extra_ro_paths,
+            extra_ro_paths: &ro_paths,
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
@@ -2896,8 +2909,7 @@ fn run_with_capture_spawn<T>(
         &capabilities,
     )?;
     splice_cli_setenv(&mut argv, extra_setenv)?;
-    let mut extra_ro_paths = splice_minimal_libs(&mut argv, opts, resolved_runtime.is_some())?;
-    extra_ro_paths.extend(splice_optional_runtimes(&mut argv, manifest, opts)?);
+    let ro_paths = splice_runtime_mounts(&mut argv, manifest, opts, resolved_runtime.is_some())?;
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
@@ -2914,7 +2926,7 @@ fn run_with_capture_spawn<T>(
             manifest,
             net_gate: &net_gate,
             runtime_arg,
-            extra_ro_paths: &extra_ro_paths,
+            extra_ro_paths: &ro_paths,
             egress: &egress,
             capabilities: &capabilities,
             dbus_plan: &dbus_plan,
