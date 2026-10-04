@@ -51,7 +51,6 @@
 "apps/print-centre/src/resource.rs" = 1
 "apps/remote/src/resource.rs" = 2
 "apps/settings/src/resource.rs" = 2
-"apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
 "apps/store/src/resource.rs" = 2
