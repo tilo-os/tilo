@@ -25,6 +25,9 @@ pub enum OpenState {
     AwaitingAllow,
     /// The target could not be opened; the reason is shown on the tab.
     Failed(String),
+    /// No environment can be built on this device (no `env-runtime` image is
+    /// installed). The tab says so and offers the device's own shell.
+    NoRuntime(String),
 }
 
 enum Source {
@@ -73,6 +76,9 @@ pub struct Sessions {
     pub legacy_vms: Vec<String>,
     allow: Option<Rc<RefCell<ui::widget::HostShellAllow>>>,
     intent: Option<ui::widget::AppHostIntent>,
+    /// The person took the tab's offer of the device's own shell; opened at
+    /// the next sync.
+    pub host_requested: bool,
 }
 
 impl std::fmt::Debug for Sessions {
@@ -102,6 +108,7 @@ impl Sessions {
             legacy_vms: Vec::new(),
             allow: None,
             intent: None,
+            host_requested: false,
         }
     }
 

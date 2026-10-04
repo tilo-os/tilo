@@ -3884,6 +3884,10 @@ impl TerminalWidget {
             return;
         }
         let mods = modifiers.state();
+        if self.take_no_runtime_offer(logical_key, mods) {
+            *handled = true;
+            return;
+        }
         if !mods.control_key()
             && !mods.alt_key()
             && !mods.super_key()
@@ -7415,6 +7419,13 @@ pub const USH_SERVICE_FD_ENV: &str = "TILO_SVC_USH_FD";
 /// route, so the service stays the chosen one.
 static USH_SERVICE_TAKEN: AtomicBool = AtomicBool::new(false);
 
+/// The launcher's connection after the supervisor refused an open on it. A
+/// refusal spends nothing, so the next open (the device's own shell, after an
+/// environment could not be built) asks on the same connection.
+#[cfg(unix)]
+static USH_SERVICE_REFUSED: std::sync::Mutex<Option<std::os::unix::net::UnixStream>> =
+    std::sync::Mutex::new(None);
+
 /// Who caused a session to open. The device's own shell is never opened for
 /// an agent, whatever else allows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -7456,8 +7467,22 @@ pub enum OpenError {
     Refused(String),
     /// Nothing here can run this target.
     Unavailable(String),
+    /// No environment can be built on this device: no `env-runtime` image is
+    /// installed. The device's own shell may still be opened instead.
+    NoRuntime(String),
     /// Opening failed.
     Failed(String),
+}
+
+impl OpenError {
+    /// Whether the supervisor answered and refused, leaving the connection
+    /// usable for another request.
+    pub fn is_refusal(&self) -> bool {
+        matches!(
+            self,
+            Self::NeedsAllow(_) | Self::Refused(_) | Self::NoRuntime(_)
+        )
+    }
 }
 
 impl std::fmt::Display for OpenError {
@@ -7466,6 +7491,7 @@ impl std::fmt::Display for OpenError {
             Self::NeedsAllow(reason)
             | Self::Refused(reason)
             | Self::Unavailable(reason)
+            | Self::NoRuntime(reason)
             | Self::Failed(reason) => f.write_str(reason),
         }
     }
@@ -7682,21 +7708,35 @@ fn ush_service_backend(
     use std::os::fd::{FromRawFd, RawFd};
     use std::os::unix::net::UnixStream;
 
-    let raw: RawFd = std::env::var(USH_SERVICE_FD_ENV)
+    let refused = USH_SERVICE_REFUSED
+        .lock()
         .ok()
-        .and_then(|raw| raw.parse().ok())
-        .ok_or_else(|| OpenError::Failed("the ush service descriptor is missing".into()))?;
-    if USH_SERVICE_TAKEN.swap(true, Ordering::AcqRel) {
-        return Err(OpenError::Unavailable(
-            "This window's shell service is already in use; open a new tab".into(),
-        ));
+        .and_then(|mut refused| refused.take());
+    let stream = if let Some(stream) = refused {
+        stream
+    } else {
+        let raw: RawFd = std::env::var(USH_SERVICE_FD_ENV)
+            .ok()
+            .and_then(|raw| raw.parse().ok())
+            .ok_or_else(|| OpenError::Failed("the ush service descriptor is missing".into()))?;
+        if USH_SERVICE_TAKEN.swap(true, Ordering::AcqRel) {
+            return Err(OpenError::Unavailable(
+                "This window's shell service is already in use; open a new tab".into(),
+            ));
+        }
+        // SAFETY: the launcher passed this descriptor as a connected socket and
+        // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
+        // is correct — nothing else in this process refers to it, and
+        // `USH_SERVICE_TAKEN` keeps a second session from taking it again.
+        unsafe { UnixStream::from_raw_fd(raw) }
+    };
+    let opened = ush_backend_on(&stream, program, target, requested_by);
+    if opened.as_ref().is_err_and(OpenError::is_refusal)
+        && let Ok(mut refused) = USH_SERVICE_REFUSED.lock()
+    {
+        *refused = Some(stream);
     }
-    // SAFETY: the launcher passed this descriptor as a connected socket and
-    // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
-    // is correct — nothing else in this process refers to it, and
-    // `USH_SERVICE_TAKEN` keeps a second session from taking it again.
-    let stream = unsafe { UnixStream::from_raw_fd(raw) };
-    ush_backend_on(&stream, program, target, requested_by)
+    opened
 }
 
 #[cfg(windows)]
@@ -7782,6 +7822,7 @@ pub(crate) fn refusal(payload: &[u8]) -> OpenError {
     }
     match serde_json::from_slice::<Reply>(payload) {
         Ok(reply) if reply.result == "host-not-allowed" => OpenError::NeedsAllow(reply.reason),
+        Ok(reply) if reply.result == "no-runtime" => OpenError::NoRuntime(reply.reason),
         Ok(reply) if !reply.reason.is_empty() => OpenError::Refused(reply.reason),
         _ => OpenError::Refused(format!(
             "the ush service refused this session: {}",

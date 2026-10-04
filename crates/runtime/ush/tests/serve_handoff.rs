@@ -125,6 +125,84 @@ fn the_service_protocol_refuses_the_host_target_answers_garbage_and_never_hangs(
     }
 }
 
+/// A device with no `env-runtime` installed: the default environment cannot
+/// be made, so the supervisor says so instead of handing out a pty whose
+/// guest prints the reason and exits — and keeps the connection open for the
+/// app to ask for something else on it.
+#[test]
+fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usable() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let images = dir.path().join("images");
+    std::fs::create_dir_all(&images).unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_USH_IMAGES", &images);
+
+    let store = Store::at(dir.path().join("store"));
+    store.ensure().expect("store");
+    let socket = dir.path().join("ush.sock");
+    let serve_socket = socket.clone();
+    let serve_store = store.clone();
+    std::thread::spawn(move || {
+        let _ = ush::supervisor::serve(&serve_socket, &serve_store, &PathBuf::from("/"));
+    });
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let stream = UnixStream::connect(&socket).expect("connect");
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .expect("read timeout");
+    let ask = |request: &ServeRequest| {
+        let mut line = serde_json::to_vec(request).unwrap();
+        line.push(b'\n');
+        (&stream).write_all(&line).expect("write request");
+        let (payload, fd) = recv_with_fd(stream.as_raw_fd()).expect("recvmsg");
+        let text = String::from_utf8_lossy(&payload).into_owned();
+        let response: ServeResponse =
+            serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
+        (response, fd)
+    };
+    let open = ServeRequest::OpenSession {
+        target: Target::default_environment(),
+        cols: 80,
+        rows: 24,
+        term: None,
+        command: Vec::new(),
+        requested_by: ush::host::RequestedBy::Person,
+    };
+
+    let (response, fd) = ask(&open);
+    assert!(
+        fd.is_none(),
+        "a pty was handed out for a guest that cannot be built"
+    );
+    let ServeResponse::NoRuntime { reason } = response else {
+        panic!("expected a no-runtime refusal, got {response:?}");
+    };
+    assert!(
+        reason.contains("env-runtime"),
+        "the reason names what is missing: {reason}"
+    );
+
+    // The refusal spent nothing: the same connection is answered again.
+    let (again, fd) = ask(&open);
+    assert!(fd.is_none());
+    assert!(
+        matches!(again, ServeResponse::NoRuntime { .. }),
+        "{again:?}"
+    );
+    assert!(
+        Records::at(store.records_root())
+            .load(DEFAULT_RECORD)
+            .unwrap()
+            .is_none(),
+        "no half-made default environment is left behind"
+    );
+}
+
 /// Lay out the fixture images under `root` the way the supervisor finds
 /// them: `<hex id>/` trees and the current runtime's id.
 pub fn fixture_images(root: &Path) {
@@ -269,7 +347,9 @@ fn open_default_session(socket: &Path) -> (UnixStream, i32) {
         serde_json::from_str(text.trim()).unwrap_or_else(|e| panic!("bad reply {text:?}: {e}"));
     match &response {
         ServeResponse::Session { environment, .. } => assert_eq!(environment, DEFAULT_RECORD),
-        ServeResponse::Denied { reason } | ServeResponse::HostNotAllowed { reason } => {
+        ServeResponse::Denied { reason }
+        | ServeResponse::HostNotAllowed { reason }
+        | ServeResponse::NoRuntime { reason } => {
             panic!("the service refused the session: {reason}")
         }
         ServeResponse::Environments { .. } | ServeResponse::Allowed => {
