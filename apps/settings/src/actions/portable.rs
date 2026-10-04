@@ -277,6 +277,9 @@ fn high_contrast_default(d: &SystemPrefs) -> bool {
 fn reduce_transparency_default(d: &SystemPrefs) -> bool {
     d.appearance.reduce_transparency
 }
+fn distinct_letters_default(d: &SystemPrefs) -> bool {
+    d.appearance.distinct_letters_effective()
+}
 fn reduce_motion_default(d: &SystemPrefs) -> bool {
     d.appearance.reduce_motion
 }
@@ -470,6 +473,16 @@ pub const PORTABLE_PREFERENCES: &[PortablePreference] = &[
     },
     PortablePreference {
         section: Category::Appearance,
+        action_id: Some("distinct_letters"),
+        key: panes::appearance::DISTINCT_LETTERS_KEY,
+        presentation: PortablePresentation::BoolFlip {
+            noun: "always distinguishing similar letters",
+            default: distinct_letters_default,
+        },
+        available: None,
+    },
+    PortablePreference {
+        section: Category::Appearance,
         action_id: Some("high_contrast"),
         key: panes::appearance::HIGH_CONTRAST_KEY,
         presentation: PortablePresentation::BoolFlip {
@@ -576,6 +589,15 @@ pub const PORTABLE_PREFERENCES: &[PortablePreference] = &[
         key: panes::accessibility::HIGH_CONTRAST_KEY,
         presentation: PortablePresentation::BoolSet {
             label: "Set high contrast",
+        },
+        available: None,
+    },
+    PortablePreference {
+        section: Category::Accessibility,
+        action_id: Some("distinct-letters"),
+        key: panes::accessibility::DISTINCT_LETTERS_KEY,
+        presentation: PortablePresentation::BoolSet {
+            label: "Set always distinguishing similar letters",
         },
         available: None,
     },

@@ -291,7 +291,10 @@ section).
 | `theme.text(role) -> TextStyle` | The complete, already-scaled style for custom measuring, painting and eliding. |
 | `TextStyle::strong()` / `Text::strong()` | Emphasis inside the role: one weight step up (Regular/Medium → Semibold, Semibold → Bold). |
 | `TextStyle::numeric()` / `Text::numeric()` | Shorthand for `with_kind(TextKind::Numeric)`: tabular figures for counters, clocks, sizes and columns. |
-| `ui::TextKind::{Prose, Numeric, Secret, Identifier, Code}`; `Text::with_kind`, `TextStyle::with_kind`, `ColumnDef::with_kind` | What text is, for the OpenType features the toolkit picks against the face ([Text kinds](#text-kinds)). |
+| `ui::TextKind::{Prose, Numeric, Secret, Identifier, Url, Code}`; `Text::with_kind`, `TextStyle::with_kind`, `ColumnDef::with_kind` | What text is, for the OpenType features the toolkit picks against the face ([Text kinds](#text-kinds)). Links, email addresses, mentions and room addresses inside prose are found and set apart with no kind declared. |
+| `ui::text_detect::identifier_spans(text)` | The links, email addresses, mentions and room addresses in a string, as the byte ranges the text is drawn with, for an app that acts on them. |
+| `TextRenderer::security_surface(..)`, `TextStyle::on_security_surface()` | A custom-drawn security surface (link preview, verification screen): every look-alike letter set apart in all its text. Toolkit prompts and identity sheets do this themselves. |
+| `RichSpan::kind(TextKind)` | A rich-text run that knows what it is; mention marks are `Identifier` and external link marks `Url` already. |
 | `TextInputKind::Secret`, `TextInputKind::text_kind()` | A code or key typed in the clear; every field kind sets its text kind while typing. |
 | `ui::UiFace::{Default, Hyperlegible}`, `Typography::set_face(name)`, `Typography::face_name()`, `UI_HYPERLEGIBLE_FAMILY` | Theme authors: the UI face by the name a theme document stores. |
 | `TextStyle::with_content_size(px)` / `Text::with_content_size(px)` / `TextStyle::content(px)` | Text sized by its content (a canvas, a slide, a document's own type): the size is used as given and never grown by the text scale. |
@@ -357,7 +360,9 @@ set it themselves.
 |---|---|
 | `.with_numeric_style(NumericStyle::TabularLining)`, `.with_font_feature(OpenTypeTag::TABULAR_NUMERALS, 1)` on times, counts, prices, sizes, progress | `.numeric()` (`TextKind::Numeric`) |
 | Monospace or a hand-picked face for verification codes, TOTP, recovery codes, API keys, hashes, revealed passwords, Wi-Fi and licence keys | `.with_kind(TextKind::Secret)`; an input: `TextInputKind::Secret` (in the clear) or `Password` (revealed) |
-| Usernames, handles, email addresses, invite codes, room names shown for verification, other people's file names, URLs in permission prompts and link previews | `.with_kind(TextKind::Identifier)`; an input: `TextInputKind::Username` / `Email` / `Url` / `Path` |
+| Usernames, handles, email addresses, invite codes, room names, other people's file names shown on their own | `.with_kind(TextKind::Identifier)`; an input: `TextInputKind::Username` / `Email` / `Path` |
+| A URL or origin shown on its own | `.with_kind(TextKind::Url)`; an input: `TextInputKind::Url` |
+| Hand-rolled link or email highlighting only to make an address legible | delete it: identifiers in prose are found and set apart by the toolkit |
 | `.with_font_family(FontChoice::Monospace)` on source or terminal text | `.with_kind(TextKind::Code)`, or the `Code` role |
 | A numeric `DataTable` column drawn by hand to line digits up | `ColumnDef::with_text(…).with_kind(TextKind::Numeric)` |
 | `.with_font_feature(*b"ss01", 1)` or any stylistic set for a look | Delete; the face is the theme's |
@@ -1289,6 +1294,11 @@ mapping covers both.
 | `ui::search::{Facet, FacetValue, FacetFilter}`, `SearchProvider::facets()`, `CatalogSearchProvider::{facets, admits}` | Filter dimensions: chips in the palette, typed `key:value` tokens parsed by the platform. |
 | `SearchPage::pending(results, PendingToken)`, `SearchProvider::poll_page(&token) -> PagePoll` | A slow source (IMAP, YouTube, a store catalogue, a geocoder): return what you have now, answer the rest when it arrives. |
 | `ui::search::SearchRow::{message, media, file_hit}` + `SearchResult::with_row` | Say what a hit is; the platform draws the row. |
+| `SearchResult::within(anchor)` | Scope a hit addressed by a flat id (`contact:42`, `sheets.cell:B4`) by the part of the app it lies in (`group:family`, `sheet:2`), without renaming the resource. |
+| `SearchEntry { within, row, ..SearchEntry::default() }`, `tilo_resource::{SearchRow, SearchRowShape}` | The same for a framework app: the scope a flat-id entry lies in, and its row (subtitle, a named icon from `Icon::name`, a message, media or file-hit shape). |
+| `CatalogSearchProvider::search_scopes()` | A catalogue provider's scopes; the blanket `SearchProvider` impl forwards them. |
+| `ui::icons::AppImage::from_image_store(&store, url)` | A media row's thumbnail or a cover from the app's `ImageStore`. |
+| `ui::icons::Icon::{name(), from_name(name)}` | An icon by its lucide kebab name, for data that cannot name the enum. |
 | `SearchField::filter()`, `.escalates_within(scope)`, `.with_placeholder(..)`, `set_count(Some(FilterCount::new(shown, total)))` | The in-content filter field. |
 | `ui::widget::{Filterable, FilterCount, apply_filter, sync_filter, Filtered}` | Bind a filter field to a list. |
 | `ui::widget::{Findable, FindOptions, FindMode, FindMatch, FindBar, FindScope, paint_find_match, with_findable}` | Find in a document. |
@@ -1330,7 +1340,9 @@ input and everything drawn around it.
    answers both a picked hit and the resource's `open` action (agents) with
    it. Other apps keep `SearchSource::activate_search_result(action_id, ..)`.
    Anchors are paths: give items inside a part of the app the part's anchor
-   as prefix (`folder:inbox/msg:12`).
+   as prefix (`folder:inbox/msg:12`). An item whose id is flat (`kind:uuid`)
+   keeps it and says where it lies instead: `SearchResult::within(anchor)`,
+   or `SearchEntry { within: Some(anchor), .. }` in a framework app.
 4. **Scopes** ("Search this folder", "Search in playlist",
    per-mailbox search): declare each part as a `ScopeDecl { anchor, label }`
    — framework apps with `#[resource(scopes = my_scopes)]` (or
@@ -1581,6 +1593,21 @@ header row and which reads as on while History shows. Apps place nothing.
 
 - An app without a header row (a single canvas or form) keeps the window's
   History bar: the same glyph at its trailing edge, nothing else.
+- The header control is bound to the window's History door. The App, the
+  headless harness and `native_app_audit` all resolve that door (and the
+  search door) as the window's, so delete any audit filter for
+  `nav-shell-history` / `history-button` `stale-action-binding` issues.
+- A framework app whose resource keeps no document state (its state lives on
+  the device or in a service: a speed test) sets
+  `const DOCUMENT_HISTORY: bool = false` on its `ResourceApp`: no History
+  control, no History actions.
+- A view is built again for every past version History shows. Such a build
+  must start no work: check `cx.is_past()` (`SurfaceCx::is_past()` in a
+  surface) and build the surface without its worker, network or file
+  watches, presenting what the document holds.
+- A scope without History (`HistoryPresentation::External { reason }`) shows
+  its reason as an empty state where the timeline would stand; write the
+  reason as a sentence a person reads ("Forecasts are not recorded.").
 - `HistoryScopeDefinition::title` is a short noun ("Notebook", "Saved
   places"). Delete descriptions and developer notes from it: "(not
   recorded)", "(forecasts are not recorded)", "Process output (not
@@ -1770,7 +1797,7 @@ writers of the appearance state.
 | Old | New |
 |---|---|
 | `CustomThemeSpec`, `CUSTOM_THEME_SCHEMA_VERSION`, `CUSTOM_THEME_SCHEMA_MIN`, `Theme::from_custom_spec` | `ThemeDocument`, `THEME_SCHEMA_VERSION`, `Theme::from_document` (`None` for a document this build does not admit) |
-| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
+| `CustomThemeSpec::{spacing_px, font, motion_scale, material_scale, icon_scale, chrome_weight, motion_character, dark_base, neutral_hue}` | `density.spacing` (a multiple of the 4 px scale), `type.{face, base_size, distinct_letters}`, `motion.character`, `material.{blur, tint_opacity}`, `palette.{dark, hue, chroma}`; icon scale, chrome weight and the duration scale are not theme roles |
 | `tokens::Material`, `Colors::of_material`, `Tokens::of_material`, `colors.material`, `colors.neutral_hue` | `tokens::Palette` (`Palette::dark()` …), `Colors::of_palette` / `Colors::stock`, `Tokens::around`, `colors.palette`, `colors.palette.hue` |
 | `Theme::high_contrast()` as the accessibility track | `theme.with_high_contrast()` (the high-contrast palette of the theme's own polarity); `Theme::high_contrast()` is the dark preset |
 | `Theme::ALL = ["Dark", "Light", "High Contrast"]`, the name `"High Contrast"` | `Preset::ALL` / `Theme::ALL` (seven presets, sentence case: `"High contrast"`, `"High contrast light"`). Never compare `theme.name`; ask `theme.colors_are_forced()` |

@@ -76,7 +76,7 @@ and a theme sets them through one document:
 | `presence` | Lightness and chroma of the twelve presence hues (hues stay 30° apart) | `presence` (`PresencePalette`), and through it `intent.you`, `selection_tint`, `border_focus` | `tokens/colors.rs` |
 | `shape` | `window_radius` | `radii.{tile, panel, control, item, detail}` derived concentrically (`Radii::from_window_radius`) | `tokens/radii.rs` |
 | `density` | `spacing`, a multiple of the 4 px scale | `spacing.s0`–`s16`; `Metrics` (pointer targets, control heights) stay put | `tokens/spacing.rs` |
-| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `base_size` | `typography.sans_family`, the body size every `TextRole` derives from (`Theme::text(role)`) | `tokens/typography.rs` (`UiFace`, `Typography::set_face`) |
+| `type` | `face` (a built-in face by name, `Default` or `Hyperlegible`, or any family name), `base_size`, `distinct_letters` (optional; absent follows the face: on with Hyperlegible) | `typography.sans_family`, the body size every `TextRole` derives from (`Theme::text(role)`), `typography.distinct_letters` (every look-alike set apart in all text, `docs/typography.md`) | `tokens/typography.rs` (`UiFace`, `Typography::set_face`), `theme_document.rs` (`ThemeType::distinguishes_letters`) |
 | `motion` | `character`: 0 calm, 1 stock, 2 lively | the shared UI springs, `motion_character` | `tokens/motion.rs` |
 | `material` | `blur`, `tint_opacity` of floating chrome | `surfaces.material_blur_px`, `surfaces.material_opacity`, `surfaces.material` | `tokens/colors.rs`, `backdrop.rs` |
 
