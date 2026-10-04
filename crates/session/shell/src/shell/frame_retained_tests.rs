@@ -617,3 +617,78 @@ fn previous_sections(
         revision: 1,
     }
 }
+
+/// The demo window, holding the demo's apps plus Editor, with
+/// `active` shown, repeated `windows` times along the strip.
+fn demo_windows(active: &str, windows: usize) -> crate::shell::state::WorkspaceTree {
+    use crate::shell::state::{AppKind, TileContent};
+    let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+    if let Some(strip) = tree
+        .desktop
+        .active_workspace_mut()
+        .and_then(|workspace| workspace.strips.first_mut())
+        && let Some(mut group) = strip.window_groups.first().cloned()
+    {
+        if let Some(mut tab) = group.tabs.first().cloned() {
+            tab.id = crate::shell::state::next_id();
+            tab.title = "Editor".into();
+            tab.tile = TileContent::AppPlaceholder {
+                kind: AppKind::Other("Editor".into()),
+                label: "Editor".into(),
+            };
+            group.tabs.push(tab);
+        }
+        strip.window_groups.clear();
+        for _ in 0..windows {
+            let mut copy = group.clone();
+            copy.id = crate::shell::state::next_id();
+            for tab in &mut copy.tabs {
+                tab.id = crate::shell::state::next_id();
+            }
+            copy.active_tab = copy
+                .tabs
+                .iter()
+                .find(|tab| tab.title == active)
+                .map_or(0, |tab| tab.id);
+            strip.window_groups.push(copy);
+        }
+    }
+    tree.seed_doc_from_cache();
+    tree
+}
+
+#[test]
+fn a_settled_desktop_does_not_rebuild_its_layout_whichever_tab_is_shown() {
+    // Each app shown in turn, with the others as tabs behind it: a tab that is
+    // never built (Files behind Notes, say) must not rebuild the desktop's
+    // layout tree on every frame, nor may the app that is shown.
+    for active in ["Notes", "Files", "Terminal", "Document", "Editor"] {
+        let mut frame = PopulatedShellFixture::with_tree(
+            (1280, 720),
+            Theme::dark().with_reduce_motion(true),
+            demo_windows(active, 3),
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut iterate = |frame: &mut PopulatedShellFixture| {
+            frame.pump_apps(&mut doc, &root);
+            frame.relayout();
+            let _ = frame.paint_with_damage();
+        };
+        for _ in 0..8 {
+            iterate(&mut frame);
+        }
+        for step in 0..4 {
+            frame
+                .host_mut()
+                .set_strip_scroll_for_test(f64::from(step) * 40.0);
+            frame.pump_apps(&mut doc, &root);
+            assert!(
+                !ui::widget::Widget::take_structure_dirty(frame.host_mut()),
+                "{active} shown, frame {step}: the settled desktop asked for a new layout tree"
+            );
+            frame.relayout();
+            let _ = frame.paint_with_damage();
+        }
+    }
+}
