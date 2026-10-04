@@ -141,18 +141,34 @@ pub struct RecordedBackdrop {
     pub ground: Color,
 }
 
-#[derive(Default)]
 struct Recording {
+    /// How many recordings this one is nested in. Placeholders are keyed by
+    /// it, so a surface recorded by an inner host (an app frame drawn while
+    /// the shell records its own) never shares an image with one of the
+    /// outer host's, whose blur would otherwise be substituted into it.
+    depth: usize,
+    /// The next region slot; each surface takes its own placeholder.
+    next_slot: usize,
     /// The host's scenes, by address, and their layers.
     layers: Vec<(usize, u32)>,
+    /// Scenes, by address, that a widget composes into another scene once
+    /// drawn (a subtree cache), see [`nest_scene`].
+    nested: Vec<usize>,
+    /// Surfaces drawn into a nested scene, waiting for [`append_nested`] to
+    /// say where that scene lands. Their `layer` is unset until then.
+    pending: Vec<(usize, RecordedBackdrop)>,
     surfaces: Vec<RecordedBackdrop>,
 }
+
+/// A placeholder's slot: the recording depth and the region index in it.
+type PlaceholderKey = (usize, usize);
 
 thread_local! {
     static RECORDING: RefCell<Option<Recording>> = const { RefCell::new(None) };
     /// One placeholder per region slot, reused while its size and ground
     /// hold so an unchanged surface encodes identically frame to frame.
-    static PLACEHOLDERS: RefCell<Vec<(usize, ImageData)>> = const { RefCell::new(Vec::new()) };
+    static PLACEHOLDERS: RefCell<Vec<(PlaceholderKey, ImageData)>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// Records the surfaces drawn in the blurred material on this thread until
@@ -166,13 +182,39 @@ pub struct BackdropRecording {
 
 impl BackdropRecording {
     pub fn begin() -> Self {
+        Self::continuing(Vec::new())
+    }
+
+    /// Resume a recording whose [`Self::finish`] returned `surfaces`, for a
+    /// frame painted in more than one pass (a main pass, then a top layer
+    /// drawn later into the same scene). New surfaces take the region slots
+    /// after `surfaces`, so the frame's placeholders stay distinct and
+    /// [`MAX_BACKDROP_REGIONS`] counts the whole frame. Name the scenes
+    /// again with [`layer_scene`].
+    pub fn continuing(surfaces: Vec<RecordedBackdrop>) -> Self {
+        let previous = RECORDING.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let depth = slot
+                .as_ref()
+                .map_or(0, |outer| outer.depth.saturating_add(1));
+            slot.replace(Recording {
+                depth,
+                next_slot: surfaces.len(),
+                layers: Vec::new(),
+                nested: Vec::new(),
+                pending: Vec::new(),
+                surfaces,
+            })
+        });
         Self {
-            previous: RECORDING.with(|slot| slot.replace(Some(Recording::default()))),
+            previous,
             finished: false,
         }
     }
 
-    /// The surfaces drawn since [`Self::begin`], bottom to top.
+    /// The surfaces drawn since [`Self::begin`], bottom to top. A surface
+    /// whose nested scene never reached a named one is not among them; its
+    /// placeholder shows the opaque material.
     pub fn finish(mut self) -> Vec<RecordedBackdrop> {
         self.finished = true;
         let previous = self.previous.take();
@@ -197,10 +239,10 @@ impl Drop for BackdropRecording {
 /// surface: the scenes it composes under that layer, plus
 /// [`RecordedBackdrop::below`]. A host drawing one scene names it once.
 ///
-/// A surface drawn into any other scene — a cache or scratch scene a
-/// widget appends later — has no known backdrop and stays opaque. `scene`
-/// must not move while the recording is active; naming a layer again
-/// replaces its scene. A no-op outside a recording.
+/// A surface drawn into any other scene — a scratch scene, or a cache a
+/// widget appends later without [`nest_scene`] — has no known backdrop and
+/// stays opaque. `scene` must not move while the recording is active;
+/// naming a layer again replaces its scene. A no-op outside a recording.
 pub fn layer_scene(scene: &Scene, layer: u32) {
     let address = std::ptr::from_ref(scene) as usize;
     RECORDING.with(|slot| {
@@ -211,6 +253,64 @@ pub fn layer_scene(scene: &Scene, layer: u32) {
             recording.layers.push((address, layer));
         }
     });
+}
+
+/// `child` is a scene a widget draws now and composes into another scene
+/// afterwards with [`append_nested`] (a subtree cache). Floating surfaces
+/// drawn into it wait there and take what lies below them once it is
+/// appended. `child` must not move until then. A no-op outside a recording.
+pub fn nest_scene(child: &Scene) {
+    let address = std::ptr::from_ref(child) as usize;
+    RECORDING.with(|slot| {
+        if let Some(recording) = slot.borrow_mut().as_mut()
+            && !recording.nested.contains(&address)
+        {
+            recording.nested.push(address);
+        }
+    });
+}
+
+/// `scene.append(child, Some(transform))`, carrying the floating surfaces
+/// drawn into `child` since [`nest_scene`] onto `scene`: what `scene` holds
+/// so far lies below them. Returns how many surfaces `child` carried. A
+/// cache that carried any must be redrawn on every recorded frame: reused,
+/// its surfaces would show the opaque material.
+pub fn append_nested(scene: &mut Scene, child: &Scene, transform: Affine) -> usize {
+    let carried = RECORDING.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let Some(recording) = slot.as_mut() else {
+            return 0;
+        };
+        let child_address = std::ptr::from_ref(child) as usize;
+        let parent = std::ptr::from_ref(&*scene) as usize;
+        recording.nested.retain(|&known| known != child_address);
+        let parent_layer = recording
+            .layers
+            .iter()
+            .find_map(|&(known, layer)| (known == parent).then_some(layer));
+        let parent_nested = recording.nested.contains(&parent);
+        let (carried, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut recording.pending)
+            .into_iter()
+            .partition(|(address, _)| *address == child_address);
+        recording.pending = kept;
+        let count = carried.len();
+        for (_, mut surface) in carried {
+            let mut below = scene.clone();
+            below.append(&surface.below, Some(transform));
+            surface.below = below;
+            surface.bounds = transform.transform_rect_bbox(surface.bounds);
+            surface.blur_px *= transform.determinant().abs().sqrt();
+            if let Some(layer) = parent_layer {
+                surface.layer = layer;
+                recording.surfaces.push(surface);
+            } else if parent_nested {
+                recording.pending.push((parent, surface));
+            }
+        }
+        count
+    });
+    scene.append(child, Some(transform));
+    carried
 }
 
 /// Register a surface with the active recording and return the placeholder
@@ -229,8 +329,11 @@ fn record(
         let layer = recording
             .layers
             .iter()
-            .find_map(|&(known, layer)| (known == address).then_some(layer))?;
-        let slot_index = recording.surfaces.len();
+            .find_map(|&(known, layer)| (known == address).then_some(layer));
+        if layer.is_none() && !recording.nested.contains(&address) {
+            return None;
+        }
+        let slot_index = recording.next_slot;
         if slot_index >= MAX_BACKDROP_REGIONS {
             return None;
         }
@@ -241,8 +344,9 @@ fn record(
         if transform.determinant().abs() <= f64::EPSILON {
             return None;
         }
+        recording.next_slot = slot_index.saturating_add(1);
         let (width, height) = (texels(bounds.width()), texels(bounds.height()));
-        let image = placeholder(slot_index, width, height, ground);
+        let image = placeholder((recording.depth, slot_index), width, height, ground);
         // Brush space is the fill's space: undo `transform`, then map the
         // image onto the surface's bounds in recording coordinates, so the
         // backdrop stays put while the surface scales or slides in.
@@ -252,14 +356,22 @@ fn record(
                 bounds.width() / f64::from(width),
                 bounds.height() / f64::from(height),
             );
-        recording.surfaces.push(RecordedBackdrop {
+        let surface = RecordedBackdrop {
             image: image.clone(),
             bounds,
-            blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px),
-            layer,
+            // The theme's radius is logical; a host drawing through a device
+            // scale records in device pixels.
+            blur_px: f64::from(theme.tokens.colors.surfaces.material_blur_px)
+                * transform.determinant().abs().sqrt(),
+            layer: layer.unwrap_or_default(),
             below: scene.clone(),
             ground,
-        });
+        };
+        if layer.is_some() {
+            recording.surfaces.push(surface);
+        } else {
+            recording.pending.push((address, surface));
+        }
         Some((image, brush_transform))
     })
 }
@@ -276,7 +388,7 @@ fn texels(logical: f64) -> u32 {
 }
 
 /// The opaque `ground`-coloured image a surface draws in `slot`.
-fn placeholder(slot: usize, width: u32, height: u32, ground: Color) -> ImageData {
+fn placeholder(slot: PlaceholderKey, width: u32, height: u32, ground: Color) -> ImageData {
     let rgba = ground.to_rgba8().to_u8_array();
     PLACEHOLDERS.with(|cache| {
         let mut cache = cache.borrow_mut();

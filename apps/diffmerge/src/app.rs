@@ -1,10 +1,13 @@
-//! Root widget — orchestrates the diff and merge modes, the top toolbar
-//! (mode switch, change navigation, open), and the host-portal file open.
+//! Root widget — orchestrates the diff and merge modes, the status bar, and
+//! the host-portal file open.
 //!
 //! Data flow:
 //! * The app holds the raw input texts in memory and the two derived views
 //!   ([`DiffView`], [`MergeView`]).
-//! * The toolbar's buttons are drawn directly and hit-tested in `handle_event`.
+//! * The header controls (mode, change navigation, open, sample) are shared
+//!   widgets in the shell's header row. They queue [`crate::chrome::Command`]s
+//!   on the [`Chrome`] they share with this widget, drained once per frame in
+//!   [`Widget::sync`], and show the state this widget publishes back.
 //! * Opening files goes through the **host** file chooser (the XDG Desktop
 //!   Portal, [`ui::portal`]) — the app never draws its own picker (HIG §5).
 //!   The chosen paths are read and re-seed the active mode (two files → diff;
@@ -18,39 +21,28 @@ use ui::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::chrome::status_bar;
+use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, SegmentedFace, ToggleGroup, Widget};
+use ui::widget::{EmptyState, EmptyStateContent, Widget};
 
 use crate::actions::DiffmergeOperation;
+use crate::chrome::{Chrome, Command, Header};
 use crate::diff_view::DiffView;
+use crate::i18n::{count, t, t_args, text};
 use crate::merge_view::MergeView;
 use crate::samples;
-
-/// Minimum toolbar band; the measured control height plus its vertical
-/// breathing room wins when the text scale makes the labels taller.
-const TOOLBAR_H: f64 = 48.0;
-/// Minimum toolbar control height.
-const TOOLBAR_CONTROL_H: f64 = 28.0;
-/// Text sizes the toolbar controls paint with (`SegmentedFace` default and the
-/// explicit `ButtonFace::text_size`); the measurements below use the same.
-const TOOLBAR_SEGMENT_FONT: f32 = 13.0;
-const TOOLBAR_BUTTON_FONT: f32 = 12.5;
-/// Horizontal label padding inside a segment / button, wide and compact.
-const SEGMENT_PAD_X: f64 = 11.0;
-const SEGMENT_PAD_X_COMPACT: f64 = 9.0;
-const BUTTON_PAD_X: f64 = 10.0;
-const BUTTON_PAD_X_COMPACT: f64 = 8.0;
 
 fn diff_open_request() -> PickRequest {
     PickRequest::open("Open a file to compare", "Open")
@@ -80,13 +72,6 @@ pub enum Mode {
     Merge,
 }
 
-/// A toolbar button's hit rect tagged with the action it triggers.
-#[derive(Clone, Copy)]
-struct ToolHit {
-    rect: Rect,
-    action: Action,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
     ModeDiff,
@@ -97,6 +82,19 @@ enum Action {
     LoadSample,
 }
 
+impl From<Command> for Action {
+    fn from(command: Command) -> Self {
+        match command {
+            Command::Mode(Mode::Diff) => Self::ModeDiff,
+            Command::Mode(Mode::Merge) => Self::ModeMerge,
+            Command::Previous => Self::PrevChange,
+            Command::Next => Self::NextChange,
+            Command::Open => Self::Open,
+            Command::LoadSample => Self::LoadSample,
+        }
+    }
+}
+
 pub struct DiffMergeApp {
     mode: Mode,
     diff: DiffView,
@@ -104,10 +102,8 @@ pub struct DiffMergeApp {
     rect: Rect,
     diff_node: Option<NodeId>,
     merge_node: Option<NodeId>,
-    tool_hits: Vec<ToolHit>,
-    cursor: Point,
     /// An in-flight XDG-portal file-open. When the user asks to compare files
-    /// (the toolbar "Open files" button) the portal round-trip runs on a
+    /// (the header's "Open files" button) the portal round-trip runs on a
     /// worker thread and hands the chosen path back over this channel, drained
     /// once per frame in [`Widget::sync`]. `None` when no picker is in flight —
     /// the app never draws its own picker (HIG §5).
@@ -116,8 +112,9 @@ pub struct DiffMergeApp {
     portal_contents_rx: Option<ContentsChannel>,
     /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
-    /// A human-readable reason the last host-portal open failed, surfaced in
-    /// the status bar. `None` in the normal (success / cancel) case.
+    /// A human-readable reason the last host-portal open failed. It replaces
+    /// the comparison until the next open succeeds; `None` in the normal
+    /// (success / cancel) case.
     load_error: Option<String>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     pending_resource_paths: Option<(
@@ -131,42 +128,30 @@ pub struct DiffMergeApp {
     /// taffy tree (the flex content child swaps between the two views).
     structure_dirty: bool,
     /// Framework-owned action dispatch: every on-panel affordance routes its
-    /// [`DiffmergeAction`] through here so it brackets **one** undo boundary,
-    /// encodes under [`DIFFMERGE_ACTION_TYPE`](crate::actions::DIFFMERGE_ACTION_TYPE),
-    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    /// [`DiffmergeAction`](crate::actions::DiffmergeAction) through here so it
+    /// brackets **one** undo boundary, encodes under
+    /// [`DIFFMERGE_ACTION_TYPE`](crate::actions::DIFFMERGE_ACTION_TYPE), and
+    /// replays byte-identically on peers — the same path Ctrl+K takes.
     actions: crate::resource::ActionSink,
-    /// The diff/merge summary, surfaced as a transient floating bubble
-    /// (see [`Self::draw_status_bubble`]) instead of a permanent bottom strip.
-    /// Poked only when the summary text actually changes, or held open while
-    /// the pointer hovers the bottom-right reveal zone; fades otherwise.
-    status_bubble: ui::StatusBubble,
-    /// Last computed bounds of the transient summary. Keeping this explicit
-    /// makes the narrow-width geometry testable as well as ensuring hover
-    /// reveal uses exactly the visible target.
-    status_bubble_rect: Rect,
-    /// The last summary string shown in the bubble. The bubble is poked only on
-    /// the transition to a *different* string, never every frame.
-    last_status: String,
-    /// `--shots`: forces the status bubble fully visible for the one headless
-    /// frame (there is no live pointer to hover the reveal zone).
-    shots_status: bool,
-    /// The custom-painted toolbar exposes this focus state to both the shared
-    /// focus ring and the accessibility tree. It intentionally stores the
-    /// semantic action, not a draw-order index, so responsive layout never
-    /// moves focus to a different operation.
-    toolbar_focus: Option<Action>,
-    /// Measured toolbar band height from the last draw (see
-    /// [`Self::measure_toolbar`]); the content rect starts below it.
-    toolbar_h: f64,
+    /// What the header controls share with this widget; `None` when nothing
+    /// hosts them (a bare surface in a test).
+    chrome: Option<Chrome>,
+    /// Height of the status bar from the last draw; the views are placed
+    /// above it.
+    status_h: f64,
+    /// The window was narrower than the header's full labels need at the last
+    /// draw.
+    compact: bool,
     /// Fingerprint of the last shared three-way projection written to the doc.
     shared_merge_fingerprint: Option<String>,
 }
 
 impl DiffMergeApp {
-    /// The live app: starts EMPTY (blank panes + the "Open files" / "Load
-    /// sample" toolbar actions), never a fabricated diff.
+    /// The live app: starts EMPTY (the "Open two files" state with the
+    /// header's "Open files" / "Load sample" actions), never a fabricated
+    /// diff.
     pub fn new() -> Self {
-        let mut app = Self::build(false);
+        let mut app = Self::build();
         // Where files have no path, the pair last compared.
         if !crate::web_file::native_paths()
             && let Some(file) = crate::web_file::recall()
@@ -182,76 +167,60 @@ impl DiffMergeApp {
         app
     }
 
-    /// The hermetic `--shots` / demo build: seeded with a sample diff + a
-    /// three-way merge conflict so the headless screenshot is populated. This
-    /// is the ONLY place the sample content is used on construction.
+    /// A seeded sample diff and three-way merge conflict, opened on the merge
+    /// so a conflict shows at once.
+    #[cfg(test)]
     pub fn new_demo() -> Self {
-        Self::build(true)
-    }
-
-    /// Deterministic visual-review states. These are intentionally only used
-    /// by the offscreen launcher: the live app always opens empty until the
-    /// user chooses local files or a sample.
-    pub fn for_shot(scenario: Option<&str>) -> Self {
-        let mut app = match scenario {
-            Some("empty") => Self::new(),
-            _ => Self::new_demo(),
-        };
-        match scenario {
-            Some("diff") => {
-                app.mode = Mode::Diff;
-                app.structure_dirty = true;
-            }
-            Some("error") => {
-                app.mode = Mode::Diff;
-                app.load_error = Some(
-                    "Couldn’t read the selected files. Check permissions and try again.".into(),
-                );
-                app.structure_dirty = true;
-                app.arm_status_bubble_for_shots();
-            }
-            Some("status") => app.arm_status_bubble_for_shots(),
-            _ => {}
-        }
+        let mut app = Self::build();
+        app.load_sample();
+        app.mode = Mode::Merge;
         app
     }
 
-    fn build(demo: bool) -> Self {
-        let mut diff = DiffView::new();
-        let mut merge = MergeView::new();
-        if demo {
-            let (l, r) = samples::diff_pair();
-            diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
-            let (base, ours, theirs) = samples::merge_triple();
-            merge.set_inputs(
-                &base.label,
-                &base.text,
-                &ours.label,
-                &ours.text,
-                &theirs.label,
-                &theirs.text,
-            );
+    /// Deterministic visual-review states, as `--shots --scenario` stages
+    /// them; a plain `--shots` is the seeded merge.
+    pub fn stage_scenario(&mut self, scenario: Option<&str>) {
+        match scenario {
+            Some("empty") => {
+                self.set_mode(Mode::Diff);
+            }
+            Some("diff") => {
+                self.load_sample();
+                self.set_mode(Mode::Diff);
+            }
+            Some("error") => {
+                self.load_sample();
+                self.set_mode(Mode::Diff);
+                self.load_error = Some(t_args(
+                    "error-not-text",
+                    &[("name", text("release-notes.docx"))],
+                ));
+            }
+            _ => {
+                self.load_sample();
+                self.set_mode(Mode::Merge);
+            }
         }
+        self.dirty = true;
+        self.publish_header();
+    }
 
-        // The demo opens on the three-way merge to immediately show a conflict;
-        // the live app opens on the side-by-side diff (empty "open files"
-        // state). `DIFFMERGE_MODE` overrides either way.
-        let mode = match std::env::var("DIFFMERGE_MODE").ok().as_deref() {
-            Some("diff") => Mode::Diff,
-            Some("merge") => Mode::Merge,
-            _ if demo => Mode::Merge,
-            _ => Mode::Diff,
-        };
+    /// The staged app in one step, for tests.
+    #[cfg(test)]
+    pub fn for_shot(scenario: Option<&str>) -> Self {
+        let mut app = Self::new();
+        app.stage_scenario(scenario);
+        app
+    }
 
+    fn build() -> Self {
         Self {
-            mode,
-            diff,
-            merge,
+            mode: Mode::Diff,
+            diff: DiffView::new(),
+            merge: MergeView::new(),
             rect: Rect::ZERO,
             diff_node: None,
             merge_node: None,
-            tool_hits: Vec::new(),
-            cursor: Point::ZERO,
             portal_rx: None,
             portal_contents_rx: None,
             pending_left: None,
@@ -262,74 +231,95 @@ impl DiffMergeApp {
             dirty: true,
             structure_dirty: false,
             actions: crate::resource::ActionSink::default(),
-            status_bubble: ui::StatusBubble::new(),
-            status_bubble_rect: Rect::ZERO,
-            last_status: String::new(),
-            shots_status: false,
-            toolbar_focus: None,
-            toolbar_h: TOOLBAR_H,
+            chrome: None,
+            status_h: status_bar::height(&Theme::dark()),
+            compact: false,
             shared_merge_fingerprint: None,
         }
     }
 
-    /// `--shots`: force the floating status bubble fully visible so a single
-    /// headless frame captures it (no live pointer hovers the reveal zone).
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.status_bubble.poke(ui::time::now());
+    /// Share the header controls' state with this widget.
+    pub(crate) fn attach_chrome(&mut self, chrome: Chrome) {
+        chrome.publish(self.header());
+        self.chrome = Some(chrome);
     }
 
+    /// What the header controls show right now.
+    fn header(&self) -> Header {
+        let changes = self.load_error.is_none()
+            && match self.mode {
+                Mode::Diff => !self.diff.model().blocks.is_empty(),
+                Mode::Merge => self.merge.model().change_count() > 0,
+            };
+        Header {
+            mode: self.mode,
+            changes,
+            compact: self.compact,
+        }
+    }
+
+    fn publish_header(&self) {
+        if let Some(chrome) = &self.chrome {
+            chrome.publish(self.header());
+        }
+    }
+
+    /// Run what the header controls queued since the last frame.
+    fn drain_commands(&mut self) {
+        while let Some(command) = self.chrome.as_ref().and_then(Chrome::take) {
+            self.act(command.into());
+        }
+    }
+
+    fn set_mode(&mut self, mode: Mode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.structure_dirty = true;
+        }
+        self.dirty = true;
+    }
+
+    /// Load the bundled sample comparison and merge.
+    fn load_sample(&mut self) {
+        let (l, r) = samples::diff_pair();
+        self.diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
+        let (base, ours, theirs) = samples::merge_triple();
+        self.merge.set_inputs(
+            &base.label,
+            &base.text,
+            &ours.label,
+            &ours.text,
+            &theirs.label,
+            &theirs.text,
+        );
+        self.pending_left = None;
+        self.load_error = None;
+        self.dirty = true;
+    }
+
+    /// The region the comparison views fill: everything above the status bar.
     fn content_rect(&self) -> Rect {
-        // Content spans to the window bottom; the summary floats as a
-        // transient bubble (see `draw_status_bubble`), not a bottom strip.
         Rect::new(
             self.rect.x0,
-            self.rect.y0 + self.toolbar_h,
+            self.rect.y0,
             self.rect.x1,
-            self.rect.y1,
+            (self.rect.y1 - self.status_h).max(self.rect.y0),
         )
     }
 
     /// Give both views the content rect. Called from `apply_layout` and again
-    /// from `draw` when the measured toolbar height changed, so the views are
-    /// never painted a frame behind the band above them.
+    /// from `draw` when the measured status bar height changed, so the views
+    /// are never painted a frame behind the band below them.
     fn place_views(&mut self) {
         let content = self.content_rect();
         self.diff.place(content);
         self.merge.place(content);
     }
 
-    /// `(control_h, toolbar_h)` measured from the label sizes the controls
-    /// paint with, floored at the design minimums.
-    fn measure_toolbar(tr: &mut TextRenderer) -> (f64, f64) {
-        let seg_h = f64::from(
-            tr.measure_weighted("Ag", TOOLBAR_SEGMENT_FONT, None, TextWeight::Medium)
-                .1,
-        );
-        let btn_h = f64::from(
-            tr.measure_weighted("Ag", TOOLBAR_BUTTON_FONT, None, TextWeight::Regular)
-                .1,
-        );
-        let control_h = (seg_h.max(btn_h) + 10.0).max(TOOLBAR_CONTROL_H);
-        (control_h, (control_h + 20.0).max(TOOLBAR_H))
-    }
-
     fn act(&mut self, action: Action) {
         match action {
-            Action::ModeDiff => {
-                if self.mode != Mode::Diff {
-                    self.mode = Mode::Diff;
-                    self.structure_dirty = true;
-                }
-                self.dirty = true;
-            }
-            Action::ModeMerge => {
-                if self.mode != Mode::Merge {
-                    self.mode = Mode::Merge;
-                    self.structure_dirty = true;
-                }
-                self.dirty = true;
-            }
+            Action::ModeDiff => self.set_mode(Mode::Diff),
+            Action::ModeMerge => self.set_mode(Mode::Merge),
             Action::PrevChange => {
                 match self.mode {
                     Mode::Diff => {
@@ -355,22 +345,9 @@ impl DiffMergeApp {
             Action::Open => {
                 self.request_open_via_portal();
             }
-            Action::LoadSample => {
-                let (l, r) = samples::diff_pair();
-                self.diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
-                let (base, ours, theirs) = samples::merge_triple();
-                self.merge.set_inputs(
-                    &base.label,
-                    &base.text,
-                    &ours.label,
-                    &ours.text,
-                    &theirs.label,
-                    &theirs.text,
-                );
-                self.pending_left = None;
-                self.dirty = true;
-            }
+            Action::LoadSample => self.load_sample(),
         }
+        self.publish_header();
     }
 
     /// Dispatch one [`DiffmergeAction`](crate::actions::DiffmergeAction) — the
@@ -485,7 +462,7 @@ impl DiffMergeApp {
             return self.merge.resource_ctx();
         }
         crate::doc::MergeDoc::has_merged(doc).then(|| crate::actions::MergeResourceCtx {
-            title: "Saved merge output · original inputs unavailable".into(),
+            title: t("merged-saved"),
             model: crate::model::MergeModel::default(),
         })
     }
@@ -531,7 +508,9 @@ impl DiffMergeApp {
                             Some(file) => Pick::Opened(
                                 String::from_utf8(file.bytes)
                                     .map(|text| (file.name.clone(), text))
-                                    .map_err(|_| format!("{}: not UTF-8 text", file.name)),
+                                    .map_err(|_| {
+                                        t_args("error-not-text", &[("name", text(&file.name))])
+                                    }),
                             ),
                             None => Pick::Cancelled,
                         },
@@ -630,7 +609,8 @@ impl DiffMergeApp {
                     }
                     Pick::Failed(reason) => {
                         self.pending_left = None;
-                        self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                        self.load_error =
+                            Some(t_args("error-chooser", &[("reason", text(&reason))]));
                         if let Some(invocation) = self.resource_invocation.take() {
                             self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
                                 invocation,
@@ -701,287 +681,84 @@ impl DiffMergeApp {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "toolbar geometry, paint, focus ring, and matching hit targets stay together"
-    )]
-    fn draw_toolbar(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        self.tool_hits.clear();
-        let c = &theme.tokens.colors;
-        let r = self.rect;
-        // A single toolbar row remains deliberately compact on phones. Keep
-        // both modes and every action reachable, but trade desktop prose for
-        // familiar short labels so controls never paint over each other.
-        let compact = r.width() < 640.0;
-        // Every control is sized from its measured label with the exact style
-        // it is painted in (`len * 7.x` estimates clipped longer locales and
-        // fell apart at 200% text), and the band grows with the control height.
-        let (seg_h, toolbar_h) = Self::measure_toolbar(tr);
-        self.toolbar_h = toolbar_h;
-        let bar = Rect::new(r.x0, r.y0, r.x1, r.y0 + toolbar_h);
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &bar);
-        // The bar's bottom rule is derived against the bar (HIG §9.5).
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::surface::edge_on(c.surfaces.raised),
-            None,
-            &Line::new(Point::new(r.x0, bar.y1), Point::new(r.x1, bar.y1)),
-        );
-
-        // Mode segmented control (shared pill-style segmented control). The OS
-        // titlebar carries the app name, so no self-drawn wordmark here — the
-        // mode control claims the reclaimed left slot.
-        let seg_y = r.y0 + (toolbar_h - seg_h) / 2.0;
-        let mode_labels: [&str; 2] = if compact {
-            ["Diff", "Merge"]
-        } else {
-            ["Diff", "3-way merge"]
-        };
-        let mode_actions = [Action::ModeDiff, Action::ModeMerge];
-        let selected = usize::from(self.mode == Mode::Merge);
-        let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
-        let seg_pad = if compact {
-            SEGMENT_PAD_X_COMPACT
-        } else {
-            SEGMENT_PAD_X
-        };
-        let mut x = r.x0 + if compact { 8.0 } else { 16.0 };
-        for label in mode_labels {
-            let (lw, _) =
-                tr.measure_weighted(label, TOOLBAR_SEGMENT_FONT, None, TextWeight::Medium);
-            let w = f64::from(lw) + 2.0 * seg_pad;
-            mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
-            x += w + if compact { 4.0 } else { 6.0 };
-        }
-        let hovered = mode_rects.iter().position(|rr| rr.contains(self.cursor));
-        ToggleGroup::paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            &SegmentedFace::new(&mode_rects, &mode_labels, selected)
-                .pill()
-                .hovered(hovered)
-                .radius(6.0),
-        );
-        for (rect, action) in mode_rects.iter().zip(mode_actions) {
-            self.tool_hits.push(ToolHit {
-                rect: *rect,
-                action,
-            });
-        }
-        if self
-            .toolbar_focus
-            .is_some_and(|action| matches!(action, Action::ModeDiff | Action::ModeMerge))
-        {
-            let focused = if self.toolbar_focus == Some(Action::ModeDiff) {
-                mode_rects.first().copied()
-            } else {
-                mode_rects.get(1).copied()
-            };
-            if let Some(focused) = focused {
-                scene.stroke(
-                    &Stroke::new(2.0),
-                    transform,
-                    theme.border_focus,
-                    None,
-                    &RoundedRect::from_rect(focused, 6.0),
-                );
-            }
-        }
-
-        // Right-aligned action buttons.
-        let mut rx = r.x1 - if compact { 8.0 } else { 16.0 };
-        let actions: &[(&str, Action)] = if compact {
-            &[
-                ("Open", Action::Open),
-                ("Sample", Action::LoadSample),
-                ("›", Action::NextChange),
-                ("‹", Action::PrevChange),
-            ]
-        } else {
-            &[
-                ("Open files", Action::Open),
-                ("Load sample", Action::LoadSample),
-                ("Next ›", Action::NextChange),
-                ("‹ Prev", Action::PrevChange),
-            ]
-        };
-        let btn_pad = if compact {
-            BUTTON_PAD_X_COMPACT
-        } else {
-            BUTTON_PAD_X
-        };
-        for (label, action) in actions {
-            let (lw, _) =
-                tr.measure_weighted(label, TOOLBAR_BUTTON_FONT, None, TextWeight::Regular);
-            let w = f64::from(lw) + 2.0 * btn_pad;
-            let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
-            Button::paint(
-                scene,
-                transform,
-                tr,
-                theme,
-                &ButtonFace::new(btn, label)
-                    .radius(6.0)
-                    .text_size(TOOLBAR_BUTTON_FONT)
-                    .weight(TextWeight::Regular)
-                    .focused(self.toolbar_focus == Some(*action))
-                    .hovered(btn.contains(self.cursor)),
-            );
-            self.tool_hits.push(ToolHit {
-                rect: btn,
-                action: *action,
-            });
-            rx -= w + if compact { 4.0 } else { 8.0 };
-        }
-    }
-
-    /// The one-line summary the status bubble shows: a host-portal load error
-    /// takes over until the next successful open clears it, otherwise the
-    /// diff-mode change counts or the merge-mode hunk/conflict counts.
-    fn status_text(&self) -> String {
-        if let Some(err) = &self.load_error {
-            return err.clone();
+    /// The two readouts of the status bar: what the comparison holds on the
+    /// left and where the reviewer is in it on the right. Unresolved
+    /// conflicts are counted once, in the merged result's header.
+    fn status_readouts(&self) -> (String, String) {
+        if self.load_error.is_some() {
+            return (String::new(), String::new());
         }
         match self.mode {
             Mode::Diff => {
                 let m = self.diff.model();
-                let active = self
+                if m.rows.is_empty() {
+                    return (t("diff-status-empty"), String::new());
+                }
+                if m.is_identical() {
+                    return (t("diff-status-identical"), String::new());
+                }
+                let position = self
                     .diff
                     .active_block()
-                    .map(|b| format!("  ·  change {}/{}", b + 1, m.blocks.len().max(1)))
-                    .unwrap_or_default();
-                format!(
-                    "+{} additions   −{} deletions   ~{} modifications   {} change block(s){}",
-                    m.added,
-                    m.removed,
-                    m.modified,
-                    m.blocks.len(),
-                    active
+                    .map(|block| (block + 1, m.blocks.len()));
+                (
+                    t_args(
+                        "diff-status-counts",
+                        &[
+                            ("added", count(m.added)),
+                            ("removed", count(m.removed)),
+                            ("modified", count(m.modified)),
+                        ],
+                    ),
+                    position_label(position),
                 )
             }
             Mode::Merge => {
                 let m = self.merge.model();
-                format!(
-                    "{} change hunk(s)   {} resolved   {} conflict(s) remaining",
-                    m.change_count(),
-                    m.resolved_count(),
-                    m.conflict_count(),
+                (
+                    t_args(
+                        "merge-status-changes",
+                        &[
+                            ("count", count(m.change_count())),
+                            ("resolved", count(m.resolved_count())),
+                        ],
+                    ),
+                    position_label(self.merge.active_change()),
                 )
             }
         }
     }
 
-    /// A deliberately compact status for a phone-width viewport. The full
-    /// detail remains in the accessible status description; this label is only
-    /// the painted transient pill and must never escape its viewport.
-    fn compact_status_text(&self) -> String {
-        if self.load_error.is_some() {
-            return "Couldn’t open files".into();
-        }
+    /// The whole status, as one sentence for assistive technology.
+    fn status_text(&self) -> String {
+        let (left, right) = self.status_readouts();
         match self.mode {
-            Mode::Diff => {
-                let model = self.diff.model();
-                format!(
-                    "+{}  −{}  ~{}  ·  {} changes",
-                    model.added,
-                    model.removed,
-                    model.modified,
-                    model.blocks.len()
-                )
-            }
+            Mode::Diff => format!("{left} {right}").trim().to_string(),
             Mode::Merge => {
-                let model = self.merge.model();
+                let conflicts = self.merge.model().conflict_count();
                 format!(
-                    "{} hunks · {} conflicts",
-                    model.change_count(),
-                    model.conflict_count()
+                    "{left}. {}",
+                    t_args("merge-status-conflicts", &[("count", count(conflicts))])
                 )
             }
         }
     }
 
-    /// Surfaces on a real change to the summary (poked only when the string
-    /// differs) or while the pointer hovers the bottom-right reveal band, then
-    /// fades.
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let now = ui::time::now();
-        let raw_label = self.status_text();
-        // Poke only on a genuine change to the summary, never every frame.
-        if raw_label != self.last_status {
-            self.status_bubble.poke(now);
-            self.last_status.clone_from(&raw_label);
-        }
-
-        let text_size = 12.0f32;
-        let margin = 14.0;
-        let r = self.rect;
-        let preferred = if r.width() < 640.0 {
-            self.compact_status_text()
-        } else {
-            raw_label
+    /// The failure that replaces the comparison until the next open.
+    fn draw_error(ctx: &mut PaintCtx<'_>, rect: Rect, reason: &str) {
+        let title = t("error-title");
+        let content = EmptyStateContent {
+            icon: Some(Icon::TriangleAlert),
+            message: Some(reason),
+            error: true,
+            ..EmptyStateContent::new(&title)
         };
-        // The pill owns 14px horizontal padding on either side. Elide before
-        // measuring so its intrinsic text width can never put its left edge
-        // beyond the viewport (the original narrow-layout regression).
-        let text_budget = (r.width() - 2.0 * margin - 28.0).max(0.0) as f32;
-        let label = tr.elide_to_width(&preferred, text_size, text_budget);
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let rect = Rect::new(
-            r.x1 - margin - w,
-            r.y1 - margin - h,
-            r.x1 - margin,
-            r.y1 - margin,
-        );
-        self.status_bubble_rect = rect;
-
-        // Reveal zone: the bottom-right corner band (plus the pill), so nudging
-        // the pointer there re-surfaces the summary on demand.
-        let zone = Rect::new(rect.x0 - 40.0, rect.y0 - 24.0, r.x1, r.y1);
-        let over = self.shots_status || zone.contains(self.cursor);
-        self.status_bubble.set_hover(over, now);
-
-        let alpha = self.status_bubble.alpha(now);
-        if alpha <= 0.0 {
-            return;
-        }
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            alpha,
-            transform,
-            &rect.inflate(12.0, 14.0),
-        );
-        ui::status_bubble::draw_pill(scene, transform, tr, theme, rect, &label, text_size);
-        scene.pop_layer();
-    }
-
-    #[cfg(test)]
-    fn status_bubble_rect(&self) -> Rect {
-        self.status_bubble_rect
+        EmptyState::paint(ctx, rect, &content, Point::new(-1.0, -1.0));
     }
 
     /// Keyboard shortcuts: F8/F7 or n/p for next/prev change, 1/2 for mode.
     /// Returns `true` if the event was consumed.
-    fn handle_keyboard_shortcut(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: winit::event::Modifiers,
-    ) -> bool {
+    fn handle_keyboard_shortcut(&mut self, event: &WindowEvent) -> bool {
         let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
@@ -994,44 +771,6 @@ impl DiffMergeApp {
         else {
             return false;
         };
-
-        if matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            const TOOLBAR_ORDER: [Action; 6] = [
-                Action::ModeDiff,
-                Action::ModeMerge,
-                Action::PrevChange,
-                Action::NextChange,
-                Action::LoadSample,
-                Action::Open,
-            ];
-            let next = if let Some(current) = self
-                .toolbar_focus
-                .and_then(|focused| TOOLBAR_ORDER.iter().position(|item| *item == focused))
-            {
-                if modifiers.state().shift_key() {
-                    current.saturating_sub(1)
-                } else {
-                    (current + 1).min(TOOLBAR_ORDER.len().saturating_sub(1))
-                }
-            } else if modifiers.state().shift_key() {
-                TOOLBAR_ORDER.len().saturating_sub(1)
-            } else {
-                0
-            };
-            let Some(action) = TOOLBAR_ORDER.get(next).copied() else {
-                return false;
-            };
-            self.toolbar_focus = Some(action);
-            self.dirty = true;
-            return true;
-        }
-        if (matches!(logical_key, Key::Named(NamedKey::Enter))
-            || matches!(logical_key, Key::Character(ch) if ch == " "))
-            && let Some(toolbar_action) = self.toolbar_focus
-        {
-            self.act(toolbar_action);
-            return true;
-        }
 
         match logical_key {
             Key::Character(ch) => match ch.as_str() {
@@ -1064,63 +803,16 @@ impl DiffMergeApp {
             _ => false,
         }
     }
+}
 
-    /// Toolbar button clicks. Returns `true` if the event was consumed.
-    fn handle_toolbar_click(&mut self, event: &WindowEvent) -> bool {
-        let WindowEvent::MouseInput {
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let hit = self
-            .tool_hits
-            .iter()
-            .find(|t| t.rect.contains(self.cursor))
-            .map(|t| t.action);
-        let Some(action) = hit else {
-            return false;
-        };
-        self.toolbar_focus = Some(action);
-        self.act(action);
-        true
-    }
-
-    fn toolbar_action_name(action: Action) -> &'static str {
-        match action {
-            Action::ModeDiff => "Show two-way diff",
-            Action::ModeMerge => "Show three-way merge",
-            Action::PrevChange => "Previous change",
-            Action::NextChange => "Next change",
-            Action::Open => "Open two files",
-            Action::LoadSample => "Load sample comparison",
-        }
-    }
-
-    fn toolbar_action_target(action: Action) -> &'static str {
-        match action {
-            Action::ModeDiff => "diffmerge.toolbar.show-diff",
-            Action::ModeMerge => "diffmerge.toolbar.show-merge",
-            Action::PrevChange => "diffmerge.toolbar.previous-change",
-            Action::NextChange => "diffmerge.toolbar.next-change",
-            Action::Open => "diffmerge.toolbar.open-files",
-            Action::LoadSample => "diffmerge.toolbar.load-sample",
-        }
-    }
-
-    fn toolbar_action_from_target(target: &str) -> Option<Action> {
-        match target {
-            "diffmerge.toolbar.show-diff" => Some(Action::ModeDiff),
-            "diffmerge.toolbar.show-merge" => Some(Action::ModeMerge),
-            "diffmerge.toolbar.previous-change" => Some(Action::PrevChange),
-            "diffmerge.toolbar.next-change" => Some(Action::NextChange),
-            "diffmerge.toolbar.open-files" => Some(Action::Open),
-            "diffmerge.toolbar.load-sample" => Some(Action::LoadSample),
-            _ => None,
-        }
-    }
+/// "Change 2 of 5", or nothing when there is no change to be on.
+fn position_label(position: Option<(usize, usize)>) -> String {
+    position.map_or_else(String::new, |(current, total)| {
+        t_args(
+            "diff-status-position",
+            &[("current", count(current)), ("total", count(total))],
+        )
+    })
 }
 
 impl Default for DiffMergeApp {
@@ -1228,6 +920,8 @@ impl Widget for DiffMergeApp {
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal();
+        // Then what the header controls asked for.
+        self.drain_commands();
 
         // Only the active mode owns the shared merged buffer; sync the merge
         // panel always so its CRDT mirror stays seeded.
@@ -1258,6 +952,7 @@ impl Widget for DiffMergeApp {
             self.merge.sync(state, path);
         }
         self.diff.sync(state, path);
+        self.publish_header();
     }
 
     fn build_layout(
@@ -1345,45 +1040,54 @@ impl Widget for DiffMergeApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
-
-        // Measure the toolbar band first so the views are placed below the
-        // height this frame will actually paint.
-        let (_, toolbar_h) = Self::measure_toolbar(tr);
+        // The window ground is the framework's; reserve the status bar first
+        // so the views are placed above the band this frame will paint.
+        // An error replaces the comparison and its status; no empty band is
+        // left behind.
+        let status_h = if self.load_error.is_some() {
+            0.0
+        } else {
+            status_bar::height(theme)
+        };
         #[expect(
             clippy::float_cmp,
             reason = "change detection against the cached measurement: any bit difference means the views must be re-placed"
         )]
-        let toolbar_changed = toolbar_h != self.toolbar_h;
-        if toolbar_changed {
-            self.toolbar_h = toolbar_h;
+        let status_changed = status_h != self.status_h;
+        if status_changed {
+            self.status_h = status_h;
             self.place_views();
         }
-
-        match self.mode {
-            Mode::Diff => self.diff.draw(scene, transform, tr, theme, presence),
-            Mode::Merge => self.merge.draw(scene, transform, tr, theme, presence),
+        let content = self.content_rect();
+        let compact = self.rect.width() < f64::from(theme.tokens.metrics.compact_breakpoint);
+        if compact != self.compact {
+            self.compact = compact;
+            self.publish_header();
         }
 
-        self.draw_toolbar(scene, transform, tr, theme);
-        self.draw_status_bubble(scene, transform, tr, theme);
+        if let Some(reason) = &self.load_error {
+            let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+            Self::draw_error(&mut ctx, content, reason);
+        } else {
+            match self.mode {
+                Mode::Diff => self.diff.draw(scene, transform, tr, theme, presence),
+                Mode::Merge => self.merge.draw(scene, transform, tr, theme, presence),
+            }
+        }
+
+        if self.load_error.is_none() {
+            let (_, bar) = status_bar::split(self.rect, theme);
+            let (left, right) = self.status_readouts();
+            status_bar::draw(scene, transform, tr, theme, bar, &left, &right);
+        }
         self.dirty = false;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.merge.reconcile_content(ctx.state);
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
 
         let merge_editor_focused = self.mode == Mode::Merge && self.merge.merged_editor_focused();
-        if !merge_editor_focused && self.handle_keyboard_shortcut(event, *ctx.modifiers) {
-            *ctx.handled = true;
-            return;
-        }
-
-        if self.handle_toolbar_click(event) {
+        if !merge_editor_focused && self.handle_keyboard_shortcut(event) {
             *ctx.handled = true;
             return;
         }
@@ -1401,9 +1105,9 @@ impl Widget for DiffMergeApp {
                     self.merge
                         .handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 }
-                // A chip click on the merge panel queues its resolution; dispatch
-                // it through the shared action path so the chip and Ctrl+K produce
-                // the same replayable action under one undo boundary.
+                // A click on a resolution queues it; dispatch it through the
+                // shared action path so the click and Ctrl+K produce the same
+                // replayable action under one undo boundary.
                 if let Some(action) = self.merge.take_pending_action() {
                     self.perform_action(ctx.state, &action);
                     *ctx.handled = true;
@@ -1416,10 +1120,8 @@ impl Widget for DiffMergeApp {
         "DiffMergeApp"
     }
 
-    // The toolbar is immediate-mode chrome, while the active comparison view
-    // owns its own semantic controls. Exposing that live child is what lets the
-    // compact source switcher reach the actual Tilo accessibility tree rather
-    // than only being available to pointer users.
+    // The header controls are shared widgets in the shell; the active
+    // comparison view owns its own semantic controls.
     fn children(&self) -> Vec<&dyn Widget> {
         match self.mode {
             Mode::Diff => vec![&self.diff],
@@ -1435,49 +1137,21 @@ impl Widget for DiffMergeApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+        use ui::a11y::{AccessNode, Role};
 
-        let controls = self
-            .tool_hits
-            .iter()
-            .map(|hit| {
-                let action = hit.action;
-                let role = match action {
-                    Action::ModeDiff | Action::ModeMerge => Role::ToggleButton,
-                    _ => Role::Button,
-                };
-                let selected = matches!(
-                    (action, self.mode),
-                    (Action::ModeDiff, Mode::Diff) | (Action::ModeMerge, Mode::Merge)
-                );
-                AccessNode::new(role)
-                    .with_name(Self::toolbar_action_name(action))
-                    .with_action_target(Self::toolbar_action_target(action))
-                    .with_bounds(hit.rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(self.toolbar_focus == Some(action))
-                            .checked(selected),
-                    )
-            })
-            .collect();
-        let mut children = vec![
-            AccessNode::new(Role::Toolbar)
-                .with_name("Comparison controls")
-                .with_children(controls),
-        ];
-        if let Some(content) = match self.mode {
-            Mode::Diff => self.diff.accessibility(),
-            Mode::Merge => self.merge.accessibility(),
-        } {
-            children.push(content);
-        }
+        let mut children = Vec::new();
+        // The active view is one of this widget's children and publishes
+        // itself; its controls are published here, where their actions are
+        // handled.
+        children.extend(match self.mode {
+            Mode::Diff => self.diff.access_controls(),
+            Mode::Merge => self.merge.access_controls(),
+        });
         if self.mode == Mode::Diff && self.diff.model().rows.is_empty() {
             children.push(
                 AccessNode::new(Role::Paragraph)
                     .with_name("No files loaded")
-                    .with_description("Use Open two files to start a local comparison."),
+                    .with_description("Use Open files to start a local comparison."),
             );
         }
         if let Some(error) = &self.load_error {
@@ -1498,25 +1172,6 @@ impl Widget for DiffMergeApp {
                 .with_description("Compare local files or resolve a shared three-way merge")
                 .with_children(children),
         )
-    }
-
-    fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
-        let [0, index] = path else {
-            return None;
-        };
-        self.tool_hits.get(*index).map(|hit| hit.rect)
-    }
-
-    fn focus_synthetic_accessibility(&mut self, path: &[usize]) -> bool {
-        let [0, index] = path else {
-            return false;
-        };
-        let Some(hit) = self.tool_hits.get(*index) else {
-            return false;
-        };
-        self.toolbar_focus = Some(hit.action);
-        self.dirty = true;
-        true
     }
 
     fn perform_semantic_action(
@@ -1547,6 +1202,13 @@ impl Widget for DiffMergeApp {
             self.dirty = true;
             return true;
         }
+        if let Some(tag) = target.strip_prefix(crate::merge_view::SOURCE_TARGET) {
+            return self.mode == Mode::Merge && {
+                let shown = self.merge.select_source_tagged(tag);
+                self.dirty |= shown;
+                shown
+            };
+        }
         if let Some(show_right) = match target {
             "diffmerge.diff-source:left" => Some(false),
             "diffmerge.diff-source:right" => Some(true),
@@ -1559,7 +1221,7 @@ impl Widget for DiffMergeApp {
             self.dirty = true;
             return true;
         }
-        if let Some((hunk, choice)) = target
+        let Some((hunk, choice)) = target
             .strip_prefix("diffmerge.merge.resolve:")
             .and_then(|value| value.split_once(':'))
             .and_then(|(hunk, choice)| {
@@ -1572,36 +1234,20 @@ impl Widget for DiffMergeApp {
                 };
                 Some((hunk, choice))
             })
-        {
-            if self.mode != Mode::Merge || self.merge.model().hunks.get(hunk).is_none() {
-                return false;
-            }
-            if matches!(action, ui::a11y::Action::Activate) {
-                self.merge.resolve(hunk, choice);
-                if let Some(pending) = self.merge.take_pending_action() {
-                    self.perform_action(state, &pending);
-                }
-            }
-            self.dirty = true;
-            return true;
-        }
-        let Some(toolbar_action) = Self::toolbar_action_from_target(target) else {
+        else {
             return false;
         };
-        self.toolbar_focus = Some(toolbar_action);
-        if matches!(action, ui::a11y::Action::Activate) {
-            self.act(toolbar_action);
-        } else {
-            self.dirty = true;
+        if self.mode != Mode::Merge || self.merge.model().hunks.get(hunk).is_none() {
+            return false;
         }
+        if matches!(action, ui::a11y::Action::Activate) {
+            self.merge.resolve(hunk, choice);
+            if let Some(pending) = self.merge.take_pending_action() {
+                self.perform_action(state, &pending);
+            }
+        }
+        self.dirty = true;
         true
-    }
-
-    fn tooltip(&self) -> Option<&str> {
-        self.tool_hits
-            .iter()
-            .find(|hit| hit.rect.contains(self.cursor))
-            .map(|hit| Self::toolbar_action_name(hit.action))
     }
 
     fn get_rect(&self) -> Rect {
@@ -1623,10 +1269,7 @@ impl Widget for DiffMergeApp {
     /// / offscreen path never has a picker pending, so it settles to zero
     /// frames).
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while a host-portal open is in flight, and while
-        // the floating status bubble is lingering / fading (so it animates out
-        // and hides on its own). Idle otherwise.
-        self.portal_rx.is_some() || self.status_bubble.needs_frame(ui::time::now())
+        self.portal_rx.is_some()
     }
 
     fn mark_drawn(&mut self) {
@@ -1806,17 +1449,25 @@ fn label_and_text(path: &Path) -> Result<(String, String), String> {
     Ok((label, read_text(path)?))
 }
 
+/// The text of the file at `path`, or a sentence that says which file could
+/// not be compared and why, by name only.
 fn read_text(path: &Path) -> Result<String, String> {
-    let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
-    let (dir, name) = tilo_files::file_at(path).map_err(|e| failed(&e))?;
-    let bytes = tilo_files::blocking::read(&dir, &name).map_err(|e| failed(&e))?;
-    String::from_utf8(bytes).map_err(|e| failed(&e))
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let unreadable =
+        |_: &dyn std::fmt::Display| t_args("error-unreadable", &[("name", text(&name))]);
+    let (dir, file) = tilo_files::file_at(path).map_err(|e| unreadable(&e))?;
+    let bytes = tilo_files::blocking::read(&dir, &file).map_err(|e| unreadable(&e))?;
+    String::from_utf8(bytes).map_err(|_| t_args("error-not-text", &[("name", text(&name))]))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ui::headless::Framed;
+    use winit::event::MouseButton;
 
     /// A standalone three-way merge is published through the merge action.
     #[test]
@@ -2214,8 +1865,8 @@ mod tests {
     }
 
     fn selected_compact_source(app: &DiffMergeApp) -> String {
-        let node = Widget::accessibility(&app.merge).expect("merge is exposed to assistive tech");
-        node.children
+        app.merge
+            .access_controls()
             .iter()
             .find(|child| child.state.checked == Some(true))
             .and_then(|child| child.name.clone())
@@ -2228,9 +1879,8 @@ mod tests {
     #[test]
     fn phone_width_keeps_controls_onscreen_with_one_source_switchers() {
         phone_merge_uses_a_full_width_source_switcher();
-        phone_toolbar_keeps_every_control_visible_without_overlap();
         phone_diff_uses_an_accessible_one_source_switcher();
-        narrow_status_bubble_stays_within_the_viewport_for_long_errors();
+        error_replaces_the_stale_comparison_without_status();
     }
 
     /// At phone width, a three-way merge intentionally presents one full-width
@@ -2246,7 +1896,9 @@ mod tests {
         let hits = app.merge.compact_source_hits();
         assert_eq!(hits.len(), 3, "phone has Base/Ours/Theirs source controls");
         assert_eq!(
-            hits.iter().map(|(_, name)| *name).collect::<Vec<_>>(),
+            hits.iter()
+                .map(|(_, name)| name.as_str())
+                .collect::<Vec<_>>(),
             vec!["Base", "Ours", "Theirs"]
         );
         for (rect, _) in &hits {
@@ -2261,10 +1913,9 @@ mod tests {
         }
         assert!(hits.windows(2).all(|pair| pair[0].0.x1 <= pair[1].0.x0));
 
-        let semantic = Widget::accessibility(&app.merge).expect("merge semantics");
         assert_eq!(
-            semantic
-                .children
+            app.merge
+                .access_controls()
                 .iter()
                 .filter(|child| child
                     .name
@@ -2280,111 +1931,22 @@ mod tests {
         // deliberately visible side by side.
         rerender_merge_frame(&mut app, (800.0, 760.0));
         assert!(app.merge.compact_source_hits().is_empty());
-        assert!(
-            Widget::accessibility(&app.merge)
-                .expect("merge semantics")
-                .children
-                .iter()
-                .all(|child| {
-                    !child
-                        .name
-                        .as_deref()
-                        .is_some_and(|name| name.starts_with("Show "))
-                })
-        );
+        assert!(app.merge.access_controls().iter().all(|child| {
+            !child
+                .name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Show "))
+        }));
     }
 
-    /// The compact source switcher is only useful when the surrounding chrome
-    /// is usable too. Keep the complete one-row phone toolbar on screen and
-    /// non-overlapping (both modes, file open/sample, and change navigation).
-    fn phone_toolbar_keeps_every_control_visible_without_overlap() {
-        let mut app = DiffMergeApp::new_demo();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let app = merge_frame(app, state, (390.0, 760.0));
-
-        assert_eq!(app.tool_hits.len(), 6, "two modes and four actions");
-        let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
-        rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
-        assert!(rects.iter().all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0));
-        assert!(rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0));
-    }
-
-    /// Measured-text layout at 1x and 200%: toolbar controls, merge chips, merge
-    /// rows and the diff gutter all follow the renderer. Fresh apps per phase.
+    /// Measured-text layout at 1x and 200%: the status bar, merge resolution
+    /// controls, merge rows and the diff gutter all follow the renderer. Fresh apps per phase.
     #[test]
     fn layout_metrics_follow_the_measured_text_at_every_scale() {
-        toolbar_controls_fit_their_measured_labels_at_every_text_scale();
+        views_fill_the_region_above_the_status_bar_at_every_text_scale();
         merge_chips_stay_inside_their_pane();
         merge_rows_follow_the_scaled_line_height();
         diff_rows_and_gutter_follow_the_scaled_line_height();
-    }
-
-    /// Every toolbar control is sized from its measured label and centred on
-    /// the measured bar, at 1× and at 200% text; the content starts below the
-    /// bar that was actually painted.
-    #[expect(
-        clippy::float_cmp,
-        reason = "at 1x the scale literal and the authored toolbar height are reproduced exactly"
-    )]
-    fn toolbar_controls_fit_their_measured_labels_at_every_text_scale() {
-        let mut widths_at_1x: Vec<f64> = Vec::new();
-        for scale in [1.0f32, 2.0] {
-            let mut app = DiffMergeApp::new_demo();
-            let mut state = ui::State::new();
-            app.sync(&mut state.doc, &state.root);
-            let app = frame_scaled(app, state, (800.0, 700.0), scale);
-
-            assert_eq!(
-                app.tool_hits.len(),
-                6,
-                "{scale}x: two modes and four actions"
-            );
-            let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
-            rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
-            for rect in &rects {
-                assert!(
-                    rect.x0 >= 0.0 && rect.x1 <= 800.0,
-                    "{scale}x: control {rect:?} leaves the window"
-                );
-                assert!(
-                    (rect.center().y - app.toolbar_h / 2.0).abs() < 0.01,
-                    "{scale}x: control {rect:?} is off the bar's centre line"
-                );
-                assert!(
-                    rect.y1 <= app.toolbar_h + 0.01,
-                    "{scale}x: control escapes the bar"
-                );
-            }
-            assert!(
-                rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
-                "{scale}x: toolbar controls overlap: {rects:?}"
-            );
-            let active = match app.mode {
-                Mode::Diff => app.diff.get_rect(),
-                Mode::Merge => app.merge.get_rect(),
-            };
-            assert!(
-                (active.y0 - app.toolbar_h).abs() < 0.01,
-                "{scale}x: content {active:?} does not start below the painted bar {}",
-                app.toolbar_h
-            );
-            assert!(
-                (active.y1 - 700.0).abs() < 0.01,
-                "{scale}x: content ends at the window"
-            );
-
-            let widths: Vec<f64> = app.tool_hits.iter().map(|hit| hit.rect.width()).collect();
-            if scale == 1.0 {
-                assert_eq!(app.toolbar_h, TOOLBAR_H, "1x keeps the design minimum");
-                widths_at_1x = widths;
-            } else {
-                assert!(app.toolbar_h > TOOLBAR_H, "200% text needs a taller bar");
-                for (wide, narrow) in widths.iter().zip(&widths_at_1x) {
-                    assert!(wide > narrow, "a scaled label needs a wider control");
-                }
-            }
-        }
     }
 
     /// Every resolution chip paints inside the pane that owns it, at 800 and
@@ -2407,7 +1969,8 @@ mod tests {
                 "{w}x{h}@{scale}: the demo merge has chips"
             );
             let (_, _, chip_h) = app.merge.metrics_for_test();
-            let compact = pane.width() < 640.0;
+            let pad = f64::from(Theme::dark().tokens.spacing.s3);
+            let compact = pane.width() < f64::from(Theme::dark().tokens.metrics.compact_breakpoint);
             let pane_x0 = if compact {
                 pane.x0
             } else {
@@ -2419,7 +1982,7 @@ mod tests {
                     "{w}x{h}@{scale}: chip for hunk {hunk} {rect:?} starts before its pane"
                 );
                 assert!(
-                    rect.x1 <= pane.x1 - 8.0 + 0.01,
+                    rect.x1 <= pane.x1 - pad + 0.01,
                     "{w}x{h}@{scale}: chip for hunk {hunk} {rect:?} runs past the pane edge"
                 );
                 assert!((rect.height() - chip_h).abs() < 0.01);
@@ -2446,7 +2009,11 @@ mod tests {
 
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
-        let line_2 = f64::from(tr.measure("Ag", 12.5, None).1);
+        let scaled = Theme::dark().with_text_scale(2.0);
+        let line_2 = f64::from(
+            tr.measure_style("Ag", None, &scaled.text(ui::tokens::TextRole::Code))
+                .1,
+        );
         assert!(
             row_2 >= line_2,
             "row pitch {row_2} shorter than the 2x line {line_2}"
@@ -2474,12 +2041,19 @@ mod tests {
 
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
-        let line_2 = f64::from(tr.measure("Ag", 13.0, None).1);
-        let digits_2 = f64::from(tr.measure("0000", 12.0, None).0);
+        let scaled = Theme::dark().with_text_scale(2.0);
+        let line_2 = f64::from(
+            tr.measure_style("Ag", None, &scaled.text(ui::tokens::TextRole::Code))
+                .1,
+        );
+        let digits_2 = f64::from(
+            tr.measure_style("0000", None, &crate::pane::number_style(&scaled))
+                .0,
+        );
         assert!(row_2 >= line_2 && row_2 > row_1 * 1.5);
         assert!(header_2 > header_1);
         assert!(
-            gutter_2 >= digits_2 + 16.0 && gutter_2 > gutter_1,
+            gutter_2 >= digits_2 + 2.0 * f64::from(scaled.tokens.spacing.s3) && gutter_2 > gutter_1,
             "gutter {gutter_2} cannot hold four 2x digits ({digits_2})"
         );
     }
@@ -2490,8 +2064,6 @@ mod tests {
     #[test]
     fn controls_have_pointer_keyboard_and_semantic_parity() {
         compact_source_switcher_has_pointer_keyboard_and_a11y_parity();
-        toolbar_controls_have_semantic_names_focus_geometry_and_activation();
-        toolbar_keyboard_tab_and_enter_follow_the_painted_control_order();
         root_accessibility_explains_empty_and_error_content();
     }
 
@@ -2511,7 +2083,7 @@ mod tests {
             .merge
             .compact_source_hits()
             .into_iter()
-            .find(|(_, name)| *name == "Theirs")
+            .find(|(_, name)| name == "Theirs")
             .expect("Theirs selector")
             .0
             .center();
@@ -2573,104 +2145,118 @@ mod tests {
         assert!(handled);
         assert_eq!(selected_compact_source(app), "Show Ours source");
 
-        let theirs_key = ui::a11y::hash_key(&"diffmerge.source.theirs");
-        assert!(Widget::perform_action_at(
-            &mut app.merge,
+        assert!(Widget::perform_semantic_action(
+            app,
+            "diffmerge.merge-source:theirs",
             &ui::a11y::Action::Activate,
-            &[theirs_key],
             &mut state.doc,
             &state.root,
         ));
         assert_eq!(selected_compact_source(app), "Show Theirs source");
     }
 
-    fn toolbar_controls_have_semantic_names_focus_geometry_and_activation() {
-        let mut app = DiffMergeApp::new_demo();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let mut app = merge_frame(app, state, (980.0, 720.0));
-        let (app, state) = Framed::split(&mut app);
-
-        let semantics = Widget::accessibility(&*app).expect("toolbar semantics");
-        let toolbar = semantics.children.first().expect("toolbar group");
-        assert_eq!(toolbar.children.len(), 6, "both modes and four actions");
-        assert!(toolbar.children.iter().all(|node| {
-            node.state.focusable && node.bounds.is_some() && node.action_target.is_some()
-        }));
-        let sample_index = toolbar
-            .children
-            .iter()
-            .position(|node| node.name.as_deref() == Some("Load sample comparison"))
-            .expect("sample control");
-        assert!(Widget::focus_synthetic_accessibility(
-            &mut *app,
-            &[0, sample_index]
-        ));
-        assert_eq!(app.toolbar_focus, Some(Action::LoadSample));
-        assert!(Widget::perform_semantic_action(
-            &mut *app,
-            "diffmerge.toolbar.show-diff",
-            &ui::a11y::Action::Activate,
-            &mut state.doc,
-            &state.root,
-        ));
-        assert_eq!(app.mode, Mode::Diff);
+    /// The comparison fills everything above the status bar, at 1x and at 200%
+    /// text, and the status bar keeps its band under it.
+    fn views_fill_the_region_above_the_status_bar_at_every_text_scale() {
+        for scale in [1.0f32, 2.0] {
+            let mut app = DiffMergeApp::new_demo();
+            let mut state = ui::State::new();
+            app.sync(&mut state.doc, &state.root);
+            let app = frame_scaled(app, state, (800.0, 700.0), scale);
+            let band = ui::chrome::status_bar::height(&Theme::dark().with_text_scale(scale));
+            let active = match app.mode {
+                Mode::Diff => app.diff.get_rect(),
+                Mode::Merge => app.merge.get_rect(),
+            };
+            assert!(
+                active.y0.abs() < 0.01,
+                "{scale}x: content {active:?} starts at the window top"
+            );
+            assert!(
+                (active.y1 - (700.0 - band)).abs() < 0.01,
+                "{scale}x: content {active:?} ends at the status bar's top edge"
+            );
+        }
     }
 
-    fn toolbar_keyboard_tab_and_enter_follow_the_painted_control_order() {
-        use winit::event::Modifiers;
+    /// A failed open replaces the stale comparison: nothing of it is read out
+    /// or counted, and its navigation is not offered.
+    fn error_replaces_the_stale_comparison_without_status() {
+        let app = DiffMergeApp::for_shot(Some("error"));
+        let app = merge_frame(app, ui::State::new(), (390.0, 760.0));
+        assert_eq!(app.status_readouts(), (String::new(), String::new()));
+        assert!(
+            !app.header().changes,
+            "no change to step to behind an error"
+        );
+    }
 
-        let mut app = DiffMergeApp::new_demo();
+    /// The header controls reach the comparison through their shared queue and
+    /// see its state: the mode they offer follows the mode it is in, and
+    /// stepping needs a change to step to.
+    #[test]
+    fn header_commands_drive_the_comparison_and_publish_its_state() {
+        use crate::chrome::{Chrome, Command, Header};
+
+        let chrome = Chrome::new();
+        let mut app = DiffMergeApp::new();
+        app.attach_chrome(chrome.clone());
+        assert_eq!(
+            chrome.header(),
+            Header {
+                mode: Mode::Diff,
+                changes: false,
+                compact: false
+            },
+            "an empty comparison has nowhere to step"
+        );
+
         let mut state = ui::State::new();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let modifiers = Modifiers::default();
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::Tab)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: &mut state.doc,
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert!(handled);
-        assert_eq!(app.toolbar_focus, Some(Action::ModeDiff));
-        handled = false;
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::Tab)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: &mut state.doc,
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert_eq!(app.toolbar_focus, Some(Action::ModeMerge));
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::Enter)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: &mut state.doc,
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
+        chrome.push(Command::LoadSample);
+        chrome.push(Command::Mode(Mode::Merge));
+        app.sync(&mut state.doc, &state.root);
         assert_eq!(app.mode, Mode::Merge);
+        assert_eq!(
+            chrome.header(),
+            Header {
+                mode: Mode::Merge,
+                changes: true,
+                compact: false
+            }
+        );
+
+        let before = app.merge.active_change();
+        chrome.push(Command::Next);
+        app.sync(&mut state.doc, &state.root);
+        assert_ne!(app.merge.active_change(), before, "Next moved to a change");
+
+        chrome.push(Command::Mode(Mode::Diff));
+        app.sync(&mut state.doc, &state.root);
+        assert_eq!(chrome.header().mode, Mode::Diff);
+    }
+
+    /// The conflict count is stated once: in the merged result's header, not
+    /// again in the status bar.
+    #[test]
+    fn the_status_bar_does_not_repeat_the_conflict_count() {
+        let app = DiffMergeApp::new_demo();
+        let (left, right) = app.status_readouts();
+        assert!(!left.contains("conflict") && !right.contains("conflict"));
+        assert!(left.contains("resolved"), "{left}");
+    }
+
+    /// The plurals follow the catalog: one change reads "1 change".
+    #[test]
+    fn counts_in_the_status_bar_follow_plural_rules() {
+        let mut app = DiffMergeApp::new();
+        app.merge
+            .set_inputs("a (base)", "a\n", "a (ours)", "b\n", "a (theirs)", "a\n");
+        app.mode = Mode::Merge;
+        let (left, _) = app.status_readouts();
+        assert!(left.starts_with("1 change,"), "{left}");
+        app.load_sample();
+        let (left, _) = app.status_readouts();
+        assert!(left.starts_with("4 changes,"), "{left}");
     }
 
     fn phone_diff_uses_an_accessible_one_source_switcher() {
@@ -2681,18 +2267,8 @@ mod tests {
         let mut app = merge_frame(app, state, (390.0, 760.0));
         let (app, state) = Framed::split(&mut app);
         let root = Widget::accessibility(&*app).expect("diff semantics");
-        let diff = root
-            .children
-            .iter()
-            .find(|child| {
-                child
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("Diff between"))
-            })
-            .expect("active diff content");
         assert_eq!(
-            diff.children
+            root.children
                 .iter()
                 .filter(|child| child
                     .name
@@ -2749,23 +2325,6 @@ mod tests {
         assert!(error.contains("comparison changed"));
     }
 
-    fn narrow_status_bubble_stays_within_the_viewport_for_long_errors() {
-        let mut app = DiffMergeApp::for_shot(Some("error"));
-        app.arm_status_bubble_for_shots();
-        let app = merge_frame(app, ui::State::new(), (390.0, 760.0));
-        let bubble = app.status_bubble_rect();
-        assert!(
-            bubble.x0 >= app.rect.x0 && bubble.x1 <= app.rect.x1,
-            "narrow status bubble must not clip: {bubble:?} in {:?}",
-            app.rect
-        );
-        assert!(
-            bubble.y0 >= app.rect.y0 && bubble.y1 <= app.rect.y1,
-            "narrow status bubble must remain vertically visible: {bubble:?} in {:?}",
-            app.rect
-        );
-    }
-
     fn root_accessibility_includes_active_hunks_and_uses_the_crdt_resolution_path() {
         let mut app = DiffMergeApp::new_demo();
         let mut state = ui::State::new();
@@ -2774,15 +2333,15 @@ mod tests {
         let (app, state) = Framed::split(&mut app);
 
         let root = Widget::accessibility(&*app).expect("root semantics");
-        let merge = root
+        let target = root
             .children
             .iter()
-            .find(|child| child.name.as_deref() == Some("Three-way merge"))
-            .expect("active merge content is not hidden behind toolbar chrome");
-        let target = merge
-            .children
-            .iter()
-            .find_map(|child| child.action_target.clone())
+            .find_map(|child| {
+                child
+                    .action_target
+                    .clone()
+                    .filter(|target| target.starts_with("diffmerge.merge.resolve:"))
+            })
             .expect("one drawn resolution action is accessible");
         let before = crate::doc::MergeDoc::merged_text(&state.doc);
         assert!(Widget::perform_semantic_action(

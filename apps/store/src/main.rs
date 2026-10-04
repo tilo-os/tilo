@@ -2,6 +2,9 @@
 //!
 //! The real worker-backed application root lives in [`store::app_root`], so
 //! the SDK, integration harnesses, and this binary share one lifecycle.
+//! A plain launch, `--shots` and every other standard launch mode run the
+//! framework app; only a launch that carries a `.flatpakref` file or a
+//! `tilo-store:` link needs the standalone root that opens it.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -30,23 +33,17 @@ extern crate runtime_dylib;
 use store::FlatpakRef;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
 
-fn wants_standalone(args: impl Iterator<Item = String>) -> bool {
-    let mut args = args;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" => return true,
-            flag if flag.starts_with('-') => {}
-            _ => {}
-        }
-    }
-    false
+/// Whether an argument is a launch target only the standalone root can open.
+fn is_launch_target(arg: &str) -> bool {
+    arg.starts_with("tilo-store:")
+        || std::path::Path::new(arg)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("flatpakref"))
 }
 
 fn main() {
-    if !wants_standalone(std::env::args().skip(1)) {
+    if !std::env::args().skip(1).any(|arg| is_launch_target(&arg)) {
         ui::framework::run::<store::StoreShell>();
         return;
     }
@@ -54,23 +51,7 @@ fn main() {
     ui::launch::run_or_exit(
         &LaunchSpec::new_with_args("so.tilo.store", live_root)
             .max_positionals(1)
-            .scenarios(&[
-                "wide",
-                "narrow",
-                "detail",
-                "remotes",
-                "progress",
-                "error",
-                "moderation",
-                "moderation-case",
-                "moderation-loading",
-                "moderation-offline",
-                "moderation-error",
-                "empty",
-                "offline",
-            ])
-            .configure_app(|app| store::doc_actions::register(app.action_registry_mut()))
-            .shot_handler(shot_handler),
+            .configure_app(|app| store::doc_actions::register(app.action_registry_mut())),
     );
 }
 
@@ -119,24 +100,9 @@ fn parse_store_uri(uri: &str) -> Result<String, LaunchError> {
     Ok(id.to_string())
 }
 
-fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
-    let out = args
-        .shots
-        .as_deref()
-        .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    store::shots::render_scenario_to_path_with_theme(
-        args.viewport
-            .unwrap_or(store::shots::DEFAULT_SHOTS_VIEWPORT),
-        out,
-        args.scenario.as_deref(),
-        &ui::launch::shot_theme(args),
-    )
-    .map_err(|error| LaunchError::Operation(error.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::parse_store_uri;
+    use super::{is_launch_target, parse_store_uri};
 
     #[test]
     fn store_deep_link_accepts_only_a_stable_app_identity() {
@@ -151,5 +117,16 @@ mod tests {
         ] {
             assert!(parse_store_uri(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn only_links_and_references_need_the_standalone_root() {
+        assert!(is_launch_target("tilo-store:app/so.tilo.notes"));
+        assert!(is_launch_target(
+            "/home/me/Downloads/org.gnome.Chess.flatpakref"
+        ));
+        assert!(!is_launch_target("--shots"));
+        assert!(!is_launch_target("target/look/app-store/wide.png"));
+        assert!(!is_launch_target("1280x800"));
     }
 }

@@ -58,7 +58,7 @@ fn production_startup_preserves_saved_merge() {
 }
 
 fn test_root() -> Box<dyn ui::widget::Widget> {
-    crate::app_root()
+    Box::new(crate::DiffMergeApp::new())
 }
 
 // Routes actual resource descriptors through Driver's admitted document-action

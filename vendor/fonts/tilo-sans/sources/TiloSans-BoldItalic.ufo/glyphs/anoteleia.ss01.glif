@@ -1,7 +1,0 @@
-<?xml version='1.0' encoding='UTF-8'?>
-<glyph name="anoteleia.ss01" format="2">
-  <advance width="285"/>
-  <outline>
-    <component base="period.ss01" xOffset="80" yOffset="345"/>
-  </outline>
-</glyph>
