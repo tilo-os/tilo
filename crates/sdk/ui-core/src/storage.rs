@@ -500,8 +500,15 @@ impl SettingsSection {
     /// The same section in the document at `path` instead of the user's
     /// (tests, tools that edit another profile).
     #[must_use]
-    pub fn in_file(mut self, path: impl Into<PathBuf>) -> Self {
-        self.document = SettingsDocument::File(path.into());
+    pub fn in_file(self, path: impl Into<PathBuf>) -> Self {
+        self.in_document(SettingsDocument::File(path.into()))
+    }
+
+    /// The same section in `document`: the one the host gave the app
+    /// ([`AppStorage::settings_document`]).
+    #[must_use]
+    pub fn in_document(mut self, document: SettingsDocument) -> Self {
+        self.document = document;
         self
     }
 
