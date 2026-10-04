@@ -205,8 +205,7 @@ impl BooksApp {
         self.selected_block = Some(anchor.block);
         if scenario == "note" {
             self.composing = Some(COMPOSED_NOTE);
-            let library = self.actions.framework.clone();
-            self.note_composer.open(COMPOSED_NOTE, library.as_ref());
+            self.note_composer.open(COMPOSED_NOTE, &self.dispatch);
         }
     }
 }

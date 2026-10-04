@@ -19,7 +19,10 @@ fn workspace_env(path: &std::path::Path) -> tilo_test_env::ScopedEnv {
 }
 
 fn app_with_sample() -> BooksApp {
-    BooksApp::with_library(load_sample_library())
+    BooksApp::with_library(
+        crate::resource::library_dispatcher_for_test(),
+        load_sample_library(),
+    )
 }
 
 /// The reader on the sample shelf as screenshot `scenario` stages it: the
@@ -1840,8 +1843,6 @@ fn notes_are_composed_reopened_and_persisted() {
     // --- phase: composing_a_note_types_backspaces_and_persists ---
     {
         let mut app = app_with_sample();
-        let (_library_app, library) = crate::resource::library_dispatcher_for_test();
-        app.attach_framework(library);
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         // Select a word, then start a note with the 'm' shortcut.
@@ -1887,8 +1888,6 @@ fn notes_are_composed_reopened_and_persisted() {
     // --- phase: clicking_a_finished_note_reopens_it_for_editing ---
     {
         let mut app = app_with_sample();
-        let (_library_app, library) = crate::resource::library_dispatcher_for_test();
-        app.attach_framework(library);
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1280.0, 800.0);
         let __p = page_point(&app);
@@ -3041,7 +3040,7 @@ fn live_start_is_empty_and_onboards() {
     {
         // The live app opens onto the shelf (its home), empty until the document
         // load on the first sync — never a fabricated starter book.
-        let app = BooksApp::new(false);
+        let app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
         assert!(
             app.library.is_empty(),
             "no books before the document is loaded"
@@ -3057,7 +3056,8 @@ fn live_start_is_empty_and_onboards() {
     {
         // The empty state offers the primary way in — open a book from anywhere —
         // and never asks the reader to drop files in a magic folder and reload.
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
         assert!(app.library.is_empty());
@@ -3173,7 +3173,8 @@ fn library_shelf_layout_filtering_and_keyboard() {
         // suppressed — the title renders exactly once. Real cover art keeps the
         // shelf label (its embedded title may not be legible on the shelf), and
         // does not itself re-draw the title, so it too shows once.
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let generated = Book {
             id: "gen".into(),
             title: "Generated".into(),
@@ -3241,7 +3242,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
         // Hide-read on: the finished book drops out of the display order.
         BooksDoc::write_library_prefs(
             &mut doc,
-            &LibraryPrefs {
+            LibraryPrefs {
                 sort: LibrarySort::Title,
                 hide_read: true,
             },
@@ -3257,7 +3258,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
         // Sort by recently opened (hide-read off): most-recent first.
         BooksDoc::write_library_prefs(
             &mut doc,
-            &LibraryPrefs {
+            LibraryPrefs {
                 sort: LibrarySort::Recent,
                 hide_read: false,
             },
@@ -3272,7 +3273,7 @@ fn library_shelf_layout_filtering_and_keyboard() {
         // Sort by progress: furthest-read first.
         BooksDoc::write_library_prefs(
             &mut doc,
-            &LibraryPrefs {
+            LibraryPrefs {
                 sort: LibrarySort::Progress,
                 hide_read: false,
             },
@@ -3315,7 +3316,8 @@ fn importing_and_removing_books_keeps_one_identity() {
         let path = tmp.path().join("picked.epub");
         std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
 
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
         assert!(app.library.is_empty(), "starts empty");
@@ -3338,7 +3340,8 @@ fn importing_and_removing_books_keeps_one_identity() {
 
     // --- phase: disconnected_picker_settles_the_pending_resource_invocation ---
     {
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         let invocation = tilo_actions::InvocationId::new();
         let (sender, receiver) = std::sync::mpsc::channel::<PortalOutcome>();
@@ -3364,7 +3367,8 @@ fn importing_and_removing_books_keeps_one_identity() {
         let watched = tmp.path().join("watched.epub");
         std::fs::write(&open, crate::content::SAMPLE_EPUB).unwrap();
         std::fs::write(&watched, crate::content::SAMPLE_EPUB).unwrap();
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
 
         let (_entered, _release) = app.begin_import_held(&open, ImportKind::Open).unwrap();
         app.begin_import(watched, ImportKind::Watch).unwrap();
@@ -3375,7 +3379,8 @@ fn importing_and_removing_books_keeps_one_identity() {
 
     // --- phase: importer_disconnect_and_generation_exhaustion_are_visible_failures ---
     {
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let path = PathBuf::from("/tmp/book.epub");
         app.import_worker.as_ref().unwrap().close_for_test();
         std::thread::sleep(Duration::from_millis(10));
@@ -3389,7 +3394,8 @@ fn importing_and_removing_books_keeps_one_identity() {
                 .is_some_and(|s| s.contains("importer"))
         );
 
-        let mut exhausted = BooksApp::with_library(Vec::new());
+        let mut exhausted =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         exhausted.import_generation = u64::MAX;
         let error = exhausted.begin_import(path, ImportKind::Open).unwrap_err();
         exhausted.settle_import_failure(error, "ebook.importer_exhausted");
@@ -3413,7 +3419,8 @@ fn importing_and_removing_books_keeps_one_identity() {
         std::fs::write(&pa, crate::content::SAMPLE_EPUB).unwrap();
         std::fs::write(&pb, crate::content::SAMPLE_EPUB).unwrap();
 
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
@@ -3446,7 +3453,8 @@ fn importing_and_removing_books_keeps_one_identity() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("book.epub");
         std::fs::write(&path, crate::content::SAMPLE_EPUB).unwrap();
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
         app.import_and_open_for_test(&mut doc, &path);
@@ -3506,7 +3514,8 @@ fn import_worker_is_non_blocking_and_wakes_its_host() {
         let pb = b.path().join("new-b.epub");
         std::fs::write(&pa, crate::content::SAMPLE_EPUB).unwrap();
         std::fs::write(&pb, crate::content::SAMPLE_EPUB).unwrap();
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
 
         // Queueing returns while the worker is held inside A's parse, so the UI
@@ -3589,7 +3598,8 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let local_path = local.path().join("local.epub");
         std::fs::write(&local_path, crate::content::SAMPLE_EPUB).unwrap();
 
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
@@ -3617,7 +3627,8 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let src = home.path().join("mine.epub");
         std::fs::write(&src, crate::content::SAMPLE_EPUB).unwrap();
 
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
         app.import_and_open_for_test(&mut doc, &src);
@@ -3638,7 +3649,8 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let source_dir = tempfile::tempdir().unwrap();
         let source = source_dir.path().join("local.epub");
         std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         app.import_and_open_for_test(&mut doc, &source);
         let id = app.library[0].id.clone();
@@ -3686,7 +3698,8 @@ fn workspace_sharing_materialises_and_verifies_books() {
         std::fs::create_dir_all(shared_path.parent().unwrap()).unwrap();
         std::fs::write(&shared_path, crate::content::SAMPLE_EPUB).unwrap();
 
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         let (_, entry) = crate::content::prepare_imported_book(&shared_path, remote);
         BooksDoc::upsert_library_entry(&mut doc, &entry);
@@ -3724,7 +3737,8 @@ fn workspace_sharing_materialises_and_verifies_books() {
     {
         let workspace = tempfile::tempdir().unwrap();
         let _workspace = workspace_env(workspace.path());
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         let id = "book:claimed-but-wrong".to_string();
         let shared_path = crate::content::workspace_book_path(&id);
@@ -3773,7 +3787,8 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let source_dir = tempfile::tempdir().unwrap();
         let source = source_dir.path().join("cancel.epub");
         std::fs::write(&source, crate::content::SAMPLE_EPUB).unwrap();
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         app.import_and_open_for_test(&mut doc, &source);
         let payload = serde_json::to_vec(&crate::actions::EbookOperation::ShareBook {
@@ -3928,19 +3943,19 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         });
         app.selected_block = Some(hl.block);
 
-        let expected = crate::actions::encode(
+        let mut expected = doc.fork();
+        tilo_actions::Action::apply(
             &app.resolve_highlight_plan(app.sel.expect("selection"), app.hi_color)
                 .expect("canonical selection plan")
                 .into_action(),
-        );
+            &mut expected,
+        )
+        .unwrap();
         // Dispatch the swatch's action through the real handler a click invokes.
         app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
-        let dispatched = app
-            .last_dispatched()
-            .cloned()
-            .expect("the swatch dispatched an action");
         assert_eq!(
-            dispatched.payload, expected.payload,
+            BooksDoc::list_annotations(&doc),
+            BooksDoc::list_annotations(&expected),
             "the swatch uses the canonical selection action"
         );
         // And it really toggled the highlight off through that action.
@@ -4426,8 +4441,6 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
     // delete one, then trash the whole highlight — all through the real hits.
     {
         let mut app = app_with_sample();
-        let (_library_app, library) = crate::resource::library_dispatcher_for_test();
-        app.attach_framework(library);
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Make a single-word highlight, then open its overlay directly.
@@ -4562,6 +4575,12 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
             }
         };
 
+        assert_eq!(spec_encoded.type_id, crate::actions::EBOOK_ACTION_TYPE);
+        let palette_action: crate::actions::EbookAction =
+            serde_json::from_slice(&spec_encoded.payload).unwrap();
+        let mut expected = doc.fork();
+        tilo_actions::Action::apply(&palette_action, &mut expected).unwrap();
+
         // Click the overlay's per-comment × button (the real affordance).
         let del = find_hit(&app, |a| matches!(a, Action::DeleteComment(_)))
             .expect("a comment delete button");
@@ -4570,14 +4589,10 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
             "delete-comment click handled"
         );
 
-        let dispatched = app
-            .last_dispatched()
-            .cloned()
-            .expect("the button dispatched an action");
-        assert_eq!(dispatched.type_id, spec_encoded.type_id);
         assert_eq!(
-            dispatched.payload, spec_encoded.payload,
-            "the button and the palette build the identical EncodedAction",
+            BooksDoc::list_annotations(&doc),
+            BooksDoc::list_annotations(&expected),
+            "the button and the palette make the identical edit",
         );
         // And it really removed the comment through that action.
         assert!(
@@ -4596,7 +4611,8 @@ fn font_rename_editor_commits_cancels_and_fits() {
     // the whole value (so the next keystroke replaces it), and a click
     // outside the field blur-commits the rename to the CRDT.
     {
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
@@ -4643,7 +4659,8 @@ fn font_rename_editor_commits_cancels_and_fits() {
     // Esc cancels an inline font rename: the field closes and the CRDT keeps
     // the original name — proven on the real `handle_event` path.
     {
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
@@ -4671,7 +4688,8 @@ fn font_rename_editor_commits_cancels_and_fits() {
     // and its left edge backs off by the shared field's text inset so the
     // edited name starts exactly where the static name is painted.
     {
-        let mut app = BooksApp::with_library(Vec::new());
+        let mut app =
+            BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
