@@ -305,8 +305,9 @@ jobs:
           retention-days: 1
 
   # The fresh disk, the headless shell and `tilo-legacy` on one KVM runner.
-  # The runner's own kernel provides KVM and vhost-vsock (only it can load
-  # the module); the test runs in the CI builder image with those devices,
+  # The runner's own kernel provides KVM (and vhost-vsock where it has it;
+  # only the runner can load the module); the test runs in the CI builder
+  # image with those devices,
   # as an ordinary user whose libvirt session owns the VM, exactly as on a
   # desktop.
   e2e:
@@ -320,18 +321,18 @@ jobs:
         run: |
           set -euo pipefail
           echo "kernel $(uname -r)"
-          sudo -n modprobe vhost_vsock
+          # Without the module the test runs on the user-space vsock daemon.
+          sudo -n modprobe vhost_vsock || echo "::notice::no vhost_vsock: using vhost-device-vsock"
           # Kata's job container has a static /dev; the kernel's own nodes
           # appear once devtmpfs is mounted.
-          if [[ ! -c /dev/kvm || ! -c /dev/vhost-vsock ]]; then
+          if [[ ! -c /dev/kvm ]]; then
             sudo -n mount -t devtmpfs devtmpfs /dev
             sudo -n mkdir -p /dev/pts /dev/shm
             [ "$(stat -f -c %T /dev/pts)" = devpts ] || sudo -n mount -t devpts -o gid=5,mode=620,ptmxmode=666 devpts /dev/pts
             mountpoint -q /dev/shm || sudo -n mount -t tmpfs -o mode=1777 tmpfs /dev/shm
           fi
-          sudo -n chmod 0666 /dev/kvm /dev/vhost-vsock
+          sudo -n chmod 0666 /dev/kvm
           python3 os/dev/probe-kvm.py x86_64
-          test -c /dev/vhost-vsock
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           name: legacy-guest-disk-x86_64

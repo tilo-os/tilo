@@ -4,17 +4,19 @@
 #   legacy-vm-e2e.sh        (from the repository root, as root in the container)
 #
 # Expects e2e/disk/disk.qcow2 (the fresh guest disk), e2e/bin/{shell,tilo-legacy}
-# and the runner's /dev/kvm and /dev/vhost-vsock. Installs the host side of a
-# legacy VM, then runs the test as an ordinary user, whose libvirt session
-# owns the VM. Logs and screenshots land in e2e/artifacts.
+# and the runner's /dev/kvm; /dev/vhost-vsock when the runner's kernel has it,
+# else the user-space vhost-device-vsock serves the VM's vsock. Installs the
+# host side of a legacy VM, then runs the test as an ordinary user, whose
+# libvirt session owns the VM. Logs and screenshots land in e2e/artifacts.
 set -euo pipefail
 
-test -c /dev/kvm && test -c /dev/vhost-vsock
-chmod 0666 /dev/kvm /dev/vhost-vsock
+test -c /dev/kvm
+chmod 0666 /dev/kvm
+[[ ! -c /dev/vhost-vsock ]] || chmod 0666 /dev/vhost-vsock
 
 dnf install -y --setopt=install_weak_deps=False \
   libvirt-client libvirt-daemon-driver-qemu libvirt-daemon-common \
-  qemu-kvm-core qemu-img edk2-ovmf passt virtiofsd waypipe skopeo
+  qemu-kvm-core qemu-img edk2-ovmf passt virtiofsd waypipe skopeo vhost-device-vsock
 command -v virsh virtqemud qemu-system-x86_64 passt waypipe >/dev/null
 test -x /usr/libexec/virtiofsd
 

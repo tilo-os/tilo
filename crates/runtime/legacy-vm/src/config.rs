@@ -71,6 +71,24 @@ impl Paths {
         self.runtime.join("supervisor.log")
     }
 
+    /// The guest's serial console.
+    #[must_use]
+    pub fn console_log(&self) -> PathBuf {
+        self.state.join("console.log")
+    }
+
+    /// QEMU's vhost-user socket to `vhost-device-vsock`.
+    #[must_use]
+    pub fn vsock_vhost_user(&self) -> PathBuf {
+        self.runtime.join("vsock-vhu.sock")
+    }
+
+    /// `vhost-device-vsock`'s host side: connect here to reach guest ports.
+    #[must_use]
+    pub fn vsock_uds(&self) -> PathBuf {
+        self.runtime.join("vsock.sock")
+    }
+
     #[must_use]
     pub fn share_socket(&self, tag: &str) -> PathBuf {
         self.runtime.join(format!("{tag}.sock"))

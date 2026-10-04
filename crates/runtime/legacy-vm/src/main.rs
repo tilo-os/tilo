@@ -7,7 +7,7 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use legacy_agent_protocol::client::{self, LaunchIo};
-use legacy_agent_protocol::vsock::VsockStream;
+use legacy_agent_protocol::link::AgentLink;
 use legacy_agent_protocol::waypipe::PORT_ENV;
 use legacy_agent_protocol::{
     AGENT_PORT, Display, GuestMessage, GuestOs, HostMessage, Launch, Stdio as LaunchStdio,
@@ -132,7 +132,11 @@ fn config(options: &Options, paths: Paths) -> VmConfig {
 }
 
 /// Ask the supervisor to wake the VM, starting one when none runs.
-fn ensure(options: &Options, paths: &Paths, extra: Vec<PathBuf>) -> Result<(u32, u32), String> {
+fn ensure(
+    options: &Options,
+    paths: &Paths,
+    extra: Vec<PathBuf>,
+) -> Result<(AgentLink, u32), String> {
     let request = ControlRequest::Ensure { extra };
     let socket = paths.supervisor_socket();
     let mut reply = control::ask(&socket, &request).map_err(|e| e.to_string())?;
@@ -142,7 +146,7 @@ fn ensure(options: &Options, paths: &Paths, extra: Vec<PathBuf>) -> Result<(u32,
             .map_err(|e| e.to_string())?;
     }
     match reply {
-        Some(ControlReply::Ready { cid, waypipe_port }) => Ok((cid, waypipe_port)),
+        Some(ControlReply::Ready { link, waypipe_port }) => Ok((link, waypipe_port)),
         Some(ControlReply::Error(message)) => Err(message),
         Some(other) => Err(format!("unexpected supervisor reply {other:?}")),
         None => Err(format!(
@@ -259,7 +263,7 @@ fn run_in_guest(
         (Some(cwd), true) => vec![cwd.clone()],
         _ => Vec::new(),
     };
-    let (cid, port) = ensure(options, paths, extra)?;
+    let (link, port) = ensure(options, paths, extra)?;
     let mut env = vec![(PORT_ENV.to_string(), port.to_string())];
     for name in ["LANG", "LC_ALL", "TERM", "COLORTERM"] {
         if let Ok(value) = std::env::var(name) {
@@ -277,7 +281,9 @@ fn run_in_guest(
             Display::None
         },
     };
-    let stream = VsockStream::connect(cid, AGENT_PORT).map_err(|e| format!("guest agent: {e}"))?;
+    let stream = link
+        .connect(AGENT_PORT)
+        .map_err(|e| format!("guest agent: {e}"))?;
     // A windowed app started from search has no terminal to read from.
     let stdin: Option<Box<dyn std::io::Read + Send>> =
         if !windowed || std::io::stdin().is_terminal() {
@@ -308,8 +314,8 @@ fn agent_request(
     paths: &Paths,
     message: &HostMessage,
 ) -> Result<GuestMessage, String> {
-    let (cid, _) = ensure(options, paths, Vec::new())?;
-    let mut stream = VsockStream::connect(cid, AGENT_PORT).map_err(|e| e.to_string())?;
+    let (link, _) = ensure(options, paths, Vec::new())?;
+    let mut stream = link.connect(AGENT_PORT).map_err(|e| e.to_string())?;
     client::request(&mut stream, message).map_err(|e| e.to_string())
 }
 
@@ -470,6 +476,7 @@ fn status(options: &Options, paths: &Paths) -> Result<ExitCode, String> {
         .map_err(|e| e.to_string())?;
     if let Some(ControlReply::Status(report)) = reply {
         println!("phase:   {}", report.phase);
+        println!("vsock:   {}", report.transport);
         if let Some(running) = report.running {
             println!("running: {running}");
         }
@@ -493,6 +500,11 @@ fn status(options: &Options, paths: &Paths) -> Result<ExitCode, String> {
         _ => "off",
     };
     println!("phase:   {phase}");
+    println!(
+        "vsock:   {}",
+        legacy_vm::transport::VsockBackend::detect()
+            .map_or("none", legacy_vm::transport::VsockBackend::as_str)
+    );
     Ok(ExitCode::SUCCESS)
 }
 
