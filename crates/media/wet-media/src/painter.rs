@@ -44,7 +44,7 @@ impl Painted {
 /// `origin`, `width` by `height` cells, receives them: moved into the
 /// window's cells, and those that cannot reach it left out. A mark painted
 /// dry outside the window still dries the wash before it, so it stays as an
-/// empty region that paints nothing.
+/// empty region that paints nothing; an eraser elsewhere dries nothing.
 pub fn windowed(
     marks: &[Painted],
     origin: (usize, usize),
@@ -62,13 +62,15 @@ pub fn windowed(
             });
             let mark = if reaches {
                 mark
-            } else if !mark.wet() {
+            } else if let (
+                Mark::Stroke(crate::engine::Stroke { paint, .. })
+                | Mark::Fill(crate::engine::Fill { paint, .. }),
+                false,
+            ) = (&mark, mark.wet())
+            {
                 Mark::Fill(crate::engine::Fill {
                     contours: Vec::new(),
-                    paint: match &mark {
-                        Mark::Stroke(stroke) => stroke.paint,
-                        Mark::Fill(fill) => fill.paint,
-                    },
+                    paint: *paint,
                     opacity: 0.0,
                     wet: false,
                     brush: 0.0,

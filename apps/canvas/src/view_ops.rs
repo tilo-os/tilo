@@ -9,12 +9,12 @@
 use serde_json::{Value, json};
 use ui::TextRenderer;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Rect};
+use ui::vello::kurbo::{Affine, Point, Rect};
 use ui::vello::peniko::Color;
 
 use crate::media;
-use crate::model::Mark;
 use crate::model::{Artwork, Layer, Shape};
+use crate::model::{Mark, path_data};
 use crate::render::{Options, Renderer};
 use crate::resource::{Compare, Export, Inspect, Look};
 
@@ -41,7 +41,7 @@ const JPEG_QUALITY: u8 = 85;
 /// A rendered picture, encoded.
 pub struct Picture {
     pub bytes: Vec<u8>,
-    /// `png` or `jpeg`.
+    /// `png`, `jpeg` or `webp`.
     pub format: &'static str,
     pub width: u32,
     pub height: u32,
@@ -105,7 +105,12 @@ fn encode(rgba: &[u8], (width, height): (u32, u32), jpeg: bool) -> Result<Pictur
     })
 }
 
-fn render_rgba(
+/// Render `region` of `art` with `pixels_per_unit` as RGBA, its width
+/// and height.
+///
+/// # Errors
+/// Returns why nothing could be rendered.
+pub fn render_rgba(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,
@@ -134,12 +139,25 @@ fn render_rgba(
 /// # Errors
 /// Returns the encoder's error.
 pub fn encode_jpeg(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    encode_jpeg_at(rgba, width, height, JPEG_QUALITY)
+}
+
+/// Opaque RGBA8 as JPEG bytes at `quality` (1-100); alpha is dropped.
+///
+/// # Errors
+/// Returns the encoder's error.
+pub fn encode_jpeg_at(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
     let rgb: Vec<u8> = rgba
         .chunks_exact(4)
         .flat_map(|pixel| pixel.iter().take(3).copied())
         .collect();
     let mut jpeg = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, JPEG_QUALITY)
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
         .encode(&rgb, width, height, image::ExtendedColorType::Rgb8)
         .map_err(|error| error.to_string())?;
     Ok(jpeg)
@@ -167,20 +185,26 @@ pub fn pixels(
         let [r, g, b, a] = BACKDROP;
         Color::from_rgba8(r, g, b, a)
     };
-    // The renderer for the last size is kept: it has learned how much memory
-    // a scene this busy needs, so the next look fits at once.
+    // The renderers for the last sizes are kept: each has learned how much
+    // memory a scene this busy needs, so the next look fits at once, and an
+    // eyedropper's tiny picture does not cost the magic wand's its renderer.
     let mut kept = OFFSCREEN
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if kept
-        .as_ref()
-        .is_none_or(|(size, _)| *size != (width, height))
-    {
+    let at = if let Some(at) = kept.iter().position(|(size, _)| *size == (width, height)) {
+        at
+    } else {
         let offscreen = ui::offscreen::OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("no renderer for a {width}x{height} picture: {error}"))?;
-        *kept = Some(((width, height), offscreen));
-    }
-    let Some((_, offscreen)) = kept.as_mut() else {
+        if kept.len() >= KEPT_RENDERERS {
+            kept.remove(0);
+        }
+        kept.push(((width, height), offscreen));
+        kept.len() - 1
+    };
+    let entry = kept.remove(at);
+    kept.push(entry);
+    let Some((_, offscreen)) = kept.last_mut() else {
         return Err("no renderer".to_owned());
     };
     let rgba = offscreen.try_render_resilient(&scene, backdrop);
@@ -188,9 +212,50 @@ pub fn pixels(
     Ok((rgba?, width, height))
 }
 
-/// The offscreen renderer of the last picture's size.
-static OFFSCREEN: std::sync::Mutex<Option<((u32, u32), ui::offscreen::OffscreenRenderer)>> =
-    std::sync::Mutex::new(None);
+/// The offscreen renderers of the last pictures' sizes, the newest last.
+static OFFSCREEN: std::sync::Mutex<Vec<((u32, u32), ui::offscreen::OffscreenRenderer)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// How many picture sizes keep a renderer.
+const KEPT_RENDERERS: usize = 2;
+
+/// The side of the patch of artwork the eyedropper averages, in units.
+const SAMPLED_SIDE: f64 = 1.0; // a sampling footprint in artwork units, not on-screen spacing
+
+/// The colour the artwork shows at `at`, as the window draws it: every
+/// layer composited through its mask, erasers taken off, the reference
+/// over it when it is shown. Averaged over a unit's patch, so a grainy
+/// paint gives its colour rather than one fleck's.
+///
+/// # Errors
+/// Returns a render failure.
+pub fn shown_colour(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    at: Point,
+) -> Result<Color, String> {
+    let half = SAMPLED_SIDE / 2.0;
+    let patch = Rect::new(at.x - half, at.y - half, at.x + half, at.y + half);
+    let options = Options {
+        view: Some(patch),
+        reference: true,
+        ..Options::default()
+    };
+    let (rgba, _, _) = pixels(patch, 4.0, false, |scene, to| {
+        renderer.draw(art, scene, to, text, &options);
+    })?;
+    let mut sum = [0u32; 3];
+    let mut count = 0u32;
+    for pixel in rgba.chunks_exact(4) {
+        for (total, channel) in sum.iter_mut().zip(pixel) {
+            *total += u32::from(*channel);
+        }
+        count += 1;
+    }
+    let mean = |total: u32| u8::try_from(total / count.max(1)).unwrap_or(u8::MAX);
+    Ok(Color::from_rgb8(mean(sum[0]), mean(sum[1]), mean(sum[2])))
+}
 
 /// The cells `compare` scores the picture in, per side.
 const COMPARE_CELLS: u32 = 4;
@@ -469,6 +534,7 @@ pub fn look(
         bare: false,
         wet: None,
         marks: None,
+        selection: true,
         detail: None,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
@@ -607,21 +673,55 @@ pub fn export(
     export: &Export,
 ) -> Result<(Picture, Value), String> {
     let scale = export.scale.unwrap_or(1.0);
-    if !(0.25..=4.0).contains(&scale) || art.width.max(art.height) * scale > 8192.0 {
+    if !(0.05..=4.0).contains(&scale) || art.width.max(art.height) * scale > 8192.0 {
         return Err(
-            "scale must be within 0.25..=4 and the picture at most 8192 pixels wide".into(),
+            "scale must be within 0.05..=4 and the picture at most 8192 pixels wide".into(),
         );
     }
-    let picture = render(
+    let format = export.format.as_deref().unwrap_or("png");
+    let quality = export.quality.unwrap_or(EXPORT_JPEG_QUALITY);
+    if !(1..=100).contains(&quality) {
+        return Err("quality is 1 to 100".into());
+    }
+    let (rgba, width, height) = render_rgba(
         renderer,
         text,
         art,
-        (art.bounds(), scale),
+        art.bounds(),
+        scale,
         &Options::default(),
-        false,
     )?;
-    let info = json!({"width": picture.width, "height": picture.height, "format": "png"});
-    Ok((picture, info))
+    let (bytes, format) = match format {
+        "png" => (encode_png(&rgba, width, height)?, "png"),
+        "jpeg" | "jpg" => (encode_jpeg_at(&rgba, width, height, quality)?, "jpeg"),
+        "webp" => (encode_webp(&rgba, width, height)?, "webp"),
+        other => return Err(format!("format {other:?} is png, jpeg or webp")),
+    };
+    let info = json!({"width": width, "height": height, "format": format, "bytes": bytes.len()});
+    Ok((
+        Picture {
+            bytes,
+            format,
+            width,
+            height,
+        },
+        info,
+    ))
+}
+
+/// JPEG quality of an export when the caller names none.
+const EXPORT_JPEG_QUALITY: u8 = 90;
+
+/// RGBA8 as lossless WebP bytes.
+///
+/// # Errors
+/// Returns the encoder's error.
+pub fn encode_webp(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut webp = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
+        .encode(rgba, width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|error| error.to_string())?;
+    Ok(webp)
 }
 
 fn round(value: f64) -> f64 {
@@ -636,6 +736,9 @@ fn whole(value: f64) -> f64 {
 
 /// One mark as `inspect` lists it; its layer only when the caller did not
 /// name one, and its shape, style and transform when `full`.
+/// The most marks an eraser's entry names as those it takes paint off.
+const ERASED_LISTED: usize = 8;
+
 fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Value {
     let bounds = art.visible_bounds(mark);
     let mut entry = json!({
@@ -669,12 +772,55 @@ fn mark_entry(art: &Artwork, mark: &Mark, named_layer: bool, full: bool) -> Valu
         }
         if let Shape::Stroke { size, .. } = &mark.shape {
             fields.insert("size".into(), round(*size).into());
+            if let Some(brush) = &mark.style.brush {
+                fields.insert("brush".into(), brush.clone().into());
+            }
+        }
+        if let Shape::Image {
+            crop, straighten, ..
+        } = &mark.shape
+        {
+            if let Some(crop) = crop {
+                fields.insert("crop".into(), json!(crop));
+            }
+            if let Some(straighten) = straighten {
+                fields.insert("straighten".into(), (*straighten).into());
+            }
+        }
+        if let Some(adjust) = &mark.style.adjust {
+            fields.insert("adjust".into(), json!(adjust));
+        }
+        if mark.erases() {
+            // What it takes paint off: the marks beneath it on its layer.
+            let erased: Vec<&str> = art
+                .erased_by(mark)
+                .map(|under| under.id.as_str())
+                .take(ERASED_LISTED)
+                .collect();
+            fields.insert("erases".into(), erased.into());
         }
         if !mark.group.is_empty() {
             fields.insert("group".into(), mark.group.clone().into());
         }
         if !mark.clip.is_empty() {
             fields.insert("clip".into(), mark.clip.clone().into());
+        }
+        if let Some(area) = mark.area() {
+            // Kept inside an area (the selection it was laid in): its box,
+            // and with `full` its outline.
+            let inside = ui::vello::kurbo::Shape::bounding_box(&area);
+            fields.insert(
+                "inside".into(),
+                json!([
+                    whole(inside.x0),
+                    whole(inside.y0),
+                    whole(inside.width()),
+                    whole(inside.height())
+                ]),
+            );
+            if full {
+                fields.insert("area".into(), path_data(&area).into());
+            }
         }
         if full {
             fields.insert("shape".into(), json!(mark.shape));
@@ -709,8 +855,9 @@ pub fn part(art: &Artwork, ids: &[String]) -> Result<Artwork, String> {
     let clips: Vec<&str> = art
         .marks
         .iter()
-        .filter(|mark| chosen.contains(mark.id.as_str()) && !mark.clip.is_empty())
-        .map(|mark| mark.clip.as_str())
+        .filter(|mark| chosen.contains(mark.id.as_str()))
+        .flat_map(|mark| art.clips_of(mark))
+        .map(|clip| clip.id.as_str())
         .collect();
     chosen.extend(clips);
     let marks: Vec<&Mark> = art
@@ -793,33 +940,14 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
             )
         })
         .collect();
+    // A mask is listed with the layer it masks, as the layers panel shows
+    // it; its id is the layer to name to paint it.
     let layers: Vec<Value> = art
         .layers
         .iter()
         .rev()
-        .map(|layer| {
-            let mut entry = json!({
-                "id": layer.id,
-                "name": layer.name,
-                "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
-                "marks": art.marks_of(&layer.id).count(),
-            });
-            if let Value::Object(fields) = &mut entry {
-                if layer.opacity < 1.0 {
-                    fields.insert("opacity".into(), layer.opacity.into());
-                }
-                if !layer.visible {
-                    fields.insert("visible".into(), false.into());
-                }
-                if layer.texture > 0.0 {
-                    fields.insert("texture".into(), layer.texture.into());
-                }
-                if layer.locked {
-                    fields.insert("locked".into(), true.into());
-                }
-            }
-            entry
-        })
+        .filter(|layer| !layer.is_mask())
+        .map(|layer| layer_entry(art, layer))
         .collect();
     let mut answer = json!({
         "artwork": {
@@ -835,6 +963,11 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         "listed": marks.len(),
         "matching": matching.len(),
     });
+    if let Some(selection) = selection_info(art)
+        && let Value::Object(fields) = &mut answer
+    {
+        fields.insert("selection".into(), selection);
+    }
     if marks.len() < matching.len()
         && let Value::Object(fields) = &mut answer
     {
@@ -849,6 +982,71 @@ pub fn inspect(art: &Artwork, inspect: &Inspect) -> Result<Value, String> {
         );
     }
     Ok(answer)
+}
+
+/// One layer as `inspect` lists it.
+fn layer_entry(art: &Artwork, layer: &Layer) -> Value {
+    let mut entry = json!({
+        "id": layer.id,
+        "name": layer.name,
+        "medium": if layer.medium.is_empty() { "plain" } else { layer.medium.as_str() },
+        "marks": art.marks_of(&layer.id).count(),
+    });
+    if let Value::Object(fields) = &mut entry {
+        if layer.opacity < 1.0 {
+            fields.insert("opacity".into(), layer.opacity.into());
+        }
+        if !layer.visible {
+            fields.insert("visible".into(), false.into());
+        }
+        if layer.texture > 0.0 {
+            fields.insert("texture".into(), layer.texture.into());
+        }
+        if layer.locked {
+            fields.insert("locked".into(), true.into());
+        }
+        if let Some(adjust) = &layer.adjust {
+            fields.insert("adjust".into(), json!(adjust));
+        }
+        mask_fields(art, layer, fields);
+    }
+    entry
+}
+
+/// The selection as `inspect` reports it: where it is, how much it covers
+/// and how soft its edge is.
+fn selection_info(art: &Artwork) -> Option<Value> {
+    let selection = art.selection.as_ref()?;
+    let region = selection.region();
+    let bounds = region.bounds().unwrap_or_default();
+    Some(json!({
+        "bounds": [whole(bounds.x0), whole(bounds.y0), whole(bounds.width()), whole(bounds.height())],
+        "area": whole(region.area()),
+        "feather": selection.feather,
+    }))
+}
+
+/// A layer's mask and clipping as `inspect` lists them.
+fn mask_fields(art: &Artwork, layer: &Layer, fields: &mut serde_json::Map<String, Value>) {
+    if let Some(mask) = art.mask_of(&layer.id) {
+        let mut entry = json!({
+            "id": mask.id,
+            "marks": art.marks_of(&mask.id).count(),
+            "base": mask.base,
+        });
+        if let Value::Object(entry) = &mut entry {
+            if mask.invert {
+                entry.insert("invert".into(), true.into());
+            }
+            if !mask.visible {
+                entry.insert("visible".into(), false.into());
+            }
+        }
+        fields.insert("mask".into(), entry);
+    }
+    if layer.clip {
+        fields.insert("clip".into(), true.into());
+    }
 }
 
 /// A medium's number as an agent reads it: two decimals say what an f32
@@ -999,7 +1197,7 @@ fn mark_fields(old: &Mark, new: &Mark) -> Vec<String> {
         (old.shape != new.shape, "shape"),
         (old.transform != new.transform, "transform"),
         (old.group != new.group, "group"),
-        (old.clip != new.clip, "clip"),
+        (old.clip != new.clip || old.area != new.area, "clip"),
     ] {
         if differs {
             fields.push(name.to_owned());

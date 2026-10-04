@@ -44,8 +44,8 @@ use std::path::PathBuf;
 
 use crate::model::{Currency, DateStyle, TimeStyle};
 
-fn locale() -> ui::storage::Settings {
-    ui::storage::Settings::section("locale")
+fn locale() -> ui::storage::SettingsSection {
+    ui::storage::SettingsSection::named("locale")
 }
 
 /// Where the shared per-user settings live.

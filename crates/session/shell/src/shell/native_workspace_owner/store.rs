@@ -7,11 +7,32 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 use tilo_files::native::atomic::lease::{FileLease, LeaseMode};
 pub(crate) use tilo_joined_room::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
+
+/// Where a snapshot stands among the writes of one state file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct StateSequence(u64);
+
+/// A file written from a snapshot of the tree, beside the state file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Companion {
+    /// The tree document and its meta.
+    Document = 0,
+    /// The capability list the filesystem enforces.
+    FsCapabilities = 1,
+}
+
+/// What [`NativeStateRuntime::publish`] did with a snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Publication {
+    Written,
+    /// A later snapshot is already in the file; this one was dropped.
+    Superseded,
+}
 
 /// Clones of the desktop share the writer, so stale UI snapshots cannot erase floors.
 #[derive(Clone, Default)]
@@ -25,6 +46,11 @@ pub(super) struct Runtime {
     pub writer: Mutex<Writer>,
     pub healthy: AtomicBool,
     uncertain_rooms: RwLock<std::collections::BTreeSet<crate::shell::state::RoomId>>,
+    /// Hands out [`StateSequence`]s; see [`NativeStateRuntime::next_sequence`].
+    sequence: AtomicU64,
+    /// Per [`Companion`], the newest snapshot it was written from. Held
+    /// across the write, so a companion file never goes backwards.
+    companions: Mutex<[u64; 2]>,
 }
 impl Default for Runtime {
     fn default() -> Self {
@@ -32,6 +58,8 @@ impl Default for Runtime {
             writer: Mutex::new(Writer::default()),
             healthy: AtomicBool::new(true),
             uncertain_rooms: RwLock::new(std::collections::BTreeSet::default()),
+            sequence: AtomicU64::new(0),
+            companions: Mutex::new([0; 2]),
         }
     }
 }
@@ -40,6 +68,8 @@ pub(super) struct Writer {
     path: Option<PathBuf>,
     lease: Option<FileLease>,
     expected: Option<[u8; 32]>,
+    /// The newest snapshot published to the state file.
+    published: u64,
     /// The attached owner and the tree whose state file it publishes into.
     owner: Option<(
         tilo_joined_room::WeakNativeWorkspaceOwner,
@@ -98,16 +128,56 @@ impl NativeStateRuntime {
         self.0.healthy.load(Ordering::Acquire)
     }
     /// Called only while the tree snapshot is held. `next` differs only for owner turns.
+    /// Order of a snapshot of the tree among every other snapshot of it.
+    /// Taken while the caller holds the tree, so a later sequence is never an
+    /// older state. A write carrying it is skipped once a later one landed:
+    /// background saves and synchronous ones share the files.
+    pub(crate) fn next_sequence(&self) -> StateSequence {
+        StateSequence(
+            self.0
+                .sequence
+                .fetch_add(1, Ordering::AcqRel)
+                .wrapping_add(1),
+        )
+    }
+
+    /// Run `write` for `companion` of snapshot `sequence`, unless that file
+    /// was already written from a later snapshot.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is held across the write so companions are written in order"
+    )]
+    pub(crate) fn write_companion(
+        &self,
+        companion: Companion,
+        sequence: StateSequence,
+        write: impl FnOnce(),
+    ) {
+        let mut companions = self.0.companions.lock();
+        let Some(written) = companions.get_mut(companion as usize) else {
+            return;
+        };
+        if sequence.0 < *written {
+            return;
+        }
+        write();
+        *written = sequence.0;
+    }
+
     pub(crate) fn publish(
         &self,
         path: &Path,
         base: &NativeAuthorityStorage,
         next: &NativeAuthorityStorage,
         bytes: &[u8],
-    ) -> io::Result<()> {
+        sequence: StateSequence,
+    ) -> io::Result<Publication> {
         let base_digest = digest(base)?;
         let next_digest = digest(next)?;
         let mut writer = self.0.writer.lock();
+        if sequence.0 < writer.published {
+            return Ok(Publication::Superseded);
+        }
         if !self.healthy() {
             return Err(io::Error::other(
                 "native state writer is fenced after uncertain publication",
@@ -124,7 +194,8 @@ impl NativeStateRuntime {
         ) {
             Ok(()) => {
                 writer.expected = Some(next_digest);
-                Ok(())
+                writer.published = sequence.0;
+                Ok(Publication::Written)
             }
             Err(error) => {
                 if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {

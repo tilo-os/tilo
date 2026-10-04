@@ -30,6 +30,7 @@
 //! ```
 
 use std::collections::HashMap;
+use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -40,8 +41,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_rich_text::{RichTextField, RichTextSurface};
+use tilo_rich_text::{RichTextField, RichTextSource, RichTextSurface};
 use ui::Widget;
+use ui::framework::Dispatcher;
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
@@ -96,32 +98,88 @@ pub struct BacklinkChip {
     pub references: u32,
 }
 
-/// A page's body in the SDK rich-text editor, edited as Notes actions.
-pub type NotesEditor = RichTextSurface<RichTextField<crate::actions::NotesAction>>;
+/// A page's body in the SDK rich-text editor, edited as the notebook's
+/// actions.
+pub type NotesEditor = RichTextSurface<PageBody>;
+
+/// A page's body: the notebook's rich-text child resource, edited through
+/// its dispatcher once the app is hosted by the framework.
+pub struct PageBody {
+    field: RichTextField,
+    page: Option<PageId>,
+    /// Notes' own action host, for hosts that mount notes without the framework.
+    local: Option<crate::resource::LocalSink>,
+}
+
+impl PageBody {
+    fn attach(&mut self, notebook: &Dispatcher<crate::resource::Notebook>) {
+        if let Some(page) = self.page {
+            self.field
+                .attach(crate::actions::page_body_dispatcher(notebook, page));
+        }
+        self.local = None;
+    }
+}
+
+impl RichTextSource for PageBody {
+    fn read_only(&self) -> bool {
+        self.local.is_none() && self.field.read_only()
+    }
+
+    fn sync(&mut self, doc: &mut AutoCommit) {
+        self.field.sync(doc);
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.field.revision()
+    }
+
+    fn read_from(&mut self, doc: &AutoCommit) -> bool {
+        self.field.read_from(doc)
+    }
+
+    fn with_state<T>(&self, read: impl FnOnce(&tilo_document::RichTextState) -> T) -> Option<T> {
+        self.field.with_state(read)
+    }
+
+    fn apply(
+        &mut self,
+        doc: &mut AutoCommit,
+        edit: &tilo_document::RichTextAction,
+    ) -> Result<(), ui::tilo_actions::ActionError> {
+        match (&self.local, self.page) {
+            (Some(local), Some(page)) => local.borrow_mut().apply_body_edit(doc, page, edit),
+            _ => self.field.apply(doc, edit),
+        }
+    }
+
+    fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
+        self.field.presence_keys()
+    }
+}
 
 /// Notes is a prose editor, so ordinary blocks must reflow to the available
 /// column width. Keeping construction behind one helper prevents a page bind,
 /// remote rebind, or empty-state reset from silently returning to the shared
 /// editor's single-line (code/editor) default. `page` is the page whose body
-/// it edits; without one it shows what it is given and writes nothing.
-fn notes_editor(page: Option<PageId>) -> NotesEditor {
-    let context = page.map(|page| {
-        crate::actions::history_context(&crate::actions::edit_body_action(
-            page,
-            tilo_document::RichTextAction::AppendParagraph {
-                text: String::new(),
-            },
-        ))
-    });
-    let mut field = RichTextField::new(
-        crate::actions::NOTES_ACTION_TYPE,
-        move |doc| page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page)),
-        move |edit| crate::actions::edit_body_action(page.unwrap_or_default(), edit),
-    );
-    if let Some(context) = context {
-        field = field.with_context(context);
+/// it edits, through the notebook's dispatcher or else notes' local action
+/// host; without a page it shows what it is given and writes nothing.
+fn notes_editor(
+    page: Option<PageId>,
+    notebook: Option<&Dispatcher<crate::resource::Notebook>>,
+    local: Option<&crate::resource::LocalSink>,
+) -> NotesEditor {
+    let mut body = PageBody {
+        field: RichTextField::view_only(move |doc| {
+            page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page))
+        }),
+        page,
+        local: local.cloned(),
+    };
+    if let Some(notebook) = notebook {
+        body.attach(notebook);
     }
-    RichTextSurface::field(field).with_editor(
+    RichTextSurface::over(body).with_editor(
         BlockEditor::new()
             .with_wrap_lines(true)
             .with_compact_paragraph_spacing(true),
@@ -234,6 +292,12 @@ pub struct MainPanel {
     /// Live editor. Always present (defaults to an empty document)
     /// so layout/draw don't need a `None` branch.
     editor: NotesEditor,
+    /// The notebook's dispatcher, once the app is hosted: page bodies are
+    /// edited through it.
+    notebook: Option<Dispatcher<crate::resource::Notebook>>,
+    /// Notes' own action host until the app is hosted by the framework:
+    /// the app's, shared, or this panel's own when it stands alone.
+    local: Option<crate::resource::LocalSink>,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -317,7 +381,9 @@ impl MainPanel {
             pending_backlink_open: None,
             focused_backlink: None,
             hovered_backlink: None,
-            editor: notes_editor(None),
+            editor: notes_editor(None, None, None),
+            notebook: None,
+            local: Some(crate::resource::LocalSink::default()),
             image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
@@ -474,6 +540,8 @@ impl MainPanel {
         workspace: &crate::Workspace,
     ) -> Result<Self, String> {
         let mut panel = Self::new();
+        panel.notebook.clone_from(&self.notebook);
+        panel.local.clone_from(&self.local);
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -549,7 +617,7 @@ impl MainPanel {
         self.pending_backlink_open = None;
         self.focused_backlink = None;
         self.hovered_backlink = None;
-        self.editor = notes_editor(None);
+        self.editor = self.fresh_editor(None);
         self.body = String::new();
         self.scroll_y = 0.0;
         self.empty_action_rect = Rect::ZERO;
@@ -644,8 +712,25 @@ impl MainPanel {
         self.editor.editor_mut().set_image_store(store);
     }
 
+    /// Edit page bodies through `notebook` from now on, the one shown
+    /// included.
+    pub(crate) fn attach_notebook(&mut self, notebook: Dispatcher<crate::resource::Notebook>) {
+        self.editor.source_mut().attach(&notebook);
+        self.notebook = Some(notebook);
+        self.local = None;
+    }
+
+    /// Edit page bodies through notes' own action host until the app is
+    /// hosted by the framework.
+    pub(crate) fn use_local_actions(&mut self, local: crate::resource::LocalSink) {
+        if self.notebook.is_none() {
+            self.editor.source_mut().local = Some(Rc::clone(&local));
+            self.local = Some(local);
+        }
+    }
+
     fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
-        let mut editor = notes_editor(page);
+        let mut editor = notes_editor(page, self.notebook.as_ref(), self.local.as_ref());
         editor
             .editor_mut()
             .set_image_store(self.image_store.clone());
@@ -1064,12 +1149,6 @@ impl MainPanel {
         self.editor.shows_stored(id)
     }
 
-    /// Whether the undo step the body's last edit opened stays open for the
-    /// next letters of the word.
-    pub fn keeps_undo_step_open(&self) -> bool {
-        ui::undo::keeps_undo_step_open(&self.editor)
-    }
-
     /// Modal overlays own the visible caret while retaining the underlying edit.
     pub fn suppress_caret_paint(&mut self, suppressed: bool) {
         self.title_label.suppress_caret_paint(suppressed);
@@ -1141,7 +1220,21 @@ impl Default for MainPanel {
     }
 }
 
+/// The undo boundaries of body edits applied through the local action host.
+impl ui::undo::CommittedActions for MainPanel {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.local.as_ref()?.borrow_mut().take_committed()
+    }
+    fn keeps_undo_step_open(&self) -> bool {
+        self.local
+            .as_ref()
+            .is_some_and(|local| local.borrow().keeps_step_open())
+    }
+}
+
 impl Widget for MainPanel {
+    ui::provides!(dyn ui::undo::CommittedActions);
+
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",

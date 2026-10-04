@@ -1618,7 +1618,42 @@ not invalidate an address. Duplicate resource or semantic IDs fail closed;
 they are never repaired with an ordinal suffix that could target the wrong
 thing.
 
-A representative effect looks like this:
+A framework app declares its effects as one typed enum and answers them where
+the state they need lives:
+
+```rust
+#[derive(Clone, Debug, Effect)]
+#[effect(operation = "mail.effects")]
+pub enum MailEffect {
+    /// Archive conversation.
+    #[effect(job)]
+    Archive { conversation: String },
+}
+
+// In the view (a custom surface implements `ResourceSurface<R, MailEffect>`
+// and answers in `effect(&mut self, ..)` instead).
+cx.effects(move |effect: MailEffect, cx| match effect {
+    MailEffect::Archive { conversation } => Ok(cx.thread(
+        move |progress| server.archive(&conversation, &progress),
+        |(), archived, cx| {
+            cx.invoke(Mail::MARK_ARCHIVED.with(archived?));
+            Ok(Effected::done())
+        },
+    )),
+});
+let archive = cx.effect_button("Archive", &MailEffect::Archive { conversation: id });
+```
+
+Each variant is a published `Effect` action with typed parameters; its options
+(`job`, `cancellable`, `returns`, `destructive`, `permission = "read"`) are its
+contract. The framework publishes the vocabulary beside the resource's
+actions, with the availability the handler reports now (`EffectStatus`), and
+routes the palette, agents, scripts and bound controls to the handler as a
+typed value. A job reports progress through its `Progress`, finishes on the UI
+thread, and changes the document only through actions. A projection queued in
+the document (an outbox) is drained with `ViewCx::drain`.
+
+A widget outside the framework describes an effect with an `ActionSpec`:
 
 ```rust
 ActionSpec::operation(
@@ -1636,14 +1671,10 @@ ActionSpec::operation(
 })
 ```
 
-For a small app with one launchable resource, wrap its ordinary retained root
-with `ui::widget::resource_actions::immediate` or `background`. The toolkit
-owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
-failure conversion; the app supplies only its resource contract and operation
-closure. The generated `async` app uses this path for its effect action inside a
-framework view, and imports action types through
-`ui::tilo_actions`, so a generated project contains no copied host
-implementation and needs no direct internal actions dependency.
+For a small widget root with one launchable resource,
+`ui::widget::resource_actions::immediate` or `background` owns the forwarding
+widget, operation dispatch, pending-job bookkeeping, and failure conversion;
+the app supplies only its resource contract and operation closure.
 
 Register document action decoders in `App::action_registry_mut`. Handle every
 effect and view type in `Widget::start_operation`, the single entry: return

@@ -380,6 +380,12 @@ interface ChannelHandle {
   # representable.
   speakerCommand @52 (appId :Text, commandJson :Data) -> (replyJson :Data);
 
+  # This application's settings in the session's records: its own
+  # `app_personal` and `app_device_local` entries and the shared sections
+  # every app reads. The app is the certified route's; there is no way to
+  # name another.
+  settings @54 () -> (settings :AppSettings);
+
 }
 
 # Optional result on @35, minted from the same captured directory and worker.
@@ -852,4 +858,16 @@ struct ScrollbackBatch {
 # Independently versioned enrolled envelope; legacy TaskRunStream is unchanged.
 interface EnrolledTaskStream {
   read @0 () -> (taskJson :Text);
+}
+
+# One application's view of the session's settings, from `settings`.
+# Documents are JSON objects of sections, at most 1 MiB.
+interface AppSettings {
+  # The view once its revision differs from `after`; at once for 0. A
+  # caller follows changes by passing back the revision it was given.
+  read @0 (after :UInt64) -> (revision :UInt64, documentJson :Data);
+  # Merge `valuesJson`, `{"<app id>": {...}}`, into the app's entry in
+  # `section` (`app_personal` or `app_device_local`), answering the view
+  # after the write. Any other section or entry is refused.
+  update @1 (section :Text, valuesJson :Data) -> (revision :UInt64, documentJson :Data);
 }

@@ -292,6 +292,9 @@ export function createRemotePresence({maxSamples = 8} = {}) {
       drag: frame.drag ?? null,
       participant: frame.participant ?? null,
     };
+    // Coordinates belong to the focused surface. Never interpolate a point
+    // from the previous app/record under the newest frame's focus.
+    if (!same(newest?.focus ?? null, sample.focus)) samples.length = 0;
     const previous = samples.at(-1);
     if (previous && sample.sentAtMs > previous.sentAtMs) {
       const gap = sample.sentAtMs - previous.sentAtMs;

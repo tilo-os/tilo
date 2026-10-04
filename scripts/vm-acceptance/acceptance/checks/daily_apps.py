@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
 from ..vm import wait_until
-from .apps import AREA, _alive, _close, _notifications, _procs, _stable_new
+from .apps import AREA, _app_procs, _close, _notifications, _procs
 
 FIRST_FRAME_S = 45
 NON_FLAT_S = 25
@@ -213,15 +213,22 @@ def _open(ctx, res, app: DailyApp):
            f"{app.name} took focus (focused group is {core.active_group_id(st)})")
     disp = core.display_of_group(st, gid)
     expect(disp == focused_display, f"{app.name} opened on the focused output {focused_display}, not {disp}")
-    procs = _stable_new(ctx, before)
-    res.metrics["processes"] = sorted(set(c.split()[0].rsplit("/", 1)[-1] for c in procs.values()))
-    expect(any(app.program in c for c in procs.values()),
-           f"no {app.program} process observed ({list(procs.values())[:4]})")
+    launch, procs, _ = _app_procs(ctx, before, app.desktop_id)
+    ctx.facts[f"launch:{app.label}"] = launch
+    res.metrics["processes"] = sorted(set(c.cmd.split()[0].rsplit("/", 1)[-1] for c in procs.values()))
+    expect(any(app.program in c.cmd for c in procs.values()),
+           f"no {app.program} process observed ({[c.cmd for c in procs.values()][:4]})")
     if app.x11:
-        xw = [c for c in _procs(ctx).values() if "Xwayland" in c or "xwayland" in c]
+        xw = [c.cmd for c in _procs(ctx).values() if "Xwayland" in c.cmd or "xwayland" in c.cmd]
         res.metrics["xwayland"] = xw[:2]
         expect(xw, f"no Xwayland server is running while {app.name} is open")
     return gid, sid, procs, toasts0
+
+
+def _alive(ctx, owned: dict) -> dict:
+    """The processes in `owned` still running with the same command."""
+    now = _procs(ctx)
+    return {p: now[p] for p, c in owned.items() if p in now and now[p].cmd == c.cmd}
 
 
 def _across_outputs(ctx, res, app: DailyApp, gid, sid) -> None:
@@ -349,7 +356,7 @@ def _ozone_flag(ctx, res, flag: str) -> None:
 
 def _no_running(ctx, app: DailyApp) -> None:
     """A browser left from an earlier check would take this launch over as a new window."""
-    left = [c for c in _procs(ctx).values() if app.program in c]
+    left = [c.cmd for c in _procs(ctx).values() if app.program in c.cmd]
     expect(not left, f"a {app.program} from before is still running ({left[:2]}): this launch "
                      "would open in it instead of starting the platform it asks for")
 
@@ -458,7 +465,7 @@ def gl_x11(ctx, res):
     if not gone:
         ctx.shot(f"{app.label}-after-escape")
         ctx.vm.invoke("desktop-windows", f"group.close:{gid}")
-    owned = {p: c for p, c in procs.items() if app.program in c}
+    owned = {p: c for p, c in procs.items() if app.program in c.cmd}
     left = wait_until(lambda: not _alive(ctx, owned) or None, 10, 1.0)
     expect(gone, f"Escape pressed on the real keyboard did not reach {app.name} (its window stayed)")
-    expect(left, f"{app.name} still running after Escape: {list(_alive(ctx, owned).values())[:2]}")
+    expect(left, f"{app.name} still running after Escape: {[c.cmd for c in _alive(ctx, owned).values()][:2]}")

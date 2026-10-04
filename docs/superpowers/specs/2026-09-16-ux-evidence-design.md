@@ -18,7 +18,6 @@ Alternative approaches rejected: replaying a supplied route cannot measure disco
 - Track input costs, no-op and repeated-state loops, outcome, capture/input latency separately from API latency, model and prompt identity, token use, per-attempt screenshots/actions and reproducible replay.
 - Fixed step/API-call/token limits; no secrets or authorization headers in logs/artifacts/source. API key read from environment or non-echoing prompt, passed only to official OpenAI API. No real user data sent.
 - Negative controls must show false completion, blank/invalid observations, excessive routes, missing feedback and failed outcomes cannot pass. Live API attempts required; mocks alone do not satisfy the objective.
-- Preserve unrelated worktree changes; no automatic commit/push for this new goal.
 
 ## Acceptance
 Run host protocol tests, evaluator negative controls, deterministic usability scenarios against the built app and live API attempts. Retain failures honestly; a working test need not declare the current application good. Publish an HTML evidence report with property coverage, denominators, limitations and concrete observed friction.

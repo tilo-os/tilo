@@ -191,6 +191,7 @@ impl LayerLevel {
             .map(|mark| match &mark.mark {
                 tilo_wet_media::Mark::Stroke(stroke) => stroke.size,
                 tilo_wet_media::Mark::Fill(fill) => fill.brush,
+                tilo_wet_media::Mark::Erase(erase) => erase.size,
             })
             .fold(0.0_f32, f32::max);
         Self {
@@ -650,7 +651,10 @@ impl Tiles {
                 if reaches {
                     key.update(&mark.fingerprint);
                     dried = false;
-                } else if !mark.mark.wet() && !dried {
+                } else if !mark.mark.wet()
+                    && !matches!(mark.mark, tilo_wet_media::Mark::Erase(_))
+                    && !dried
+                {
                     key.update(b"dry");
                     dried = true;
                 }

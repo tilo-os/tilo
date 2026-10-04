@@ -108,7 +108,7 @@ else
   msg "systemd-repart: ESP 2G (vfat) + root (btrfs)"
   sudo -n systemd-repart \
     --empty=force --dry-run=no --discard=no --offline=false \
-    --definitions="$HERE/repart.d" \
+    --sector-size=512 --definitions="$HERE/repart.d" \
     --size="$TILO_CFS_DISK_SIZE" \
     "$DISK"
 

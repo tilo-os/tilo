@@ -195,13 +195,13 @@ impl TextSession {
         if empty {
             return Some(CanvasAction::RemoveMarks(RemoveMarks {
                 ids: vec![self.id.clone()],
-                layer: None,
+                ..RemoveMarks::default()
             }));
         }
         (before.shape != self.shape).then(|| {
             CanvasAction::edit(EditMarks {
                 ids: vec![self.id.clone()],
-                shape: Some(self.shape.clone()),
+                shape: Some(crate::actions::Taught(self.shape.clone())),
                 ..EditMarks::default()
             })
         })

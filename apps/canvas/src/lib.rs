@@ -14,6 +14,9 @@ pub const APP_ID: &str = "so.tilo.canvas";
 pub const APP_TITLE: &str = "Canvas";
 
 pub mod actions;
+pub mod adjust;
+pub mod author;
+pub mod brushes;
 pub mod detail;
 pub mod doc;
 pub mod fonts;
@@ -22,10 +25,14 @@ pub mod locales;
 pub mod media;
 pub mod model;
 pub mod panels;
+pub mod picture;
 pub mod preview;
+pub mod region;
 pub mod render;
 pub mod resource;
 pub mod sample;
+pub mod selection;
+pub mod strokes;
 pub mod surface;
 pub mod svg;
 pub mod thumb;
@@ -46,7 +53,9 @@ impl ResourceApp for App {
     type Resource = ArtworkResource;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    const SHOT_VIEWPORT: (u32, u32) = (1280, 800);
+    fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
+        (1280, 800)
+    }
 
     fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
         locales::install();
@@ -66,7 +75,11 @@ impl ResourceApp for App {
             .push(Box::new(
                 Pane::new(panels::header::header(cx, &tools), Edge::Bottom).grouping(),
             ))
-            .push(canvas);
+            .push(Box::new(
+                ui::widget::Stack::new()
+                    .push(canvas)
+                    .push(panels::header::context_bar(cx, &tools)),
+            ));
         let sidebar = {
             let tools = tools.clone();
             cx.switch(&tools.sidebar.clone(), move |cx, shown| {

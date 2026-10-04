@@ -86,6 +86,26 @@ say "the default Tilo app collection"
 app_release=$out/app-release
 "$repo_root/dist/rpm/app-collection.sh" "$app_release"
 
+# The env-runtime environment image ships in the same store. CI fetches the
+# published one (Cosign-verified) into $out/env-runtime before the build
+# container starts; a local build fetches it here when it can.
+env_runtime=${TILO_ENV_RUNTIME_DIR:-$out/env-runtime}
+if [[ ! -d $env_runtime ]] && command -v skopeo >/dev/null && command -v cosign >/dev/null; then
+    say "the env-runtime environment image"
+    status=0
+    "$repo_root/os/dev/fetch-env-runtime.sh" "$env_runtime" || status=$?
+    case $status in
+        0) ;;
+        1) echo "warning: no env-runtime is published for this checkout" >&2 ;;
+        *) exit "$status" ;;
+    esac
+fi
+if [[ -d $env_runtime ]]; then
+    export TILO_ENV_RUNTIME_DIR=$env_runtime
+else
+    unset TILO_ENV_RUNTIME_DIR
+fi
+
 say "staging immutable Tilo app store"
 app_stage=$stage/apps
 "$repo_root/dist/rpm/stage-app-store.sh" "$app_release" "$rel" "$app_stage"

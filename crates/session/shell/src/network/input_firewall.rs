@@ -40,6 +40,10 @@ pub const CLICK_BURST_WINDOW: Duration = Duration::from_millis(100);
 /// How long a peer stays blocked after a click burst — long enough to break an automated storm, short enough not to lock out a trackpad fumble.
 pub const CLICK_BURST_BLOCK: Duration = Duration::from_secs(1);
 
+/// Most text one remote input-method commit may carry: a dictated paragraph
+/// fits, a pasted document does not (paste goes through the clipboard).
+pub const MAX_REMOTE_TEXT_BYTES: usize = 4096;
+
 /// evdev keycodes the scrubber names directly.
 mod keycode {
     pub const DELETE: u32 = 111;
@@ -93,6 +97,8 @@ pub enum Denial {
     /// A local client holds the pointer locked or confined; a peer's
     /// pointer would move the shared seat and break (or steer) it.
     PointerHeld,
+    /// Committed text that is empty or longer than [`MAX_REMOTE_TEXT_BYTES`].
+    TextSize,
 }
 
 impl Denial {
@@ -115,6 +121,7 @@ impl Denial {
             Denial::RateLimited => "rate-limited",
             Denial::ClickBurst => "click-burst",
             Denial::PointerHeld => "pointer-held",
+            Denial::TextSize => "text-size",
         }
     }
 }
@@ -399,7 +406,11 @@ impl RemoteInputFirewall {
                 InputEvent::PointerButton { .. }
                 | InputEvent::PointerEnter { .. }
                 | InputEvent::KeyboardFocus { .. }
-                | InputEvent::Key { .. } => {}
+                | InputEvent::Key { .. }
+                | InputEvent::PointerAxis { .. }
+                | InputEvent::ClipboardText { .. }
+                | InputEvent::Close
+                | InputEvent::Text { .. } => {}
             }
         }
         outcome
@@ -494,7 +505,48 @@ impl RemoteInputFirewall {
                 }
                 Ok(event.clone())
             }
+            InputEvent::PointerAxis { .. } => {
+                // Scrolls where this peer's pointer last was, which must still
+                // be over the window.
+                let Some((cursor_surface, local)) = self.peer_mut(peer).cursor else {
+                    return Err(Denial::NoPointerPosition);
+                };
+                if cursor_surface != surface {
+                    return Err(Denial::SurfaceMismatch);
+                }
+                self.locate(surface, local)?;
+                self.spend_budget(peer, now, false)?;
+                Ok(event.clone())
+            }
+            InputEvent::ClipboardText { .. } | InputEvent::Close => {
+                // Each changes the session (its clipboard, the window's
+                // life) as a press would.
+                self.spend_budget(peer, now, true)?;
+                Ok(event.clone())
+            }
+            InputEvent::Text { text } => {
+                self.check_text(peer, surface, text, now)?;
+                Ok(event.clone())
+            }
         }
+    }
+
+    /// Committed text is typing, so the keyboard's focus guard applies: it
+    /// lands only in the shared window, and only while that has focus.
+    fn check_text(
+        &mut self,
+        peer: PeerId,
+        surface: SurfaceId,
+        text: &str,
+        now: Instant,
+    ) -> Result<(), Denial> {
+        if self.view.chrome_captures || self.view.keyboard_focus != Some(surface) {
+            return Err(Denial::FocusMuted);
+        }
+        if text.is_empty() || text.len() > MAX_REMOTE_TEXT_BYTES {
+            return Err(Denial::TextSize);
+        }
+        self.spend_budget(peer, now, true)
     }
 
     /// Region + z-order for one surface-local coordinate; returns the global point to inject.
@@ -741,6 +793,78 @@ mod tests {
                 Err(Denial::Occluded),
             );
         }
+    }
+
+    /// Text an input method committed is typing: it needs the shared
+    /// window to hold the keyboard, and it is bounded like one commit.
+    #[test]
+    fn remote_text_lands_only_in_the_focused_shared_window() {
+        let now = Instant::now();
+        let text = InputEvent::Text {
+            text: "grüße".into(),
+        };
+        assert_eq!(
+            firewall().review(PEER, SHARED, &text, now),
+            Ok(text.clone())
+        );
+
+        let mut unfocused = RemoteInputFirewall::new();
+        unfocused.publish_view(ShellView::new(
+            vec![(SHARED, Rect::new(100.0, 50.0, 500.0, 350.0))],
+            Some(PRIVATE),
+            false,
+            false,
+        ));
+        assert_eq!(
+            unfocused.review(PEER, SHARED, &text, now),
+            Err(Denial::FocusMuted)
+        );
+        for size in [0, MAX_REMOTE_TEXT_BYTES + 1] {
+            assert_eq!(
+                firewall().review(
+                    PEER,
+                    SHARED,
+                    &InputEvent::Text {
+                        text: "a".repeat(size),
+                    },
+                    now,
+                ),
+                Err(Denial::TextSize)
+            );
+        }
+    }
+
+    /// The wheel scrolls where the peer's pointer is, so it needs one over
+    /// the window, like a button; a paste and a close need none.
+    #[test]
+    fn the_wheel_needs_a_coordinate_and_a_paste_or_close_does_not() {
+        let mut fw = firewall();
+        let now = Instant::now();
+        let scroll = InputEvent::PointerAxis { dx: 0.0, dy: 30.0 };
+        assert_eq!(
+            fw.review(PEER, SHARED, &scroll, now),
+            Err(Denial::NoPointerPosition)
+        );
+        fw.review(
+            PEER,
+            SHARED,
+            &InputEvent::PointerMotion { x: 10.0, y: 20.0 },
+            now,
+        )
+        .expect("accepted motion");
+        assert_eq!(fw.review(PEER, SHARED, &scroll, now), Ok(scroll.clone()));
+        assert_eq!(
+            fw.review(PEER, PRIVATE, &scroll, now),
+            Err(Denial::SurfaceMismatch)
+        );
+        let paste = InputEvent::ClipboardText {
+            text: "hello".into(),
+        };
+        assert_eq!(fw.review(PEER, SHARED, &paste, now), Ok(paste.clone()));
+        assert_eq!(
+            fw.review(PEER, SHARED, &InputEvent::Close, now),
+            Ok(InputEvent::Close)
+        );
     }
 
     #[test]

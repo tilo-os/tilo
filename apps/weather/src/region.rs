@@ -46,7 +46,7 @@ pub fn units_from_settings_json(text: &str) -> Units {
 /// Load the user's measurement preference from the shared store. Returns
 /// metric when the file is absent or unreadable — never fails, never panics.
 pub fn load_units() -> Units {
-    let locale = ui::storage::Settings::section("locale");
+    let locale = ui::storage::SettingsSection::named("locale");
     units_from_measurement(locale.string("measurement").as_deref().unwrap_or("Metric"))
 }
 

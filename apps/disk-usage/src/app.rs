@@ -24,7 +24,7 @@ use ui::widget::{Button, ButtonFace, PieChart, PieSlice, PieStyle, Widget};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::doc::DiskUsageDoc;
-use crate::scan::{Entry, ScanCancellation, ScanResult};
+use crate::scan::{ScanCancellation, ScanResult};
 use ui::format::bytes_si;
 
 const TOP_H: f64 = 78.0;
@@ -79,7 +79,9 @@ pub struct DiskUsageApp {
     scan_rx: Option<Receiver<ScanResult>>,
     scan_cancellation: Option<ScanCancellation>,
     picker_rx: Option<ui::portal::PortalChannel>,
-    shot_mode: bool,
+    /// Slices appear at once instead of growing in: a screenshot shows the
+    /// finished chart.
+    pub(crate) immediate: bool,
     pub(crate) actions: crate::resource::ActionSink,
     hosted: bool,
 }
@@ -122,67 +124,17 @@ impl DiskUsageApp {
             scan_rx: None,
             scan_cancellation: None,
             picker_rx: None,
-            shot_mode: false,
+            immediate: false,
             actions: crate::resource::ActionSink::default(),
             hosted: false,
         }
-    }
-
-    pub fn sample() -> Self {
-        let mut app = Self::new();
-        app.shot_mode = true;
-        let path = PathBuf::from("/home/you");
-        let values = [
-            ("Projects", 84_200_000_000),
-            ("Videos", 48_600_000_000),
-            ("Photos", 31_800_000_000),
-            ("Downloads", 19_400_000_000),
-            ("Documents", 8_700_000_000),
-            ("Other", 5_100_000_000),
-        ];
-        let entries = values
-            .into_iter()
-            .map(|(name, bytes)| Entry {
-                path: path.join(name.to_lowercase()),
-                name: name.into(),
-                bytes,
-                files: bytes / 1_000_000,
-                unreadable: 0,
-            })
-            .collect::<Vec<_>>();
-        let total = entries.iter().map(|e| e.bytes).sum();
-        app.set_result(ScanResult {
-            path,
-            entries,
-            total,
-            files: 12_842,
-            unreadable: 0,
-            error: None,
-        });
-        app
-    }
-
-    pub fn sample_with_inspection() -> Self {
-        let mut app = Self::sample();
-        let _ = app.chart.inspect("/home/you/projects");
-        app
-    }
-
-    pub fn sample_home() -> Self {
-        let mut app = Self::new();
-        app.shot_mode = true;
-        app.recent = vec![
-            PathBuf::from("/home/you/Projects/tilo"),
-            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-        ];
-        app
     }
 
     fn palette(theme: &Theme, index: usize) -> ui::vello::peniko::Color {
         ChartPalette::from_theme(theme).categorical(index)
     }
 
-    fn set_result(&mut self, result: ScanResult) {
+    pub(crate) fn set_result(&mut self, result: ScanResult) {
         let total = result.total;
         let slices = result
             .entries
@@ -206,7 +158,7 @@ impl DiskUsageApp {
                 }
             })
             .collect();
-        if self.shot_mode {
+        if self.immediate {
             self.chart.set_slices_immediate(slices);
         } else {
             self.chart.set_slices(slices);
@@ -372,9 +324,7 @@ impl Widget for DiskUsageApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
-        if !self.shot_mode {
-            self.recent = DiskUsageDoc::recent(state);
-        }
+        self.recent = DiskUsageDoc::recent(state);
     }
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -625,7 +575,7 @@ impl Widget for DiskUsageApp {
                 } else {
                     0.0
                 };
-                if self.shot_mode {
+                if self.immediate {
                     self.chart.set_slices_immediate(slices);
                 } else {
                     self.chart.set_slices(slices);
@@ -916,6 +866,11 @@ impl DiskUsageApp {
         self.hosted
     }
 
+    /// Show the chart's details for one slice, as hovering it does.
+    pub(crate) fn inspect(&mut self, id: &str) {
+        let _ = self.chart.inspect(id);
+    }
+
     #[cfg(test)]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.hosted = true;
@@ -927,9 +882,8 @@ impl DiskUsageApp {
         self.actions.is_hosted()
     }
 
-    /// Submit the shared recent-directory projection. Hosted edits use the
-    /// framework dispatcher; standalone, `--shots`, and unit tests use the
-    /// local action host.
+    /// Submit the shared recent-directory projection through the framework
+    /// dispatcher; unit tests of the bare widget use the local action host.
     pub(crate) fn remember_scanned(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
         let action = crate::resource::DiskUsageAction::Remember {
             path: path.to_string_lossy().into_owned(),
@@ -1040,6 +994,14 @@ impl ui::resources::PublishesResources for DiskUsageApp {
     }
 }
 
+/// The analyzer showing a finished scan, as after a real one.
+#[cfg(test)]
+pub(crate) fn analysed() -> DiskUsageApp {
+    let mut app = DiskUsageApp::new();
+    app.set_result(ScanResult::sample());
+    app
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1049,7 +1011,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::resources::resources(&DiskUsageApp::sample(), doc),
+        resources: |doc| ui::resources::resources(&analysed(), doc),
         palette: ["Analyze Projects", "Choose folder", "Go back"],
     }
 
@@ -1134,8 +1096,10 @@ mod tests {
 
         // --- phase: narrow_home_keeps_common_places_visible ---
         {
-            let mut app = DiskUsageApp::sample_home();
+            let mut app = DiskUsageApp::new();
             app.recent.extend([
+                PathBuf::from("/home/you/Projects/tilo"),
+                PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
                 PathBuf::from("/one"),
                 PathBuf::from("/two"),
                 PathBuf::from("/three"),

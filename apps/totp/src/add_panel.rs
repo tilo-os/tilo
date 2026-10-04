@@ -1957,12 +1957,6 @@ impl AddAccountPanel {
         }
     }
 
-    /// Test hook: run the exact production save path (validate → emit event).
-    #[cfg(test)]
-    pub(crate) fn save_for_test(&mut self) {
-        self.try_save();
-    }
-
     /// Test hook: current (issuer, label, secret) field values.
     #[cfg(test)]
     pub(crate) fn field_snapshot(&self) -> (String, String, String) {

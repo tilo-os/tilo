@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {
-  addPasskey, base64url, certifyDevice, createIdentity, currentIdentity, installNodeCertificate, formatRecoveryKey, IdentityError, parseRecoveryKey, unbase64url, unhex,
-  unlockIdentity,
+  addPasskey, base64url, certifyDevice, createIdentity, currentIdentity, hex, installNode, installNodeCertificate, formatRecoveryKey, IdentityError, nodeInstallInfo,
+  parseRecoveryKey, unbase64url, unhex, unlockIdentity,
 } from './root-identity.mjs';
 import {fakeAuthenticator} from './testing/fake-authenticator.mjs';
 
@@ -197,4 +197,54 @@ test('a node certificate is installed with its install token', async () => {
   assert.deepEqual([...calls[1].init.body], [0xfb, 0xff, 1]);
   assert.equal(calls[1].init.headers['content-type'], 'application/octet-stream');
   await assert.rejects(installNodeCertificate({origin: 'https://node.example', certificate: {}, installToken: 'other', fetch}), {code: 'install-token-refused'});
+});
+
+/** A node waiting for its certificate, with a session beside it. */
+async function waitingNode({vouchFor} = {}) {
+  const node = await crypto.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
+  const nodeKey = hex(new Uint8Array(await crypto.subtle.exportKey('raw', node.publicKey)));
+  const session = 'cd'.repeat(32);
+  const message = new Uint8Array([...new TextEncoder().encode('tilo node session v1\0'), ...unhex(nodeKey), ...unhex(vouchFor ?? session)]);
+  const signature = hex(new Uint8Array(await crypto.subtle.sign({name: 'Ed25519'}, node.privateKey, message)));
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({url, init});
+    if (init.headers['x-tilo-install-token'] !== 'token') return {status: 403, text: async () => 'wrong install token'};
+    const info = {device_public_key: nodeKey, session: {device_public_key: session, signature}};
+    return {status: 200, text: async () => JSON.stringify(init.method === 'GET' ? info : {device_public_key: nodeKey, user_public_key: 'bb'})};
+  };
+  return {nodeKey, session, calls, fetch};
+}
+
+test('a node names the session beside it, vouched for by the key the page got out of band', async () => {
+  const {nodeKey, session, calls, fetch} = await waitingNode();
+  const origin = 'https://node.example';
+  assert.deepEqual(await nodeInstallInfo({origin, devicePublicKey: nodeKey.toUpperCase(), installToken: 'token', fetch}), {sessionPublicKey: session});
+  assert.equal(calls[0].init.method, 'GET');
+  await assert.rejects(nodeInstallInfo({origin, devicePublicKey: 'ab'.repeat(32), installToken: 'token', fetch}), {code: 'install-refused'});
+  await assert.rejects(nodeInstallInfo({origin, devicePublicKey: nodeKey, installToken: 'other', fetch}), {code: 'install-token-refused'});
+  const forged = await waitingNode({vouchFor: 'ef'.repeat(32)});
+  await assert.rejects(nodeInstallInfo({origin, devicePublicKey: forged.nodeKey, installToken: 'token', fetch: forged.fetch}), {code: 'install-refused'});
+});
+
+test('installing a node certifies it and its session and hands both over', async () => {
+  const credentials = fakeAuthenticator();
+  const {identity} = await createIdentity({...OPTIONS, credentials});
+  const {nodeKey, session, calls, fetch} = await waitingNode();
+  const issued = [];
+  const runtime = {
+    issueDeviceCert: async (_, key, label, role) => { issued.push({key, label, role}); return JSON.stringify({key, role}); },
+    // Stands in for the canonical encoding.
+    deviceCertCanonical: json => new TextEncoder().encode(json),
+  };
+  const answer = await installNode({origin: 'https://node.example', devicePublicKey: nodeKey, installToken: 'token', identity, label: 'Acme node', runtime, fetch});
+  assert.deepEqual(answer, {device_public_key: nodeKey, user_public_key: 'bb'});
+  assert.deepEqual(issued, [{key: nodeKey, label: 'Acme node', role: 'node'}, {key: session, label: 'Apps on Acme node', role: 'session'}]);
+  const posted = calls.at(-1);
+  assert.equal(posted.init.method, 'POST');
+  assert.equal(posted.init.headers['content-type'], 'application/json');
+  const sent = JSON.parse(posted.init.body);
+  assert.deepEqual(JSON.parse(atob(sent.certificate)), {key: nodeKey, role: 'node'});
+  assert.deepEqual(JSON.parse(atob(sent.session_certificate)), {key: session, role: 'session'});
+  await assert.rejects(installNodeCertificate({origin: 'https://node.example', certificate: '+/8B', sessionCertificate: '{}', installToken: 'token', fetch}), TypeError);
 });

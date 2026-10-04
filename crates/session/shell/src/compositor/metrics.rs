@@ -54,6 +54,57 @@ pub struct FrameSample {
     /// that expired, or [`WAKE_IO`] when a registered fd became readable
     /// first. An idle desktop that keeps waking is named here.
     pub wake: &'static str,
+    /// CPU time the loop thread consumed during this tick, park included (the
+    /// park runs event callbacks; parked itself it consumes none). Unlike the
+    /// wall-clock timings it leaves out time the thread was descheduled or
+    /// blocked, so a host that steals a virtual CPU or a display that holds a
+    /// buffer does not show up as compositor work. `None` where the platform
+    /// has no per-thread CPU clock.
+    pub cpu_us: Option<u32>,
+    /// The longest named step of the input phase and how long it took, so a
+    /// tick whose `input_us` stalls names what it stalled in. Empty when the
+    /// phase had no steps.
+    pub input_step: &'static str,
+    pub input_step_us: u32,
+}
+
+/// The slowest of a phase's consecutive named steps. Each [`Self::step`]
+/// closes the step that began at the previous one; two clock reads per step,
+/// cheap enough to run on every tick.
+#[derive(Clone, Copy, Debug)]
+pub struct SlowestStep {
+    last: Instant,
+    name: &'static str,
+    took: Duration,
+}
+
+impl SlowestStep {
+    pub fn starting_at(at: Instant) -> Self {
+        Self {
+            last: at,
+            name: "",
+            took: Duration::ZERO,
+        }
+    }
+
+    /// Close the step named `name`, which ran from the previous step (or the
+    /// start) until now.
+    pub fn step(&mut self, name: &'static str) {
+        self.step_at(name, Instant::now());
+    }
+
+    fn step_at(&mut self, name: &'static str, now: Instant) {
+        let took = now.saturating_duration_since(self.last);
+        if took > self.took || self.name.is_empty() {
+            self.name = name;
+            self.took = took;
+        }
+        self.last = now;
+    }
+
+    pub fn slowest(&self) -> (&'static str, Duration) {
+        (self.name, self.took)
+    }
 }
 
 /// [`FrameSample::wake`] for a park ended by a readable fd (input, a client, the control socket, a worker ping) rather than by a deadline.
@@ -71,7 +122,7 @@ impl FrameSample {
     fn write_csv_row(&self, out: &mut impl Write) -> std::io::Result<()> {
         writeln!(
             out,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.seq,
             self.start_us,
             self.period_us,
@@ -94,6 +145,9 @@ impl FrameSample {
             u8::from(self.backpressured),
             self.deadline_late_us,
             self.wake,
+            self.cpu_us.map(|v| v.to_string()).unwrap_or_default(),
+            self.input_step,
+            self.input_step_us,
         )
     }
 }
@@ -101,7 +155,7 @@ impl FrameSample {
 /// Header line for the `TILO_FRAME_TRACE` CSV, kept next to `FrameSample::write_csv_row` so the two cannot drift.
 pub const CSV_HEADER: &str = "seq,start_us,period_us,input_us,pump_us,layout_us,scene_us,\
 submit_us,testctl_us,clients_us,sleep_us,painted,present_async,input_latency_us,\
-input_retirement_latency_us,backpressured,deadline_late_us,wake";
+input_retirement_latency_us,backpressured,deadline_late_us,wake,cpu_us,input_step,input_step_us";
 
 /// Percentile bundle for one measured quantity, in microseconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -340,6 +394,8 @@ pub struct FrameRecorder {
     /// older response.
     pending_retirement: Option<(u64, Instant)>,
     completed_retirement_latency_us: Option<u32>,
+    /// The loop thread's CPU clock when the current tick began.
+    tick_cpu_start: Option<Duration>,
 }
 
 /// Cap on retained samples: 200k ticks is ~55 minutes at 60 Hz and ~7 MB of `FrameSample`.
@@ -400,6 +456,7 @@ impl FrameRecorder {
             pending_input: None,
             pending_retirement: None,
             completed_retirement_latency_us: None,
+            tick_cpu_start: None,
         }
     }
 
@@ -475,6 +532,7 @@ impl FrameRecorder {
             ..Default::default()
         };
         self.cur.input_retirement_latency_us = self.completed_retirement_latency_us.take();
+        self.tick_cpu_start = thread_cpu_time();
         self.seq = self.seq.saturating_add(1);
     }
 
@@ -500,6 +558,11 @@ impl FrameRecorder {
     /// Cumulative phase marks: each takes the duration *of that phase*, not a cumulative offset, so callers can compute them however is cheapest at the call site.
     pub fn mark_input(&mut self, d: Duration) {
         self.cur.input_us = us(d);
+    }
+    pub fn mark_input_step(&mut self, step: SlowestStep) {
+        let (name, took) = step.slowest();
+        self.cur.input_step = name;
+        self.cur.input_step_us = us(took);
     }
     pub fn mark_pump(&mut self, d: Duration) {
         self.cur.pump_us = us(d);
@@ -597,6 +660,10 @@ impl FrameRecorder {
         if !self.enabled {
             return;
         }
+        self.cur.cpu_us = self
+            .tick_cpu_start
+            .zip(thread_cpu_time())
+            .map(|(start, end)| us(end.saturating_sub(start)));
         let sample = self.cur;
         if let Some(t) = self.trace.as_mut()
             && let Err(e) = sample.write_csv_row(t)
@@ -721,6 +788,30 @@ impl Drop for FrameRecorder {
     fn drop(&mut self) {
         self.finish();
     }
+}
+
+/// CPU time the calling thread has consumed.
+#[cfg(unix)]
+fn thread_cpu_time() -> Option<Duration> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `time` is a valid, writable timespec for the duration of the
+    // call; an unsupported clock reports an error instead of writing.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) };
+    if status != 0 {
+        return None;
+    }
+    Some(Duration::new(
+        u64::try_from(time.tv_sec).ok()?,
+        u32::try_from(time.tv_nsec).ok()?,
+    ))
+}
+
+#[cfg(not(unix))]
+fn thread_cpu_time() -> Option<Duration> {
+    None
 }
 
 fn us(d: Duration) -> u32 {
@@ -1064,6 +1155,26 @@ mod tests {
     }
 
     #[test]
+    fn the_input_phase_names_its_slowest_step() {
+        let base = Instant::now();
+        let mut step = SlowestStep::starting_at(base);
+        step.step_at("poll", base + Duration::from_millis(2));
+        step.step_at("persist", base + Duration::from_millis(90));
+        step.step_at("flush", base + Duration::from_millis(91));
+        assert_eq!(step.slowest(), ("persist", Duration::from_millis(88)));
+        let mut recorder = FrameRecorder::disabled();
+        recorder.enabled = true;
+        recorder.begin_tick(base);
+        recorder.mark_input_step(step);
+        recorder.end_tick();
+        let sample = recorder.samples()[0];
+        assert_eq!(
+            (sample.input_step, sample.input_step_us),
+            ("persist", 88_000)
+        );
+    }
+
+    #[test]
     fn metrics_cli_and_trace_output_are_well_formed() {
         // Phase `parse_run_seconds_accepts_positive_values_only`.
         assert_eq!(
@@ -1112,6 +1223,9 @@ mod tests {
                 backpressured: true,
                 deadline_late_us: 14,
                 wake: "cadence",
+                cpu_us: Some(15),
+                input_step: "events",
+                input_step_us: 16,
             }
             .write_csv_row(&mut buf)
             .expect("write csv row into a Vec");
@@ -1142,6 +1256,29 @@ mod tests {
             assert!(
                 !bytes.is_empty(),
                 "one-second trace must reach disk before Drop"
+            );
+        }
+        // Phase `each_tick_records_the_cpu_its_thread_spent`.
+        #[cfg(unix)]
+        {
+            let mut recorder = FrameRecorder::disabled();
+            recorder.enabled = true;
+            recorder.begin_tick(Instant::now());
+            let spin_from = thread_cpu_time().expect("unix has a per-thread CPU clock");
+            let mut acc = 0_u64;
+            while thread_cpu_time()
+                .is_some_and(|now| now.saturating_sub(spin_from) < Duration::from_millis(5))
+            {
+                acc = std::hint::black_box(acc.wrapping_add(1));
+            }
+            std::thread::sleep(Duration::from_millis(30));
+            recorder.end_tick();
+            let cpu = recorder.samples()[0]
+                .cpu_us
+                .expect("unix has a per-thread CPU clock");
+            assert!(
+                (5_000..30_000).contains(&cpu),
+                "5 ms of spinning counts as CPU, 30 ms asleep does not: {cpu} us"
             );
         }
     }

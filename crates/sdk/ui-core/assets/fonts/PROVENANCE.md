@@ -9,35 +9,31 @@ bytes; Adwaita adds 879,796 fixture bytes.
 The current Fedora rendering does not reproduce all historical Tilo typography
 PNGs. This catalog identifies a reviewed product input; it does not claim those
 historical PNGs were generated with these bytes. Baseline migration requires a
-separate evidence review. The following is the preserved licensing audit; its
-scratch paths identify acquisition inputs, not runtime dependencies.
+separate evidence review. The following is the licensing audit; the upstream
+paths it names identify acquisition inputs, not runtime dependencies.
 
 # Canonical font catalog: license and provenance bundle
 
 Date: 2026-09-12
 
 This report completes the licensing input for the 16-file catalog in
-`font-catalog-sources.md`. It does not add product assets or implementation.
-All preserved files are below the ignored scratch root:
-
-```text
-/Users/user/dev/tilo-macos-shell/.superpowers/sdd/2026-09-12-macos-shell-build-foundation/font-license-scratch
-```
+`manifest.toml`. The shipped notices are in `LICENSES/`; the upstream sources
+they were taken from are named below.
 
 ## Packaging decision
 
 Every selected font binary is distributed under SIL Open Font License 1.1.
 Ship the exact upstream family notice mapped below alongside each unmodified
 font. Also ship a short generated copyright index containing the unique SFNT
-name-ID 0 notices preserved in `font-name-notices.txt`. This retains notices
+name-ID 0 notices (`LICENSES/FONT-COPYRIGHT-NOTICES.txt`). This retains notices
 which are more specific than, or newer than, the repository-level OFL header.
 
 The minimal full-text bundle is 12 files and 52,680 bytes: eight distinct
 notofonts family OFLs, the CJK license, both files which Fedora ships for the
 emoji package, and the Adwaita license. The three Latin tag copies and the two
 Symbols tag copies are byte-identical and can be deduplicated in the product
-bundle. Keep their separate tag copies in scratch because their provenance is
-different.
+bundle; their upstream tags are still recorded separately below because their
+provenance is different.
 
 Use a manifest field such as `license_files = [...]` for every font entry. A
 small exact product layout is:
@@ -65,9 +61,9 @@ modification needs a new license/name review before release.
 
 ## Per-font mapping
 
-Paths in this table are relative to `font-license-scratch/licenses/`.
+Paths in this table name the upstream release or package the notice came from.
 
-| catalog font | authoritative full-text notice in scratch | additional exact embedded notice |
+| catalog font | authoritative full-text notice | additional exact embedded notice |
 |---|---|---|
 | `NotoSans[wght].ttf` | `notofonts-releases/NotoSans-v2.015/OFL.txt` | Noto Project Authors 2022, latin-greek-cyrillic |
 | `NotoSans-Italic[wght].ttf` | `notofonts-releases/NotoSans-v2.015/OFL.txt` | same |
@@ -86,16 +82,14 @@ Paths in this table are relative to `font-license-scratch/licenses/`.
 | `Noto-COLRv1.ttf` | `noto-emoji-b3e3051/LICENSE` and `fedora-installed/google-noto-color-emoji-fonts/OFL.txt` | `Copyright 2022 Google Inc.`; the two package notices say Copyright 2013 Google LLC |
 | `AdwaitaSans-Regular.ttf` | `adwaita-fonts-50.0/LICENSE` | embedded Inter 2016 notice; the full file also names Renzhi Li, Jamie Gravendeel, and Florian Müllner |
 
-`font-name-notices.txt` is the exact extraction of name IDs 0, 13 and 14 from
-the VM originals. It is 10,367 bytes with SHA-256
-`f3cbba1d449827c0a7c7d47d9cabb9e87a81a03136fb0bb1bf20df3744548374`.
-`extract_sfnt_names.py` is the dependency-free reader used in the VM through
-the Parallels shared folder; it did not modify a font.
+The name-ID 0, 13 and 14 notices were extracted from the Fedora 44 originals
+with a dependency-free SFNT reader that did not modify a font; the unique
+copyright notices are shipped as `LICENSES/FONT-COPYRIGHT-NOTICES.txt`.
 
 ## Exact notofonts release notices
 
-Each `commit.json` was fetched from the official GitHub API for the named tag.
-Each preserved OFL was fetched from the official repository at that tag, then
+Each tag was resolved through the official GitHub API.
+Each OFL was fetched from the official repository at that tag, then
 re-fetched by the resolved immutable commit SHA; the SHA-256 values matched.
 
 | tag / repository | resolved commit | OFL bytes | OFL SHA-256 |
@@ -118,27 +112,25 @@ Symbols files are identical.
 
 ## CJK, emoji and Adwaita bundles
 
-| source | preserved path | bytes | SHA-256 | byte proof |
+| source | upstream path | bytes | SHA-256 | byte proof |
 |---|---|---:|---|---|
-| Noto CJK `Sans2.004`, commit `523d033d6cb47f4a80c58a35753646f5c3608a78` | `licenses/noto-cjk-Sans2.004/LICENSE` | 4301 | `6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2` | identical to VM `/usr/share/licenses/google-noto-sans-cjk-vf-fonts/LICENSE` |
-| noto-emoji commit `b3e3051a088047d19fd4d49b1c3ac42fb8c3aaf8` | `licenses/noto-emoji-b3e3051/LICENSE` | 4330 | `500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b` | identical to VM package `LICENSE` |
-| Fedora emoji source bundle | `licenses/fedora-installed/google-noto-color-emoji-fonts/OFL.txt` | 4423 | `ab2dcc4de7edccb08a7e453bb88dd21bd3035fd5e8c9a2e977368b0ba3992281` | copied from VM package; Fedora spec maps it to `Source4: Noto_Emoji.zip` |
-| GNOME Adwaita Fonts 50.0 source archive | `licenses/adwaita-fonts-50.0/LICENSE` | 4554 | `459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81` | source-archive file is identical to VM package `LICENSE` |
+| Noto CJK `Sans2.004`, commit `523d033d6cb47f4a80c58a35753646f5c3608a78` | `licenses/noto-cjk-Sans2.004/LICENSE` | 4301 | `6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2` | identical to Fedora `/usr/share/licenses/google-noto-sans-cjk-vf-fonts/LICENSE` |
+| noto-emoji commit `b3e3051a088047d19fd4d49b1c3ac42fb8c3aaf8` | `licenses/noto-emoji-b3e3051/LICENSE` | 4330 | `500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b` | identical to Fedora package `LICENSE` |
+| Fedora emoji source bundle | `licenses/fedora-installed/google-noto-color-emoji-fonts/OFL.txt` | 4423 | `ab2dcc4de7edccb08a7e453bb88dd21bd3035fd5e8c9a2e977368b0ba3992281` | Fedora package file; Fedora spec maps it to `Source4: Noto_Emoji.zip` |
+| GNOME Adwaita Fonts 50.0 source archive | `licenses/adwaita-fonts-50.0/LICENSE` | 4554 | `459687971d21c53923c1d1c9c062ec273a7ea03226b36195b79ec6af7d98dc81` | source-archive file is identical to Fedora package `LICENSE` |
 
-The Fedora-installed copies are retained separately under
-`licenses/fedora-installed/`. The CJK, emoji `LICENSE`, and Adwaita files all
+The CJK, emoji `LICENSE`, and Adwaita files all
 matched their upstream copies byte for byte. The emoji package's second
-`OFL.txt` is also retained because Fedora deliberately declares and installs
+`OFL.txt` is also shipped because Fedora deliberately declares and installs
 both `LICENSE OFL.txt`.
 
-The monthly Noto release's `fonts/LICENSE` is preserved at
-`licenses/notofonts-monthly-2025.12.01/fonts-LICENSE` (4,374 bytes, SHA-256
+The monthly Noto 2025.12.01 release's `fonts/LICENSE` (4,374 bytes, SHA-256
 `f2095b08bed08b23a6fe26112fcd679a2bee3f002eef077eb05d215ed1051bd8`).
 It is a valid umbrella OFL with a generic Noto Project header, but the family
 tag files above retain more precise repository provenance.
 
-Do not package
-`licenses/fedora-installed/google-noto-fonts-common/LICENSE` as the license for
+Do not package the
+`google-noto-fonts-common` package's `LICENSE` as the license for
 the 11 ordinary Noto font files. It is the 11,357-byte Apache-2.0 repository
 license, SHA-256
 `c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4`.
@@ -149,9 +141,8 @@ the relevant font license evidence.
 
 ## Fedora source-package provenance
 
-The preserved `spec` and `sources` files came from the Fedora 44 dist-git
-branches. They were checked again through the immutable dist-git commit URLs;
-the local SHA-256 values matched.
+The `spec` and `sources` files below come from the Fedora 44 dist-git
+branches, checked through the immutable dist-git commit URLs.
 
 | Fedora dist-git | f44 commit | spec SHA-256 | sources SHA-256 | declared source digest |
 |---|---|---|---|---|
@@ -165,9 +156,9 @@ RPMs. The other rows cover the CJK, emoji and Adwaita files respectively.
 
 ## Binary hash correction and verification
 
-All 16 SHA-256 values in `font-catalog-sources.md` were recomputed directly
-from the Fedora VM originals on 2026-09-12. Each is now exactly 64 lowercase
-hexadecimal characters and matches the VM output.
+All 16 SHA-256 values in `manifest.toml` were recomputed directly from the
+Fedora 44 originals on 2026-09-12. Each is exactly 64 lowercase hexadecimal
+characters.
 
 The original Symbols row had accidentally omitted the `df8` after byte 36.
 Its corrected, verified digest is:
@@ -176,8 +167,8 @@ Its corrected, verified digest is:
 63724daeff6755a45933b9a5e3a3b41df5df8fe925c0f4c991f2f68c08a4182d
 ```
 
-That is the only factual correction made to `font-catalog-sources.md` in this
-licensing pass.
+That is the only factual correction made to the catalog in this licensing
+pass.
 
 ## Version uncertainty retained for implementation review
 

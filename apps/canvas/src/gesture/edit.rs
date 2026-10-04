@@ -6,12 +6,13 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use ui::vello::kurbo::{Affine, Point, Rect, Shape as _, Vec2};
+use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _, Vec2};
 
 use crate::actions::{CanvasAction, Draw, EditMarks, NewMark};
-use crate::model::{Artwork, Mark, valid_id};
+use crate::model::{Artwork, Mark, path_data, valid_id};
 
-/// Whether `mark` can be picked: its layer is shown.
+/// Whether `mark` can be picked: its layer is shown. An eraser is picked
+/// like any stroke, so it can be moved, reshaped or taken away.
 fn pickable(art: &Artwork, mark: &Mark) -> bool {
     art.layer(&mark.layer).is_some_and(|layer| layer.visible)
 }
@@ -35,7 +36,7 @@ pub fn with_groups(art: &Artwork, ids: &[String]) -> Vec<String> {
 /// What a click at `at` picks: the topmost mark there and, unless `inside`
 /// (picking within a group), the rest of its group.
 pub fn pick(art: &Artwork, at: Point, inside: bool) -> Vec<String> {
-    let Some(mark) = art.mark_at(at) else {
+    let Some(mark) = art.pick_at(at) else {
         return Vec::new();
     };
     if inside {
@@ -203,7 +204,8 @@ pub fn new_mark(mark: &Mark) -> NewMark {
         stroke: style.stroke.clone(),
         stroke_width: Some(style.stroke_width),
         opacity: style.opacity,
-        brush: style.brush,
+        brush: style.brush.clone(),
+        brush_size: style.brush_size,
         angle: style.angle,
         wet: style.wet.then_some(true),
         params: (!style.params.is_empty()).then(|| style.params.clone()),
@@ -213,7 +215,9 @@ pub fn new_mark(mark: &Mark) -> NewMark {
         blend: style.blend.clone(),
         shadow: style.shadow.clone(),
         group: (!mark.group.is_empty()).then(|| mark.group.clone()),
-        clip: (!mark.clip.is_empty()).then(|| mark.clip.clone()),
+        clip: (!mark.clip.is_empty())
+            .then(|| mark.clip.clone())
+            .or_else(|| mark.area().map(|area| path_data(&area))),
         transform: mark.transform,
         ..NewMark::new(mark.shape.clone())
     }
@@ -285,7 +289,18 @@ pub fn place(
         mark.clip = mark.clip.as_ref().and_then(|clip| {
             ids.get(clip)
                 .cloned()
-                .or_else(|| art.mark(clip).map(|_| clip.clone()))
+                .or_else(|| {
+                    (art.mark(clip).is_some() || art.members(clip).next().is_some())
+                        .then(|| clip.clone())
+                })
+                .or_else(|| {
+                    // An area the copy is kept inside goes with it.
+                    let mut area = BezPath::from_svg(clip)
+                        .ok()
+                        .filter(|area| !valid_id(clip) && !area.elements().is_empty())?;
+                    area.apply_affine(Affine::translate(offset));
+                    Some(path_data(&area))
+                })
         });
         let to = Affine::translate(offset);
         match mark.transform {
@@ -369,6 +384,7 @@ mod tests {
             transform: None,
             group: group.into(),
             clip: String::new(),
+            area: String::new(),
         }
     }
 
@@ -383,6 +399,7 @@ mod tests {
                 visible: true,
                 texture: 0.0,
                 locked: false,
+                ..Layer::default()
             }],
             marks: vec![
                 mark("a", 0.0, "pair"),

@@ -23,6 +23,7 @@ EXPECTED_COPIES = (
     "os/scripts/cargo-freshness.sh /build/os/scripts/",
     "COPY os/usr/share/tilo/installer-locales.txt "
     "/build/os/usr/share/tilo/installer-locales.txt",
+    "COPY os/legacy-guest-snapshot.env /build/os/legacy-guest-snapshot.env",
     "COPY tools/policy/app_portability_rules.toml "
     "/build/tools/policy/app_portability_rules.toml",
     "COPY tools/policy/app_capability_usage.toml "

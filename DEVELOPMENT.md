@@ -101,6 +101,14 @@ sudo bootc upgrade && sudo systemctl reboot
 sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-<board> && sudo systemctl reboot
 ```
 
+The board job checks the Lenovo image's audio stack (topology, DSP firmware,
+UCM profile: `os/tests/board_audio_contract.sh --root`), but only the laptop
+proves the sound. After booting a build that changes it, `wpctl status` lists a
+speaker sink and a microphone source for Built-in Audio, and
+`journalctl -b -k | grep -i -e q6apm -e wsa884x` shows no errors. The four
+speakers run without DSP speaker protection, as upstream ships them: test them
+at low volume.
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets
@@ -462,8 +470,8 @@ Testing needs `adb` and an `x86_64` emulator image or a device.
 Use the pinned Rust MSVC toolchain, Visual Studio C++ build tools for the host
 architecture. The native
 ARM64 toolkit, Calculator, Notes, Calendar, Contacts, Sheets, Slides, Weather and
-Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Image Editor,
-Photos, Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
+Scratchpad, Files, Word Processor, Terminal, PDF Viewer, Books, Clocks, Photos,
+Hex Editor, Code Editor, API Tester, Diff and Merge, Snippets, Database
 Client, Git Client and Feeds have been built and run on Windows.
 Other apps are still being ported; a workspace-wide build currently includes
 Linux services and is not a Windows
@@ -680,20 +688,6 @@ drive letters are preserved. Windows imports remain local unless an absolute
 The installer does not provide that workspace service. Books captures accept an
 EPUB positional argument and wait for its import to finish.
 
-Image Editor is installed as **Image Editor** (`image-editor.exe`). It opens
-PNG, JPEG and WebP through the shared Windows file picker or `--open PATH`.
-Adjustments remain editable in the persisted project; Export writes
-`<source-name>-edited.png` beside the source without changing the original.
-The native verification opens a Unicode path, invokes semantic rotate,
-monochrome and export actions, checks the exported dimensions and verifies
-that the project survives a new process. Its offscreen scenarios support
-`TILO_SHOTS_THEME=dark|light|high-contrast`.
-
-```powershell
-cargo test --locked -p image-editor --all-targets
-./tools/windows/install-apps.ps1 -Apps image-editor
-```
-
 Photos uses the native file picker and keeps imported image bytes in the shared
 filesystem blob store. On Windows the default is `%LOCALAPPDATA%/tilo/blobs`,
 with `USERPROFILE/AppData/Local` as the native fallback; `TILO_BLOB_STORE` and
@@ -904,7 +898,7 @@ Its import libraries link directly; no `.lib` conversion is required. Configure
 the current PowerShell process for your installation:
 
 ```powershell
-$gstPrefix = 'C:/Users/user/msys64/clangarm64' # Replace with your installation.
+$gstPrefix = 'C:/msys64/clangarm64' # Replace with your installation.
 $env:PATH = "$gstPrefix/bin;$env:PATH"
 $env:PKG_CONFIG = "$gstPrefix/bin/pkgconf.exe"
 $env:PKG_CONFIG_PATH = "$gstPrefix/lib/pkgconfig"

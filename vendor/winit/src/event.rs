@@ -303,6 +303,33 @@ pub enum WindowEvent {
         button: MouseButton,
     },
 
+    /// The stylus behind the pointer event that follows: a pen, or the
+    /// eraser end of one, with its pressure and tilt.
+    ///
+    /// A stylus still moves the cursor and clicks as a mouse does, so every
+    /// window works with one. This event comes immediately before each
+    /// [`WindowEvent::CursorMoved`] and [`WindowEvent::MouseInput`] a stylus
+    /// produces, for the same window; a mouse's events come without one. The
+    /// tip touching the surface is the left button, the barrel buttons the
+    /// right and middle ones.
+    ///
+    /// ## Platform-specific
+    ///
+    /// - Only available on **Wayland**, with a compositor offering
+    ///   `zwp_tablet_manager_v2`.
+    PenSample {
+        device_id: DeviceId,
+        /// How hard the tip is pressed, `0.0..=1.0`: `0.0` while it hovers,
+        /// and on a tool that reports no pressure.
+        pressure: f64,
+        /// The tool's tilt in degrees from the surface normal, towards the
+        /// positive x and y axes, each within `-90.0..=90.0`: `(0.0, 0.0)`
+        /// upright, and on a tool that reports no tilt.
+        tilt: (f64, f64),
+        /// The tool is an eraser, such as the back end of a pen.
+        eraser: bool,
+    },
+
     /// A completed three-finger trackpad swipe.
     ///
     /// Unlike scrolling or panning, this is one discrete event per swipe.
@@ -1175,6 +1202,12 @@ mod tests {
                     device_id: did,
                     state: event::ElementState::Pressed,
                     button: event::MouseButton::Other(0),
+                });
+                with_window_event(PenSample {
+                    device_id: did,
+                    pressure: 0.5,
+                    tilt: (0.0, 0.0),
+                    eraser: false,
                 });
                 with_window_event(PinchGesture {
                     device_id: did,
