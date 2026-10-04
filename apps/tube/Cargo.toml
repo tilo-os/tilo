@@ -45,7 +45,6 @@ anyhow.workspace = true
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "json"] }
 # Grayjay device-sync peers file.
 tilo-files = { path = "../../crates/platform/tilo-files" }
-tilo-paths = { path = "../../crates/platform/tilo-paths" }
 bounded-command = { path = "../../crates/system/bounded-command", optional = true }
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests

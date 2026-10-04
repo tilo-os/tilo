@@ -292,6 +292,15 @@ impl ResourceSurface<Tube, TubeEffect> for TubeApp {
             .is_live()
             .then(|| cx.person::<crate::history::WatchHistory>())
             .flatten();
+        // Only a live window pairs and syncs devices, with the app's secret
+        // store and the devices paired on this one.
+        #[cfg(feature = "grayjay-sync")]
+        if cx.mode().is_live() {
+            self.start_device_sync(
+                &cx.secrets(),
+                cx.storage().settings::<crate::sync::PairedDevices>(),
+            );
+        }
         self.attach_framework(cx.dispatcher(), history);
     }
 
