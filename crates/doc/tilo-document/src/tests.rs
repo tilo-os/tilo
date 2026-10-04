@@ -906,3 +906,48 @@ fn replace_matches_uses_pre_action_unicode_offsets_and_one_replay_envelope() {
     );
     assert_eq!(body_ids(&peer.state().unwrap()), vec![id]);
 }
+
+/// A new document starts the same whoever creates it: its first paragraph's
+/// id names no device.
+#[test]
+fn a_new_document_starts_the_same_on_every_device() {
+    let body = |actor: &str| {
+        let mut doc =
+            automerge::AutoCommit::new().with_actor(automerge::ActorId::from(actor.as_bytes()));
+        RichText::initialize(&mut doc).unwrap();
+        body_ids(&RichText::read(&doc).unwrap())
+    };
+    assert_eq!(body("device-a"), body("device-b"));
+    assert_eq!(body("device-a").len(), 1);
+}
+
+/// An imported file is remembered by its content address, and a write of
+/// the file records what it then holds, as content from outside.
+#[test]
+fn the_document_remembers_the_file_it_was_read_from_and_written_to() {
+    use tilo_actions::Action;
+    let mut doc = automerge::AutoCommit::new();
+    RichText::initialize(&mut doc).unwrap();
+    assert_eq!(RichText::read(&doc).unwrap().file_digest(), None);
+    let bytes = b"# Report\n";
+    crate::action::RichTextAction::ReplaceFormatted {
+        format: crate::action::ImportFormat::Markdown,
+        bytes: bytes.to_vec(),
+    }
+    .apply(&mut doc)
+    .unwrap();
+    let digest = tilo_content::hash_bytes(bytes);
+    assert_eq!(
+        RichText::read(&doc).unwrap().file_digest(),
+        Some(digest.as_str())
+    );
+    let written = crate::action::RichTextAction::NoteFileWritten {
+        digest: tilo_content::hash_bytes(b"saved"),
+    };
+    assert_eq!(written.change_kind(), tilo_actions::ChangeKind::External);
+    written.apply(&mut doc).unwrap();
+    assert_eq!(
+        RichText::read(&doc).unwrap().file_digest(),
+        Some(tilo_content::hash_bytes(b"saved").as_str())
+    );
+}

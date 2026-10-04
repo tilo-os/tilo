@@ -410,11 +410,18 @@ pub enum RichTextAction {
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
     /// Replace the body with `bytes` decoded as `format`. A decode failure
-    /// refuses the action so the open document stays as it was.
+    /// refuses the action so the open document stays as it was. The
+    /// document remembers the bytes' content address as the file it was
+    /// last read from ([`FILE_DIGEST`]).
     ReplaceFormatted {
         format: ImportFormat,
         bytes: Vec<u8>,
     },
+    /// The document was written to its file, whose bytes now have content
+    /// address `digest` ([`FILE_DIGEST`]): what a later open compares the
+    /// file with to tell whether it changed elsewhere. Content from outside:
+    /// it syncs, but no undo takes it back.
+    NoteFileWritten { digest: String },
     /// Accept one tracked change, or every change when `id` is absent.
     AcceptChanges { id: Option<String> },
     /// Reject one tracked change, or every change when `id` is absent.
@@ -485,6 +492,7 @@ impl RichTextAction {
             | Self::SetBlockAttr { .. }
             | Self::ClearBlockAttr { .. }
             | Self::SetPageMargins { .. }
+            | Self::NoteFileWritten { .. }
             | Self::SetStyleProperty { .. }
             | Self::DeleteStyle { .. } => ActionDomain::Formatting,
             Self::SetImageCrop { .. }
@@ -917,6 +925,11 @@ impl<'a> ActionValidator<'a> {
             blocks,
             key,
         } => self.unique_existing(*region, blocks) && Self::clearable_attr(key),
+        RichTextAction::NoteFileWritten { digest } => {
+            !digest.is_empty()
+                && digest.len() <= 128
+                && digest.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }
         RichTextAction::SetPageMargins { top, right, bottom, left } => [top, right, bottom, left]
             .into_iter()
             .all(|value| value.is_finite() && (4.0..=10_000.0).contains(value)),
@@ -1939,7 +1952,12 @@ fn apply_replace_formatted(dm: &mut DocMut, format: ImportFormat, bytes: &[u8]) 
     // codec result mixed with the old one.
     let _ = import_formatted(dm, format, bytes, &mut inputs);
     keep_a_paragraph(dm);
+    dm.set_meta_str(FILE_DIGEST, &tilo_content::hash_bytes(bytes));
 }
+
+/// The document meta key holding the content address of the file the
+/// document was last read from or written to.
+pub const FILE_DIGEST: &str = "file_digest";
 
 fn import_formatted(
     dm: &mut DocMut,
@@ -2358,6 +2376,7 @@ fn apply_formatting_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             dm.set_meta_str("page_margin_bottom", &bottom.to_string());
             dm.set_meta_str("page_margin_left", &left.to_string());
         }
+        RichTextAction::NoteFileWritten { digest } => dm.set_meta_str(FILE_DIGEST, digest),
         RichTextAction::SetStyleProperty { style, key, value } => {
             let value = match value {
                 AttrVal::Bool(value) => tilo_doc::AttrVal::Bool(*value),
@@ -2615,6 +2634,13 @@ impl Action for RichTextAction {
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            Self::NoteFileWritten { .. } => tilo_actions::ChangeKind::External,
+            _ => tilo_actions::ChangeKind::Content,
+        }
     }
 }
 
