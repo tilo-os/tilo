@@ -3960,7 +3960,29 @@ fn write_snapshot_png(
     if w == 0 || h == 0 {
         return Err("the crop is empty, nothing to write".to_string());
     }
-    ui::png::write_rgba8(path, w, h, &rgba).map_err(|e| format!("write {}: {e}", path.display()))
+    let png = ui::png::encode_rgba8(w, h, &rgba).map_err(|e| format!("encode: {e}"))?;
+    write_whole(path, &png).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Write `bytes` to a sibling file and rename it over `path`, so a reader
+/// that opens `path` sees the previous file or the whole new one, never a
+/// PNG cut off mid-write.
+fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} names no file", path.display()),
+        )
+    })?;
+    let mut staging_name = std::ffi::OsString::from(".");
+    staging_name.push(name);
+    staging_name.push(format!(".{}.partial", std::process::id()));
+    let staging = path.with_file_name(staging_name);
+    let written = std::fs::write(&staging, bytes).and_then(|()| std::fs::rename(&staging, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staging);
+    }
+    written
 }
 
 /// The part of a `size` RGBA8 frame inside `crop`, clamped to the frame.
@@ -13666,6 +13688,28 @@ mod tests {
             assert_eq!(code, "not_permitted", "{refused}");
             assert!(message.contains("TILO_TEST_CONTROL"), "{message}");
         }
+    }
+
+    /// A full-size high-density screenshot lands whole, and the staging file
+    /// that made it atomic is gone.
+    #[test]
+    fn a_written_screenshot_is_complete_and_leaves_no_staging_file() {
+        let dir = tempfile::tempdir().expect("scratch directory");
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, b"stale").expect("an older file to replace");
+        let (width, height) = (2944_u32, 1840_u32);
+        let rgba = vec![0x7f; usize::try_from(width * height * 4).expect("fits")];
+        let png = ui::png::encode_rgba8(width, height, &rgba).expect("encode");
+        write_whole(&path, &png).expect("write");
+        let decoded =
+            ui::png::decode_rgba8(&std::fs::read(&path).expect("read back")).expect("complete PNG");
+        assert_eq!((decoded.width, decoded.height), (width, height));
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("shot.png")]);
     }
 
     /// A request that could not do what it asked says so: a screenshot that
