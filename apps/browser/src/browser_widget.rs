@@ -286,9 +286,20 @@ enum BrowserOperation {
     Forward,
     Reload,
     Stop,
-    Navigate { url: String },
-    ShowLibrary { section: LibrarySection },
-    SetLibraryFilter { query: String },
+    Navigate {
+        url: String,
+    },
+    /// Another Browser in a desktop tab right after this one.
+    OpenInNewTab {
+        url: String,
+        background: bool,
+    },
+    ShowLibrary {
+        section: LibrarySection,
+    },
+    SetLibraryFilter {
+        query: String,
+    },
     ClearLibraryFilter,
     ShowSettings,
     ShowPage,
@@ -296,11 +307,21 @@ enum BrowserOperation {
     RequestWebsiteDataClear,
     TogglePictureInPicture,
     ToggleHistoryPause,
-    StartDownload { url: String },
-    CancelDownload { id: String },
-    RetryDownload { id: String },
-    OpenDownload { id: String },
-    RevealDownload { id: String },
+    StartDownload {
+        url: String,
+    },
+    CancelDownload {
+        id: String,
+    },
+    RetryDownload {
+        id: String,
+    },
+    OpenDownload {
+        id: String,
+    },
+    RevealDownload {
+        id: String,
+    },
     Page(PageRequest),
 }
 
@@ -390,6 +411,9 @@ fn browser_operation_payload(operation: &BrowserOperation) -> serde_json::Value 
         BrowserOperation::Navigate { url } => {
             serde_json::json!({ "operation": "navigate", "url": url })
         }
+        BrowserOperation::OpenInNewTab { url, background } => {
+            serde_json::json!({ "operation": "open-tab", "url": url, "background": background })
+        }
         BrowserOperation::ShowLibrary { section } => serde_json::json!({
             "operation": "show-library",
             "section": match section {
@@ -460,6 +484,15 @@ fn decode_browser_operation(payload: &[u8]) -> Result<BrowserOperation, String> 
                 url: url.to_string(),
             })
             .ok_or_else(|| "browser navigate operation is missing `url`".to_string()),
+        Some("open-tab") => {
+            required_string(&value, "url").map(|url| BrowserOperation::OpenInNewTab {
+                url,
+                background: value
+                    .get("background")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            })
+        }
         Some("show-library") => {
             let section = match value.get("section").and_then(serde_json::Value::as_str) {
                 Some("history") => LibrarySection::History,
@@ -569,7 +602,35 @@ pub(crate) fn window_navigation_operations() -> Vec<ActionSpec> {
         )
         .with_contract(navigation_contract()),
     );
+    ops.push(open_in_new_tab_operation());
     ops
+}
+
+/// "Open in new tab": another Browser, at `url`, in a desktop tab right
+/// after this one. Tabs are the desktop's; this window keeps its page.
+fn open_in_new_tab_operation() -> ActionSpec {
+    ActionSpec::typed_operation(
+        "open-tab",
+        "Open in new tab",
+        "https://…",
+        OperationKind::Effect,
+        BROWSER_OPERATION_TYPE,
+        vec![
+            ActionParam::required_owned("url", ParamType::Text, "Absolute URL or search terms"),
+            ActionParam::optional_owned(
+                "background",
+                ParamType::Boolean,
+                "Open behind this tab instead of in front of it",
+            ),
+        ],
+        |args: &ActionArgs| {
+            encode_browser_operation(&BrowserOperation::OpenInNewTab {
+                url: args.text("url").unwrap_or("").to_string(),
+                background: args.boolean("background").unwrap_or(false),
+            })
+        },
+    )
+    .with_contract(local_effect_contract(&["navigation"]))
 }
 
 /// An explicit contract for sensitive work that happens only in this running
@@ -836,9 +897,6 @@ pub struct BrowserWidget {
     /// Hosted bookmark and preference edits, applied on the next sync.
     pending_library_edits: ui::LocalState<Vec<BrowserAction>>,
     initial_url: String,
-    session_url: String,
-    session_first_commit: bool,
-    navigation_deferred: bool,
     /// An address draft belongs to this window. Only an explicit Navigate
     /// resource operation crosses the browser/engine boundary.
     address: ui::LocalState<String>,
@@ -1031,28 +1089,8 @@ impl BrowserWidget {
     /// this only after validating the URI against Browser's declared schemes.
     #[must_use]
     pub fn with_initial_uri(mut self, uri: String) -> Self {
-        self.session_url.clone_from(&uri);
         self.initial_url = uri;
         self
-    }
-
-    pub(crate) fn prepare_session_uri(&mut self, uri: String, deferred: bool) {
-        self.initial_url.clone_from(&uri);
-        self.session_url.clone_from(&uri);
-        self.address.set(uri);
-        self.current_uri.clear();
-        self.session_first_commit = false;
-        self.navigation_deferred = deferred;
-        self.bootstrap_done = false;
-    }
-    pub(crate) fn activate_session_uri(&mut self) {
-        if self.navigation_deferred {
-            self.navigation_deferred = false;
-            self.bootstrap_done = false;
-        }
-    }
-    pub(crate) fn persisted_url(&self) -> &str {
-        &self.session_url
     }
 
     /// [`labelled_width`] at the theme's text scale from the last layout pass.
@@ -1093,10 +1131,6 @@ impl BrowserWidget {
         true
     }
 
-    /// Widget over an explicit engine — used by tests.
-    pub(crate) fn is_headless(&self) -> bool {
-        self.headless
-    }
     pub(crate) fn deactivate_credentials(&mut self) {
         let was_open = self.credentials.open;
         let requests = self.credentials.close();
@@ -1104,97 +1138,30 @@ impl BrowserWidget {
         self.structure_dirty |= was_open;
     }
 
-    pub(crate) fn browsing_mode(&self) -> BrowsingMode {
-        self.browsing_mode
-    }
     pub(crate) fn request_private_window(&self) {
         self.private_window_request.set(true);
-    }
-    pub(crate) fn tab_url(&self) -> &str {
-        if self.navigation_deferred || self.current_uri.is_empty() {
-            &self.initial_url
-        } else {
-            &self.current_uri
-        }
-    }
-    pub(crate) fn tab_title(&self) -> String {
-        if self.navigation_deferred {
-            return self.initial_url.clone();
-        }
-        let title = if !self.title.is_empty() {
-            &self.title
-        } else if self.tab_url() == "about:blank" {
-            "New tab"
-        } else {
-            self.tab_url()
-        };
-        title.to_owned()
-    }
-    pub(crate) fn tab_visual(&self) -> crate::browser_tab_strip::TabVisual {
-        crate::browser_tab_strip::TabVisual {
-            favicon: self.favicon.clone(),
-            loading: self.progress < 1.0,
-            muted: self.audio_muted,
-            media_playing: self.media_playing,
-        }
-    }
-    pub(crate) fn tab_muted(&self) -> bool {
-        self.audio_muted
-    }
-    pub(crate) fn set_tab_muted(&mut self, muted: bool) {
-        self.audio_muted = muted;
-        self.engine.send(WebViewCommand::SetAudioMuted(muted));
-        self.structure_dirty = true;
-    }
-    pub(crate) fn set_tab_identity(&mut self, id: u64) {
-        self.pip_id = format!("{PIP_ID}.{id}");
-    }
-    pub(crate) fn share_history_pause(&mut self, other: &Self) {
-        self.history_paused = other.history_paused.clone();
     }
     pub(crate) fn history_paused(&self) -> bool {
         self.history_paused
             .load(std::sync::atomic::Ordering::Relaxed)
     }
-    pub(crate) fn focus_tab_address_with_caret(&mut self, buffered: bool) -> bool {
-        let focused = self.focus_address_input();
-        if buffered {
-            fn caret(widget: &mut dyn Widget) {
-                if widget.test_id() == Some(URL_INPUT_ID)
-                    && let Some((_, text)) = widget.text_review()
-                {
-                    ui::undo::set_state(widget, &text.len().to_string());
-                }
-                for child in widget.children_mut() {
-                    caret(child);
-                }
-            }
-            if let Some(composed) = self.composed.as_mut() {
-                caret(composed.as_mut());
-            }
-        }
-        focused
+    /// Put the caret in the address field, for a window opened without a
+    /// page to show.
+    pub(crate) fn focus_address_with_caret(&mut self) -> bool {
+        self.focus_address_input()
     }
-    pub(crate) fn buffer_tab_address(&mut self, key: &WKey, replace: bool) -> bool {
-        match key {
-            WKey::Character(text) => {
-                if replace {
-                    self.address.set(String::new());
-                }
-                self.address.update(|address| address.push_str(text));
-                true
+    /// Show `url` in another Browser in a desktop tab right after this one.
+    /// A private page never hands its URL to a normal launch: the new page
+    /// is another private window, placed as the tab beside.
+    pub(crate) fn open_beside(&mut self, url: String, background: bool) {
+        if self.browsing_mode.is_private() {
+            ui::shell_tabs::place_next_window_beside(background);
+            if let Err(error) = crate::private_window::launch(Some(&url)) {
+                self.private_window_notice = Some(error);
+                self.structure_dirty = true;
             }
-            WKey::Named(WNamedKey::Backspace) => {
-                self.address.update(|address| {
-                    address.pop();
-                });
-                true
-            }
-            WKey::Named(WNamedKey::Enter) => {
-                self.navigate_to_input();
-                true
-            }
-            _ => false,
+        } else {
+            ui::shell_tabs::open_beside(Some(url), background);
         }
     }
     pub(crate) fn set_window_scale(&mut self, scale: f64) {
@@ -1215,17 +1182,6 @@ impl BrowserWidget {
     pub(crate) fn cancel_downloads_for_exit(&self) {
         crate::capabilities::Capabilities::cancel_all(&self.engine);
     }
-    pub(crate) fn inherit_workspace_state(&mut self, other: &Self) {
-        self.window_scale = other.window_scale;
-        self.capabilities.share_downloads(&other.capabilities);
-        self.site.share_runtime_state(&other.site);
-    }
-    pub(crate) fn refresh_shared_history(&mut self) {
-        if !self.headless && self.browsing_mode.persists_personal_state() {
-            self.history = History::load();
-        }
-    }
-
     pub fn with_engine(engine: SharedEngine, headless: bool) -> Self {
         Self::with_engine_mode(engine, headless, BrowsingMode::Normal)
     }
@@ -1292,9 +1248,6 @@ impl BrowserWidget {
             window_scale: 1.0,
             native_closed: false,
             close_blocked: false,
-            session_url: initial_url.clone(),
-            session_first_commit: false,
-            navigation_deferred: false,
             initial_url,
             can_go_back: false,
             loading_stopped: false,
@@ -1732,6 +1685,10 @@ impl BrowserWidget {
                             },
                         });
                 }
+            }
+            BrowserOperation::OpenInNewTab { url, background } => {
+                let target = self.navigation_target(url.trim())?;
+                self.open_beside(target, background);
             }
             BrowserOperation::Navigate { url } => {
                 let target = self.navigation_target(url.trim())?;
@@ -3957,7 +3914,7 @@ impl BrowserWidget {
         {
             let event = match event {
                 WebViewEvent::LoadFinishedAt { uri } => {
-                    if self.navigation_deferred || uri != self.current_uri {
+                    if uri != self.current_uri {
                         continue;
                     }
                     WebViewEvent::LoadFinished
@@ -4041,14 +3998,6 @@ impl BrowserWidget {
                     let requests = self.credentials.navigation(&uri);
                     crate::credentials::Credentials::send(&self.engine, requests);
                     self.structure_dirty = true;
-                    if !self.navigation_deferred
-                        && (uri != "about:blank"
-                            || self.initial_url == "about:blank"
-                            || self.session_first_commit)
-                    {
-                        self.session_url.clone_from(&uri);
-                        self.session_first_commit = true;
-                    }
                     self.document_revision = self.document_revision.wrapping_add(1);
                     self.favicon = None;
                     self.media_playing = false;
@@ -5094,7 +5043,7 @@ impl Widget for BrowserWidget {
         let (state, path) = ui::doc::document(state, path);
         if self.private_window_request.get() {
             self.private_window_request.set(false);
-            self.private_window_notice = crate::private_window::launch().err();
+            self.private_window_notice = crate::private_window::launch(None).err();
             self.structure_dirty = true;
         }
         let paused = self.history_paused();
@@ -5119,10 +5068,8 @@ impl Widget for BrowserWidget {
                 if !self.settings.adblock_enabled {
                     self.set_adblock(false);
                 }
-                if !self.navigation_deferred {
-                    self.engine
-                        .send(WebViewCommand::Navigate(self.initial_url.clone()));
-                }
+                self.engine
+                    .send(WebViewCommand::Navigate(self.initial_url.clone()));
             }
             self.bootstrap_done = true;
         }
@@ -6060,6 +6007,7 @@ impl ui::resources::PublishesResources for BrowserWidget {
             )
             .with_contract(navigation_contract()),
         );
+        page.actions.push(open_in_new_tab_operation());
         if let Ok(spec) = ActionSpec::immediate(
             "bookmark",
             "Bookmark this page",
@@ -6644,6 +6592,9 @@ impl BrowserWidget {
                 }
                 BrowserOperation::RevealDownload { .. } => {
                     local_output("Downloaded file location was handed to the desktop portal.")
+                }
+                BrowserOperation::OpenInNewTab { .. } => {
+                    local_output("Asked the desktop for a new Browser tab beside this one.")
                 }
                 _ => ui::tilo_actions::ActionOutput::default(),
             };
@@ -8295,7 +8246,7 @@ mod tests {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             w.headless = false;
             w.settings.clear_on_exit = true;
-            drop(crate::BrowserTabs::new(w));
+            drop(crate::BrowserWindow::new(w, false));
             assert!(
                 History::load().is_empty(),
                 "workspace exit clears persisted history"
@@ -9009,10 +8960,10 @@ mod tests {
             let mut widget = BrowserWidget::new_headless();
             layout_at(&mut widget, 800.0, 588.0);
             widget.site.open = true;
-            let tabs = crate::browser_tabs::BrowserTabs::new(widget);
+            let window = crate::BrowserWindow::new(widget, false);
             let mut harness = ui::headless::FrameHarness::new(
                 ui::state::State::new(),
-                Box::new(tabs),
+                Box::new(window),
                 (800, 632),
             );
             for _ in 0..3 {
@@ -9893,6 +9844,38 @@ mod tests {
             assert!(!back.contract.availability.is_available());
             let navigate = page.actions.iter().find(|a| a.id == "navigate").unwrap();
             assert_eq!(navigate.params()[0].name.as_ref(), "url");
+            // Another page is a desktop tab: "Open in new tab" asks the
+            // desktop and leaves this window on its own page.
+            let open_tab = page.actions.iter().find(|a| a.id == "open-tab").unwrap();
+            assert_eq!(open_tab.params()[0].name.as_ref(), "url");
+            assert!(open_tab.contract.validate_declaration().is_empty());
+            let operation = BrowserOperation::OpenInNewTab {
+                url: "example.test/next".into(),
+                background: true,
+            };
+            assert!(matches!(
+                decode_browser_operation(
+                    &serde_json::to_vec(&browser_operation_payload(&operation)).unwrap()
+                ),
+                Ok(BrowserOperation::OpenInNewTab { ref url, background: true })
+                    if url == "example.test/next"
+            ));
+            let _ = ui::shell_tabs::take_requests();
+            let before = engine.commands().len();
+            w.perform_browser_operation(operation).unwrap();
+            assert_eq!(
+                ui::shell_tabs::take_requests(),
+                vec![ui::shell_tabs::TabRequest::OpenBeside {
+                    target: Some("https://example.test/next".into()),
+                    background: true,
+                }]
+            );
+            assert!(
+                !engine.commands()[before..]
+                    .iter()
+                    .any(|command| matches!(command, WebViewCommand::Navigate(_))),
+                "this window keeps its page"
+            );
             assert_eq!(
                 navigate.contract.execution,
                 ui::tilo_actions::ExecutionMode::Background { cancellable: false }
@@ -10012,8 +9995,8 @@ mod tests {
                 ]),
                 TestEngine::new(),
             ));
-            let mut widget = BrowserWidget::with_engine(engine.clone(), true);
-            widget.prepare_session_uri("https://example.test/saved".into(), false);
+            let mut widget = BrowserWidget::with_engine(engine.clone(), true)
+                .with_initial_uri("https://example.test/saved".into());
             widget.title = "about:blank".into();
             widget.apply_engine_events();
             assert!(
@@ -10026,16 +10009,6 @@ mod tests {
             });
             widget.apply_engine_events();
             assert!((widget.progress - 1.0).abs() < f64::EPSILON);
-        }
-
-        // Phase `deferred_session_tab_keeps_saved_identity_before_activation`.
-        {
-            let mut widget = BrowserWidget::with_engine(TestEngine::new(), true);
-            widget.prepare_session_uri("https://example.test/saved".into(), true);
-            widget.title = "about:blank".into();
-            widget.current_uri = "about:blank".into();
-            assert_eq!(widget.tab_title(), "https://example.test/saved");
-            assert_eq!(widget.persisted_url(), "https://example.test/saved");
         }
 
         // Phase `continuation_restore_navigates_the_matching_browser_instance`.
