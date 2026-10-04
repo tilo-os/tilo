@@ -93,10 +93,10 @@ fn settle(app: &mut VideoEditorApp, doc: &mut AutoCommit) {
 
 /// Present the project `doc` holds, as the host does when it changes.
 fn present(app: &mut VideoEditorApp, doc: &AutoCommit) {
-    ui::framework::ResourceSurface::<crate::resource::VideoProject>::present(
-        app,
-        &std::rc::Rc::new(VideoDoc::load_project(doc)),
-    );
+    ui::framework::ResourceSurface::<
+        crate::resource::VideoProject,
+        crate::actions::VideoEditorEffect,
+    >::present(app, &std::rc::Rc::new(VideoDoc::load_project(doc)));
 }
 
 /// One host frame's sync: the submitted edits applied, a changed document
@@ -2885,65 +2885,12 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-#[expect(
-    clippy::float_cmp,
-    reason = "the value is either untouched by the event under test or assigned a literal, so any difference is the bug"
-)]
 fn resource_and_view_actions_target_exact_entities() {
-    // Case `resource_operations_reject_wrong_kinds_without_changing_state`.
-    {
-        let (mut app, mut doc) = app_and_doc();
-        let selected_before = app.selected();
-        let playhead_before = app.playhead;
-        let clip = app.project.clips[0].id;
-        let reveal = serde_json::to_vec(&crate::actions::VideoEditorOperation::RevealClip {
-            clip: clip.to_string(),
-        })
-        .unwrap();
-        assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &reveal
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
-        );
-        assert_eq!(app.selected(), selected_before);
-        assert_eq!(app.playhead, playhead_before);
-
-        let import = serde_json::to_vec(&crate::actions::VideoEditorOperation::ImportMedia {
-            path: Some("/tmp/wrong-kind.mp4".into()),
-        })
-        .unwrap();
-        assert!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &import
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err()
-        );
-        assert!(app.resource_operation.is_none());
-        assert!(app.resource_pending_operation.is_none());
-        assert!(app.resource_invocation.is_none());
-    }
     // Case `a_chosen_search_hit_brokers_the_exact_timeline_selection`:
     // A chosen search row resolves through the exported resource tree and the
     // operation broker, then opens the exact clip and timeline instant.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _doc) = app_and_doc();
         let clip = app.project.clips[0].clone();
         let media = app
             .project
@@ -2966,20 +2913,8 @@ fn resource_and_view_actions_target_exact_entities() {
 
         app.playback.playing = true;
         app.playhead = 0.0;
-        assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("view operation succeeds"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
+        app.perform_resource_operation(decode_effect(&encoded))
+            .expect("view operation succeeds");
         assert!(
             (app.playhead - clip.start).abs() < 1e-3,
             "the hit put the playhead on the clip: {}",
@@ -2993,7 +2928,7 @@ fn resource_and_view_actions_target_exact_entities() {
     // Clip markers resolve their current collaborative position at execution
     // time and select their owner, rather than replaying a stale timestamp.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _doc) = app_and_doc();
         let cid = app.project.clips[0].id;
         let marker = crate::model::Marker::new(1.25, "Exact beat", 1);
         let marker_id = marker.id;
@@ -3007,48 +2942,26 @@ fn resource_and_view_actions_target_exact_entities() {
         let address = crate::actions::reveal_marker_address(marker_id);
         let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("marker action is exported");
-        app.start_operation(
-            &ui::widget::ResourceOperation::local(
-                ui::tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-            ),
-            &mut doc,
-            &automerge::ROOT,
-        )
-        .expect("view marker");
+        app.perform_resource_operation(decode_effect(&encoded))
+            .expect("view marker");
         assert_eq!(app.selected(), Some(cid));
         assert!((app.playhead - (clip.start + 1.25)).abs() < 1e-9);
     }
     // Case `effect_view_action_targets_its_instance_and_refuses_a_stale_id`.
     {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, _doc) = app_and_doc();
         let clip_id = app.project.clips[0].id;
         let clip = app.project.clip_mut(clip_id).expect("fixture clip");
         clip.add_effect(crate::model::EffectKind::Sepia);
         clip.add_effect(crate::model::EffectKind::Sepia);
         let effect_id = clip.effects[1].id;
-        let payload = serde_json::to_vec(&crate::actions::VideoEditorOperation::RevealEffect {
+        let reveal = crate::actions::VideoEditorEffect::RevealEffect {
             clip: clip_id.to_string(),
             effect: effect_id.to_string(),
-        })
-        .expect("operation serializes");
+        };
 
-        assert!(matches!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .expect("live effect resolves"),
-            Some(ui::widget::ResourceOperationStart::Accepted)
-        ));
+        app.perform_resource_operation(reveal.clone())
+            .expect("live effect resolves");
         assert_eq!(app.selected(), Some(clip_id));
 
         app.project
@@ -3056,20 +2969,21 @@ fn resource_and_view_actions_target_exact_entities() {
             .expect("fixture clip")
             .remove_effect_id(effect_id);
         assert!(
-            app.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut doc,
-                &automerge::ROOT
-            )
-            .is_err(),
+            app.perform_resource_operation(reveal).is_err(),
             "a stale effect operation cannot resolve a duplicate by position",
         );
     }
+}
+
+/// The effect a published action encodes, as the framework decodes it.
+fn decode_effect(encoded: &tilo_actions::EncodedAction) -> crate::actions::VideoEditorEffect {
+    use ui::tilo_resource::Effect;
+    assert_eq!(
+        encoded.type_id,
+        crate::actions::VideoEditorEffect::OPERATION
+    );
+    crate::actions::VideoEditorEffect::from_payload(&encoded.payload)
+        .expect("a video editor effect")
 }
 
 fn key_press(app: &mut VideoEditorApp, doc: &mut AutoCommit, ch: &str, ctrl: bool) -> bool {

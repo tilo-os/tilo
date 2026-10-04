@@ -111,21 +111,6 @@ impl Resource for VideoProject {
             .unwrap_or_default()
     }
 
-    /// Import / open / save / export and other non-document project jobs.
-    fn local_operations() -> Vec<ActionSpec> {
-        let ctx = VideoResourceCtx::default();
-        crate::actions::project_tree(&ctx)
-            .into_iter()
-            .next()
-            .map(|root| {
-                root.actions
-                    .into_iter()
-                    .filter(|spec| spec.kind != OperationKind::Document)
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
     /// Every marker, track, clip, effect and bin source, each hit revealing
     /// it.
     fn search(project: &Project) -> Vec<SearchEntry> {
@@ -228,10 +213,6 @@ mod tests {
         let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
         for expected in [
             "add-marker",
-            "import",
-            "open",
-            "save",
-            "export",
             "rename-project",
             "set-frame-size",
             "apply",
@@ -271,7 +252,10 @@ mod tests {
         let at = clip.start + (clip.end() - clip.start) * 0.5;
         app.seed_unpublished_project_for_test(sample);
         app.set_playhead_for_test(at);
-        let bound = ResourceSurface::<VideoProject>::bound_declarations(&app);
+        let bound =
+            ResourceSurface::<VideoProject, crate::actions::VideoEditorEffect>::bound_declarations(
+                &app,
+            );
         let ids: Vec<&str> = bound.iter().map(|decl| decl.id).collect();
         for expected in [
             "mark-in",
