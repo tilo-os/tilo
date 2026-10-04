@@ -1064,7 +1064,7 @@ impl Action for EbookAction {
                 before,
                 preferences,
             } => {
-                BooksDoc::write_library_prefs_delta(doc, before, preferences);
+                BooksDoc::write_library_prefs_delta(doc, *before, *preferences);
                 Ok(())
             }
             EbookAction::RemoveLibraryBook { book_id } => {
@@ -2418,7 +2418,10 @@ mod tests {
     /// A reader with a book open and one seeded highlight carrying two comments,
     /// plus a standalone note and a bookmark, in the CRDT.
     fn open_with_annotations() -> (BooksApp, AutoCommit, String, Uuid) {
-        let app = BooksApp::with_library(crate::content::load_sample_library());
+        let app = BooksApp::with_library(
+            crate::resource::library_dispatcher_for_test(),
+            crate::content::load_sample_library(),
+        );
         let book_id = app
             .open_book()
             .expect("sample library is non-empty")
@@ -2494,7 +2497,8 @@ mod tests {
                 .any(|resource| resource.id.as_str() == id || contains_id(&resource.children, id))
         }
         let (app, _seed, book_id, _group) = open_with_annotations();
-        let mut resources = ui::resources::resources(&app, doc);
+        let mut resources = provide_resources(&[], doc);
+        resources.extend(ui::resources::resources(&app, doc));
         let lazy = std::iter::once(format!("ebook.book:{book_id}"))
             .chain(
                 BooksDoc::read_fonts(doc)
@@ -2671,7 +2675,7 @@ mod tests {
         // the immutable search snapshot and never materialise siblings.
         {
             let (app, doc, book_id, _group) = open_with_annotations();
-            let roots = ui::resources::resources(&app, &doc);
+            let roots = provide_resources(&[], &doc);
             assert_eq!(roots.len(), 1);
             assert_eq!(roots[0].id.as_str(), "ebook.library");
             assert!(

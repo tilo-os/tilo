@@ -31,8 +31,7 @@ use crate::resource::Ebook;
 /// The SDK editor a note or comment is written in, bound to the note's rich
 /// text: each keystroke is an [`EbookAction::EditNoteText`] the library's
 /// dispatcher applies, undone a word at a time. Enter asks to finish,
-/// Shift+Enter breaks the line and Escape cancels. Until the library's
-/// dispatcher is attached the note is shown and not edited.
+/// Shift+Enter breaks the line and Escape cancels.
 ///
 /// [`EbookAction::EditNoteText`]: crate::actions::EbookAction::EditNoteText
 pub(crate) struct NoteEditor {
@@ -43,17 +42,11 @@ pub(crate) struct NoteEditor {
 }
 
 impl NoteEditor {
-    pub(crate) fn new(
-        id: Uuid,
-        body_size: f32,
-        hint: &str,
-        library: Option<&Dispatcher<Ebook>>,
-    ) -> Self {
-        let mut field =
-            RichTextField::view_only(move |doc| crate::doc::BooksDoc::annotation_text(doc, id));
-        if let Some(library) = library {
-            field.attach(crate::actions::note_text_dispatcher(library, id));
-        }
+    pub(crate) fn new(id: Uuid, body_size: f32, hint: &str, library: &Dispatcher<Ebook>) -> Self {
+        let field = RichTextField::new(
+            crate::actions::note_text_dispatcher(library, id),
+            move |doc| crate::doc::BooksDoc::annotation_text(doc, id),
+        );
         let mut surface = RichTextSurface::field(field)
             .with_editor(
                 BlockEditor::new()
@@ -69,14 +62,6 @@ impl NoteEditor {
             host: Embedded::new(surface),
             placed: false,
         }
-    }
-
-    /// Edit the note through the library's dispatcher from now on.
-    pub(crate) fn attach(&mut self, library: &Dispatcher<Ebook>) {
-        self.host
-            .widget_mut()
-            .source_mut()
-            .attach(crate::actions::note_text_dispatcher(library, self.id));
     }
 
     pub(crate) fn id(&self) -> Uuid {
@@ -494,7 +479,7 @@ impl NoteComposer {
     }
 
     /// Open the editor on note `id`; it shows the note on the next sync.
-    pub(crate) fn open(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
+    pub(crate) fn open(&mut self, id: Uuid, library: &Dispatcher<Ebook>) {
         self.editor = Some(NoteEditor::new(id, 13.5, "Write a note…", library));
     }
 
@@ -517,13 +502,6 @@ impl NoteComposer {
     pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(editor) = self.editor.as_mut() {
             editor.sync(state, root);
-        }
-    }
-
-    /// Edit the open note through the library's dispatcher from now on.
-    pub(crate) fn attach(&mut self, library: &Dispatcher<Ebook>) {
-        if let Some(editor) = self.editor.as_mut() {
-            editor.attach(library);
         }
     }
 
@@ -744,9 +722,9 @@ mod tests {
             let id = note.id;
             crate::doc::BooksDoc::upsert_annotation(&mut doc, &note);
             doc.commit();
-            let (_app, library) = crate::resource::library_dispatcher_for_test();
+            let library = crate::resource::library_dispatcher_for_test();
             let mut composer = NoteComposer::default();
-            composer.open(id, Some(&library));
+            composer.open(id, &library);
             let root = automerge::ROOT;
             composer.sync(&mut doc, &root);
             let taffy = TaffyTree::new();
@@ -793,28 +771,13 @@ mod tests {
                 "helloworld",
                 "Enter finishes, it does not break"
             );
-
-            // Without the library's dispatcher the note is shown, not edited.
-            let mut composer = NoteComposer::default();
-            composer.open(id, None);
-            composer.sync(&mut doc, &root);
-            assert!(!press(
-                &mut composer,
-                &mut doc,
-                key(Key::Character("!".into()))
-            ));
-            assert_eq!(
-                stored(&doc),
-                "helloworld",
-                "a view-only note is not written"
-            );
         }
 
         // --- phase: note_hit_testing_keeps_card_modal_and_tap_away_saves ---
         {
             let id = Uuid::new_v4();
             let mut composer = NoteComposer::default();
-            composer.open(id, None);
+            composer.open(id, &crate::resource::library_dispatcher_for_test());
             composer.card = Rect::new(10.0, 10.0, 200.0, 160.0);
             composer.delete = Rect::new(20.0, 110.0, 80.0, 140.0);
             composer.save = Rect::new(110.0, 110.0, 180.0, 140.0);
