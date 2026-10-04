@@ -283,6 +283,34 @@ impl ResourceApp for KeepApp {
     }
 }
 
+/// An app with options of its own: how its window runs, beside what it
+/// opens.
+struct TunedApp;
+
+impl ResourceApp for TunedApp {
+    type Resource = Sketch;
+    const ID: &'static str = "so.tilo.test-tuned";
+    const TITLE: &'static str = "Tuned";
+    const ARGUMENTS: usize = 1;
+    const OPTIONS: &'static [&'static str] = &["--pen"];
+    const FLAGS: &'static [&'static str] = &["--grid"];
+
+    fn view(cx: &mut ViewCx<Sketch>) -> Element {
+        let pen = cx.launch_option("--pen").unwrap_or("none").to_owned();
+        let grid = cx.launch_flag("--grid");
+        let launched = cx.launch_arguments().join(" ");
+        Box::new(Text::new(&format!("Pen {pen}, grid {grid}, on {launched}")))
+    }
+
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<Sketch>> {
+        input
+            .option("--pen")
+            .map(|pen| Sketch::TRACE.with(format!("{pen} {}", input.flag("--grid"))))
+            .into_iter()
+            .collect()
+    }
+}
+
 #[test]
 fn a_handed_file_is_kept_in_the_content_store_the_view_reads() {
     let bytes = b"\x89PNG harbour".to_vec();
@@ -299,6 +327,31 @@ fn a_handed_file_is_kept_in_the_content_store_the_view_reads() {
         .with(|content| content.borrow_mut().take())
         .expect("the view reads the content store the launch kept the bytes in");
     assert_eq!(content.read(&hash), Some(bytes));
+}
+
+#[test]
+fn the_apps_own_options_reach_its_launch_and_its_view_apart_from_its_arguments() {
+    let mut app = TestApp::<TunedApp>::launched(&["--pen=ink", "--grid", "harbour"]).unwrap();
+    app.harness().relayout();
+    assert_eq!(app.state().source, "ink true");
+    assert!(
+        app.harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Pen ink, grid true, on harbour"),
+        "the view reads the options and the one argument"
+    );
+
+    let mut plain = TestApp::<TunedApp>::launched(&["--pen", "chalk"]).unwrap();
+    plain.harness().relayout();
+    assert_eq!(plain.state().source, "chalk false");
+    assert!(
+        plain
+            .harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Pen chalk, grid false, on ")
+    );
 }
 
 /// A player that shows what its launch asked it to play, without keeping any

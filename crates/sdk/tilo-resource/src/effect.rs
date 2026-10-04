@@ -37,6 +37,13 @@
 //! operation (any reader may invoke it, a collaborator may not move someone
 //! else's view, repeating it is harmless), answered by the same handler.
 //!
+//! An effect that reaches the files, hardware or services of the device it
+//! runs on — set this computer up, kill a process here, read a local
+//! folder — is `device_only`: the door runs it for the person at that
+//! device and refuses collaborators and remote participants. Mark one
+//! variant, or the whole vocabulary (`#[effect(operation = "…",
+//! device_only)]`).
+//!
 //! An effect that acts on one item — open *this* snippet, connect *this*
 //! connection — is offered on the item itself with its arguments bound
 //! ([`Effect::bound`]): a published child or a live row carries it, and
@@ -51,7 +58,8 @@
 //! (answers with a JSON value), `destructive` (asks for confirmation),
 //! `privileged` (hands out or shows a credential, such as copying a one-time
 //! code: asks for confirmation too), `idempotent` (safe to repeat after an
-//! uncertain outcome) and `permission = "read"` (any participant may invoke
+//! uncertain outcome), `device_only` (only the person at this device) and
+//! `permission = "read"` (any participant may invoke
 //! it; an effect needs write access by default, a view read access). Field
 //! `#[param("…")]` describes a parameter; `#[param(secret, "…")]` makes it a
 //! secret the host keeps out of logs, history and confirmations.
@@ -167,6 +175,10 @@ pub struct EffectDecl {
     /// Safe to repeat after an uncertain outcome.
     pub idempotent: bool,
     pub permission: PermissionRequirement,
+    /// Reaches files, hardware or services of the device it runs on: only
+    /// the person at that device may invoke it, never a collaborator or a
+    /// remote participant.
+    pub device_only: bool,
 }
 
 /// How an effect answers its caller.
@@ -252,6 +264,11 @@ impl EffectDecl {
                 RetryPolicy::Idempotent
             } else {
                 base.retry
+            },
+            tags: if self.device_only {
+                ::std::vec![tilo_actions::LOCAL_DEVICE_ONLY.to_owned()]
+            } else {
+                base.tags.clone()
             },
             ..base
         };

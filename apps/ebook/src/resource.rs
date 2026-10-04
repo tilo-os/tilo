@@ -209,7 +209,7 @@ pub(crate) fn launch_file(input: &LaunchInput<'_>) -> Option<Invoke<Ebook>> {
 
 /// What Books does that changes no document by itself.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "ebook.effect")]
+#[effect(operation = "ebook.effect", device_only)]
 pub enum BooksEffect {
     /// Open a book the content store holds, putting it on the shelf.
     #[effect(job)]

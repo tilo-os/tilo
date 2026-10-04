@@ -65,11 +65,13 @@ mod schema;
 /// scripts alike. See `tilo_resource::effect`.
 ///
 /// `#[effect(operation = "app.effects")]` names the vocabulary's operation
-/// type. Each variant is unit or has named fields (the effect's typed
+/// type; `device_only` beside it marks every effect device-only. Each variant is unit or has named fields (the effect's typed
 /// parameters, `#[param("…")]` describing one); its id is the variant name in
 /// kebab case and its label the first doc line. Variant options:
 /// `#[effect(label = "...", view, row, job, cancellable, returns,
-/// destructive, privileged, idempotent, permission = "read")]`. Generates `impl Effect` and one `ActionRef`
+/// destructive, privileged, idempotent, device_only, permission = "read")]`.
+/// A `device_only` effect reaches the files, hardware or services of the
+/// device it runs on: only the person at that device may invoke it. Generates `impl Effect` and one `ActionRef`
 /// constant per variant (`Backups::RESTORE`) for binding controls.
 #[proc_macro_derive(Effect, attributes(effect, param))]
 pub fn derive_effect(input: TokenStream) -> TokenStream {

@@ -289,6 +289,13 @@ fn sheet_names(app: &HostedApp) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The argument of Sheets' New sheet: the sheet's name.
+fn sheet_named(name: &str) -> InvokeArgument {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("name".into(), name.into());
+    InvokeArgument::Json(arguments)
+}
+
 fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> InvokeRequest {
     InvokeRequest {
         invocation: InvocationId::new(),
@@ -431,11 +438,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     // 2. Invoke on a record nobody has open: the host mounts it, runs the
     // action and commits the change as its own.
-    let add = request(
-        &sheets_provider,
-        new_sheet.clone(),
-        InvokeArgument::Text("Budget".into()),
-    );
+    let add = request(&sheets_provider, new_sheet.clone(), sheet_named("Budget"));
     let receipt = browser.invoke(add.clone()).await;
     assert!(
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
@@ -465,7 +468,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let retry = browser.invoke(add.clone()).await;
     assert_eq!(retry, receipt);
     let mut other = add.clone();
-    other.argument = InvokeArgument::Text("Other".into());
+    other.argument = sheet_named("Other");
     let conflict = browser.invoke(other).await;
     assert_eq!(
         conflict.status,
@@ -541,13 +544,9 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let slow = request(
         &record_provider(&busy_route),
         new_sheet.clone(),
-        InvokeArgument::Text("Busy".into()),
+        sheet_named("Busy"),
     );
-    let queued = request(
-        &sheets_provider,
-        new_sheet,
-        InvokeArgument::Text("Never".into()),
-    );
+    let queued = request(&sheets_provider, new_sheet, sheet_named("Never"));
     browser.send(RemoteActionMessage::Invoke(slow.clone()));
     browser.send(RemoteActionMessage::Invoke(queued.clone()));
     browser.send(RemoteActionMessage::Cancel {
