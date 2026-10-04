@@ -496,7 +496,7 @@ impl Channels {
         route: &DocumentRoute,
         publisher: [u8; 32],
         now_ns: u64,
-    ) -> Option<([u8; 32], u64)> {
+    ) -> Option<([u8; 32], u64, Option<u64>)> {
         if self.revocation_overflow {
             return None;
         }
@@ -518,9 +518,19 @@ impl Channels {
         if self.governance(&route.cluster_id) != Governance::Governed(member.steward()) {
             return None;
         }
+        let revocation = self
+            .revocations
+            .get(&cert.user_public_key)
+            .and_then(|list| {
+                list.iter()
+                    .find(|entry| entry.revoked_device_public_key == publisher)
+                    .map(|entry| entry.revoked_at_ns)
+            });
+        let expires = cert.expires_at_ns.into_iter().chain(revocation).min();
         Some((
             cert.user_public_key,
             member.admitted_epoch_for(Ed25519PublicKey::from_bytes(publisher))?,
+            expires,
         ))
     }
 
@@ -533,7 +543,7 @@ impl Channels {
         cipher: &mut dyn ContentCipher,
     ) -> Option<crate::session::VerifiedSemanticLive> {
         use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame, SealedLiveFrame};
-        let (user, epoch) = self.semantic_authority(route, publisher, now_ns)?;
+        let (user, epoch, expires) = self.semantic_authority(route, publisher, now_ns)?;
         let sealed = SealedLiveFrame::decode(bytes).ok()?;
         if sealed.epoch != epoch {
             return None;
@@ -555,7 +565,7 @@ impl Channels {
             serde_json::from_str(&event.interaction_json).ok()?;
         interaction.validate().ok()?;
         if interaction.invocation.0.is_nil()
-            || interaction.sequence == 0
+            || interaction.sequence != event.seq
             || interaction.actor.kind != tilo_actions::InteractionActorKind::Person
             || interaction.actor.id != hex::encode(user)
             || interaction
@@ -570,6 +580,9 @@ impl Channels {
             publisher,
             user,
             epoch,
+            authority_generation: 0, // The owning session stamps its current snapshot.
+            authority_observed_at_ms: now_ns / 1_000_000,
+            authority_expires_at_ms: expires.map(|value| value / 1_000_000),
             frame: frame.encode().ok()?,
         })
     }

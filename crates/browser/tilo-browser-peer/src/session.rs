@@ -349,6 +349,12 @@ pub struct VerifiedSemanticLive {
     pub user: [u8; 32],
     /// Current exact-record MLS membership epoch.
     pub epoch: u64,
+    /// Local authority snapshot; compare synchronously before presenting a receipt.
+    pub authority_generation: u64,
+    /// Wall-clock verification time, independent of the source event timestamp.
+    pub authority_observed_at_ms: u64,
+    /// Earliest certificate expiry or known revocation deadline, rounded down.
+    pub authority_expires_at_ms: Option<u64>,
     /// Canonical bounded semantic frame, with actor checked against this root.
     pub frame: Vec<u8>,
 }
@@ -368,6 +374,7 @@ pub type RoomsCompletion =
 type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
 
 struct Shared {
+    semantic_generation: u64,
     status: PeerStatus,
     queues: Vec<std::sync::Weak<Mutex<VecDeque<PeerEvent>>>>,
     wakes: Vec<Wake>,
@@ -447,6 +454,7 @@ impl PeerHandle {
     ) -> Self {
         let (commands, receiver) = mpsc::unbounded_channel();
         let shared = Arc::new(Mutex::new(Shared {
+            semantic_generation: 1,
             status: PeerStatus {
                 phase: TransportPhase::Connecting,
                 authenticated: false,
@@ -813,7 +821,11 @@ impl PeerHandle {
     fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
         let wakes = {
             let mut shared = lock(&self.shared);
+            let before = (shared.status.phase, shared.status.rooms.clone());
             change(&mut shared.status);
+            if before != (shared.status.phase, shared.status.rooms.clone()) {
+                shared.semantic_generation = shared.semantic_generation.saturating_add(1);
+            }
             shared.status.generation = shared.status.generation.wrapping_add(1);
             shared.wakes.clone()
         };
@@ -936,6 +948,11 @@ impl PeerHandle {
     /// queue. Other consumers use [`Self::events`].
     pub fn drain(&self) -> Vec<PeerEvent> {
         PeerEvents(self.events.clone()).drain()
+    }
+
+    /// Current local authority snapshot, invalidated on received authority or session changes.
+    pub fn semantic_generation(&self) -> u64 {
+        lock(&self.shared).semantic_generation
     }
 
     /// A new, independent event queue.
@@ -1184,10 +1201,19 @@ impl Task {
             .is_ok()
     }
 
+    fn invalidate_semantic(&self) {
+        let mut shared = lock(&self.shared);
+        shared.semantic_generation = shared.semantic_generation.saturating_add(1);
+    }
+
     fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
         let wakes = {
             let mut shared = lock(&self.shared);
+            let before = (shared.status.phase, shared.status.rooms.clone());
             change(&mut shared.status);
+            if before != (shared.status.phase, shared.status.rooms.clone()) {
+                shared.semantic_generation = shared.semantic_generation.saturating_add(1);
+            }
             shared.status.generation = shared.status.generation.wrapping_add(1);
             shared.wakes.clone()
         };
@@ -1612,6 +1638,7 @@ impl Task {
                 true
             }
             Command::PinGovernor(room, governor) => {
+                self.invalidate_semantic();
                 let changes = self
                     .channels
                     .pin_governor(&room, governor, crate::clock::now_ms());
@@ -2024,8 +2051,15 @@ impl Task {
         }
         let now_ns = crate::clock::now_ms().checked_mul(1_000_000)?;
         let cipher = self.ciphers.get_mut(route)?;
-        self.channels
-            .open_semantic(route, publisher, bytes, now_ns, cipher.as_mut())
+        let mut receipt =
+            self.channels
+                .open_semantic(route, publisher, bytes, now_ns, cipher.as_mut())?;
+        let generation = lock(&self.shared).semantic_generation;
+        if generation == u64::MAX {
+            return None;
+        }
+        receipt.authority_generation = generation;
+        Some(receipt)
     }
 
     async fn publish(
@@ -2228,11 +2262,13 @@ impl Task {
             Ok(neighbour_wire::NeighbourMsg::IdentityHello {
                 cert, revocations, ..
             }) => {
+                self.invalidate_semantic();
                 self.channels.note_revocations(&revocations);
                 let changes = self.channels.note_cert(author, *cert, now);
                 self.absorb(changes);
             }
             Ok(neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. }) => {
+                self.invalidate_semantic();
                 let changes = self.channels.receive_frame(author, &room, *frame, now);
                 self.absorb(changes);
             }
@@ -2348,6 +2384,9 @@ impl Task {
         let result = saved
             .encode()
             .and_then(|bytes| self.store.save_channels(&bytes));
+        if self.semantic_storage_ready != result.is_ok() {
+            self.invalidate_semantic();
+        }
         self.semantic_storage_ready = result.is_ok();
         if let Err(error) = result {
             self.channels.mark_changed();

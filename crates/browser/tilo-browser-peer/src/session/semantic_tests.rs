@@ -56,6 +56,7 @@ fn task_fixture() -> (Task, DocumentRoute, [u8; 32], Vec<u8>, Arc<Store>) {
         revocations: RevocationList::new(),
     };
     let shared = Arc::new(Mutex::new(Shared {
+        semantic_generation: 1,
         status: tests::status(&[]),
         queues: Vec::new(),
         wakes: Vec::new(),
@@ -203,6 +204,80 @@ fn semantic_corrupt_saved_authority_cannot_be_replaced_by_readmission_or_save() 
     assert!(!task.semantic_storage_trusted);
     task.persist_channels(true);
     assert_eq!(store.load_channels().unwrap(), corrupt);
+    assert!(
+        task.open_semantic_live(&route, publisher, &bytes, true)
+            .is_none()
+    );
+}
+
+#[test]
+fn semantic_receipt_snapshot_survives_read_only_refresh_but_not_authority_change() {
+    let (mut task, route, publisher, bytes, _) = task_fixture();
+    task.inbound(Envelope::Ready {
+        workspace_id: route.workspace_id().unwrap(),
+        pending_deltas: 0,
+    });
+    let receipt = task
+        .open_semantic_live(&route, publisher, &bytes, true)
+        .unwrap();
+    task.update(|_| {});
+    assert_eq!(
+        receipt.authority_generation,
+        lock(&task.shared).semantic_generation
+    );
+    let mut cert = task.config.cert.clone();
+    cert.device_public_key = publisher;
+    cert.capabilities = tilo_user_identity::DeviceCapabilities::primary();
+    tilo_user_identity::sign_device_cert(&mut cert, &SigningKey::from_bytes(&[71; 32])).unwrap();
+    task.inbound_body(
+        postcard::to_stdvec(&neighbour_wire::NeighbourMsg::IdentityHello {
+            cert: Box::new(cert),
+            revocations: Vec::new(),
+        })
+        .unwrap(),
+        publisher,
+    );
+    assert_ne!(
+        receipt.authority_generation,
+        lock(&task.shared).semantic_generation
+    );
+    let renewed = task
+        .open_semantic_live(&route, publisher, &bytes, true)
+        .unwrap();
+    assert_eq!(
+        renewed.authority_generation,
+        lock(&task.shared).semantic_generation
+    );
+    task.update(|status| status.phase = TransportPhase::Offline);
+    assert_ne!(
+        renewed.authority_generation,
+        lock(&task.shared).semantic_generation
+    );
+    assert!(
+        task.open_semantic_live(&route, publisher, &bytes, true)
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn semantic_receipt_is_invalidated_by_an_actual_governor_pin_change() {
+    let (mut task, route, publisher, bytes, _) = task_fixture();
+    task.inbound(Envelope::Ready {
+        workspace_id: route.workspace_id().unwrap(),
+        pending_deltas: 0,
+    });
+    let receipt = task
+        .open_semantic_live(&route, publisher, &bytes, true)
+        .unwrap();
+    task.apply(
+        Command::PinGovernor(route.cluster_id.clone(), [99; 32]),
+        None,
+    )
+    .await;
+    assert_ne!(
+        receipt.authority_generation,
+        lock(&task.shared).semantic_generation
+    );
     assert!(
         task.open_semantic_live(&route, publisher, &bytes, true)
             .is_none()

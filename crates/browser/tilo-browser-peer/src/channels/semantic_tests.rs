@@ -380,3 +380,37 @@ fn semantic_invalid_persisted_revocation_fails_closed() {
     assert!(f.channels.revocation_overflow);
     assert!(f.open(&bytes).is_none());
 }
+
+#[test]
+fn semantic_receipt_carries_certificate_and_future_revocation_deadlines() {
+    let mut f = fixture();
+    let bytes = f.seal(&f.payload());
+    let mut cert = tests::cert(&f.root, &f.publisher, DeviceCapabilities::primary());
+    cert.expires_at_ns = Some(9_999_999);
+    tilo_user_identity::sign_device_cert(&mut cert, &f.root).unwrap();
+    f.channels.note_cert(tests::device(&f.publisher), cert, 0);
+    let verified = f.open(&bytes).unwrap();
+    assert_eq!(verified.authority_observed_at_ms, 0);
+    assert_eq!(verified.authority_expires_at_ms, Some(9));
+    let mut entry = RevocationEntry {
+        user_public_key: tests::device(&f.root),
+        revoked_device_public_key: tests::device(&f.publisher),
+        revoked_at_ns: 5_999_999,
+        reason: RevocationReason::Compromised,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut entry, &f.root).unwrap();
+    f.channels.note_revocations([&entry]);
+    assert_eq!(f.open(&bytes).unwrap().authority_expires_at_ms, Some(5));
+    assert!(
+        f.channels
+            .open_semantic(
+                &f.route,
+                tests::device(&f.publisher),
+                &bytes,
+                6_000_000,
+                &mut f.cipher
+            )
+            .is_none()
+    );
+}

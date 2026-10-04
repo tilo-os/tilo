@@ -90,3 +90,15 @@ Browser integration must recheck its active subscription and exact mount generat
 after awaiting it, clear on authority/lifetime changes, and bind target geometry
 to a genuine presentation. This API does not activate a publisher, a cursor,
 or panorama semantics; generic pointer decoding still refuses semantic frames.
+
+
+A verified browser receipt includes `authorityGeneration`,
+`authorityObservedAtMs` and `authorityExpiresAtMs` (nullable). Consumers compare
+the generation (both APIs use lossless decimal strings) synchronously against
+`peer.semanticGeneration()` before using
+a retained receipt, and refuse it at the earliest certificate expiry or known
+revocation deadline. Wall-clock rollback before the verification time also
+invalidates the receipt. Source event time remains separate. Network authority,
+room/session changes and storage readiness invalidate the local generation;
+read-only status refreshes do not. These fields grant no new authority and
+neither obtain keys nor renew a publisher lifetime.
