@@ -555,6 +555,12 @@ fn render_live_shot_to_png(
 
     let real_engine: SharedEngine = ui::webview::chromium::ChromiumEngine::new()
         .map_err(|e| format!("Chromium engine failed to boot: {e}"))?;
+    // The same page drawn from the paint stream, as a web client sees it.
+    let real_engine: SharedEngine = if std::env::var("TILO_BROWSER_PAINT").as_deref() == Ok("1") {
+        ui::webview::paint::PaintEngine::new(real_engine)
+    } else {
+        real_engine
+    };
     let probe = live_probe::LiveProbe::new(real_engine);
     let engine: SharedEngine = probe.clone();
     // Keep capture chrome/session data isolated while using real maintained

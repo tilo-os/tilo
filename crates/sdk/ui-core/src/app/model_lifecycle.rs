@@ -233,6 +233,23 @@ impl super::App {
         self.root_widget.sync(&mut self.state.doc, &self.state.root);
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
+        self.forget_replaced_widgets();
+        true
+    }
+
+    /// After a sync replaced widgets (a view switched what it shows), the
+    /// layout's map from nodes to widgets still points at the freed ones
+    /// until the next layout rebuilds it. Drop the map now, so nothing in
+    /// between (the cursor and tooltip a pointer move looks up, a key's
+    /// focused target) reaches a widget that is gone. Whether it did.
+    pub(super) fn forget_replaced_widgets(&mut self) -> bool {
+        if !self.take_composition_dirty() {
+            return false;
+        }
+        self.layout.structure_dirty = true;
+        self.layout.layout_dirty = true;
+        self.bindings.clear();
+        self.layout.node_map.clear();
         true
     }
 
@@ -266,3 +283,7 @@ impl super::App {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "replaced_widget_tests.rs"]
+mod replaced_widget_tests;

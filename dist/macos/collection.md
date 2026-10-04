@@ -63,6 +63,15 @@ install cross targets or pretend host-only bundles are universal. It pins build
 `MACOSX_DEPLOYMENT_TARGET=13.0` and rejects code requiring a newer OS than its plist.
 Intel execution and real app functionality still need separate qualification.
 
+Build-time dependencies use `CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP=none`.
+This avoids [Rust #157750](https://github.com/rust-lang/rust/issues/157750): on
+macOS 27, stripped proc-macro dylibs can have a misaligned `LINKEDIT` string pool,
+which dyld rejects and rustc reports as `E0463` (cannot find the proc-macro crate).
+The app's release stripping and optimization settings remain unchanged. Cargo
+may rebuild build-time dependencies once for this profile override; keep the
+shared compiler budget and free-space floor. Build receipts record the override;
+imported bundles make no claim about their build-time stripping policy.
+
 ## Signatures and credentials
 
 Distribution selects **Developer ID Application**, never Apple Development,
