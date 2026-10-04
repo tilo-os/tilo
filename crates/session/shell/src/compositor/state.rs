@@ -942,6 +942,12 @@ impl State {
     /// block on its last frame, and so never finish closing.
     pub(crate) fn ask_toplevel_to_close(&mut self, toplevel: &ToplevelSurface) {
         let id = surface_id(toplevel.wl_surface());
+        eprintln!(
+            "window-close-requested: surface={id} launch={}",
+            crate::shell::launcher::launch_key_for_surface(id)
+                .as_deref()
+                .unwrap_or("-")
+        );
         let now = std::time::Instant::now();
         let until = now.checked_add(CLOSING_FRAME_GRACE).unwrap_or(now);
         self.closing_toplevels.insert(id, until);
@@ -4869,6 +4875,15 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::note_client_pump();
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
+        // Whether the window went because it was asked to or on its own: the
+        // session's default log passes errors only, so this goes to stderr,
+        // which the session log records.
+        let launch = crate::shell::launcher::launch_key_for_surface(surface_id);
+        eprintln!(
+            "window-destroyed: surface={surface_id} launch={} asked_to_close={}",
+            launch.as_deref().unwrap_or("-"),
+            self.closing_toplevels.contains_key(&surface_id)
+        );
         crate::shell::launcher::forget_surface_launch(surface_id);
         self.closing_toplevels.remove(&surface_id);
         self.release_sheets_of_destroyed(surface_id);
