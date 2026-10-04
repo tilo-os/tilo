@@ -528,6 +528,20 @@ files = [
   { link = "../libexec/tilo-vmd", to = "/usr/bin/tilo-vmd" },
 ]
 
+# A signed app registry on loopback offering newer versions of an installed
+# app, for os/tests/booted_app_update.sh: the system image's apps update and
+# roll back through `app` like any other.
+[[component]]
+name = "test-registry"
+kind = "userspace"
+scope = "session"
+packages = ["test-app-registry"]
+bins = ["tilo-test-registry"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-test-registry", to = "/usr/bin/tilo-test-registry", mode = "0755" },
+]
+
 # ---- Boot: effective only after a cold boot ---------------------------------
 # Built and installed outside this manifest for now (the kernel RPM stage, the
 # `uki` stage via os/dev/uki.sh, dracut in the rootfs stage). Listed so dev

@@ -198,6 +198,19 @@ impl Widget for LiveStore {
                 );
             }
         }
+        if let Some((ids, invocation)) = self.inner.take_lifecycle_update_all() {
+            let items: Vec<_> = ids
+                .iter()
+                .filter_map(|id| self.inner.items().iter().find(|item| &item.id == id))
+                .cloned()
+                .collect();
+            if !worker.request_with_invocation(Request::UpdateAll(items), Some(invocation)) {
+                self.inner.complete_lifecycle_invocation(
+                    invocation,
+                    Some("store worker is unavailable".into()),
+                );
+            }
+        }
         if let Some(invocation) = self.inner.take_lifecycle_refresh()
             && !worker.request_with_invocation(Request::Refresh, Some(invocation))
         {

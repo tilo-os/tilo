@@ -10,7 +10,11 @@ launcher, inside its sandbox, attached to the session's runtime host.  The
 client does not import the UI crate or inspect an in-process AccessKit tree.
 
 ``open APP_NAME`` performs only the session launch and prints the app's
-AT-SPI bus name and process id, for gates with their own checks.
+AT-SPI bus name and process id, for gates with their own checks. Such a gate
+then drives the opened app by that bus name: ``names BUS`` prints every
+accessible name in its tree, ``type BUS TEXT`` sets its first editable text
+field, and ``click BUS NAME`` invokes the click action of the node named NAME
+once it appears.
 
 The small ``[accessibility.atspi_acceptance]`` section in a signed app
 manifest is the certification data.  Adding an app is data, not another
@@ -39,6 +43,9 @@ PATH_RE = re.compile(r"/org/a11y/atspi/accessible/[0-9/]+")
 POLL_SECONDS = 0.05
 START_TIMEOUT_SECONDS = 20
 TREE_NODE_LIMIT = 128
+# A catalogue window (the App Store) exposes a page of cards and their
+# controls; walking it whole needs more than one app scenario's limit.
+APP_TREE_NODE_LIMIT = 2048
 SHELL_TREE_NODE_LIMIT = 1024
 # The session's compositor owns this backend name; it identifies the shell's
 # AT-SPI connection without reading another process's /proc entry.
@@ -385,6 +392,54 @@ def open_in_session(address: str, app_name: str) -> tuple[str, int]:
     )
 
 
+def app_names(address: str, bus: str) -> list[str]:
+    """Every accessible name in an opened app's tree, in walk order."""
+    client = AtspiClient(address, bus)
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while True:
+        try:
+            tree = client.tree(APP_TREE_NODE_LIMIT)
+            break
+        except GateError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(POLL_SECONDS)
+    names = []
+    for value in tree.values():
+        match = re.search(r"'((?:[^'\\]|\\.)*)'", value)
+        if match and match.group(1).strip():
+            names.append(match.group(1))
+    return names
+
+
+def click_in_app(address: str, bus: str, name: str, timeout: float) -> None:
+    """Click the node named NAME in an opened app once it is exposed."""
+    client = AtspiClient(address, bus)
+    deadline = time.monotonic() + timeout
+    last_error = GateError(f"no node named {name!r} appeared")
+    while time.monotonic() < deadline:
+        try:
+            client.click(client.tree(APP_TREE_NODE_LIMIT), name)
+            return
+        except GateError as error:
+            last_error = error
+        time.sleep(POLL_SECONDS * 4)
+    raise last_error
+
+
+def type_in_app(address: str, bus: str, text: str) -> None:
+    """Set the first editable text field of an opened app to TEXT."""
+    client = AtspiClient(address, bus)
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        tree = client.tree(APP_TREE_NODE_LIMIT)
+        for path in tree:
+            if "org.a11y.atspi.EditableText" in client.interfaces(path) and client.set_text(path, text):
+                return
+        time.sleep(POLL_SECONDS * 4)
+    raise GateError("the app exposed no editable text field over AT-SPI")
+
+
 def close_app(pid: int) -> None:
     """End the app the session opened, so the next scenario starts clean."""
     try:
@@ -446,6 +501,15 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command")
     opener = sub.add_parser("open", help="open an installed app in the session; print its AT-SPI bus and pid")
     opener.add_argument("app_name")
+    names = sub.add_parser("names", help="print every accessible name in an opened app's tree")
+    names.add_argument("bus")
+    clicker = sub.add_parser("click", help="click the node with this accessible name in an opened app")
+    clicker.add_argument("bus")
+    clicker.add_argument("name")
+    clicker.add_argument("--timeout", type=float, default=LAUNCH_TIMEOUT_SECONDS)
+    typer = sub.add_parser("type", help="set the first editable text field of an opened app")
+    typer.add_argument("bus")
+    typer.add_argument("text")
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -456,6 +520,15 @@ def main() -> int:
         if args.command == "open":
             bus_name, pid = open_in_session(address, args.app_name)
             print(f"{bus_name} {pid}")
+            return 0
+        if args.command == "names":
+            print("\n".join(app_names(address, args.bus)))
+            return 0
+        if args.command == "click":
+            click_in_app(address, args.bus, args.name, args.timeout)
+            return 0
+        if args.command == "type":
+            type_in_app(address, args.bus, args.text)
             return 0
         for scenario, _binary in installed_scenarios(args.payload_root):
             exercise(scenario, address)

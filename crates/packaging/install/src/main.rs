@@ -27,7 +27,7 @@ use std::process::Command;
 
 use clap::{Args, Parser, Subcommand};
 use install::shim;
-use package_store::{Admission, InstalledPackage, PackageStore, Registry, StoreError};
+use package_store::{Admission, InstalledPackage, PackageStore, StoreError};
 use tilo_app_package::trust::{
     AttestorScope, RevocationList, RevokedKey, TrustedAttestor, TrustedAttestors,
     default_revoked_keys_path, default_trusted_attestors_path,
@@ -374,6 +374,11 @@ enum Error {
     AlreadyInstalled(String),
     #[error("no such package installed: {0}")]
     NotInstalled(String),
+    #[error(
+        "{0} ships with the system image and cannot be removed; \
+         `app rollback {0}` goes back to an older version"
+    )]
+    ImageApp(String),
     #[error("registry read: {0}")]
     RegistryRead(String),
     #[error("trust registry: {0}")]
@@ -477,17 +482,42 @@ fn bin_root() -> Result<PathBuf, Error> {
     Ok(store()?.layout().bin())
 }
 
-fn load_registry() -> Result<Registry, Error> {
-    store()?
-        .registry()
+/// The installed packages: the system image's apps and the user's store,
+/// one row per app for the copy that runs.
+fn catalog() -> Result<package_store::Catalog, Error> {
+    Ok(package_store::Catalog::at(
+        data_root()?,
+        package_store::SystemStore::from_env(),
+    ))
+}
+
+fn list_catalog() -> Result<Vec<InstalledPackage>, Error> {
+    catalog()?
+        .list()
         .map_err(|e| Error::RegistryRead(e.to_string()))
 }
 
+fn layers(pkg_id: &str) -> Result<package_store::Layers, Error> {
+    catalog()?
+        .layers(pkg_id)
+        .map_err(|e| Error::RegistryRead(e.to_string()))
+}
+
+/// The copy of `pkg_id` that runs, whichever store holds it.
 fn find_installed(pkg_id: &str) -> Result<InstalledPackage, Error> {
-    load_registry()?
-        .find(pkg_id)
+    layers(pkg_id)?
+        .running()
         .cloned()
         .ok_or_else(|| Error::NotInstalled(pkg_id.into()))
+}
+
+/// Whether a user copy of `version` must be held in front of the image's
+/// copy of the same app: it is older, so only an explicit choice (a
+/// rollback, a forced install) put it there.
+fn held_below_image(layers: &package_store::Layers, version: &str) -> bool {
+    layers.image.as_ref().is_some_and(|image| {
+        tilo_app_package::version::compare(version, &image.version) == std::cmp::Ordering::Less
+    })
 }
 
 fn store_error(error: StoreError) -> Error {
@@ -709,6 +739,7 @@ fn install_checked(
     candidate: &Candidate,
     checked: &Checked,
     pinned: bool,
+    held: bool,
     source: String,
     payload: Option<&dyn BlobFetcher>,
 ) -> Result<package_store::Installed, Error> {
@@ -728,6 +759,7 @@ fn install_checked(
                     pinned,
                     attested_by,
                     source,
+                    held,
                 })
             },
             payload,
@@ -876,13 +908,10 @@ fn install(
     let candidate = Candidate::File(tapp.to_path_buf());
     let checked = check(&candidate, trust)?;
 
-    // 2. Registry check.
+    // 2. Registry check: an app the system image ships is installed too.
     let store = store()?;
-    let existing = store
-        .registry()
-        .map_err(store_error)?
-        .find(checked.id())
-        .cloned();
+    let layers = layers(checked.id())?;
+    let existing = layers.running().cloned();
     if existing.is_some() && !force {
         return Err(Error::AlreadyInstalled(checked.id().to_string()));
     }
@@ -903,6 +932,7 @@ fn install(
         &candidate,
         &checked,
         pinned,
+        held_below_image(&layers, checked.version()),
         tapp.display().to_string(),
         payload_from
             .as_ref()
@@ -1021,7 +1051,10 @@ fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error
                 "--from names one .tapp, so it needs one package id".into(),
             ));
         }
-        load_registry()?.into_entries()
+        if !request.dry_run {
+            drop_superseded()?;
+        }
+        list_catalog()?
     };
     if targets.is_empty() {
         println!("(no packages installed)");
@@ -1039,6 +1072,29 @@ fn update(pkg_id: Option<&str>, request: &UpdateRequest<'_>) -> Result<(), Error
     }
     if targets.len() > 1 {
         println!("{updated} updated, {current} already current");
+    }
+    Ok(())
+}
+
+/// Remove the user's copies of apps the system image now ships a newer
+/// version of: nothing runs them any more.
+fn drop_superseded() -> Result<(), Error> {
+    let superseded = catalog()?
+        .superseded()
+        .map_err(|e| Error::RegistryRead(e.to_string()))?;
+    if superseded.is_empty() {
+        return Ok(());
+    }
+    let store = store()?;
+    for entry in superseded {
+        store.remove(&entry.id, true).map_err(store_error)?;
+        if !entry.cli_commands.is_empty() {
+            let _ = shim::remove_shims(&bin_root()?, &entry.cli_commands);
+        }
+        println!(
+            "{} {}: the system image ships a newer version; removed this copy",
+            entry.id, entry.version
+        );
     }
     Ok(())
 }
@@ -1151,7 +1207,14 @@ fn update_one(
         );
         println!("  from      : {source}");
         println!("  signature : verified ({})", describe_trust(&checked));
-        println!("  payload   : replace {}", entry.payload_root.display());
+        if entry.system {
+            println!(
+                "  payload   : install beside the system image's {}",
+                entry.payload_root.display()
+            );
+        } else {
+            println!("  payload   : replace {}", entry.payload_root.display());
+        }
         match runtime_status(&checked)? {
             None => println!("  runtime   : none declared"),
             Some((v, true)) => println!("  runtime   : tilo-runtime/{v} (installed)"),
@@ -1172,11 +1235,13 @@ fn update_one(
     //    row replaced atomically: a failure before that point leaves the old
     //    version installed and working, and the old tree goes only after.
     let store = store()?;
+    let held = held_below_image(&layers(&entry.id)?, checked.version());
     let installed = install_checked(
         &store,
         &candidate,
         &checked,
         entry.pinned,
+        held,
         source.clone(),
         payload,
     )?;
@@ -1203,16 +1268,16 @@ fn update_one(
 }
 
 fn list() -> Result<(), Error> {
-    let reg = load_registry()?;
-    if reg.is_empty() {
+    let entries = list_catalog()?;
+    if entries.is_empty() {
         println!("(no packages installed)");
         return Ok(());
     }
     println!(
-        "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  installed",
-        "id", "version", "pinned", "attested-by", "runtime"
+        "{:<32}  {:<8}  {:<6}  {:<6}  {:<18}  {:<18}  installed",
+        "id", "version", "from", "pinned", "attested-by", "runtime"
     );
-    for e in reg.entries() {
+    for e in &entries {
         let ago = age(e.installed_at);
         let attested = if e.attested_by.is_empty() {
             "-"
@@ -1233,9 +1298,10 @@ fn list() -> Result<(), Error> {
             }
         };
         println!(
-            "{:<32}  {:<8}  {:<6}  {:<18}  {:<18}  {}",
+            "{:<32}  {:<8}  {:<6}  {:<6}  {:<18}  {:<18}  {}",
             e.id,
             e.version,
+            installed_from(e),
             if e.pinned { "yes" } else { "no" },
             attested,
             runtime,
@@ -1245,18 +1311,40 @@ fn list() -> Result<(), Error> {
     Ok(())
 }
 
+/// Which store a listed package runs from: the system image's, or the
+/// user's (`held` when rolled back below the image's version).
+fn installed_from(entry: &InstalledPackage) -> &'static str {
+    if entry.system {
+        "image"
+    } else if entry.held {
+        "held"
+    } else {
+        "user"
+    }
+}
+
 /// Uninstall a package, deciding about its user data separately.
 ///
 /// The payload is the publisher's (reproducible by reinstalling); the
 /// per-room state is the user's and does not come back — so the two
 /// are separate decisions, and deleting state is never done silently.
 fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Result<(), Error> {
-    let entry = find_installed(pkg_id)?;
+    // Only the user's copy can go; removing it puts the image's back.
+    let layers = layers(pkg_id)?;
+    let Some(entry) = layers.user.clone() else {
+        return Err(match layers.image {
+            Some(_) => Error::ImageApp(pkg_id.into()),
+            None => Error::NotInstalled(pkg_id.into()),
+        });
+    };
     let data_home = data_home_root()?;
     let rooms = install::state::find(&data_home, pkg_id);
 
     if dry_run {
         println!("plan: uninstall {} {}", entry.id, entry.version);
+        if let Some(image) = &layers.image {
+            println!("  then runs : {} from the system image", image.version);
+        }
         println!("  payload   : remove {}", entry.payload_root.display());
         println!("  registry  : drop the entry");
         if entry.cli_commands.is_empty() {
@@ -1303,6 +1391,12 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
         );
     }
     println!("uninstalled: {pkg_id} {}", entry.version);
+    if let Some(image) = &layers.image {
+        println!(
+            "  now runs : {} {} from the system image",
+            image.id, image.version
+        );
+    }
     println!(
         "  content  : evicted {} blob(s) no other package uses",
         removed.evicted_blobs
@@ -1330,7 +1424,7 @@ fn uninstall(pkg_id: &str, purge: bool, keep_state: bool, dry_run: bool) -> Resu
 fn verify_installed(pkg_id: Option<&str>) -> Result<(), Error> {
     let targets: Vec<InstalledPackage> = match pkg_id {
         Some(id) => vec![find_installed(id)?],
-        None => load_registry()?.into_entries(),
+        None => list_catalog()?,
     };
     if targets.is_empty() {
         println!("(no packages installed)");
@@ -2046,6 +2140,7 @@ fn image(cmd: ImageCmd) -> Result<(), Error> {
                             pinned: false,
                             attested_by,
                             source: tapp.display().to_string(),
+                            held: false,
                         })
                     },
                     payload.as_ref().map(|fetcher| fetcher as &dyn BlobFetcher),

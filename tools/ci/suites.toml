@@ -948,6 +948,11 @@ suite = "os/tests/booted_app_store.sh"
 reason = "needs a booted image (SSH into a VM)"
 
 [[unrequired]]
+suite = "os/tests/booted_app_update.sh"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/tests/build-windows-dxvk-load.sh"
 reason = "build helper: needs a Windows guest SDK"
 
