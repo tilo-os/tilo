@@ -178,23 +178,32 @@ impl CrdtTextBody {
         range: Range<usize>,
         s: &str,
     ) -> usize {
+        self.apply(
+            state,
+            root,
+            &ui::Edit {
+                at: range.start,
+                removed: range.len(),
+                inserted: s.to_owned(),
+            },
+        )
+    }
+
+    /// Apply `edit` to both mirror and CRDT; returns the offset just past
+    /// the inserted text.
+    pub fn apply(&mut self, state: &mut AutoCommit, root: &ObjId, edit: &ui::Edit) -> usize {
         let Some(body) = self.resolve(state, root) else {
-            return range.start;
+            return edit.at;
         };
-        let edit = ui::Edit {
-            at: range.start,
-            removed: range.len(),
-            inserted: s.to_owned(),
-        };
-        // A `range` that doesn't land on char boundaries would be an
-        // upstream bug (Automerge itself would then splice at the wrong
-        // char), so treat it the same as "resolve failed": skip the edit.
+        // An edit that doesn't land on char boundaries would be an upstream
+        // bug (Automerge itself would then splice at the wrong char), so
+        // treat it the same as "resolve failed": skip the edit.
         if edit.splice_automerge(state, &body, &self.text).is_none() {
-            return range.start;
+            return edit.at;
         }
         edit.apply(&mut self.text);
         self.typing.touch();
-        range.start.saturating_add(s.len())
+        edit.caret_after()
     }
 
     /// Nearest char boundary at or below `pos`, clamped to the buffer.
