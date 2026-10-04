@@ -2888,7 +2888,17 @@ impl WorkspaceTree {
     /// governor admitted them; [`tilo_user_identity::RevocationList::insert`]
     /// verifies each again.
     pub fn known_identity_revocations(&self) -> tilo_user_identity::RevocationList {
-        let mut list = tilo_user_identity::RevocationList::new();
+        self.known_identity_revocations_with(&tilo_user_identity::RevocationList::new())
+    }
+
+    /// [`Self::known_identity_revocations`] together with `local`, the
+    /// revocations this device holds outside the tree (its fleet). The tree
+    /// does no I/O, so a caller that read the fleet passes them in.
+    pub fn known_identity_revocations_with(
+        &self,
+        local: &tilo_user_identity::RevocationList,
+    ) -> tilo_user_identity::RevocationList {
+        let mut list = local.clone();
         for identity in self
             .room_peer_identities
             .values()
@@ -2915,6 +2925,7 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         proposal: collab_types::OwnershipTransferProposalV1,
         now_unix: u64,
+        local_revocations: &tilo_user_identity::RevocationList,
     ) -> Result<(), OwnershipTransferStateError> {
         let room = self
             .room_of(workspace_id)
@@ -2922,7 +2933,10 @@ impl WorkspaceTree {
         if !room.is_nil() && !self.governs_room(room) {
             return Err(OwnershipTransferStateError::NotGoverned);
         }
-        proposal.verify(now_unix, &self.known_identity_revocations())?;
+        proposal.verify(
+            now_unix,
+            &self.known_identity_revocations_with(local_revocations),
+        )?;
         if proposal.expires_unix > now_unix.saturating_add(MAX_OWNERSHIP_OFFER_SECONDS) {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
         }
@@ -2991,8 +3005,9 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         cancellation: &collab_types::OwnershipTransferCancellationV1,
         now_unix: u64,
+        local_revocations: &tilo_user_identity::RevocationList,
     ) -> Result<(), OwnershipTransferStateError> {
-        let revocations = self.known_identity_revocations();
+        let revocations = self.known_identity_revocations_with(local_revocations);
         let room = self
             .room_of(workspace_id)
             .ok_or(OwnershipTransferStateError::ProposalUnavailable)?;
@@ -3049,6 +3064,7 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         audit: collab_types::OwnershipTransferAuditV1,
         now_unix: u64,
+        local_revocations: &tilo_user_identity::RevocationList,
     ) -> Result<(), OwnershipTransferStateError> {
         let room = self
             .room_of(workspace_id)
@@ -3056,7 +3072,7 @@ impl WorkspaceTree {
         if !room.is_nil() && !self.governs_room(room) {
             return Err(OwnershipTransferStateError::NotGoverned);
         }
-        let revocations = self.known_identity_revocations();
+        let revocations = self.known_identity_revocations_with(local_revocations);
         audit.verify(&revocations)?;
         if audit.committed_unix > now_unix {
             return Err(OwnershipTransferStateError::ProposalUnavailable);
@@ -8216,7 +8232,12 @@ mod workspace_tree_lifecycle_tests {
             )
             .unwrap();
             assert!(matches!(
-                tree.propose_workspace_ownership_transfer(workspace_id, overlong, 100),
+                tree.propose_workspace_ownership_transfer(
+                    workspace_id,
+                    overlong,
+                    100,
+                    &tilo_user_identity::RevocationList::new()
+                ),
                 Err(OwnershipTransferStateError::ProposalUnavailable)
             ));
             let proposal = collab_types::OwnershipTransferProposalV1::new(
@@ -8228,8 +8249,13 @@ mod workspace_tree_lifecycle_tests {
                 &alice_device,
             )
             .unwrap();
-            tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
-                .unwrap();
+            tree.propose_workspace_ownership_transfer(
+                workspace_id,
+                proposal.clone(),
+                100,
+                &tilo_user_identity::RevocationList::new(),
+            )
+            .unwrap();
             // A restart ends the process that held the state file's single writer.
             drop(tree);
             let mut tree = crate::shell::persist::load_tree_from(&state_path).unwrap();
@@ -8270,7 +8296,12 @@ mod workspace_tree_lifecycle_tests {
                 .clone();
             assert!(tree.revoke_in_workspace(workspace_id, &alice, &recipient_admin));
             assert!(matches!(
-                tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102),
+                tree.accept_workspace_ownership_transfer(
+                    workspace_id,
+                    audit.clone(),
+                    102,
+                    &tilo_user_identity::RevocationList::new()
+                ),
                 Err(OwnershipTransferStateError::RecipientNotAdministrator)
             ));
             tree.grant_in_workspace(
@@ -8283,10 +8314,20 @@ mod workspace_tree_lifecycle_tests {
                 ),
             )
             .unwrap();
-            tree.accept_workspace_ownership_transfer(workspace_id, audit.clone(), 102)
-                .unwrap();
+            tree.accept_workspace_ownership_transfer(
+                workspace_id,
+                audit.clone(),
+                102,
+                &tilo_user_identity::RevocationList::new(),
+            )
+            .unwrap();
             assert!(matches!(
-                tree.accept_workspace_ownership_transfer(workspace_id, audit, 102),
+                tree.accept_workspace_ownership_transfer(
+                    workspace_id,
+                    audit,
+                    102,
+                    &tilo_user_identity::RevocationList::new()
+                ),
                 Err(OwnershipTransferStateError::ProposalUnavailable)
             ));
             let ws = tree
@@ -8341,8 +8382,13 @@ mod workspace_tree_lifecycle_tests {
                 &owner_device,
             )
             .unwrap();
-            tree.propose_workspace_ownership_transfer(workspace_id, proposal.clone(), 100)
-                .unwrap();
+            tree.propose_workspace_ownership_transfer(
+                workspace_id,
+                proposal.clone(),
+                100,
+                &tilo_user_identity::RevocationList::new(),
+            )
+            .unwrap();
             let cancellation =
                 collab_types::OwnershipTransferCancellationV1::new(&proposal, 101, &owner_device)
                     .unwrap();
@@ -8356,16 +8402,31 @@ mod workspace_tree_lifecycle_tests {
                 &none,
             )
             .unwrap();
-            tree.cancel_workspace_ownership_transfer(workspace_id, &cancellation, 101)
-                .unwrap();
+            tree.cancel_workspace_ownership_transfer(
+                workspace_id,
+                &cancellation,
+                101,
+                &tilo_user_identity::RevocationList::new(),
+            )
+            .unwrap();
             let mut restarted = crate::shell::persist::load_tree_from(&state_path).unwrap();
             restarted.persist_path = Some(state_path);
             assert!(matches!(
-                restarted.propose_workspace_ownership_transfer(workspace_id, proposal, 102),
+                restarted.propose_workspace_ownership_transfer(
+                    workspace_id,
+                    proposal,
+                    102,
+                    &tilo_user_identity::RevocationList::new()
+                ),
                 Err(OwnershipTransferStateError::ProposalUnavailable)
             ));
             assert!(matches!(
-                restarted.accept_workspace_ownership_transfer(workspace_id, audit, 102),
+                restarted.accept_workspace_ownership_transfer(
+                    workspace_id,
+                    audit,
+                    102,
+                    &tilo_user_identity::RevocationList::new()
+                ),
                 Err(OwnershipTransferStateError::ProposalUnavailable)
             ));
         }
@@ -8418,7 +8479,50 @@ mod workspace_tree_lifecycle_tests {
             )
             .unwrap();
             assert!(matches!(
-                tree.propose_workspace_ownership_transfer(workspace_id, proposal, 100),
+                tree.propose_workspace_ownership_transfer(
+                    workspace_id,
+                    proposal,
+                    100,
+                    &tilo_user_identity::RevocationList::new()
+                ),
+                Err(OwnershipTransferStateError::InvalidSignature(
+                    collab_types::OwnershipTransferError::Chain(
+                        tilo_user_identity::ChainError::Revoked
+                    )
+                ))
+            ));
+            // A revocation this device knows only from its own fleet, not yet
+            // announced into any room's governance, refuses as well.
+            let locally_lost = collab_types::ownership_transfer::fixture_device_signer(
+                &owner_key,
+                tilo_user_identity::DeviceCapabilities::joined(),
+            );
+            let mut local_entry = tilo_user_identity::RevocationEntry {
+                user_public_key: *owner_public.as_bytes(),
+                revoked_device_public_key: locally_lost.cert().device_public_key,
+                revoked_at_ns: 1,
+                reason: tilo_user_identity::RevocationReason::Stolen,
+                signature: [0; 64],
+            };
+            tilo_user_identity::sign_revocation_entry(&mut local_entry, &owner_key).unwrap();
+            let mut fleet_revocations = tilo_user_identity::RevocationList::new();
+            fleet_revocations.insert(local_entry).unwrap();
+            let proposal = collab_types::OwnershipTransferProposalV1::new(
+                room.to_string(),
+                [14; 32],
+                owner_public,
+                recipient_public,
+                200,
+                &locally_lost,
+            )
+            .unwrap();
+            assert!(matches!(
+                tree.propose_workspace_ownership_transfer(
+                    workspace_id,
+                    proposal,
+                    100,
+                    &fleet_revocations
+                ),
                 Err(OwnershipTransferStateError::InvalidSignature(
                     collab_types::OwnershipTransferError::Chain(
                         tilo_user_identity::ChainError::Revoked
@@ -8434,8 +8538,13 @@ mod workspace_tree_lifecycle_tests {
                 &still_trusted,
             )
             .unwrap();
-            tree.propose_workspace_ownership_transfer(workspace_id, proposal, 100)
-                .unwrap();
+            tree.propose_workspace_ownership_transfer(
+                workspace_id,
+                proposal,
+                100,
+                &tilo_user_identity::RevocationList::new(),
+            )
+            .unwrap();
         }
     }
 

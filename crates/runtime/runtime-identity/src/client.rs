@@ -600,6 +600,29 @@ mod tests {
                 b"tilo-collaboration-join-v1\0workspace"
             );
         }
+        // phase: app_action_signing_bytes_are_pinned_and_unambiguous
+        {
+            let mut expected =
+                b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfftilo-app-action-v1\0".to_vec();
+            expected.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 2]);
+            expected.extend_from_slice(b"ab");
+            expected.extend_from_slice(&[0, 0, 0, 0, 0, 0, 0, 1]);
+            expected.extend_from_slice(b"c");
+            expected.extend_from_slice(b"msg");
+            assert_eq!(crate::app_action_signing_bytes("ab", "c", b"msg"), expected);
+            // Moving bytes between the app, the action and the message
+            // always changes the signed bytes.
+            assert_ne!(
+                crate::app_action_signing_bytes("a", "bc", b"msg"),
+                crate::app_action_signing_bytes("ab", "c", b"msg")
+            );
+            assert_ne!(
+                crate::app_action_signing_bytes("ab", "cm", b"sg"),
+                crate::app_action_signing_bytes("ab", "c", b"msg")
+            );
+            // Longer than any 32-byte digest a device key otherwise signs.
+            assert!(crate::app_action_signing_bytes("", "", b"").len() > 32);
+        }
         // phase: oversized_frame_is_rejected_before_reading_its_body
         {
             let len = u32::try_from(wire::FRAMING.max_len() + 1).expect("length");

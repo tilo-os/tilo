@@ -357,40 +357,35 @@ fn active_identity(
 const MAX_OWNERSHIP_OFFER_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 /// This device's key with the certificate the selected identity issued for
-/// it: ownership steps are signed as the person by the device, so the
-/// identity's root never has to be here.
+/// it, while that chain lets it own workspaces now: ownership steps are
+/// signed as the person by the device, so the identity's root never has to
+/// be here. Also returns the revocations this device's fleet holds, which
+/// the verification of every step takes into account.
 fn active_ownership_signer(
     state: &ChromeState,
     expected: collab_types::Ed25519PublicKey,
-) -> Result<tilo_user_identity::DeviceSigner, ActionError> {
+) -> Result<
+    (
+        tilo_user_identity::DeviceSigner,
+        tilo_user_identity::RevocationList,
+    ),
+    ActionError,
+> {
     let (_, profile) = active_identity(state)?;
     if profile.user_public_key != *expected.as_bytes() {
         return Err(ActionError::Refused(
             "the selected certified identity is not the required transfer signer".into(),
         ));
     }
-    let paths = crate::firstboot::collaboration_identity_paths();
-    let key = tilo_user_identity::persist::load_device_key(&paths).map_err(|error| {
-        ActionError::Refused(format!("this device's key is unavailable: {error}"))
-    })?;
-    let cert = tilo_user_identity::persist::read_device_cert(
-        &paths.device_cert_for_user(&profile.user_public_key),
+    tilo_identity_host::broker::device_signer_for(
+        &profile,
+        tilo_user_identity::Authority::OwnWorkspaces,
     )
     .map_err(|error| {
         ActionError::Refused(format!(
-            "this device holds no certificate for the selected identity ({error}); \
-                     pair it with a device that holds the identity first"
+            "this device cannot sign ownership steps for the selected identity ({error}); \
+             use a device of yours whose certificate lets it own workspaces"
         ))
-    })?;
-    if !tilo_user_identity::Authority::OwnWorkspaces.granted_by(&cert.capabilities) {
-        return Err(ActionError::Refused(
-            "this device's certificate does not let it own workspaces; \
-             transfer ownership from another of your devices"
-                .into(),
-        ));
-    }
-    tilo_user_identity::DeviceSigner::new(key, cert).map_err(|error| {
-        ActionError::Refused(format!("this device cannot sign for the identity: {error}"))
     })
 }
 
@@ -581,7 +576,7 @@ fn apply_ownership_proposal(
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
         .map(collab_types::Ed25519PublicKey::from_bytes)
         .ok_or_else(|| ActionError::Refused("workspace owner is not certified".into()))?;
-    let signer = active_ownership_signer(state, current_owner)?;
+    let (signer, local_revocations) = active_ownership_signer(state, current_owner)?;
     let mut proposal_id = [0_u8; 32];
     rand_core::Rng::fill_bytes(&mut UnwrapErr(SysRng), &mut proposal_id);
     let room = state
@@ -601,7 +596,7 @@ fn apply_ownership_proposal(
     .map_err(|error| ActionError::Refused(format!("cannot sign ownership offer: {error}")))?;
     state
         .tree_mut()
-        .propose_workspace_ownership_transfer(workspace_id, proposal, now)
+        .propose_workspace_ownership_transfer(workspace_id, proposal, now, &local_revocations)
         .map_err(|error| ActionError::Refused(error.to_string()))
 }
 
@@ -614,18 +609,20 @@ fn apply_ownership_acceptance(state: &ChromeState) -> Result<(), ActionError> {
         .active_workspace()
         .and_then(|workspace| workspace.pending_ownership_transfer.clone())
         .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
-    let signer = active_ownership_signer(state, proposal.recipient)?;
+    let (signer, local_revocations) = active_ownership_signer(state, proposal.recipient)?;
     let acceptance = collab_types::OwnershipTransferAcceptanceV1::new(&proposal, now, &signer)
         .map_err(|error| {
             ActionError::Refused(format!("cannot sign ownership acceptance: {error}"))
         })?;
-    let revocations = state.tree().known_identity_revocations();
+    let revocations = state
+        .tree()
+        .known_identity_revocations_with(&local_revocations);
     let audit =
         collab_types::OwnershipTransferAuditV1::new(proposal, acceptance, now, &revocations)
             .map_err(|error| ActionError::Refused(error.to_string()))?;
     state
         .tree_mut()
-        .accept_workspace_ownership_transfer(workspace_id, audit, now)
+        .accept_workspace_ownership_transfer(workspace_id, audit, now, &local_revocations)
         .map_err(|error| ActionError::Refused(error.to_string()))
 }
 
@@ -638,14 +635,14 @@ fn apply_ownership_cancellation(state: &ChromeState) -> Result<(), ActionError> 
         .active_workspace()
         .and_then(|workspace| workspace.pending_ownership_transfer.clone())
         .ok_or_else(|| ActionError::Refused("no ownership offer is pending".into()))?;
-    let signer = active_ownership_signer(state, proposal.current_owner)?;
+    let (signer, local_revocations) = active_ownership_signer(state, proposal.current_owner)?;
     let cancellation = collab_types::OwnershipTransferCancellationV1::new(&proposal, now, &signer)
         .map_err(|error| {
             ActionError::Refused(format!("cannot sign ownership cancellation: {error}"))
         })?;
     state
         .tree_mut()
-        .cancel_workspace_ownership_transfer(workspace_id, &cancellation, now)
+        .cancel_workspace_ownership_transfer(workspace_id, &cancellation, now, &local_revocations)
         .map_err(|error| ActionError::Refused(error.to_string()))
 }
 

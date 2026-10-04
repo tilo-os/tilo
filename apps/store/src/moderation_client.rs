@@ -57,15 +57,11 @@ pub fn sign_with_runtime_identity(
     };
     let message = moderation_signing_message(&request)
         .map_err(|error| ModerationClientError::Identity(error.to_string()))?;
-    let action = match &request.mutation {
-        ModerationMutation::FileReport { .. } => "submit-report",
-        ModerationMutation::PublisherReply { .. } => "publisher-reply",
-        ModerationMutation::PublisherAppeal { .. } => "appeal",
-        ModerationMutation::ReviewerDecision { .. } => "review-decision",
-    };
+    // The identity service frames this as the Store's app action; the
+    // registry verifies exactly that framing (`moderation_signed_bytes`).
     request.signature_hex = hex::encode(
         identity
-            .sign_for(action, &message)
+            .sign_for(request.mutation.action(), &message)
             .map_err(|error| ModerationClientError::Identity(error.to_string()))?,
     );
     Ok(request)
@@ -355,6 +351,46 @@ mod tests {
             validate_submission_projection(&request, &case).unwrap();
             case.status = registry_types::ModerationCaseStatus::ClosedNoAction;
             assert!(validate_submission_projection(&request, &case).is_err());
+        }
+
+        // Case `registry_verifies_exactly_what_the_identity_service_signs`.
+        // The Store signs through the identity service, which frames every
+        // app signature; the registry must rebuild that same framing.
+        {
+            let key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+            for mutation in [
+                ModerationMutation::FileReport {
+                    package_id: "so.tilo.notes".into(),
+                    category: "policy".into(),
+                    summary: "s".into(),
+                    evidence_digest_hex: "aa".repeat(32),
+                },
+                ModerationMutation::PublisherAppeal {
+                    case_id: "case".into(),
+                    reason: "r".into(),
+                    evidence_digest_hex: None,
+                },
+            ] {
+                let request = registry_types::sign_moderation_mutation(
+                    "request".into(),
+                    10,
+                    20,
+                    ModerationActorRole::Reporter,
+                    mutation,
+                    &key,
+                )
+                .unwrap();
+                let digest = moderation_signing_message(&request).unwrap();
+                assert_eq!(
+                    registry_types::moderation_signed_bytes(&request).unwrap(),
+                    runtime_identity::app_action_signing_bytes(
+                        registry_types::MODERATION_APP_ID,
+                        request.mutation.action(),
+                        &digest,
+                    )
+                );
+                registry_types::verify_moderation_mutation(&request).unwrap();
+            }
         }
     }
 }

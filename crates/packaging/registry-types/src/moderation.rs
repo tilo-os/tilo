@@ -66,6 +66,27 @@ pub enum ModerationMutation {
     },
 }
 
+impl ModerationMutation {
+    /// The Store action under which the identity service signs this
+    /// mutation.
+    #[must_use]
+    pub fn action(&self) -> &'static str {
+        match self {
+            Self::FileReport { .. } => "submit-report",
+            Self::PublisherReply { .. } => "publisher-reply",
+            Self::PublisherAppeal { .. } => "appeal",
+            Self::ReviewerDecision { .. } => "review-decision",
+        }
+    }
+}
+
+/// The app whose actions sign moderation mutations.
+pub const MODERATION_APP_ID: &str = "so.tilo.store";
+
+/// Tag that begins an app action signature, as the identity service frames
+/// it (`runtime_identity::app_action_signing_bytes`).
+const APP_ACTION_TAG: &[u8] = b"\xff\xff\xff\xff\xff\xff\xff\xff\xff\xfftilo-app-action-v1\0";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedModerationMutation {
     pub protocol: u16,
@@ -192,6 +213,28 @@ pub fn moderation_signing_message(
     Ok(*hasher.finalize().as_bytes())
 }
 
+/// The exact bytes an actor's key signs for `request`: its
+/// [`moderation_signing_message`] digest, framed as the Store's app action
+/// for the mutation — the framing the identity service applies to every app
+/// signature, so a device key signs moderation only as the Store.
+///
+/// # Errors
+/// Returns an encoding error if the canonical payload cannot be serialized.
+pub fn moderation_signed_bytes(
+    request: &SignedModerationMutation,
+) -> Result<Vec<u8>, ModerationWireError> {
+    let digest = moderation_signing_message(request)?;
+    let action = request.mutation.action();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(APP_ACTION_TAG);
+    for field in [MODERATION_APP_ID.as_bytes(), action.as_bytes()] {
+        bytes.extend_from_slice(&u64::try_from(field.len()).unwrap_or(u64::MAX).to_be_bytes());
+        bytes.extend_from_slice(field);
+    }
+    bytes.extend_from_slice(&digest);
+    Ok(bytes)
+}
+
 /// Construct and sign one moderation mutation.
 ///
 /// # Errors
@@ -214,8 +257,7 @@ pub fn sign_moderation_mutation(
         mutation,
         signature_hex: String::new(),
     };
-    request.signature_hex =
-        hex::encode(key.sign(&moderation_signing_message(&request)?).to_bytes());
+    request.signature_hex = hex::encode(key.sign(&moderation_signed_bytes(&request)?).to_bytes());
     Ok(request)
 }
 
@@ -236,7 +278,7 @@ pub fn verify_moderation_mutation(
     .map_err(|_| ModerationWireError::InvalidSignature)?;
     let key =
         VerifyingKey::from_bytes(&key_bytes).map_err(|_| ModerationWireError::InvalidPublicKey)?;
-    key.verify(&moderation_signing_message(request)?, &signature)
+    key.verify(&moderation_signed_bytes(request)?, &signature)
         .map_err(|_| ModerationWireError::InvalidSignature)
 }
 

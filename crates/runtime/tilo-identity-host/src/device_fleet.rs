@@ -448,7 +448,11 @@ impl DeviceFleetStore {
         }
         let _fleet_lock = self.lock_fleets()?;
         let mut fleet = self.load(identity_id)?;
-        if fleet.is_revoked(&entry.revoked_device_public_key) {
+        if fleet
+            .revocation_list()
+            .revocation_of(&entry.user_public_key, &entry.revoked_device_public_key)
+            .is_some()
+        {
             return Ok(false);
         }
         fleet.revocations.push(entry);

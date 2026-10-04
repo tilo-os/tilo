@@ -906,9 +906,9 @@ fn certified_without_root(
 ) -> io::Result<()> {
     let identity_id = hex::encode(user_public_key);
     let fleets = crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone());
-    let fleet = fleets
-        .load(&identity_id)
-        .unwrap_or_else(|_| crate::device_fleet::DeviceFleet::new(identity_id.clone()));
+    // An absent fleet loads empty; one that cannot be read must not be
+    // mistaken for a fleet without revocations.
+    let fleet = fleets.load(&identity_id)?;
     let now = crate::device_fleet::now_ns();
     let refusal = || {
         crate::device_fleet::root_refusal(RootOnly::CertifyDevice, &fleet.root_holder_labels(now))

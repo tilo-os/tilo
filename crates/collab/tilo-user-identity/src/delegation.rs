@@ -44,6 +44,10 @@ pub const MAX_DELEGATION_DOMAIN_BYTES: usize = 128;
 /// What an operation needs the signing device's certificate to grant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Authority {
+    /// Be one of the person's certified devices, whatever it may do. For
+    /// transport admission, where each operation then decides further; it
+    /// never lets a device sign anything as the person.
+    Device,
     /// Act for the person: edit their documents, sign their app actions,
     /// join their rooms. Every personal device grants it; a dedicated host
     /// (certified to host, not to own) does not speak as the person.
@@ -64,6 +68,7 @@ impl Authority {
     #[must_use]
     pub fn granted_by(self, capabilities: &DeviceCapabilities) -> bool {
         match self {
+            Self::Device => true,
             Self::Person => capabilities.can_own_workspaces || !capabilities.can_act_as_host,
             Self::OwnWorkspaces => capabilities.can_own_workspaces,
             Self::AdmitDevices => capabilities.can_admit_devices,
@@ -76,6 +81,7 @@ impl Authority {
     #[must_use]
     pub fn describe(self) -> &'static str {
         match self {
+            Self::Device => "be one of the person's devices",
             Self::Person => "act for the person",
             Self::OwnWorkspaces => "own workspaces",
             Self::AdmitDevices => "admit devices",
@@ -395,12 +401,15 @@ impl DeviceSigner {
         verify_chain(&self.cert, policy)
     }
 
-    /// Sign raw `bytes` with the device key — for wire formats whose own
-    /// envelope already binds the certificate and domain (collaboration
-    /// operations, join proofs).
+    /// Sign `framed` with the device key, for wire formats that frame their
+    /// own bytes. `framed` must begin with the format's own NUL-terminated
+    /// domain tag and be longer than 32 bytes, so the signature can stand for
+    /// nothing else this key signs — a delegated signature or a transport
+    /// challenge, which both cover a 32-byte digest, in particular. Never
+    /// pass bytes an app chose without framing them first.
     #[must_use]
-    pub fn sign_raw(&self, bytes: &[u8]) -> [u8; 64] {
-        self.key.sign(bytes).to_bytes()
+    pub fn sign_framed_bytes(&self, framed: &[u8]) -> [u8; 64] {
+        self.key.sign(framed).to_bytes()
     }
 }
 
@@ -569,7 +578,7 @@ mod tests {
         // The device key signing the raw message, without the binding.
         let raw = DelegatedSignature {
             cert: board.cert().clone(),
-            signature: board.sign_raw(b"hello"),
+            signature: board.sign_framed_bytes(b"hello"),
         };
         assert_eq!(
             verify_delegated(&raw, "tilo.test.edit", b"hello", &ok),
@@ -614,6 +623,10 @@ mod tests {
             Err(ChainError::NotPermitted(Authority::OwnWorkspaces))
         );
         assert_eq!(check(&host, Authority::Host), Ok(()));
+        // Every certified device is one of the person's devices, a host too.
+        for signer in [&joined, &member, &host, &primary] {
+            assert_eq!(check(signer, Authority::Device), Ok(()));
+        }
         assert_eq!(check(&primary, Authority::AdmitDevices), Ok(()));
         assert_eq!(check(&primary, Authority::OwnWorkspaces), Ok(()));
     }

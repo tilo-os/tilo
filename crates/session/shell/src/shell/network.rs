@@ -5292,7 +5292,10 @@ impl ShellNetwork {
         payload: PersonalFabricPayload,
     ) {
         let origin = crate::shell::state::PeerOrigin::peer(&peer);
-        let Some(identity) = self.peer_identities.get(&origin) else {
+        let Some(identity) = self
+            .peer_identities
+            .trusted(&origin, tilo_clock::unix_now_ns())
+        else {
             tracing::warn!(peer = %peer, "dropping unauthenticated personal fabric frame");
             return;
         };
@@ -5845,22 +5848,23 @@ impl ShellNetwork {
                 routes.remove(&(ws, peer));
             }
             self.accept_identity_hello(ws, &origin, &peer, cert, revocations);
-            if self.peer_identities.get(&origin).is_some()
+            let admitted = self
+                .peer_identities
+                .trusted(&origin, tilo_clock::unix_now_ns());
+            if admitted.is_some()
                 && let Ok(mut direct) = self.workspace_control_direct.lock()
             {
                 direct.insert((ws, peer));
             }
-            if self.peer_identities.get(&origin).is_none() {
+            if admitted.is_none() {
                 self.notify_workspace_control(WorkspaceControlNetworkEvent::PeerRevoked {
                     workspace_topic: ws,
                     peer,
                 });
             }
-            if let (Some(epoch), Some(user), Some(identity)) = (
-                membership_epoch,
-                self.personal_continuity_user,
-                self.peer_identities.get(&origin),
-            ) && ws == personal_continuity_topic_id(&user)
+            if let (Some(epoch), Some(user), Some(identity)) =
+                (membership_epoch, self.personal_continuity_user, admitted)
+                && ws == personal_continuity_topic_id(&user)
                 && identity.is_same_user(&user)
                 && let Ok(device) = crate::shell::personal_continuity::DeviceId::new(hex::encode(
                     identity.device_pubkey,
@@ -5887,9 +5891,11 @@ impl ShellNetwork {
         let governed_action = matches!(msg, NeighbourMsg::RemoteAction { .. })
             && self.peer_identities.get(&origin).is_none()
             && self.governed_identity(ws, peer).is_some_and(|identity| {
-                !self
-                    .peer_identities
-                    .is_revoked(&identity.user_pubkey, &identity.device_pubkey)
+                // The certificate the room's governance holds must still be
+                // current: unexpired, and not revoked by its root as far as
+                // this device knows.
+                self.peer_identities
+                    .holds(&identity, tilo_user_identity::Authority::Device, now_ns)
             });
         if self.require_peer_identity
             && self.peer_identities.trusted(&origin, now_ns).is_none()
@@ -5917,7 +5923,7 @@ impl ShellNetwork {
                 invite_id: Some(invite_id),
                 ..
             } = &msg
-            && let Some(identity) = self.peer_identities.get(&origin)
+            && let Some(identity) = self.peer_identities.trusted(&origin, now_ns)
         {
             self.redeem_invited_identity(ws, *invite_id, &peer, &identity.device_cert);
         }
@@ -6092,7 +6098,9 @@ impl ShellNetwork {
         let Some(local_user) = self.personal_continuity_user else {
             return true;
         };
-        let identity = self.peer_identities.get(origin);
+        let identity = self
+            .peer_identities
+            .trusted(origin, tilo_clock::unix_now_ns());
         if ws != personal_continuity_topic_id(user_public_key)
             || user_public_key != &local_user
             || identity
@@ -6329,13 +6337,25 @@ impl ShellNetwork {
         pinned_authority_may_bootstrap: bool,
     ) -> bool {
         // Trusted now, not merely announced once: a device revoked or expired
-        // since it connected is refused here.
+        // since it connected is refused here. Reading needs only a certified
+        // device of the person; what the peer writes into the room is applied
+        // as the person's own, so its certificate must let it act for the
+        // person — a dedicated host never does.
         let Some(identity) = self
             .peer_identities
             .trusted(origin, tilo_clock::unix_now_ns())
         else {
             return false;
         };
+        if required != crate::shell::state::Verb::Read
+            && !self.peer_identities.holds(
+                &identity,
+                tilo_user_identity::Authority::Person,
+                tilo_clock::unix_now_ns(),
+            )
+        {
+            return false;
+        }
         let Some(room) = self.unique_room_for_topic(workspace_topic) else {
             return false;
         };
@@ -6686,10 +6706,14 @@ impl ShellNetwork {
         record_id: &str,
         envelope: &collab_types::SignedOp,
     ) -> Option<collab_types::Role> {
-        let identity = self
-            .peer_identities
-            .trusted(origin, tilo_clock::unix_now_ns())?;
-        if *envelope.author.as_bytes() != identity.device_pubkey {
+        let now_ns = tilo_clock::unix_now_ns();
+        let identity = self.peer_identities.trusted(origin, now_ns)?;
+        // The envelope is the person's authored document change.
+        if *envelope.author.as_bytes() != identity.device_pubkey
+            || !self
+                .peer_identities
+                .holds(&identity, tilo_user_identity::Authority::Person, now_ns)
+        {
             return None;
         }
         let person = collab_types::caps::Principal::person_from_key(
