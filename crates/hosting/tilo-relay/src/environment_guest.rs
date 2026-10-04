@@ -136,6 +136,7 @@ pub struct UshGuestLauncher {
     config: UshLauncherConfig,
     supervisors: Mutex<BTreeMap<[u8; 32], Supervisor>>,
     tool_builds: Option<ToolBuildService>,
+    legacy_route: Option<crate::legacy_route::LegacyLaunchRoute>,
 }
 
 struct Supervisor {
@@ -143,12 +144,16 @@ struct Supervisor {
     child: Child,
     cgroup: Option<PathBuf>,
     builds: Option<tokio::task::JoinHandle<()>>,
+    legacy: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
         if let Some(builds) = &self.builds {
             builds.abort();
+        }
+        if let Some(legacy) = &self.legacy {
+            legacy.abort();
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -171,7 +176,17 @@ impl UshGuestLauncher {
             config,
             supervisors: Mutex::new(BTreeMap::new()),
             tool_builds: None,
+            legacy_route: None,
         }
+    }
+
+    /// Send members' legacy launches to the relay through `route`: a guest's
+    /// `code .` runs the app on a worker with KVM, and its windows open on
+    /// the member's devices.
+    #[must_use]
+    pub fn with_legacy_route(mut self, route: crate::legacy_route::LegacyLaunchRoute) -> Self {
+        self.legacy_route = Some(route);
+        self
     }
 
     /// Build members' missing tools through `service`, which signs them
@@ -248,8 +263,18 @@ impl UshGuestLauncher {
             .map(|service| service.listen(run.clone()))
             .transpose()
             .map_err(|error| failed("the member's tool builds", error))?;
+        let legacy_socket = area.runtime().join("legacy.sock");
+        let legacy = self
+            .legacy_route
+            .as_ref()
+            .map(|route| route.listen(member.identity, &legacy_socket, uid))
+            .transpose()
+            .map_err(|error| failed("the member's legacy launches", error))?;
         let publisher = self.tool_builds.as_ref().map(ToolBuildService::publisher);
         let mut command = self.supervisor_command(&run, &socket, publisher);
+        if legacy.is_some() {
+            command.env(ush::legacy_relay::LEGACY_LAUNCHES_ENV, &legacy_socket);
+        }
         let child = command
             .spawn()
             .map_err(|error| failed("start the member's supervisor", error))?;
@@ -258,6 +283,7 @@ impl UshGuestLauncher {
             child,
             cgroup,
             builds,
+            legacy,
         };
         if let Some(cgroup) = &supervisor.cgroup {
             std::fs::write(
