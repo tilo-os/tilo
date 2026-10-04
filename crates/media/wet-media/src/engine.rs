@@ -170,7 +170,7 @@ pub struct Stroke {
     pub paint: Paint,
     pub opacity: f32,
     /// Paint into the layer while it is still wet (blending, bleeding),
-    /// rather than over a dried layer.
+    /// rather than over paint that has dried.
     pub wet: bool,
     /// Per-mark parameter overrides on top of the preset.
     #[serde(default)]
@@ -338,6 +338,11 @@ impl Mark {
                         ..
                     }) => scatter + dab.max(stroke.size),
                     Some(crate::form::Form::Branch { .. }) => length,
+                    // Hatching fills the outline, its lines ending up to a
+                    // third of their spacing past its edge.
+                    Some(crate::form::Form::Hatch { spacing, .. }) => {
+                        spacing.max(stroke.size * 0.5).max(0.5) * 0.5
+                    }
                 };
                 (
                     stroke

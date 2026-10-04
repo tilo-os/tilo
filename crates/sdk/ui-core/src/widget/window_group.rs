@@ -1065,6 +1065,19 @@ impl WindowGroup {
         !self.tab_rects().iter().any(|r| r.contains(p))
     }
 
+    /// Where a finger can grab the whole group: anywhere on its tab bar,
+    /// tabs included, except the new-tab button and the resize edge.
+    pub fn touch_grab_hit(&self, p: Point) -> bool {
+        if self.external_navigation || !self.bar_rect().contains(p) {
+            return false;
+        }
+        if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+            return false;
+        }
+        let plus = self.bar.new_tab_rect();
+        !(plus.area() > 0.0 && plus.contains(p))
+    }
+
     /// True when `p` is in the group's trailing-edge resize target.
     /// `GroupRow` uses this before arming a whole-group drag so the two
     /// gestures cannot race; this matters especially for a one-group strip,
@@ -4770,6 +4783,32 @@ mod tests {
                 "reduced motion snaps a running resize to the target",
             );
         }
+    }
+
+    /// A host that lays out at ~12 fps (a headless session rendering in
+    /// software) steps the opening slot 50 ms at a time. The slot must
+    /// still settle at its width; it used to grow until the client was
+    /// configured `i32::MAX` wide.
+    #[test]
+    fn a_slow_host_opens_the_slot_to_its_width() {
+        let mut g = make_group();
+        g.set_strip_usable_px(996.0);
+        let target = g.resolved_width_px();
+        g.start_spawn_animation();
+        for frame in 0..40 {
+            g.last_width_step = g.width_spring.as_ref().map(|_| instant_ago_ms(80));
+            g.step_width_spring();
+            let width = g.layout_width_px();
+            assert!(
+                width <= target * 1.05,
+                "frame {frame}: slot at {width} past its {target} px width",
+            );
+        }
+        assert!(
+            g.width_spring.is_none() && (g.layout_width_px() - target).abs() < 0.5,
+            "the slot settles at {target}, got {}",
+            g.layout_width_px(),
+        );
     }
 
     #[test]

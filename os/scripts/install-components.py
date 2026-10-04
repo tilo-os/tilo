@@ -67,8 +67,7 @@ examples:
 
   # What the production Containerfile runs: every image file, one tree per
   # image layer under /image/<layer>/
-  install-components.py --from /out --from /out/optional \\
-      --dest /image --by-layer --all
+  install-components.py --from /out --dest /image --by-layer --all
 
   # List components, and what a swap needs: the systemd units to restart, a
   # reboot onto a new boot entry (the kernel), or for the other boot

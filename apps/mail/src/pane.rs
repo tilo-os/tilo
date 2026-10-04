@@ -1955,8 +1955,7 @@ impl Pane {
                 self.html_view_rect = Some(rect);
                 self.draw_remote_toggle(scene, t, tr, theme, rect, true);
             } else {
-                // WPE is optional and can also fail to initialise on a given
-                // GPU. The test engine paints a diagnostic colour, not HTML;
+                // The test engine paints a diagnostic colour, not HTML;
                 // render the already-decoded MIME text alternative instead.
                 let plain = self
                     .shared
@@ -3141,19 +3140,11 @@ impl Pane {
     }
 }
 
-/// The web engine backing HTML-mail rendering. Under the `html-webview`
-/// feature this is the real WPE `WebKit` engine (the same one the browser uses),
-/// falling back to the hermetic test engine if it can't start; otherwise it is
-/// the deterministic test engine — which still exercises the full
-/// sandbox/remote-block plumbing in the default build and `--shots`.
+/// The web engine backing HTML-mail rendering: the deterministic test
+/// engine, which exercises the full sandbox/remote-block plumbing in the
+/// default build and `--shots` but is never presented as message content
+/// (the reader shows the text part instead).
 fn new_html_engine() -> (SharedEngine, bool) {
-    #[cfg(feature = "html-webview")]
-    {
-        match ui::webview::wpe::WpeEngine::new() {
-            Ok(e) => return (e, true),
-            Err(err) => tracing::warn!(%err, "mail: WPE engine unavailable; using test engine"),
-        }
-    }
     let e: SharedEngine = ui::webview::test_engine::TestEngine::new();
     (e, false)
 }

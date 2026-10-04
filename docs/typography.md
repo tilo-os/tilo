@@ -157,8 +157,8 @@ the CRDT boundary.
 cosmic-text's per-line cursors into global UTF-8 offsets and supplies painting,
 wrapping, click hit-testing, caret geometry, visual Home/End and Left/Right
 movement, and disjoint selection bands for mixed bidirectional text. Ordinary
-single- and multiline `TextInput` fields, syntax-highlighted `CodeEditor`
-instances, and `RichTextEditor` use that same layout, so ligatures and RTL text
+single- and multiline `TextInput` fields and syntax-highlighted `CodeEditor`
+instances use that same layout, so ligatures and RTL text
 cannot disagree between ink and interaction. Code-editor gutters and
 current-line bands are overlays derived from the shaped paragraph's logical and
 visual line geometry; they do not maintain a competing row model.
@@ -312,8 +312,8 @@ Editable shaped text retains caret affinity as well as its UTF-8 document
 offset. `TextPosition { byte, affinity }` represents the two legitimate visual
 positions that can share one logical byte at a mixed-BiDi run boundary (and at
 a soft wrap). `RichTextLayout::hit_position`, `caret_geometry_at`, and
-`visual_motion_position` preserve that distinction; `TextInput` and
-`RichTextEditor` carry it through clicks, arrow motion, painting, IME anchoring,
+`visual_motion_position` preserve that distinction; `TextInput` carries
+it through clicks, arrow motion, painting, IME anchoring,
 and ephemeral rebuild/undo state. Existing byte-only methods remain convenient
 wrappers for unambiguous positions, so ordinary application code does not need
 to manage affinity.

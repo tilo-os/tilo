@@ -86,6 +86,10 @@ fn text_uses_the_fonts_tilo_ships_and_names_them_when_refused() {
     let measured = view(&mut app, "inspect", json!({"measure": ["title"]}));
     let letters = measured["measured"][0]["letters"].as_array().unwrap();
     assert_eq!(letters.len(), 7, "one box per letter: {measured}");
+    assert_eq!(
+        measured["listed"], 0,
+        "measuring, the marks are listed only when asked: {measured}"
+    );
     assert_eq!(letters[0]["t"], "M");
     let left = |index: usize| letters[index]["box"][0].as_f64().unwrap();
     let width = |index: usize| letters[index]["box"][2].as_f64().unwrap();

@@ -1,0 +1,177 @@
+name: Dev / host-desktop session VM
+
+# The tilo-session RPMs on stock Fedora 44 (the Cloud image) under KVM, run as
+# a person runs them: dnf install, a gnome-keyring Secret Service unlocked on
+# the user's bus, the identity provisioned there, SDDM autologin into the
+# packaged tilo.desktop, then Settings, Notes, Files and Terminal opened
+# through search on the VM's keyboard. The compositor must survive each app
+# (dist/session/vm-e2e/run.py, dist/session/README.md "VM test").
+#
+# Release / desktop calls this after its package lane with that run's
+# fedora-44-amd64 artifact. A dispatch or a pull request changing the test
+# builds those RPMs from its own commit first (`rpms`), with the same command
+# and image as the package lane, so the test never depends on another run's
+# short-lived artifacts.
+#
+# Runner: runner-disk-100g, the Kata runners with KVM the legacy guest and
+# dev disk boots use. No GPU: Tilo renders with lavapipe onto virtio-gpu.
+on:
+  workflow_call:
+    inputs:
+      rpm-artifact:
+        description: "Name of this run's artifact holding the fedora-44 RPMs."
+        type: string
+        required: true
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: "Comma-separated package ids to open; empty: all (so.tilo.settings, so.tilo.notes, so.tilo.file-explorer, so.tilo.terminal)."
+        required: false
+        default: ""
+  pull_request:
+    branches: [main]
+    paths:
+      - "dist/session/vm-e2e/**"
+      - ".forgejo/workflows/host-session-e2e.yml"
+
+concurrency:
+  group: host-session-e2e-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # resolve-builder.yml's job, inline: Release / desktop calls this workflow,
+  # and a called workflow does not call another.
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            tools/ci/resolve_builder.py
+            tools/ci/images.toml
+          sparse-checkout-cone-mode: false
+      - name: Resolve the CI builder
+        id: resolve
+        run: python3 tools/ci/resolve_builder.py
+
+  # The fedora-44 amd64 RPMs of this commit, when no caller passed them; a
+  # caller's RPMs make this a no-op on the quality lane. (Skipping the job
+  # instead would skip host-session too, or need an always() condition that a
+  # caller's skipped jobs would then pass.)
+  rpms:
+    runs-on: ${{ inputs.rpm-artifact && 'runner-quality' || 'runner-large' }}
+    timeout-minutes: 120
+    steps:
+      # A full clone, as the package lane takes (dist/ci/run-package-job.sh).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: ${{ !inputs.rpm-artifact }}
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the env-runtime environment image
+        if: ${{ !inputs.rpm-artifact }}
+        run: bash dist/ci/fetch-package-env-runtime.sh
+      - name: Build and install-test the Fedora 44 RPMs
+        if: ${{ !inputs.rpm-artifact }}
+        env:
+          TILO_CARGO_JOBS: "6"
+        run: |
+          set -euo pipefail
+          IFS='|' read -r distro image revision < <(dist/ci/package-targets.sh amd64 fedora-44)
+          dist/ci/run-package-job.sh "$distro" "$image" amd64 "$revision"
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: ${{ !inputs.rpm-artifact }}
+        with:
+          name: fedora-44-amd64
+          path: dist/ci-output/fedora-44-amd64/*
+          if-no-files-found: error
+
+  host-session:
+    needs: [builder, rpms]
+    runs-on: runner-disk-100g
+    timeout-minutes: 75
+    # The CI builder (Fedora, with the node the actions need); QEMU comes
+    # from its packages, as in Dev / VM acceptance.
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      WORK: /var/tmp/host-session-e2e
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install QEMU and the test's tools
+        run: |
+          set -euo pipefail
+          dnf --setopt=retries=3 install -y \
+            qemu-system-x86-core qemu-device-display-virtio-vga qemu-device-display-virtio-gpu \
+            qemu-img openssh-clients xorriso python3 curl
+          command -v qemu-system-x86_64 qemu-img ssh scp ssh-keygen xorriso >/dev/null
+
+      - name: Require a native x86-64 runner with KVM
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh x86_64
+          [[ ! -e /dev/kvm ]] || chmod 0666 /dev/kvm
+          python3 os/dev/probe-kvm.py x86_64 || {
+            echo '::error::this runner cannot create a KVM VM; the session test never runs under TCG'
+            exit 1
+          }
+
+      # The RPMs are uploaded with upload-artifact v4 (one zip); only a v4
+      # download (Forgejo's build) unpacks them.
+      - name: Take this run's RPMs
+        uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          name: ${{ inputs.rpm-artifact || 'fedora-44-amd64' }}
+          path: /var/tmp/host-session-e2e/rpms
+
+      - name: Record this run's RPMs
+        env:
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
+          WORKFLOW: ${{ github.workflow }}
+          ARTIFACT: ${{ inputs.rpm-artifact || 'fedora-44-amd64' }}
+        run: |
+          set -euo pipefail
+          cd "$WORK/rpms"
+          python3 - <<'EOF'
+          import json, os, pathlib
+          rpms = sorted(p.name for p in pathlib.Path(".").glob("*.rpm"))
+          pathlib.Path("source.json").write_text(json.dumps({
+              "workflow": os.environ["WORKFLOW"],
+              "run": int(os.environ["RUN_NUMBER"]), "run_id": int(os.environ["RUN_ID"]),
+              "commit": os.environ["GITHUB_SHA"], "ref": os.environ["GITHUB_REF_NAME"],
+              "artifact": os.environ["ARTIFACT"], "rpms": rpms}, indent=1) + "\n")
+          EOF
+          cat source.json
+
+      - name: Boot Fedora, log into Tilo, open apps
+        timeout-minutes: 60
+        env:
+          APPS: ${{ github.event.inputs.apps }}
+        run: |
+          set -euo pipefail
+          python3 dist/session/vm-e2e/run.py test --rpms "$WORK/rpms" --out "$WORK/report" \
+            --work "$WORK/vm" --image-cache "$WORK/images" --apps "${APPS:-}"
+
+      - name: Write the report to the job summary
+        if: always()
+        run: |
+          set -euo pipefail
+          report="$WORK/report/report.md"
+          [[ -f $report ]] || { echo '::warning::the run wrote no report'; exit 0; }
+          tee -a "$GITHUB_STEP_SUMMARY" < "$report"
+
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        if: always()
+        with:
+          name: host-session-e2e-${{ github.run_id }}
+          path: /var/tmp/host-session-e2e/report
+          if-no-files-found: warn

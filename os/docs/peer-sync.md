@@ -13,10 +13,6 @@ Invites carry a signed Iroh `EndpointAddr`; no multicast discovery or fixed
 TCP port is required. The inviter and invitee authenticate the endpoint id
 embedded in the token before room state is accepted.
 
-The legacy `--enable-peer-sync`, peer-sync desktop entry, and marker unit are
-still accepted so upgraded installations keep working, but they are no longer
-required.
-
 ## Persistent host
 
 Set `TILO_COLLAB_HOST` to the host's Iroh endpoint id (or the JSON representation
@@ -50,7 +46,6 @@ derive the same Iroh endpoint id from that device key.
 ```bash
 journalctl --user -u graphical-session.target | grep -Ei 'iroh|gossip|workspace host'
 stat -c '%a %U:%G %n' /var/lib/tilo/device-private/keypair.bin
-systemctl --user status shell-peer-sync.service
 ```
 
 An unreadable or mismatched key is not repaired by generating a replacement;
