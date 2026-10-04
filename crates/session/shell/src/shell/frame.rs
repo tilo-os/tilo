@@ -4213,8 +4213,12 @@ mod tests {
         // Typed keys reach the sheet's secret field, not the focused setup
         // control underneath.
         for key in ["h", "u", "n", "t"] {
+            let mut typed = key_press(Key::Character(key.into()));
+            if let WindowEvent::KeyboardInput { event, .. } = &mut typed {
+                event.text = Some(key.into());
+            }
             assert!(fb.dispatch_event(
-                &key_press(Key::Character(key.into())),
+                &typed,
                 &Modifiers::default(),
                 &mut doc,
                 &automerge::ROOT,
