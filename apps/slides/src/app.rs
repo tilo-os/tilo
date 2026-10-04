@@ -29,7 +29,7 @@ use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, TextControl, V
 use ui::icons::{Icon, draw_icon};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -852,11 +852,6 @@ pub struct SlidesApp {
     /// move. Cached because [`Widget::tooltip`] hands out a borrow and the
     /// text is a fluent lookup, not a `'static` literal.
     tooltip_text: Option<String>,
-    /// An in-flight host image-open request. `Some(rx)` means the XDG portal's
-    /// file chooser is open on a worker thread; the chosen path arrives over
-    /// this channel and is drained each frame in [`SlidesApp::drain_portal`].
-    /// `None` when idle. Per-peer/transient (not CRDT).
-    portal_rx: Option<PortalChannel>,
     /// Visible result of a fallible open/save/image operation. Previously those
     /// paths failed silently, leaving users unsure whether a click worked.
     io_toast: Option<(String, ToastKind)>,
@@ -980,7 +975,6 @@ impl SlidesApp {
             chrome_metrics: ChromeMetrics::fallback(),
             inspector_scroll: Scrollable::new_vertical().always_visible(),
             tooltip_text: None,
-            portal_rx: None,
             io_toast: None,
             ctx_menu: ContextMenu::new(),
             ctx_hits: Vec::new(),
@@ -2920,7 +2914,9 @@ impl SlidesApp {
             }
             // Images can't be conjured from nothing — the tool opens the host
             // portal file chooser; the chosen file is inserted when it resolves.
-            Hit::Insert(ElementKind::Image) => self.request_image_open(),
+            Hit::Insert(ElementKind::Image) => {
+                self.dispatch.effect(&SlidesEffect::InsertPicture);
+            }
             Hit::Insert(kind) => self.insert_element(kind),
             Hit::SelectSlide(i) => {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
@@ -3095,17 +3091,22 @@ impl SlidesApp {
         self.editing_text = false;
     }
 
-    /// Ask the host desktop's file chooser to pick an image, via the XDG
-    /// Desktop Portal. Per HIG §5 the app never draws its own picker: the
-    /// portal round-trip runs on a worker thread ([`ui::portal::PickRequest`]) and
-    /// the chosen path comes back over a channel drained each frame in
-    /// [`Self::drain_portal`]. A second request while one is in flight is
-    /// ignored, so a double-click can't stack two host dialogs.
-    fn request_image_open(&mut self) {
-        if self.portal_rx.is_some() {
-            return;
-        }
-        self.portal_rx = Some(image_open_request().send());
+    /// Ask the person for a picture with the host's chooser (the app never
+    /// draws its own picker), then keep its bytes in the content store and
+    /// place it on the current slide. A cancelled choice places nothing.
+    fn choose_picture(cx: &mut EffectCx<SlidesDeck, Self>) -> Effected {
+        cx.choose_file(image_open_request(), |app: &mut Self, chosen, _| {
+            let Some(file) = chosen else {
+                return Ok(Effected::done());
+            };
+            let Some(src) = crate::assets::store_asset(&app.content, &file.bytes) else {
+                let message = tr("slides-toast-image-import-failed");
+                app.io_toast = Some((message.clone(), ToastKind::Error));
+                return Err(message);
+            };
+            app.insert_picture(&src);
+            Ok(Effected::done())
+        })
     }
 
     /// Open a presentation file in place of the deck: the file at `path`,
@@ -3241,44 +3242,10 @@ impl SlidesApp {
         }
     }
 
-    /// Drain a completed portal request, if any. Called once per frame from
-    /// [`Widget::sync`]; inserts the chosen image and clears the in-flight
-    /// channel. Never blocks — a still-pending picker simply leaves the channel
-    /// installed for the next frame.
-    fn drain_portal(&mut self) {
-        let Some(rx) = self.portal_rx.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.portal_rx = None;
-                match outcome {
-                    PortalOutcome::Opened(path) => self.insert_image_from_path(&path),
-                    // A cancel or a portal failure is not a bug — leave the deck
-                    // untouched (we never fabricate a placeholder element).
-                    PortalOutcome::Cancelled => {}
-                    PortalOutcome::Failed(reason) => {
-                        eprintln!("slides: image chooser failed: {reason}");
-                        self.io_toast =
-                            Some((tr("slides-toast-image-chooser-failed"), ToastKind::Error));
-                    }
-                }
-            }
-            // Still waiting on the host dialog, or the worker vanished.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-            }
-        }
-    }
-
-    /// Place the picked image on the current slide and kick off its background
-    /// decode so the picture is ready by the time it paints.
-    fn insert_image_from_path(&mut self, path: &std::path::Path) {
-        let Some(src) = crate::assets::import_asset_file(&self.content, path) else {
-            self.io_toast = Some((tr("slides-toast-image-import-failed"), ToastKind::Error));
-            return;
-        };
+    /// Place the picture stored as `src` on the current slide and kick off
+    /// its background decode so it is ready by the time it paints.
+    fn insert_picture(&mut self, src: &str) {
+        let src = src.to_owned();
         // Start decoding now (off the UI thread) so the first paint already has
         // pixels, or a graceful loading/failed state if it can't be read.
         let _ = self.images.get(&src);
@@ -5117,8 +5084,6 @@ impl Widget for SlidesApp {
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         self.adopt_deferred();
-        // Fold in a completed host image-open, if the portal worker finished.
-        self.drain_portal();
         // One-time view bootstrap: open on the second slide with its title
         // selected so the editor demonstrates selection + the element
         // inspector immediately (also what `--shots` captures).
@@ -5785,6 +5750,7 @@ impl SlidesApp {
                 self.begin_notes_edit();
                 self.scroll_rail_to_current();
             }
+            SlidesEffect::InsertPicture => return Ok(Self::choose_picture(cx)),
             SlidesEffect::Open { path } => return Ok(self.open_presentation(path, cx)),
             SlidesEffect::SaveAs { path } => return self.save_presentation(path, cx),
             SlidesEffect::Read => return Ok(Effected::value(crate::outline::of_deck(&self.deck))),

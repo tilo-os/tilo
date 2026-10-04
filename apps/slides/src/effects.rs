@@ -63,6 +63,12 @@ pub enum SlidesEffect {
         #[param("Id of the slide")]
         slide: String,
     },
+    /// Insert picture
+    ///
+    /// Choose a picture with the system picker and place it on the current
+    /// slide.
+    #[effect(job, cancellable, device_only)]
+    InsertPicture,
     /// Open presentation
     ///
     /// Replace the deck with an ODP or PPTX file: the one at `path`, or one
