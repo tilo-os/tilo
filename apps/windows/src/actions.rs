@@ -229,6 +229,7 @@ fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
         "windows.compat-app",
         &app.name,
     )
+    .operation(show_spec(app))
     .operation(effect(
         "launch",
         "Launch",
@@ -254,6 +255,27 @@ fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
         None => row,
     }
 }
+
+/// Show `app` in the window, as choosing its row does: the action a
+/// search hit for it invokes. Local presentation only.
+fn show_spec(app: &crate::model::WindowsApp) -> ActionSpec {
+    let payload = serde_json::to_vec(&app.id).unwrap_or_else(|_| b"\"\"".to_vec());
+    ActionSpec::typed_operation(
+        "show",
+        "Show",
+        "",
+        OperationKind::View,
+        SHOW_OPERATION,
+        Vec::new(),
+        move |_| EncodedAction {
+            type_id: SHOW_OPERATION.into(),
+            payload: payload.clone(),
+        },
+    )
+}
+
+/// The view operation that shows one application.
+pub const SHOW_OPERATION: &str = "windows.show";
 
 fn launch_contract(app: &crate::model::WindowsApp) -> ActionContract {
     ActionContract {
