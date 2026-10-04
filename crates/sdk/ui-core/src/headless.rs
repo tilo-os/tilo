@@ -9328,6 +9328,20 @@ mod tests {
                 disabled.native_app_audit().issues
             );
 
+            // A password field's show/hide control is bound like the field.
+            let secret = Driver::new(
+                State::new(),
+                Box::new(
+                    crate::widget::TextInput::new(Vec::new())
+                        .with_id("password")
+                        .with_accessible_name("Password")
+                        .with_secret(true),
+                ),
+                (320, 160),
+            );
+            let audit = secret.native_app_audit();
+            assert!(audit.is_certified(), "{audit:?}");
+
             let empty = Driver::new(State::new(), Box::new(Column::new()), (320, 160));
             assert!(
                 empty
