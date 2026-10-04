@@ -388,7 +388,7 @@ impl Template {
         }
     }
 
-    /// The localized, user-facing title shown in the "New ▾" template picker.
+    /// The localized, user-facing title shown in the "New" template picker.
     /// Resolves through Fluent; under `en-US` it matches [`Self::title`].
     pub fn display_title(self) -> String {
         let key = match self {

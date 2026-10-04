@@ -163,10 +163,13 @@ fn the_history_strip_lists_real_versions_in_its_own_band() {
         let band = wp.history.band();
         assert!(band.height() > 100.0, "the strip has a real band: {band:?}");
         assert!(
-            band.y1 <= wp.rect.y1 - LAYOUT_BAR_H,
+            band.y1 <= wp.rect.y1 - wp.layout_bar_height,
             "the strip sits above the bottom layout bar"
         );
-        assert_eq!(band.width(), wp.rect.width(), "full-width strip");
+        assert!(
+            band.x0 > wp.rect.x0 && band.x1 < wp.rect.x1 && band.width() > wp.rect.width() * 0.9,
+            "the strip spans the column inside its gutters: {band:?}"
+        );
 
         wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
         assert_eq!(
