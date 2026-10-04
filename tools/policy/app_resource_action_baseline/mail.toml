@@ -1,0 +1,5 @@
+# Audited ceilings of apps/mail (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.raw_operation_handler]
+"apps/mail/src/app.rs" = 3

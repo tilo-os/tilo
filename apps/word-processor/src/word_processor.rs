@@ -2420,27 +2420,59 @@ impl WordProcessor {
         if edit.is_noop() {
             return false;
         }
-        let end = edit.at.saturating_add(edit.removed);
-        let Some(prefix) = text.get(..edit.at) else {
+        let Some(splice) = edit.char_splice(text) else {
             return false;
         };
-        let Some(removed_text) = text.get(edit.at..end) else {
-            return false;
-        };
-        let start = prefix.chars().count();
-        let removed = removed_text.chars().count();
         let block = self.caret.block.clone();
         self.region_splice(
             state,
             &block,
-            start,
-            num::isize_of_usize(removed),
+            splice.at,
+            splice.removed_isize(),
             &edit.inserted,
         );
         let mut updated = text.to_owned();
-        updated.replace_range(edit.at..end, &edit.inserted);
+        edit.apply(&mut updated);
         self.sync_state_from_edit_core(&updated);
         true
+    }
+
+    /// Delete the character (grapheme cluster) before or after the caret
+    /// within its block through the shared core. Returns whether it did.
+    fn delete_grapheme(&mut self, state: &mut AutoCommit, backward: bool) -> bool {
+        let text = self.current_text(state);
+        self.sync_edit_core_from_state(&text);
+        let edit = if backward {
+            self.edit_core.delete_backward(&text, false)
+        } else {
+            self.edit_core.delete_forward(&text, false)
+        };
+        self.apply_edit_core(state, &text, &edit)
+    }
+
+    /// Show `text` as the input method's composition at the caret; it is
+    /// not part of the document until committed.
+    pub fn set_preedit(&mut self, text: &str, cursor: Option<(usize, usize)>) {
+        self.edit_core.set_preedit(text, cursor);
+    }
+
+    /// Drop the composition.
+    pub fn clear_preedit(&mut self) {
+        self.edit_core.clear_preedit();
+    }
+
+    /// The composition in progress (empty when none).
+    pub fn preedit(&self) -> &str {
+        self.edit_core.preedit()
+    }
+
+    /// The part of the composition before the input method's cursor, where
+    /// the caret draws while composing.
+    pub fn preedit_before_cursor(&self) -> &str {
+        let preedit = self.edit_core.preedit();
+        preedit
+            .get(..self.edit_core.display_caret(""))
+            .unwrap_or(preedit)
     }
 
     /// Select the entire document (Ctrl+A).
@@ -2565,8 +2597,7 @@ impl WordProcessor {
         let offset = self.caret.offset;
 
         if offset > 0 {
-            self.region_splice(state, &block, offset - 1, 1, "");
-            self.caret.offset = offset - 1;
+            self.delete_grapheme(state, true);
             return;
         }
 
@@ -2625,7 +2656,7 @@ impl WordProcessor {
         let len = self.block_len(state, &block);
 
         if offset < len {
-            self.region_splice(state, &block, offset, 1, "");
+            self.delete_grapheme(state, false);
             return;
         }
 

@@ -1,0 +1,5 @@
+# Audited ceilings of apps/calculator (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.raw_operation_handler]
+"apps/calculator/src/app.rs" = 2

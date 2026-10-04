@@ -66,7 +66,8 @@ pub enum Motion {
 }
 
 /// The byte offset in the `\n`-delimited line above (`up`) or below the one
-/// holding `byte`, at the same character column, clamped to that line's end.
+/// holding `byte`, at the same character column, clamped to that line's end
+/// and pulled back onto the start of a grapheme cluster it would split.
 fn line_step(text: &str, byte: usize, up: bool) -> usize {
     let (start, end) = line_boundaries(text, byte);
     let column = text.get(start..byte).map_or(0, |line| line.chars().count());
@@ -82,11 +83,12 @@ fn line_step(text: &str, byte: usize, up: bool) -> usize {
         line_boundaries(text, end.saturating_add(1))
     };
     let line = text.get(target_start..target_end).unwrap_or_default();
-    target_start.saturating_add(
+    let target = target_start.saturating_add(
         line.char_indices()
             .nth(column)
             .map_or(line.len(), |(offset, _)| offset),
-    )
+    );
+    grapheme_boundary_at_or_before(text, target)
 }
 
 /// A splice to apply to the buffer, in **byte** offsets over the pre-edit text:
@@ -668,6 +670,12 @@ mod tests {
         core.motion(text, Motion::LineUp, true);
         assert_eq!(at(&core), "abc\ndéf".len());
         assert!(core.has_selection());
+
+        // A column that would split a cluster lands on the cluster's start.
+        let text = "abc\ne\u{301}e\u{301}";
+        let mut core = EditCore::at(3);
+        core.motion(text, Motion::LineDown, false);
+        assert_eq!(at(&core), "abc\ne\u{301}".len());
     }
 
     /// Apply an `Edit` to a `String` the way the host CRDT splice would, so the
