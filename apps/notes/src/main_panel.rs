@@ -514,15 +514,33 @@ impl MainPanel {
         if crate::doc::NotesDoc::page_body(doc, page).is_none() {
             return Err("the page has no body".into());
         }
+        // Binding the page already open again (its record re-read, a reveal)
+        // keeps the caret where the person left it: a rebind that put it back
+        // at the start would make the next keystroke land before the last.
+        let caret = (self.page_id == Some(page))
+            .then(|| {
+                let editor = self.editor.editor();
+                let block = editor.blocks().get(editor.focused_index()?)?;
+                Some((block.id.clone(), block.line.cursor_pos()))
+            })
+            .flatten();
         let mut editor = self.fresh_editor(Some(page));
         editor
             .editor_mut()
             .set_local_author(self.local_author.clone());
         editor.present_from(doc);
         editor.set_focus(true);
-        editor
-            .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::Start);
+        let (index, placement) = caret
+            .and_then(|(id, byte)| {
+                let index = editor
+                    .editor()
+                    .blocks()
+                    .iter()
+                    .position(|block| block.id == id)?;
+                Some((index, ui::widget::CursorPlacement::Byte(byte)))
+            })
+            .unwrap_or((0, ui::widget::CursorPlacement::Start));
+        editor.editor_mut().focus_block(index, placement);
         self.editor = editor;
         self.page_id = Some(page);
         self.dates = self.date_index.get(page);
@@ -2474,7 +2492,7 @@ mod tests {
                 assert_eq!(target, rect);
                 assert_eq!(label, panel.dates.labels()[row]);
                 assert!(
-                    label.contains("UTC"),
+                    label.contains(':'),
                     "compact metadata must expose the exact time"
                 );
             }

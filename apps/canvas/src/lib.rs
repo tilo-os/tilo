@@ -18,6 +18,7 @@ pub mod adjust;
 pub mod author;
 pub mod brushes;
 pub mod doc;
+pub mod document;
 pub mod fonts;
 pub mod gesture;
 pub mod locales;
@@ -37,6 +38,7 @@ pub mod svg;
 pub mod thumb;
 pub mod tools;
 pub mod view_ops;
+pub mod wand;
 
 pub use actions::CanvasAction;
 pub use model::Artwork;
@@ -90,15 +92,67 @@ impl ResourceApp for App {
                 }
             })
         };
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .with_gap(0.0)
-                .with_fill_remaining_height()
-                .push(Box::new(Pane::new(rail(&tools), Edge::Right)))
-                .push(Box::new(work))
-                .push(sidebar),
-        )
+        let window = Container::new()
+            .with_no_padding()
+            .filling()
+            .with_child(Box::new(
+                Row::new()
+                    .no_wrap()
+                    .with_gap(0.0)
+                    .with_fill_remaining_height()
+                    .push(Box::new(Pane::new(rail(&tools), Edge::Right)))
+                    .push(Box::new(work))
+                    .push(sidebar),
+            ));
+        // Over a blank artwork, a welcome saying what can be done here and
+        // by whom; then the dialogs.
+        let mut layers = Stack::new()
+            .push(Box::new(window))
+            .push(panels::start::welcome(cx, &tools));
+        for sheet in sheets(cx, &tools) {
+            layers = layers.push(sheet);
+        }
+        Box::new(panels::files::FileDesk::new(
+            Box::new(layers),
+            tools,
+            cx.live().clone(),
+            cx.dispatcher(),
+        ))
+    }
+
+    /// A saved artwork, handed over by Files or named on the command line.
+    const OPENS: &'static [&'static str] = &[document::MEDIA_TYPE];
+    const ARGUMENTS: usize = 1;
+
+    /// An artwork file named on the command line opens as its own record,
+    /// the same one each time it is opened.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        let path = std::path::Path::new(input.argument()?);
+        let artwork = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case(document::EXTENSION));
+        artwork.then(|| RecordId::identify_file(path))
+    }
+
+    /// The file's artwork, in the record it opened: a record made for the
+    /// file starts as it; a file handed to the window's artwork replaces it
+    /// as one step, Undo away from what was there.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<ArtworkResource>> {
+        let Some(file) = input.file() else {
+            return Vec::new();
+        };
+        if !created && input.argument().is_some() {
+            // The file's own record, opened again: it is the artwork.
+            return Vec::new();
+        }
+        let Ok(text) = std::str::from_utf8(file.bytes()) else {
+            return Vec::new();
+        };
+        let open = CanvasAction::OpenArtwork(actions::OpenArtwork {
+            file: text.to_owned(),
+        });
+        Invoke::apply(&open).into_iter().collect()
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -136,6 +190,130 @@ impl ResourceApp for App {
     }
 }
 
+/// The dialogs over the window: starting a new artwork, exporting it, and
+/// the keyboard shortcuts.
+fn sheets(cx: &ViewCx<ArtworkResource>, tools: &tools::Tools) -> Vec<Element> {
+    use tools::{FileRequest, Sheet};
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let close = |tools: &tools::Tools| {
+        let sheet = tools.sheet.clone();
+        move || sheet.set(None)
+    };
+    let body = |content: Element| Container::new().with_no_padding().with_child(content);
+    let new = {
+        let dispatch = cx.dispatcher();
+        let tools = tools.clone();
+        let (cancel, dismiss) = (close(&tools), close(&tools));
+        ui::widget::ModalDialog::new(
+            lookup("canvas-new-artwork"),
+            body(panels::start::body(cx, &tools)),
+        )
+        .with_test_id("canvas-new-dialog")
+        .primary_action(lookup("canvas-create"), move || {
+            panels::start::create(&dispatch, &tools);
+        })
+        .secondary_action(lookup("canvas-cancel"), cancel)
+        .on_dismiss(dismiss)
+        .with_max_size(680.0, 700.0)
+    };
+    let export = {
+        let tools = tools.clone();
+        let (cancel, dismiss) = (close(&tools), close(&tools));
+        ui::widget::ModalDialog::new(
+            lookup("canvas-export-title"),
+            body(panels::export::body(cx, &tools)),
+        )
+        .with_test_id("canvas-export-dialog")
+        .primary_action(lookup("canvas-export-save"), move || {
+            tools.sheet.set(None);
+            tools
+                .files
+                .set(Some(FileRequest::Export(tools.export.settings())));
+        })
+        .secondary_action(lookup("canvas-cancel"), cancel)
+        .on_dismiss(dismiss)
+        .with_max_size(520.0, 460.0)
+    };
+    let keys = ui::widget::ModalDialog::new(
+        lookup("canvas-keys-title"),
+        body(panels::shortcuts::overview()),
+    )
+    .with_test_id("canvas-keys-dialog")
+    .primary_action(lookup("canvas-done"), close(tools))
+    .on_dismiss(close(tools))
+    .with_max_size(820.0, 620.0);
+    vec![
+        Box::new(Shown::new(new, tools.sheet.clone(), Sheet::NewArtwork)),
+        Box::new(Shown::new(export, tools.sheet.clone(), Sheet::Export)),
+        Box::new(Shown::new(keys, tools.sheet.clone(), Sheet::Shortcuts)),
+    ]
+}
+
+/// A dialog shown while the window's sheet is `which`. The dialog stays in
+/// the tree, so what was typed in it outlives closing it.
+struct Shown {
+    dialog: ui::widget::ModalDialog<Container>,
+    sheet: LocalState<Option<tools::Sheet>>,
+    which: tools::Sheet,
+}
+
+impl Shown {
+    fn new(
+        dialog: ui::widget::ModalDialog<Container>,
+        sheet: LocalState<Option<tools::Sheet>>,
+        which: tools::Sheet,
+    ) -> Self {
+        Self {
+            dialog,
+            sheet,
+            which,
+        }
+    }
+}
+
+impl ui::widget::Decorator for Shown {
+    type Inner = ui::widget::ModalDialog<Container>;
+
+    fn inner(&self) -> &Self::Inner {
+        &self.dialog
+    }
+
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.dialog
+    }
+
+    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        let open = self.sheet.with(|sheet| *sheet == Some(self.which));
+        if open != self.dialog.is_open() {
+            self.dialog.set_open(open);
+        }
+        self.dialog.sync(state, path);
+    }
+
+    /// A click or key right after the dialog was asked for already lands
+    /// in it, not in what is beneath, even before the next frame.
+    fn handle_event(
+        &mut self,
+        event: &ui::winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) {
+        let open = self.sheet.with(|sheet| *sheet == Some(self.which));
+        if open != self.dialog.is_open() {
+            self.dialog.set_open(open);
+        }
+        ui::widget::Widget::handle_event(&mut self.dialog, event, ctx);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.sheet.with(|sheet| *sheet == Some(self.which)) != self.dialog.is_open()
+            || self.dialog.needs_redraw()
+    }
+
+    fn concrete_type_name(&self) -> &'static str {
+        "CanvasSheet"
+    }
+}
+
 /// What the lower half of the sidebar shows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Dock {
@@ -145,7 +323,7 @@ enum Dock {
 }
 
 /// The tool rail's width.
-const RAIL: f32 = 56.0; // a pointer target and its inset, laid out before a theme is known
+pub(crate) const RAIL: f32 = 56.0; // a pointer target and its inset, laid out before a theme is known
 /// The sidebar's width.
 pub(crate) const SIDEBAR: f32 = 288.0; // the swatches' width plus insets: a layout width, not spacing
 

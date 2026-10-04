@@ -12,7 +12,7 @@ class SettingsEffectsTests(unittest.TestCase):
           document_root='Root',document_actor='ab12',document_witness_kind='effective_heads_on_disposable_clone',
           effective_document_heads=['a'*64],original_pending_ops=3)
         b=dict(a,local_search_text='z',search_widget_text='z',search_caret_byte=1)
-        c=dict(b,synchronized_search_query='z',rendered_result_count=3,rendered_category_ids=list(Z_CATEGORIES))
+        c=dict(b,synchronized_search_query='z',rendered_result_count=len(Z_CATEGORIES),rendered_category_ids=list(Z_CATEGORIES))
         d=dict(c,local_search_text='',search_widget_text='',search_caret_byte=0)
         scenario=dict(warmup_steps=1,steps=[dict(kind='click',x=100,y=50),dict(kind='character',value='z'),dict(kind='key',key='backspace')])
         effects=[dict(id=0,before=a,after=a),dict(id=1,before=a,after=b),dict(id=2,before=c,after=d)]

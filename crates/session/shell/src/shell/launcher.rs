@@ -937,6 +937,9 @@ pub(crate) struct SessionLaunches {
     /// XDG autostart entries. Their exit is not a failed open of the app the
     /// person just launched.
     session_helpers: Mutex<HashSet<String>>,
+    /// Autostart entries with `X-GNOME-AutoRestart=true`: how to start each
+    /// again, and when it last started.
+    restartable_helpers: Mutex<HashMap<String, RestartableHelper>>,
     /// The "Opening…" notification of each package still on its way, so the
     /// frame thread can retire it when the app starts.
     pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
@@ -958,6 +961,7 @@ impl Default for SessionLaunches {
             awaiting_window: Mutex::default(),
             unresolved_owners: Mutex::default(),
             session_helpers: Mutex::default(),
+            restartable_helpers: Mutex::default(),
             opening_notices: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
@@ -3144,6 +3148,67 @@ pub(crate) fn note_session_helper(package_id: &str) {
     lock(&LaunchSession::current().session_helpers).insert(package_id.to_string());
 }
 
+/// How to start an `X-GNOME-AutoRestart` autostart entry again.
+#[derive(Debug, Clone)]
+pub(crate) struct RestartableHelper {
+    display_name: String,
+    command: LaunchCommand,
+    started_at: Instant,
+}
+
+/// A helper that dies sooner than this after (re)starting is not restarted
+/// again, so a program that cannot run does not loop. `gnome-session`'s limit.
+pub(crate) const HELPER_RESTART_LIMIT: Duration = Duration::from_secs(60);
+
+/// Remember how to restart an autostart entry marked `X-GNOME-AutoRestart`.
+pub(crate) fn note_restartable_session_helper(
+    package_id: &str,
+    display_name: &str,
+    command: LaunchCommand,
+) {
+    lock(&LaunchSession::current().restartable_helpers).insert(
+        package_id.to_string(),
+        RestartableHelper {
+            display_name: display_name.to_string(),
+            command,
+            started_at: Instant::now(),
+        },
+    );
+}
+
+/// The command to start a restartable helper that died at `now` again, or
+/// `None` when it is not restartable or died within [`HELPER_RESTART_LIMIT`]
+/// of its last start (it is then forgotten).
+pub(crate) fn take_helper_restart(
+    package_id: &str,
+    now: Instant,
+) -> Option<(String, LaunchCommand)> {
+    let session = LaunchSession::current();
+    let mut helpers = lock(&session.restartable_helpers);
+    let helper = helpers.get_mut(package_id)?;
+    if now.saturating_duration_since(helper.started_at) >= HELPER_RESTART_LIMIT {
+        helper.started_at = now;
+        return Some((helper.display_name.clone(), helper.command.clone()));
+    }
+    helpers.remove(package_id);
+    drop(helpers);
+    tracing::warn!(
+        target: "shell::launcher",
+        %package_id,
+        "autostart helper is dying too quickly; not restarting it again"
+    );
+    None
+}
+
+/// Restart an `X-GNOME-AutoRestart` helper that died; whether it was restarted.
+pub(crate) fn restart_session_helper(package_id: &str) -> bool {
+    let Some((display_name, command)) = take_helper_restart(package_id, Instant::now()) else {
+        return false;
+    };
+    tracing::info!(target: "shell::launcher", %package_id, "restarting autostart helper");
+    spawn_launch(package_id.to_string(), display_name, command).is_ok()
+}
+
 /// A signal exit of an autostart helper that the person did not ask to open.
 ///
 /// A later palette launch of the same id sets [`set_pending_placement`] and
@@ -3272,6 +3337,7 @@ pub(crate) fn clear_launched_for_test() {
     lock(&session.awaiting_window).clear();
     lock(&session.unresolved_owners).clear();
     lock(&session.session_helpers).clear();
+    lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
 }
 
@@ -3612,6 +3678,7 @@ pub fn clear_pending_placements() {
     lock(&session.awaiting_window).clear();
     lock(&session.unresolved_owners).clear();
     lock(&session.session_helpers).clear();
+    lock(&session.restartable_helpers).clear();
     lock(&session.presented).clear();
 }
 
@@ -5546,6 +5613,21 @@ mod tests {
             "Wine File's host process tree exits after its wineboot.exe window closes",
             || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
         );
+    }
+
+    #[test]
+    fn an_auto_restart_helper_restarts_until_it_dies_too_quickly() {
+        let command = held("orca", &["run-host"]).command;
+        assert!(take_helper_restart("orca", Instant::now()).is_none());
+        note_restartable_session_helper("orca", "Screen Reader", command.clone());
+        let later = Instant::now() + HELPER_RESTART_LIMIT;
+        assert_eq!(
+            take_helper_restart("orca", later),
+            Some(("Screen Reader".to_string(), command))
+        );
+        // Dead again within the limit of that restart: given up for good.
+        assert!(take_helper_restart("orca", later + Duration::from_secs(1)).is_none());
+        assert!(take_helper_restart("orca", later + HELPER_RESTART_LIMIT * 2).is_none());
     }
 
     #[test]

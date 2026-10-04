@@ -41,5 +41,6 @@ pub mod image;
 pub mod lifecycle;
 pub mod memory;
 pub mod supervisor;
+pub mod transport;
 pub mod virsh;
 pub mod virtiofs;

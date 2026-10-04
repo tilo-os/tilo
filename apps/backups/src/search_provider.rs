@@ -155,13 +155,9 @@ mod tests {
         assert_eq!(page.inspected, 1, "unique posting avoids a corpus scan");
         let address = hit.action_address().expect("canonical address");
         assert_eq!(address.resource, "backups.snapshot:snapshot-002999");
-        let resource = crate::actions::resource(
-            &crate::model::RetentionPolicy::default(),
-            &catalog,
-            true,
-            &address.resource,
-        )
-        .expect("late search address materializes its resource");
+        let resource = crate::actions::live_row(&catalog, None, &address.resource)
+            .expect("late search address resolves its live row")
+            .into_resource();
         assert!(
             resource
                 .actions
