@@ -43,7 +43,6 @@
 "apps/music/src/resource.rs" = 2
 "apps/notes/src/resource.rs" = 1
 "apps/osk/src/resource.rs" = 2
-"apps/passwords/src/resource.rs" = 2
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
 "apps/print-centre/src/resource.rs" = 1
@@ -55,7 +54,6 @@
 "apps/store/src/resource.rs" = 2
 "apps/terminal/src/main_body.rs" = 2
 "apps/themes/src/resource.rs" = 2
-"apps/totp/src/resource.rs" = 1
 "apps/tube/src/app.rs" = 2
 "apps/tube/src/resource.rs" = 2
 "apps/typst-editor/src/app.rs" = 2
@@ -93,8 +91,6 @@
 "apps/maps/src/main.rs" = 2
 "apps/music/src/lib.rs" = 2
 "apps/osk/src/main.rs" = 1
-"apps/passwords/src/lib.rs" = 2
-"apps/passwords/src/main.rs" = 2
 "apps/pdf-viewer/src/lib.rs" = 2
 "apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
@@ -108,7 +104,6 @@
 "apps/speed-test/src/main.rs" = 2
 "apps/themes/src/lib.rs" = 2
 "apps/themes/src/main.rs" = 2
-"apps/totp/src/main.rs" = 2
 "apps/tube/src/lib.rs" = 2
 "apps/tube/src/main.rs" = 2
 "apps/typst-editor/src/lib.rs" = 2
