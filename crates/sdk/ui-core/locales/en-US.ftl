@@ -256,6 +256,8 @@ terminal-target-host = This device (unconfined)
 terminal-target-default = Default environment
 terminal-target-legacy = legacy VM
 terminal-target-manage = Manage environments…
+terminal-run-on = Run on:
+terminal-run-on-this-device = This device
 terminal-host-awaiting-allow = Waiting for you to allow this device's own shell
 terminal-host-denied = This device's own shell was not allowed
 terminal-env-title = Environments
@@ -420,3 +422,10 @@ history-day-today = Today
 history-day-yesterday = Yesterday
 history-day-this-week = This week
 history-day-earlier = Earlier
+
+widget-block-duplicate = Duplicate block and children
+
+widget-block-duplicate-selection = Duplicate selected or focused blocks
+
+widget-block-move-selection-up = Move selected blocks up
+widget-block-move-selection-down = Move selected blocks down

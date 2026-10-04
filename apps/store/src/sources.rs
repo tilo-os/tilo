@@ -425,6 +425,7 @@ mod tests {
             cli_commands: Vec::new(),
             runtime: String::new(),
             source: String::new(),
+            held: false,
             system: !user_managed,
         }
     }

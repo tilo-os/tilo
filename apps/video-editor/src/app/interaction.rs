@@ -61,7 +61,7 @@ impl VideoEditorApp {
                     self.goto_entry = None;
                 }
                 Key::Named(NamedKey::Backspace) => {
-                    entry.pop();
+                    ui::text_edit::delete_last_grapheme(entry);
                 }
                 Key::Named(NamedKey::Enter) => {
                     let typed = entry.clone();

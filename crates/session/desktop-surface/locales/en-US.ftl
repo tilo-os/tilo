@@ -816,18 +816,18 @@ a11y-shell-workspace-activity-description = Review grouped outcomes and what hap
 
 # Empty-workspace launchpad
 launchpad-title = Make something together
-launchpad-description = Choose a shared conversation, notes, tasks, meeting, invitation, or workspace activity.
+launchpad-description = Choose a shared conversation, notes, tasks, a call, an invitation, or workspace activity.
 launchpad-open-app = Open an app
 launchpad-discuss = Discuss
 launchpad-notes = Notes
 launchpad-tasks = Tasks
-launchpad-meet = Plan a meeting
+launchpad-meet = Start a call
 launchpad-invite = Invite people
 launchpad-activity = Catch up
 launchpad-discuss-detail = Open the shared conversation
 launchpad-notes-detail = Write ideas together
-launchpad-tasks-detail = Plan work in Calendar
-launchpad-meet-detail = Open Chat, then start a voice or video call
+launchpad-tasks-detail = Open the to-do list in Calendar
+launchpad-meet-detail = Talk with this workspace in Chat
 launchpad-invite-detail = Bring someone into this workspace
 launchpad-activity-detail = See what changed and why
 

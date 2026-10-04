@@ -254,6 +254,15 @@ impl DeviceIdentity {
     }
 }
 
+/// The enrolled home-peer registry below a device identity root.
+///
+/// It lives in its own device-trust-group directory rather than directly in
+/// the root: the session user records the identity's home peers while
+/// joining it, and the identity root itself stays writable only by root.
+pub fn home_peer_registry_path(identity_root: &std::path::Path) -> std::path::PathBuf {
+    identity_root.join("peers").join("home-peers.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

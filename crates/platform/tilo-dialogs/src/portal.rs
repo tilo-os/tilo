@@ -603,6 +603,10 @@ pub struct PickedContents {
     /// The MIME type the host reported, when it did.
     pub media_type: Option<String>,
     pub bytes: Vec<u8>,
+    /// Where the chosen file is on this device, when the host chose one
+    /// with a path: for recognising the same file chosen again, never for
+    /// showing. `None` where files have no paths (a browser page).
+    pub location: Option<std::path::PathBuf>,
 }
 
 /// The result of [`PickRequest::send_contents`].
@@ -678,6 +682,7 @@ pub(crate) fn read_picked(paths: Option<PickedPaths>) -> ContentsChannel {
                             name,
                             media_type: None,
                             bytes,
+                            location: Some(path),
                         })
                     })
                     .collect::<Result<Vec<_>, String>>()

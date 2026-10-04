@@ -99,15 +99,6 @@ fn secret_key(locator: &str) -> String {
     format!("{PURPOSE_ATTRIBUTE}.{}", locator.to_ascii_lowercase())
 }
 
-/// The item attributes earlier builds stored `locator`'s secret under,
-/// through `secret-tool store tilo-purpose … tilo-identity-key <locator>`.
-fn legacy_attributes(locator: &str) -> [(&str, &str); 2] {
-    [
-        ("tilo-purpose", PURPOSE_ATTRIBUTE),
-        ("tilo-identity-key", locator),
-    ]
-}
-
 fn store_error(error: SecretError) -> io::Error {
     match error {
         SecretError::Unavailable(_) | SecretError::Denied | SecretError::Unsupported(_) => {
@@ -148,8 +139,6 @@ impl SecretProvider for SecretServiceProvider {
             Err(error) if crate::is_secret_service_unavailable_io(&error) => {}
             Err(error) => return Err(error),
         }
-        // Hex text, as earlier builds stored it: one format for adopted and
-        // new items.
         let encoded = Zeroizing::new(hex::encode(secret));
         self.store
             .put_blocking(
@@ -174,13 +163,7 @@ impl SecretProvider for SecretServiceProvider {
         validate_software_locator(locator)?;
         let stored = self
             .store
-            .get_or_adopt_blocking(
-                &secret_key(locator),
-                &legacy_attributes(locator),
-                PutOptions {
-                    label: Some("Tilo identity signing key".into()),
-                },
-            )
+            .get_blocking(&secret_key(locator))
             .map_err(store_error)?
             .ok_or_else(crate::secret_service_unavailable_error)?;
         // Corruption must surface; never mask it by generating a replacement key.
@@ -200,7 +183,7 @@ impl SecretProvider for SecretServiceProvider {
     fn remove(&self, locator: &str) -> io::Result<()> {
         validate_software_locator(locator)?;
         self.store
-            .delete_with_legacy_blocking(&secret_key(locator), &legacy_attributes(locator))
+            .delete_blocking(&secret_key(locator))
             .map_err(store_error)
     }
 }
@@ -231,6 +214,13 @@ impl BrokerFileProvider {
 
     fn ensure_root(&self) -> io::Result<()> {
         fs::create_dir_all(&self.root)?;
+        self.check_root()?;
+        fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+    }
+
+    /// The secrets directory is a real directory this user owns. Reading a
+    /// key checks it without creating or changing it.
+    fn check_root(&self) -> io::Result<()> {
         let meta = fs::symlink_metadata(&self.root)?;
         if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
             return Err(io::Error::new(
@@ -244,7 +234,7 @@ impl BrokerFileProvider {
                 "identity secrets directory is not owned by the current user",
             ));
         }
-        fs::set_permissions(&self.root, fs::Permissions::from_mode(0o700))
+        Ok(())
     }
 }
 
@@ -285,7 +275,7 @@ impl SecretProvider for BrokerFileProvider {
     }
 
     fn load(&self, locator: &str) -> io::Result<Zeroizing<Vec<u8>>> {
-        self.ensure_root()?;
+        self.check_root()?;
         let path = self.path(locator)?;
         let file = OpenOptions::new()
             .read(true)

@@ -1126,7 +1126,17 @@ impl AgentModelsModel {
             body.push(value_row(&protocol, profile.protocol.label()));
             let buffer = self.key_buffer(&profile_id);
             let initial = buffer.lock().map(|key| key.clone()).unwrap_or_default();
-            let configured = tilo_model_gateway::secret_configured(&profile_id).unwrap_or(false);
+            let (configured, configured_error) =
+                match tilo_model_gateway::secret_configured(&profile_id) {
+                    Ok(configured) => (configured, None),
+                    Err(error) => (false, Some(error.to_string())),
+                };
+            if let Some(error) = configured_error {
+                body.push(crate::widgets::error_caption(&t_args(
+                    "agent-key-read-error",
+                    &[("error", error.into())],
+                )));
+            }
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(

@@ -1158,6 +1158,39 @@ impl App {
         }
     }
 
+    /// The desktop's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS)
+    /// when no widget consumed the press: tabs are the shell's, so every app
+    /// answers them the same way through [`crate::shell_tabs`].
+    #[cfg(feature = "native")]
+    fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {
+        if *handled {
+            return;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key,
+                    state: winit::event::ElementState::Pressed,
+                    repeat: false,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return;
+        };
+        let modifiers = self.input.modifiers.state();
+        let command = self.input.platform.command_modifier_down(modifiers);
+        // Ctrl and Super together are a different chord on every platform.
+        let other = modifiers.alt_key() || (modifiers.control_key() && modifiers.super_key());
+        if let Some(request) =
+            crate::shell_tabs::chord_request(logical_key, command, modifiers.shift_key(), other)
+        {
+            crate::shell_tabs::request(request);
+            *handled = true;
+        }
+    }
+
     /// Let the focused widget see directional input first. Only an unconsumed
     /// arrow may move host focus, using the same modal/focus-trap fence as Tab.
     #[cfg(feature = "native")]

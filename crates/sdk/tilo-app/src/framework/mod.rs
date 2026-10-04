@@ -309,8 +309,8 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher, Refused};
 pub use each::Each;
 pub use effect::{
-    EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs, Progress,
-    Projection,
+    ChosenFile, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
+    Progress, Projection,
 };
 pub use kinds::resource_kind;
 pub use launch::{Command, LaunchInput};

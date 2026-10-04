@@ -52,7 +52,7 @@ pub mod notebook;
 pub mod resource;
 pub use ui::num;
 pub mod scenario;
-pub mod search_provider;
+pub mod search;
 pub mod shortcuts_overlay;
 pub mod sidebar;
 pub mod status_bar;

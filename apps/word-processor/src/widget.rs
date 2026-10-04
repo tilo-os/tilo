@@ -73,6 +73,7 @@ pub(crate) use participants::note_participant_outcome;
 #[cfg(test)]
 mod participant_tests;
 mod proofing;
+mod semantic_geometry;
 mod text_runs;
 mod toolbar;
 
@@ -1487,7 +1488,6 @@ pub struct WordProcessorWidget {
     /// drawn as a toast in the overlay pass. Dismissed on the next interaction.
     toast: Option<(String, ToastKind)>,
     ime_rect: Option<Rect>,
-    ime_preedit: String,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
@@ -1649,7 +1649,6 @@ impl WordProcessorWidget {
             style_menu: StyleMenu::default(),
             toast: None,
             ime_rect: None,
-            ime_preedit: String::new(),
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             participant_host: false,
@@ -4375,19 +4374,44 @@ impl WordProcessorWidget {
                 rl.origin.x + f64::from(cx) + CARET_WIDTH,
                 rl.origin.y + f64::from(cy) + f64::from(ch),
             );
+            let c = self.draw_preedit(scene, ctf, tr, c, 12.0, PAPER_INK);
             self.ime_rect = Some(ctf.transform_rect_bbox(c));
             scene.fill(Fill::NonZero, ctf, self.chrome.paper_accent, None, &c);
-            if !self.ime_preedit.is_empty() {
-                tr.draw_text(
-                    scene,
-                    &self.ime_preedit,
-                    12.0,
-                    PAPER_INK,
-                    ctf * Affine::translate((c.x0, c.y0)),
-                    None,
-                );
-            }
         }
+    }
+
+    /// Draw the input method's composition at `caret`, underlined, and
+    /// return the caret moved to the composition's own cursor. The caret is
+    /// unchanged while nothing is being composed.
+    fn draw_preedit(
+        &self,
+        scene: &mut Scene,
+        ctf: Affine,
+        tr: &mut TextRenderer,
+        caret: Rect,
+        size: f32,
+        ink: Color,
+    ) -> Rect {
+        let preedit = self.inner.preedit();
+        if preedit.is_empty() {
+            return caret;
+        }
+        tr.draw_text(
+            scene,
+            preedit,
+            size,
+            ink,
+            ctf * Affine::translate((caret.x0, caret.y0)),
+            None,
+        );
+        let (width, _) = tr.measure(preedit, size, None);
+        let under = vello::kurbo::Line::new(
+            (caret.x0, caret.y1),
+            (caret.x0 + f64::from(width), caret.y1),
+        );
+        scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, ink, None, &under);
+        let (before, _) = tr.measure(self.inner.preedit_before_cursor(), size, None);
+        caret + vello::kurbo::Vec2::new(f64::from(before), 0.0)
     }
 
     /// The per-side measurement the active mode edits (the page margins).
@@ -8140,6 +8164,7 @@ impl WordProcessorWidget {
                     l.text_x + f64::from(cx) + CARET_WIDTH,
                     ly + f64::from(cy) + f64::from(ch),
                 );
+                let caret = self.draw_preedit(scene, fg.ctf, text_renderer, caret, l.size, l.ink);
                 self.ime_rect = Some(fg.ctf.transform_rect_bbox(caret));
                 scene.fill(
                     Fill::NonZero,
@@ -8148,16 +8173,6 @@ impl WordProcessorWidget {
                     None,
                     &caret,
                 );
-                if !self.ime_preedit.is_empty() {
-                    text_renderer.draw_text(
-                        scene,
-                        &self.ime_preedit,
-                        l.size,
-                        l.ink,
-                        fg.ctf * Affine::translate((caret.x0, caret.y0)),
-                        None,
-                    );
-                }
             }
             if clipped {
                 scene.pop_layer();
@@ -8784,6 +8799,7 @@ impl WordProcessorWidget {
         &self,
         scene: &mut Scene,
         ctf: Affine,
+        canvas_clip: Rect,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
@@ -8806,16 +8822,6 @@ impl WordProcessorWidget {
         let now = ui::time::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
-                tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
-                    .iter()
-                    .map(|range| {
-                        (
-                            range.block.as_str(),
-                            usize::try_from(range.start).unwrap_or(usize::MAX),
-                            usize::try_from(range.end).unwrap_or(usize::MAX),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
                 tilo_actions::InteractionAnchor::Objects { ids } => ids
                     .iter()
                     .filter_map(|id| {
@@ -8827,7 +8833,9 @@ impl WordProcessorWidget {
                     .collect(),
                 _ => Vec::new(),
             };
-            let mut rects = Vec::new();
+            let mut rects = self
+                .semantic_text_rects(&interaction.anchor, ctf, canvas_clip)
+                .unwrap_or_default();
             for (block, start, end) in ranges {
                 let Some(l) = self.laid.iter().find(|laid| laid.id == block) else {
                     continue;
@@ -8846,15 +8854,25 @@ impl WordProcessorWidget {
                     },
                 ));
             }
+            if rects.is_empty() {
+                continue;
+            }
+            // This pass runs after the page layer was popped. Clip semantic
+            // highlights and their labels explicitly so they cannot reach
+            // the toolbar, other panes, or the surrounding host chrome.
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                Affine::IDENTITY,
+                &canvas_clip,
+            );
             let user = UserId(interaction.actor.id.clone());
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
             }
-            if let Some(bounds) = rects
-                .iter()
-                .copied()
-                .reduce(|bounds, rect| bounds.union(rect))
-            {
+            // Label an actual visible span, never a union spanning page gaps.
+            if let Some(bounds) = rects.first().copied() {
                 let label = presence.display_name(&user);
                 presence.draw_peer_outline_labeled(
                     &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
@@ -8864,6 +8882,7 @@ impl WordProcessorWidget {
                     3.0,
                 );
             }
+            scene.pop_layer();
         }
         for c in &remote_carets {
             presence.draw_peer_caret_labeled(
@@ -10496,7 +10515,14 @@ impl Widget for WordProcessorWidget {
         // no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
 
-        self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
+        self.draw_remote_overlays(
+            scene,
+            fg.ctf,
+            fg.canvas_clip,
+            text_renderer,
+            theme,
+            presence,
+        );
 
         // Contextual styles panel on the right (between toolbar and layout bar).
         if self.styles_panel_visible() {
@@ -10759,7 +10785,7 @@ impl Widget for WordProcessorWidget {
                 ..
             } => self.handle_left_release(ctx.state, ctx.handled),
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-                self.ime_preedit.clear();
+                self.inner.clear_preedit();
                 self.handle_key_press(
                     ctx.state,
                     &Key::Character(text.as_str().into()),
@@ -10769,13 +10795,17 @@ impl Widget for WordProcessorWidget {
                     ctx.handled,
                 );
             }
-            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
-                self.ime_preedit.clone_from(text);
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
+                if text.is_empty() {
+                    self.inner.clear_preedit();
+                } else {
+                    self.inner.set_preedit(text, *cursor);
+                }
                 self.lifecycle.dirty = true;
                 *ctx.handled = true;
             }
             WindowEvent::Ime(winit::event::Ime::Disabled) => {
-                self.ime_preedit.clear();
+                self.inner.clear_preedit();
                 self.lifecycle.dirty = true;
             }
             WindowEvent::KeyboardInput {

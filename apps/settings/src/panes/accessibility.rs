@@ -28,7 +28,7 @@ use winit::event::WindowEvent;
 
 use crate::effects::{SettingsEffect, effect};
 use crate::host::{Followed, PaneCx};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::panes::appearance::{
     AppearanceEffect, text_size_label, text_size_name, text_size_options,
 };
@@ -38,22 +38,9 @@ use crate::prefs::{
 };
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
-
-const OSK_PACKAGE_ID: &str = "so.tilo.osk";
-const OSK_PACKAGE_KIND: &str = "service";
-
-pub(crate) fn osk_service_available() -> bool {
-    package_store::list_installed()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|entry| launcher::manifest::read_manifest(&entry.manifest_path).ok())
-        .any(|manifest| {
-            manifest.package_id == OSK_PACKAGE_ID
-                && manifest.kind == OSK_PACKAGE_KIND
-                && manifest.entrypoint.gui_bin().is_some()
-        })
-}
+use crate::widgets::{
+    El, caption, card, choice_row, error_row, rows, setting_row_described, value_row,
+};
 
 fn executable_available(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
@@ -291,17 +278,12 @@ pub(crate) fn answer(
     app.host().update(change)
 }
 
-/// What this device cannot do now: the on-screen keyboard and the screen
-/// reader need software that may not be installed.
-pub(crate) fn statuses(osk: bool, speech: bool) -> Vec<EffectStatus> {
+/// What this device cannot do now: the screen reader needs a speech engine
+/// that may not be installed. The on-screen keyboard ships with every image
+/// and the compositor decides whether it runs; a sandboxed Settings cannot
+/// read the package catalogue, so it does not second-guess that.
+pub(crate) fn statuses(speech: bool) -> Vec<EffectStatus> {
     let mut statuses = Vec::new();
-    if !osk {
-        statuses.push(EffectStatus::unavailable(
-            effect(AccessibilityEffect::SET_ON_SCREEN_KEYBOARD),
-            "not_installed",
-            t("a11y-osk-missing"),
-        ));
-    }
     if !speech {
         for unavailable in [
             effect(AccessibilityEffect::SET_SCREEN_READER).id,
@@ -427,8 +409,6 @@ pub struct AccessibilityPane {
     appearance: Followed<AppearancePrefs>,
     access: Followed<AccessibilityPrefs>,
     shown: Shown,
-    /// Whether the on-screen keyboard service is installed.
-    osk: bool,
     /// The speech engine the screen reader would speak through.
     speech: Option<&'static str>,
     structure_dirty: bool,
@@ -437,11 +417,9 @@ pub struct AccessibilityPane {
 }
 
 /// The assistive software installed on this device, looked up once per
-/// window: whether the on-screen keyboard service is installed, and the
-/// speech engine the screen reader would speak through.
+/// window: the speech engine the screen reader would speak through.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Software {
-    pub on_screen_keyboard: bool,
     pub speech: Option<&'static str>,
 }
 
@@ -449,7 +427,6 @@ impl Software {
     /// What this device has installed.
     pub fn installed() -> Self {
         Self {
-            on_screen_keyboard: osk_service_available(),
             speech: tts_capability(),
         }
     }
@@ -457,7 +434,6 @@ impl Software {
     /// What a screenshot and the crate's tests show installed: everything.
     pub fn sample() -> Self {
         Self {
-            on_screen_keyboard: true,
             speech: Some("Speech Dispatcher"),
         }
     }
@@ -482,7 +458,6 @@ impl AccessibilityPane {
             appearance,
             access,
             shown,
-            osk: software.on_screen_keyboard,
             speech: software.speech,
             structure_dirty: false,
             composed: None,
@@ -657,20 +632,16 @@ impl AccessibilityPane {
     // --- Typing.
     fn build_typing_card(&self) -> Box<dyn Widget> {
         let shown = &self.shown;
-        let osk_row = if self.osk {
-            setting_row_described(
-                &t("a11y-osk"),
-                &t("a11y-osk-desc"),
-                self.choice(
-                    "a11y.on_screen_keyboard",
-                    OnScreenKeyboard::OPTIONS.iter().copied(),
-                    &shown.on_screen_keyboard,
-                    AccessibilityEffect::SET_ON_SCREEN_KEYBOARD,
-                ),
-            )
-        } else {
-            value_row(&t("a11y-osk"), &t("a11y-osk-missing"))
-        };
+        let osk_row = setting_row_described(
+            &t("a11y-osk"),
+            &t("a11y-osk-desc"),
+            self.choice(
+                "a11y.on_screen_keyboard",
+                OnScreenKeyboard::OPTIONS.iter().copied(),
+                &shown.on_screen_keyboard,
+                AccessibilityEffect::SET_ON_SCREEN_KEYBOARD,
+            ),
+        );
         card(
             &t("a11y-typing-title"),
             rows(vec![
@@ -787,6 +758,11 @@ impl AccessibilityPane {
                     ),
                 ),
             ]
+        } else if let Some(error) = super::installed_programs_unreadable() {
+            vec![error_row(
+                &t("a11y-screen-reader"),
+                &t_args("settings-programs-error", &[("error", error.into())]),
+            )]
         } else {
             vec![value_row(
                 &t("a11y-screen-reader"),
@@ -1093,12 +1069,13 @@ mod tests {
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
-    /// Without the on-screen keyboard service or a speech engine, their
-    /// effects say so instead of storing an inert preference.
+    /// Without a speech engine, the screen reader's effects say so instead
+    /// of storing an inert preference; the on-screen keyboard choice is
+    /// always open.
     #[test]
     fn missing_software_makes_its_effects_unavailable() {
-        assert!(statuses(true, true).is_empty());
-        let statuses = statuses(false, false);
-        assert_eq!(statuses.len(), 4);
+        assert!(statuses(true).is_empty());
+        let statuses = statuses(false);
+        assert_eq!(statuses.len(), 3);
     }
 }

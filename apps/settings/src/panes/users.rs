@@ -24,7 +24,9 @@ use crate::i18n::{t, t_args};
 use crate::panes::model::{PaneModel, Shared};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{El, StatusTone, caption, card, rows, semantic_status_pill, setting_row};
+use crate::widgets::{
+    El, StatusTone, caption, card, error_caption, rows, semantic_status_pill, setting_row,
+};
 
 /// Changes to this device's login accounts and the person's identities.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -190,6 +192,8 @@ pub struct DeviceUser {
     pub admin: bool,
     pub current: bool,
     pub automatic_login: bool,
+    /// Why `automatic_login` could not be read; it is then not offered.
+    pub automatic_login_error: Option<String>,
 }
 
 pub trait UserAdmin: Send + Sync {
@@ -319,23 +323,36 @@ fn read_passwd_users(
                 admin: admins.contains(username),
                 current: current_user == Some(username),
                 automatic_login: false,
+                automatic_login_error: None,
             })
         })
         .collect()
 }
 
-pub(crate) fn users_for_display() -> Vec<DeviceUser> {
+/// The device's login accounts, or why they could not be read.
+fn read_users() -> Result<Vec<DeviceUser>, String> {
     let current = std::env::var("USER").ok();
     let admins = fs::read_to_string("/etc/group")
         .map(|s| admins_from_group(&s))
-        .unwrap_or_default();
+        .map_err(|error| format!("/etc/group: {error}"))?;
     let mut users = fs::read_to_string("/etc/passwd")
         .map(|s| read_passwd_users(&s, current.as_deref(), &admins))
-        .unwrap_or_default();
+        .map_err(|error| format!("/etc/passwd: {error}"))?;
     for user in &mut users {
-        user.automatic_login = os_actions::users::automatic_login(&user.username).unwrap_or(false);
+        match os_actions::users::automatic_login(&user.username) {
+            Ok(enabled) => user.automatic_login = enabled,
+            Err(error) => user.automatic_login_error = Some(error),
+        }
     }
-    users
+    Ok(users)
+}
+
+/// Split a read into the accounts it found and why it found none.
+fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, Option<String>) {
+    match read {
+        Ok(users) => (users, None),
+        Err(error) => (Vec::new(), Some(error)),
+    }
 }
 
 fn identities_for_display() -> (Vec<IdentitySummary>, Option<DiskIdentityAdmin>) {
@@ -378,7 +395,7 @@ impl UsersArea {
         let model = self.model().borrow();
         let accounts = model.users.iter().filter(|user| !user.current).map(|user| {
             let name = user.username.clone();
-            LiveRow::new(
+            let mut row = LiveRow::new(
                 format!("settings.user:{name}"),
                 "settings.user",
                 user.full_name.clone(),
@@ -389,15 +406,18 @@ impl UsersArea {
                     admin: !user.admin,
                 })
                 .bound(),
-            )
-            .operation(
-                SettingsEffect::from(UsersEffect::SetAutomaticLogin {
-                    user: name.clone(),
-                    on: !user.automatic_login,
-                })
-                .bound(),
-            )
-            .operation(
+            );
+            // An unread automatic-login state offers no switch to flip.
+            if user.automatic_login_error.is_none() {
+                row = row.operation(
+                    SettingsEffect::from(UsersEffect::SetAutomaticLogin {
+                        user: name.clone(),
+                        on: !user.automatic_login,
+                    })
+                    .bound(),
+                );
+            }
+            row.operation(
                 SettingsEffect::from(UsersEffect::RemoveUser {
                     user: name,
                     keep_files: true,
@@ -464,6 +484,8 @@ impl AccountForm {
 pub struct UsersModel {
     cx: PaneCx,
     users: Vec<DeviceUser>,
+    /// Why the accounts could not be read; the list is then not "empty".
+    users_error: Option<String>,
     identities: Vec<IdentitySummary>,
     backends: Backends,
     /// Whether the accounts are this device's, read again after a change.
@@ -476,9 +498,11 @@ pub struct UsersModel {
 impl UsersModel {
     fn of_device(cx: PaneCx) -> Self {
         let (identities, identity_admin) = identities_for_display();
+        let (users, users_error) = users_and_error(read_users());
         Self {
             cx,
-            users: users_for_display(),
+            users,
+            users_error,
             identities,
             backends: Backends {
                 users: Arc::new(AccountsServiceAdmin),
@@ -500,6 +524,7 @@ impl UsersModel {
             admin: current,
             current,
             automatic_login: false,
+            automatic_login_error: None,
         };
         Self {
             cx,
@@ -507,6 +532,7 @@ impl UsersModel {
                 user("ada", "Ada Lovelace", 1000, true),
                 user("grace", "Grace Hopper", 1001, false),
             ],
+            users_error: None,
             identities: vec![IdentitySummary {
                 id: "personal".into(),
                 display_name: "Personal".into(),
@@ -532,7 +558,7 @@ impl UsersModel {
         if !self.of_device {
             return;
         }
-        self.users = users_for_display();
+        (self.users, self.users_error) = users_and_error(read_users());
         if let Ok(dir) = runtime_identity::identity_dir_from_env() {
             self.identities = runtime_identity::list_identities(&dir).unwrap_or_default();
         }
@@ -546,7 +572,12 @@ impl UsersModel {
                 rows(vec![caption(error)]),
             ));
         }
-        let people = if self.users.is_empty() {
+        let people = if let Some(error) = &self.users_error {
+            rows(vec![error_caption(&t_args(
+                "settings-users-read-error",
+                &[("error", error.as_str().into())],
+            ))])
+        } else if self.users.is_empty() {
             rows(vec![caption(&t("settings-users-empty-accounts"))])
         } else {
             rows(self.users.iter().map(|u| self.user_row(u)).collect())
@@ -644,7 +675,8 @@ impl UsersModel {
         )
     }
 
-    fn user_row(&self, user: &DeviceUser) -> El {
+    /// What can be done to `user`'s account: nothing for the signed-in one.
+    fn user_actions(&self, user: &DeviceUser) -> Row {
         let mut actions = Row::new().push(Box::new(Spacer::new()));
         if !user.current {
             let role_action = if user.admin {
@@ -658,15 +690,16 @@ impl UsersModel {
                 t("settings-users-enable-autologin")
             };
             let name = &user.username;
-            actions = actions
-                .push(Box::new(self.cx.bind_invocation(
-                    Button::new(&format!("settings.users.role.{name}"), &role_action, None),
-                    UsersEffect::SetAdministrator {
-                        user: name.clone(),
-                        admin: !user.admin,
-                    },
-                )))
-                .push(Box::new(self.cx.bind_invocation(
+            actions = actions.push(Box::new(self.cx.bind_invocation(
+                Button::new(&format!("settings.users.role.{name}"), &role_action, None),
+                UsersEffect::SetAdministrator {
+                    user: name.clone(),
+                    admin: !user.admin,
+                },
+            )));
+            // An unread automatic-login state offers no switch to flip.
+            if user.automatic_login_error.is_none() {
+                actions = actions.push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!("settings.users.autologin.{name}"),
                         &auto_action,
@@ -676,7 +709,9 @@ impl UsersModel {
                         user: name.clone(),
                         on: !user.automatic_login,
                     },
-                )))
+                )));
+            }
+            actions = actions
                 .push(Box::new(self.cx.bind_invocation(
                     Button::new(
                         &format!("settings.users.remove_keep.{name}"),
@@ -700,6 +735,11 @@ impl UsersModel {
                     },
                 )));
         }
+        actions
+    }
+
+    fn user_row(&self, user: &DeviceUser) -> El {
+        let actions = self.user_actions(user);
         let role = if user.admin {
             t("settings-users-role-administrator")
         } else {
@@ -710,37 +750,41 @@ impl UsersModel {
         } else {
             String::new()
         };
-        Box::new(
-            Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .push(Box::new(
-                    Row::new()
-                        .push(Box::new(Text::new(&user.full_name).with_size(13.0)))
-                        .push(Box::new(Spacer::new()))
-                        .push(semantic_status_pill(
-                            &role,
-                            if user.admin {
-                                StatusTone::Success
-                            } else {
-                                StatusTone::Neutral
-                            },
-                        )),
+        let mut row = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(
+                Row::new()
+                    .push(Box::new(Text::new(&user.full_name).with_size(13.0)))
+                    .push(Box::new(Spacer::new()))
+                    .push(semantic_status_pill(
+                        &role,
+                        if user.admin {
+                            StatusTone::Success
+                        } else {
+                            StatusTone::Neutral
+                        },
+                    )),
+            ))
+            .push(Box::new(
+                Text::new(&t_args(
+                    "settings-users-uid-line",
+                    &[
+                        ("username", user.username.as_str().into()),
+                        ("uid", user.uid.into()),
+                        ("you", you.as_str().into()),
+                    ],
                 ))
-                .push(Box::new(
-                    Text::new(&t_args(
-                        "settings-users-uid-line",
-                        &[
-                            ("username", user.username.as_str().into()),
-                            ("uid", user.uid.into()),
-                            ("you", you.as_str().into()),
-                        ],
-                    ))
-                    .with_size(11.0)
-                    .dimmed(),
-                ))
-                .push(Box::new(actions)),
-        )
+                .with_size(11.0)
+                .dimmed(),
+            ));
+        if let Some(error) = &user.automatic_login_error {
+            row = row.push(error_caption(&t_args(
+                "settings-users-autologin-error",
+                &[("error", error.as_str().into())],
+            )));
+        }
+        Box::new(row.push(Box::new(actions)))
     }
 
     fn identity_row(&self, id: &IdentitySummary) -> El {
@@ -927,8 +971,44 @@ mod tests {
             admin: current,
             current,
             automatic_login: false,
+            automatic_login_error: None,
         }
     }
+    /// Accounts that could not be read are not "no accounts", and an
+    /// unread automatic-login state is reported rather than offered as off.
+    #[test]
+    fn unreadable_accounts_are_shown_as_errors() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut pane = UsersModel::sample(PaneCx::in_file(profile.path().join("settings.json")));
+        pane.users.clear();
+        pane.users_error = Some("/etc/passwd: No such file or directory (os error 2)".into());
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter().any(|line| line
+                == "Can't read this device's accounts: /etc/passwd: No such file or directory (os error 2)"),
+            "{text:#?}"
+        );
+        assert!(
+            !text.contains(&t("settings-users-empty-accounts")),
+            "{text:#?}"
+        );
+
+        let mut bob = user("bob", false);
+        bob.automatic_login_error = Some("AccountsService is unreachable".into());
+        pane.users_error = None;
+        pane.users = vec![user("ada", true), bob];
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Can't read automatic login: AccountsService is unreachable"),
+            "{text:#?}"
+        );
+        assert!(
+            !text.contains(&t("settings-users-enable-autologin")),
+            "{text:#?}"
+        );
+    }
+
     fn identity(id: &str, active: bool) -> IdentitySummary {
         IdentitySummary {
             id: id.into(),

@@ -34,6 +34,8 @@ mod markdown_marks_roundtrip;
 mod markdown_phase3_roundtrip;
 #[path = "offscreen_smoke.rs"]
 mod offscreen_smoke;
+#[path = "outline_commands.rs"]
+mod outline_commands;
 #[path = "page_edit_persistence.rs"]
 mod page_edit_persistence;
 #[path = "responsive_drawer.rs"]
@@ -44,6 +46,8 @@ mod sidebar_collab_growth;
 mod sidebar_dnd;
 #[path = "slash_menu_focus.rs"]
 mod slash_menu_focus;
+#[path = "tab_nesting.rs"]
+mod tab_nesting;
 #[path = "tree_operations.rs"]
 mod tree_operations;
 #[path = "two_peer_sync.rs"]
@@ -102,3 +106,6 @@ mod scenarios;
 
 #[path = "continuation_discovery.rs"]
 mod continuation_discovery;
+
+#[path = "block_commands.rs"]
+mod block_commands;

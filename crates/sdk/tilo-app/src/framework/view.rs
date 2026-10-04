@@ -640,6 +640,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
             run: self.run.clone(),
             storage: Rc::clone(&self.storage),
             effects: self.effects.clone(),
+            saved: self.saved.clone(),
             alive: self.alive.clone(),
         });
         surface.present(&self.live.get());

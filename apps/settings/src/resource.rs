@@ -37,6 +37,12 @@ impl Resource for Settings {
     fn read(_doc: &Doc) -> Result<(), ModelError> {
         Ok(())
     }
+
+    /// Every pane, found by its name, summary and the words people use for
+    /// it.
+    fn search(_state: &()) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search::pane_entries()
+    }
 }
 
 /// Framework app: the settings widget is the surface over [`Settings`].
