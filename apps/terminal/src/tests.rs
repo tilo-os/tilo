@@ -30,7 +30,10 @@ pub(crate) fn replica_of(host: &TerminalWidget) -> TerminalWidget {
     .expect("the title records");
     let (mut replica, _) = build_test_widget();
     let state = crate::resource::Terminal::read(&doc).expect("the session reads");
-    ResourceSurface::<crate::resource::Terminal>::present(&mut replica, &Rc::new(state));
+    ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
+        &mut replica,
+        &Rc::new(state),
+    );
     replica
 }
 
@@ -1371,12 +1374,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         assert_eq!(bytes, vec![0x03]);
     }
 
-    // Case `ctrl_shift_c_queues_the_canonical_confirmed_copy_action`.
+    // Case `ctrl_shift_c_copies_the_selection_instead_of_interrupting`.
     {
-        // The shortcut only queues the exported action. The host performs the
-        // clipboard effect after live permission and confirmation checks.
         use winit::keyboard::{Key, SmolStr};
-        let (mut widget, _write_rx) = build_test_widget();
+        let (mut widget, write_rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         widget.force_viewport_start(0);
@@ -1385,7 +1386,6 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             anchor: GridPos { row: 0, col: 0 },
             cursor: GridPos { row: 1, col: 12 },
         }));
-
         send_key(
             &mut widget,
             &mut doc,
@@ -1393,29 +1393,18 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             /*ctrl=*/ true,
             /*shift=*/ true,
         );
-
-        let intent = ui::widget::controls::take_control_invocation(&mut widget)
-            .expect("copy shortcut queues a canonical action");
-        assert_eq!(intent.address.action, "copy-selection");
-        let resources = ui::resources::resources(&widget, &doc);
-        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
-        assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
-        assert_eq!(
-            spec.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::Confirm
-        );
         assert!(
-            ui::widget::controls::take_control_invocation(&mut widget).is_none(),
-            "the gesture queues exactly one intent"
+            drain_writes(&write_rx).is_empty(),
+            "the copy shortcut never reaches the process"
         );
+        assert!(widget.selection().is_some(), "copying keeps the selection");
     }
 
-    // Case `paste_shortcuts_queue_the_same_canonical_confirmed_action`.
+    // Case `paste_shortcuts_paste_the_clipboard_into_the_process`.
     {
         use winit::keyboard::{Key, NamedKey, SmolStr};
 
-        ui::clipboard_copy("queued paste");
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("queued paste"));
+        ui::clipboard_copy("shortcut paste");
         for key in [
             Key::Character(SmolStr::new_static("V")),
             Key::Named(NamedKey::Insert),
@@ -1425,113 +1414,46 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
             let ctrl = matches!(&key, Key::Character(_));
             send_key(&mut widget, &mut doc, key, ctrl, true);
-
-            assert!(
-                drain_writes(&writes).is_empty(),
-                "shortcut cannot write before host admission"
-            );
-            let intent = ui::widget::controls::take_control_invocation(&mut widget)
-                .expect("paste shortcut queues a canonical action");
-            assert_eq!(intent.address.action, "paste");
-            let resources = ui::resources::resources(&widget, &doc);
-            let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
-            assert_eq!(spec.params().len(), 1);
-            assert_eq!(spec.params()[0].name.as_ref(), "text");
-            assert!(spec.params()[0].required);
-            assert!(spec.build_json(&serde_json::Map::new()).is_err());
-            assert_eq!(
-                spec.contract.confirmation,
-                ui::tilo_actions::ConfirmationPolicy::Confirm
-            );
+            assert_eq!(drain_writes(&writes), b"shortcut paste");
         }
     }
 
-    // Case `denied_clipboard_gestures_cannot_bypass_the_permission_surface`.
-    {
-        use winit::keyboard::{Key, SmolStr};
-
-        ui::clipboard_copy("denied paste");
-        ui::clipboard_copy_primary("denied primary paste");
-        let (mut widget, writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        widget.force_grid(vec!["denied copy".to_string()]);
-        widget.force_selection(Some(Selection {
-            anchor: GridPos { row: 0, col: 0 },
-            cursor: GridPos { row: 0, col: 11 },
-        }));
-        ui::widget::controls::refresh_control_action_availability(
-            &mut widget,
-            &std::collections::HashSet::new(),
-        );
-
-        send_key(
-            &mut widget,
-            &mut doc,
-            Key::Character(SmolStr::new_static("C")),
-            true,
-            true,
-        );
-        send_key(
-            &mut widget,
-            &mut doc,
-            Key::Character(SmolStr::new_static("V")),
-            true,
-            true,
-        );
-        send_cursor_move(&mut widget, &mut doc, 100.0, 100.0);
-        send_middle_press(&mut widget, &mut doc);
-
-        assert!(ui::widget::controls::take_control_invocation(&mut widget).is_none());
-        assert!(
-            drain_writes(&writes).is_empty(),
-            "denied gestures produce neither an invocation nor a PTY effect"
-        );
-    }
-
-    // Case `middle_click_queues_the_canonical_confirmed_primary_paste_action`.
+    // Case `middle_click_pastes_the_primary_selection`.
     {
         // Headless runs use the toolkit primary-selection fallback, so this
         // path is deterministic without opening a graphical session.
         ui::clipboard_copy_primary("PASTED");
-        assert_eq!(ui::clipboard_paste_primary().as_deref(), Some("PASTED"));
         let (mut w, write_rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         w.feed(b""); // init modes (no bracketed paste)
         send_cursor_move(&mut w, &mut doc, 100.0, 100.0);
         send_middle_press(&mut w, &mut doc);
-        assert!(drain_writes(&write_rx).is_empty());
-        let intent = ui::widget::controls::take_control_invocation(&mut w)
-            .expect("middle-click queues a canonical action");
-        assert_eq!(intent.address.action, "paste-primary");
-        let resources = ui::resources::resources(&w, &doc);
-        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
-        assert_eq!(
-            spec.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::Confirm
-        );
-        ui::clipboard_copy_primary("SUBSTITUTED");
-        let encoded = spec.build_json(&intent.arguments).unwrap();
-        assert!(
-            w.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &ROOT
+        assert_eq!(drain_writes(&write_rx), b"PASTED");
+    }
+
+    // Case `a_participant_who_may_only_view_cannot_drive_the_process`.
+    {
+        use crate::resource::TerminalEffect;
+        let mut viewer =
+            ui::framework::testing::TestApp::<crate::resource::TerminalShell>::with_role(
+                ui::Role::Viewer,
             )
-            .map(|started| started.is_some())
-            .unwrap()
-        );
-        assert_eq!(
-            drain_writes(&write_rx),
-            b"PASTED",
-            "execution uses the primary-selection text captured before confirmation"
-        );
+            .expect("terminal");
+        for effect in [
+            TerminalEffect::Paste {
+                text: "denied".into(),
+            },
+            TerminalEffect::Send {
+                text: "denied".into(),
+            },
+            TerminalEffect::Interrupt,
+        ] {
+            assert!(
+                viewer.effect_confirmed(&effect).is_err(),
+                "a viewer may not {effect:?}"
+            );
+        }
     }
 }
 
@@ -2121,45 +2043,6 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             false,
             false,
         );
-        assert!(
-            widget.selection().is_none(),
-            "menu selection waits for host admission"
-        );
-        let intent = ui::widget::controls::take_control_invocation(&mut widget)
-            .expect("canonical select-all intent");
-        assert_eq!(intent.address.action, "select-all");
-        // Grant selection without clipboard publication: this keyboard test must
-        // never write the real desktop clipboard on any platform.
-        ui::widget::controls::refresh_control_action_availability(
-            &mut widget,
-            &std::collections::HashSet::from([intent.address.clone()]),
-        );
-        let resources = ui::resources::resources(&widget, &doc);
-        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
-        assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
-        assert_eq!(
-            spec.contract.confirmation,
-            ui::tilo_actions::ConfirmationPolicy::Confirm
-        );
-        let encoded = spec.build_json(&intent.arguments).unwrap();
-        // This focused keyboard-selection regression supplies the host's accepted
-        // operation after checking the queued contract. The separate App/component
-        // tests cover denial, confirmation and live role revocation.
-        assert!(
-            widget
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        spec.kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .map(|started| started.is_some())
-                .unwrap()
-        );
         assert_eq!(
             widget.selection(),
             Some(Selection {
@@ -2203,490 +2086,42 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
     }
 }
 
-/// Menu clear/paste and paste shortcuts admit through live permissions and confirmation, writing exact bytes.
+/// Menu rows do what they say: Clear sends the form feed, Paste pastes the
+/// clipboard as it was when the row was chosen, and a row for the process's
+/// input is disabled once it ended.
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "cases merged from separate tests; each case stays self-contained"
-)]
 #[serial_test::serial]
-fn menu_and_paste_actions_recheck_live_permissions() {
-    // Case `menu_clear_uses_real_app_permission_and_confirmation_admission`.
-    {
-        use ui::a11y::Action;
-        use ui::permissions::{Actor, PermissionContext, Role};
-
-        for role in [Role::Viewer, Role::Editor] {
-            let (mut widget, writes) = build_test_widget();
-            let mut state = State::new();
-            widget.sync(&mut state.doc, &state.root);
-            widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
-            let mut app = ui::App::new(state, Box::new(widget));
-            app.set_permission_ctx(PermissionContext::from_capabilities(
-                Actor::person(Some(role), "terminal-menu-user"),
-                vec![],
-            ));
-            app.init_layout();
-            app.refresh_semantic_tree();
-            let clear = app
-                .semantic_tree()
-                .iter()
-                .find(|node| {
-                    node.name.as_deref() == Some("Clear screen")
-                        && node.role == ui::a11y::Role::MenuItem
-                })
-                .expect("Clear menu row");
-            assert_eq!(clear.state.disabled, role == Role::Viewer);
-            assert_eq!(clear.state.focusable, role == Role::Editor);
-            let clear_id = clear.id.clone();
-            let owner = clear.widget_taffy_id.expect("menu owner");
-            let accepted = app
-                .invoke_semantic_action(&clear_id, "activate", None)
-                .unwrap();
-            assert_eq!(accepted, role == Role::Editor);
-            // The public assistive dispatch drains exactly the same pending
-            // controls as the native event loop, without a window or test bypass.
-            app.dispatch_a11y_action(ui::accesskit::NodeId(owner + 1), &Action::Focus);
-            assert!(
-                drain_writes(&writes).is_empty(),
-                "no PTY effect before explicit confirmation"
-            );
-            assert_eq!(
-                app.action_palette()
-                    .is_some_and(ui::action_palette::ActionPalette::is_open),
-                role == Role::Editor
-            );
-
-            // A viewer can still discover and open local Find; its query is not
-            // a terminal command and does not need write access to the process.
-            if role == Role::Viewer {
-                app.refresh_semantic_tree();
-                let label = ui::i18n::I18nManager::lookup("terminal-find-scrollback", None);
-                let find = app
-                    .semantic_tree()
-                    .iter()
-                    .find(|node| {
-                        node.role == ui::a11y::Role::MenuItem
-                            && node.name.as_deref() == Some(label.as_str())
-                    })
-                    .expect("local Find row")
-                    .id
-                    .clone();
-                assert!(app.invoke_semantic_action(&find, "activate", None).unwrap());
-                app.refresh_semantic_tree();
-                assert!(
-                    app.semantic_tree()
-                        .iter()
-                        .any(|node| node.role == ui::a11y::Role::TextInput
-                            && node.name.as_deref() == Some("Find in scrollback"))
-                );
-                assert!(drain_writes(&writes).is_empty());
-            }
-        }
-    }
-
-    // Case `confirmed_menu_clear_checks_live_component_permissions_and_writes_exact_bytes`.
-    {
-        use std::{cell::RefCell, rc::Rc};
-        use ui::application::{
-            ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs,
-            LaunchTarget, RestoreInput,
-        };
-        use ui::permissions::{Actor, PermissionContext, Role, UserId};
-        const APP_ID: &str = "so.tilo.terminal";
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("state");
-        let mut owners = ui::record::RecordOwners::new(root.clone());
-        let records = owners.open(APP_ID, "terminal-menu-room").unwrap();
-        let views = Rc::new(
-            ui::application_view::InstanceViewStore::new(
-                root,
-                "terminal-menu-device",
-                "terminal-menu-room",
-            )
-            .unwrap(),
-        );
-        let permissions = Rc::new(RefCell::new(PermissionContext::permissive()));
-        let definition = ApplicationDefinition {
-            app_id: APP_ID,
-            title: "Terminal",
-            icon: ui::IconDescriptor::Glyph("T"),
-            record_kind: ui::record::RecordKind::new("terminal"),
-            required: vec![],
-            optional: vec![],
-            opens: &[],
-            room_record: false,
-            create: menu_component_factory,
-        };
-        let (mut widget, writes) = build_test_widget();
-        widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
-        let semantics = widget.accessibility().unwrap();
-        let clear = semantics
-            .children
+fn menu_rows_drive_the_process_and_follow_its_lifecycle() {
+    use vello::kurbo::Point;
+    let row = |widget: &TerminalWidget, label: &str| {
+        widget
+            .context_menu_labels()
             .iter()
-            .find(|node| node.role == ui::a11y::Role::Menu)
-            .unwrap()
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Clear screen"))
-            .unwrap();
-        widget.perform_semantic_action(
-            clear.action_target.as_deref().unwrap(),
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &ROOT,
-        );
-        let intent = ui::widget::controls::take_control_invocation(&mut widget)
-            .expect("menu queues a canonical intent");
-        assert_eq!(intent.address.action, "clear");
-        assert!(drain_writes(&writes).is_empty());
-        MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
-        let context = HostContext::prepare(
-            &definition,
-            HostContextInputs {
-                records,
-                views,
-                device_id: "terminal-menu-device".into(),
-                instance_id: 17,
-                permissions: permissions.clone(),
-                author: UserId("terminal-menu-user".into()),
-                action_context: ui::tilo_actions::ActionContext::default(),
-            },
-            &LaunchTarget::New,
-        )
-        .unwrap();
-        let component = definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        let mut driver = ui::headless::Driver::from_component(
-            component,
-            (800, 480),
-            ComponentRunnerInputs {
-                theme: ui::Theme::dark(),
-                text_renderer: ui::TextRenderer::new(),
-            },
-        )
-        .unwrap();
-        let address = ui::bound_dispatch::BoundActionAddress {
-            instance_id: 17,
-            address: intent.address,
-        };
-        *permissions.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "terminal-menu-user"),
-            vec![],
-        );
-        assert!(
-            driver
-                .invoke_bound_action_confirmed(&address, &intent.arguments)
-                .is_err(),
-            "confirmation never grants a Viewer process write access"
-        );
-        assert!(drain_writes(&writes).is_empty());
-        *permissions.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Editor), "terminal-menu-user"),
-            vec![],
-        );
-        assert!(
-            driver
-                .invoke_bound_action(&address, &intent.arguments)
-                .is_err(),
-            "Editor must still confirm the existing privileged contract"
-        );
-        assert!(drain_writes(&writes).is_empty());
-        assert!(matches!(
-            driver
-                .invoke_bound_action_confirmed(&address, &intent.arguments)
-                .unwrap(),
-            ui::widget::ResourceOperationStart::Completed(_)
-        ));
-        assert_eq!(
-            drain_writes(&writes),
-            vec![0x0c],
-            "the admitted menu action writes Clear exactly once"
-        );
-        *permissions.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "terminal-menu-user"),
-            vec![],
-        );
-        assert!(
-            driver
-                .invoke_bound_action_confirmed(&address, &intent.arguments)
-                .is_err(),
-            "later role revocation is checked again"
-        );
-        assert!(drain_writes(&writes).is_empty());
-        driver.close_components();
-    }
+            .position(|item| item == label)
+            .unwrap_or_else(|| panic!("menu has `{label}`"))
+    };
 
-    // Case `confirmed_paste_shortcut_rechecks_live_role_before_writing_to_the_pty`.
-    {
-        use std::{cell::RefCell, rc::Rc};
-        use ui::application::{
-            ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs,
-            LaunchTarget, RestoreInput,
-        };
-        use ui::permissions::{Actor, PermissionContext, Role, UserId};
-        use winit::keyboard::{Key, SmolStr};
+    let (mut widget, writes) = build_test_widget();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    widget.feed(b"output");
+    widget.open_context_menu_at(Point::new(20.0, 20.0));
+    let clear = row(&widget, "Clear screen");
+    widget.activate_menu_row_for_test(clear);
+    assert_eq!(drain_writes(&writes), vec![0x0c]);
 
-        const APP_ID: &str = "so.tilo.terminal";
-        ui::clipboard_copy("admitted shortcut paste");
-        assert_eq!(
-            ui::clipboard_paste().as_deref(),
-            Some("admitted shortcut paste")
-        );
-        let (mut widget, writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        send_key(
-            &mut widget,
-            &mut doc,
-            Key::Character(SmolStr::new_static("V")),
-            true,
-            true,
-        );
-        let intent = ui::widget::controls::take_control_invocation(&mut widget)
-            .expect("shortcut queues the canonical paste action");
-        assert_eq!(intent.address.action, "paste");
-        assert!(drain_writes(&writes).is_empty());
-        ui::clipboard_copy("substituted after shortcut intent");
-        assert_eq!(
-            ui::clipboard_paste().as_deref(),
-            Some("substituted after shortcut intent")
-        );
+    ui::clipboard_copy("menu snapshot");
+    widget.open_context_menu_at(Point::new(20.0, 20.0));
+    let paste = row(&widget, "Paste");
+    widget.activate_menu_row_for_test(paste);
+    assert_eq!(drain_writes(&writes), b"menu snapshot");
 
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("state");
-        let mut owners = ui::record::RecordOwners::new(root.clone());
-        let records = owners.open(APP_ID, "terminal-shortcut-room").unwrap();
-        let views = Rc::new(
-            ui::application_view::InstanceViewStore::new(
-                root,
-                "terminal-shortcut-device",
-                "terminal-shortcut-room",
-            )
-            .unwrap(),
-        );
-        let permissions = Rc::new(RefCell::new(PermissionContext::permissive()));
-        let definition = ApplicationDefinition {
-            app_id: APP_ID,
-            title: "Terminal",
-            icon: ui::IconDescriptor::Glyph("T"),
-            record_kind: ui::record::RecordKind::new("terminal"),
-            required: vec![],
-            optional: vec![],
-            opens: &[],
-            room_record: false,
-            create: menu_component_factory,
-        };
-        MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
-        let context = HostContext::prepare(
-            &definition,
-            HostContextInputs {
-                records,
-                views,
-                device_id: "terminal-shortcut-device".into(),
-                instance_id: 18,
-                permissions: permissions.clone(),
-                author: UserId("terminal-shortcut-user".into()),
-                action_context: ui::tilo_actions::ActionContext::default(),
-            },
-            &LaunchTarget::New,
-        )
-        .unwrap();
-        let component = definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        let mut driver = ui::headless::Driver::from_component(
-            component,
-            (800, 480),
-            ComponentRunnerInputs {
-                theme: ui::Theme::dark(),
-                text_renderer: ui::TextRenderer::new(),
-            },
-        )
-        .unwrap();
-        let address = ui::bound_dispatch::BoundActionAddress {
-            instance_id: 18,
-            address: intent.address,
-        };
-
-        *permissions.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "terminal-shortcut-user"),
-            vec![],
-        );
-        assert!(
-            driver
-                .invoke_bound_action_confirmed(&address, &intent.arguments)
-                .is_err(),
-            "a Viewer cannot bypass process-write admission through a shortcut"
-        );
-        assert!(drain_writes(&writes).is_empty());
-        *permissions.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Editor), "terminal-shortcut-user"),
-            vec![],
-        );
-        assert!(
-            driver
-                .invoke_bound_action(&address, &intent.arguments)
-                .is_err(),
-            "the canonical shortcut action still requires confirmation"
-        );
-        assert!(drain_writes(&writes).is_empty());
-        assert!(
-            driver
-                .invoke_bound_action_confirmed(&address, &intent.arguments)
-                .is_ok()
-        );
-        assert_eq!(drain_writes(&writes), b"admitted shortcut paste");
-
-        *permissions.borrow_mut() = PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "terminal-shortcut-user"),
-            vec![],
-        );
-        assert!(
-            driver
-                .invoke_bound_action_confirmed(&address, &intent.arguments)
-                .is_err(),
-            "role revocation after the first admitted paste is checked again"
-        );
-        assert!(drain_writes(&writes).is_empty());
-        driver.close_components();
-    }
-
-    // Case `denied_terminal_menu_rows_are_disabled_while_local_rows_remain_usable`.
-    {
-        use ui::a11y::Action;
-        use ui::widget::Widget;
-        use winit::keyboard::{Key, NamedKey};
-
-        let (mut widget, writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        ui::widget::controls::refresh_control_action_availability(
-            &mut widget,
-            &std::collections::HashSet::new(),
-        );
-        widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
-
-        let menu = widget
-            .accessibility()
-            .unwrap()
-            .children
-            .into_iter()
-            .find(|node| node.role == ui::a11y::Role::Menu)
-            .unwrap();
-        let paste = menu
-            .children
-            .iter()
-            .find(|node| node.name.as_deref() == Some("Paste"))
-            .unwrap();
-        assert!(paste.state.disabled);
-        assert!(!paste.state.focusable);
-        assert!(!widget.perform_semantic_action(
-            paste.action_target.as_deref().unwrap(),
-            &Action::Activate,
-            &mut doc,
-            &ROOT,
-        ));
-        assert!(widget.context_menu_is_open());
-
-        send_key(
-            &mut widget,
-            &mut doc,
-            Key::Named(NamedKey::ArrowDown),
-            false,
-            false,
-        );
-        send_key(
-            &mut widget,
-            &mut doc,
-            Key::Named(NamedKey::Enter),
-            false,
-            false,
-        );
-        assert!(
-            widget.find_test_state().0,
-            "keyboard navigation skips denied effects and reaches local Find"
-        );
-        assert!(ui::widget::controls::take_control_invocation(&mut widget).is_none());
-        assert!(drain_writes(&writes).is_empty());
-    }
-
-    // Case `menu_paste_executes_the_text_captured_when_the_row_was_selected`.
-    {
-        use ui::a11y::Action;
-
-        ui::clipboard_copy("menu snapshot");
-        assert_eq!(ui::clipboard_paste().as_deref(), Some("menu snapshot"));
-        let (mut widget, writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
-        let paste_target = widget
-            .accessibility()
-            .unwrap()
-            .children
-            .into_iter()
-            .find(|node| node.role == ui::a11y::Role::Menu)
-            .unwrap()
-            .children
-            .into_iter()
-            .find(|node| node.name.as_deref() == Some("Paste"))
-            .and_then(|node| node.action_target)
-            .unwrap();
-        assert!(widget.perform_semantic_action(&paste_target, &Action::Activate, &mut doc, &ROOT,));
-        let intent = ui::widget::controls::take_control_invocation(&mut widget)
-            .expect("menu paste queues its captured canonical intent");
-
-        ui::clipboard_copy("menu substitution");
-        let resources = ui::resources::resources(&widget, &doc);
-        let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
-        let encoded = spec.build_json(&intent.arguments).unwrap();
-        assert!(
-            widget
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        spec.kind,
-                        &encoded.type_id,
-                        &encoded.payload
-                    ),
-                    &mut doc,
-                    &ROOT
-                )
-                .map(|started| started.is_some())
-                .unwrap()
-        );
-        assert_eq!(
-            drain_writes(&writes),
-            b"menu snapshot",
-            "menu confirmation cannot substitute later clipboard contents"
-        );
-    }
-}
-
-thread_local! {
-    static MENU_COMPONENT_WIDGET: std::cell::RefCell<Option<TerminalWidget>> = const { std::cell::RefCell::new(None) };
-}
-
-#[expect(
-    clippy::unnecessary_wraps,
-    reason = "the application definition's `create` hook requires this fallible signature"
-)]
-fn menu_component_factory(
-    mut context: ui::application::HostContext,
-    _: ui::application::LaunchTarget,
-    _: ui::application::RestoreInput,
-) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
-    let widget = MENU_COMPONENT_WIDGET
-        .with_borrow_mut(Option::take)
-        .expect("explicit test terminal");
-    context.initialize_new_record(|_| Ok(())).unwrap();
-    Ok(ui::application::AppComponent::new(
-        context,
-        Box::new(widget),
-        ui::tilo_actions::ActionRegistry::new(),
-    ))
+    widget.mark_disconnected_for_test();
+    widget.open_context_menu_at(Point::new(20.0, 20.0));
+    let paste = row(&widget, "Paste");
+    assert!(
+        !widget.context_menu_item_enabled(paste),
+        "an ended process takes no paste"
+    );
 }
 
 // ---------------------------------------------------------------
@@ -2826,7 +2261,10 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
             .expect("the session reads");
         let (mut viewer, _rx) = build_test_widget();
         viewer.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
-        ResourceSurface::<crate::resource::Terminal>::present(&mut viewer, reader.state());
+        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
+            &mut viewer,
+            reader.state(),
+        );
         assert!(viewer.grid_text().contains("BASE000"), "base content shown");
 
         crate::resource::TerminalAction::Output {
@@ -2840,7 +2278,10 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         .apply(&mut doc)
         .unwrap();
         assert!(reader.sync(&mut doc).expect("the change reads"));
-        ResourceSurface::<crate::resource::Terminal>::present(&mut viewer, reader.state());
+        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
+            &mut viewer,
+            reader.state(),
+        );
         assert!(
             viewer.grid_text().contains("REMOTE_EDIT"),
             "a change to old scrollback reaches the viewer"
@@ -3346,44 +2787,47 @@ fn terminal_resource_identity_convergence_and_presence() {
         assert_eq!(left.pane_id, right.pane_id, "pane identities converge");
         let (mut left_view, _) = build_test_widget();
         let (mut right_view, _) = build_test_widget();
-        ResourceSurface::<crate::resource::Terminal>::present(&mut left_view, &Rc::new(left));
-        ResourceSurface::<crate::resource::Terminal>::present(&mut right_view, &Rc::new(right));
+        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
+            &mut left_view,
+            &Rc::new(left),
+        );
+        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
+            &mut right_view,
+            &Rc::new(right),
+        );
         assert_eq!(
-            ui::resources::resources(&left_view, &left_doc)[0].id,
-            ui::resources::resources(&right_view, &right_doc)[0].id,
-            "resource identities converge after merge"
+            ui::presence::capability::presence_key(&left_view),
+            ui::presence::capability::presence_key(&right_view),
+            "presence addresses converge after merge"
         );
     }
 
-    // Case `terminal_resources_are_bounded_remote_resolvable_and_title_aware`.
+    // Case `link_rows_are_bounded_resolvable_and_named_in_semantics`.
     {
         use ui::widget::Widget;
 
         let (mut widget, _writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 120.0), 10.0, 20.0);
         widget.feed(
             b"\x1b]2;build session\x07\x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\",
         );
-        widget.sync(&mut doc, &ROOT);
-
-        let root = ui::resources::resources(&widget, &doc)
+        let label = <crate::resource::TerminalShell as ui::framework::ResourceApp>::label(
+            &crate::resource::SessionState {
+                title: widget.title().to_owned(),
+                ..crate::resource::SessionState::default()
+            },
+        );
+        assert_eq!(label, "Terminal — build session");
+        let rows: Vec<_> = widget
+            .link_rows()
             .into_iter()
-            .next()
-            .expect("session root");
-        assert_eq!(root.label, "Terminal — build session");
-        let transcript = root
-            .children
-            .iter()
-            .find(|resource| resource.kind == "terminal.transcript")
-            .expect("transcript child");
-        let link = transcript
-            .children
-            .iter()
-            .find(|resource| resource.kind == "terminal.link")
-            .expect("visible OSC link child");
+            .map(ui::framework::LiveRow::into_resource)
+            .collect();
+        let [link] = rows.as_slice() else {
+            panic!("one visible link row, not {}", rows.len());
+        };
         assert_eq!(link.label, "https://example.test/docs");
-        assert!(ui::resources::resource(&widget, &doc, link.id.as_str()).is_some());
+        assert!(widget.link_row(link.id.as_str()).is_some());
         let semantics = Widget::accessibility(&widget).expect("terminal semantics");
         assert!(semantics.children.iter().any(|child| {
             child.role == ui::a11y::Role::Link
@@ -3391,8 +2835,6 @@ fn terminal_resource_identity_convergence_and_presence() {
                 && child.action_target.as_deref() == Some(link.id.as_str())
                 && child.state.focusable
         }));
-        let initial_revision = ui::resources::action_directory_revision(&widget, &doc)
-            .expect("terminal directory revision");
 
         let mut link_burst = Vec::new();
         for index in 0..40 {
@@ -3401,44 +2843,17 @@ fn terminal_resource_identity_convergence_and_presence() {
             );
         }
         widget.feed(&link_burst);
-        widget.sync(&mut doc, &ROOT);
-        assert_ne!(
-            ui::resources::action_directory_revision(&widget, &doc).as_deref(),
-            Some(initial_revision.as_str()),
-            "new visible link resources invalidate the directory snapshot"
-        );
-        let bounded = ui::resources::resources(&widget, &doc)
-            .into_iter()
-            .next()
-            .and_then(|root| {
-                root.children
-                    .into_iter()
-                    .find(|resource| resource.kind == "terminal.transcript")
-            })
-            .expect("bounded transcript");
-        assert_eq!(
-            bounded.children.len(),
-            32,
-            "visible link projection is capped"
-        );
-        let prefix = bounded.children[0]
-            .id
-            .as_str()
+        let bounded = widget.link_rows();
+        assert_eq!(bounded.len(), 32, "the published link rows are capped");
+        let prefix = bounded[0]
+            .id()
             .rsplit_once(':')
-            .map(|(prefix, _)| prefix)
+            .map(|(prefix, _)| prefix.to_owned())
             .expect("link id suffix");
         assert!(
-            ui::resources::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
-            "a link omitted from the contextual cap resolves lazily"
+            widget.link_row(&format!("{prefix}:41")).is_some(),
+            "a link left out of the published rows resolves by id"
         );
-
-        let page = ui::resources::action_directory_resource_page(&widget, &doc, b"", 1)
-            .expect("bounded directory page");
-        assert_eq!(page.resources.len(), 1);
-        assert!(page.exhausted && page.next_cursor.is_empty());
-        let exhausted = ui::resources::action_directory_resource_page(&widget, &doc, b"done", 1)
-            .expect("terminal owns its empty tail page");
-        assert!(exhausted.resources.is_empty() && exhausted.exhausted);
     }
 
     // Case `a_collaborator_sees_the_running_sessions_screen_and_pane`.
@@ -3454,7 +2869,10 @@ fn terminal_resource_identity_convergence_and_presence() {
         a.settle();
         let joined = crate::resource::Terminal::read(&a.peer_document()).unwrap();
         let (mut b, _rx_b) = build_test_widget();
-        ResourceSurface::<crate::resource::Terminal>::present(&mut b, &Rc::new(joined));
+        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
+            &mut b,
+            &Rc::new(joined),
+        );
         assert!(
             b.grid_text().contains("peer-a-line-one"),
             "B shows A's screen; B grid:\n{}",
@@ -3465,7 +2883,10 @@ fn terminal_resource_identity_convergence_and_presence() {
             .expect("hosted terminal");
         a.settle();
         let later = crate::resource::Terminal::read(&a.peer_document()).unwrap();
-        ResourceSurface::<crate::resource::Terminal>::present(&mut b, &Rc::new(later));
+        ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
+            &mut b,
+            &Rc::new(later),
+        );
         let (a_grid, a_key) = a
             .with_surface(|terminal: &mut TerminalWidget| {
                 (

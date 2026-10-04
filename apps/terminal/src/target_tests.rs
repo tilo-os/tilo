@@ -189,18 +189,13 @@ fn agents_and_collaborators_never_open_the_device_shell() {
     // Through the published operation, as an agent or a collaborator in a
     // shared room would reach it.
     let operate = |app: &mut App, actor: &str, target: &str| {
-        let payload = serde_json::to_vec(target).unwrap();
-        let op = ui::widget::ResourceOperation::local(
-            ui::tilo_actions::InvocationId::new(),
-            ui::tilo_actions::OperationKind::Effect,
-            "terminal.target",
-            &payload,
-        );
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ui::tilo_actions::ActionInvoker::actor(actor),
         );
         on_tab(app, |tab| {
-            Widget::start_operation(tab, &op, &mut AutoCommit::new(), &ROOT).map(|_| ())
+            tab.perform(crate::resource::TerminalEffect::OpenIn {
+                target: target.into(),
+            })
         })
     };
     for actor in ["agent:helper", "0123abcd"] {
@@ -452,17 +447,14 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
     assert!(labels.contains(&format!("{run_on} Home")), "{labels:?}");
 
     // An agent names the relay with the environment.
-    let payload = serde_json::to_vec(&format!("environment:work@{RELAY}")).unwrap();
-    let op = ui::widget::ResourceOperation::local(
-        ui::tilo_actions::InvocationId::new(),
-        ui::tilo_actions::OperationKind::Effect,
-        "terminal.target",
-        &payload,
-    );
     let _scope = ui::invocation_scope::InvokerScope::enter(ui::tilo_actions::ActionInvoker::actor(
         "agent:helper",
     ));
-    Widget::start_operation(&mut widget, &op, &mut doc, &ROOT).unwrap();
+    widget
+        .perform(crate::resource::TerminalEffect::OpenIn {
+            target: format!("environment:work@{RELAY}"),
+        })
+        .unwrap();
     assert_eq!(
         opened.borrow().last(),
         Some(&(on_relay("work"), Requester::Agent))

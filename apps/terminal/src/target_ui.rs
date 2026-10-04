@@ -1031,39 +1031,11 @@ impl TerminalWidget {
 
     // --- agent and palette operations
 
-    /// `terminal.target`: move this session to another target.
-    fn answer_target_operation(&mut self, payload: &[u8]) -> Result<(), String> {
-        let raw: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let target = parse_target_argument(&raw)
-            .ok_or_else(|| format!("`{raw}` is not a target: use environment, environment:<record>, legacy:<vm> or host"))?;
+    /// `open-in`: move this session to another target.
+    fn open_in(&mut self, raw: &str) -> Result<(), String> {
+        let target = parse_target_argument(raw).ok_or_else(|| {
+            format!("`{raw}` is not a target: use environment, environment:<record>, legacy:<vm> or host")
+        })?;
         self.switch_target(&target, Requester::current())
-    }
-
-    /// `terminal.environment`: create or rename an environment.
-    fn answer_environment_operation(&mut self, payload: &[u8]) -> Result<(), String> {
-        let raw: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
-        let request: serde_json::Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-        let text = |key: &str| {
-            request
-                .get(key)
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default()
-                .to_owned()
-        };
-        match text("op").as_str() {
-            "create" => self.sessions.create_environment(&text("name")).map(|_| ()),
-            "rename" => self
-                .sessions
-                .rename_environment(&text("record"), &text("name")),
-            "grant-folder" => self.sessions.grant_folder(
-                &text("record"),
-                &text("path"),
-                request
-                    .get("writable")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(true),
-            ),
-            other => Err(format!("unknown environment operation `{other}`")),
-        }
     }
 }
