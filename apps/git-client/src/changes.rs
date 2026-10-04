@@ -4,7 +4,9 @@
 //! `Subheading` title, a count and one action for the whole area) over a
 //! list of file rows; a row is a toolkit [`ListRowFace`] whose leading badge
 //! says how the file changed, whose secondary line names its folder and
-//! whose meta counts the lines added and removed. Staging a single file is
+//! whose meta counts the lines added and removed. Every row is the height of
+//! a two-line row, so a file at the repository root (no folder line) keeps
+//! the list's rhythm. Staging a single file is
 //! the row's hover action. The commit box is pinned under the list: the
 //! message field and the view's one primary action.
 
@@ -18,6 +20,7 @@ use ui::widget::{
     Interaction, ListRowFace, RowAction, RowLeading, badge_column_width,
 };
 
+use crate::i18n::{t, t_args};
 use crate::model::{ChangeArea, ChangeKind, FileChange, RepoModel};
 
 /// What a pointer press or an assistive action in the column asks for.
@@ -56,6 +59,10 @@ pub struct ChangesInput<'a> {
 pub struct ChangesDraw {
     pub targets: Vec<(Rect, ChangesHit)>,
     pub commit_input: Rect,
+    /// The commit button, enabled or not: assistive technology reaches it
+    /// either way (only an enabled button is among the press targets).
+    pub commit_button: Rect,
+    pub commit_enabled: bool,
     /// Height of everything in the list, for clamping the scroll.
     pub content_height: f64,
     /// Height of the list viewport above the commit box.
@@ -63,28 +70,28 @@ pub struct ChangesDraw {
 }
 
 /// The title a section is listed under.
-pub fn section_title(area: ChangeArea) -> &'static str {
-    match area {
-        ChangeArea::Staged => "Staged",
-        ChangeArea::Unstaged => "Not staged",
-        ChangeArea::Untracked => "Untracked",
-    }
+pub fn section_title(area: ChangeArea) -> String {
+    t(match area {
+        ChangeArea::Staged => "git-section-staged",
+        ChangeArea::Unstaged => "git-section-unstaged",
+        ChangeArea::Untracked => "git-section-untracked",
+    })
 }
 
 /// The action label for a whole section.
-fn section_action(area: ChangeArea) -> &'static str {
-    match area {
-        ChangeArea::Staged => "Unstage all",
-        ChangeArea::Unstaged | ChangeArea::Untracked => "Stage all",
-    }
+fn section_action(area: ChangeArea) -> String {
+    t(match area {
+        ChangeArea::Staged => "git-unstage-all",
+        ChangeArea::Unstaged | ChangeArea::Untracked => "git-stage-all",
+    })
 }
 
 /// The commit button's label: what happens, on which branch.
 pub fn commit_label(model: &RepoModel) -> String {
     if model.head.is_empty() {
-        "Commit".to_string()
+        t("git-commit")
     } else {
-        format!("Commit to {}", model.head)
+        t_args("git-commit-to", &[("branch", model.head.as_str().into())])
     }
 }
 
@@ -166,11 +173,15 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &ChangesInput<'_>) -> Ch
             .map(|change| change.kind.badge())
             .collect();
         let badge_w = badge_column_width(ctx.text, ctx.theme, &badges);
+        let row_h = ListRowFace::new("")
+            .secondary("")
+            .height(ctx.text, ctx.theme);
         let mut pass = ListPass {
             list,
             m: &m,
             input,
             badge_w,
+            row_h,
             targets: &mut targets,
         };
         let top = list.y0 + m.inset - input.scroll;
@@ -190,7 +201,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &ChangesInput<'_>) -> Ch
         y + m.inset - top
     };
 
-    let commit_input = paint_commit_box(
+    let commit = paint_commit_box(
         ctx,
         Rect::new(area.x0, box_top, area.x1, area.y1),
         &m,
@@ -200,7 +211,9 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &ChangesInput<'_>) -> Ch
 
     ChangesDraw {
         targets,
-        commit_input,
+        commit_input: commit.field,
+        commit_button: commit.button,
+        commit_enabled: commit.enabled,
         content_height,
         viewport_height: list.height(),
     }
@@ -208,7 +221,8 @@ pub fn paint(ctx: &mut PaintCtx<'_>, area: Rect, input: &ChangesInput<'_>) -> Ch
 
 /// A clean working tree: one sentence where the lists would be.
 fn paint_clean(ctx: &mut PaintCtx<'_>, list: Rect) {
-    let content = EmptyStateContent::new("No changes to commit");
+    let title = t("git-no-changes");
+    let content = EmptyStateContent::new(&title);
     EmptyState::paint(ctx, list, &content, Point::new(f64::MIN, f64::MIN));
 }
 
@@ -219,6 +233,8 @@ struct ListPass<'a, 'b> {
     input: &'a ChangesInput<'b>,
     /// The leading badge column every row shares, so names line up.
     badge_w: f64,
+    /// Every row's height: a row with a secondary line.
+    row_h: f64,
     targets: &'a mut Vec<(Rect, ChangesHit)>,
 }
 
@@ -268,21 +284,29 @@ impl ListPass<'_, '_> {
         let pad = f64::from(theme.tokens.spacing.s3);
         let gap = f64::from(theme.tokens.spacing.s2);
 
-        // The action trails; the title takes what is left before it.
+        // The action trails, its label ending on the rows' text edge (where
+        // their line counts end); the title takes what is left before it.
         let label = section_action(change_area);
-        let hovered = self.input.pointer;
-        let probe = ButtonFace::new(Rect::ZERO, label)
+        let probe = ButtonFace::new(Rect::ZERO, &label)
             .role(ButtonRole::Plain)
             .control_size(ControlSize::Small);
         let action_w = probe.intrinsic_width(ctx.text, theme);
-        let action = Rect::new(band.x1 - action_w, band.y0, band.x1, band.y1);
-        let face = ButtonFace::new(action, label)
+        let label_w = f64::from(
+            ctx.text
+                .measure_style(&label, None, &ControlSize::Small.label_style(theme))
+                .0,
+        );
+        let label_inset = ((action_w - label_w) / 2.0).max(0.0);
+        let x1 = band.x1 - pad + label_inset;
+        let action = Rect::new(x1 - action_w, band.y0, x1, band.y1);
+        let face = ButtonFace::new(action, &label)
             .role(ButtonRole::Plain)
-            .control_size(ControlSize::Small)
-            .hovered(hovered.is_some_and(|p| action.contains(p)));
+            .control_size(ControlSize::Small);
+        let hovered = self.input.pointer.is_some_and(|p| face.contains(theme, p));
+        let face = face.hovered(hovered);
         Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
         self.push(
-            action,
+            face.hit_rect(theme),
             if change_area == ChangeArea::Staged {
                 ChangesHit::UnstageAll(change_area)
             } else {
@@ -296,7 +320,7 @@ impl ListPass<'_, '_> {
         let title_room = (action.x0 - gap - count_w - gap - title_x).max(0.0);
         let style = theme.text(TextRole::Subheading);
         let title = ctx.text.elide_to_width_style(
-            section_title(change_area),
+            &section_title(change_area),
             ui::num::f32_of_f64(title_room),
             &style,
         );
@@ -329,13 +353,14 @@ impl ListPass<'_, '_> {
     ) -> f64 {
         let (change_area, index) = key;
         let staged = change_area == ChangeArea::Staged;
+        let action_label = t(if staged { "git-unstage" } else { "git-stage" });
         let actions = [RowAction {
             icon: if staged {
                 ui::icons::Icon::Minus
             } else {
                 ui::icons::Icon::Plus
             },
-            label: if staged { "Unstage" } else { "Stage" },
+            label: &action_label,
         }];
         let counts = line_counts(file.additions, file.deletions);
         let title = row_title(file);
@@ -351,7 +376,7 @@ impl ListPass<'_, '_> {
         if let Some(counts) = counts.as_deref() {
             face = face.meta(counts);
         }
-        let h = face.height(ctx.text, ctx.theme);
+        let h = self.row_h.max(face.height(ctx.text, ctx.theme));
         let rect = Rect::new(
             self.list.x0 + self.m.inset,
             y,
@@ -415,16 +440,22 @@ fn row_title(file: &FileChange) -> String {
     }
 }
 
+/// Where the commit box put its parts.
+struct CommitBox {
+    field: Rect,
+    button: Rect,
+    enabled: bool,
+}
+
 /// The commit box under the list: the message field (laid out by the owner,
 /// which hosts the toolkit text input) and the primary commit button.
-/// Returns the field's rect.
 fn paint_commit_box(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
     m: &Metrics,
     input: &ChangesInput<'_>,
     targets: &mut Vec<(Rect, ChangesHit)>,
-) -> Rect {
+) -> CommitBox {
     let theme = ctx.theme;
     ui::surface::separator(
         ctx.scene,
@@ -453,13 +484,18 @@ fn paint_commit_box(
     let label = commit_label(input.model);
     let face = ButtonFace::new(button, &label)
         .role(ButtonRole::Primary)
-        .hovered(enabled && input.pointer.is_some_and(|p| button.contains(p)))
         .disabled(!enabled);
+    let hovered = enabled && input.pointer.is_some_and(|p| face.contains(theme, p));
+    let face = face.hovered(hovered);
     Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
     if enabled {
         targets.push((button, ChangesHit::Commit));
     }
-    field
+    CommitBox {
+        field,
+        button,
+        enabled,
+    }
 }
 
 #[cfg(test)]

@@ -3,11 +3,16 @@
 //!
 //! The diff is a document the app draws: its rows read every size from the
 //! theme's `Code` line box and every colour from the theme (added and removed
-//! lines are washed in the success and danger status colours over the ground
-//! they stand on). The `diff --git` / `index` / `---` / `+++` metadata is not
-//! shown as rows: the file header above the rows names the file, its rename
-//! and its line counts, and carries the file's actions. Each hunk opens with
-//! its `@@` line and the hunk's own actions as Small buttons.
+//! lines stand on the toolkit's success and danger status washes). With the
+//! wrap preference on (the default), a line longer than its pane wraps onto
+//! further rows of the same line, so no code is cut at a pane edge; with it
+//! off, long lines scroll sideways. The `diff --git` / `index` / `---` /
+//! `+++` metadata is not shown as rows: the file header above the rows
+//! names the file, its rename and its line counts, and carries the file's
+//! actions. Each hunk opens with its `@@` line and the hunk's own actions as
+//! Small buttons.
+
+use std::ops::Range;
 
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
@@ -16,15 +21,15 @@ use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST, over};
-use ui::widget::code_editor::SyntaxHighlighter;
-use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent};
+use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
+use ui::widget::code_editor::{Span, SyntaxHighlighter};
+use ui::widget::{
+    Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, EmptyState, EmptyStateContent, Tone,
+};
 
+use crate::i18n::{t, t_args};
 use crate::model::{DiffLine, DiffLineKind, FileDiff};
 use crate::settings::{DiffLayout, Settings};
-
-/// How strongly an added or removed line is washed in its status colour.
-const WASH: f32 = 0.16;
 
 /// What a hunk button does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +55,7 @@ pub enum DiffHit {
 pub struct DiffInput<'a> {
     pub diff: &'a FileDiff,
     pub scroll: f64,
+    /// How far the code is scrolled sideways (only without wrapping).
     pub hscroll: f64,
     pub settings: Settings,
     /// The staged side (HEAD → index): actions unstage.
@@ -66,7 +72,8 @@ pub struct DiffDraw {
     pub viewport: Rect,
     /// Height of all rows, for clamping the vertical scroll.
     pub content_height: f64,
-    /// How far the code may scroll sideways before its longest line ends.
+    /// How far the code may scroll sideways before its longest line ends
+    /// (zero while lines wrap).
     pub max_hscroll: f64,
 }
 
@@ -75,7 +82,8 @@ pub struct DiffDraw {
 pub struct Metrics {
     /// One code row: the `Code` line box, in whole pixels.
     pub row_h: f64,
-    /// One hunk header row: a Small control with an `s1` margin.
+    /// One hunk header row: a Small control with the file header's `s2`
+    /// margin above and below it.
     pub hunk_h: f64,
     /// Width of one monospace cell.
     pub cell_w: f64,
@@ -108,7 +116,7 @@ impl Metrics {
         let small = ButtonFace::height(ControlSize::Small, theme);
         Self {
             row_h: line_h.ceil(),
-            hunk_h: (small + 2.0 * f64::from(s.s1)).ceil(),
+            hunk_h: (small + 2.0 * f64::from(s.s2)).ceil(),
             cell_w,
             number_w,
             pad: f64::from(s.s3),
@@ -149,8 +157,81 @@ enum Row {
     Pair(Option<usize>, Option<usize>),
 }
 
+/// How many cells a wrapped line's continuation rows are indented: the
+/// line's own indentation, so wrapped code stays inside its block (at most
+/// half the pane).
+fn hanging_indent(content: &str, cols: usize) -> usize {
+    content
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .count()
+        .min(cols / 2)
+}
+
+/// Where each line of code breaks to fit `cols` monospace cells: the byte
+/// range of every visual line, at least one. Continuation rows are
+/// [`hanging_indent`] cells narrower. A break prefers the last space in the
+/// second half of a visual line, so words stay whole where they can.
+fn wrap(content: &str, cols: usize) -> Vec<Range<usize>> {
+    let first_cols = cols.max(1);
+    let indent = hanging_indent(content, first_cols);
+    let mut cols = first_cols;
+    let mut segments = Vec::new();
+    let mut start = 0;
+    // Characters on the visual line so far, and the last break after a
+    // space: its byte offset and how many characters precede it.
+    let mut count = 0;
+    let mut soft: Option<(usize, usize)> = None;
+    for (i, c) in content.char_indices() {
+        if count == cols {
+            let (end, used) = match soft {
+                Some((end, used)) if used * 2 > cols => (end, used),
+                _ => (i, count),
+            };
+            segments.push(start..end);
+            start = end;
+            count -= used;
+            soft = None;
+            cols = (first_cols - indent).max(1);
+        }
+        count += 1;
+        if c.is_whitespace() {
+            soft = Some((i + c.len_utf8(), count));
+        }
+    }
+    segments.push(start..content.len());
+    segments
+}
+
+/// Every line's visual lines in its pane, by line index (empty for lines
+/// that are not code).
+fn wrap_lines(diff: &FileDiff, cols: usize) -> Vec<Vec<Range<usize>>> {
+    diff.lines
+        .iter()
+        .map(|line| match line.kind {
+            DiffLineKind::Meta | DiffLineKind::Hunk => Vec::new(),
+            _ => wrap(&line.content, cols),
+        })
+        .collect()
+}
+
+/// How many monospace cells of code fit beside the gutter in `width`.
+fn code_columns(width: f64, layout: DiffLayout, m: &Metrics) -> usize {
+    let room = match layout {
+        DiffLayout::Unified => width - m.unified_gutter() - m.pad,
+        DiffLayout::SideBySide => width / 2.0 - m.half_gutter() - m.pad,
+    };
+    (room / m.cell_w.max(1.0)).floor().max(1.0) as usize
+}
+
 /// Where each row sits: its top relative to the first row, and its height.
-fn lay_out(diff: &FileDiff, layout: DiffLayout, m: &Metrics) -> (Vec<(Row, f64, f64)>, f64) {
+/// A code row is as tall as its longest wrapped line needs.
+fn lay_out(
+    diff: &FileDiff,
+    layout: DiffLayout,
+    m: &Metrics,
+    wrapped: &[Vec<Range<usize>>],
+) -> (Vec<(Row, f64, f64)>, f64) {
     let rows: Vec<Row> = match layout {
         DiffLayout::Unified => diff
             .lines
@@ -164,13 +245,20 @@ fn lay_out(diff: &FileDiff, layout: DiffLayout, m: &Metrics) -> (Vec<(Row, f64, 
             .collect(),
         DiffLayout::SideBySide => pair_rows(&diff.lines),
     };
+    let visual = |i: Option<usize>| i.and_then(|i| wrapped.get(i)).map_or(1, |w| w.len().max(1));
     let mut y = 0.0;
     let placed = rows
         .into_iter()
         .map(|row| {
-            let h = match row {
-                Row::Hunk(_) => m.hunk_h,
-                Row::Line(_) | Row::Pair(..) => m.row_h,
+            let lines = match row {
+                Row::Hunk(_) => 0,
+                Row::Line(i) => visual(Some(i)),
+                Row::Pair(l, r) => visual(l).max(visual(r)),
+            };
+            let h = if lines == 0 {
+                m.hunk_h
+            } else {
+                m.row_h * ui::num::f64_of_usize(lines)
             };
             let top = y;
             y += h;
@@ -252,24 +340,7 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
     );
     let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1.max(header.y1));
 
-    let empty = if input.diff.binary {
-        Some(("Binary file", "There is no text to compare."))
-    } else if input
-        .diff
-        .lines
-        .iter()
-        .all(|l| l.kind == DiffLineKind::Meta)
-    {
-        Some(("No changes to show", "Only the file's mode changed."))
-    } else {
-        None
-    };
-    if let Some((title, message)) = empty {
-        let content = EmptyStateContent {
-            message: Some(message),
-            ..EmptyStateContent::new(title)
-        };
-        EmptyState::paint(ctx, viewport, &content, Point::new(f64::MIN, f64::MIN));
+    if paint_empty(ctx, viewport, input.diff) {
         return DiffDraw {
             targets,
             viewport,
@@ -278,7 +349,11 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
         };
     }
 
-    let (rows, content_height) = lay_out(input.diff, input.settings.diff_layout, &m);
+    let layout = input.settings.diff_layout;
+    let cols = code_columns(viewport.width(), layout, &m);
+    let wrapping = input.settings.wrap_lines;
+    let wrapped = wrap_lines(input.diff, if wrapping { cols } else { usize::MAX });
+    let (rows, content_height) = lay_out(input.diff, layout, &m, &wrapped);
     let widest = input
         .diff
         .lines
@@ -286,18 +361,19 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
         .filter(|l| !matches!(l.kind, DiffLineKind::Meta | DiffLineKind::Hunk))
         .map(|l| l.content.chars().count())
         .max()
-        .unwrap_or(0) as f64
-        * m.cell_w;
-    let code_room = match input.settings.diff_layout {
-        DiffLayout::Unified => viewport.width() - m.unified_gutter() - m.pad,
-        DiffLayout::SideBySide => viewport.width() / 2.0 - m.half_gutter() - m.pad,
+        .unwrap_or(0);
+    let max_hscroll = if wrapping {
+        0.0
+    } else {
+        (ui::num::f64_of_usize(widest.saturating_sub(cols)) * m.cell_w).max(0.0)
     };
-    let max_hscroll = (widest - code_room).max(0.0);
     let pass = RowPass {
         input,
         m,
         viewport,
         top: viewport.y0 - input.scroll,
+        wrapped: &wrapped,
+        cols,
         hscroll: input.hscroll.clamp(0.0, max_hscroll),
     };
     ctx.scene.push_layer(
@@ -335,6 +411,28 @@ pub fn paint(ctx: &mut PaintCtx<'_>, pane: Rect, input: &DiffInput<'_>) -> DiffD
     }
 }
 
+/// A diff with no text rows (a binary file, a mode change) says so in one
+/// sentence instead; returns whether it did.
+fn paint_empty(ctx: &mut PaintCtx<'_>, viewport: Rect, diff: &FileDiff) -> bool {
+    let empty = if diff.binary {
+        Some(("git-binary-file", "git-binary-file-detail"))
+    } else if diff.lines.iter().all(|l| l.kind == DiffLineKind::Meta) {
+        Some(("git-mode-only", "git-mode-only-detail"))
+    } else {
+        None
+    };
+    let Some((title, message)) = empty else {
+        return false;
+    };
+    let (title, message) = (t(title), t(message));
+    let content = EmptyStateContent {
+        message: Some(&message),
+        ..EmptyStateContent::new(&title)
+    };
+    EmptyState::paint(ctx, viewport, &content, Point::new(f64::MIN, f64::MIN));
+    true
+}
+
 /// The file header: the path (and the name it was renamed from), its line
 /// counts, and the file's actions.
 fn paint_file_header(
@@ -352,24 +450,24 @@ fn paint_file_header(
 
     // Actions trail: the file's toggle last, discard before it.
     let mut right = band.x1 - m.pad;
-    let mut buttons: Vec<(&str, ButtonRole, DiffHit)> = vec![(
-        if input.staged {
-            "Unstage file"
+    let mut buttons: Vec<(String, ButtonRole, DiffHit)> = vec![(
+        t(if input.staged {
+            "git-unstage-file"
         } else {
-            "Stage file"
-        },
+            "git-stage-file"
+        }),
         ButtonRole::Secondary,
         DiffHit::StageFile,
     )];
     if input.can_discard && !input.staged {
         buttons.push((
-            "Discard file",
+            t("git-discard-file"),
             ButtonRole::Destructive,
             DiffHit::DiscardFile,
         ));
     }
     for (label, role, hit) in buttons {
-        let probe = ButtonFace::new(Rect::ZERO, label)
+        let probe = ButtonFace::new(Rect::ZERO, &label)
             .role(role)
             .control_size(ControlSize::Small);
         let w = probe.intrinsic_width(ctx.text, theme);
@@ -377,12 +475,13 @@ fn paint_file_header(
         if rect.x0 < band.x0 + m.pad {
             break;
         }
-        let face = ButtonFace::new(rect, label)
+        let face = ButtonFace::new(rect, &label)
             .role(role)
-            .control_size(ControlSize::Small)
-            .hovered(input.pointer.is_some_and(|p| rect.contains(p)));
+            .control_size(ControlSize::Small);
+        let hovered = input.pointer.is_some_and(|p| face.contains(theme, p));
+        let face = face.hovered(hovered);
         Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-        targets.push((rect, hit));
+        targets.push((face.hit_rect(theme), hit));
         right = rect.x0 - gap;
     }
 
@@ -430,7 +529,7 @@ fn paint_file_header(
         cx += w + gap;
     }
     if let Some(old) = &diff.old_path {
-        let note = format!("Renamed from {old}");
+        let note = t_args("git-renamed-from", &[("path", old.as_str().into())]);
         let room = (right - gap - cx).max(0.0);
         if room > m.cell_w * 8.0 {
             let style = theme.text(TextRole::Caption);
@@ -449,6 +548,11 @@ struct RowPass<'a, 'b> {
     viewport: Rect,
     /// Where the first row's top is, after scrolling.
     top: f64,
+    /// Each line's visual lines, by line index.
+    wrapped: &'a [Vec<Range<usize>>],
+    /// How many cells of code a row holds.
+    cols: usize,
+    /// How far unwrapped code is scrolled sideways.
     hscroll: f64,
 }
 
@@ -484,19 +588,23 @@ impl RowPass<'_, '_> {
         let y = row.center().y - small_h / 2.0;
         let mut right = row.x1 - m.pad;
         let mut actions = vec![(
-            if self.input.staged {
-                "Unstage hunk"
+            t(if self.input.staged {
+                "git-unstage-hunk"
             } else {
-                "Stage hunk"
-            },
+                "git-stage-hunk"
+            }),
             ButtonRole::Secondary,
             HunkAction::Toggle,
         )];
         if self.input.can_discard && !self.input.staged {
-            actions.push(("Discard hunk", ButtonRole::Destructive, HunkAction::Discard));
+            actions.push((
+                t("git-discard-hunk"),
+                ButtonRole::Destructive,
+                HunkAction::Discard,
+            ));
         }
         for (label, role, action) in actions {
-            let w = ButtonFace::new(Rect::ZERO, label)
+            let w = ButtonFace::new(Rect::ZERO, &label)
                 .role(role)
                 .control_size(ControlSize::Small)
                 .intrinsic_width(ctx.text, theme);
@@ -504,13 +612,14 @@ impl RowPass<'_, '_> {
             if rect.x0 < row.x0 + m.pad {
                 break;
             }
-            let face = ButtonFace::new(rect, label)
+            let face = ButtonFace::new(rect, &label)
                 .role(role)
-                .control_size(ControlSize::Small)
-                .hovered(self.input.pointer.is_some_and(|p| rect.contains(p)));
+                .control_size(ControlSize::Small);
+            let hovered = self.input.pointer.is_some_and(|p| face.contains(theme, p));
+            let face = face.hovered(hovered);
             Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
             if rect.y0 >= self.viewport.y0 && rect.y1 <= self.viewport.y1 {
-                targets.push((rect, DiffHit::Hunk(line.hunk, action)));
+                targets.push((face.hit_rect(theme), DiffHit::Hunk(line.hunk, action)));
             }
             right = rect.x0 - gap;
         }
@@ -531,15 +640,17 @@ impl RowPass<'_, '_> {
         };
         let m = &self.m;
         let ground = Self::paint_wash(ctx, row, line.kind);
+        // Numbers and the marker sit on the line's first visual line.
+        let first = Rect::new(row.x0, row.y0, row.x1, row.y0 + m.row_h);
         let numbers = number_style(ctx.theme);
         let old_right = row.x0 + m.pad + m.number_w;
         let new_right = old_right + m.column_gap + m.number_w;
-        Self::number(ctx, line.old_lineno, old_right, row, &numbers);
-        Self::number(ctx, line.new_lineno, new_right, row, &numbers);
+        Self::number(ctx, line.old_lineno, old_right, first, &numbers);
+        Self::number(ctx, line.new_lineno, new_right, first, &numbers);
         let marker_x = new_right + m.column_gap;
-        Self::marker(ctx, line.kind, marker_x, row, ground);
+        Self::marker(ctx, line.kind, marker_x, first, ground);
         let code = Rect::new(marker_x + m.marker(), row.y0, row.x1, row.y1);
-        self.code(ctx, line, code);
+        self.code(ctx, index, line, code);
     }
 
     /// One side-by-side row: the old line on the left, the new on the right.
@@ -562,35 +673,40 @@ impl RowPass<'_, '_> {
         let x = mid.round();
         ctx.fill_rect(Rect::new(x - 0.5, row.y0, x + 0.5, row.y1), edge);
         for (half, index, old) in halves {
-            let Some(line) = index.and_then(|i| self.input.diff.lines.get(i)) else {
+            let Some((index, line)) =
+                index.and_then(|i| self.input.diff.lines.get(i).map(|line| (i, line)))
+            else {
                 continue;
             };
             let ground = Self::paint_wash(ctx, half, line.kind);
+            let first = Rect::new(half.x0, half.y0, half.x1, half.y0 + m.row_h);
             let number_right = half.x0 + m.pad + m.number_w;
             let number = if old {
                 line.old_lineno
             } else {
                 line.new_lineno
             };
-            Self::number(ctx, number, number_right, half, &numbers);
+            Self::number(ctx, number, number_right, first, &numbers);
             let marker_x = number_right + m.column_gap;
-            Self::marker(ctx, line.kind, marker_x, half, ground);
+            Self::marker(ctx, line.kind, marker_x, first, ground);
             let code = Rect::new(marker_x + m.marker(), half.y0, half.x1, half.y1);
-            self.code(ctx, line, code);
+            self.code(ctx, index, line, code);
         }
     }
 
-    /// Wash an added or removed row in its status colour; returns the
-    /// ground the row's text stands on.
+    /// Wash an added or removed row in the toolkit's status wash; returns
+    /// the ground the row's text stands on.
     fn paint_wash(ctx: &mut PaintCtx<'_>, row: Rect, kind: DiffLineKind) -> Color {
-        let colors = &ctx.theme.tokens.colors;
-        let ground = colors.surfaces.content;
+        let theme = ctx.theme;
+        let ground = theme.tokens.colors.surfaces.content;
         let tone = match kind {
-            DiffLineKind::Addition => colors.semantic.success,
-            DiffLineKind::Deletion => colors.semantic.danger,
+            DiffLineKind::Addition => Tone::Success,
+            DiffLineKind::Deletion => Tone::Danger,
             _ => return ground,
         };
-        let washed = over(ground, tone, WASH);
+        let washed = ChipStyle::Tinted(tone)
+            .colors(theme, ground, false, false)
+            .fill;
         ctx.fill_rect(row, washed);
         washed
     }
@@ -630,12 +746,28 @@ impl RowPass<'_, '_> {
         ctx.text_role_in_band(glyph, TextRole::Code, ink, x, row, None);
     }
 
-    /// The line's code in `area`, scrolled sideways and clipped to it.
-    fn code(&self, ctx: &mut PaintCtx<'_>, line: &DiffLine, area: Rect) {
+    /// The line's code in `area`, one visual line per row height, clipped
+    /// to the pane's code column.
+    fn code(&self, ctx: &mut PaintCtx<'_>, index: usize, line: &DiffLine, area: Rect) {
         let clip = Rect::new(area.x0, area.y0, area.x1 - self.m.pad, area.y1);
         if clip.width() <= 0.0 {
             return;
         }
+        let style = ctx.theme.text(TextRole::Code);
+        let line_h = f64::from(ctx.text.measure_style("Ag", None, &style).1);
+        let whole = 0..line.content.len();
+        let segments = self
+            .wrapped
+            .get(index)
+            .filter(|w| !w.is_empty())
+            .map_or_else(|| std::slice::from_ref(&whole), Vec::as_slice);
+        let spans = if self.input.settings.syntax_highlight {
+            SyntaxHighlighter::for_token_or_plain(&self.input.diff.language)
+                .start()
+                .highlight_line(&line.content)
+        } else {
+            Vec::new()
+        };
         ctx.scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -643,50 +775,71 @@ impl RowPass<'_, '_> {
             ctx.transform,
             &clip,
         );
-        let style = ctx.theme.text(TextRole::Code);
-        let line_h = f64::from(ctx.text.measure_style("Ag", None, &style).1);
-        let y = ui::text_metrics::centered_text_top(area.y0, area.height(), line_h);
-        let origin = Point::new(area.x0 - self.hscroll, y);
-        draw_code(
-            ctx,
-            &line.content,
-            &self.input.diff.language,
-            origin,
-            &style,
-            self.input.settings.syntax_highlight,
-        );
+        let mut band_top = area.y0;
+        let indent = if segments.len() > 1 {
+            ui::num::f64_of_usize(hanging_indent(&line.content, self.cols)) * self.m.cell_w
+        } else {
+            0.0
+        };
+        for (row, segment) in segments.iter().enumerate() {
+            let y = ui::text_metrics::centered_text_top(band_top, self.m.row_h, line_h);
+            let x = area.x0 - self.hscroll + if row == 0 { 0.0 } else { indent };
+            draw_code(
+                ctx,
+                &line.content,
+                segment.clone(),
+                &spans,
+                Point::new(x, y),
+                &style,
+            );
+            band_top += self.m.row_h;
+        }
         ctx.scene.pop_layer();
     }
 }
 
-/// Code with its top-left at `origin`, highlighted by the theme's syntax
-/// palette when `highlight` is on.
+/// The `range` of `content` with its top-left at `origin`, coloured by the
+/// theme's syntax palette where `spans` cover it (plain ink elsewhere).
 fn draw_code(
     ctx: &mut PaintCtx<'_>,
     content: &str,
-    language: &str,
+    range: Range<usize>,
+    spans: &[Span],
     origin: Point,
     style: &TextStyle,
-    highlight: bool,
 ) {
     let theme = ctx.theme;
-    if !highlight {
-        ctx.text(content, style, theme.text_primary, origin, None);
+    let plain = theme.text_primary;
+    if spans.is_empty() {
+        if let Some(text) = content.get(range) {
+            ctx.text(text, style, plain, origin, None);
+        }
         return;
     }
-    // Diff rows are discontiguous slices of the file, so each line is
-    // tokenized on its own.
     let mut x = origin.x;
-    let spans = SyntaxHighlighter::for_token_or_plain(language)
-        .start()
-        .highlight_line(content);
+    let mut at = range.start;
+    let mut paint = |ctx: &mut PaintCtx<'_>, from: usize, to: usize, color: Color| {
+        if let Some(text) = content.get(from..to)
+            && !text.is_empty()
+        {
+            ctx.text(text, style, color, Point::new(x, origin.y), None);
+            x += f64::from(ctx.text.measure_style(text, None, style).0);
+        }
+    };
     for span in spans {
-        let Some(text) = content.get(span.range) else {
+        let from = span.range.start.max(range.start);
+        let to = span.range.end.min(range.end);
+        if from >= to {
             continue;
-        };
-        let color = theme.tokens.syntax.color(span.kind);
-        ctx.text(text, style, color, Point::new(x, origin.y), None);
-        x += f64::from(ctx.text.measure_style(text, None, style).0);
+        }
+        if from > at {
+            paint(ctx, at, from, plain);
+        }
+        paint(ctx, from, to, theme.tokens.syntax.color(span.kind));
+        at = to;
+    }
+    if at < range.end {
+        paint(ctx, at, range.end, plain);
     }
 }
 
@@ -705,13 +858,14 @@ mod tests {
         )
     }
 
-    fn draw(diff: &FileDiff, width: f64, layout: DiffLayout, staged: bool) -> DiffDraw {
+    fn draw(diff: &FileDiff, width: f64, layout: DiffLayout, staged: bool, wrap: bool) -> DiffDraw {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
         let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
         let settings = Settings {
             diff_layout: layout,
+            wrap_lines: wrap,
             ..Settings::default()
         };
         paint(
@@ -737,7 +891,8 @@ mod tests {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let m = Metrics::measure(&mut text, &theme, &diff);
-        let (unified, height) = lay_out(&diff, DiffLayout::Unified, &m);
+        let wrapped = wrap_lines(&diff, 200);
+        let (unified, height) = lay_out(&diff, DiffLayout::Unified, &m, &wrapped);
         let code_lines = diff
             .lines
             .iter()
@@ -745,7 +900,7 @@ mod tests {
             .count();
         assert_eq!(unified.len(), code_lines);
         assert!((height - (2.0 * m.hunk_h + 7.0 * m.row_h)).abs() < 0.01);
-        let (split, _) = lay_out(&diff, DiffLayout::SideBySide, &m);
+        let (split, _) = lay_out(&diff, DiffLayout::SideBySide, &m, &wrapped);
         assert!(split.iter().any(|(row, _, _)| matches!(
             row,
             Row::Pair(Some(l), Some(r))
@@ -762,7 +917,7 @@ mod tests {
     #[test]
     fn hunks_and_the_file_offer_their_actions() {
         let diff = sample_diff();
-        let worktree = draw(&diff, 900.0, DiffLayout::Unified, false);
+        let worktree = draw(&diff, 900.0, DiffLayout::Unified, false, true);
         for hunk in 0..2 {
             for action in [HunkAction::Toggle, HunkAction::Discard] {
                 assert!(
@@ -780,7 +935,7 @@ mod tests {
                 .iter()
                 .any(|(_, h)| *h == DiffHit::DiscardFile)
         );
-        let staged = draw(&diff, 900.0, DiffLayout::Unified, true);
+        let staged = draw(&diff, 900.0, DiffLayout::Unified, true, true);
         assert!(
             !staged.targets.iter().any(|(_, h)| matches!(
                 h,
@@ -796,15 +951,70 @@ mod tests {
         }
     }
 
-    /// A narrow pane scrolls its long lines sideways instead of cutting them.
+    /// Without wrapping, a narrow pane scrolls its long lines sideways; with
+    /// it, nothing scrolls sideways.
     #[test]
-    fn a_narrow_pane_scrolls_long_lines_sideways() {
+    fn unwrapped_lines_scroll_sideways() {
         let diff = parse_unified(
             "x.rs",
             "rust",
             "@@ -1,1 +1,1 @@\n-let value = compute_the_answer_to_everything(with_a_very_long_argument_list, and_more);\n+let value = compute_the_answer_to_everything(with_an_even_longer_argument_list, and_more);\n",
         );
-        assert!(draw(&diff, 400.0, DiffLayout::Unified, false).max_hscroll > 0.0);
-        assert!(draw(&diff, 2400.0, DiffLayout::Unified, false).max_hscroll <= 0.0);
+        assert!(draw(&diff, 400.0, DiffLayout::Unified, false, false).max_hscroll > 0.0);
+        assert!(draw(&diff, 2400.0, DiffLayout::Unified, false, false).max_hscroll <= 0.0);
+        assert!(draw(&diff, 400.0, DiffLayout::Unified, false, true).max_hscroll <= 0.0);
+    }
+
+    /// A long line wraps onto more rows of its pane instead of being cut at
+    /// the pane edge, breaking after a space where one falls late enough,
+    /// and the row grows with it; a wide pane keeps it on one row.
+    #[test]
+    fn long_lines_wrap_inside_their_pane() {
+        let line = "let value = compute(with_a_long_argument, and_more);";
+        let segments = wrap(line, 20);
+        assert!(segments.len() > 1);
+        let joined: String = segments.iter().map(|r| &line[r.clone()]).collect();
+        assert_eq!(joined, line, "wrapping keeps every character once");
+        assert!(
+            segments
+                .iter()
+                .all(|r| line[r.clone()].chars().count() <= 20)
+        );
+        assert_eq!(&line[segments[0].clone()], "let value = ");
+        assert_eq!(wrap("short", 20), vec![0..5]);
+        let nested = "        call(first_argument, second_argument);";
+        let rows = wrap(nested, 24);
+        assert!(rows.len() > 2);
+        assert!(
+            rows.iter()
+                .skip(1)
+                .all(|r| nested[r.clone()].chars().count() <= 24 - 8),
+            "continuation rows leave room for the hanging indent"
+        );
+        assert_eq!(wrap("", 20), vec![0..0]);
+
+        let diff = parse_unified(
+            "x.rs",
+            "rust",
+            &format!("@@ -1,1 +1,1 @@\n-{line}\n+{line} // and a trailing comment\n"),
+        );
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let m = Metrics::measure(&mut text, &theme, &diff);
+        for layout in [DiffLayout::Unified, DiffLayout::SideBySide] {
+            let narrow = wrap_lines(&diff, code_columns(400.0, layout, &m));
+            let (rows, _) = lay_out(&diff, layout, &m, &narrow);
+            assert!(
+                rows.iter().any(|(_, _, h)| *h > m.row_h * 1.5),
+                "{layout:?}: a long line takes more than one row"
+            );
+            let wide = wrap_lines(&diff, code_columns(2400.0, layout, &m));
+            let (rows, _) = lay_out(&diff, layout, &m, &wide);
+            assert!(
+                rows.iter()
+                    .all(|(row, _, h)| matches!(row, Row::Hunk(_)) || (*h - m.row_h).abs() < 0.01),
+                "{layout:?}: a wide pane keeps every line on one row"
+            );
+        }
     }
 }

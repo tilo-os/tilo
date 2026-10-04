@@ -57,6 +57,7 @@ mod doc;
 pub mod graph;
 pub mod history;
 mod http_transport;
+pub mod i18n;
 pub mod model;
 pub mod panels;
 pub mod repo;
