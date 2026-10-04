@@ -479,18 +479,23 @@ pub struct CodeApp {
     panel_toggle: BottomPanelToggle,
     palette: CommandPalette,
 
-    /// Framework-owned action dispatch (the Tilo resource + action model). The
-    /// only doc-mutating operation Code exports beyond raw text is materialising
-    /// a buffer (New file); it is dispatched through this host so it brackets one
-    /// undo boundary and replays byte-identically on peers, the same path a
-    /// Ctrl+K palette dispatch takes. See [`crate::actions`].
-    actions: crate::resource::ActionSink,
+    /// What a test runs with the document at the start of the next sync.
+    #[cfg(test)]
+    pub(crate) test_hook: Option<TestHook>,
+    /// Where every edit of the project goes: the framework's door, which
+    /// checks, applies, records and replicates it. `None` until the
+    /// framework mounts the editor; an editor that is not mounted edits
+    /// nothing.
+    dispatch: Option<ui::framework::Dispatcher<crate::resource::CodeEditor>>,
+    /// The project as it was last presented, and the live handle that asks
+    /// for the text of the files the tabs show.
+    presented: std::rc::Rc<crate::resource::ProjectState>,
+    live_state: Option<ui::framework::Live<crate::resource::CodeEditor>>,
+    /// The file ids whose text the tabs demanded last.
+    demanded: Vec<String>,
     /// A command invoked through its published effect. An effect handler has
     /// no document, so the next sync runs the command with it.
     pending_command: Option<Command>,
-    /// Tentative UUID used before the first sync persists it in the shared
-    /// document; afterwards this is always the document's project identity.
-    project_id: String,
     /// The file a New File command created, opened once its record arrives.
     pending_open: Option<String>,
 
@@ -659,6 +664,10 @@ pub struct CodeApp {
     /// open a file that has no editor geometry until the next frame.
     pending_jump: Option<(usize, usize)>,
 }
+
+/// What a test runs with the editor and its document.
+#[cfg(test)]
+pub(crate) type TestHook = Box<dyn FnOnce(&mut CodeApp, &mut AutoCommit)>;
 
 /// A screenshot scenario being staged: `None` for a plain `--shots`.
 #[derive(Clone, Debug)]
@@ -882,7 +891,6 @@ impl CodeApp {
         // and then does nothing is worse than no chip.
         tabs.set_show_maximize(false);
 
-        let project_id = Uuid::new_v4().to_string();
         let panel_toggle = BottomPanelToggle::new(effect_binding(
             &crate::effects::CodeEditorEffect::ToggleBottomPanel,
         ));
@@ -900,9 +908,13 @@ impl CodeApp {
             panel: BottomPanel::new(),
             panel_toggle,
             palette: CommandPalette::new(),
-            actions: crate::resource::ActionSink::default(),
+            #[cfg(test)]
+            test_hook: None,
+            dispatch: None,
+            presented: std::rc::Rc::default(),
+            live_state: None,
+            demanded: Vec::new(),
             pending_command: None,
-            project_id,
             pending_open: None,
             flap: FlapState::open_when_docked(),
             flap_tick: ui::time::now(),
@@ -1134,45 +1146,44 @@ impl CodeApp {
     }
 
     /// The embedded terminal's document map. Missing panels are created by
-    /// [`CodeEditorAction::EnsureTerminalPanel`](actions::CodeEditorAction::EnsureTerminalPanel)
-    /// through the action sink, hosted or standalone.
-    fn terminal_document_root(&mut self, doc: &mut AutoCommit) -> ObjId {
-        if EditorDoc::terminal_panel(doc).is_none() {
-            let action = actions::CodeEditorAction::EnsureTerminalPanel;
-            self.actions.dispatch_with_context(
-                doc,
-                actions::CODE_EDITOR_ACTION_TYPE,
-                &action,
-                actions::history_context(&action, "Terminal", &self.project_id),
-            );
+    /// [`CodeEditorAction::EnsureTerminalPanel`](actions::CodeEditorAction::EnsureTerminalPanel).
+    fn terminal_document_root(&self, doc: &mut AutoCommit) -> ObjId {
+        if EditorDoc::terminal_panel(doc).is_none()
+            && let Err(error) =
+                self.submit_now(doc, &actions::CodeEditorAction::EnsureTerminalPanel)
+        {
+            tracing::warn!(%error, "terminal panel not created");
         }
-        if let Some(id) = EditorDoc::terminal_panel(doc) {
-            return id;
-        }
-        EditorDoc::terminal_root(doc)
+        EditorDoc::terminal_panel(doc).unwrap_or(automerge::ROOT)
     }
 
-    /// Seed every open buffer's text into the CRDT (idempotent) and bind the
-    /// editor to the active buffer's Text object.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "buffer seed, project id, and active Text binding stay one sync path"
-    )]
-    fn ensure_buffers(&mut self, doc: &mut AutoCommit) {
-        let action = actions::CodeEditorAction::EnsureProjectId {
-            id: self.project_id.clone(),
-        };
-        self.actions.dispatch_with_context(
-            doc,
-            actions::CODE_EDITOR_ACTION_TYPE,
-            &action,
-            actions::history_context(&action, "Project", &self.project_id),
-        );
-        if let Some(id) = EditorDoc::project_id(doc) {
-            self.project_id = id;
+    /// Apply `action` to `doc` now, through the framework's door: within the
+    /// event, so the editor sees its own edit before the next keystroke.
+    fn submit_now(
+        &self,
+        doc: &mut AutoCommit,
+        action: &actions::CodeEditorAction,
+    ) -> Result<(), tilo_actions::ActionError> {
+        match &self.dispatch {
+            Some(dispatch) => dispatch.apply_now(doc, action),
+            None => Err(tilo_actions::ActionError::Refused(
+                "the editor is not open on a project".into(),
+            )),
         }
-        self.import_project_file_records(doc);
-        self.sync_collaborative_files(doc);
+    }
+
+    /// Submit `action` through the framework's door; it applies after the
+    /// event.
+    fn submit(&self, action: &actions::CodeEditorAction) {
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
+        }
+    }
+
+    /// Keep the open buffers' saved-on-disk comparison current, and bind the
+    /// editor to the active buffer's text. Reads only: a buffer's text is
+    /// seeded when its file is opened ([`Self::open_node`]).
+    fn ensure_buffers(&mut self, doc: &AutoCommit) {
         // A New File command opens the file it created once its record is in
         // the project.
         if let Some(id) = self.pending_open.clone()
@@ -1181,88 +1192,20 @@ impl CodeApp {
             self.pending_open = None;
             self.open_node(node);
         }
-        // Seed each open buffer's text into the document, reading the real file
-        // for a disk-backed node. This is the read half of "open a file": until
-        // it runs, a tab is bound to an empty Text.
-        //
-        // A read failure is recorded and the tab closed again — a file that
-        // opened as a silently empty buffer would be written back empty by the
-        // next Ctrl+S.
-        let mut failed: Vec<(TreeId, String)> = Vec::new();
-        for i in 0..self.session.open.len() {
-            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
-                continue;
-            };
-            // The document already carrying text for this node is *not* proof
-            // that the file has been read. The document is persisted across
-            // launches, so on the next run it hands back the buffer while this
-            // session has taken no stamp — and `disk::save` treats a missing
-            // stamp as "no check requested" and writes unconditionally. That
-            // combination silently overwrote a real file with a previous
-            // session's contents: the exact clobber the stamp exists to refuse.
-            //
-            // So the condition to skip is having reconciled *in this session*,
-            // which is what holding a stamp means. When the document's text is
-            // already there it is kept — a peer's or a previous session's
-            // unsaved edits are not ours to discard — but the stamp and the
-            // on-disk comparison text come from the file, so the buffer shows
-            // as modified and the next save goes through the conflict check
-            // like any other.
-            let key = self.buffer_key(node);
-            let has_text = EditorDoc::buffer_text_key(doc, &key).is_some();
-            let reconciled = self.session.open.get(i).is_some_and(|b| b.stamp.is_some());
-            let disk_backed = self.session.project.disk_path_of(node).is_some();
-            if has_text && (reconciled || !disk_backed) {
-                // Sample / scratch tabs are not disk-backed. Import can put text
-                // in the document before this loop takes a stamp; without adopting
-                // that text as `saved_text`, dirty stays true forever and clean
-                // closes raise a save prompt.
-                if !reconciled
-                    && let Some(buf) = self.session.open.get_mut(i)
-                    && buf.saved_text.is_empty()
-                {
-                    let current = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
-                    buf.mark_saved(current, None);
-                }
-                continue;
-            }
-            match self.session.project.file_seed(node) {
-                Ok((text, stamp)) => {
-                    if !has_text {
-                        let action = actions::CodeEditorAction::EnsureBuffer {
-                            key: key.clone(),
-                            seed: text.clone(),
-                        };
-                        self.actions.dispatch_with_context(
-                            doc,
-                            actions::CODE_EDITOR_ACTION_TYPE,
-                            &action,
-                            actions::history_context(&action, "File", &self.project_id),
-                        );
-                    }
-                    let Some(buf) = self.session.open.get_mut(i) else {
-                        continue;
-                    };
-                    buf.path = self.session.project.disk_path_of(node);
-                    buf.mark_saved(text, stamp);
-                }
-                Err(e) => {
-                    let name = self
-                        .session
-                        .open
-                        .get(i)
-                        .map_or_else(String::new, |b| b.name.clone());
-                    failed.push((node, format!("Could not open {name}: {e}")));
+        for buffer in &mut self.session.open {
+            // A buffer with no file on disk (a scratch file, a collaborator's
+            // file) is saved when its text is first here: an untouched one is
+            // clean and closes without a prompt.
+            if buffer.stamp.is_none() && buffer.path.is_none() && buffer.saved_text.is_empty() {
+                let key = self
+                    .session
+                    .project
+                    .get(buffer.node)
+                    .map(|node| node.resource_id.clone());
+                if let Some(text) = key.and_then(|key| EditorDoc::read_buffer_key(doc, &key)) {
+                    buffer.mark_saved(text, None);
                 }
             }
-        }
-        for (node, message) in failed {
-            if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
-                self.session.close_tab(idx);
-                self.invalidate_search_projection();
-            }
-            self.note(message, true);
-            self.bound_node = None;
         }
         self.seeded = true;
 
@@ -1273,12 +1216,18 @@ impl CodeApp {
             let Some(node) = self.session.open.get(i).map(|b| b.node) else {
                 continue;
             };
-            let current =
-                EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
-            let Some(buf) = self.session.open.get_mut(i) else {
+            let key = self.buffer_key(node);
+            let Some(current) = self.presented.buffers.get(&key) else {
                 continue;
             };
-            buf.dirty = buf.is_dirty(&current);
+            let dirty = self
+                .session
+                .open
+                .get(i)
+                .is_some_and(|buffer| buffer.is_dirty(current));
+            if let Some(buf) = self.session.open.get_mut(i) {
+                buf.dirty = dirty;
+            }
         }
 
         // Bind the editor to the active buffer.
@@ -1301,114 +1250,132 @@ impl CodeApp {
         }
     }
 
-    /// Project opening imports the filesystem once into durable records so
-    /// every existing file, not only newly-created scratch files, has an
-    /// addressable resource. Each record is a `CreateFile` or `CreateFolder`
-    /// action. IDs are UUIDs persisted in the shared document; absolute disk
-    /// locations stay solely in `disk_path` local provenance.
-    fn import_project_file_records(&mut self, doc: &mut AutoCommit) {
-        let records: Vec<_> = self
+    /// Ask for the text of the files the tabs show, and only those.
+    fn demand_open_buffers(&mut self, doc: &AutoCommit) {
+        let open: Vec<String> = self
             .session
-            .project
-            .nodes
-            .values()
-            .map(|node| match &node.kind {
-                NodeKind::File { language, .. } => crate::doc::CollaborativeFile {
-                    id: node.resource_id.clone(),
-                    kind: "file".into(),
-                    name: node.name.clone(),
-                    path: self.session.project.path_of(node.id),
-                    parent: node.parent.and_then(|parent| {
-                        self.session
-                            .project
-                            .get(parent)
-                            .map(|parent| parent.resource_id.clone())
-                    }),
-                    language: language.label().to_string(),
-                    order: i64::try_from(node.id).unwrap_or(i64::MAX),
-                    deleted: false,
-                    name_revision: 0,
-                    structure_revision: 0,
-                    language_revision: 0,
-                    deletion_revision: 0,
-                },
-                NodeKind::Folder { .. } => crate::doc::CollaborativeFile {
-                    id: node.resource_id.clone(),
-                    kind: "folder".into(),
-                    name: node.name.clone(),
-                    path: self.session.project.path_of(node.id),
-                    parent: node.parent.and_then(|parent| {
-                        self.session
-                            .project
-                            .get(parent)
-                            .map(|parent| parent.resource_id.clone())
-                    }),
-                    language: String::new(),
-                    order: i64::try_from(node.id).unwrap_or(i64::MAX),
-                    deleted: false,
-                    name_revision: 0,
-                    structure_revision: 0,
-                    language_revision: 0,
-                    deletion_revision: 0,
-                },
-            })
+            .open
+            .iter()
+            .map(|buffer| self.buffer_key(buffer.node))
             .collect();
-        for record in records {
-            if EditorDoc::file(doc, &record.id).is_some() {
-                continue;
-            }
-            let action = if record.kind == "folder" {
-                actions::CodeEditorAction::CreateFolder {
-                    id: record.id.clone(),
-                    name: record.name.clone(),
-                    parent: record.parent.clone(),
-                    order: record.order,
-                }
-            } else {
-                let seed = self
-                    .session
-                    .project
-                    .node_for_resource(&record.id)
-                    .and_then(|node| self.session.project.file_seed(node).ok())
-                    .map(|(text, _stamp)| text)
-                    .unwrap_or_default();
-                actions::create_file_action(
-                    record.id.clone(),
-                    record.name.clone(),
-                    record.parent.clone(),
-                    record.order,
-                    seed,
-                )
-            };
-            self.actions.dispatch_with_context(
-                doc,
-                actions::CODE_EDITOR_ACTION_TYPE,
-                &action,
-                actions::history_context(&action, &record.name, &self.project_id),
-            );
+        if open == self.demanded {
+            return;
+        }
+        self.demanded.clone_from(&open);
+        if let Some(live) = &self.live_state
+            && let Err(error) = live.demand(doc, ui::tilo_resource::Demand::none().with_keys(open))
+        {
+            tracing::warn!(%error, "open files not read");
         }
     }
 
-    /// Project-tree synchronization is a pure projection from the durable
-    /// resource records. The local arena id may vary by replica; every record
-    /// is matched through its UUID and deleted records stay tombstoned in the
-    /// CRDT rather than being silently resurrected by a local cache.
-    fn sync_collaborative_files(&mut self, doc: &AutoCommit) {
-        let mut files = EditorDoc::files(doc);
-        files.sort_by_key(|file| file.path.matches('/').count());
-        self.project_files(files);
+    /// Read a disk-backed file into its buffer the first time this session
+    /// opens it. The document may already hold text for it — a collaborator's
+    /// or a previous session's unsaved edits, which are not ours to discard —
+    /// so the seed only creates text that is missing; the file's bytes and
+    /// stamp become the comparison a save is checked against either way.
+    ///
+    /// A read failure closes the tab again: a file that opened as a silently
+    /// empty buffer would be written back empty by the next Ctrl+S.
+    fn seed_buffer(&mut self, node: TreeId) {
+        let Some(buffer) = self.session.buffer_of(node) else {
+            return;
+        };
+        if buffer.stamp.is_some() || self.session.project.disk_path_of(node).is_none() {
+            return;
+        }
+        let name = buffer.name.clone();
+        match self.session.project.file_seed(node) {
+            Ok((text, stamp)) => {
+                self.submit(&actions::CodeEditorAction::EnsureBuffer {
+                    key: self.buffer_key(node),
+                    seed: text.clone(),
+                });
+                let path = self.session.project.disk_path_of(node);
+                if let Some(buffer) = self.session.buffer_of_mut(node) {
+                    buffer.path = path;
+                    buffer.mark_saved(text, stamp);
+                }
+            }
+            Err(error) => {
+                if let Some(index) = self.session.open.iter().position(|b| b.node == node) {
+                    self.session.close_tab(index);
+                    self.invalidate_search_projection();
+                }
+                self.note(format!("Could not open {name}: {error}"), true);
+                self.bound_node = None;
+            }
+        }
+    }
+
+    /// Record the files and folders the editor read from disk since it last
+    /// looked — the folder it opened, a folder expanded, the way to a search
+    /// hit — so each is a file of the project its collaborators, the palette
+    /// and agents address. One step of content from outside, nobody's undo.
+    fn record_disk_entries(&mut self) {
+        let fresh = self.session.project.take_read_from_disk();
+        if fresh.is_empty() || self.dispatch.is_none() {
+            return;
+        }
+        let entries: Vec<actions::CodeEditorAction> = fresh
+            .into_iter()
+            .filter_map(|id| {
+                let node = self.session.project.get(id)?;
+                if self
+                    .presented
+                    .files
+                    .iter()
+                    .any(|file| file.id == node.resource_id)
+                {
+                    return None;
+                }
+                let parent = node.parent.and_then(|parent| {
+                    self.session
+                        .project
+                        .get(parent)
+                        .map(|parent| parent.resource_id.clone())
+                });
+                let (kind, language) = match &node.kind {
+                    NodeKind::File { language, .. } => {
+                        (actions::EntryKind::File, language.label().to_string())
+                    }
+                    NodeKind::Folder { .. } => (actions::EntryKind::Folder, String::new()),
+                };
+                Some(actions::CodeEditorAction::ImportEntry {
+                    id: node.resource_id.clone(),
+                    kind,
+                    name: node.name.clone(),
+                    parent,
+                    language,
+                    order: i64::try_from(id).unwrap_or(i64::MAX),
+                })
+            })
+            .collect();
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.group(|| {
+                for entry in &entries {
+                    dispatch.apply(entry);
+                }
+            });
+        }
     }
 
     /// Project durable file records into the local tree. An empty list does not
     /// wipe a project that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ProjectState) {
+    /// Adopt the project as last presented again: after a folder or file
+    /// was opened, its tree meets the records the project already holds.
+    fn adopt_presented(&mut self) {
+        let state = std::rc::Rc::clone(&self.presented);
+        self.adopt_resource_state(&state);
+    }
+
+    pub(crate) fn adopt_resource_state(
+        &mut self,
+        state: &std::rc::Rc<crate::resource::ProjectState>,
+    ) {
+        self.presented = std::rc::Rc::clone(state);
         if state.files.is_empty() && !self.session.project.nodes.is_empty() {
             return;
-        }
-        if let Some(id) = &state.project_id
-            && self.project_id.is_empty()
-        {
-            self.project_id.clone_from(id);
         }
         if !state.files.is_empty() {
             let mut files = state.files.clone();
@@ -1417,19 +1384,16 @@ impl CodeApp {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
-    }
-
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::CodeEditor>,
         live: bool,
         settings: ui::framework::Setting<crate::settings::CodeSettings>,
+        state: ui::framework::Live<crate::resource::CodeEditor>,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatch = Some(dispatcher);
+        self.live_state = Some(state);
         self.live = live;
         self.settings = Some(settings);
     }
@@ -1498,29 +1462,20 @@ impl CodeApp {
             return;
         };
         let file_id = self.buffer_key(buffer.node);
-        let name = buffer.name.clone();
-        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &edit.base, &edit.next) {
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &edit.base, &edit.next) {
             self.editor.reconcile_from_doc(doc);
             self.note(format!("Text edit was refused: {error}"), true);
         }
     }
 
     fn dispatch_text_action(
-        &mut self,
+        &self,
         doc: &mut AutoCommit,
         file_id: String,
-        name: &str,
         base: &str,
         next: &str,
     ) -> Result<(), tilo_actions::ActionError> {
-        let action = actions::text_edit_action(file_id, base, next);
-        let context = actions::history_context(&action, name, &self.project_id);
-        self.actions.try_dispatch_with_context(
-            doc,
-            actions::CODE_EDITOR_ACTION_TYPE,
-            &action,
-            context,
-        )
+        self.submit_now(doc, &actions::text_edit_action(file_id, base, next))
     }
 
     /// Reconcile the shared tab bar's pills against `session.open`, by node
@@ -1982,6 +1937,7 @@ impl CodeApp {
     /// Open a file node into a tab and bind the editor.
     fn open_node(&mut self, node: TreeId) {
         self.session.open_file(node);
+        self.seed_buffer(node);
         self.invalidate_search_projection();
         explorer::set_current(&mut self.sidebar, Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
@@ -2298,16 +2254,9 @@ impl CodeApp {
                     i64::MAX / 2,
                     String::new(),
                 );
-                self.actions.dispatch_with_context(
-                    doc,
-                    actions::CODE_EDITOR_ACTION_TYPE,
-                    &action,
-                    actions::history_context(&action, &name, &self.project_id),
-                );
-                self.sync_collaborative_files(doc);
-                match self.session.project.node_for_resource(&id) {
-                    Some(node) => self.open_node(node),
-                    None => self.pending_open = Some(id),
+                match self.submit_now(doc, &action) {
+                    Ok(()) => self.pending_open = Some(id),
+                    Err(error) => self.note(format!("Could not create {name}: {error}"), true),
                 }
             }
             Command::OpenFolder => self.request_open_folder(),
@@ -2466,10 +2415,6 @@ impl CodeApp {
             return;
         };
         let file_id = self.buffer_key(node);
-        let name = self
-            .session
-            .active_buffer()
-            .map_or_else(|| "file".to_string(), |buffer| buffer.name.clone());
         let text = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
         let Some(at) = flat_index(&text, m.line, m.col) else {
             return;
@@ -2477,7 +2422,7 @@ impl CodeApp {
         let replacement = self.find.replacement().to_string();
         let mut next = text.clone();
         replace_chars(&mut next, at, m.len, &replacement);
-        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &text, &next) {
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &text, &next) {
             self.editor.reconcile_from_doc(doc);
             self.note(format!("Text edit was refused: {error}"), true);
             return;
@@ -2499,10 +2444,6 @@ impl CodeApp {
             return;
         };
         let file_id = self.buffer_key(node);
-        let name = self
-            .session
-            .active_buffer()
-            .map_or_else(|| "file".to_string(), |buffer| buffer.name.clone());
         let text = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
         let replacement = self.find.replacement().to_string();
         let count = self.find_matches.len();
@@ -2512,7 +2453,7 @@ impl CodeApp {
                 replace_chars(&mut next, at, m.len, &replacement);
             }
         }
-        if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &text, &next) {
+        if let Err(error) = self.dispatch_text_action(doc, file_id, &text, &next) {
             self.editor.reconcile_from_doc(doc);
             self.note(format!("Text edit was refused: {error}"), true);
             return;
@@ -3488,7 +3429,6 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 
 impl Widget for CodeApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
         dyn ui::search::capability::SearchSource
     );
@@ -3537,6 +3477,10 @@ impl Widget for CodeApp {
     )]
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
+        #[cfg(test)]
+        if let Some(hook) = self.test_hook.take() {
+            hook(self, state);
+        }
         if let Some(command) = self.pending_command.take() {
             self.apply_command(command, state);
         }
@@ -3557,7 +3501,9 @@ impl Widget for CodeApp {
         // the worker thread fills — the UI never waits on D-Bus.
         self.poll_portal(state);
         self.poll_search();
+        self.record_disk_entries();
         self.ensure_buffers(state);
+        self.demand_open_buffers(state);
         self.continue_staging(state);
         self.refresh_search_catalog(state);
         self.editor.sync(state, path);
@@ -4221,15 +4167,6 @@ impl ui::widget::controls::ActionControls for CodeApp {
             bindings.extend(self.palette.control_action_bindings());
         }
         bindings
-    }
-}
-
-impl ui::undo::CommittedActions for CodeApp {
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary bracketing it (see
-    /// `Self::apply_command`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 

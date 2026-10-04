@@ -127,7 +127,7 @@ impl CodeApp {
                 // same action-owned splice path as a keystroke or replace.
                 let file_id = self.buffer_key(node);
                 let base = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
-                if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &base, &text) {
+                if let Err(error) = self.dispatch_text_action(doc, file_id, &base, &text) {
                     self.editor.reconcile_from_doc(doc);
                     self.note(format!("Reload was refused: {error}"), true);
                     return;
@@ -423,6 +423,7 @@ impl CodeApp {
             Ok(project) => {
                 let name = project.name.clone();
                 self.session = Session::new(project);
+                self.adopt_presented();
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
                 explorer::set_current(&mut self.sidebar, None);
@@ -455,6 +456,7 @@ impl CodeApp {
         match Project::open_single_file(&path) {
             Ok((project, node)) => {
                 self.session = Session::new(project);
+                self.adopt_presented();
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
                 self.bound_node = None;
