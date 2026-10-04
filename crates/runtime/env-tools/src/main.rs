@@ -178,17 +178,7 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|_| anyhow::anyhow!("poisoned"))?
                 .clone();
             if let Some(path) = catalog {
-                let mut doc = if path.exists() {
-                    Catalog::load(&path)?
-                } else {
-                    Catalog::default()
-                };
-                doc.insert(Entry {
-                    tool: built.tool,
-                    key: built.key.clone(),
-                    requested: packages.clone(),
-                });
-                doc.save(&path)?;
+                add_to_catalog(&path, &built, &packages)?;
             }
             print(&report(built, packages, tapp))
         }
@@ -206,6 +196,25 @@ fn main() -> anyhow::Result<()> {
             print(&serde_json::json!({ "tools": merged.tools.len() }))
         }
     }
+}
+
+/// Add `built` to the catalog document at `path`, creating it if missing.
+fn add_to_catalog(
+    path: &Path,
+    built: &env_tools::Built,
+    requested: &[String],
+) -> anyhow::Result<()> {
+    let mut doc = if path.exists() {
+        Catalog::load(path)?
+    } else {
+        Catalog::default()
+    };
+    doc.insert(Entry {
+        tool: built.tool,
+        key: built.key.clone(),
+        requested: requested.to_vec(),
+    });
+    doc.save(path)
 }
 
 fn report(built: env_tools::Built, requested: Vec<String>, tapp: Option<PathBuf>) -> BuiltTool {
