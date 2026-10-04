@@ -45,6 +45,39 @@ pub struct SetArtwork {
     pub fit: Option<String>,
 }
 
+/// Start over on a blank artwork: its size, ground and first layer. The
+/// artwork before it stays in history, one undo away.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewArtwork {
+    pub title: Option<String>,
+    /// A size preset; `width` and `height` override it.
+    pub size: Option<String>,
+    /// Turn the size on its side.
+    pub landscape: Option<bool>,
+    /// Width in units, 16 to 8192.
+    pub width: Option<f64>,
+    /// Height in units, 16 to 8192.
+    pub height: Option<f64>,
+    /// A ground and first medium; the fields below override it.
+    pub start: Option<String>,
+    pub texture: Option<String>,
+    /// Ground colour, `#rrggbb`.
+    pub ground_colour: Option<String>,
+    /// The first layer's medium; empty for plain.
+    pub medium: Option<String>,
+}
+
+/// Replace the artwork with one saved as a file: its title, size, ground,
+/// layers, marks and media.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OpenArtwork {
+    /// A `.artwork` path, a content address, or the file's JSON.
+    // The action keeps the JSON, so every replica opens the same artwork.
+    pub file: String,
+}
+
 /// Add a layer on top, or above another.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -432,6 +465,8 @@ pub struct SetReference {
 #[serde(tag = "action", rename_all = "kebab-case")]
 pub enum CanvasAction {
     SetArtwork(SetArtwork),
+    NewArtwork(NewArtwork),
+    OpenArtwork(OpenArtwork),
     AddLayer(AddLayer),
     EditLayer(EditLayer),
     RemoveLayer(RemoveLayer),
@@ -1461,6 +1496,12 @@ impl tilo_actions::Action for CanvasAction {
         let art = doc::read(doc);
         match self {
             Self::SetArtwork(set) => set_artwork(doc, &art, set),
+            Self::NewArtwork(new) => replace(doc, &new.file()?),
+            Self::OpenArtwork(open) => {
+                let file =
+                    crate::document::ArtworkFile::parse(open.file.as_bytes()).map_err(refuse)?;
+                replace(doc, &file)
+            }
             Self::AddLayer(add) => add_layer(doc, &art, add),
             Self::EditLayer(edit) => edit_layer(doc, &art, edit),
             Self::RemoveLayer(remove) => {
@@ -1605,6 +1646,216 @@ fn set_artwork(doc: &mut Doc, art: &Artwork, set: &SetArtwork) -> Result<(), Act
         }
         let encoded = serde_json::to_string(&ground).unwrap_or_default();
         doc::put_text(doc, &ROOT, "ground", &encoded)?;
+    }
+    Ok(())
+}
+
+impl NewArtwork {
+    /// The blank artwork this starts: a size and a start resolved, each
+    /// overridden by what is given exactly.
+    ///
+    /// # Errors
+    /// Names the size, start, side, texture, colour or medium that is not
+    /// one of the choices.
+    pub fn file(&self) -> Result<crate::document::ArtworkFile, ActionError> {
+        use crate::document::{self, ArtworkFile, FileLayer};
+        let size = match &self.size {
+            Some(id) => Some(document::size(id).ok_or_else(|| {
+                refuse(format!(
+                    "size {id:?} must be one of {}",
+                    document::SIZES.map(|size| size.id).join(", ")
+                ))
+            })?),
+            None => None,
+        };
+        let start = match &self.start {
+            Some(id) => document::start(id).ok_or_else(|| {
+                refuse(format!(
+                    "start {id:?} must be one of {}",
+                    document::STARTS.map(|start| start.id).join(", ")
+                ))
+            })?,
+            None => document::STARTS[0],
+        };
+        let defaults = Artwork::default();
+        let (mut width, mut height) = size.map_or((defaults.width, defaults.height), |size| {
+            (size.width, size.height)
+        });
+        if self
+            .landscape
+            .is_some_and(|landscape| landscape != (width > height))
+        {
+            std::mem::swap(&mut width, &mut height);
+        }
+        let width = self.width.unwrap_or(width);
+        let height = self.height.unwrap_or(height);
+        for (value, what) in [(width, "width"), (height, "height")] {
+            if !(16.0..=MAX_SIDE).contains(&value) {
+                return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
+            }
+        }
+        let texture = self.texture.clone().unwrap_or_else(|| start.texture.into());
+        if tilo_wet_media::Texture::parse(&texture).is_none() {
+            return Err(refuse(format!(
+                "texture {texture:?} must be one of {}",
+                tilo_wet_media::Texture::names()
+            )));
+        }
+        let colour = self
+            .ground_colour
+            .clone()
+            .unwrap_or_else(|| start.colour.into());
+        if tilo_wet_media::colour::parse_hex(&colour).is_none() {
+            return Err(refuse(format!("ground_colour {colour:?} must be #rrggbb")));
+        }
+        let medium = self.medium.clone().unwrap_or_else(|| start.medium.into());
+        check_medium(&Artwork::default(), &medium)?;
+        let name = if medium.is_empty() {
+            "Layer 1".to_owned()
+        } else {
+            // "Watercolour, washes" names its layer "Watercolour".
+            media::resolve(&Artwork::default(), &medium).map_or_else(
+                || medium.clone(),
+                |spec| {
+                    spec.label
+                        .split(',')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned()
+                },
+            )
+        };
+        Ok(ArtworkFile {
+            title: self.title.clone().unwrap_or_default(),
+            width,
+            height,
+            ground: crate::model::Ground { texture, colour },
+            layers: vec![FileLayer {
+                id: "layer-1".into(),
+                name,
+                medium,
+                opacity: 1.0,
+                visible: true,
+                texture: 0.0,
+                locked: false,
+                mask_of: String::new(),
+                base: 1.0,
+                invert: false,
+                clip: false,
+                adjust: None,
+            }],
+            ..ArtworkFile::of(&Artwork::default())
+        })
+    }
+}
+
+/// Refuse a file whose sides, marks, layer ids or media are not valid.
+fn check_file(file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
+    for (value, what) in [(file.width, "width"), (file.height, "height")] {
+        if !(16.0..=MAX_SIDE).contains(&value) {
+            return Err(refuse(format!("{what} must be within 16..={MAX_SIDE}")));
+        }
+    }
+    if file.marks.len() > crate::model::MAX_MARKS {
+        return Err(refuse(format!(
+            "the artwork has {} marks, more than the {} one artwork holds",
+            file.marks.len(),
+            crate::model::MAX_MARKS
+        )));
+    }
+    for layer in &file.layers {
+        if !valid_id(&layer.id) {
+            return Err(refuse(format!(
+                "layer id {:?} must be 1-48 of a-z, 0-9, '-' and '_'",
+                layer.id
+            )));
+        }
+    }
+    for medium in file.media.values() {
+        medium.validate().map_err(refuse)?;
+    }
+    let with_media = Artwork {
+        media: file.media.clone(),
+        ..Artwork::default()
+    };
+    for layer in &file.layers {
+        check_medium(&with_media, &layer.medium)?;
+    }
+    for mark in &file.marks {
+        if !file.layers.iter().any(|layer| layer.id == mark.layer) {
+            return Err(refuse(format!(
+                "mark {:?} is on layer {:?}, which the artwork does not have",
+                mark.id, mark.layer
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Make the artwork `file`: everything the artwork had is removed and the
+/// file's title, size, ground, layers, marks and media written in their
+/// order.
+fn replace(doc: &mut Doc, file: &crate::document::ArtworkFile) -> Result<(), ActionError> {
+    use ui::automerge::ROOT;
+    use ui::automerge::transaction::Transactable as _;
+    check_file(file)?;
+    let old = doc::read(doc);
+    for mark in &old.marks {
+        doc::remove(doc, doc::MARKS, &mark.id)?;
+    }
+    for layer in &old.layers {
+        doc::remove(doc, doc::LAYERS, &layer.id)?;
+    }
+    for id in old.media.keys() {
+        doc::remove(doc, doc::MEDIA, id)?;
+    }
+    doc::write_reference(doc, None)?;
+    doc::write_selection(doc, None)?;
+    doc::put_text(doc, &ROOT, "title", &file.title)?;
+    doc.put(&ROOT, "width", file.width)?;
+    doc.put(&ROOT, "height", file.height)?;
+    let ground = serde_json::to_string(&file.ground).unwrap_or_default();
+    doc::put_text(doc, &ROOT, "ground", &ground)?;
+    for medium in file.media.values() {
+        doc::write_medium(doc, medium)?;
+    }
+    let mut below: Option<String> = None;
+    for layer in &file.layers {
+        let order = order::between(below.as_deref(), None);
+        doc::write_layer(
+            doc,
+            &Layer {
+                id: layer.id.clone(),
+                name: layer.name.clone(),
+                order: order.clone(),
+                medium: layer.medium.clone(),
+                opacity: layer.opacity.clamp(0.0, 1.0),
+                visible: layer.visible,
+                texture: layer.texture.clamp(0.0, 1.0),
+                locked: layer.locked,
+                mask_of: layer.mask_of.clone(),
+                base: layer.base.clamp(0.0, 1.0),
+                invert: layer.invert,
+                clip: layer.clip,
+                adjust: layer.adjust.clone(),
+            },
+        )?;
+        below = Some(order);
+    }
+    let mut last: BTreeMap<&str, String> = BTreeMap::new();
+    for mark in &file.marks {
+        let order = order::between(last.get(mark.layer.as_str()).map(String::as_str), None);
+        doc::write_mark(
+            doc,
+            &Mark::of_body(
+                mark.id.clone(),
+                mark.layer.clone(),
+                order.clone(),
+                mark.body.clone(),
+            ),
+        )?;
+        last.insert(&mark.layer, order);
     }
     Ok(())
 }

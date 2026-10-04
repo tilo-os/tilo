@@ -170,7 +170,7 @@ jobs:
             "$(sha256sum "$medium" | awk '{print $1}')" \
             > dist/dev-installer/tilo-dev-installer-aarch64.qcow2.sha256
           mv dev-installer-source.txt dist/dev-installer/source.txt
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-dev-installer-aarch64-${{ github.run_id }}
           path: dist/dev-installer/

@@ -702,12 +702,32 @@ impl ConnectivityState {
     }
 }
 
+/// Ask `NetworkManager` to recheck connectivity, and fall back to its last
+/// verdict when this caller may not ask for a recheck (polkit refuses that
+/// to clients outside an active session, such as a sandboxed app behind a
+/// filtered bus).
+///
 /// # Errors
 ///
-/// Returns an error message if `nmcli` is not installed or the connectivity check fails.
+/// Returns the recheck's error message if neither the recheck nor the
+/// cached verdict could be read (e.g. `nmcli` is not installed).
 pub fn get_connectivity() -> Result<ConnectivityState, String> {
-    let out = run_capture("nmcli", &["-t", "networking", "connectivity", "check"])?;
-    Ok(parse_connectivity(&out))
+    connectivity_from(
+        run_capture("nmcli", &["-t", "networking", "connectivity", "check"]),
+        || run_capture("nmcli", &["-t", "networking", "connectivity"]),
+    )
+}
+
+fn connectivity_from(
+    check: Result<String, String>,
+    cached: impl FnOnce() -> Result<String, String>,
+) -> Result<ConnectivityState, String> {
+    match check {
+        Ok(out) => Ok(parse_connectivity(&out)),
+        Err(check_error) => cached()
+            .map(|out| parse_connectivity(&out))
+            .map_err(|_| check_error),
+    }
 }
 
 /// Return `NetworkManager`'s configured connectivity-check URI. Opening this
@@ -1501,6 +1521,23 @@ mod profile_tests {
             assert_eq!(parse_connectivity("portal\n"), ConnectivityState::Portal);
             assert_eq!(parse_connectivity("limited\n"), ConnectivityState::Limited);
             assert_eq!(parse_connectivity("full\n"), ConnectivityState::Full);
+        }
+        // Phase `a_refused_recheck_falls_back_to_the_cached_verdict`.
+        {
+            let refused =
+                || Err::<String, String>("Error: Not authorized to recheck connectivity.".into());
+            assert_eq!(
+                connectivity_from(refused(), || Ok("full\n".into())),
+                Ok(ConnectivityState::Full)
+            );
+            assert_eq!(
+                connectivity_from(Ok("portal\n".into()), || unreachable!()),
+                Ok(ConnectivityState::Portal)
+            );
+            assert_eq!(
+                connectivity_from(refused(), || Err("nmcli not installed".into())),
+                Err("Error: Not authorized to recheck connectivity.".into())
+            );
         }
         // Phase `saved_profiles_preserve_escaped_colons_and_autoconnect`.
         {

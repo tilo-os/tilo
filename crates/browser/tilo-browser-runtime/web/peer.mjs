@@ -579,7 +579,8 @@ export async function withCustody(custody, connecting, signal) {
   }
   const dispose = peer.dispose;
   peer.dispose = async () => {
-    try { await dispose(); } finally { custody.close(); }
+    // The page may connect again once this resolves: the device key is free by then.
+    try { await dispose(); } finally { await custody.close(); }
   };
   signal?.addEventListener('abort', () => custody.close(), {once: true});
   return peer;

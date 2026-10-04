@@ -1142,6 +1142,12 @@ impl TextInput {
         &self.text
     }
 
+    /// Whether an IME candidate is displayed but not yet committed as text.
+    /// Composite editors must leave candidate-selection keys to the IME.
+    pub fn is_composing(&self) -> bool {
+        !self.preedit.is_empty()
+    }
+
     /// Register an app-local callback for committed user edits.
     ///
     /// Keyboard input, paste, accessibility edits, and committed IME text
@@ -3287,14 +3293,16 @@ impl TextInput {
         self.cursor_from_x(logical_x)
     }
 
+    /// A secret refuses Copy and Cut, shown or not, as password fields do
+    /// everywhere: its value never leaves the field.
     fn do_copy(&self) {
-        if let Some(s) = self.selected_str() {
+        if let Some(s) = self.shareable_selection() {
             clipboard_copy(s);
         }
     }
 
     fn do_cut(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
-        if let Some(s) = self.selected_str() {
+        if let Some(s) = self.shareable_selection() {
             let owned = s.to_string();
             // Delete only once the text is on a clipboard; a failed copy
             // must not lose the selection.
@@ -3718,7 +3726,7 @@ impl TextInput {
             self.caret_affinity = TextAffinity::Before;
         }
 
-        let has_sel = self.has_selection();
+        let can_share = self.shareable_selection().is_some();
         let can_paste = clipboard_paste().is_some_and(|s| !s.is_empty());
 
         let mut menu = ContextMenu::new();
@@ -3761,7 +3769,7 @@ impl TextInput {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
-        if has_sel && !self.text_actions.is_empty() {
+        if can_share && !self.text_actions.is_empty() {
             for (index, action) in self.text_actions.iter().enumerate() {
                 menu.push(MenuItem::action(action.label.clone(), || {}));
                 actions.push(Some(CtxAction::TextAction(index)));
@@ -3769,7 +3777,7 @@ impl TextInput {
             menu.push(MenuItem::separator());
             actions.push(None);
         }
-        if has_sel {
+        if can_share {
             menu.push(MenuItem::action("Cut", || {}));
             actions.push(Some(CtxAction::Cut));
             menu.push(MenuItem::action("Copy", || {}));
@@ -3842,10 +3850,11 @@ impl TextInput {
                 let _ = self.undo_last_autocorrection(false, state, obj_id);
             }
             CtxAction::TextAction(index) => {
-                if let (Some(action), Some((start, end))) =
-                    (self.text_actions.get(index), self.selection_range())
-                    && let Some(selected) = self.text.get(start..end)
-                {
+                if let (Some(action), Some((start, end)), Some(selected)) = (
+                    self.text_actions.get(index),
+                    self.selection_range(),
+                    self.shareable_selection(),
+                ) {
                     self.pending_text_action = Some(TextActionRequest {
                         id: action.id.clone(),
                         text: selected.to_string(),
@@ -4191,6 +4200,9 @@ impl Widget for TextInput {
     ) {
         self.last_caret_width = theme.caret_width;
         self.gutter_text_scale = f64::from(theme.text_scale);
+        if self.secret && !self.text.is_empty() {
+            crate::secret_paint::note_secret_painted();
+        }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
         if !self.plain {
             self.draw_field_chrome(scene, transform, theme, &shape);
@@ -5444,12 +5456,14 @@ impl TextInput {
     /// the user dragged across its bullets; middle click may still paste a
     /// primary selection *into* a secret field, matching GTK password inputs.
     fn publish_primary_selection(&self) {
-        if let Some(selected) = self.primary_selection_text() {
+        if let Some(selected) = self.shareable_selection() {
             clipboard_copy_primary(selected);
         }
     }
 
-    fn primary_selection_text(&self) -> Option<&str> {
+    /// The selection as it may leave the field — for the clipboard, the
+    /// primary selection or a host's text action. Never a secret's.
+    fn shareable_selection(&self) -> Option<&str> {
         (!self.secret).then(|| self.selected_str()).flatten()
     }
 

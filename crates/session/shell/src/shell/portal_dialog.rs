@@ -2345,6 +2345,17 @@ impl PortalDialogController {
         &self.entries
     }
 
+    /// Whether the sheet up now asks for a secret: administrator
+    /// authentication, network secrets, or any sheet whose field is a
+    /// secret, such as a shortcut step's masked answer.
+    pub fn holds_secret(&self) -> bool {
+        matches!(
+            self.view(),
+            Some(DialogView::Authentication { .. } | DialogView::NetworkSecrets { .. })
+        ) || self.text_field().is_some_and(TextInput::is_secret)
+            || self.entries.iter().any(TextInput::is_secret)
+    }
+
     fn forget_secret(&mut self) {
         // Overwrite before release so the freed allocation does not keep
         // the password.

@@ -473,17 +473,27 @@ pub(crate) fn validate_bound_resources(
     binding: &CallbackBinding,
     resources: &[tilo_actions::Resource],
 ) -> Result<bool, BoundDispatchError> {
+    Ok(bound_contract_violations(root, binding, resources)?.is_some_and(|found| found.is_empty()))
+}
+
+/// Every contract violation of one component's surface, checked against the
+/// component's own registry and operation handlers. `None` when the binding
+/// names no mounted component.
+pub(crate) fn bound_contract_violations(
+    root: &mut dyn Widget,
+    binding: &CallbackBinding,
+    resources: &[tilo_actions::Resource],
+) -> Result<Option<Vec<tilo_actions::ContractViolation>>, BoundDispatchError> {
     let _entry = binding.enter()?;
-    let mut valid = false;
+    let mut violations = None;
     let mut visit = |_: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
                      registry: &tilo_actions::ActionRegistry| {
-        valid = tilo_actions::validate_surface(
+        violations = Some(tilo_actions::validate_surface(
             resources,
             registry,
             &widget.resource_operation_handlers(),
-        )
-        .is_empty();
+        ));
         None
     };
     root.visit_components(&mut ComponentRequest {
@@ -491,7 +501,7 @@ pub(crate) fn validate_bound_resources(
         found: false,
         visit: &mut visit,
     })?;
-    Ok(valid)
+    Ok(violations)
 }
 
 /// Collect each retained component once even when an ordinary container does

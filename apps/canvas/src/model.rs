@@ -19,6 +19,8 @@ use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _};
 pub const MAX_SIDE: f64 = 8192.0; // a document limit in artwork units, not on-screen spacing
 /// The most marks one action may add.
 pub const MAX_MARKS_PER_ACTION: usize = 2000;
+/// The most marks an artwork opened from a file may hold.
+pub const MAX_MARKS: usize = 100_000;
 /// The most points one stroke or outline may have.
 pub const MAX_POINTS: usize = 4096;
 
@@ -440,6 +442,37 @@ pub struct MarkBody {
     pub clip: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub area: String,
+}
+
+impl Mark {
+    /// What is stored of the mark besides its id, layer and place.
+    pub fn body(&self) -> MarkBody {
+        MarkBody {
+            name: self.name.clone(),
+            shape: self.shape.clone(),
+            style: self.style.clone(),
+            transform: self.transform,
+            group: self.group.clone(),
+            clip: self.clip.clone(),
+            area: self.area.clone(),
+        }
+    }
+
+    /// The mark `id` on `layer` at `order`, made of `body`.
+    pub fn of_body(id: String, layer: String, order: String, body: MarkBody) -> Self {
+        Self {
+            id,
+            layer,
+            order,
+            name: body.name,
+            shape: body.shape,
+            style: body.style,
+            transform: body.transform,
+            group: body.group,
+            clip: body.clip,
+            area: body.area,
+        }
+    }
 }
 
 /// The whole artwork as views and actions read it.

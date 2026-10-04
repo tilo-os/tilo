@@ -56,6 +56,9 @@ FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
 FRAMEWORK_LAUNCH = re.compile(
     r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<|\b\w+\s*::\s*main\s*!\s*\("
 )
+# A framework app answers its effect and view operations as a typed
+# vocabulary: a surface's `ResourceSurface::effect`, a view's `cx.effects(..)`.
+TYPED_EFFECT_HANDLER = re.compile(r"\bfn\s+effect\s*\(|\.\s*effects\s*\(\s*(?:move\s*)?\|")
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
@@ -738,12 +741,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
             sources.append((source, source.read_text(encoding="utf-8")))
         combined_raw = "\n".join(text for _, text in sources)
         combined = rust_code_only(combined_raw)
-        # What the app publishes, without its tests: a test asserting that a
-        # published operation is an effect publishes nothing.
-        production = "\n".join(
+        # Hand-built effect/view specs are judged by what ships: a test may
+        # assert the kind of an operation the framework publishes.
+        shipped = "\n".join(
             production_code(text)
             for source, text in sources
-            if not is_test_source(source.relative_to(manifest_path.parent).as_posix())
+            if not is_test_source(source.relative_to(root).as_posix())
         )
         main_path = manifest_path.parent / "src" / "main.rs"
         main_raw = main_path.read_text(encoding="utf-8") if main_path.is_file() else ""
@@ -829,9 +832,11 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "app builds no runtime Resource value (an empty provider is not a protocol)",
                     )
                 )
+            typed_effects = framework_host and TYPED_EFFECT_HANDLER.search(combined) is not None
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(production)
+                and not typed_effects
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER.search(combined)
             ):
                 violations.append(
@@ -843,7 +848,8 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 )
             if (
                 not toolkit_host
-                and OPERATION_KIND.search(production)
+                and not typed_effects
+                and OPERATION_KIND.search(shipped)
                 and not OPERATION_HANDLER_REGISTRY.search(combined)
             ):
                 violations.append(
@@ -853,7 +859,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         "effect/view actions require an explicit runtime handler registry",
                     )
                 )
-            if not toolkit_host and OPERATION_KIND.search(combined):
+            if not toolkit_host and OPERATION_KIND.search(shipped):
                 for entry in unattached_handler_entries(combined_raw):
                     violations.append(
                         Violation(

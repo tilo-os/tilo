@@ -45,8 +45,8 @@ pub trait Images: Send + Sync {
 }
 
 /// OCI references (`host/repo[:tag]`, comma-separated) to fetch images no
-/// local store holds from. A relay sets it for its members' supervisors; a
-/// device ships its images and leaves it unset.
+/// local store holds from instead of the repositories CI publishes to. A
+/// relay sets it for its members' supervisors; a device leaves it unset.
 pub const IMAGE_SOURCES_ENV: &str = "TILO_USH_IMAGE_SOURCES";
 
 /// Where images fetched from [`IMAGE_SOURCES_ENV`] are cached.
@@ -91,8 +91,9 @@ impl StoreImages {
     /// The device's stores, as the package store finds them, also trusting
     /// images this device signed (the tools its builder made) and the ones
     /// the user's other devices signed while they are the user's
-    /// ([`crate::fleet`]). Images built elsewhere are fetched from the shelf
-    /// in the user's synced files, when this session has them mounted.
+    /// ([`crate::fleet`]). An image no store holds comes from the shelf in
+    /// the user's synced files ([`synced_files`]), then from the OCI registry
+    /// ([`registry_images`]); only a tool neither has is built.
     ///
     /// # Errors
     /// Returns why the stores cannot be opened.
@@ -108,20 +109,33 @@ impl StoreImages {
         if let Some(key) = trusted_publisher_from_env()? {
             trust = trust.with_publisher(key);
         }
-        let mut store = store.with_trust(trust);
-        if let Some(fetcher) = oci_fetcher_from_env()? {
-            store = store.with_fetcher(fetcher);
-        }
-        let images = Self::new(store);
+        // Sources in the order they are asked: the shelf, then the registry.
+        let mut images = Self::new(store.with_trust(trust));
         let shelf = std::env::var_os(IMAGE_SHELF_ENV)
             .map(PathBuf::from)
             .filter(|shelf| shelf.is_absolute())
-            .or_else(|| xdg_paths::workspace_root().map(|synced| synced.join(SHELF_DIR)));
-        Ok(match shelf {
-            Some(shelf) => images.with_shelf(package_store::ImageShelf::at(shelf)),
-            None => images,
-        })
+            .or_else(|| synced_files().map(|synced| synced.join(SHELF_DIR)));
+        if let Some(shelf) = shelf {
+            images = images.with_shelf(package_store::ImageShelf::at(shelf));
+        }
+        if let Some(registry) = registry_images()? {
+            images.store = images.store.with_fetcher(registry);
+        }
+        Ok(images)
     }
+}
+
+/// The user's synced files as the supervisor reaches them: the workspace the
+/// session names, else the filesystem daemon's mount at
+/// [`xdg_paths::WORKSPACE_MOUNT`], where the Files app reads them too. The
+/// supervisor is the `tilo-ush` user service, started with no workspace in
+/// its environment and in the host's mount namespace, so the mount is what a
+/// normal session finds.
+pub fn synced_files() -> Option<PathBuf> {
+    xdg_paths::workspace_root().or_else(|| {
+        let mount = PathBuf::from(xdg_paths::WORKSPACE_MOUNT);
+        mount.is_dir().then_some(mount)
+    })
 }
 
 /// A tool builder whose images the user's other devices can fetch: each
@@ -172,10 +186,20 @@ fn trusted_publisher_from_env() -> Result<Option<[u8; 32]>, String> {
         .ok_or_else(|| format!("{TRUSTED_PUBLISHER_ENV} is not a 32-byte hex key"))
 }
 
-/// The OCI fetcher [`IMAGE_SOURCES_ENV`] and [`IMAGE_CACHE_ENV`] describe.
-fn oci_fetcher_from_env() -> Result<Option<tilo_oci_images::OciImages>, String> {
-    let Some(sources) = std::env::var_os(IMAGE_SOURCES_ENV) else {
-        return Ok(None);
+/// The OCI registry images no local store or shelf holds come from:
+/// [`IMAGE_SOURCES_ENV`] (cached in [`IMAGE_CACHE_ENV`]) on a relay, else the
+/// repositories CI publishes env-runtimes and catalog tools to, cached under
+/// `$XDG_CACHE_HOME/tilo/env-images`. `None` on a device without a cache
+/// directory. Where an image came from earns it no trust: the CI key the
+/// system store names, or one of the user's devices, must have signed it.
+///
+/// # Errors
+/// Returns why [`IMAGE_SOURCES_ENV`] or [`IMAGE_CACHE_ENV`] is unusable.
+pub fn registry_images() -> Result<Option<tilo_oci_images::OciImages>, String> {
+    let Some(sources) = std::env::var_os(IMAGE_SOURCES_ENV).filter(|s| !s.is_empty()) else {
+        return Ok(xdg_paths::xdg::cache_home()
+            .filter(|cache| cache.is_absolute())
+            .map(|cache| tilo_oci_images::OciImages::published(cache.join("tilo/env-images"))));
     };
     let sources = sources
         .to_string_lossy()

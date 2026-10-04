@@ -228,8 +228,9 @@ impl Dropdown {
 
     /// A menu button: the control is `icon` alone, its list opens at least
     /// [`MENU_MIN_WIDTH`] wide aligned to the control's trailing edge, and
-    /// choosing an option reports it (to [`Self::on_change`] or
-    /// [`Self::on_action`]) without the control keeping it as its value.
+    /// choosing an option reports it (to [`Self::on_action`], or to the
+    /// view state of [`Self::from_state`]) without the control keeping it as
+    /// its value.
     /// Name it with [`Self::with_accessible_name`]: it shows no text.
     #[must_use]
     pub fn as_menu(mut self, icon: crate::icons::Icon) -> Self {
@@ -569,11 +570,14 @@ impl Dropdown {
     /// Store `value` through the binding and mirror it locally.
     fn commit_value(&mut self, value: &str, state: &mut AppModel, root: &ModelPath) {
         if self.menu.is_some() {
-            // A menu's choice is a command: reported, never kept.
+            // A menu's choice is a command: reported, never kept. A menu
+            // bound to view state reports it there, for the view to act on.
             if let Some(action) = &mut self.action {
                 let _ = action.emit(value.to_string());
             } else if let Some(callback) = self.on_change.as_mut() {
                 callback(value);
+            } else if let Some(binding) = &mut self.binding {
+                binding.push(state, root, &value.to_string());
             }
             return;
         }

@@ -14,10 +14,10 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use ui::TextRenderer;
-use ui::vello::kurbo::{Affine, Point};
+use ui::vello::kurbo::{Affine, Point, Rect};
 
 use crate::model::{Artwork, path_data};
-use crate::region::{Mask, Op, Region};
+use crate::region::{Coverage, Op, Region};
 use crate::render::{Options, Renderer};
 use crate::selection::Select;
 
@@ -66,6 +66,9 @@ pub struct ColourQuery {
     pub everywhere: bool,
     /// See only these layers.
     pub layers: Option<Vec<String>>,
+    /// Find it only inside this area: the selection, when the wand takes
+    /// from it or keeps only what is in it, or the bucket fills inside it.
+    pub within: Option<Region>,
 }
 
 /// Turn `select`'s colour into the area it finds, in `d`.
@@ -95,8 +98,23 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
         tolerance,
         everywhere: select.at.is_none(),
         layers: None,
+        within: None,
     };
-    let found = with_sight(|renderer, text, art| colour_region(renderer, text, art, &query))?;
+    // Taking from the selection, or keeping only part of it, the wand looks
+    // only inside it: what it finds cannot reach other parts through
+    // colour outside.
+    let within_selection = matches!(select.mode.as_deref(), Some("subtract" | "intersect"));
+    let found = with_sight(|renderer, text, art| {
+        let query = ColourQuery {
+            within: art
+                .selection
+                .as_ref()
+                .filter(|_| within_selection)
+                .map(crate::model::Selection::region),
+            ..query
+        };
+        colour_region(renderer, text, art, &query)
+    })?;
     let found = match &select.d {
         Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
             .combine(&found, Op::Union),
@@ -137,7 +155,9 @@ pub fn with_sight<T>(
 }
 
 /// The area of `art` showing the colour `query` names, found in a picture
-/// of it.
+/// of it. The wand looks at the whole artwork first, then again closer at
+/// the part it found, so its edge follows the paint finely on a big
+/// artwork too.
 ///
 /// # Errors
 /// Returns a point outside the artwork, or a render failure.
@@ -147,67 +167,135 @@ pub fn colour_region(
     art: &Artwork,
     query: &ColourQuery,
 ) -> Result<Region, String> {
+    let whole = art.bounds();
     let scale = (f64::from(WAND_SIDE) / art.width.max(art.height).max(1.0)).min(2.0);
-    let options = Options {
-        layers: query.layers.clone(),
-        bare: query.layers.is_some(),
-        ..Options::default()
+    let mut eye = Eye {
+        renderer,
+        text,
+        art,
+        query,
     };
-    let (rgba, width, height) =
-        crate::view_ops::pixels(art.bounds(), scale, options.bare, |scene, to| {
-            renderer.draw(art, scene, to, text, &options);
-        })?;
-    let (width, height) = (width as usize, height as usize);
-    let pixel = |x: usize, y: usize| -> [u8; 4] {
-        let start = (y * width + x) * 4;
-        rgba.get(start..start + 4)
-            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-            .unwrap_or_default()
-    };
-    let seed = match query.at {
-        Some(at) => {
-            let cell = Affine::scale(scale) * at;
-            if !(0.0..f64::from(u32::try_from(width).unwrap_or(u32::MAX))).contains(&cell.x)
-                || !(0.0..f64::from(u32::try_from(height).unwrap_or(u32::MAX))).contains(&cell.y)
-            {
-                return Err(format!(
-                    "at [{}, {}] is outside the artwork (0, 0, {}, {})",
-                    at.x, at.y, art.width, art.height
-                ));
-            }
-            Some((index(cell.x), index(cell.y)))
+    let first = eye.look(whole, scale, None)?;
+    let found = match closer(art, query, &first, scale) {
+        Some((view, closer_scale)) => {
+            // Closer, it may only find what it found, and the pixels about
+            // its edge.
+            let near = first.grown(3.0 / scale);
+            let again = eye.look(view, closer_scale, Some(&near))?;
+            if again.is_empty() { first } else { again }
         }
-        None => None,
+        None => first,
     };
-    let target = match (seed, query.colour) {
-        (_, Some([r, g, b])) => [r, g, b, 255],
-        (Some((x, y)), None) => pixel(x, y),
-        (None, None) => return Err("give at or colour".into()),
-    };
-    let reach = (query.tolerance * 255.0).round();
-    let like = |colour: [u8; 4]| {
-        colour
-            .iter()
-            .zip(target)
-            .all(|(a, b)| (f64::from(*a) - f64::from(b)).abs() <= reach)
-    };
-    let mut cells = vec![false; width * height];
-    match seed.filter(|_| !query.everywhere) {
-        Some((x, y)) => flood(&mut cells, (width, height), (x, y), |x, y| {
-            like(pixel(x, y))
-        }),
-        None => {
-            for (cell, colour) in cells.iter_mut().zip(rgba.chunks_exact(4)) {
-                *cell = <[u8; 4]>::try_from(colour).is_ok_and(like);
-            }
-        }
+    // Found inside `within`, its edge runs a little past it, so taking it
+    // from the selection or keeping only it there leaves no sliver along
+    // the selection's own edge.
+    Ok(found.combine(&Region::of_rect(whole), Op::Intersect))
+}
+
+/// Where to look again, closer, at what the first look found: the part of
+/// the artwork around it in a picture of the same size, when that is
+/// markedly closer.
+fn closer(art: &Artwork, query: &ColourQuery, found: &Region, scale: f64) -> Option<(Rect, f64)> {
+    if query.everywhere || query.at.is_none() {
+        return None;
     }
-    let mask = Mask {
-        width,
-        height,
-        cells,
-    };
-    Ok(mask.traced(Affine::scale(1.0 / scale)))
+    let bounds = found.bounds()?.inflate(3.0 / scale, 3.0 / scale);
+    let (width, height) = (art.width * scale, art.height * scale);
+    let closer = (width / bounds.width().max(1e-6))
+        .min(height / bounds.height().max(1e-6))
+        .min(MOST_PIXELS_PER_UNIT);
+    if closer < scale * 1.25 {
+        return None;
+    }
+    // The same size of picture as the first look, so its renderer is kept.
+    let (half_width, half_height) = (width / closer / 2.0, height / closer / 2.0);
+    let centre = bounds.center();
+    Some((
+        Rect::new(
+            centre.x - half_width,
+            centre.y - half_height,
+            centre.x + half_width,
+            centre.y + half_height,
+        ),
+        closer,
+    ))
+}
+
+/// The closest the wand looks, in pixels per unit.
+const MOST_PIXELS_PER_UNIT: f64 = 8.0; // a sampling density of the artwork, not on-screen spacing
+
+/// What the wand looks with.
+struct Eye<'a> {
+    renderer: &'a mut Renderer,
+    text: &'a mut TextRenderer,
+    art: &'a Artwork,
+    query: &'a ColourQuery,
+}
+
+impl Eye<'_> {
+    /// The colour the query names in a picture of `view` at `scale` pixels
+    /// per unit, found only inside `near` when given.
+    fn look(&mut self, view: Rect, scale: f64, near: Option<&Region>) -> Result<Region, String> {
+        let (art, query) = (self.art, self.query);
+        let options = Options {
+            layers: query.layers.clone(),
+            bare: query.layers.is_some(),
+            ..Options::default()
+        };
+        let (renderer, text) = (&mut *self.renderer, &mut *self.text);
+        let (rgba, width, height) =
+            crate::view_ops::pixels(view, scale, options.bare, |scene, to| {
+                renderer.draw(art, scene, to, text, &options);
+            })?;
+        let (width, height) = (width as usize, height as usize);
+        let to_cells = Affine::scale(scale) * Affine::translate((-view.x0, -view.y0));
+        let seed = match query.at {
+            Some(at) => {
+                let cell = to_cells * at;
+                let inside = |value: f64, side: usize| {
+                    (0.0..f64::from(u32::try_from(side).unwrap_or(u32::MAX))).contains(&value)
+                };
+                if !art.bounds().contains(at) || !inside(cell.x, width) || !inside(cell.y, height) {
+                    return Err(format!(
+                        "at [{}, {}] is outside the artwork (0, 0, {}, {})",
+                        at.x, at.y, art.width, art.height
+                    ));
+                }
+                Some((index(cell.x), index(cell.y)))
+            }
+            None => None,
+        };
+        if seed.is_none() && query.colour.is_none() {
+            return Err("give at or colour".into());
+        }
+        // Only the artwork, only inside what it may find.
+        let mut allowed = Region::of_rect(art.bounds());
+        for limit in [query.within.as_ref(), near].into_iter().flatten() {
+            allowed = allowed.combine(limit, Op::Intersect);
+        }
+        let allowed = allowed.cells(to_cells, width, height);
+        let field = crate::wand::coverage(
+            &crate::wand::Picture {
+                rgba: &rgba,
+                width,
+                height,
+            },
+            &crate::wand::Wand {
+                seed,
+                colour: query.colour,
+                tolerance: query.tolerance,
+                everywhere: query.everywhere,
+                allowed: Some(&allowed),
+                pixels_per_unit: scale,
+            },
+        );
+        Ok(Coverage {
+            width,
+            height,
+            cells: &field,
+        }
+        .traced(to_cells.inverse()))
+    }
 }
 
 #[allow(
@@ -217,70 +305,4 @@ pub fn colour_region(
 )]
 fn index(value: f64) -> usize {
     value.floor().max(0.0) as usize
-}
-
-/// Set every cell reachable from `start` through cells `inside` says are
-/// in, one row's run at a time.
-fn flood(
-    cells: &mut [bool],
-    (width, height): (usize, usize),
-    start: (usize, usize),
-    inside: impl Fn(usize, usize) -> bool,
-) {
-    let mut seen = vec![false; cells.len()];
-    let mut stack = vec![start];
-    while let Some((x, y)) = stack.pop() {
-        let at = y * width + x;
-        if seen.get(at).copied().unwrap_or(true) || !inside(x, y) {
-            continue;
-        }
-        // The run of the row through (x, y).
-        let mut left = x;
-        while left > 0
-            && !seen.get(at - (x - left) - 1).copied().unwrap_or(true)
-            && inside(left - 1, y)
-        {
-            left -= 1;
-        }
-        let mut right = x;
-        while right + 1 < width
-            && !seen.get(at + (right - x) + 1).copied().unwrap_or(true)
-            && inside(right + 1, y)
-        {
-            right += 1;
-        }
-        for column in left..=right {
-            let cell = y * width + column;
-            if let Some(slot) = seen.get_mut(cell) {
-                *slot = true;
-            }
-            if let Some(slot) = cells.get_mut(cell) {
-                *slot = true;
-            }
-            if y > 0 {
-                stack.push((column, y - 1));
-            }
-            if y + 1 < height {
-                stack.push((column, y + 1));
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_flood_stays_inside_its_colour() {
-        // Two columns of in-cells joined at the bottom, and an island.
-        let (width, height) = (7, 5);
-        let inside = |x: usize, y: usize| x == 1 || x == 3 || y == 4 || (x == 6 && y == 0);
-        let mut cells = vec![false; width * height];
-        flood(&mut cells, (width, height), (1, 0), inside);
-        assert!(cells[3], "the other column joins through the bottom row");
-        assert!(cells[4 * width + 6], "the bottom row is reached");
-        assert!(!cells[6], "the island is not");
-        assert!(!cells[width], "nor a cell between the columns");
-    }
 }

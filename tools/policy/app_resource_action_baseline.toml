@@ -20,7 +20,6 @@
 
 [ratchets.app_action_host]
 "apps/api-tester/src/resource.rs" = 2
-"apps/backups/src/resource.rs" = 2
 "apps/browser/src/resource.rs" = 2
 "apps/calendar/src/resource.rs" = 1
 "apps/camera/src/resource.rs" = 2
@@ -29,7 +28,6 @@
 "apps/code-editor/src/resource.rs" = 2
 "apps/contacts/src/resource.rs" = 2
 "apps/diffmerge/src/resource.rs" = 2
-"apps/disk-usage/src/resource.rs" = 1
 "apps/ebook/src/resource.rs" = 2
 "apps/feeds/src/resource.rs" = 2
 "apps/file-explorer/src/resource.rs" = 2
@@ -42,7 +40,6 @@
 "apps/osk/src/resource.rs" = 2
 "apps/pdf-viewer/src/resource.rs" = 2
 "apps/photos/src/resource.rs" = 2
-"apps/print-centre/src/resource.rs" = 1
 "apps/settings/src/resource.rs" = 2
 "apps/sheets/src/resource.rs" = 1
 "apps/slides/src/app.rs" = 1
@@ -54,13 +51,11 @@
 "apps/typst-editor/src/app.rs" = 2
 "apps/video-editor/src/resource.rs" = 1
 "apps/video-player/src/resource.rs" = 2
-"apps/vpn/src/resource.rs" = 2
 "apps/weather/src/resource.rs" = 2
 
 [ratchets.standalone_launch]
 "apps/api-tester/src/lib.rs" = 2
 "apps/api-tester/src/main.rs" = 2
-"apps/backups/src/main.rs" = 2
 "apps/calendar/src/main.rs" = 1
 "apps/camera/src/lib.rs" = 2
 "apps/camera/src/main.rs" = 1
@@ -84,7 +79,6 @@
 "apps/pdf-viewer/src/lib.rs" = 2
 "apps/pdf-viewer/src/main.rs" = 3
 "apps/photos/src/lib.rs" = 2
-"apps/print-centre/src/main.rs" = 2
 "apps/settings/src/main.rs" = 1
 "apps/slides/src/lib.rs" = 2
 "apps/slides/src/main.rs" = 1
@@ -96,7 +90,6 @@
 "apps/tube/src/main.rs" = 2
 "apps/typst-editor/src/lib.rs" = 2
 "apps/typst-editor/src/main.rs" = 1
-"apps/vpn/src/main.rs" = 2
 "apps/weather/src/main.rs" = 2
 "apps/word-processor/src/main.rs" = 3
 
@@ -109,7 +102,6 @@
 "apps/clocks/src/resource.rs" = 1
 "apps/imager/src/setup/actions.rs" = 1
 "apps/imager/src/setup/import_actions.rs" = 1
-"apps/print-centre/src/resource.rs" = 1
 "apps/speed-test/src/resource.rs" = 1
 
 [ratchets.widget_owned_document]

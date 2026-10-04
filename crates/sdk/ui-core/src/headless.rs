@@ -4567,6 +4567,46 @@ impl FrameHarness {
         resources
     }
 
+    /// Every action contract violation that would make the live host refuse
+    /// to publish a mounted component's surface. The host withdraws a whole
+    /// component when one of its actions breaks its contract, so a test
+    /// asserts this is empty rather than finding the surface gone at runtime.
+    pub fn component_contract_violations(&mut self) -> Vec<tilo_actions::ContractViolation> {
+        self.drain_component_wakes();
+        let components = match crate::bound_dispatch::discover_bound_resources(
+            self.root.as_ref(),
+            &self.state.doc,
+            None,
+        ) {
+            Ok(components) => components,
+            Err(error) => {
+                return vec![tilo_actions::ContractViolation {
+                    address: "application-root".into(),
+                    reason: format!("bound resources are not discoverable: {error:?}"),
+                }];
+            }
+        };
+        let mut violations = Vec::new();
+        for component in components {
+            match crate::bound_dispatch::bound_contract_violations(
+                self.root.as_mut(),
+                &component.binding,
+                &component.resources,
+            ) {
+                Ok(Some(found)) => violations.extend(found),
+                Ok(None) => violations.push(tilo_actions::ContractViolation {
+                    address: format!("{:?}", component.binding.instance_id),
+                    reason: "component is not mounted".into(),
+                }),
+                Err(error) => violations.push(tilo_actions::ContractViolation {
+                    address: format!("{:?}", component.binding.instance_id),
+                    reason: format!("{error:?}"),
+                }),
+            }
+        }
+        violations
+    }
+
     /// The live document. Used to dump state and to hand to a saver.
     pub fn state_mut(&mut self) -> &mut State {
         self.pump_component_wakes();

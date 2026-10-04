@@ -62,6 +62,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's search entries at one live revision, indexed.
     search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
+    /// The view operation types of the nested resources at one live revision.
+    nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// The palette the view was last drawn in, which `render` draws it in.
     drawn_theme: Option<Theme>,
     /// Shapes text for `render`, which runs outside a frame.
@@ -170,6 +172,7 @@ impl<R: Resource> ResourceRoot<R> {
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
+            nested_views: std::cell::RefCell::new(None),
             drawn_theme: None,
             render_text: None,
             past: None,
@@ -317,6 +320,36 @@ impl<R: Resource> ResourceRoot<R> {
             resource = resource.with_action(spec);
         }
         resource
+    }
+
+    /// The operation types of the views the resource's nested resources
+    /// publish (the editor of a note's rich-text body): presentations of the
+    /// resource this root has mounted, answered like its own.
+    fn nested_views(&self) -> Rc<HashSet<String>> {
+        fn collect(resources: &[tilo_actions::Resource], views: &mut HashSet<String>) {
+            for resource in resources {
+                views.extend(
+                    resource
+                        .actions
+                        .iter()
+                        .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
+                        .filter_map(|spec| spec.operation_type.clone()),
+                );
+                collect(&resource.children, views);
+            }
+        }
+        let revision = self.live.revision();
+        let mut cached = self.nested_views.borrow_mut();
+        match cached.as_ref() {
+            Some((at, views)) if *at == revision => Rc::clone(views),
+            _ => {
+                let mut views = HashSet::new();
+                collect(&R::children(&self.live.get()), &mut views);
+                let views = Rc::new(views);
+                *cached = Some((revision, Rc::clone(&views)));
+                views
+            }
+        }
     }
 
     /// The dispatcher the root's views submit through, which the host drains.
@@ -632,6 +665,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
                 handlers.insert(type_id);
             }
         }
+        handlers.extend(self.nested_views().iter().cloned());
         handlers
     }
 
@@ -679,9 +713,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
             return Ok(Some(started));
         }
-        // View openers from the resource/presentation catalogue (e.g.
-        // `tilo.rich-text.view` editor/compact) are already mounted; accept
-        // them so agents and Ctrl+K can switch without a missing-handler fault.
+        // View openers from the resource/presentation catalogue and from its
+        // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
+        // editor/compact) are already mounted; accept them so agents and
+        // Ctrl+K can switch without a missing-handler fault.
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
@@ -691,7 +726,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         let known = R::local_operations()
             .into_iter()
             .chain(self.presentation.iter().cloned())
-            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id));
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
+            || self.nested_views().contains(request.type_id);
         if known {
             Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
