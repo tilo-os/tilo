@@ -88,15 +88,26 @@ fn toolbar_controls_align_and_move_into_the_overflow_menu_when_narrow() {
         }
     }
 
-    // Phase `a_tablet_width_window_keeps_every_primary_command_and_a_readable_address_field`.
+    // Phase `the_narrowest_regular_window_keeps_every_primary_command_and_a_readable_address_field`.
+    // The toolbar follows the shell's one compact tier: at the breakpoint
+    // every primary command is still on the row.
     {
-        let targets = targets_at(768, 1024);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the breakpoint is a small positive window width"
+        )]
+        let width = ui::tokens::Metrics::BASE.compact_breakpoint.ceil() as u32;
+        let targets = targets_at(width, 1024);
         for id in ROW {
-            assert!(targets.contains_key(id), "{id} stays on the tablet toolbar");
+            assert!(
+                targets.contains_key(id),
+                "{id} stays on the toolbar at {width}px"
+            );
         }
         assert!(
             targets[URL_INPUT].width() >= 400.0,
-            "the address field is starved at tablet width: {}",
+            "the address field is starved at {width}px: {}",
             targets[URL_INPUT].width()
         );
     }
