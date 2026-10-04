@@ -14,9 +14,6 @@
 //     time-zone dropdown popped open; `keyboard` renders the keyboard step
 //     seeded with a non-default (German) layout so the visual preview shows
 //     the remapped keys. Defaults to `disk`.
-//   * `--headless-drive '<json>'` — the live widget tree with no window
-//     (docs/headless-testing.md); scenarios click named controls or invoke
-//     the installer's published actions by address.
 //
 // A live run also answers the tilo-control action protocol (actions list,
 // actions invoke, state-dump) on its console endpoints — see
@@ -69,15 +66,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // `--headless-drive '<json>'`: the same widget tree and the same
-    // published actions, driven with no window and no GPU (see
-    // docs/headless-testing.md). Scenarios address controls by name or
-    // invoke published actions by address.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
-        let code = ui::headless::run(&spec, Box::new(InstallerApp::new()), HEADLESS_MANIFEST_ID);
-        std::process::exit(code);
-    }
-
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();
     // Shared slot the event loop fills with its proxy once running; the
@@ -104,9 +92,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     Ok(())
 }
-
-/// Package namespace for `--headless-drive` runs (never the live medium).
-const HEADLESS_MANIFEST_ID: &str = "org.tilo.Installer";
 
 /// Start the console endpoints that exist on this machine: the private
 /// runtime socket, and the virtio port when a hypervisor attached one. Each
