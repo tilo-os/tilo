@@ -11,9 +11,10 @@ use ui::vello::kurbo::{Affine, BezPath, Point, Rect, Shape as _, Vec2};
 use crate::actions::{CanvasAction, Draw, EditMarks, NewMark};
 use crate::model::{Artwork, Mark, path_data, valid_id};
 
-/// Whether `mark` can be picked: its layer is shown.
+/// Whether `mark` can be picked: its layer is shown. An eraser is picked
+/// like any stroke, so it can be moved, reshaped or taken away.
 fn pickable(art: &Artwork, mark: &Mark) -> bool {
-    art.layer(&mark.layer).is_some_and(|layer| layer.visible) && !mark.erases()
+    art.layer(&mark.layer).is_some_and(|layer| layer.visible)
 }
 
 /// `ids` and every other member of the groups they are in, in stacking
@@ -35,7 +36,7 @@ pub fn with_groups(art: &Artwork, ids: &[String]) -> Vec<String> {
 /// What a click at `at` picks: the topmost mark there and, unless `inside`
 /// (picking within a group), the rest of its group.
 pub fn pick(art: &Artwork, at: Point, inside: bool) -> Vec<String> {
-    let Some(mark) = art.mark_at(at) else {
+    let Some(mark) = art.pick_at(at) else {
         return Vec::new();
     };
     if inside {
