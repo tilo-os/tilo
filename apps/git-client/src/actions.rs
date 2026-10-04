@@ -35,11 +35,10 @@
 //!   Working-tree status is *not* projected; it stays a live hosted extra.
 //!
 //! Git mutations against the on-disk repository remain Effects. The resource
-//! tree is owned by [`tilo_resource::publish`]: preferences are
-//! [`bound_actions`], Effects/Views are [`local_operations`], and shared
-//! children ride [`children`].
+//! tree is owned by [`tilo_resource::publish`]: preferences are bound
+//! actions, Effects/Views are local operations, and shared children ride the
+//! resource's children. Working-tree status is the surface's live rows.
 
-use automerge::AutoCommit;
 use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
 
@@ -48,7 +47,9 @@ use tilo_actions::{
     OperationKind, Resource, RetryPolicy,
 };
 
-use crate::doc::{GitClientState, SharedRepo};
+use ui::framework::LiveRow;
+
+use crate::doc::SharedRepo;
 use crate::model::{ChangeArea, FileChange, RepoModel};
 use crate::settings::{self, DiffLayout, Settings};
 
@@ -134,6 +135,8 @@ pub enum GitClientAction {
     SetWrapLines { on: bool },
     /// Replace the shared repository projection (no working-tree lists).
     WriteSharedRepo { json: String },
+    /// Open the repository at `path` in this record.
+    OpenRepository { path: String },
 }
 
 impl Action for GitClientAction {
@@ -164,6 +167,13 @@ impl Action for GitClientAction {
             GitClientAction::WriteSharedRepo { json } => {
                 SharedRepo::write_json(doc, json);
             }
+            GitClientAction::OpenRepository { path } => {
+                doc.put(
+                    &automerge::ROOT,
+                    crate::doc::keys::REPOSITORY,
+                    path.as_str(),
+                )?;
+            }
         }
         Ok(())
     }
@@ -172,6 +182,15 @@ impl Action for GitClientAction {
         // Preferences and the shared projection: this client applies +
         // replicates, peers replay.
         ExecutionLocus::ClientLocal
+    }
+
+    /// The projection is read from the repository on disk, nobody's edit:
+    /// it reaches every collaborator, and no undo takes it back.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            GitClientAction::WriteSharedRepo { .. } => tilo_actions::ChangeKind::External,
+            _ => tilo_actions::ChangeKind::Content,
+        }
     }
 }
 
@@ -206,7 +225,7 @@ pub fn set_diff_layout_action(layout: DiffLayout) -> GitClientAction {
 // ===========================================================================
 
 /// Keep the palette's contextual tree cheap even for monorepos. Every omitted
-/// item is still addressable through [`ResourceProvider::resource`].
+/// item is still addressable by id ([`resolve_child`], [`working_tree_row`]).
 pub const MAX_CONTEXT_CHANGES: usize = 48;
 pub const MAX_CONTEXT_COMMITS: usize = 48;
 pub const MAX_CONTEXT_REFS: usize = 32;
@@ -249,40 +268,38 @@ fn remote_resource_id(name: &str) -> String {
     format!("git_client.remote:{}", stable_component(name))
 }
 
-fn change_resource(change: &FileChange) -> Resource {
+fn change_row(change: &FileChange) -> LiveRow {
     let area = change_area_name(change.area);
     let open = GitClientOperation::OpenChange {
         area: area.into(),
         path: change.path.clone(),
     };
-    let mut resource = Resource::new(
+    let mut row = LiveRow::new(
         change_resource_id(change.area, &change.path),
         "git_client.diff",
         format!("{} — {area}", change.path),
     );
     if let Some(spec) = operation("open", "Open diff", OperationKind::View, &open) {
-        resource = resource.with_action(spec);
+        row = row.operation(spec);
     }
-    let mutation = match change.area {
-        ChangeArea::Staged => Some((
+    let (id, label, value) = match change.area {
+        ChangeArea::Staged => (
             "unstage",
             "Unstage file",
             GitClientOperation::UnstageFile {
                 path: change.path.clone(),
             },
-        )),
-        ChangeArea::Unstaged | ChangeArea::Untracked => Some((
+        ),
+        ChangeArea::Unstaged | ChangeArea::Untracked => (
             "stage",
             "Stage file",
             GitClientOperation::StageFile {
                 path: change.path.clone(),
             },
-        )),
+        ),
     };
-    if let Some((id, label, value)) = mutation
-        && let Some(spec) = operation(id, label, OperationKind::Effect, &value)
-    {
-        resource = resource.with_action(spec);
+    if let Some(spec) = operation(id, label, OperationKind::Effect, &value) {
+        row = row.operation(spec);
     }
     if change.area != ChangeArea::Staged
         && let Some(spec) = operation(
@@ -294,9 +311,9 @@ fn change_resource(change: &FileChange) -> Resource {
             },
         )
     {
-        resource = resource.with_action(spec);
+        row = row.operation(spec);
     }
-    resource
+    row
 }
 
 fn commit_resource(commit: &crate::model::Commit) -> Resource {
@@ -575,18 +592,31 @@ pub(crate) fn root_local_operations() -> Vec<ActionSpec> {
     actions
 }
 
-/// Working-tree status collection — live when hosted, included in standalone
-/// publish when the model carries staged/unstaged/untracked rows.
-pub(crate) fn changes_collection(model: &RepoModel) -> Resource {
-    Resource::new("git_client.changes", "git_client.collection", "Changes").with_children(
-        model
-            .staged
-            .iter()
-            .chain(model.unstaged.iter())
-            .chain(model.untracked.iter())
-            .take(MAX_CONTEXT_CHANGES)
-            .map(change_resource),
-    )
+/// The working tree's changed files as live rows: the bounded page beneath
+/// one `Changes` row, every file in `model`.
+pub(crate) fn working_tree_rows(model: &RepoModel) -> LiveRow {
+    model
+        .staged
+        .iter()
+        .chain(model.unstaged.iter())
+        .chain(model.untracked.iter())
+        .take(MAX_CONTEXT_CHANGES)
+        .map(change_row)
+        .fold(
+            LiveRow::new("git_client.changes", "git_client.collection", "Changes"),
+            LiveRow::row,
+        )
+}
+
+/// The changed file `id`, beyond the page [`working_tree_rows`] publishes.
+pub(crate) fn working_tree_row(model: &RepoModel, id: &str) -> Option<LiveRow> {
+    model
+        .staged
+        .iter()
+        .chain(model.unstaged.iter())
+        .chain(model.untracked.iter())
+        .find(|change| change_resource_id(change.area, &change.path) == id)
+        .map(change_row)
 }
 
 /// Shared children for [`tilo_resource::publish`]: history, branches, tags,
@@ -624,22 +654,11 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
     );
     children.push(
         Resource::new("git_client.stashes", "git_client.collection", "Stashes").with_children(
-            model.stashes.iter().take(MAX_CONTEXT_STASHES).map(|stash| {
-                let mut resource = Resource::new(
-                    format!("git_client.stash:{}", stash.index),
-                    "git_client.stash",
-                    stash.message.clone(),
-                );
-                if let Some(spec) = operation(
-                    "apply",
-                    "Apply stash",
-                    OperationKind::Effect,
-                    &GitClientOperation::ApplyStash { index: stash.index },
-                ) {
-                    resource = resource.with_action(spec);
-                }
-                resource
-            }),
+            model
+                .stashes
+                .iter()
+                .take(MAX_CONTEXT_STASHES)
+                .map(stash_resource),
         ),
     );
     children.push(
@@ -654,17 +673,6 @@ pub(crate) fn document_children(model: &RepoModel) -> Vec<Resource> {
     children
 }
 
-/// Children on the framework resource: working-tree when present on the
-/// projection used for publish, then shared history/branches/remotes.
-pub(crate) fn publish_children(state: &GitClientState) -> Vec<Resource> {
-    let mut children = Vec::new();
-    if state.repo.change_count() > 0 {
-        children.push(changes_collection(&state.repo));
-    }
-    children.extend(document_children(&state.repo));
-    children
-}
-
 pub(crate) fn repo_label(model: &RepoModel) -> String {
     let repo_name = model.name.as_str();
     if repo_name.trim().is_empty() {
@@ -674,67 +682,27 @@ pub(crate) fn repo_label(model: &RepoModel) -> String {
     }
 }
 
-/// Build the resource tree via [`tilo_resource::publish`]. Standalone /
-/// `--shots` pass the live model (including working-tree rows); the framework
-/// door reads the shared projection from the document.
-pub fn provide_resources(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
-    // Branches, commits, and remotes come from the document once it holds the
-    // shared projection. A caller that has not written one yet still publishes
-    // the model it passed. Working-tree Changes stay a live extra on that model.
-    let shared = SharedRepo::read(doc);
-    let state = if shared.is_some() {
-        GitClientState::from_doc(doc)
-    } else {
-        GitClientState {
-            settings: Settings::read_only(doc),
-            repo: model.clone(),
-        }
-    };
-    let label = repo_label(if shared.is_some() { &state.repo } else { model });
-    let mut root =
-        ui::tilo_resource::publish::<crate::resource::GitClient>("git_client.repo", &label, &state);
-    if shared.is_some()
-        && model.change_count() > 0
-        && !root
-            .children
-            .iter()
-            .any(|child| child.id.as_str() == "git_client.changes")
-    {
-        root.children.insert(0, changes_collection(model));
+fn stash_resource(stash: &crate::model::Stash) -> Resource {
+    let mut resource = Resource::new(
+        format!("git_client.stash:{}", stash.index),
+        "git_client.stash",
+        stash.message.clone(),
+    );
+    if let Some(spec) = operation(
+        "apply",
+        "Apply stash",
+        OperationKind::Effect,
+        &GitClientOperation::ApplyStash { index: stash.index },
+    ) {
+        resource = resource.with_action(spec);
     }
-    vec![root]
+    resource
 }
 
-/// Resolve an arbitrary current repository item without building the complete
-/// hierarchy. This keeps search/history/agent addresses valid beyond the
-/// contextual caps above while rejecting stale ids after a fetch or checkout.
-fn find_git(resource: &Resource, id: &str) -> Option<Resource> {
-    if resource.id.as_str() == id {
-        return Some(resource.clone());
-    }
-    for child in &resource.children {
-        if let Some(found) = find_git(child, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option<Resource> {
-    let root = provide_resources(model, doc).into_iter().next()?;
-    if let Some(found) = find_git(&root, id) {
-        return Some(found);
-    }
-    for change in model
-        .staged
-        .iter()
-        .chain(model.unstaged.iter())
-        .chain(model.untracked.iter())
-    {
-        if change_resource_id(change.area, &change.path) == id {
-            return Some(change_resource(change));
-        }
-    }
+/// Resolve one current repository item by id without building the whole
+/// hierarchy, so search, history and agent addresses stay valid beyond the
+/// published page while ids gone after a fetch or checkout resolve to `None`.
+pub(crate) fn resolve_child(model: &RepoModel, id: &str) -> Option<Resource> {
     if let Some(commit) = model
         .commits
         .iter()
@@ -776,16 +744,7 @@ pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option
         .iter()
         .find(|stash| format!("git_client.stash:{}", stash.index) == id)
     {
-        let mut resource = Resource::new(id, "git_client.stash", stash.message.clone());
-        if let Some(spec) = operation(
-            "apply",
-            "Apply stash",
-            OperationKind::Effect,
-            &GitClientOperation::ApplyStash { index: stash.index },
-        ) {
-            resource = resource.with_action(spec);
-        }
-        return Some(resource);
+        return Some(stash_resource(stash));
     }
     model
         .remotes
@@ -794,23 +753,10 @@ pub fn resolve_resource(model: &RepoModel, doc: &AutoCommit, id: &str) -> Option
         .map(remote_resource)
 }
 
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::GitClientApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        match self.resource_model() {
-            Some(model) => provide_resources(model, doc),
-            None => Vec::new(),
-        }
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        resolve_resource(self.resource_model()?, doc, id)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use tilo_actions::LocalTransport;
     use ui::testing::action_contract::assert_spec_encodes_as;
 
@@ -839,6 +785,19 @@ mod tests {
         doc
     }
 
+    /// The repository door the framework publishes from `doc` once `model`'s
+    /// projection is written into it.
+    fn published(model: &RepoModel, doc: &AutoCommit) -> Vec<Resource> {
+        let mut doc = doc.clone();
+        SharedRepo::write(&mut doc, &SharedRepo::from_model(model));
+        let state = crate::doc::GitClientState::from_doc(&doc);
+        vec![ui::tilo_resource::publish::<crate::resource::GitClient>(
+            "git_client.repo",
+            &repo_label(&state.repo),
+            &state,
+        )]
+    }
+
     fn repo_model() -> RepoModel {
         RepoModel {
             name: "tilo".into(),
@@ -859,15 +818,15 @@ mod tests {
     /// Each preference action writes its absolute value into `root["settings"]`.
     fn preference_actions_write_the_settings() {
         let mut doc = seeded();
-        assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
-        assert!(Settings::read_only(&doc).syntax_highlight);
+        assert_eq!(Settings::read(&doc).diff_layout, DiffLayout::Unified);
+        assert!(Settings::read(&doc).syntax_highlight);
 
         dispatch(&mut doc, &set_diff_layout_action(DiffLayout::SideBySide));
         dispatch(&mut doc, &GitClientAction::SetSyntaxHighlight { on: false });
         dispatch(&mut doc, &GitClientAction::SetShowWhitespace { on: true });
         dispatch(&mut doc, &GitClientAction::SetWrapLines { on: true });
 
-        let s = Settings::read_only(&doc);
+        let s = Settings::read(&doc);
         assert_eq!(s.diff_layout, DiffLayout::SideBySide);
         assert!(!s.syntax_highlight);
         assert!(s.show_whitespace);
@@ -885,7 +844,7 @@ mod tests {
             },
         );
         assert_eq!(
-            Settings::read_only(&doc).diff_layout,
+            Settings::read(&doc).diff_layout,
             DiffLayout::Unified,
             "an unknown layout falls back to the canonical default"
         );
@@ -906,7 +865,7 @@ mod tests {
     /// resource builder.
     fn ctrl_k_publishes_the_repo_and_preference_actions() {
         let doc = seeded();
-        let resources = provide_resources(&repo_model(), &doc);
+        let resources = published(&repo_model(), &doc);
         assert_eq!(resources.len(), 1, "one repository root");
         let repo = &resources[0];
         assert_eq!(repo.kind, "git_client.repo");
@@ -944,7 +903,7 @@ mod tests {
         s.write(&mut doc);
         doc.commit();
 
-        let resources = provide_resources(&repo_model(), &doc);
+        let resources = published(&repo_model(), &doc);
         let spec = resources[0]
             .actions
             .iter()
@@ -971,7 +930,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: seeded(),
         registry: registry(),
-        resources: |doc| provide_resources(&crate::sample::model().0, doc),
+        resources: |doc| published(&crate::sample::model().0, doc),
         palette: ["side-by-side", "syntax highlighting"],
         replay: [
             diff_layout => |_| encode(&set_diff_layout_action(DiffLayout::SideBySide)).unwrap(),
@@ -994,7 +953,7 @@ mod tests {
     fn repository_resources_cover_git_objects_and_confirmation_contracts() {
         let (model, _) = crate::sample::model();
         let doc = seeded();
-        let root = provide_resources(&model, &doc).remove(0);
+        let root = published(&model, &doc).remove(0);
         let kinds: std::collections::HashSet<_> = root
             .children
             .iter()
@@ -1002,7 +961,6 @@ mod tests {
             .map(|resource| resource.kind.as_str())
             .collect();
         for expected in [
-            "git_client.diff",
             "git_client.commit",
             "git_client.branch",
             "git_client.tag",
@@ -1011,17 +969,28 @@ mod tests {
         ] {
             assert!(kinds.contains(expected), "missing {expected}: {kinds:?}");
         }
-        let discard = root
+        let changes = working_tree_rows(&model).into_resource();
+        assert!(
+            changes.children.iter().all(|row| row
+                .actions
+                .iter()
+                .all(|action| action.kind != OperationKind::Document)),
+            "working-tree rows only view and run Effects"
+        );
+        let discard = changes
             .children
             .iter()
-            .flat_map(|collection| &collection.children)
-            .find(|resource| resource.kind == "git_client.diff")
+            .find(|resource| {
+                resource.kind == "git_client.diff"
+                    && resource.actions.iter().any(|action| action.id == "discard")
+            })
             .and_then(|resource| {
                 resource
                     .actions
                     .iter()
                     .find(|action| action.id == "discard")
             });
+        assert!(discard.is_some(), "a worktree change offers discard");
         if let Some(discard) = discard {
             assert_eq!(
                 discard.contract.confirmation,
@@ -1045,7 +1014,7 @@ mod tests {
             .collect();
         let omitted = commit_resource_id(&model.commits[MAX_CONTEXT_COMMITS + 3].id);
         let doc = seeded();
-        let root = provide_resources(&model, &doc).remove(0);
+        let root = published(&model, &doc).remove(0);
         let history = root
             .children
             .iter()
@@ -1059,7 +1028,7 @@ mod tests {
                 .all(|resource| resource.id.as_str() != omitted)
         );
         assert_eq!(
-            resolve_resource(&model, &doc, &omitted)
+            resolve_child(&model, &omitted)
                 .expect("omitted commit resolves lazily")
                 .id
                 .as_str(),

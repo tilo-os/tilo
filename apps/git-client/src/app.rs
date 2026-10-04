@@ -36,6 +36,7 @@ use crate::history::{self, HistoryView};
 use crate::model::{ChangeArea, DiffKey, DiffMap, FileChange, RepoModel};
 use crate::panels::{BranchAction, PanelHit, PanelsView, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
+use ui::framework::{LiveRow, RunMode};
 
 /// Which embedded text field currently holds keyboard focus. Text editing is
 /// delegated to the toolkit's [`TextInput`] (cursor, selection, word-nav,
@@ -246,7 +247,7 @@ struct RemoteJob {
     result: Option<Result<(), String>>,
     invocation: Option<tilo_actions::InvocationId>,
     progress_sent: bool,
-    /// Palette label while the transfer is in flight (live hosted extra).
+    /// Palette label while the transfer is in flight (a live row).
     label: String,
 }
 
@@ -255,13 +256,20 @@ pub struct GitClientApp {
     diffs: DiffMap,
     graph_layout: GraphLayout,
 
-    /// Framework-owned action dispatch (the only action-dispatch state the app
-    /// holds). Every durable view-preference toggle dispatches its
-    /// [`GitClientAction`](crate::actions::GitClientAction) through this: the
-    /// host brackets the undo boundary, encodes and applies through the executor
-    /// (so it replays byte-identically on peers), and remembers the last action
-    /// for the affordance == `ActionSpec` covenant test.
-    actions: crate::resource::ActionSink,
+    /// Where every document edit goes: the framework's door for the
+    /// repository resource, shared with the palette, agents and scripts.
+    /// `None` until the framework attaches the surface.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::GitClient>>,
+    /// What the surface is built for: a window someone uses reads the
+    /// repository on disk, a past version shows its projection, a screenshot
+    /// its sample.
+    mode: RunMode,
+    /// The repository path of the record this client last opened, so a
+    /// presentation that names it again does not reopen it.
+    opened: Option<String>,
+    /// Whether a record was presented yet: the first one without a
+    /// repository looks around the working directory.
+    presented: bool,
 
     /// No repository is bound and none was reachable at launch — the app shows
     /// the honest "open a repository" empty state rather than any placeholder
@@ -292,13 +300,6 @@ pub struct GitClientApp {
     settings: Settings,
     /// Fingerprint of the last shared-repo projection written to the document.
     shared_repo_fingerprint: Option<String>,
-    /// Set once after the first sync seeds the settings into the doc.
-    settings_seeded: bool,
-    /// An initial preference was forced at construction (the `GIT_CLIENT_SPLIT`
-    /// screenshot path), so the first sync keeps it rather than adopting the
-    /// document's persisted value. Interactive toggles never set this — they go
-    /// through the action executor, which writes the document directly.
-    settings_forced: bool,
     /// Cached hit rects for the app-bar settings controls, set during draw.
     settings_seg: Rect,
     settings_syn: Rect,
@@ -379,37 +380,10 @@ impl Default for GitClientApp {
 }
 
 impl GitClientApp {
-    /// Build the app, loading the repository discovered from the current
-    /// directory (or `GIT_CLIENT_REPO`). Opens the empty repository picker
-    /// when no repository is reachable.
-    ///
-    /// Setting `GIT_CLIENT_SAMPLE=1` forces the bundled fixture regardless
-    /// of any reachable repository — the headless screenshot path uses
-    /// this so the capture is a fully populated, deterministic state
-    /// (rename + delete + new file across all three areas, a multi-lane
-    /// commit graph) rather than whatever happens to sit around the CWD.
+    /// The client before the framework presents it a record: no repository
+    /// bound, the "open a repository" empty state.
     pub fn new() -> Self {
-        let force_sample =
-            std::env::var("GIT_CLIENT_SAMPLE").is_ok_and(|v| v != "0" && !v.is_empty());
-        if force_sample {
-            let (model, diffs) = crate::sample::model();
-            return Self::from_model(model, diffs);
-        }
-        if let Some((path, model, diffs)) = Self::load_repo() {
-            let mut app = Self::from_model(model, diffs);
-            app.repo_path = Some(path);
-            app
-        } else {
-            // No reachable repository — show the honest "open a repository"
-            // empty state rather than any placeholder data. The path field
-            // is pre-filled with the current directory as a convenience.
-            let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
-            app.awaiting_repo = true;
-            if let Ok(cwd) = std::env::current_dir() {
-                app.open_input.set_text(&cwd.to_string_lossy());
-            }
-            app
-        }
+        Self::open_empty()
     }
 
     /// Open a real repository discovered from `path` and build the app
@@ -435,29 +409,24 @@ impl GitClientApp {
         app
     }
 
-    /// `--shots --scenario`: open a screen directly so each one can be
-    /// reviewed from a single offscreen frame.
-    pub fn shot_screen(&mut self, screen: Screen) {
-        self.switch_screen(screen);
-    }
-
-    /// `--shots --scenario split`: the side-by-side diff layout, pinned so
-    /// the document sync does not fold it back to the stored preference.
-    pub fn shot_split_diff(&mut self) {
-        self.settings.diff_layout = DiffLayout::SideBySide;
-        self.settings_forced = true;
-    }
-
-    /// `--shots --scenario commit`: a typed commit summary so the commit box
-    /// and its primary action render in their enabled state.
-    pub fn shot_commit_message(&mut self, message: &str) {
-        self.commit_input.set_text(message);
-    }
-
-    /// `--shots --scenario discard`: the two-click discard confirmation
-    /// armed on the selected file, so the danger state is capturable.
-    pub fn shot_arm_discard(&mut self) {
-        self.armed_discard = Some(DiscardTarget::File);
+    /// Stage the view state a screenshot `scenario` shows, once the
+    /// scenario's actions are laid out.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        match scenario {
+            Some("history") => self.switch_screen(Screen::History),
+            Some("branches") => self.switch_screen(Screen::Panels),
+            // A typed commit summary, so the commit box and its primary
+            // action render enabled.
+            Some("commit") => self
+                .commit_input
+                .set_text("Flush the blur pass before presenting"),
+            // The two-click discard confirmation armed on the selected file.
+            Some("discard") => self.armed_discard = Some(DiscardTarget::File),
+            // The narrow window's list column, revealed over its scrim
+            // rather than the closed default a fresh narrow window opens to.
+            Some("narrow") => self.flap.snap(true),
+            _ => {}
+        }
     }
 
     /// Construct from an explicit model — used by the sample path and tests.
@@ -465,26 +434,8 @@ impl GitClientApp {
         let graph_layout = graph::layout(&mut model.commits);
         // Pre-select the first changed file so the diff pane is populated.
         let selected_change = first_change(&model);
-        // Allow the headless capture to open a specific screen so each
-        // screen can be reviewed; defaults to Changes for the live app.
-        let screen = match std::env::var("GIT_CLIENT_SCREEN").as_deref() {
-            Ok("history") => Screen::History,
-            Ok("panels") => Screen::Panels,
-            _ => Screen::Changes,
-        };
-        let mut settings = Settings::default();
-        let split_forced = std::env::var("GIT_CLIENT_SPLIT").is_ok();
-        if split_forced {
-            settings.diff_layout = DiffLayout::SideBySide;
-        }
-        // The primary list column defaults open when docked. The headless
-        // narrow capture sets `GIT_CLIENT_FLAP_OPEN` so the single offscreen
-        // frame shows the overlay flap fully revealed over its scrim rather
-        // than the closed default a fresh narrow window opens to.
-        let mut flap = FlapState::open_when_docked();
-        if std::env::var("GIT_CLIENT_FLAP_OPEN").is_ok_and(|v| v != "0" && !v.is_empty()) {
-            flap.snap(true);
-        }
+        // The primary list column defaults open when docked.
+        let flap = FlapState::open_when_docked();
         let commit_input = TextInput::local()
             .with_id("git.commit-message")
             .with_accessible_name("Commit message")
@@ -504,7 +455,10 @@ impl GitClientApp {
             .with_font_size(14.0)
             .with_mono();
         Self {
-            actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
+            mode: RunMode::Live,
+            opened: None,
+            presented: false,
             flap,
             last_flap_tick: ui::time::now(),
             hamburger_rect: Rect::ZERO,
@@ -521,15 +475,13 @@ impl GitClientApp {
             repo_path: None,
             last_error: None,
             remote_job: None,
-            settings,
+            settings: Settings::default(),
             shared_repo_fingerprint: None,
-            settings_seeded: false,
-            settings_forced: split_forced,
             settings_seg: Rect::ZERO,
             settings_syn: Rect::ZERO,
             status_rect: Rect::ZERO,
             status_text: String::new(),
-            screen,
+            screen: Screen::Changes,
             rect: Rect::ZERO,
             selected_change,
             changes_scroll: 0.0,
@@ -661,16 +613,32 @@ impl GitClientApp {
         self.last_error.as_deref()
     }
 
-    fn load_repo() -> Option<(std::path::PathBuf, RepoModel, DiffMap)> {
-        let path = std::env::var("GIT_CLIENT_REPO").map_or_else(
-            |_| std::env::current_dir().unwrap_or_else(|_| ".".into()),
-            std::path::PathBuf::from,
-        );
+    /// Bind the repository at `path`, read from disk; `false` when there is
+    /// none there.
+    fn bind_repository(&mut self, path: &std::path::Path) -> bool {
+        let Some((model, diffs)) = crate::repo::load(path) else {
+            return false;
+        };
         // Anchor actions on the working directory so later opens are stable
         // even if the CWD changes; fall back to the given path when bare.
-        let anchor = crate::repo::workdir(&path).unwrap_or_else(|| path.clone());
-        let (model, diffs) = crate::repo::load(&path)?;
-        Some((anchor, model, diffs))
+        let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
+        self.show_model(model, diffs);
+        self.repo_path = Some(anchor);
+        true
+    }
+
+    /// Show `model` in place of the repository shown so far.
+    fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
+        self.model = model;
+        self.diffs = diffs;
+        self.graph_layout = graph::layout(&mut self.model.commits);
+        self.model.graph_width = self.graph_layout.lanes;
+        self.selected_change = first_change(&self.model);
+        if self.selected_commit >= self.model.commits.len() {
+            self.selected_commit = 0;
+        }
+        self.diff_scroll = 0.0;
+        self.awaiting_repo = false;
     }
 
     /// Re-read the live repository into the model after a mutation, so the
@@ -1057,25 +1025,20 @@ impl GitClientApp {
         if raw.is_empty() {
             return;
         }
-        let path = std::path::PathBuf::from(&raw);
-        match crate::repo::load(&path) {
-            Some((model, diffs)) => {
-                let anchor = crate::repo::workdir(&path).unwrap_or(path);
-                self.model = model;
-                self.diffs = diffs;
-                self.graph_layout = graph::layout(&mut self.model.commits);
-                self.model.graph_width = self.graph_layout.lanes;
-                self.repo_path = Some(anchor);
-                self.selected_change = first_change(&self.model);
-                self.awaiting_repo = false;
-                self.last_error = None;
-                self.set_focus(None);
-                self.screen = Screen::Changes;
-                self.flap.reconcile(self.layout_mode());
+        if self.bind_repository(std::path::Path::new(&raw)) {
+            self.last_error = None;
+            self.set_focus(None);
+            self.screen = Screen::Changes;
+            self.flap.reconcile(self.layout_mode());
+            // The record opens this repository from now on, on every device
+            // that opens it.
+            if let Some(path) = &self.repo_path {
+                let path = path.to_string_lossy().into_owned();
+                self.opened = Some(path.clone());
+                self.submit(&crate::actions::GitClientAction::OpenRepository { path });
             }
-            None => {
-                self.last_error = Some(format!("No git repository at {raw}"));
-            }
+        } else {
+            self.last_error = Some(format!("No git repository at {raw}"));
         }
     }
 
@@ -1089,92 +1052,115 @@ impl GitClientApp {
     }
 
     // --- Durable view-preference actions -------------------------------
-    // The diff-view preferences are the app's only shared-document state.
-    // Each toggle updates the local snapshot for an immediate redraw AND
-    // dispatches its `GitClientAction` through the framework `ActionHost`,
-    // which brackets the undo boundary and applies it through the executor
-    // (so it records one Ctrl+Z step and replays byte-identically on peers).
-    // The next `sync` re-reads the same value straight back out of the doc.
-    // These are the exact actions the Ctrl+K resource tree exports — one
-    // source of truth (see `crate::actions`).
+    // The diff-view preferences are shared-document state. Each toggle
+    // updates the local snapshot for an immediate redraw and submits its
+    // `GitClientAction` through the framework's door — the exact action the
+    // Ctrl+K resource tree exports (see `crate::actions`) — which records
+    // one Ctrl+Z step, replays on peers and presents the stored value back.
+
+    /// Submit one document edit through the framework's door.
+    fn submit(&self, action: &crate::actions::GitClientAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
+        }
+    }
 
     /// Flip the diff-pane layout (unified ⇄ side-by-side). Routed to by the
     /// app-bar segmented control and the `d` shortcut.
-    fn toggle_diff_layout(&mut self, doc: &mut AutoCommit) {
+    fn toggle_diff_layout(&mut self) {
         self.settings.toggle_layout();
         self.diff_scroll = 0.0;
-        let action = crate::actions::set_diff_layout_action(self.settings.diff_layout);
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
+        self.submit(&crate::actions::set_diff_layout_action(
+            self.settings.diff_layout,
+        ));
     }
 
     /// Flip diff syntax highlighting. Routed to by the app-bar `</>` pill.
-    fn toggle_syntax_highlight(&mut self, doc: &mut AutoCommit) {
+    fn toggle_syntax_highlight(&mut self) {
         self.settings.syntax_highlight = !self.settings.syntax_highlight;
-        let action = crate::actions::GitClientAction::SetSyntaxHighlight {
+        self.submit(&crate::actions::GitClientAction::SetSyntaxHighlight {
             on: self.settings.syntax_highlight,
-        };
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
+        });
     }
 
-    /// Borrow the current external repository projection for the bounded
-    /// resource catalogue. Presentation-only state is intentionally excluded.
-    pub(crate) fn resource_model(&self) -> Option<&RepoModel> {
-        (!self.awaiting_repo).then_some(&self.model)
-    }
-
-    /// The last preference [`EncodedAction`](tilo_actions::EncodedAction) an
-    /// on-screen control dispatched, for the affordance == `ActionSpec`
-    /// covenant test.
-    #[doc(hidden)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    /// Show the diff preferences the framework resource already holds. The
-    /// live on-disk repository model is not replaced by the shared projection.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::doc::GitClientState) {
-        if self.settings_forced {
-            return;
-        }
-        self.settings = state.settings;
-    }
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
+    /// Take the framework's dispatcher, and the repository to show: the one
+    /// on disk in a window someone uses (bound on presentation), the
+    /// sample in a screenshot.
+    pub(crate) fn attach_dispatcher(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
+        mode: RunMode,
+        sample: Option<&crate::resource::SampleRepository>,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatcher = Some(dispatcher);
+        self.mode = mode;
+        if let Some(sample) = sample {
+            self.show_model(sample.model.clone(), sample.diffs.clone());
+        }
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
+    /// Show the record as stored: its preferences, and in a window someone
+    /// uses the repository it opens — else the one around the working
+    /// directory, else the picker. A past version shows the projection of
+    /// the repository it held then.
+    pub(crate) fn present_state(&mut self, state: &crate::doc::GitClientState) {
+        self.settings = state.settings;
+        match self.mode {
+            RunMode::Live => {
+                let first = !std::mem::replace(&mut self.presented, true);
+                if !first && self.opened == state.repository {
+                    return;
+                }
+                self.opened.clone_from(&state.repository);
+                match &state.repository {
+                    Some(path) => {
+                        if !self.bind_repository(std::path::Path::new(path)) {
+                            self.last_error = Some(format!("No git repository at {path}"));
+                            self.open_input.set_text(path);
+                        }
+                    }
+                    None if first => {
+                        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                        if !self.bind_repository(&cwd) {
+                            self.open_input.set_text(&cwd.to_string_lossy());
+                        }
+                    }
+                    None => {}
+                }
+            }
+            RunMode::Past => self.show_model(state.repo.clone(), DiffMap::new()),
+            RunMode::Capture => {}
+        }
     }
 
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
+    /// The working tree's changed files and an in-flight transfer, as live
+    /// rows beneath the repository.
+    pub(crate) fn working_tree_rows(&self) -> Vec<LiveRow> {
+        let mut rows = Vec::new();
+        if !self.awaiting_repo {
+            rows.push(crate::actions::working_tree_rows(&self.model));
+        }
+        if let Some(job) = &self.remote_job {
+            rows.push(LiveRow::new(
+                "git_client.remote-job",
+                "git_client.job",
+                job.label.clone(),
+            ));
+        }
+        rows
     }
 
-    /// Label for an in-flight fetch/pull/push, when one is running.
-    pub(crate) fn remote_job_label(&self) -> Option<String> {
-        self.remote_job.as_ref().map(|job| job.label.clone())
+    /// The changed file `id`, beyond the page the rows publish.
+    pub(crate) fn working_tree_row(&self, id: &str) -> Option<LiveRow> {
+        (!self.awaiting_repo)
+            .then(|| crate::actions::working_tree_row(&self.model, id))
+            .flatten()
     }
 
-    /// Write the shared repository projection when branches/commits/remotes move.
-    fn publish_shared_repo_if_needed(&mut self, doc: &mut AutoCommit) {
-        if self.awaiting_repo {
+    /// Submit the shared repository projection when branches, commits or
+    /// remotes moved on disk.
+    fn publish_shared_repo_if_needed(&mut self) {
+        if self.awaiting_repo || !self.mode.is_live() {
             return;
         }
         let fingerprint = crate::doc::shared_fingerprint(&self.model);
@@ -1183,40 +1169,8 @@ impl GitClientApp {
         }
         let shared = crate::doc::SharedRepo::from_model(&self.model);
         let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
-        let action = crate::actions::GitClientAction::WriteSharedRepo { json };
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
+        self.submit(&crate::actions::GitClientAction::WriteSharedRepo { json });
         self.shared_repo_fingerprint = Some(fingerprint);
-    }
-
-    fn preference_actions(&self) -> [crate::actions::GitClientAction; 4] {
-        [
-            crate::actions::set_diff_layout_action(self.settings.diff_layout),
-            crate::actions::GitClientAction::SetShowWhitespace {
-                on: self.settings.show_whitespace,
-            },
-            crate::actions::GitClientAction::SetSyntaxHighlight {
-                on: self.settings.syntax_highlight,
-            },
-            crate::actions::GitClientAction::SetWrapLines {
-                on: self.settings.wrap_lines,
-            },
-        ]
-    }
-
-    fn publish_settings(&mut self, doc: &mut AutoCommit) {
-        for action in self.preference_actions() {
-            self.actions.dispatch_with_context(
-                doc,
-                crate::actions::GIT_CLIENT_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-            );
-        }
     }
 
     // --- Drawing -------------------------------------------------------
@@ -2188,7 +2142,7 @@ impl GitClientApp {
         self.flap.reconcile(self.layout_mode());
     }
 
-    fn handle_click(&mut self, pos: Point, doc: &mut AutoCommit) {
+    fn handle_click(&mut self, pos: Point) {
         // Hamburger toggle (overlay mode only) summons / dismisses the flap.
         if self.hamburger_rect.width() > 0.0 && self.hamburger_rect.contains(pos) {
             self.flap.toggle(self.layout_mode());
@@ -2226,11 +2180,11 @@ impl GitClientApp {
         // Settings segmented control + syntax toggle — durable preferences,
         // dispatched as actions so they undo and replicate.
         if self.settings_seg.contains(pos) {
-            self.toggle_diff_layout(doc);
+            self.toggle_diff_layout();
             return;
         }
         if self.settings_syn.contains(pos) {
-            self.toggle_syntax_highlight(doc);
+            self.toggle_syntax_highlight();
             return;
         }
 
@@ -2755,37 +2709,13 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 }
 
 impl Widget for GitClientApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
-    );
-
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         self.drain_remote();
-        if self.settings_seeded {
-            // Adopt document changes: remote collaborators, and this app's own
-            // preference actions, which the framework `ActionHost` applies
-            // straight to the document through the executor.
-            self.settings = Settings::read(state);
-        } else {
-            // First sync: adopt any persisted preferences, then seed the doc so
-            // it is the source of truth and collaborators see the same
-            // preferences. An initial override forced at construction (the
-            // GIT_CLIENT_SPLIT screenshot path) wins over the persisted value.
-            if !self.settings_forced {
-                // Read without creating the map. The preference actions below
-                // are what write it, hosted or standalone.
-                self.settings = Settings::read_only(state);
-            }
-            self.publish_settings(state);
-            self.settings_seeded = true;
-        }
-        self.publish_shared_repo_if_needed(state);
+        self.publish_shared_repo_if_needed();
     }
 
     fn build_layout(
@@ -3041,7 +2971,7 @@ impl Widget for GitClientApp {
         else {
             return false;
         };
-        self.handle_click(rect.center(), state);
+        self.handle_click(rect.center());
         true
     }
 
@@ -3145,44 +3075,6 @@ impl Widget for GitClientApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
-    }
-}
-
-impl ui::resources::PublishesResources for GitClientApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the repository door — keep only live working-tree status and in-flight
-    /// remote jobs.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        // The framework root already owns the repository door.
-        if self.is_hosted() && id == "git_client.repo" {
-            return None;
-        }
-        if let Some(found) = self.publish_resource(doc, id) {
-            return Some(found);
-        }
-        if self.is_hosted() {
-            return crate::resource::live_extras(self)
-                .into_iter()
-                .find(|resource| resource.id.as_str() == id);
-        }
-        None
-    }
-}
-
-impl ui::undo::CommittedActions for GitClientApp {
-    /// Hand the host the document heads captured before an on-screen preference
-    /// control dispatched, so it records exactly one undo boundary bracketing
-    /// it — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
@@ -3551,7 +3443,7 @@ impl GitClientApp {
         }
         // Anywhere else: blur the fields and run the normal click router.
         self.set_focus(None);
-        self.handle_click(pos, ctx.state);
+        self.handle_click(pos);
     }
 
     /// Submit the focused field's action (Enter).
@@ -3665,7 +3557,7 @@ impl GitClientApp {
                     *handled = true;
                 }
                 "d" => {
-                    self.toggle_diff_layout(state);
+                    self.toggle_diff_layout();
                     *handled = true;
                 }
                 _ => {}
@@ -3745,26 +3637,6 @@ mod tests {
         app
     }
 
-    /// The first sync publishes preferences through the action sink.
-    #[test]
-    fn a_fresh_client_publishes_preferences_through_the_sink() {
-        let mut app = GitClientApp::new();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        let recorded = app
-            .actions
-            .last_dispatched()
-            .expect("the first sync submits a preference action");
-        assert_eq!(
-            recorded.type_id.as_str(),
-            crate::actions::GIT_CLIENT_ACTION_TYPE
-        );
-        assert_eq!(
-            crate::settings::Settings::read_only(&state.doc).diff_layout,
-            app.settings.diff_layout
-        );
-    }
-
     /// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed,
     /// the breakpoint boundary is inclusive, Panels never collapses, and crossing the
     /// breakpoint restores the mode default. Each phase is a former test with its own fresh fixture.
@@ -3823,9 +3695,9 @@ mod tests {
         assert!(!app.flap_open());
         // Simulate the hamburger being drawn this frame, then click it.
         app.hamburger_rect = Rect::new(12.0, 12.0, 44.0, 44.0);
-        app.handle_click(Point::new(28.0, 28.0), &mut AutoCommit::new());
+        app.handle_click(Point::new(28.0, 28.0));
         assert!(app.flap_open(), "hamburger summons the overlay flap");
-        app.handle_click(Point::new(28.0, 28.0), &mut AutoCommit::new());
+        app.handle_click(Point::new(28.0, 28.0));
         assert!(!app.flap_open(), "hamburger dismisses it again");
     }
 
@@ -3834,7 +3706,7 @@ mod tests {
         app.flap.snap(true); // open overlay flap
         assert!(app.flap_open());
         // Click far to the right of the list column (over the dimmed detail).
-        app.handle_click(Point::new(600.0, 400.0), &mut AutoCommit::new());
+        app.handle_click(Point::new(600.0, 400.0));
         assert!(!app.flap_open(), "clicking the scrim closes the flap");
     }
 
@@ -3842,7 +3714,7 @@ mod tests {
         let mut app = app_at(680.0, Screen::Changes);
         app.flap.snap(true);
         // A click within the list column must not be treated as a scrim tap.
-        app.handle_click(Point::new(40.0, 400.0), &mut AutoCommit::new());
+        app.handle_click(Point::new(40.0, 400.0));
         assert!(
             app.flap_open(),
             "clicks on the list column keep the flap open"
@@ -3868,7 +3740,7 @@ mod tests {
             "obscured app-bar controls must not remain in the screen-reader tree"
         );
 
-        app.handle_click(Point::new(140.0, 28.0), &mut AutoCommit::new());
+        app.handle_click(Point::new(140.0, 28.0));
         assert_eq!(app.screen, Screen::Changes, "covered tab click is consumed");
         assert!(
             app.flap_open(),
@@ -3891,67 +3763,14 @@ mod tests {
         assert!(app.flap_open(), "docked default restores the open column");
     }
 
-    /// Semantic parity: the app-bar diff-layout toggle equals the palette action,
-    /// semantic open-repository and text edits reach their inputs, and synthetic
-    /// accessibility controls sit at their drawn rects. Each phase is a former test with its own fresh fixture.
+    /// Semantic parity: semantic open-repository and text edits reach their
+    /// inputs, and synthetic accessibility controls sit at their drawn rects.
+    /// Each phase is a former test with its own fresh fixture.
     #[test]
     fn affordances_and_semantic_controls_reach_the_production_actions() {
-        appbar_diff_layout_toggle_matches_the_palette_action();
         semantic_open_repository_binds_the_entered_repository();
         semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs();
         synthetic_accessibility_controls_are_addressable_at_their_drawn_rects();
-    }
-
-    /// The affordance == `ActionSpec` covenant on the *real* production path:
-    /// the app-bar diff-layout control mutates the shared document, records one
-    /// undo boundary, and dispatches the byte-identical `EncodedAction` the
-    /// Ctrl+K palette would — one source of truth, not two code paths.
-    fn appbar_diff_layout_toggle_matches_the_palette_action() {
-        let (model, diffs) = crate::sample::model();
-        let mut app = GitClientApp::from_model(model, diffs);
-        let mut doc = AutoCommit::new();
-        // First sync seeds the default (unified) preferences into the document.
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
-
-        // The action Ctrl+K would dispatch right now: flip unified → split.
-        let resources = ui::resources::resources(&app, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "diff-layout")
-            .unwrap();
-        let palette_action = match &spec.input {
-            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. }
-            | tilo_actions::ActionInput::Deferred { .. } => {
-                panic!("diff-layout is an immediate action")
-            }
-        };
-
-        // Drive the real app-bar segmented control.
-        app.toggle_diff_layout(&mut doc);
-
-        // It mutated the shared document...
-        assert_eq!(
-            Settings::read_only(&doc).diff_layout,
-            DiffLayout::SideBySide,
-            "the control switched the persisted layout"
-        );
-        // ...recorded exactly one undo boundary bracketing the toggle...
-        assert!(
-            ui::undo::take_committed_action(&mut app).is_some(),
-            "one undo boundary recorded for the control's action"
-        );
-        // ...and dispatched the byte-identical action Ctrl+K would.
-        let dispatched = app
-            .last_dispatched()
-            .expect("the control dispatched an action");
-        assert_eq!(dispatched.type_id, crate::actions::GIT_CLIENT_ACTION_TYPE);
-        assert_eq!(
-            dispatched, &palette_action,
-            "the app-bar control and the Ctrl+K entry build one and the same action"
-        );
     }
 
     /// App-bar geometry: controls stay visible and separate at narrow widths, inside
@@ -4093,7 +3912,6 @@ mod tests {
             &automerge::ROOT,
         ));
         assert_ne!(app.settings.diff_layout, before);
-        assert!(app.last_dispatched().is_some());
 
         assert!(Widget::perform_semantic_action(
             &mut app,
