@@ -12,7 +12,8 @@ use std::rc::Rc;
 
 use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::application::{
-    ApplicationHost, Capture, ComponentRunnerInputs, OpenFile, PreparedComponentInputs,
+    ApplicationHost, Capture, ComponentRunnerInputs, OpenFile, PlaybackHandoff,
+    PreparedComponentInputs,
 };
 use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
@@ -126,7 +127,15 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Returns any launch, storage or construction failure.
     pub fn with_role(role: Role) -> Result<Self, LaunchError> {
         let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
-        Self::open(Profile::Temporary(profile), role, AUTHOR, &[], None, None)
+        Self::open(
+            Profile::Temporary(profile),
+            role,
+            AUTHOR,
+            &[],
+            None,
+            None,
+            None,
+        )
     }
 
     /// The app as `person` (the hex of a root public key) opens it on a
@@ -142,6 +151,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             Role::Owner,
             person,
             &[],
+            None,
             None,
             None,
         )
@@ -201,6 +211,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             AUTHOR,
             arguments,
             None,
+            None,
             Some((Capture::new(scenario.map(str::to_owned)), viewport)),
         )?;
         super::stage::stage::<A>(app.harness(), scenario)?;
@@ -223,6 +234,26 @@ impl<A: ResourceApp> HeadlessApp<A> {
             &arguments,
             None,
             None,
+            None,
+        )
+    }
+
+    /// The app launched with `arguments` to continue `handoff`'s playback,
+    /// as the session launches the target of a media handoff.
+    ///
+    /// # Errors
+    /// Returns any launch, storage or construction failure.
+    pub fn handed_off(arguments: &[&str], handoff: PlaybackHandoff) -> Result<Self, LaunchError> {
+        let profile = Rc::new(tempfile::tempdir().map_err(operation)?);
+        let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
+        Self::open(
+            Profile::Temporary(profile),
+            Role::Owner,
+            AUTHOR,
+            &arguments,
+            None,
+            Some(handoff),
+            None,
         )
     }
 
@@ -241,6 +272,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             &[],
             Some(file),
             None,
+            None,
         )
     }
 
@@ -258,6 +290,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             &[],
             None,
             None,
+            None,
         )
     }
 
@@ -267,6 +300,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         author: &str,
         arguments: &[String],
         file: Option<OpenFile>,
+        handoff: Option<PlaybackHandoff>,
         capture: Option<(Capture, (u32, u32))>,
     ) -> Result<Self, LaunchError> {
         let person = author.to_owned();
@@ -304,6 +338,9 @@ impl<A: ResourceApp> HeadlessApp<A> {
         hand_launch(definition, arguments, &mut prepared)?;
         if let Some(file) = file {
             prepared.context.provide_open_file(file);
+        }
+        if let Some(handoff) = handoff {
+            prepared.context.provide_handoff(handoff);
         }
         let viewport = match capture {
             Some((capture, viewport)) => {
@@ -375,7 +412,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
         // Release this instance's record writer before the next one opens it.
         drop(self);
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
-        Self::open(profile, role, &author, &arguments, None, None)
+        Self::open(profile, role, &author, &arguments, None, None, None)
     }
 
     /// The record the app shows.

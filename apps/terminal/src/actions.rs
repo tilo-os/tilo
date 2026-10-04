@@ -1,81 +1,19 @@
-//! Resource + action-model status for the terminal.
+//! The terminal's actions and effects.
 //!
-//! The Tilo action-model recipe (`docs/action-model-recipe.md`) splits every
-//! interaction into exactly one of two buckets: a *document-mutating* operation
-//! becomes an `Action` (`tilo_actions::Action`) — a serializable value that
-//! deterministically changes the shared Automerge document, so undo and
-//! multi-peer replay come for free — while presentation / view state stays plain
-//! app code. PTY input is therefore exported as an effect on the live terminal
-//! resource, without fabricating document actions or a saved-session model.
+//! A terminal session is a record ([`Terminal`](crate::resource::Terminal)):
+//! what its process shows, the title the program set, where the session runs
+//! and the pane collaborators' presence is scoped to. The emulator parses the
+//! process's output onto its own screen, and after each batch the difference
+//! reaches the record as one [`Output`](crate::resource::TerminalAction::Output)
+//! action, so every collaborator and every past version sees the same screen.
+//! None of these actions is an undo step: they record what a process did,
+//! which no undo takes back.
 //!
-//! ## Everything that changes the world is external
-//!
-//! The terminal is a projection of an external process: a real shell running
-//! behind a PTY. Spawning that shell, sending keystrokes to its stdin, running
-//! commands, and the emulator parsing the bytes it prints back are all **OS /
-//! driver** side effects. A keystroke travels straight to the shell — the
-//! production `Widget::handle_event` keyboard path maps the key to bytes and
-//! hands them to [`write_input`](crate::TerminalWidget::write_input), which owns
-//! only the PTY writer and takes **no** `AutoCommit`; it can no more mutate the
-//! shared document than the shell process can. By the recipe's rule none of this
-//! is an action, and all of it stays as-is.
-//!
-//! ## The shared document is the live screen, not authored records
-//!
-//! What lives in the Automerge document is exactly the emulator's projection of
-//! the running program's output, seeded by
-//! `init_crdt` and filled by
-//! [`feed`](crate::TerminalWidget::feed) / the PTY-drain `pump`:
-//!
-//! - `terminal_grid` and `terminal_grid_alt` — the main and alternate screen
-//!   buffers, a `List` of line `Map`s each holding a `Text` and packed `attrs`;
-//! - `cursor` — the cursor's `x` / `y`;
-//! - `terminal_links` — OSC 8 hyperlink targets the program emitted;
-//! - `terminal_images` — content hashes and cell placements for terminal
-//!   graphics; immutable bytes live in the app's content store;
-//! - `terminal_title` — the OSC 0/2 window title the program set;
-//! - `terminal_pane_id` — a shared id that scopes collaboration *presence* (whose
-//!   caret is whose), not user data.
-//!
-//! Every one of these is written by the terminal emulator *from the process's
-//! output stream*, never by a user editing a document. It is mirrored into the
-//! CRDT for one reason: so a collaborator invited to the pane sees the same live
-//! screen. The CRDT already replicates that projection and the compositor renders
-//! it; there is no user-authored edit to attribute, order, or undo, so
-//! re-encoding a byte of program output as an `Action` would be meaningless — the
-//! recipe's rule is *does a **user** operation mutate the shared document*, and
-//! here the mutations are the transcript of an external process.
-//!
-//! ## No profiles, themes, sessions or split layouts
-//!
-//! The one thing that *would* be an action — a durable, user-authored record such
-//! as a saved profile, a colour theme, a named session, or a persisted split
-//! layout — the terminal simply does not have: it writes none of these to the
-//! document (or anywhere else). Colours come from the OS-controlled `Theme` passed
-//! to `draw`; there is no per-app settings map, no saved-sessions collection. The
-//! generic `ui::persist` autosave in `main.rs` snapshots the whole document, but
-//! that document *is* the transient screen above — it is the toolkit's screen
-//! persistence, identical in every app, not a terminal-specific record model.
-//!
-//! ## Presentation is never an action
-//!
-//! The scrollback offset, the current text selection, local find-in-scrollback
-//! query/matches, whether the context menu is
-//! open, and the viewport are per-peer view state held on the widget. The recipe
-//! names "the current selection, an overlay being open" as presentation that must
-//! *never* be an action.
-//!
-//! ## Consequence
-//!
-//! The terminal publishes its live session with send/interrupt/clear effects;
-//! [`take_committed_action`](ui::undo::CommittedActions::take_committed_action) stays
-//! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
-//! nothing for it to dispatch, and `main.rs` registers no action decoder).
-//! The bounded resource tree still exposes the live session, its transcript and
-//! visible OSC links to search, agents and invocation history. Those operations
-//! are typed effects/views: they drive the PTY, clipboard, viewport or URL
-//! opener, but never pretend transient process state is a durable document edit.
-//! The tests below prove each half of this split on the real production path.
+//! Keystrokes are not actions: they travel straight to the process's stdin
+//! and change no document. Driving the process from the palette, an agent
+//! or a script — send text, run a command, interrupt it, paste — is an
+//! effect on the live session. Presentation (the scrollback offset, the
+//! selection, the find bar, the context menu) is view state of the widget.
 
 use ui::tilo_actions::ActionRegistry;
 
@@ -88,9 +26,8 @@ pub fn register(registry: &mut ActionRegistry) {
 mod tests {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
-    use tilo_automerge::ApplyIncoming;
 
-    use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
+    use automerge::{AutoCommit, ROOT};
     use portable_pty::{MasterPty, PtySize};
     use std::sync::mpsc::Receiver;
     use taffy::{NodeId, TaffyTree};
@@ -230,92 +167,9 @@ mod tests {
         );
     }
 
-    /// Read the concatenated text of every line in a grid `List`.
-    fn grid_text(doc: &AutoCommit, key: &str) -> String {
-        let grid = match doc.get(&ROOT, key).unwrap() {
-            Some((Value::Object(ObjType::List), id)) => id,
-            other => panic!("root[\"{key}\"] must be an Automerge List, got {other:?}"),
-        };
-        let mut out = String::new();
-        for i in 0..doc.length(&grid) {
-            let line = doc.get(&grid, i).unwrap().unwrap().1;
-            let text = doc.get(&line, "text").unwrap().unwrap().1;
-            out.push_str(&doc.text(&text).unwrap());
-        }
-        out
-    }
-
-    /// The shared document is only the screen projection, keystrokes reach the shell, and output replicates byte-identically.
+    /// Keystrokes reach the shell and change no document.
     #[test]
-    fn document_is_the_replicated_screen_projection_and_keys_go_to_the_shell() {
-        // Case `document_holds_only_the_live_screen_projection`.
-        // The shared document is exactly the emulator's screen projection — the two
-        // grid buffers, the cursor, the OSC hyperlink map and the presence pane id —
-        // seeded by the real `init_crdt`. There is no user-authored record
-        // collection anywhere: no profiles, themes, sessions, split layouts, snippets
-        // or settings map. So there is nothing structural for an action to mutate;
-        // every key present is written from the running program's output, not by a
-        // user editing a document.
-        {
-            let (mut widget, _rx) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
-
-            // Exactly the live-screen keys the emulator seeds — nothing structural.
-            let mut root_keys: Vec<String> = doc.keys(&ROOT).collect();
-            root_keys.sort();
-            assert_eq!(
-                root_keys,
-                vec![
-                    "cursor".to_string(),
-                    "terminal_grid".to_string(),
-                    "terminal_grid_alt".to_string(),
-                    "terminal_images".to_string(),
-                    "terminal_links".to_string(),
-                    "terminal_pane_id".to_string(),
-                ],
-                "the document holds only the emulator's live-screen projection: {root_keys:?}",
-            );
-
-            // Both grids are screen buffers; cursor is a coord map; links is the OSC 8
-            // map — every key is process output, never an authored record.
-            for (key, want) in [
-                ("terminal_grid", ObjType::List),
-                ("terminal_grid_alt", ObjType::List),
-                ("cursor", ObjType::Map),
-                ("terminal_links", ObjType::Map),
-            ] {
-                match doc.get(&ROOT, key).unwrap() {
-                    Some((Value::Object(got), _)) if got == want => {}
-                    other => panic!("root[\"{key}\"] must be a {want:?}, got {other:?}"),
-                }
-            }
-
-            // No durable, user-authored record collection exists to hang an action
-            // off — proving this isn't a "saved profiles / sessions are actions" case.
-            for forbidden in [
-                "profiles",
-                "profile",
-                "themes",
-                "theme",
-                "sessions",
-                "session",
-                "layouts",
-                "splits",
-                "snippets",
-                "favourites",
-                "favorites",
-                "settings",
-                "prefs",
-                "bookmarks",
-            ] {
-                assert!(
-                    doc.get(&ROOT, forbidden).unwrap().is_none(),
-                    "document must not carry a `{forbidden}` record collection",
-                );
-            }
-        }
-
+    fn keys_go_to_the_shell_not_the_document() {
         // Case `keystrokes_go_to_the_shell_not_the_document`.
         // A keystroke is **external**: driven through the production
         // `Widget::handle_event`, the character reaches the shell's stdin (arrives on
@@ -326,9 +180,6 @@ mod tests {
             let (mut widget, write_rx) = build_test_widget();
             let mut doc = AutoCommit::new();
 
-            // Seed the screen projection once (the real path), then settle — after
-            // this `init_crdt` is doc-idempotent, so any later change is the keystroke.
-            widget.init_crdt(&mut doc, &ROOT);
             doc.commit();
             let heads_before = doc.get_heads();
             let _ = drain_writes(&write_rx); // ignore anything queued during seeding
@@ -348,49 +199,6 @@ mod tests {
                 "the keystroke was delivered to the shell's stdin",
             );
         }
-
-        // Case `pty_output_projects_into_the_grid_and_replicates_byte_identically`.
-        // The collaboration guarantee the toolkit's CRDT already provides for the
-        // screen projection — the same one an action executor would give, and the
-        // reason no action is needed: the *external* program's output, fed through
-        // the production `feed`, fills `terminal_grid`, and an independent replica
-        // that merges the change converges **byte-identically** (same head hashes,
-        // not merely the same visible text).
-        {
-            let (mut widget, _rx) = build_test_widget();
-            let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
-            doc.commit();
-
-            let base = doc.save();
-            let mut peer = AutoCommit::load(&base).unwrap();
-            assert_eq!(
-                doc.get_heads(),
-                peer.get_heads(),
-                "precondition: replicas share a base"
-            );
-
-            // The shell prints "hello" — an external side effect the emulator projects
-            // into the grid. `feed` is the exact path the live PTY-drain `pump` runs.
-            widget.feed(&mut doc, &ROOT, b"hello");
-            doc.commit();
-            assert!(
-                grid_text(&doc, "terminal_grid").contains("hello"),
-                "the program's output landed in the screen buffer",
-            );
-
-            // Merge into the peer: byte-identical convergence, for free, no action.
-            peer.merge_incoming(&mut doc).unwrap();
-            assert_eq!(
-                doc.get_heads(),
-                peer.get_heads(),
-                "byte-identical convergence after merge"
-            );
-            assert!(
-                grid_text(&peer, "terminal_grid").contains("hello"),
-                "the collaborator sees the same live screen",
-            );
-        }
     }
 
     /// Exported terminal effects: no document undo boundary, bounded commands and payloads, and only public web links.
@@ -406,10 +214,9 @@ mod tests {
         {
             let (mut widget, _rx) = build_test_widget();
             let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
 
             // Real event/output path: program prints, user types, user clicks.
-            widget.feed(&mut doc, &ROOT, b"hello");
+            widget.feed(b"hello");
             send(&mut widget, &mut doc, &char_event("x"));
             send(&mut widget, &mut doc, &left_press());
 
@@ -635,10 +442,7 @@ mod tests {
         {
             let (mut widget, _writes) = build_test_widget();
             let mut doc = AutoCommit::new();
-            widget.init_crdt(&mut doc, &ROOT);
             widget.feed(
-                &mut doc,
-                &ROOT,
                 b"\x1b]8;;file:///home/me/.ssh/id_ed25519\x1b\\local\x1b]8;;\x1b\\ \
               \x1b]8;;https://token@example.test/private\x1b\\credential\x1b]8;;\x1b\\ \
               \x1b]8;;https://example.test/docs\x1b\\public\x1b]8;;\x1b\\",
@@ -778,11 +582,7 @@ mod tests {
     fn live_session() -> (TerminalWidget, AutoCommit) {
         let (mut widget, _writes) = build_test_widget();
         let mut doc = AutoCommit::new();
-        widget.init_crdt(&mut doc, &ROOT);
-        widget.feed(
-            &mut doc,
-            &ROOT,
-            b"\x1b]2;build\x07$ make\r\nsee \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\\r\n",
+        widget.feed(b"\x1b]2;build\x07$ make\r\nsee \x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\\r\n",
         );
         widget.sync(&mut doc, &ROOT);
         doc.commit();

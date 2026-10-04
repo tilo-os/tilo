@@ -1,13 +1,38 @@
 use crate::{Attr, GridPos, Selection, TerminalPerformer, TerminalWidget};
-use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
+use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use tilo_automerge::ApplyIncoming;
 use ui::State;
+use ui::framework::ResourceSurface;
+use ui::tilo_resource::Resource as _;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 use vte::Perform;
+
+/// What a collaborator shows of `host`'s session: its screen and title,
+/// recorded as the session's actions, read back from the record and
+/// presented to a terminal with no process of its own.
+pub(crate) fn replica_of(host: &TerminalWidget) -> TerminalWidget {
+    use ui::tilo_actions::Action as _;
+    let mut doc = AutoCommit::new();
+    crate::resource::TerminalAction::Output {
+        edits: crate::screen::edits(None, host.screen()),
+    }
+    .apply(&mut doc)
+    .expect("the screen records");
+    crate::resource::TerminalAction::SetTitle {
+        title: host.title().to_owned(),
+    }
+    .apply(&mut doc)
+    .expect("the title records");
+    let (mut replica, _) = build_test_widget();
+    let state = crate::resource::Terminal::read(&doc).expect("the session reads");
+    ResourceSurface::<crate::resource::Terminal>::present(&mut replica, &Rc::new(state));
+    replica
+}
 
 /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
 const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
@@ -189,10 +214,9 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
     // Case `first_pty_bytes_retire_the_first_run_watermark`.
     {
         let (mut widget, _writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
         assert!(!widget.has_received_pty_output());
 
-        widget.feed(&mut doc, &ROOT, b"\x1b[32m\x1b[?25h");
+        widget.feed(b"\x1b[32m\x1b[?25h");
 
         assert!(
             widget.has_received_pty_output(),
@@ -744,8 +768,6 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
             }
         }
 
-        let state = State::new();
-        let mut doc = state.doc;
         let (_output_tx, output_rx) = std::sync::mpsc::channel();
         let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
 
@@ -756,10 +778,8 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
             tilo_content::ContentStore::memory(),
         );
 
-        widget.init_crdt(&mut doc, &ROOT);
-
-        let grid_id = doc.get(ROOT, "terminal_grid").unwrap().unwrap().1;
-        assert_eq!(doc.length(&grid_id), 24);
+        widget.feed(b"");
+        assert_eq!(widget.grid_text().split('\n').count(), 24);
     }
 
     // Case `empty_line_pads_on_cursor_jump_write`.
@@ -772,38 +792,15 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
     // shell ~3-5 s" report.
     {
         let (mut widget, _rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        widget.init_crdt(&mut doc, &ROOT);
 
         // Fresh lines start empty.
-        let grid_id = doc.get(ROOT, "terminal_grid").unwrap().unwrap().1;
-        let line0 = doc.get(&grid_id, 0usize).unwrap().unwrap().1;
-        let text0 = doc.get(&line0, "text").unwrap().unwrap().1;
-        assert_eq!(
-            doc.text(&text0).unwrap().len(),
-            0,
-            "blank lines are seeded empty"
-        );
+        widget.feed(b"");
+        assert_eq!(widget.grid_row(0).len(), 0, "blank lines are seeded empty");
 
         // CSI 1;11 H → row 1, col 11 (1-based); print 'X' at 0-based col 10
         // on the still-empty first line — this exercises the pad path.
-        widget.feed(&mut doc, &ROOT, b"\x1b[1;11HX");
-
-        // Read the grid directly from the CRDT: find the line carrying 'X'
-        // and assert it was padded to column 10 with spaces.
-        let grid_id = doc.get(ROOT, "terminal_grid").unwrap().unwrap().1;
-        let n = doc.length(&grid_id);
-        let mut found: Option<String> = None;
-        for i in 0..n {
-            let line = doc.get(&grid_id, i).unwrap().unwrap().1;
-            let text = doc.get(&line, "text").unwrap().unwrap().1;
-            let s = doc.text(&text).unwrap();
-            if s.contains('X') {
-                found = Some(s);
-                break;
-            }
-        }
-        let line = found.expect("a grid line must carry the printed 'X'");
+        widget.feed(b"\x1b[1;11HX");
+        let line = widget.grid_row(0);
         assert_eq!(
             line.chars().nth(10),
             Some('X'),
@@ -818,38 +815,15 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
     // Case `test_terminal_performer_print`.
     {
         use crate::TermModes;
-        let mut doc = AutoCommit::new();
-        let grid_id = doc
-            .put_object(ROOT, "terminal_grid", ObjType::List)
-            .unwrap();
-        let line_id = doc.insert_object(&grid_id, 0, ObjType::Map).unwrap();
-        let text_id = doc.put_object(&line_id, "text", ObjType::Text).unwrap();
-        doc.splice_text(&text_id, 0, 0, &" ".repeat(80)).unwrap();
-
-        let attr_bytes: Vec<u8> = vec![Attr::default().pack(); 80].concat();
-        doc.put(&line_id, "attrs", attr_bytes).unwrap();
-
-        // The performer also needs a (possibly empty) alternate buffer list.
-        let alt_grid_id = doc
-            .put_object(ROOT, "terminal_grid_alt", ObjType::List)
-            .unwrap();
-        let links_id = doc
-            .put_object(ROOT, "terminal_links", ObjType::Map)
-            .unwrap();
-        let images_id = doc
-            .put_object(ROOT, "terminal_images", ObjType::List)
-            .unwrap();
-
-        let cursor_id = doc.put_object(ROOT, "cursor", ObjType::Map).unwrap();
-        doc.put(&cursor_id, "x", 0u64).unwrap();
-        doc.put(&cursor_id, "y", 0u64).unwrap();
-
-        let mut line_ids = vec![line_id.clone()];
-        let mut alt_line_ids: Vec<_> = Vec::new();
-        let mut alt_active = false;
+        let mut screen = crate::screen::Screen {
+            main: vec![Rc::new(crate::screen::Line {
+                text: " ".repeat(80),
+                attrs: vec![Attr::default().pack(); 80].concat(),
+            })],
+            ..crate::screen::Screen::default()
+        };
         let mut modes = TermModes::default();
         let mut saved_cursor = None;
-        let mut trimmed_front = 0usize;
         let mut next_link_id = 0u16;
         let mut title_out = None;
         let mut responses: Vec<u8> = Vec::new();
@@ -857,16 +831,8 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
 
         {
             let mut performer = TerminalPerformer {
-                state: &mut doc,
-                main_grid_id: grid_id,
-                alt_grid_id,
-                cursor_id,
-                links_id,
-                images_id,
+                screen: &mut screen,
                 content: &content,
-                main_line_ids: &mut line_ids,
-                alt_line_ids: &mut alt_line_ids,
-                alt_active: &mut alt_active,
                 width: 80,
                 height: 24,
                 cursor_x: 0,
@@ -877,7 +843,6 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
                 saved_cursor: &mut saved_cursor,
                 scroll_top: 0,
                 scroll_bottom: 23,
-                trimmed_front: &mut trimmed_front,
                 next_link_id: &mut next_link_id,
                 current_link_id: 0,
                 title_out: &mut title_out,
@@ -888,15 +853,13 @@ fn terminal_grid_initialises_prints_and_is_a_library_widget() {
             performer.print('H');
             performer.print('i');
             assert_eq!(performer.cursor_x, 2);
-            // Printed cells are batched in-memory and committed to the CRDT on
+            // Printed cells are batched in memory and committed to the line on
             // any non-print action or at end of feed; flush so the read below
             // sees them (the real feed path flushes via `flush_cursor`).
             performer.flush_print_buf();
         }
 
-        let (_, text_id) = doc.get(&line_id, "text").unwrap().unwrap();
-        let text = doc.text(&text_id).unwrap();
-        assert!(text.starts_with("Hi"));
+        assert!(screen.main[0].text.starts_with("Hi"));
     }
 
     // Case `crate_exposes_terminal_widget_as_library`.
@@ -1535,7 +1498,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         let (mut w, write_rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        w.feed(&mut doc, &automerge::ROOT, b""); // init modes (no bracketed paste)
+        w.feed(b""); // init modes (no bracketed paste)
         send_cursor_move(&mut w, &mut doc, 100.0, 100.0);
         send_middle_press(&mut w, &mut doc);
         assert!(drain_writes(&write_rx).is_empty());
@@ -1596,7 +1559,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
         for i in 0..60 {
             payload.extend_from_slice(format!("LINE{i:03}\r\n").as_bytes());
         }
-        w.feed(&mut doc, &automerge::ROOT, &payload);
+        w.feed(&payload);
         w.sync(&mut doc, &automerge::ROOT);
 
         // Pinned to the bottom: newest lines visible, oldest not.
@@ -1702,7 +1665,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
         for i in 0..60 {
             payload.extend_from_slice(format!("L{i:03}\r\n").as_bytes());
         }
-        w.feed(&mut doc, &automerge::ROOT, &payload);
+        w.feed(&payload);
         w.sync(&mut doc, &automerge::ROOT);
 
         w.scroll_to_top();
@@ -1863,7 +1826,6 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
 
         let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
-        widget.init_crdt(&mut doc, &ROOT);
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         let heads_before = doc.get_heads();
         let transcript = widget.accessibility().expect("terminal transcript");
@@ -2714,15 +2676,10 @@ fn menu_component_factory(
     _: ui::application::LaunchTarget,
     _: ui::application::RestoreInput,
 ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
-    let mut widget = MENU_COMPONENT_WIDGET
+    let widget = MENU_COMPONENT_WIDGET
         .with_borrow_mut(Option::take)
         .expect("explicit test terminal");
-    context
-        .initialize_new_record(|doc| {
-            widget.init_crdt(doc, &ROOT);
-            Ok(())
-        })
-        .unwrap();
+    context.initialize_new_record(|_| Ok(())).unwrap();
     Ok(ui::application::AppComponent::new(
         context,
         Box::new(widget),
@@ -2770,7 +2727,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         }
 
         let start = ui::time::now();
-        w.feed(&mut doc, &automerge::ROOT, &payload);
+        w.feed(&payload);
         w.sync(&mut doc, &automerge::ROOT);
         let elapsed = start.elapsed();
 
@@ -2817,7 +2774,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
                 payload.extend_from_slice(format!("ROW{emitted:04}\r\n").as_bytes());
                 emitted += 1;
             }
-            w.feed(&mut doc, &automerge::ROOT, &payload);
+            w.feed(&payload);
             w.sync(&mut doc, &automerge::ROOT);
         }
         // 150 lines fed, MAX_HISTORY 120 (+8 slack) under cfg(test): a trim
@@ -2842,42 +2799,51 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         );
     }
 
-    // Case `external_edit_without_local_feed_triggers_full_reread`.
+    // Case `a_collaborators_edit_to_old_scrollback_reaches_a_viewer`.
     {
+        use ui::tilo_actions::Action as _;
         use vello::kurbo::Rect;
-        // Simulate a collaborator editing an *old* scrollback line directly in
-        // the CRDT (no local feed). Because the mirror can't assume only the
-        // live screen changed, `sync` must fall back to a full re-read and
-        // surface the remote edit.
-        let (mut w, _rx, _out) = build_test_widget_io();
-        let mut doc = AutoCommit::new();
-        w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
-
+        // A collaborator's change to an *old* scrollback line arrives as a
+        // change to the session record; a terminal showing that record reads
+        // only what changed and shows it.
+        let (mut host, _rx, _out) = build_test_widget_io();
+        host.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
         let mut payload = Vec::new();
         for i in 0..40 {
             payload.extend_from_slice(format!("BASE{i:03}\r\n").as_bytes());
         }
-        w.feed(&mut doc, &automerge::ROOT, &payload);
-        w.sync(&mut doc, &automerge::ROOT);
-        assert!(w.grid_text().contains("BASE000"), "base content mirrored");
+        host.feed(&payload);
 
-        // Edit line 0's text object directly (external mutation, no feed).
-        let grid_id = doc
-            .get(&automerge::ROOT, "terminal_grid")
-            .unwrap()
-            .unwrap()
-            .1;
-        let line0 = doc.get(&grid_id, 0).unwrap().unwrap().1;
-        let (_, text_id) = doc.get(&line0, "text").unwrap().unwrap();
-        let len = doc.length(&text_id);
-        doc.splice_text(&text_id, 0, len as isize, "REMOTE_EDIT")
-            .unwrap();
+        let mut doc = AutoCommit::new();
+        crate::resource::TerminalAction::Output {
+            edits: crate::screen::edits(None, host.screen()),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let mut reader = ui::tilo_resource::Reader::<crate::resource::Terminal>::open(&mut doc)
+            .expect("the session reads");
+        let (mut viewer, _rx) = build_test_widget();
+        viewer.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
+        ResourceSurface::<crate::resource::Terminal>::present(&mut viewer, reader.state());
+        assert!(viewer.grid_text().contains("BASE000"), "base content shown");
 
-        w.sync(&mut doc, &automerge::ROOT);
+        crate::resource::TerminalAction::Output {
+            edits: vec![crate::screen::ScreenEdit::Write {
+                alternate: false,
+                index: 0,
+                text: "REMOTE_EDIT".into(),
+                attrs: Vec::new(),
+            }],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert!(reader.sync(&mut doc).expect("the change reads"));
+        ResourceSurface::<crate::resource::Terminal>::present(&mut viewer, reader.state());
         assert!(
-            w.grid_text().contains("REMOTE_EDIT"),
-            "external edit to old scrollback must be picked up by a full re-read"
+            viewer.grid_text().contains("REMOTE_EDIT"),
+            "a change to old scrollback reaches the viewer"
         );
+        assert!(viewer.grid_text().contains("BASE039"));
     }
 
     // Case `commit_action_reports_whether_the_document_actually_changed`.
@@ -2921,8 +2887,7 @@ fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
     // Case `plain_paste_writes_to_pty_with_cr_newlines`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b""); // init crdt / modes
+        w.feed(b""); // init crdt / modes
         w.paste("echo hi\nls");
         let got = drain_writes(&write_rx);
         assert_eq!(got, b"echo hi\rls", "plain paste normalises LF to CR");
@@ -2931,9 +2896,8 @@ fn paste_writes_to_pty_with_newline_and_bracketing_rules() {
     // Case `bracketed_paste_wraps_when_app_enabled_it`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
         // App turns on bracketed paste via a real DEC private set sequence.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?2004h");
+        w.feed(b"\x1b[?2004h");
         assert!(w.modes().bracketed_paste);
         w.paste("data");
         let got = drain_writes(&write_rx);
@@ -2959,14 +2923,14 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Write to the main screen.
-        w.feed(&mut doc, &automerge::ROOT, b"MAIN CONTENT\r\n");
+        w.feed(b"MAIN CONTENT\r\n");
         w.sync(&mut doc, &automerge::ROOT);
         assert!(!w.is_alt_screen());
         assert!(w.grid_row(0).starts_with("MAIN CONTENT"));
 
         // Enter the alternate screen and do a full-screen redraw.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1049h\x1b[2J\x1b[H");
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[3;5HTUI REDRAW");
+        w.feed(b"\x1b[?1049h\x1b[2J\x1b[H");
+        w.feed(b"\x1b[3;5HTUI REDRAW");
         w.sync(&mut doc, &automerge::ROOT);
         assert!(w.is_alt_screen(), "?1049h enters the alternate screen");
         // The alt buffer holds the redraw, and the main content is not in it.
@@ -2981,7 +2945,7 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
         );
 
         // Leave the alternate screen — the main buffer must return intact.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1049l");
+        w.feed(b"\x1b[?1049l");
         w.sync(&mut doc, &automerge::ROOT);
         assert!(!w.is_alt_screen(), "?1049l restores the main screen");
         assert!(
@@ -2998,17 +2962,16 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
     // Case `dec_private_modes_toggle_cursor_and_bracketed_paste`.
     {
         let (mut w, _rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"");
+        w.feed(b"");
         assert!(w.modes().cursor_visible, "cursor visible by default");
 
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?25l");
+        w.feed(b"\x1b[?25l");
         assert!(!w.modes().cursor_visible, "?25l hides the cursor");
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?25h");
+        w.feed(b"\x1b[?25h");
         assert!(w.modes().cursor_visible, "?25h shows the cursor");
 
         // Mouse reporting is parsed (not crashing) into the mode flags.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1000h\x1b[?1006h");
+        w.feed(b"\x1b[?1000h\x1b[?1006h");
         assert!(
             w.modes().mouse_report && w.modes().mouse_sgr,
             "mouse modes are tracked"
@@ -3020,7 +2983,7 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
     {
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1004h");
+        w.feed(b"\x1b[?1004h");
         let _ = drain_writes(&rx);
         send_focus(&mut w, &mut doc, true);
         send_focus(&mut w, &mut doc, false);
@@ -3041,7 +3004,7 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1002h\x1b[?1006h");
+        w.feed(b"\x1b[?1002h\x1b[?1006h");
         let _ = drain_writes(&rx);
 
         send_cursor_move(&mut w, &mut doc, 25.0, 65.0); // cell 3,4 (one-based)
@@ -3078,7 +3041,7 @@ fn mouse_tracking_padding_and_grid_hit_testing() {
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1003h\x1b[?1006h");
+        w.feed(b"\x1b[?1003h\x1b[?1006h");
         let _ = drain_writes(&rx);
         send_cursor_move(&mut w, &mut doc, 25.0, 65.0);
         let _ = drain_writes(&rx); // ignore the requested all-motion hover report
@@ -3229,7 +3192,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         let (mut w, _rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 80.0), 10.0, 20.0);
-        w.feed(&mut doc, &automerge::ROOT, b"accessible output");
+        w.feed(b"accessible output");
         w.sync(&mut doc, &automerge::ROOT);
         w.set_focus(true);
 
@@ -3262,7 +3225,6 @@ fn ime_and_accessibility_expose_terminal_semantics() {
 
         let (mut w, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
-        w.init_crdt(&mut doc, &automerge::ROOT);
         assert!(!Widget::perform_action(
             &mut w,
             &Action::SetValue("printf semantic".to_string()),
@@ -3343,56 +3305,32 @@ fn ime_and_accessibility_expose_terminal_semantics() {
     reason = "cases merged from separate tests; each case stays self-contained"
 )]
 fn terminal_resource_identity_convergence_and_presence() {
-    // Case `terminal_resource_uses_the_shared_pane_identity`.
-    {
-        let (mut w, _writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.init_crdt(&mut doc, &automerge::ROOT);
-        let resource = ui::resources::resources(&w, &doc)
-            .into_iter()
-            .next()
-            .expect("terminal session resource");
-        let saved = doc.save();
-        let mut peer_doc = AutoCommit::load(&saved).expect("load collaborator replica");
-        let (mut peer, _writes) = build_test_widget();
-        peer.init_crdt(&mut peer_doc, &automerge::ROOT);
-        let peer_resource = ui::resources::resources(&peer, &peer_doc)
-            .into_iter()
-            .next()
-            .expect("peer terminal session resource");
-        assert_eq!(resource.id, peer_resource.id);
-        assert_eq!(
-            ui::widget::controls::control_action_bindings(&w).len(),
-            0,
-            "resource actions are command-palette/agent operations, not phantom controls"
-        );
-    }
-
-    // Case `concurrent_terminal_initialisation_converges_on_one_resource_identity`.
-    // Two peers can both create the same previously empty terminal document.
-    // Automerge retains both concurrent scalar writes, so the widget must select
-    // a deterministic pane id from that conflict set or resource/action and
+    // Case `concurrent_pane_claims_converge_on_one_resource_identity`.
+    // Two peers can both claim a pane on the same previously empty session.
+    // Automerge retains both concurrent scalar writes, so every replica must
+    // select the same pane id from that conflict set, or resource and
     // presence addresses would split despite the document converging.
     {
         use automerge::ActorId;
+        use ui::tilo_actions::Action as _;
 
-        let mut base = AutoCommit::new();
-        let mut left_doc = base.fork().with_actor(ActorId::random());
-        let mut right_doc = base.fork().with_actor(ActorId::random());
-        let (mut left, _writes) = build_test_widget();
-        let (mut right, _writes) = build_test_widget();
-
-        left.init_crdt(&mut left_doc, &ROOT);
-        right.init_crdt(&mut right_doc, &ROOT);
-        left_doc.commit();
-        right_doc.commit();
+        let base = AutoCommit::new();
+        let mut left_doc = base.clone().with_actor(ActorId::random());
+        let mut right_doc = base.with_actor(ActorId::random());
+        for doc in [&mut left_doc, &mut right_doc] {
+            crate::resource::TerminalAction::ClaimPane {
+                pane_id: uuid::Uuid::new_v4().to_string(),
+            }
+            .apply(doc)
+            .unwrap();
+            doc.commit();
+        }
         left_doc
             .merge_incoming(&mut right_doc)
-            .expect("merge concurrent terminal initialisation");
+            .expect("merge concurrent pane claims");
         right_doc
             .merge_incoming(&mut left_doc)
-            .expect("return the merged terminal state to the second peer");
-
+            .expect("return the merged session to the second peer");
         assert_eq!(
             left_doc
                 .get_all(&ROOT, "terminal_pane_id")
@@ -3401,24 +3339,16 @@ fn terminal_resource_identity_convergence_and_presence() {
             2,
             "the test must exercise Automerge's concurrent-value case"
         );
-
-        // Re-reading the merged document is the path an already-retained widget
-        // takes on its next sync, and must pick the same resource identity on both
-        // replicas without a conflict-cleanup write.
-        left.init_crdt(&mut left_doc, &ROOT);
-        right.init_crdt(&mut right_doc, &ROOT);
-        let left_id = ui::resources::resources(&left, &left_doc)
-            .into_iter()
-            .next()
-            .expect("left terminal resource")
-            .id;
-        let right_id = ui::resources::resources(&right, &right_doc)
-            .into_iter()
-            .next()
-            .expect("right terminal resource")
-            .id;
+        let left = crate::resource::Terminal::read(&left_doc).unwrap();
+        let right = crate::resource::Terminal::read(&right_doc).unwrap();
+        assert_eq!(left.pane_id, right.pane_id, "pane identities converge");
+        let (mut left_view, _) = build_test_widget();
+        let (mut right_view, _) = build_test_widget();
+        ResourceSurface::<crate::resource::Terminal>::present(&mut left_view, &Rc::new(left));
+        ResourceSurface::<crate::resource::Terminal>::present(&mut right_view, &Rc::new(right));
         assert_eq!(
-            left_id, right_id,
+            ui::resources::resources(&left_view, &left_doc)[0].id,
+            ui::resources::resources(&right_view, &right_doc)[0].id,
             "resource identities converge after merge"
         );
     }
@@ -3430,10 +3360,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         let (mut widget, _writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 120.0), 10.0, 20.0);
-        widget.init_crdt(&mut doc, &ROOT);
         widget.feed(
-            &mut doc,
-            &ROOT,
             b"\x1b]2;build session\x07\x1b]8;;https://example.test/docs\x1b\\docs\x1b]8;;\x1b\\",
         );
         widget.sync(&mut doc, &ROOT);
@@ -3471,7 +3398,7 @@ fn terminal_resource_identity_convergence_and_presence() {
                 format!("\x1b]8;;https://example.test/{index}\x1b\\x\x1b]8;;\x1b\\").as_bytes(),
             );
         }
-        widget.feed(&mut doc, &ROOT, &link_burst);
+        widget.feed(&link_burst);
         widget.sync(&mut doc, &ROOT);
         assert_ne!(
             ui::resources::action_directory_revision(&widget, &doc).as_deref(),
@@ -3512,81 +3439,52 @@ fn terminal_resource_identity_convergence_and_presence() {
         assert!(exhausted.resources.is_empty() && exhausted.exhausted);
     }
 
-    // Case `two_peers_converge_on_terminal_grid_via_crdt`.
+    // Case `a_collaborator_sees_the_running_sessions_screen_and_pane`.
     {
-        // Peer A runs a session; peer B late-joins from A's full snapshot
-        // (`SyncCRDT`) and then receives A's live output as an incremental
-        // delta (`SyncIncremental`) — exactly the save/load path `ui::App`
-        // drives. Both peers must converge on an identical grid.
-        let (mut a, _rx_a) = build_test_widget();
-        let mut doc_a = AutoCommit::new();
-        doc_a.set_actor(automerge::ActorId::from(b"alice".as_slice()));
-        a.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        a.feed(&mut doc_a, &automerge::ROOT, b"peer-a-line-one\r\n");
-        a.sync(&mut doc_a, &automerge::ROOT);
-        assert!(a.grid_text().contains("peer-a-line-one"));
-
-        // Late join: B adopts A's shared document.
-        let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
-        doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
+        // Peer A runs a session hosted by the framework; peer B joins from
+        // A's record and shows it without a process of its own. Both show the
+        // same screen and scope presence under the same pane.
+        use ui::presence::PresenceKey;
+        let mut a = ui::framework::testing::TestApp::<crate::resource::TerminalShell>::new()
+            .expect("terminal");
+        a.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"peer-a-line-one\r\n"))
+            .expect("hosted terminal");
+        a.settle();
+        let joined = crate::resource::Terminal::read(&a.peer_document()).unwrap();
         let (mut b, _rx_b) = build_test_widget();
-        b.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        b.sync(&mut doc_b, &automerge::ROOT);
+        ResourceSurface::<crate::resource::Terminal>::present(&mut b, &Rc::new(joined));
         assert!(
             b.grid_text().contains("peer-a-line-one"),
-            "B adopts A's grid on join; B grid:\n{}",
+            "B shows A's screen; B grid:\n{}",
             b.grid_text()
         );
 
-        // Re-baseline A's incremental cursor after the full save (App does this).
-        let _ = doc_a.save_incremental();
-
-        // A produces more output; deliver the delta to B.
-        a.feed(&mut doc_a, &automerge::ROOT, b"peer-a-line-two\r\n");
-        a.sync(&mut doc_a, &automerge::ROOT);
-        let delta = doc_a.save_incremental();
-        assert!(
-            !delta.is_empty(),
-            "A produced an incremental change to share"
-        );
-        doc_b.load_incoming(&delta).unwrap();
-        b.sync(&mut doc_b, &automerge::ROOT);
-        assert!(
-            b.grid_text().contains("peer-a-line-two"),
-            "B sees A's live output over the incremental sync path"
-        );
-
-        // Full convergence: identical grids on both peers.
+        a.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"peer-a-line-two\r\n"))
+            .expect("hosted terminal");
+        a.settle();
+        let later = crate::resource::Terminal::read(&a.peer_document()).unwrap();
+        ResourceSurface::<crate::resource::Terminal>::present(&mut b, &Rc::new(later));
+        let (a_grid, a_key) = a
+            .with_surface(|terminal: &mut TerminalWidget| {
+                (
+                    terminal.grid_text(),
+                    ui::presence::capability::presence_key(terminal),
+                )
+            })
+            .expect("hosted terminal");
+        assert!(b.grid_text().contains("peer-a-line-two"));
         assert_eq!(
-            a.grid_text(),
-            b.grid_text(),
-            "peers converge on the same terminal grid"
+            a_grid.trim_end(),
+            b.grid_text().trim_end(),
+            "peers show the same terminal grid"
         );
-    }
-
-    // Case `peers_share_pane_id_and_presence_key`.
-    {
-        // Presence must be keyed on a shared pane id so a peer's caret /
-        // selection is filed and rendered under the same key both sides use.
-        use ui::presence::PresenceKey;
-        use ui::widget::Widget as _;
-        let (mut a, _rx_a) = build_test_widget();
-        let mut doc_a = AutoCommit::new();
-        a.feed(&mut doc_a, &automerge::ROOT, b"");
-        a.sync(&mut doc_a, &automerge::ROOT);
-
-        let mut doc_b = AutoCommit::load(&doc_a.save()).unwrap();
-        let (mut b, _rx_b) = build_test_widget();
-        b.sync(&mut doc_b, &automerge::ROOT);
-
-        let ka = ui::presence::capability::presence_key(&a).expect("A presence key");
-        let kb = ui::presence::capability::presence_key(&b).expect("B presence key");
+        let b_key = ui::presence::capability::presence_key(&b);
         assert_eq!(
-            ka, kb,
+            a_key, b_key,
             "both peers scope presence under the same shared pane id"
         );
-        match ka {
-            PresenceKey::App { app, .. } => {
+        match a_key {
+            Some(PresenceKey::App { app, .. }) => {
                 assert_eq!(app, ui::permissions::AppKind::Terminal);
             }
             other => panic!("expected App presence key, got {other:?}"),
@@ -3598,8 +3496,6 @@ fn terminal_resource_identity_convergence_and_presence() {
         use ui::collaboration::PresencePayload;
 
         let (mut w, _) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.init_crdt(&mut doc, &automerge::ROOT);
         w.force_grid(vec!["abcdefgh".to_string()]);
 
         // With a selection, the payload is a Selection over linear indices.
@@ -3648,7 +3544,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Semicolon truecolor foreground.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38;2;10;20;30mA");
+        w.feed(b"\x1b[H\x1b[38;2;10;20;30mA");
         w.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).fg,
@@ -3657,7 +3553,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         );
 
         // Semicolon 256-indexed foreground.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38;5;196mB");
+        w.feed(b"\x1b[H\x1b[38;5;196mB");
         w.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).fg,
@@ -3666,7 +3562,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         );
 
         // Colon-subparam 256-indexed foreground (the xterm form apps emit).
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[38:5:214mC");
+        w.feed(b"\x1b[H\x1b[38:5:214mC");
         w.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).fg,
@@ -3675,7 +3571,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         );
 
         // Truecolor background.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[48;2;5;6;7mD");
+        w.feed(b"\x1b[H\x1b[48;2;5;6;7mD");
         w.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).bg,
@@ -3693,7 +3589,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Bold + italic + underline + reverse all at once.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[1;3;4;7mW");
+        w.feed(b"\x1b[H\x1b[1;3;4;7mW");
         w.sync(&mut doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
         assert!(
@@ -3702,7 +3598,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         );
 
         // A reset clears everything back to the default attribute.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[0mN");
+        w.feed(b"\x1b[H\x1b[0mN");
         w.sync(&mut doc, &automerge::ROOT);
         let b = w.cell_attr(0, 0);
         assert_eq!(b.fg, CellColor::Default);
@@ -3720,18 +3616,14 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Faint + crossed-out together.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[H\x1b[2;9mX");
+        w.feed(b"\x1b[H\x1b[2;9mX");
         w.sync(&mut doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
         assert!(a.dim, "SGR 2 sets faint: {a:?}");
         assert!(a.strike, "SGR 9 sets crossed-out: {a:?}");
 
         // SGR 22 clears both bold and faint; SGR 29 clears crossed-out.
-        w.feed(
-            &mut doc,
-            &automerge::ROOT,
-            b"\x1b[H\x1b[1;2;9mY\x1b[22;29mZ",
-        );
+        w.feed(b"\x1b[H\x1b[1;2;9mY\x1b[22;29mZ");
         w.sync(&mut doc, &automerge::ROOT);
         let z = w.cell_attr(0, 1);
         assert!(!z.dim && !z.bold, "SGR 22 clears bold+faint: {z:?}");
@@ -3748,12 +3640,8 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         let (mut host, rx) = build_test_widget();
         let mut host_doc = AutoCommit::new();
         host.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        host.feed(&mut host_doc, &automerge::ROOT, b"before ");
-        host.feed(
-            &mut host_doc,
-            &automerge::ROOT,
-            format!("\x1b_Ga=T,f=100,t=d,c=3,r=2,i=42;{encoded}\x1b\\after").as_bytes(),
-        );
+        host.feed(b"before ");
+        host.feed(format!("\x1b_Ga=T,f=100,t=d,c=3,r=2,i=42;{encoded}\x1b\\after").as_bytes());
         host.sync(&mut host_doc, &automerge::ROOT);
 
         assert!(
@@ -3782,14 +3670,11 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
             Some(png.as_slice())
         );
 
-        let mut peer_doc = AutoCommit::load(&host_doc.save()).unwrap();
-        let (mut peer, _peer_rx) = build_test_widget();
-        peer.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        peer.sync(&mut peer_doc, &automerge::ROOT);
+        let peer = replica_of(&host);
         assert_eq!(
             peer.image_placements(),
             host.image_placements(),
-            "placement metadata converges through the terminal CRDT"
+            "placement metadata converges through the session record"
         );
     }
 }
@@ -3868,11 +3753,11 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
 
     // Case `newly_spawned_local_pty_does_not_append_to_a_previous_session_grid`.
     {
-        use automerge::{AutoCommit, ObjType};
+        use automerge::AutoCommit;
 
         let mut old = TerminalWidget::spawn_headless().expect("old terminal");
         let mut doc = AutoCommit::new();
-        old.feed(&mut doc, &automerge::ROOT, b"old-session-output");
+        old.feed(b"old-session-output");
         old.sync(&mut doc, &automerge::ROOT);
         assert!(old.grid_text().contains("old-session-output"));
 
@@ -3900,13 +3785,6 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         assert!(
             !screen.contains("old-session-output"),
             "a new PTY must not inherit the previous process' screen: {screen:?}"
-        );
-        assert!(
-            matches!(
-                doc.get(&automerge::ROOT, "terminal_grid"),
-                Ok(Some((automerge::Value::Object(ObjType::List), _)))
-            ),
-            "the new session recreated its durable grid"
         );
     }
 
@@ -3984,7 +3862,7 @@ fn keyboard_encoding_sends_expected_sequences() {
         let (mut w, rx) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        w.feed(&mut doc, &automerge::ROOT, b""); // init modes
+        w.feed(b""); // init modes
 
         send_key_mods(
             &mut w,
@@ -4081,7 +3959,7 @@ fn keyboard_encoding_sends_expected_sequences() {
         assert_eq!(drain_writes(&rx), b"\x1b[A", "default arrow = CSI A");
 
         // App turns on DECCKM; unmodified arrows now use SS3.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?1h");
+        w.feed(b"\x1b[?1h");
         assert!(w.modes().app_cursor_keys);
         send_key_mods(
             &mut w,
@@ -4508,9 +4386,8 @@ fn osc_sequences_update_title_and_hyperlinks() {
     {
         use ui::AppWidget;
         let (mut w, _) = build_test_widget();
-        let mut doc = AutoCommit::new();
         // OSC 2 ; <title> BEL
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b]2;my session\x07");
+        w.feed(b"\x1b]2;my session\x07");
         assert_eq!(w.title(), "my session", "OSC 2 sets the window title");
         assert_eq!(
             w.app_title(),
@@ -4519,14 +4396,11 @@ fn osc_sequences_update_title_and_hyperlinks() {
         );
 
         // OSC 0 (icon + title) also sets it; ST-terminated form.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b]0;another\x1b\\");
+        w.feed(b"\x1b]0;another\x1b\\");
         assert_eq!(w.title(), "another", "OSC 0 sets the window title too");
 
-        // The title rides the CRDT: a second widget on the same doc reads it.
-        w.sync(&mut doc, &automerge::ROOT);
-        let (mut peer, _) = build_test_widget();
-        let mut peer_doc = AutoCommit::load(&doc.save()).unwrap();
-        peer.sync(&mut peer_doc, &automerge::ROOT);
+        // The title rides the session record: a collaborator's view reads it.
+        let peer = replica_of(&w);
         assert_eq!(
             peer.title(),
             "another",
@@ -4551,15 +4425,9 @@ fn osc_sequences_update_title_and_hyperlinks() {
         // hyperlink that resolves back to the URL (rendered underlined and
         // clickable). The link registry rides the CRDT so peers resolve it too.
         let (mut w, _) = build_test_widget();
-        let mut doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         // Home, open link, print "link", close link.
-        w.feed(
-            &mut doc,
-            &automerge::ROOT,
-            b"\x1b[H\x1b]8;;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\",
-        );
-        w.sync(&mut doc, &automerge::ROOT);
+        w.feed(b"\x1b[H\x1b]8;;https://example.test/docs\x1b\\link\x1b]8;;\x1b\\");
 
         assert_eq!(w.grid_row(0).trim_end(), "link", "the link text is printed");
         assert_eq!(
@@ -4578,11 +4446,8 @@ fn osc_sequences_update_title_and_hyperlinks() {
             "cells outside the link have no URL"
         );
 
-        // A peer on the same doc resolves the same hyperlink.
-        let (mut peer, _) = build_test_widget();
-        peer.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        let mut peer_doc = AutoCommit::load(&doc.save()).unwrap();
-        peer.sync(&mut peer_doc, &automerge::ROOT);
+        // A collaborator's view of the session resolves the same hyperlink.
+        let peer = replica_of(&w);
         assert_eq!(
             peer.hyperlink_at(0, 1),
             Some("https://example.test/docs"),
@@ -4602,13 +4467,8 @@ fn osc_52_writes_clipboard_from_base64() {
     // skip: the round trip is always observable, so an OSC 52 that
     // decoded nothing fails here rather than passing quietly.
     let (mut w, _) = build_test_widget();
-    let mut doc = AutoCommit::new();
     // base64("tilo-osc52") = dGlsby1vc2M1Mg==
-    w.feed(
-        &mut doc,
-        &automerge::ROOT,
-        b"\x1b]52;c;dGlsby1vc2M1Mg==\x07",
-    );
+    w.feed(b"\x1b]52;c;dGlsby1vc2M1Mg==\x07");
     assert_eq!(
         ui::text_selection::clipboard_paste().as_deref(),
         Some("tilo-osc52"),
@@ -4636,9 +4496,8 @@ fn device_attribute_queries_reply() {
     // Case `da1_query_writes_primary_device_attributes_reply`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
         // Exactly the bytes fish sends to probe the terminal: CSI c.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[c");
+        w.feed(b"\x1b[c");
         let got = drain_writes(&write_rx);
         assert_eq!(
             got, b"\x1b[?62;22c",
@@ -4649,8 +4508,7 @@ fn device_attribute_queries_reply() {
     // Case `da1_query_with_zero_param_also_replies`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[0c");
+        w.feed(b"\x1b[0c");
         assert_eq!(
             drain_writes(&write_rx),
             b"\x1b[?62;22c",
@@ -4661,8 +4519,7 @@ fn device_attribute_queries_reply() {
     // Case `decid_esc_z_replies_like_da1`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"\x1bZ");
+        w.feed(b"\x1bZ");
         assert_eq!(
             drain_writes(&write_rx),
             b"\x1b[?62;22c",
@@ -4673,8 +4530,7 @@ fn device_attribute_queries_reply() {
     // Case `da2_secondary_device_attributes_reply`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[>c");
+        w.feed(b"\x1b[>c");
         let expected = format!("\x1b[>1;{};0c", crate::inner::terminal_da2_version());
         assert_eq!(
             drain_writes(&write_rx),
@@ -4686,8 +4542,7 @@ fn device_attribute_queries_reply() {
     // Case `xtversion_reply_names_the_terminal`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[>0q");
+        w.feed(b"\x1b[>0q");
         let got = drain_writes(&write_rx);
         let expected = format!("\x1bP>|tilo-terminal({})\x1b\\", env!("CARGO_PKG_VERSION"));
         assert_eq!(
@@ -4704,11 +4559,10 @@ fn status_and_mode_reports_reply_or_stay_silent() {
     // Case `dsr_cursor_position_report_uses_live_cursor`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
         // Move the cursor to row 5, column 3 (1-based) via CUP, then ask for it.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[5;3H");
+        w.feed(b"\x1b[5;3H");
         let _ = drain_writes(&write_rx); // CUP itself sends nothing; clear.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[6n");
+        w.feed(b"\x1b[6n");
         assert_eq!(
             drain_writes(&write_rx),
             b"\x1b[5;3R",
@@ -4719,18 +4573,16 @@ fn status_and_mode_reports_reply_or_stay_silent() {
     // Case `dsr_device_status_reports_ok`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[5n");
+        w.feed(b"\x1b[5n");
         assert_eq!(drain_writes(&write_rx), b"\x1b[0n", "DSR 5n → terminal OK");
     }
 
     // Case `dsr_private_cursor_position_report`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[2;7H");
+        w.feed(b"\x1b[2;7H");
         let _ = drain_writes(&write_rx);
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?6n");
+        w.feed(b"\x1b[?6n");
         assert_eq!(
             drain_writes(&write_rx),
             b"\x1b[?2;7;1R",
@@ -4741,16 +4593,15 @@ fn status_and_mode_reports_reply_or_stay_silent() {
     // Case `decrqm_reports_bracketed_paste_state`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
         // Enable bracketed paste, then query its mode: DECRPM value 1 = set.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?2004h\x1b[?2004$p");
+        w.feed(b"\x1b[?2004h\x1b[?2004$p");
         assert_eq!(
             drain_writes(&write_rx),
             b"\x1b[?2004;1$y",
             "DECRQM must report bracketed paste as set (1) after ?2004h"
         );
         // Disable it and re-query: value 2 = reset.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?2004l\x1b[?2004$p");
+        w.feed(b"\x1b[?2004l\x1b[?2004$p");
         assert_eq!(
             drain_writes(&write_rx),
             b"\x1b[?2004;2$y",
@@ -4761,19 +4612,17 @@ fn status_and_mode_reports_reply_or_stay_silent() {
     // Case `decrqm_unknown_mode_reports_not_recognised`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
         // A mode we do not track → value 0 (not recognised) rather than a hang.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[?9999$p");
+        w.feed(b"\x1b[?9999$p");
         assert_eq!(drain_writes(&write_rx), b"\x1b[?9999;0$y");
     }
 
     // Case `unknown_query_is_consumed_without_a_spurious_reply`.
     {
         let (mut w, write_rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
         // DECSCUSR (set cursor style, `CSI 2 SP q`) is not a query — it must not
         // trigger the XTVERSION path or write anything back.
-        w.feed(&mut doc, &automerge::ROOT, b"\x1b[2 q");
+        w.feed(b"\x1b[2 q");
         assert!(
             drain_writes(&write_rx).is_empty(),
             "a non-query CSI must not write a spurious reply to the shell"
@@ -5179,7 +5028,7 @@ fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
         b"\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\x1b]133;A;click_events=1\x1b\\\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[K\r\x1b[17C\x1b[?2004l\x1b[?2031l\x1b[>4;0m\x1b>\x1b]0;/v/tmp\x07\x1b[m\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\r\x1b]133;A;click_events=1\x07\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[J\r\x1b[17Cab",
     ];
     for batch in batches {
-        w.feed(&mut doc, &ROOT, batch);
+        w.feed(batch);
         w.sync(&mut doc, &ROOT);
     }
     assert!(
@@ -5195,13 +5044,13 @@ fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
     let (mut w, _rx) = build_test_widget();
     let mut doc = AutoCommit::new();
     w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-    w.feed(&mut doc, &ROOT, b"above\r\nP# tail\r\nbelow\x1b[2;4H\x1b[J");
+    w.feed(b"above\r\nP# tail\r\nbelow\x1b[2;4H\x1b[J");
     w.sync(&mut doc, &ROOT);
     assert_eq!(w.grid_row(0).trim_end(), "above");
     assert_eq!(w.grid_row(1).trim_end(), "P#");
     assert_eq!(w.grid_row(2).trim_end(), "");
 
-    w.feed(&mut doc, &ROOT, b"\x1b[2;3H\x1b[1J");
+    w.feed(b"\x1b[2;3H\x1b[1J");
     w.sync(&mut doc, &ROOT);
     assert_eq!(w.grid_row(0).trim_end(), "");
     assert!(

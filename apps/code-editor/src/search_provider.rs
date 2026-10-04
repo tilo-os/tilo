@@ -1,9 +1,10 @@
-//! Code's global-search projection over canonical resource view actions.
+//! Code's global-search projection of what only the editor knows: the symbols
+//! declared in its files and the hits of the running project search. The
+//! files themselves are the resource's own search entries.
 //!
-//! The palette is allowed to be fast, but it must not quietly become a view of
-//! the first N files in a project. The app retains a complete, incremental
-//! catalogue while collaborative state changes; palette keystrokes only ask
-//! that catalogue for one budgeted continuation page.
+//! The app retains a complete, incremental catalogue while collaborative state
+//! changes; palette keystrokes only ask that catalogue for one budgeted
+//! continuation page.
 
 use ui::icons::Icon;
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
@@ -11,8 +12,6 @@ use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
 use crate::actions::{SearchResultRef, SymbolRef};
 use crate::model::NodeId;
 
-pub const OPEN_KIND: &str = "Open files";
-pub const PROJECT_KIND: &str = "Project files";
 pub const SYMBOL_KIND: &str = "Symbols";
 pub const RESULT_KIND: &str = "Search results";
 
@@ -22,7 +21,6 @@ pub struct FileEntry {
     pub resource_id: String,
     pub name: String,
     pub path: String,
-    pub open: bool,
 }
 
 /// A cheap handle to Code's retained complete search projection. Cloning this
@@ -33,13 +31,9 @@ pub struct FileSearchProvider {
 }
 
 impl FileSearchProvider {
-    pub fn new(
-        files: Vec<FileEntry>,
-        symbols: Vec<SymbolRef>,
-        results: Vec<SearchResultRef>,
-    ) -> Self {
+    pub fn new(symbols: Vec<SymbolRef>, results: Vec<SearchResultRef>) -> Self {
         let catalog = SearchCatalog::new("Code");
-        Self::index_into(&catalog, files, symbols, results);
+        Self::index_into(&catalog, symbols, results);
         Self { catalog }
     }
 
@@ -52,27 +46,9 @@ impl FileSearchProvider {
     /// palette is handling an input character.
     pub fn index_into(
         catalog: &SearchCatalog,
-        files: Vec<FileEntry>,
         symbols: Vec<SymbolRef>,
         results: Vec<SearchResultRef>,
     ) {
-        for file in files {
-            let kind = if file.open { OPEN_KIND } else { PROJECT_KIND };
-            let address = crate::actions::open_file_address(&file.resource_id);
-            let mut result = SearchResult::for_action(kind, file.name.clone(), address.clone())
-                .with_icon(Icon::FileCode);
-            if file.path != file.name && !file.path.is_empty() {
-                result = result.with_subtitle(file.path.clone());
-            }
-            if file.open {
-                result = result.with_score(1);
-            }
-            let _ = catalog.upsert(
-                address.resource,
-                format!("{}\n{}", file.name, file.path),
-                result,
-            );
-        }
         for symbol in symbols {
             let address = crate::actions::open_symbol_address(&symbol);
             let subtitle = format!("{}:{}", symbol.path, symbol.line + 1);
@@ -160,13 +136,13 @@ mod tests {
     use super::*;
     use ui::search::SearchProvider;
 
-    fn file(node: usize, name: &str, path: &str) -> FileEntry {
-        FileEntry {
-            node,
-            resource_id: format!("test-file-{node}"),
+    fn symbol(index: usize, name: &str, path: &str) -> SymbolRef {
+        SymbolRef {
+            file_id: format!("test-file-{index}"),
             name: name.into(),
             path: path.into(),
-            open: false,
+            line: index,
+            col: 0,
         }
     }
 
@@ -183,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn file_search_finds_late_partial_and_unicode_matches() {
+    fn symbol_search_finds_late_partial_and_unicode_matches() {
         // Each phase builds its own provider.
         complete_projection_keeps_a_late_file_findable();
         partial_matches_are_not_hidden_by_exact_file_names();
@@ -191,44 +167,42 @@ mod tests {
     }
 
     fn complete_projection_keeps_a_late_file_findable() {
-        let mut files = (0..20_000)
-            .map(|node| {
-                file(
-                    node,
-                    &format!("file-{node}.rs"),
-                    &format!("src/file-{node}.rs"),
+        let mut symbols = (0..20_000)
+            .map(|index| {
+                symbol(
+                    index,
+                    &format!("item_{index}"),
+                    &format!("src/file-{index}.rs"),
                 )
             })
             .collect::<Vec<_>>();
-        files.push(file(20_000, "needle.rs", "deep/needle.rs"));
-        let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
+        symbols.push(symbol(20_000, "needle", "deep/needle.rs"));
+        let provider = FileSearchProvider::new(symbols, Vec::new());
         let found = provider.search_limited("deep/needle", 10);
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].title, "needle.rs");
+        assert_eq!(found[0].title, "needle");
     }
 
     fn partial_matches_are_not_hidden_by_exact_file_names() {
         let provider = FileSearchProvider::new(
             vec![
-                file(1, "needle.rs", "src/needle.rs"),
-                file(2, "main.rs", "src/contains-needle-here.rs"),
+                symbol(1, "needle", "src/needle.rs"),
+                symbol(2, "main", "src/contains-needle-here.rs"),
             ],
-            Vec::new(),
             Vec::new(),
         );
         let found = provider.search_limited("needle", 10);
         assert_eq!(found.len(), 2);
-        assert!(found.iter().any(|hit| hit.title == "needle.rs"));
-        assert!(found.iter().any(|hit| hit.title == "main.rs"));
+        assert!(found.iter().any(|hit| hit.title == "needle"));
+        assert!(found.iter().any(|hit| hit.title == "main"));
     }
 
     fn unicode_and_embedded_nul_grams_are_unambiguous() {
         let provider = FileSearchProvider::new(
             vec![
-                file(1, "éclair.rs", "src/éclair.rs"),
-                file(2, "nul.rs", "src/a\0b.rs"),
+                symbol(1, "éclair", "src/éclair.rs"),
+                symbol(2, "nul", "src/a\0b.rs"),
             ],
-            Vec::new(),
             Vec::new(),
         );
         assert_eq!(provider.search_limited("ÉCL", 10).len(), 1);
@@ -236,24 +210,24 @@ mod tests {
     }
 
     #[test]
-    fn file_search_pages_are_budgeted_and_restart_after_mutation() {
+    fn symbol_search_pages_are_budgeted_and_restart_after_mutation() {
         // Each phase builds its own provider.
         pages_have_hard_inspection_budgets_and_reach_late_matches();
         mutation_invalidates_a_stale_cursor_without_skipping_the_new_revision();
     }
 
     fn pages_have_hard_inspection_budgets_and_reach_late_matches() {
-        let files = (0..1_000)
-            .map(|node| {
-                file(
-                    node,
-                    &format!("common-{node}.rs"),
-                    &format!("src/common-{node}.rs"),
+        let symbols = (0..1_000)
+            .map(|index| {
+                symbol(
+                    index,
+                    &format!("common_{index}"),
+                    &format!("src/common-{index}.rs"),
                 )
             })
-            .chain(std::iter::once(file(1_001, "needle.rs", "late/needle.rs")))
+            .chain(std::iter::once(symbol(1_001, "needle", "late/needle.rs")))
             .collect();
-        let provider = FileSearchProvider::new(files, Vec::new(), Vec::new());
+        let provider = FileSearchProvider::new(symbols, Vec::new());
         assert!(
             provider
                 .search_page("needle", None, 0, 1)
@@ -275,17 +249,16 @@ mod tests {
             }
         }
         let needle = provider.search_page("late/needle", None, 1, 1);
-        saw_late |= needle.results.iter().any(|hit| hit.title == "needle.rs");
+        saw_late |= needle.results.iter().any(|hit| hit.title == "needle");
         assert!(saw_late, "a late corpus row must remain discoverable");
     }
 
     fn mutation_invalidates_a_stale_cursor_without_skipping_the_new_revision() {
         let provider = FileSearchProvider::new(
             vec![
-                file(1, "alpha.rs", "src/alpha.rs"),
-                file(2, "beta.rs", "src/beta.rs"),
+                symbol(1, "alpha", "src/alpha.rs"),
+                symbol(2, "beta", "src/beta.rs"),
             ],
-            Vec::new(),
             Vec::new(),
         );
         let stale = provider
@@ -294,12 +267,11 @@ mod tests {
             .expect("continuation");
         FileSearchProvider::index_into(
             &provider.catalog,
-            vec![file(3, "fresh.rs", "src/fresh.rs")],
-            Vec::new(),
+            vec![symbol(3, "fresh", "src/fresh.rs")],
             Vec::new(),
         );
         let restarted = provider.search_page("fresh", Some(&stale), 1, 1);
-        assert_eq!(restarted.results[0].title, "fresh.rs");
+        assert_eq!(restarted.results[0].title, "fresh");
         assert!(provider.stats().generation > 0);
     }
 }

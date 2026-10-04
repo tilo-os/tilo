@@ -18,9 +18,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::doc::{read_bool, read_i64_coerced, read_str};
 
-use crate::model::{
-    InstallMode, InstallProfile, Source, TargetDrive, sample_recent_sources, sample_source,
-};
+use crate::model::{InstallMode, InstallProfile, Source, sample_recent_sources, sample_source};
 
 pub struct ImagerDoc;
 
@@ -36,7 +34,7 @@ impl ImagerDoc {
     /// Seed the document with empty collaborative records — no fabricated
     /// image or history. The local app owns device discovery and job state.
     /// Idempotent: only writes fields that are missing.
-    pub fn seed(doc: &mut AutoCommit, _targets: &[TargetDrive]) {
+    pub fn seed(doc: &mut AutoCommit) {
         let _ = doc.put(&ROOT, "imager_schema", 2i64);
         if Self::source_map_read(doc).is_none() {
             Self::set_source(doc, None);
@@ -56,7 +54,7 @@ impl ImagerDoc {
     /// only by `--shots`, the `--demo` flag, and tests, never by the live app
     /// (which stays blank per [`Self::seed`]).
     pub fn seed_demo(doc: &mut AutoCommit) {
-        Self::seed(doc, &[]);
+        Self::seed(doc);
         Self::set_source(doc, Some(&sample_source()));
         Self::set_recent(doc, &sample_recent_sources());
     }
@@ -431,12 +429,12 @@ impl ImagerDoc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{InstallMode, SourceKind, sample_targets};
+    use crate::model::{InstallMode, SourceKind};
 
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
         assert!(ImagerDoc::is_empty(&doc));
-        ImagerDoc::seed(&mut doc, &sample_targets());
+        ImagerDoc::seed(&mut doc);
         doc
     }
 
@@ -486,7 +484,7 @@ mod tests {
             let mut doc = seeded();
             let source = sample_source();
             ImagerDoc::set_source(&mut doc, Some(&source));
-            ImagerDoc::seed(&mut doc, &sample_targets()); // re-seed must not clobber
+            ImagerDoc::seed(&mut doc); // re-seed must not clobber
             assert_eq!(ImagerDoc::source(&doc).unwrap().name, source.name);
         }
     }

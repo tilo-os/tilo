@@ -60,14 +60,31 @@ pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
 pub use widget::WordProcessorWidget;
 
-/// A new, empty document's editor, keeping embedded media in the app's
-/// content store.
-pub fn app_root() -> Box<dyn ui::widget::Widget> {
-    let mut widget = WordProcessorWidget::new();
-    widget
-        .model_mut()
-        .set_content_store(tilo_content::ContentStore::for_app());
-    Box::new(widget)
+/// The kind of a Writer document record: the rich-text resource the native
+/// app, the workspace host and the browser all open. Records stamped with the
+/// former `document` read as this kind (see [`ui::RecordKind::new`]).
+pub const RECORD_KIND: &str = <tilo_document::RichText as tilo_resource::Resource>::KIND;
+
+/// Initialize a new record as an empty Writer document: the document
+/// resource's genesis, for hosts that reserve a record outside the app.
+///
+/// # Errors
+///
+/// Returns why the document could not be initialized.
+pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
+    <framework::Document as tilo_resource::Resource>::initialize(doc)
+        .map_err(|error| error.to_string())
+}
+
+/// The store the document's images are kept in on this device.
+pub(crate) fn app_content_store() -> tilo_content::ContentStore {
+    tilo_content::ContentStore::for_app()
+}
+
+/// The word processor as every host mounts it: the framework app over the
+/// document's rich-text record.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<framework::WordProcessorApp>()
 }
 
 pub use word_processor::WordProcessor;
@@ -163,6 +180,20 @@ impl WpFormat {
             Some("epub") => WpFormat::Epub,
             Some("txt" | "text") => WpFormat::Text,
             _ => WpFormat::Markdown,
+        }
+    }
+
+    /// The format [`actions::RichTextAction::ReplaceFormatted`] imports this
+    /// one as; `None` for the export-only formats.
+    pub fn import_format(self) -> Option<actions::ImportFormat> {
+        match self {
+            WpFormat::Markdown => Some(actions::ImportFormat::Markdown),
+            WpFormat::Text => Some(actions::ImportFormat::Text),
+            WpFormat::Html => Some(actions::ImportFormat::Html),
+            WpFormat::Rtf => Some(actions::ImportFormat::Rtf),
+            WpFormat::Docx => Some(actions::ImportFormat::Docx),
+            WpFormat::Odt => Some(actions::ImportFormat::Odt),
+            WpFormat::Pdf | WpFormat::Epub => None,
         }
     }
 
@@ -274,6 +305,30 @@ fn start_history_here(state: &mut ui::State) {
     let _ = ui::tilo_resource::history::commit_stamped(&mut doc);
     state.history_mut().rebase(&mut doc);
     state.doc = doc;
+}
+
+/// The action that replaces a document's body with `bytes` read as
+/// `format`: the import a launch on a file takes, and Open in place. The
+/// images the file embeds are kept in `content` first, since the document
+/// only names them.
+///
+/// # Errors
+///
+/// Returns why the bytes cannot be imported: an export-only format, a codec
+/// rejection, or images that could not be kept.
+pub fn import_action(
+    bytes: &[u8],
+    format: WpFormat,
+    content: &tilo_content::ContentStore,
+) -> Result<actions::RichTextAction, String> {
+    let import = format
+        .import_format()
+        .ok_or_else(|| format!("{format:?} documents cannot be opened"))?;
+    let (action, inputs) = tilo_document::action::stage_import(import, bytes)?;
+    content
+        .put_inputs(&inputs)
+        .map_err(|error| format!("could not keep the file's images: {error}"))?;
+    Ok(action)
 }
 
 fn invalid_data<E: std::fmt::Display>(e: E) -> std::io::Error {
@@ -1426,20 +1481,4 @@ mod tests {
             );
         }
     }
-}
-
-pub mod component;
-pub use component::definition;
-/// The kind of a Writer document record: the rich-text resource the native
-/// app, the workspace host and the browser all open. Records stamped with the
-/// former `document` read as this kind (see [`ui::RecordKind::new`]).
-pub const RECORD_KIND: &str = <tilo_document::RichText as tilo_resource::Resource>::KIND;
-
-/// Initialize a checked New record as an empty Writer document.
-///
-/// # Errors
-///
-/// Never fails today; the `Result` matches the record-initializer contract.
-pub fn initialize_empty_document(doc: &mut AutoCommit) -> Result<(), String> {
-    WordProcessor::initialize_empty_document(doc)
 }
