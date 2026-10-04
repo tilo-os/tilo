@@ -1307,7 +1307,7 @@ impl FrameHarness {
         } else {
             text.set_text_scale(theme.text_scale);
         }
-        text.set_ui_face(&theme.tokens.typography.sans_family);
+        text.apply_typography(&theme.tokens.typography);
         let control_domain = crate::control_custody::ControlDomain::outer();
         let mut root = root;
         crate::widget::controls::install_control_custody(
@@ -1525,8 +1525,7 @@ impl FrameHarness {
     ) -> Result<(), crate::widget::WidgetLayoutError> {
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
-        self.text
-            .set_ui_face(&self.theme.tokens.typography.sans_family);
+        self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
         self.relayout_at(viewport)
     }
@@ -1869,7 +1868,20 @@ impl FrameHarness {
             None,
         )
         .unwrap_or_default();
-        let _ = crate::bound_dispatch::refresh_bound_controls(self.root.as_mut(), &snapshots);
+        let host_doors = self
+            .host_door_resources()
+            .iter()
+            .flat_map(|resource| {
+                resource.actions.iter().map(|action| {
+                    tilo_actions::ActionAddress::new(resource.id.as_str(), &action.id)
+                })
+            })
+            .collect();
+        let _ = crate::bound_dispatch::refresh_bound_controls(
+            self.root.as_mut(),
+            &snapshots,
+            &host_doors,
+        );
         if let Err(error) = crate::bound_dispatch::legacy_document::refresh_legacy_controls(
             self.root.as_mut(),
             &self.permissions,
@@ -1927,8 +1939,7 @@ impl FrameHarness {
         self.pump_component_wakes();
         self.theme = theme;
         self.text.set_text_scale(self.theme.text_scale);
-        self.text
-            .set_ui_face(&self.theme.tokens.typography.sans_family);
+        self.text.apply_typography(&self.theme.tokens.typography);
         self.invalidate_layout_tree();
         self.relayout();
     }
@@ -4504,7 +4515,10 @@ impl FrameHarness {
         use crate::widget::ControlBindingKind;
         self.drain_component_wakes();
 
-        let resources = self.resources();
+        // A control bound to one of the window's doors (opening search,
+        // History) resolves as it does in a window: its host answers it.
+        let mut resources = self.resources();
+        resources.extend(self.host_door_resources());
         let bindings = crate::widget::controls::control_action_bindings(self.root.as_ref());
         let inventoried_controls = bindings
             .iter()
@@ -7169,13 +7183,24 @@ fn audit_inspection_node(node: &InspectionNode, issues: &mut Vec<AccessibilityIs
     }
 }
 
+/// Every semantic control a binding may stand behind: the effect-capable
+/// roles, and a focusable list item, which is pressed as a whole (a list
+/// row bound through `ListRow::on_view`).
 fn effect_control_ids(node: &InspectionNode) -> HashSet<String> {
-    effect_control_ids_where(node, &|_| true)
+    effect_control_ids_of(node, &|_| true, true)
 }
 
 fn effect_control_ids_where(
     node: &InspectionNode,
     include: &dyn Fn(&AccessNode) -> bool,
+) -> HashSet<String> {
+    effect_control_ids_of(node, include, false)
+}
+
+fn effect_control_ids_of(
+    node: &InspectionNode,
+    include: &dyn Fn(&AccessNode) -> bool,
+    pressable_items: bool,
 ) -> HashSet<String> {
     let mut controls = HashSet::new();
     if let Some(semantics) = &node.semantics {
@@ -7183,14 +7208,24 @@ fn effect_control_ids_where(
             semantics,
             node.test_id.as_deref(),
             &node.path,
-            include,
+            &EffectFilter {
+                include,
+                pressable_items,
+            },
             &mut controls,
         );
     }
     for child in &node.children {
-        controls.extend(effect_control_ids_where(child, include));
+        controls.extend(effect_control_ids_of(child, include, pressable_items));
     }
     controls
+}
+
+/// Which semantic nodes count as controls.
+struct EffectFilter<'a> {
+    include: &'a dyn Fn(&AccessNode) -> bool,
+    /// Count a focusable list item too.
+    pressable_items: bool,
 }
 
 fn inspection_has_semantics(node: &InspectionNode) -> bool {
@@ -7201,11 +7236,11 @@ fn collect_effect_access_nodes(
     node: &AccessNode,
     retained_id: Option<&str>,
     path: &str,
-    include: &dyn Fn(&AccessNode) -> bool,
+    filter: &EffectFilter<'_>,
     controls: &mut HashSet<String>,
 ) {
-    let effect = include(node)
-        && matches!(
+    let effect = (filter.include)(node)
+        && (matches!(
             node.role,
             Role::Button
                 | Role::ToggleButton
@@ -7217,7 +7252,7 @@ fn collect_effect_access_nodes(
                 | Role::SpinButton
                 | Role::TextInput
                 | Role::MultilineTextInput
-        );
+        ) || (filter.pressable_items && node.role == Role::ListItem && node.state.focusable));
     if effect {
         let identity = node
             .action_target
@@ -7232,7 +7267,7 @@ fn collect_effect_access_nodes(
             child,
             None,
             &format!("{path}/semantic[{index}]"),
-            include,
+            filter,
             controls,
         );
     }

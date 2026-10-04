@@ -1,21 +1,23 @@
-//! The sidebar: the saved connections, and inside the open one the tables and
-//! views of its database.
+//! The sidebar: the saved connections, and under them the tables and views
+//! of the open one's database.
 //!
 //! One toolkit [`NavList`], so a row looks, selects and moves the way it does
 //! in every other app, and one selection: the table that is open, or the
-//! connection when no table is. The tables sit inside their connection, so the
-//! list says which database they belong to.
+//! connection when no table is. A connection says where it connects (its
+//! host and port, or its file) on a second line, and the open one carries
+//! the active dot. The open database's tables are a section of their own,
+//! titled with the connection's name, so the window's filter narrows the
+//! tables and never the connections.
 
 use ui::icons::Icon;
-use ui::widget::{NavAction, NavItem, NavList, NavSection};
+use ui::widget::{NavAction, NavItem, NavList, NavSection, RowStatus};
 use uuid::Uuid;
 
 use crate::link::{ConnectionRow, Intent, Link};
 use crate::model::{DatabaseSchema, Engine, RelationKind, RelationRef, SchemaInfo};
 
 const CONNECTIONS: &str = "connections";
-/// Marks the row id of the open connection.
-const OPEN: &str = "open:";
+const CATALOG: &str = "catalog";
 /// Separates a schema from a table in a row id; no catalog name contains it.
 const SEPARATOR: char = '\u{1f}';
 
@@ -31,24 +33,14 @@ fn parse_relation(key: &str) -> Option<RelationRef> {
     })
 }
 
-/// The row id of a connection. An open connection is a different row from the
-/// same connection closed, so the list opens it afresh each time instead of
-/// remembering that it was folded the last time it was open.
-fn connection_key(id: Uuid, open: bool) -> String {
-    if open {
-        format!("{OPEN}{id}")
-    } else {
-        id.to_string()
-    }
+/// The row id of a connection.
+fn connection_key(id: Uuid) -> String {
+    id.to_string()
 }
 
-/// The connection a row id names, and whether it is the open one.
-fn parse_connection(key: &str) -> Option<(Uuid, bool)> {
-    let (id, open) = match key.strip_prefix(OPEN) {
-        Some(id) => (id, true),
-        None => (key, false),
-    };
-    Some((Uuid::parse_str(id).ok()?, open))
+/// The connection a row id names.
+fn parse_connection(key: &str) -> Option<Uuid> {
+    Uuid::parse_str(key).ok()
 }
 
 fn engine_icon(engine: Engine) -> Icon {
@@ -72,7 +64,7 @@ fn relation_items(schema: &SchemaInfo) -> Vec<NavItem> {
             match table.kind {
                 RelationKind::View => item.icon(Icon::Eye),
                 RelationKind::Table => {
-                    let item = item.icon(Icon::List);
+                    let item = item.icon(Icon::Table);
                     match table.row_count.and_then(|rows| u32::try_from(rows).ok()) {
                         Some(rows) => item.count(rows),
                         None => item,
@@ -84,7 +76,7 @@ fn relation_items(schema: &SchemaInfo) -> Vec<NavItem> {
 }
 
 /// What an open connection holds: the tables of its one schema, or a folder
-/// for each when there are several.
+/// for each when there are several, open whenever the database is opened.
 fn catalog_items(schema: &DatabaseSchema) -> Vec<NavItem> {
     if let [only] = schema.schemas.as_slice() {
         return relation_items(only);
@@ -97,27 +89,26 @@ fn catalog_items(schema: &DatabaseSchema) -> Vec<NavItem> {
                 .icon(Icon::Folder)
                 .without_actions()
                 .children(relation_items(info))
-                .expanded()
+                .ensure_expanded()
         })
         .collect()
 }
 
-/// The saved connections, the open one holding its catalog.
-fn connection_section(rows: &[ConnectionRow], open: Option<(Uuid, &DatabaseSchema)>) -> NavSection {
+/// The saved connections; the open one carries the active dot.
+fn connection_section(rows: &[ConnectionRow], open: Option<Uuid>) -> NavSection {
     NavSection::new(
         CONNECTIONS,
         "Connections",
         rows.iter()
             .map(|row| {
-                let is_open = matches!(open, Some((id, _)) if id == row.id);
-                let item = NavItem::new(connection_key(row.id, is_open), row.name.clone())
+                let mut item = NavItem::new(connection_key(row.id), row.name.clone())
                     .icon(engine_icon(row.engine));
-                let item = match open {
-                    Some((id, schema)) if id == row.id && !schema.schemas.is_empty() => {
-                        item.children(catalog_items(schema)).expanded()
-                    }
-                    _ => item,
-                };
+                if !row.address.is_empty() {
+                    item = item.secondary(row.address.clone());
+                }
+                if open == Some(row.id) {
+                    item = item.status(RowStatus::Active);
+                }
                 if row.removable {
                     item
                 } else {
@@ -127,6 +118,25 @@ fn connection_section(rows: &[ConnectionRow], open: Option<(Uuid, &DatabaseSchem
             .collect(),
     )
     .trailing_action(NavAction::new("new", Icon::Plus, "New connection"))
+}
+
+/// The open database's tables, under the connection's name; the one
+/// section the window's filter narrows.
+fn catalog_section(name: &str, schema: &DatabaseSchema) -> NavSection {
+    NavSection::new(CATALOG, name, catalog_items(schema))
+        .empty_caption("No tables")
+        .filterable()
+}
+
+/// Every section of the list.
+fn sections(rows: &[ConnectionRow], open: Option<(Uuid, &DatabaseSchema)>) -> Vec<NavSection> {
+    let mut sections = vec![connection_section(rows, open.map(|(id, _)| id))];
+    if let Some((id, schema)) = open
+        && let Some(row) = rows.iter().find(|row| row.id == id)
+    {
+        sections.push(catalog_section(&row.name, schema));
+    }
+    sections
 }
 
 /// The sidebar list, kept in line with the published model.
@@ -143,12 +153,14 @@ impl Navigator {
         let ask = link.clone();
         let remove = link.clone();
         let new = link.clone();
-        let list = NavList::new(vec![connection_section(&[], None)])
+        let opened = link.clone();
+        let list = NavList::new(sections(&[], None))
             .with_id("db.sidebar")
             .with_accessible_name("Connections and tables")
             .on_select(move |id| {
-                if let Some((id, open)) = parse_connection(&id) {
+                if let Some(id) = parse_connection(&id) {
                     // Choosing the connection that is already open keeps it open.
+                    let open = opened.read(|model| model.connected && model.active == Some(id));
                     if !open {
                         ask.ask(Intent::Connect(id));
                     }
@@ -159,7 +171,7 @@ impl Navigator {
             .item_actions(
                 vec![NavAction::new("remove", Icon::Trash2, "Remove connection")],
                 move |id, _action| {
-                    if let Some((id, _)) = parse_connection(id) {
+                    if let Some(id) = parse_connection(id) {
                         remove.ask(Intent::RemoveConnection(id));
                     }
                 },
@@ -188,17 +200,15 @@ impl Navigator {
         let open = active.filter(|_| connected);
         let open_now = open.map(|id| (id, revision));
         if rows != self.shown || open_now != self.shown_open {
-            self.list.set_sections(vec![connection_section(
-                &rows,
-                open.map(|id| (id, schema.as_ref())),
-            )]);
+            self.list
+                .set_sections(sections(&rows, open.map(|id| (id, schema.as_ref()))));
             self.shown = rows;
             self.shown_open = open_now;
         }
         // One selection: the open table, or else the connection itself.
         let selected_key = match (&selected, open) {
             (Some(relation), Some(_)) => Some(relation_key(relation)),
-            _ => active.map(|id| connection_key(id, open.is_some())),
+            _ => active.map(connection_key),
         };
         if self.list.selected_id() != selected_key {
             self.list.set_selected(selected_key.as_deref());
@@ -270,11 +280,17 @@ mod tests {
             id: Uuid::new_v4(),
             name: name.into(),
             engine,
+            address: match engine {
+                Engine::Sqlite => String::new(),
+                Engine::Postgres | Engine::MySql => "db.example.net:5432".into(),
+            },
             removable,
         }
     }
 
-    /// One schema lists its tables inside the connection with row counts; several schemas get a folder each; a closed connection holds nothing.
+    /// The open database's tables are their own filterable section, titled
+    /// with the connection, with row counts; several schemas get a folder
+    /// each; with no connection open there are no tables.
     #[test]
     fn the_open_connection_holds_its_catalog() {
         let sample = row("Chinook sample", Engine::Sqlite, false);
@@ -290,18 +306,31 @@ mod tests {
                     table("recent", RelationKind::View, None),
                 ],
             )]);
-            let section = connection_section(&rows, Some((sample.id, &schema)));
-            assert_eq!(section.items.len(), 2, "the catalog is not a section");
-            let tables = &section.items[0].children;
+            let all = sections(&rows, Some((sample.id, &schema)));
+            assert_eq!(all.len(), 2, "connections, then the open catalog");
+            let connections = &all[0];
+            assert!(
+                !connections.filterable,
+                "the filter never hides connections"
+            );
+            assert!(
+                connections.items[0].status.is_some(),
+                "the open one is marked"
+            );
+            assert!(connections.items[1].status.is_none());
+            assert_eq!(
+                connections.items[1].secondary.as_deref(),
+                Some("db.example.net:5432"),
+                "a network connection says where it connects"
+            );
+            let catalog = &all[1];
+            assert!(catalog.filterable);
+            assert_eq!(catalog.title, "Chinook sample");
+            let tables = &catalog.items;
             let labels: Vec<_> = tables.iter().map(|i| i.label.as_str()).collect();
             assert_eq!(labels, ["albums", "recent"]);
             assert!(tables[0].count.is_some(), "a table shows its rows");
             assert!(tables[1].count.is_none(), "a view has no count");
-            assert!(section.items[0].expanded, "the open connection is open");
-            assert!(
-                section.items[1].children.is_empty(),
-                "another connection holds nothing"
-            );
         }
 
         // --- phase: several_schemas_are_one_folder_each ---
@@ -316,8 +345,12 @@ mod tests {
                     vec![table("orders", RelationKind::Table, Some(9))],
                 ),
             ]);
-            let section = connection_section(&rows, Some((analytics.id, &schema)));
-            let folders = &section.items[1].children;
+            let all = sections(&rows, Some((analytics.id, &schema)));
+            let folders = &all[1].items;
+            assert!(
+                folders.iter().all(|folder| folder.ensure_expanded),
+                "each schema opens with the database, whatever was folded"
+            );
             assert_eq!(
                 folders.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
                 ["public", "archive"]
@@ -330,8 +363,7 @@ mod tests {
 
         // --- phase: no_connection_open_means_no_tables ---
         {
-            let section = connection_section(&rows, None);
-            assert!(section.items.iter().all(|item| item.children.is_empty()));
+            assert_eq!(sections(&rows, None).len(), 1, "only the connections");
         }
 
         // --- phase: a_row_id_names_its_relation ---
@@ -375,7 +407,7 @@ mod tests {
             let navigator = harness.root::<Navigator>();
             assert_eq!(
                 navigator.list.selected_id(),
-                Some(connection_key(sample.id, true))
+                Some(connection_key(sample.id))
             );
         }
 
@@ -401,7 +433,7 @@ mod tests {
             let rect = harness
                 .root::<Navigator>()
                 .list
-                .row_rect(&connection_key(sample.id, true))
+                .row_rect(&connection_key(sample.id))
                 .expect("the row is on screen");
             harness.click_at(rect.center().x, rect.center().y);
             assert!(
@@ -422,7 +454,7 @@ mod tests {
                 .root::<Navigator>()
                 .list
                 .row_rect(&key)
-                .expect("the table is listed under its connection");
+                .expect("the table is listed under the connections");
             harness.click_at(rect.center().x, rect.center().y);
             assert!(
                 link.take_intents()
@@ -489,7 +521,7 @@ mod tests {
         harness.relayout();
         assert_eq!(
             harness.root::<Navigator>().list.selected_id(),
-            Some(connection_key(analytics.id, true))
+            Some(connection_key(analytics.id))
         );
 
         link.publish(model(sample.id, None, 3));

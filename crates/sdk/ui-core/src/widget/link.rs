@@ -56,6 +56,8 @@ pub struct Link {
     enabled: bool,
     /// Lets a parent or test observe that the link fired without intercepting the opener.
     last_activated: Option<String>,
+    /// An exported action the link runs instead of opening a URL.
+    action: Option<crate::widget::ActionEmitter<()>>,
     dirty: bool,
     last_state: (bool, bool, bool),
 }
@@ -74,9 +76,34 @@ impl Link {
             is_focused: false,
             enabled: true,
             last_activated: None,
+            action: None,
             dirty: true,
             last_state: (false, false, false),
         }
+    }
+
+    /// A link that runs an exported action instead of opening a URL ("Search
+    /// everywhere", "Open in Files"): link-shaped navigation inside Tilo.
+    pub fn action(label: &str, binding: tilo_actions::ActionBinding<()>) -> Self {
+        let mut link = Self::new("");
+        link.label = label.to_string();
+        link.action = Some(crate::widget::ActionEmitter::new(binding));
+        link
+    }
+
+    /// Run `binding` when activated, instead of opening the URL.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    fn effectively_enabled(&self) -> bool {
+        self.enabled
+            && self
+                .action
+                .as_ref()
+                .is_none_or(crate::widget::ActionEmitter::is_available)
     }
 
     /// The URL is still what opens and what the accessible value reports.
@@ -131,7 +158,13 @@ impl Link {
 
     /// Single entry point shared by mouse, keyboard and AT so all three paths behave identically.
     pub fn activate(&mut self) {
-        if !self.enabled {
+        if !self.effectively_enabled() {
+            return;
+        }
+        if let Some(action) = &mut self.action {
+            if let Err(error) = action.emit(()) {
+                tracing::warn!(%error, "action-bound link refused its arguments");
+            }
             return;
         }
         self.last_activated = Some(self.url.clone());
@@ -139,14 +172,55 @@ impl Link {
     }
 }
 
+impl crate::widget::controls::ActionControls for Link {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action
+            .as_mut()
+            .and_then(crate::widget::ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        self.action
+            .as_ref()
+            .map(|action| vec![action.metadata(self.label.clone())])
+            .unwrap_or_default()
+    }
+    fn has_action_control_bindings(&self) -> bool {
+        self.action.is_some()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+            self.dirty = true;
+        }
+    }
+}
+
 impl Widget for Link {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let style = theme.text(self.text_role);
+        let mut style = theme.text(self.text_role);
+        if self.label == self.url {
+            // A link that shows its address is read as one.
+            style = style.with_kind(crate::text_render::TextKind::Url);
+        }
         if style != self.style {
             self.style = style;
             self.dirty = true;
@@ -327,7 +401,7 @@ impl Widget for Link {
     }
 
     fn is_focusable(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
     fn set_focus(&mut self, focused: bool) {
         self.is_focused = focused;
@@ -336,7 +410,7 @@ impl Widget for Link {
         self.is_focused
     }
     fn is_enabled(&self) -> bool {
-        self.enabled
+        self.effectively_enabled()
     }
 
     fn perform_action(
@@ -363,7 +437,7 @@ impl Widget for Link {
         Some(
             AccessNode::new(Role::Link)
                 .with_name(self.label.clone())
-                .with_value(self.url.clone())
+                .with_optional_value((!self.url.is_empty()).then(|| self.url.clone()))
                 .with_state(AccessState {
                     focusable: self.is_focusable(),
                     focused: self.is_focused(),
@@ -538,5 +612,25 @@ mod tests {
         renders_as_a_link_in_the_accessibility_tree();
         hovered_link_requests_the_pointer_cursor();
         default_label_is_the_url();
+    }
+    #[test]
+    fn an_action_link_runs_its_action_instead_of_opening() {
+        let resource = tilo_actions::Resource::new("app:1", "app", "App").with_action(
+            tilo_actions::ActionSpec::operation(
+                "search",
+                "Search everywhere",
+                tilo_actions::OperationKind::View,
+                "test.search",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "search").unwrap();
+        let mut link = Link::action("Search everywhere", binding);
+        link.activate();
+        assert!(link.last_activated().is_none(), "no URL opened");
+        assert!(crate::widget::controls::take_control_invocation(&mut link).is_some());
+        let node = Widget::accessibility(&link).expect("semantics");
+        assert_eq!(node.value, None);
     }
 }

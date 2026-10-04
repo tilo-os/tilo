@@ -23,7 +23,6 @@
 //! become collaborative document changes.
 
 mod find;
-mod goto;
 mod layout;
 mod paint;
 
@@ -53,13 +52,12 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    ControlSize, EmptyState, FindBar, FindMatch, Popover, PopoverSide, SegmentedStyle,
-    SidebarDrawer, ToggleGroup,
+    ControlSize, EmptyState, FindBar, FindMatch, Popover, PopoverPrompt, PopoverSide,
+    SegmentedStyle, SidebarDrawer, ToggleGroup,
 };
 
 use crate::actions::HexOperation;
 use crate::model::{Column, EditMode, Endian, HexModel, LocalEdit};
-use goto::GotoForm;
 use layout::{CellMetrics, ENDIAN_LABELS, Geo, MODE_LABELS};
 use ui::widget::toggle_group::Segment;
 
@@ -123,12 +121,16 @@ pub struct HexView {
     match_idx: Option<usize>,
 
     // --- go to ---
-    /// The go-to-offset form, in a popover at the status bar.
-    goto: Popover<GotoForm>,
+    /// The go-to-offset prompt, in a popover at the status bar's offset.
+    goto: Popover<PopoverPrompt>,
+    /// The offset readout in the status bar, which opens the prompt.
+    offset_readout: Rect,
 
     // --- chrome ---
     /// The inspector: docked when wide, a floating drawer when narrow.
     drawer: SidebarDrawer,
+    /// The window's History control, which the header row holds.
+    history: ui::widget::HistoryOpener,
     /// The edit-mode strip in the header, and the pick the person made.
     mode_group: ToggleGroup,
     mode_pick: Rc<Cell<Option<usize>>>,
@@ -210,12 +212,19 @@ impl HexView {
             find_open: false,
             matches: Vec::new(),
             match_idx: None,
-            goto: Popover::with_content(GotoForm::new())
-                .side(PopoverSide::Above)
-                .with_label("Go to offset"),
+            goto: Popover::prompt("Go to offset", "0x1F or 31", "Hex with 0x, or decimal")
+                .with_field_chars(16)
+                .with_field(|input| {
+                    input
+                        .with_kind(ui::widget::TextInputKind::Code)
+                        .with_id("hex.goto")
+                })
+                .side(PopoverSide::Above),
+            offset_readout: Rect::ZERO,
             drawer: SidebarDrawer::new()
                 .right()
                 .docked_width(f64::from(ui::tokens::Metrics::BASE.inspector_width)),
+            history: ui::widget::HistoryOpener::new(),
             mode_group: strip("hex.mode", &MODE_LABELS, &mode_pick),
             mode_pick,
             endian_group: strip("hex.endian", &ENDIAN_LABELS, &endian_pick).fill(),
@@ -655,11 +664,25 @@ impl HexView {
         self.dirty = true;
     }
 
-    /// Open the go-to form (Ctrl+G) at the status bar's offset readout.
+    /// Open the go-to prompt (Ctrl+G, or a click on the offset readout) at
+    /// the status bar's offset readout.
     fn open_goto(&mut self) {
-        self.goto.set_open(true);
-        self.goto.content_mut().focus();
+        let anchor = self.goto_anchor();
+        // The current offset, selected: typing replaces it, Enter keeps it.
+        let cursor = self.model.cursor();
+        self.goto.open_prompt(anchor, &format!("0x{cursor:X}"));
         self.dirty = true;
+    }
+
+    /// Where the go-to prompt hangs from: the offset readout, or the status
+    /// bar's content edge before it has been painted.
+    fn goto_anchor(&self) -> Rect {
+        if self.offset_readout.area() > 0.0 {
+            return self.offset_readout;
+        }
+        let status = self.geo.status;
+        let inset = f64::from(self.layout_theme.tokens.spacing.s4);
+        Rect::new(status.x0 + inset, status.y0, status.x0 + inset, status.y1)
     }
 
     /// Apply what the header and inspector strips picked since the last
@@ -805,6 +828,10 @@ impl HexView {
                     self.dirty = true;
                     return true;
                 }
+                if self.offset_readout.contains(p) {
+                    self.open_goto();
+                    return true;
+                }
                 if self.over_inspector(p) {
                     // A press on the panel never reaches the grid behind it.
                     self.route_to_strips(event, ctx);
@@ -846,12 +873,8 @@ impl HexView {
     /// Events while the go-to popover is open: it captures input.
     fn handle_goto_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         Widget::handle_event(&mut self.goto, event, ctx);
-        if let Some(query) = self.goto.content_mut().take_submit() {
-            self.goto.close();
+        if let Some(query) = self.goto.take_submitted() {
             self.commit_goto(&query);
-        }
-        if !self.goto.is_open() {
-            self.goto.content_mut().reset();
         }
         self.dirty = true;
     }
@@ -876,7 +899,9 @@ impl HexView {
 impl Widget for HexView {
     ui::provides!(
         dyn ui::resources::PublishesResources,
-        dyn ui::widget::Findable
+        dyn ui::widget::Findable,
+        dyn ui::widget::WindowHeader,
+        dyn ui::widget::controls::ActionControls
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1056,14 +1081,8 @@ impl Widget for HexView {
         self.layout_theme = theme.clone();
         self.relayout(text_renderer, theme, true);
         if self.goto.is_open() {
-            let status = self.geo.status;
-            let inset = f64::from(theme.tokens.spacing.s4);
-            self.goto.set_anchor(Rect::new(
-                status.x0 + inset,
-                status.y0,
-                status.x0 + inset,
-                status.y1,
-            ));
+            let anchor = self.goto_anchor();
+            self.goto.set_anchor(anchor);
         }
         self.paint(scene, transform, text_renderer, theme, presence);
     }
@@ -1071,6 +1090,17 @@ impl Widget for HexView {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let ctrl = ctx.modifiers.state().control_key();
         let shift = ctx.modifiers.state().shift_key();
+
+        let hovered = self.history.is_hovered();
+        if self
+            .history
+            .handle_event(event, self.geo.history, ctx.scale_factor)
+        {
+            *ctx.handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.dirty |= hovered != self.history.is_hovered();
 
         if !self.has_file {
             self.handle_empty_event(event, ctx);
@@ -1149,7 +1179,7 @@ impl Widget for HexView {
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
         if self.goto.is_open() {
-            return self.goto.content().ime_cursor_rect();
+            return Widget::ime_cursor_rect(self.goto.content());
         }
         if self.find_open && Widget::is_focused(&self.find_bar) {
             return self.find_bar.ime_cursor_rect();
@@ -1159,7 +1189,7 @@ impl Widget for HexView {
 
     fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
         if self.goto.is_open() {
-            return self.goto.content().ime_purpose();
+            return Widget::ime_purpose(self.goto.content());
         }
         if self.find_open && Widget::is_focused(&self.find_bar) {
             return self.find_bar.ime_purpose();
@@ -1169,7 +1199,7 @@ impl Widget for HexView {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         if self.goto.is_open() {
-            return self.goto.content().cursor_shape(point);
+            return Widget::cursor_shape(self.goto.content(), point);
         }
         if self.find_open && self.geo.find.contains(point) {
             return self.find_bar.cursor_shape(point);
@@ -1256,6 +1286,7 @@ impl Widget for HexView {
                     .with_action_target("hex.open"),
             );
         }
+        children.extend(self.history.accessibility(self.geo.history));
         Some(
             AccessNode::new(Role::Document)
                 .with_name("Hex editor")
@@ -1285,6 +1316,9 @@ impl Widget for HexView {
         _state: &mut AppModel,
         _path: &ModelPath,
     ) -> bool {
+        if self.history.perform_semantic_action(target, action) {
+            return true;
+        }
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
                 "hex.open" => self.begin_open(),
@@ -1695,6 +1729,27 @@ impl HexView {
             _ => {}
         }
         self.dirty = true;
+    }
+}
+
+/// The view's header row is the window's: it holds the History control the
+/// host offers, so the window draws no History bar above the editor.
+impl ui::widget::WindowHeader for HexView {
+    fn set_history_control(&mut self, control: Option<ui::widget::HistoryControl>) {
+        if self.history.control() != control {
+            self.history.set_control(control);
+            self.dirty = true;
+        }
+    }
+}
+
+impl ui::widget::controls::ActionControls for HexView {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.history.take().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
     }
 }
 

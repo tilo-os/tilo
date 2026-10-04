@@ -5,7 +5,7 @@
 ## Destinations
 tube-nav-home = Home
 tube-nav-trending = Trending
-tube-nav-channels = Channels
+tube-nav-subscriptions = Subscriptions
 tube-nav-queue = Queue
 tube-nav-history = History
 tube-nav-settings = Settings
@@ -14,7 +14,6 @@ tube-nav-name = Tube
 ## Header row and navigation
 tube-connecting = Connecting
 tube-clear-history = Clear history
-tube-back = Back
 
 ## Counts and facts
 tube-views = { $count ->

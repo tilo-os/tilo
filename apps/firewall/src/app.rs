@@ -131,7 +131,6 @@ pub struct FirewallApp {
     notice: Option<Notice>,
     /// The result toast, and when it was last advanced.
     toasts: ToastStack,
-    toasts_ticked: Instant,
     /// The content column is wide enough for the services' descriptions:
     /// at least `wide_from`, the width of a compact window.
     wide: bool,
@@ -236,7 +235,6 @@ impl FirewallApp {
             backend: Backend::detect(),
             notice: None,
             toasts: ToastStack::new().with_max(1).with_default_ttl(TOAST_TTL),
-            toasts_ticked: ui::time::now(),
             wide: true,
             wide_from: 0.0,
             available,
@@ -838,28 +836,18 @@ impl FirewallApp {
         }
     }
 
-    /// Advance the result toast's clock and place it in the window's
-    /// bottom trailing corner; the stack expires, paints and dismisses it.
+    /// Advance the result toast and place it in the window's bottom
+    /// trailing corner; the stack expires, paints and dismisses it.
     fn place_toast(&mut self, window: Rect, theme: &Theme) {
-        let now = ui::time::now();
-        self.toasts
-            .tick(now.saturating_duration_since(self.toasts_ticked));
-        self.toasts_ticked = now;
+        self.toasts.advance(ui::time::now());
         self.toasts
             .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
     }
 
-    /// When the showing toast expires, so the window wakes to hide it. A
-    /// toast under the pointer waits for it to leave.
+    /// When the showing toast expires, so the window wakes to hide it. The
+    /// stack waits while the pointer is over it and under the capture clock.
     fn toast_deadline(&self) -> Option<Instant> {
-        if self.toasts.is_hovered() {
-            return None;
-        }
-        self.toasts
-            .iter()
-            .map(|toast| toast.ttl_remaining)
-            .min()
-            .map(|left| self.toasts_ticked + left)
+        Widget::next_wake_deadline(&self.toasts)
     }
 
     fn admit_resource_operation(

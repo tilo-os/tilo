@@ -215,10 +215,14 @@ fn connection_row(entry: &ListEntry<'_>, selected: Option<ConnId>, intents: &Int
         .map_or("Not set up on this device", |details| {
             endpoint_host(&details.endpoint)
         });
+    // The protocol at a glance: the list shares one badge column, so every
+    // title starts on one edge whichever protocols it holds.
     let row = ListRow::new(format!("vpn-connection-{id}"), &connection.name)
+        .badge(connection.kind.badge())
+        .badge_tooltip(connection.kind.long_name())
         .secondary(secondary)
         .selected(selected == Some(id))
-        .on_activate(intents.sender(Intent::Select(id)));
+        .on_view(intents.sender(Intent::Select(id)));
     let row = match connection.status {
         ConnStatus::Connected => row.active(),
         ConnStatus::Connecting => row.warning(),
@@ -312,49 +316,19 @@ fn notice(notice: &Notice<'_>, intents: &Intents) -> Element {
             kind.ext()
         ))),
         NoticeKind::Error => {
-            let banner: Element = Box::new(DismissOnClose {
-                banner: Banner::error(notice.message).dismissible(),
-                intents: intents.clone(),
-            });
-            if !notice.retry {
-                return banner;
+            // Closing the banner dismisses the error; trying again is the
+            // banner's own action.
+            let dismiss = intents.sender(Intent::DismissError);
+            let mut banner = Banner::error(notice.message)
+                .with_id("vpn-error")
+                .on_dismiss(dismiss);
+            if notice.retry {
+                banner = banner.with_action(
+                    Button::new("vpn-retry-import", "Try again", None)
+                        .on_click(intents.sender(Intent::RetryImport)),
+                );
             }
-            let retry = Button::new("vpn-retry-import", "Try again", None)
-                .control_size(ControlSize::Small)
-                .on_click(intents.sender(Intent::RetryImport));
-            Box::new(Section::new(vec![
-                banner,
-                Box::new(Row::new().no_wrap().push(Box::new(retry))),
-            ]))
-        }
-    }
-}
-
-/// An error banner whose close control dismisses the error it shows.
-struct DismissOnClose {
-    banner: Banner,
-    intents: Intents,
-}
-
-impl ui::widget::Decorator for DismissOnClose {
-    type Inner = Banner;
-
-    fn inner(&self) -> &Banner {
-        &self.banner
-    }
-
-    fn inner_mut(&mut self) -> &mut Banner {
-        &mut self.banner
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &ui::winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) {
-        Widget::handle_event(&mut self.banner, event, ctx);
-        if self.banner.take_dismissed() {
-            self.intents.push(Intent::DismissError);
+            Box::new(banner)
         }
     }
 }

@@ -14,11 +14,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::LocalState;
 use ui::a11y::AccessNode;
-use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ButtonFace, ControlSize, Dropdown, Widget};
+use ui::widget::{ControlSize, Dropdown, DropdownFace, Widget};
 
 use crate::input_controls::InputEventCtx;
 
@@ -78,15 +77,9 @@ impl HostedDropdown {
         text: &mut TextRenderer,
         theme: &Theme,
     ) -> f64 {
-        labels
-            .into_iter()
-            .map(|label| {
-                ButtonFace::new(Rect::ZERO, label)
-                    .icon(Icon::ChevronDown)
-                    .control_size(size)
-                    .intrinsic_width(text, theme)
-            })
-            .fold(0.0, f64::max)
+        DropdownFace::new(Rect::ZERO, "")
+            .control_size(size)
+            .intrinsic_width(labels, text, theme)
     }
 
     /// Paint the closed control at `rect`.

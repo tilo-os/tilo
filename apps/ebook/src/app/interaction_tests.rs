@@ -4669,7 +4669,11 @@ fn font_rename_editor_commits_cancels_and_fits() {
             .iter()
             .find(|f| f.id == "serif")
             .expect("serif entry present");
-        assert_eq!(serif.name, "Serif", "cancel kept the original name");
+        assert_eq!(
+            serif.name,
+            ui::ReadingFace::Default.name(),
+            "cancel kept the original name"
+        );
     }
 
     // --- phase: font_rename_editor_stops_before_the_controls_and_starts_on_the_name ---

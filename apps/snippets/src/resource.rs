@@ -87,6 +87,7 @@ impl Resource for Snippets {
                     snippet.title.clone()
                 },
                 text: snippet.description.clone(),
+                ..Default::default()
             })
             .collect()
     }

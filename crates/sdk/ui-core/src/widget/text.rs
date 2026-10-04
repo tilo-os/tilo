@@ -2,9 +2,9 @@ use crate::i18n::ArgValue;
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::text_render::{
-    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
-    TextKind, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextScaling, TextStyle,
-    TextWeight, TextWrapMode,
+    FIGURE_TAGS, FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing,
+    ParagraphAlign, TextKind, TextLayoutConstraints, TextLayoutEngine, TextRenderer, TextScaling,
+    TextStyle, TextWeight, TextWrapMode,
 };
 use crate::theme::Theme;
 use crate::tokens::{TextRole, Typography};
@@ -447,9 +447,29 @@ impl Text {
         if let Some(line_height) = modifiers.line_height {
             style.line_height = line_height;
         }
+        if matches!(modifiers.kind, Some(TextKind::Numeric | TextKind::Secret)) {
+            // A kind that decides the figures replaces the role's.
+            style
+                .font_features
+                .retain(|f| !FIGURE_TAGS.contains(&f.tag));
+        }
         let layered = &modifiers.layered;
         style.hyphenation = layered.hyphenation.clone();
-        style.font_features.clone_from(&layered.font_features);
+        // Explicit features layer over the role's own (the Reading role's
+        // old-style figures); an explicit figure style replaces the role's.
+        if layered
+            .font_features
+            .iter()
+            .any(|f| FIGURE_TAGS.contains(&f.tag))
+        {
+            style
+                .font_features
+                .retain(|f| !FIGURE_TAGS.contains(&f.tag));
+        }
+        for feature in &layered.font_features {
+            style.font_features.retain(|f| f.tag != feature.tag);
+            style.font_features.push(*feature);
+        }
         style.font_variations.clone_from(&layered.font_variations);
         style.optical_sizing = layered.optical_sizing;
         style.align = layered.align;

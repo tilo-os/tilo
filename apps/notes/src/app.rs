@@ -4519,7 +4519,6 @@ impl Widget for NotesApp {
                 .apply_layout(taffy, n, self.columns.sidebar.rect().origin());
         }
         self.note_menu.set_viewport(Some(self.rect));
-        self.shortcuts.set_viewport(self.rect, &self.theme);
     }
 
     fn draw(

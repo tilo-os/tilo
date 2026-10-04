@@ -19,15 +19,15 @@ use std::rc::Rc;
 
 use ui::LocalState;
 use ui::icons::Icon;
-use ui::tokens::{Metrics, Rhythm, Spacing};
+use ui::tokens::{Metrics, Spacing, SpacingStep};
 use ui::widget::data_table::{
     ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
 };
-use ui::widget::{Button, ButtonRole, Checkbox, Column, Element, TextInput, TextInputKind};
+use ui::widget::{Button, ButtonRole, Checkbox, Column, Element, Spacer, TextInput, TextInputKind};
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
-use ui::widget::Slot;
+use crate::swap::Swap;
 
 /// What a row's controls do once the row holds a pair: put them in place of
 /// the empty cell they replace, by the column they belong to.
@@ -196,7 +196,8 @@ fn text_cell(
     // text up under the column's header.
     Box::new(
         Column::new()
-            .with_padding_rhythm(Rhythm::Related, None)
+            .with_horizontal_padding(Spacing::BASE.s2, Spacing::BASE.s2)
+            .with_vertical_padding(0.0)
             .with_intrinsic_height()
             .push(Box::new(input)),
     )
@@ -220,7 +221,7 @@ fn gated(row: &KvRow, column: &'static str, control: impl Fn() -> Element + 'sta
     if !row.pending.get() {
         return centred(control());
     }
-    let (slot, handle) = Slot::empty();
+    let (slot, handle) = Swap::new(Box::new(Spacer::token(SpacingStep::S0)));
     row.reveal
         .borrow_mut()
         .insert(column, Box::new(move || handle.set(centred(control()))));

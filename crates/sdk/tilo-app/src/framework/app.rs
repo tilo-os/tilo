@@ -50,6 +50,11 @@ pub trait ResourceApp: 'static {
     const ICON: Option<&'static str> = None;
     /// The `--shots` viewport.
     const SHOT_VIEWPORT: (u32, u32) = (1024, 720);
+    /// Whether the resource keeps document state whose versions History
+    /// shows. An app whose state lives outside its document (a measurement,
+    /// a device) sets `false`: it publishes no History actions and its
+    /// window offers no History.
+    const DOCUMENT_HISTORY: bool = true;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -192,6 +197,11 @@ pub(crate) fn build_root<A: ResourceApp>(
     let updaters = Updaters::new();
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only);
+    let dispatch = if permissions.is_none() {
+        dispatch.past()
+    } else {
+        dispatch
+    };
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
     let stages = Stages::new();
     let mut cx = ViewCx::root(live, updaters, &alive, dispatch, published, saved, stages);
@@ -200,7 +210,9 @@ pub(crate) fn build_root<A: ResourceApp>(
     let root = ResourceRoot::new(A::TITLE, icon::<A>(), label, cx, alive, content)
         .following(permissions, scope)
         .with_presentation(A::local_operations());
-    if live {
+    if !A::DOCUMENT_HISTORY {
+        root.without_history()
+    } else if live {
         root.drawing_past(super::preview::draw_past::<A>)
     } else {
         root
@@ -233,9 +245,11 @@ fn create<A: ResourceApp>(
     tilo_resource::group::register::<A::Resource>(&mut registry);
     registry.register::<super::history::HistoryEdit>(super::history::EDIT_TYPE);
     let mut component = AppComponent::new(context, Box::new(root), registry);
-    component
-        .register_document_history(super::preview::history_definition::<A>())
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    if A::DOCUMENT_HISTORY {
+        component
+            .register_document_history(super::preview::history_definition::<A>())
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    }
     Ok(component)
 }
 

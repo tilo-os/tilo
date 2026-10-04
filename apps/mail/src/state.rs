@@ -101,15 +101,16 @@ impl CtxAction {
 
     /// Shared visual treatment for the reader toolbar and its context menu.
     /// Keeping the icon mapping beside the action makes a command mean the
-    /// same thing whether it is invoked by pointer, keyboard, or AT.
-    pub fn icon(self) -> Icon {
+    /// same thing whether it is invoked by pointer, keyboard, or AT. `read`
+    /// is the message's state: marking it unread closes the envelope,
+    /// marking it read opens it.
+    pub fn icon(self, read: bool) -> Icon {
         match self {
-            // The shared icon set does not yet include reply-all/mail-open,
-            // so use the closest existing canonical glyph rather than draw a
-            // bespoke lookalike here.
-            CtxAction::Reply | CtxAction::ReplyAll => Icon::Reply,
-            CtxAction::Forward => Icon::Send,
-            CtxAction::ToggleRead => Icon::Mail,
+            CtxAction::Reply => Icon::Reply,
+            CtxAction::ReplyAll => Icon::ReplyAll,
+            CtxAction::Forward => Icon::Forward,
+            CtxAction::ToggleRead if read => Icon::Mail,
+            CtxAction::ToggleRead => Icon::MailOpen,
             CtxAction::ToggleStar => Icon::Star,
             CtxAction::Archive => Icon::Archive,
             CtxAction::Delete => Icon::Trash,

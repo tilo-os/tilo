@@ -7,7 +7,7 @@ crates/sdk/ui-core/src/widget/block_editor.rs literal_font_size 4
 crates/sdk/ui-core/src/widget/block_editor_table.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/checkbox.rs font_size_const 1
 crates/sdk/ui-core/src/widget/code_editor.rs legacy_size_api 1
-crates/sdk/ui-core/src/widget/data_table.rs legacy_size_api 2
+crates/sdk/ui-core/src/widget/data_table.rs legacy_size_api 4
 crates/sdk/ui-core/src/widget/decorator.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/document_viewport.rs legacy_size_api 1
 crates/sdk/ui-core/src/widget/empty_state.rs legacy_size_api 4

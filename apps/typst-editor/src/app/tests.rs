@@ -530,10 +530,9 @@ fn the_problems_toggle_counts_errors_and_warnings() {
         app.chrome.toolbar_names()
     );
     assert!(
-        app.take_structure_dirty(),
-        "a rebuilt toolbar asks for a layout pass"
+        !app.take_structure_dirty(),
+        "the count relabels the command in place, without rebuilding the tree"
     );
-    assert!(!app.take_structure_dirty(), "the request is read once");
 
     // Only warnings still count.
     app.err_count = 0;

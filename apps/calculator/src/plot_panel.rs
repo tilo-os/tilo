@@ -525,10 +525,12 @@ impl PlotPanel {
             let name = |verb: &str| format!("{verb} {} {}", self.words.item, i + 1);
             let (show, delete) = (name("Show"), name("Delete"));
             let hover = self.hover.button;
-            let vis = ButtonFace::icon_only(geo.vis, Icon::Eye, &show)
+            // A hidden plot shows the crossed-out eye; the button stays
+            // live so it can show the plot again.
+            let eye = if row.visible { Icon::Eye } else { Icon::EyeOff };
+            let vis = ButtonFace::icon_only(geo.vis, eye, &show)
                 .control_size(ControlSize::Small)
-                .hovered(hover == Some((i, RowButton::Visibility)))
-                .disabled(!row.visible);
+                .hovered(hover == Some((i, RowButton::Visibility)));
             let del = ButtonFace::icon_only(geo.del, Icon::Trash, &delete)
                 .control_size(ControlSize::Small)
                 .hovered(hover == Some((i, RowButton::Delete)));

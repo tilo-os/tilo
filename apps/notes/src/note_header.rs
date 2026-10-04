@@ -2,7 +2,7 @@
 //! and the notes that link to it, as one group of toolkit widgets under the
 //! title.
 //!
-//! Tags and incoming links are real buttons: they take focus, activate from
+//! Tags and incoming links are chips that act: they take focus, activate from
 //! the keyboard and assistive technology, and are laid out and painted by the
 //! toolkit. A press only records intent; the app drains it and admits it as the
 //! same operation a command-palette entry would.
@@ -12,7 +12,7 @@ use std::rc::Rc;
 
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{Button, ButtonRole, Column, ControlSize, Row, Text};
+use ui::widget::{Chip, Column, Row, Text};
 
 use crate::main_panel::{BacklinkChip, TagChip};
 use crate::model::{PageId, TagId};
@@ -127,9 +127,9 @@ impl NoteHeader {
                 let open = Rc::clone(&self.tag_open);
                 let id = tag.id;
                 row = row.push(Box::new(
-                    Button::new(&format!("notes.tag-chip:{}", tag.id), &tag.name, None)
-                        .control_size(ControlSize::Small)
-                        .with_accessible_name(&format!("Tag: {}", tag.name))
+                    Chip::new(&tag.name)
+                        .with_id(format!("notes.tag-chip:{}", tag.id))
+                        .with_accessible_name(format!("Tag: {}", tag.name))
                         .tooltip(ui::i18n::I18nManager::format(
                             "notes-surface-tag",
                             &[("tag", tag.name.clone().into())],
@@ -164,19 +164,14 @@ impl NoteHeader {
                 let open = Rc::clone(&self.backlink_open);
                 let page = backlink.page;
                 row = row.push(Box::new(
-                    Button::new(
-                        &format!("notes.backlink-chip:{}", backlink.page),
-                        &backlink_label(backlink),
-                        None,
-                    )
-                    .control_size(ControlSize::Small)
-                    .role(ButtonRole::Secondary)
-                    .with_accessible_name(&format!("Linked from: {}", backlink.title))
-                    .tooltip(ui::i18n::I18nManager::format(
-                        "notes-surface-backlink",
-                        &[("title", backlink.title.clone().into())],
-                    ))
-                    .on_click(move || open.set(Some(page))),
+                    Chip::new(backlink_label(backlink))
+                        .with_id(format!("notes.backlink-chip:{}", backlink.page))
+                        .with_accessible_name(format!("Linked from: {}", backlink.title))
+                        .tooltip(ui::i18n::I18nManager::format(
+                            "notes-surface-backlink",
+                            &[("title", backlink.title.clone().into())],
+                        ))
+                        .on_click(move || open.set(Some(page))),
                 ));
             }
             links = links.push(Box::new(row));

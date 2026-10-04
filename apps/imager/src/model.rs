@@ -309,6 +309,17 @@ pub struct TargetDrive {
 }
 
 impl TargetDrive {
+    /// The glyph of the drive: a USB stick, a memory card, or a drive.
+    pub fn icon(&self) -> ui::icons::Icon {
+        use ui::icons::Icon;
+        match self.tran.as_deref() {
+            Some("usb") => Icon::Usb,
+            Some("mmc" | "sd") => Icon::SdCard,
+            _ if self.name.starts_with("mmcblk") => Icon::SdCard,
+            _ => Icon::HardDrive,
+        }
+    }
+
     /// Whether this is external installation media the desktop imager may
     /// safely offer. Some USB readers report `RM=0`, so the transport is also
     /// considered; system disks are unconditionally excluded.

@@ -19,10 +19,129 @@ use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Fill;
 
 /// Height of the status bar: the compact control height, so a status bar
-/// and a bar control read as the same tier.
+/// and a bar control read as the same tier, grown with the `Caption` line
+/// at a large text scale so the readouts always have `s1` of air.
 #[must_use]
 pub fn height(theme: &Theme) -> f64 {
-    f64::from(theme.tokens.metrics.bar_control_height)
+    let line = f64::from(label_style(theme).line_height_px());
+    let air = f64::from(theme.tokens.spacing.s1) * 2.0;
+    f64::from(theme.tokens.metrics.bar_control_height).max((line + air).ceil())
+}
+
+/// One readout of the status bar. A readout that does something when
+/// clicked (a zoom level that opens its menu, a line number that opens "Go
+/// to line") is [`StatusReadout::action`]: it lifts under the pointer, and
+/// [`draw_readouts`] returns its rect for the host to hit-test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StatusReadout<'a> {
+    pub text: &'a str,
+    pub action: bool,
+}
+
+impl<'a> StatusReadout<'a> {
+    /// A readout that only informs.
+    #[must_use]
+    pub const fn text(text: &'a str) -> Self {
+        Self {
+            text,
+            action: false,
+        }
+    }
+
+    /// A readout that does something when clicked.
+    #[must_use]
+    pub const fn action(text: &'a str) -> Self {
+        Self { text, action: true }
+    }
+}
+
+/// Draw the status bar in `bar` with `left` readouts from its leading edge
+/// and `right` readouts from its trailing edge, `s4` apart. `hovered` is an
+/// index into `left` then `right` (as the returned rects are ordered).
+/// Returns each readout's rect, for hit-testing the clickable ones.
+pub fn draw_readouts(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    bar: Rect,
+    left: &[StatusReadout<'_>],
+    right: &[StatusReadout<'_>],
+    hovered: Option<usize>,
+) -> Vec<Rect> {
+    paint_rule(scene, transform, theme, bar);
+    let style = label_style(theme);
+    let gutter = f64::from(theme.tokens.spacing.s4);
+    let pad = f64::from(theme.tokens.spacing.s2);
+    let colors = &theme.tokens.colors;
+    let line_h = f64::from(style.line_height_px());
+    let item_h = (line_h + f64::from(theme.tokens.spacing.s1)).min(bar.height());
+    let y0 = bar.y0 + (bar.height() - item_h) / 2.0;
+    let mut rects = Vec::with_capacity(left.len() + right.len());
+    // A clickable readout carries its own inset, so its text stays on the
+    // same edge as a plain one beside it.
+    let width = |tr: &mut TextRenderer, item: &StatusReadout<'_>| {
+        f64::from(tr.measure_style(item.text, None, &style).0)
+            + if item.action { pad * 2.0 } else { 0.0 }
+    };
+    let mut x = bar.x0 + gutter;
+    for item in left {
+        let w = width(tr, item);
+        let x0 = if item.action { x - pad } else { x };
+        rects.push(Rect::new(x0, y0, x0 + w, y0 + item_h));
+        x += w - if item.action { pad * 2.0 } else { 0.0 } + gutter;
+    }
+    let mut right_rects = Vec::with_capacity(right.len());
+    let mut x = bar.x1 - gutter;
+    for item in right.iter().rev() {
+        let w = width(tr, item);
+        let x1 = if item.action { x + pad } else { x };
+        right_rects.push(Rect::new(x1 - w, y0, x1, y0 + item_h));
+        x -= w - if item.action { pad * 2.0 } else { 0.0 } + gutter;
+    }
+    right_rects.reverse();
+    rects.extend(right_rects);
+    let ground = colors.surfaces.content;
+    for (index, (item, rect)) in left.iter().chain(right).zip(&rects).enumerate() {
+        if item.action && hovered == Some(index) {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.lift_on(ground, 1.0),
+                None,
+                &vello::kurbo::RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.item)),
+            );
+        }
+        let text_x = if item.action { rect.x0 + pad } else { rect.x0 };
+        let ink = if item.action && hovered == Some(index) {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        tr.draw_style(
+            scene,
+            item.text,
+            ink,
+            transform.pre_translate(Vec2::new(text_x, rect.y0 + (rect.height() - line_h) / 2.0)),
+            None,
+            &style,
+        );
+    }
+    rects
+}
+
+/// The hairline where the bar meets the content above it.
+fn paint_rule(scene: &mut Scene, transform: Affine, theme: &Theme, bar: Rect) {
+    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
+    if rule > 0.0 {
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            crate::surface::edge_on(theme.tokens.colors.surfaces.content),
+            None,
+            &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + rule),
+        );
+    }
 }
 
 /// Reserve the status bar's band at the bottom of `region`: returns
@@ -66,17 +185,7 @@ pub fn draw(
     right: &str,
 ) {
     let colors = &theme.tokens.colors;
-    // One hairline where the bar meets the content above it.
-    let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
-    if rule > 0.0 {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            crate::surface::edge_on(colors.surfaces.content),
-            None,
-            &Rect::new(bar.x0, bar.y0, bar.x1, bar.y0 + rule),
-        );
-    }
+    paint_rule(scene, transform, theme, bar);
 
     let style = label_style(theme);
     let ink = colors.text_dim;
@@ -136,6 +245,41 @@ mod tests {
             assert_eq!(content.y1, bar.y0, "nothing is painted under the bar");
             assert_eq!((content.y0, bar.y1), (region.y0, region.y1));
             assert_eq!(height(&Theme::dark().with_ui_scale(2.0)), 56.0);
+            // At a large text scale the bar grows with its caption line.
+            let large = Theme::dark().with_text_scale(3.0);
+            let line = f64::from(large.text(TextRole::Caption).line_height_px());
+            assert!(height(&large) >= line + f64::from(large.tokens.spacing.s1) * 2.0);
+            assert!(height(&large) > height(&theme));
+        }
+
+        // Case `clickable_readouts_return_their_rects_and_keep_the_text_edge`.
+        {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            let bar = Rect::new(0.0, 0.0, 600.0, height(&theme));
+            let rects = draw_readouts(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                bar,
+                &[StatusReadout::text("3 conflicts")],
+                &[
+                    StatusReadout::action("100 %"),
+                    StatusReadout::text("Ln 4, Col 2"),
+                ],
+                Some(1),
+            );
+            assert_eq!(rects.len(), 3);
+            let gutter = f64::from(theme.tokens.spacing.s4);
+            assert!(
+                (rects[0].x0 - gutter).abs() < 1e-9,
+                "a plain readout sits on the gutter"
+            );
+            assert!((rects[2].x1 - (600.0 - gutter)).abs() < 1e-9);
+            assert!(rects[1].x1 < rects[2].x0, "readouts do not overlap");
+            assert!(rects.iter().all(|r| r.y0 >= bar.y0 && r.y1 <= bar.y1));
         }
 
         // Case `readouts_sit_on_the_s4_gutter_and_centre_their_measured_line`.
