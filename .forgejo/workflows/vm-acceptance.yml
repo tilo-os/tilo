@@ -309,6 +309,10 @@ jobs:
           uid=$(id -u "$RUN_USER")
           install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "/run/user/$uid"
           chmod 0666 /dev/kvm
+          # Fedora's libvirt raises QEMU's core limit to unlimited, which this
+          # container's hard limit refuses; the session takes no core dumps.
+          install -d -o "$RUN_USER" -g "$RUN_USER" "/home/$RUN_USER/.config" "/home/$RUN_USER/.config/libvirt"
+          echo 'max_core = 0' | install -m 0644 -o "$RUN_USER" -g "$RUN_USER" /dev/stdin "/home/$RUN_USER/.config/libvirt/qemu.conf"
           install -d -o "$RUN_USER" -g "$RUN_USER" "$WORK/report"
           chown -R "$RUN_USER:" "$WORK"
           # tilo-vm writes a receipt per command into the worktree it runs from.
