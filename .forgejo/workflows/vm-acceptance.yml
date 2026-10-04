@@ -11,7 +11,7 @@ name: Dev / VM acceptance
 # before the ref, installed here exactly as Release / Dev VM disk installs it.
 # The ref's own code reaches the VM through `tilo-vm swap --builder host`,
 # built here in the CI builder (the dev image's Fedora, with the CI sccache):
-# by default the shell plus the apps the ref changed against the base. P01
+# by default the shell plus the apps the ref changed. P01
 # states the result as "base <commit> + <components> swapped from <ref>".
 #
 # Runners: runner-disk-100g, the Kata runners whose KVM the dev disk and legacy
@@ -25,7 +25,7 @@ on:
         required: false
         default: "main"
       swap:
-        description: "What to build from the ref and swap in: default (shell plus the apps the ref changed against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
+        description: "What to build from the ref and swap in: default (shell plus the apps the ref changed: a branch against main, a main commit against the base), none, all (every userspace component in os/components.toml), or a comma-separated list (components, app:<dir>)."
         required: false
         default: "default"
       only:
@@ -103,12 +103,12 @@ jobs:
           python3 -c 'import PIL'  # the checks read pixels from shots
 
       # registry.tilo.so answers this network's anonymous reads with 401.
+      # The builder has no docker; skopeo and podman share this login.
       - name: Log in to registry.tilo.so
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: registry.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          ACTOR: ${{ github.actor }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "$TOKEN" | podman login --username "$ACTOR" --password-stdin registry.tilo.so
 
       - name: Plan the ref, its base disk, the swaps and the checks
         id: plan
@@ -161,9 +161,13 @@ jobs:
             none) swap="" ;;
             default)
               swap=""
+              # The apps a branch changes are its own diff from main; for a
+              # main commit, what changed since the base.
+              from=$(git merge-base origin/main "$target")
+              [[ $from != "$target" ]] || from=$commit
               if ! git diff --quiet "$commit" "$target"; then
                 swap=shell
-                for app in $(git diff --name-only "$commit" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
+                for app in $(git diff --name-only "$from" "$target" -- apps/ | cut -d/ -f2 | sort -u); do
                   git cat-file -e "$target:apps/$app/Cargo.toml" 2>/dev/null && swap+=",app:$app"
                 done
               fi ;;

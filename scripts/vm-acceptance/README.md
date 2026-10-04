@@ -51,9 +51,11 @@ a run needs no laptop memory:
 
 ```bash
 fgj workflow run vm-acceptance.yml -r main                       # every check on main
-fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=B06,A13 \
-  -f swap=default -f outputs=1920x1080@1,1280x800@1.25 -f gl=off
+fgj workflow run vm-acceptance.yml -r main -f ref=my-branch -f only=window -f gl=off
 ```
+
+`fgj -f` splits values on commas, so a list (`only=B06,A13`, `swap=shell,app:notes`,
+`outputs`) goes through the forge's "Run workflow" form or its dispatch API instead.
 
 It also runs nightly on main, and on pull requests that change this directory: with only
 the checks of the changed check modules (and of the modules importing from them), just
@@ -69,8 +71,9 @@ writes the provenance record itself.
 `ref`'s own code reaches the VM the way it does on a laptop: after the slot is up, run.py
 `--swap` runs `tilo-vm swap <component> --builder host` from a worktree of `ref`
 (`--swap-from`), session components and apps into the run's slot, VM-wide ones into `vm`.
-`swap=default` is `shell` plus every `app:<dir>` whose `apps/<dir>` differs between the
-base and `ref` (nothing when they are the same commit), `all` every userspace component in
+`swap=default` is `shell` plus every `app:<dir>` the ref changed: a branch's own diff
+from main, or for a main commit what changed since the base (nothing when `ref` is the
+base commit), `all` every userspace component in
 `os/components.toml`, `none` nothing, or a list. The job runs in the CI builder image (the
 dev image's Fedora, with the runner's sccache), so swapped binaries link against the
 libraries the VM has. P01 then reads `base <commit> + <components> swapped from <ref>` and
