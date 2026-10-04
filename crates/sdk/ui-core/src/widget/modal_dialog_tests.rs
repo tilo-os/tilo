@@ -883,7 +883,8 @@ fn retained_dialog_can_consume_scrim_without_dismissing() {
 #[test]
 fn hosted_nested_content_pointer_focus_uses_host_owners_after_relayout() {
     use crate::headless::FrameHarness;
-    use crate::widget::{Column, Field, Segment, Stack, TextInput, ToggleGroup};
+    use crate::widget::toggle_group::Segment;
+    use crate::widget::{Column, Field, Stack, TextInput, ToggleGroup};
     let outside = crate::LocalState::new(String::new());
     let first = crate::LocalState::new(String::new());
     let edited = crate::LocalState::new(String::new());
@@ -930,7 +931,13 @@ fn hosted_nested_content_pointer_focus_uses_host_owners_after_relayout() {
             Some("Recovery label"),
             "the pointer must focus its actual host owner, not a private node with the same integer"
         );
+        // Repeated clicks can intentionally select a word; append from an
+        // explicit caret position rather than depend on click timing.
+        harness.key("End");
         harness.type_text("x");
+        // Give the focused field its hover-exit move before entering the
+        // protocol strip. Column stops a move consumed by that transition.
+        harness.send(&cursor_at(Point::new(2.0, 2.0)));
         let openvpn = harness
             .a11y_nodes()
             .into_iter()
@@ -1064,6 +1071,9 @@ fn mutable_content_sync_settles_and_replacement_reopen_refreshes_host_owners() {
             .as_deref(),
         Some("Replacement value")
     );
+    // Reopening/clicking may retain a select-all/word selection. The focus
+    // contract does not promise a collapsed selection at the end.
+    harness.key("End");
     harness.type_text("!");
     assert_eq!(value.with(Clone::clone), "kept!");
     harness.relayout();

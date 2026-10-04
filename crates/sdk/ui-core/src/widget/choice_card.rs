@@ -49,8 +49,8 @@ impl Geometry {
         }
     }
 
-    /// The card at 1x: the tile with a full inset above and below reads as
-    /// one calm row rather than a cramped list item.
+    /// The icon's minimum: the tile keeps a full inset above and below.
+    /// The title and description may require a taller card even at 1x.
     fn min_height(self) -> f64 {
         self.icon_tile + 2.0 * self.pad
     }
@@ -555,10 +555,54 @@ mod tests {
 
     #[test]
     fn choice_card_grows_with_larger_type() {
-        let theme = Theme::dark();
-        let minimum = Geometry::of(&theme).min_height();
-        assert!((card_height(&theme) - minimum).abs() < f64::EPSILON);
-        let large = Theme::dark().with_text_scale(2.0);
-        assert!(card_height(&large) > minimum);
+        let mut host = crate::headless::FrameHarness::for_root(
+            crate::state::State::new(),
+            super::super::Column::new()
+                .with_no_padding()
+                .push(Box::new(ChoiceCard::new(
+                    "restore",
+                    Icon::Archive,
+                    "Restore a backup",
+                    "Choose an encrypted file",
+                    None,
+                ))),
+            (1024, 600),
+            Theme::dark(),
+        );
+        let mut heights = Vec::new();
+        for scale in [1.0, 2.0] {
+            let theme = Theme::dark().with_text_scale(scale);
+            host.set_theme(theme.clone());
+            let rect = host.root::<super::super::Column>().children()[0].get_rect();
+            let geometry = Geometry::of(&theme);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            let (_, title_height) = text.measure_style(
+                "Restore a backup",
+                None,
+                &theme.text(crate::TextRole::Heading),
+            );
+            let (_, description_height) = text.measure_style(
+                "Choose an encrypted file",
+                None,
+                &theme.text(crate::TextRole::Body),
+            );
+            let content_height = f64::from(title_height + description_height) + geometry.text_gap;
+            assert!(
+                rect.height() >= geometry.min_height(),
+                "the icon keeps its insets"
+            );
+            assert!(
+                rect.height() >= content_height + 2.0 * geometry.pad,
+                "both actual text lines keep their insets at {scale}x: {rect:?}"
+            );
+            assert!(
+                (rect.height() - content_height - 2.0 * geometry.pad).abs() < 1.0,
+                "text determines the height with only pixel rounding at {scale}x"
+            );
+            assert_eq!(rect.height(), f64::from(ChoiceCard::height_for(&theme)));
+            heights.push(rect.height());
+        }
+        assert!(heights[1] > heights[0], "the retained card grows with type");
     }
 }

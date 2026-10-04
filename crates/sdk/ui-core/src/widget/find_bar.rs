@@ -1272,6 +1272,16 @@ mod tests {
         target.caret = 7;
         target.doc.text = "cat---cat--cat---cat".into();
         bar.refresh(&mut target);
+        assert_eq!(
+            target
+                .doc
+                .found
+                .iter()
+                .map(|hit| hit.start)
+                .collect::<Vec<_>>(),
+            [0, 6, 11, 17],
+            "the inserted match shifts the final match to byte 17"
+        );
         assert_eq!(target.caret, 7, "refresh does not move the view");
         assert_eq!(target.doc.current, Some(0), "refresh never calls reveal");
         assert_eq!(
@@ -1282,7 +1292,12 @@ mod tests {
         assert_eq!(bar.field.count(), Some(FilterCount::new(3, 4)));
         bar.next();
         bar.drive(&mut target);
-        assert_eq!(target.caret, 16, "an explicit step still reveals");
+        assert_eq!(target.caret, 17, "an explicit step still reveals");
+        assert_eq!(
+            target.doc.current,
+            Some(3),
+            "Next revealed the fourth match"
+        );
         assert_eq!(bar.position(), Some((4, 4)));
     }
 

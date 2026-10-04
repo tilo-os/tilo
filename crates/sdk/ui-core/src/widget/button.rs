@@ -2159,9 +2159,54 @@ mod tests {
                 .shortcut_hint(crate::platform::Shortcut::command("Enter"));
             let mut scene = Scene::new();
             Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
+            // One logical string can use several font runs (for example
+            // the macOS command symbol falls back independently of Enter).
+            // Compare full shaped content, then verify the two text blocks.
+            let style = theme.text(TextRole::Label);
+            let mut reference = Scene::new();
+            text.draw_style(
+                &mut reference,
+                "Run query",
+                theme.text_primary,
+                Affine::IDENTITY,
+                None,
+                &style,
+            );
+            let label_runs = reference.encoding().resources.glyph_runs.len();
+            text.draw_style(
+                &mut reference,
+                &label,
+                theme.text_primary,
+                Affine::IDENTITY,
+                None,
+                &style,
+            );
+            let expected = &reference.encoding().resources;
+            let painted = &scene.encoding().resources;
+            assert!(label_runs > 0 && expected.glyph_runs.len() > label_runs);
+            assert_eq!(painted.glyph_runs.len(), expected.glyph_runs.len());
+            assert_eq!(painted.glyphs.len(), expected.glyphs.len());
+            for (actual, expected) in painted.glyphs.iter().zip(&expected.glyphs) {
+                assert_eq!(actual.id, expected.id, "neither text block is elided");
+                assert_eq!((actual.x, actual.y), (expected.x, expected.y));
+            }
             let origins = glyph_origins(&scene);
-            assert_eq!(origins.len(), 2, "label and hint are two runs");
-            assert!(origins[1][0] > origins[0][0], "the hint trails the label");
+            let (label_origins, hint_origins) = origins.split_at(label_runs);
+            assert!(
+                label_origins
+                    .iter()
+                    .all(|origin| *origin == label_origins[0])
+            );
+            assert!(hint_origins.iter().all(|origin| *origin == hint_origins[0]));
+            let label_width = text.measure_style("Run query", None, &style).0;
+            let hint_width = text.measure_style(&label, None, &style).0;
+            assert!(
+                hint_origins[0][0] > label_origins[0][0] + label_width,
+                "the complete hint trails the complete label with a gap"
+            );
+            assert_eq!(hint_origins[0][1], label_origins[0][1]);
+            assert!(label_origins[0][0] >= 0.0);
+            assert!(f64::from(hint_origins[0][0] + hint_width) <= width + 0.001);
         }
 
         fn a_face_hit_rect_is_never_under_the_pointer_target() {
