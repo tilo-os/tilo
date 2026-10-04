@@ -61,6 +61,11 @@ pub struct WorkspaceMeta {
     /// workspace's strips, window groups and tabs. `None` for an entry no
     /// device has bound to a room yet.
     pub room: Option<String>,
+    /// Who governs the room when someone other than this directory's
+    /// person owns it: the governing peer as the device that accepted the
+    /// invitation pinned it. `None` for the person's own rooms, which any
+    /// of their devices governs.
+    pub governor: Option<String>,
     /// Device public keys that hold a full replica of this
     /// workspace. Every device in this set will project + hydrate;
     /// devices outside it see nothing.
@@ -283,6 +288,29 @@ impl WorkspaceDirectory {
         self.put_text_if_changed(&obj, "room", room)
     }
 
+    /// Record who governs the room of workspace `id`, or that the person
+    /// does (`None`). Unchanged values write nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
+    pub fn set_governor(
+        &mut self,
+        id: WorkspaceId,
+        governor: Option<&str>,
+    ) -> Result<(), DirectoryError> {
+        let obj = self.ensure_workspace_obj(id)?;
+        match governor {
+            Some(governor) => self.put_text_if_changed(&obj, "governor", governor),
+            None if self.read_text(&obj, "governor").is_some() => self
+                .doc
+                .delete(&obj, "governor")
+                .map_err(|e| DirectoryError::Automerge(e.to_string())),
+            None => Ok(()),
+        }
+    }
+
     fn put_text_if_changed(
         &mut self,
         obj: &ObjId,
@@ -422,10 +450,12 @@ impl WorkspaceDirectory {
             };
             let name = self.read_text(&obj, "name").unwrap_or_default();
             let room = self.read_text(&obj, "room");
+            let governor = self.read_text(&obj, "governor");
             out.push(WorkspaceMeta {
                 id,
                 name,
                 room,
+                governor,
                 member_devices: self.read_pubkey_list(&obj, "members"),
                 host_devices: self.read_pubkey_list(&obj, "hosts"),
                 pinned_devices: self.read_pubkey_list(&obj, "pinned"),

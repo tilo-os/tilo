@@ -259,7 +259,7 @@ fn renames_follow_the_list_and_concurrent_ones_converge() {
 }
 
 #[test]
-fn only_the_persons_own_workspaces_are_listed() {
+fn rooms_the_person_is_not_in_are_not_listed() {
     let (laptop_device, _) = person_with_two_devices();
     let mut laptop = device_tree(LAPTOP, "Research");
     let mut colleague = Workspace::new(WorkspaceId(salted(LAPTOP, 2)), "Their project");
@@ -269,11 +269,15 @@ fn only_the_persons_own_workspaces_are_listed() {
     let offered = RoomId::new();
     assert!(laptop.adopt_continuation_room(offered, "Board"));
 
-    let listed = owned_workspaces(&laptop, PERSON);
+    let listed = member_workspaces(&laptop, PERSON);
     assert_eq!(
-        listed.values().map(String::as_str).collect::<Vec<_>>(),
+        listed
+            .values()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["Research"]
     );
+    assert!(listed.values().all(|entry| entry.governor.is_none()));
 
     let mut list = list_for(&laptop_device);
     assert!(list.publish_local(&laptop, PERSON));
@@ -383,4 +387,272 @@ fn the_agreed_list_survives_a_restart() {
         .snapshot(&laptop_device.key, 10)
         .expect("signed list");
     assert!(reopened.covered_by(&update));
+}
+
+/// The person the test devices are certified for, as owners record them,
+/// with the key the network layer authenticates.
+fn certified_person(device: &Device) -> (String, [u8; 32]) {
+    let key = device.cert.user_public_key;
+    (
+        crate::shell::state::person_id_of(key).expect("a root names a person"),
+        key,
+    )
+}
+
+fn origin_of(device: &Device) -> PeerOrigin {
+    PeerOrigin::peer(
+        &iroh::EndpointId::from_bytes(&device.cert.device_public_key).expect("device endpoint"),
+    )
+}
+
+fn name_of(tree: &WorkspaceTree, room: RoomId) -> String {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .map(|workspace| workspace.name.clone())
+        .expect("workspace held")
+}
+
+fn ship_room(
+    from: &mut WorkspaceTree,
+    to: &mut WorkspaceTree,
+    room: RoomId,
+    origin: &PeerOrigin,
+) -> bool {
+    let changes = from
+        .export_room_changes_since(room, &[])
+        .expect("in the room");
+    to.apply_room_changes(room, &changes, origin)
+        .expect("admits")
+}
+
+#[test]
+fn any_device_of_the_owner_governs_their_room_until_it_is_revoked() {
+    use crate::shell::state::{CapOverride, Subject, Verb};
+
+    let (laptop_device, board_device) = person_with_two_devices();
+    let (person, key) = certified_person(&laptop_device);
+    let mut laptop = device_tree(LAPTOP, "Research");
+    laptop.desktop.workspaces[0].set_owner(person.clone());
+    let research = laptop.desktop.workspaces[0].room;
+    let mut board = device_tree(BOARD, "Board home");
+    board.desktop.workspaces[0].set_owner(person.clone());
+    for tree in [&mut laptop, &mut board] {
+        tree.local_person = Some(key);
+    }
+    laptop
+        .authenticated_persons
+        .insert(origin_of(&board_device), key);
+    board
+        .authenticated_persons
+        .insert(origin_of(&laptop_device), key);
+
+    let mut laptop_list = list_for(&laptop_device);
+    let mut board_list = list_for(&board_device);
+    laptop_list.publish_local(&laptop, &person);
+    let update = laptop_list.snapshot(&laptop_device.key, 10).expect("list");
+    board_list
+        .merge(&update, &laptop_device.cert, 20)
+        .expect("same person");
+    assert!(board_list.adopt_into(&mut board, &person));
+    assert!(ship_room(
+        &mut laptop,
+        &mut board,
+        research,
+        &origin_of(&laptop_device)
+    ));
+    assert_eq!(
+        board.room_authority(research),
+        RoomAuthority::Person(key),
+        "the room is the person's, not the laptop's"
+    );
+    assert!(board.governs_room(research));
+
+    // The board renames the room; the laptop that made it accepts that from
+    // another device of the person who owns it.
+    board
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.room == research)
+        .expect("joined")
+        .name = "Thesis".into();
+    assert!(ship_room(
+        &mut board,
+        &mut laptop,
+        research,
+        &origin_of(&board_device)
+    ));
+    assert_eq!(name_of(&laptop, research), "Thesis");
+
+    // Membership is governance: the board admits someone and the laptop
+    // takes it from another device of the room's owner.
+    let board_ws = board
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == research)
+        .map(|workspace| workspace.id)
+        .expect("joined");
+    let grant = |tree: &mut WorkspaceTree, who: &str| {
+        tree.grant_in_workspace(
+            board_ws,
+            &person,
+            CapOverride::membership(Subject::person(who), research.to_string(), Verb::Write),
+        )
+        .expect("the person's device administers the person's room")
+    };
+    grant(&mut board, "person-ada");
+    assert!(ship_room(
+        &mut board,
+        &mut laptop,
+        research,
+        &origin_of(&board_device)
+    ));
+    assert!(member_of(&laptop, research, "person-ada"));
+
+    // Once the board is revoked it no longer counts as the person's device.
+    laptop.authenticated_persons.clear();
+    grant(&mut board, "person-mallory");
+    assert!(!ship_room(
+        &mut board,
+        &mut laptop,
+        research,
+        &origin_of(&board_device)
+    ));
+    assert!(!member_of(&laptop, research, "person-mallory"));
+}
+
+fn member_of(tree: &WorkspaceTree, room: RoomId, who: &str) -> bool {
+    tree.desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .and_then(|workspace| workspace.role_of_at(&who.to_string(), 0))
+        .is_some()
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the governor, the accepting laptop and the board form one scenario"
+)]
+fn a_room_someone_else_invited_the_person_to_follows_them_with_its_governor() {
+    use crate::shell::state::{CapOverride, Subject, Verb};
+
+    let (laptop_device, board_device) = person_with_two_devices();
+    let (person, key) = certified_person(&laptop_device);
+    let colleague_key = iroh::SecretKey::from_bytes(&[0xC0; 32]);
+    let colleague_origin = PeerOrigin::peer(&colleague_key.public());
+
+    // The colleague's room, with this person a member.
+    let mut colleague = WorkspaceTree::default();
+    colleague.set_salt_override(0xC011);
+    let colleague_ws = WorkspaceId(salted(0xC011, 1));
+    let mut project = Workspace::new(colleague_ws, "Their project");
+    let room = RoomId::new();
+    project.room = room;
+    project.set_owner("person-colleague".to_string());
+    colleague.desktop.workspaces.push(project);
+    colleague.desktop.active = colleague_ws;
+    assert!(
+        colleague
+            .grant_in_workspace(
+                colleague_ws,
+                &"person-colleague".to_string(),
+                CapOverride::membership(
+                    Subject::person(person.clone()),
+                    room.to_string(),
+                    Verb::Write
+                ),
+            )
+            .is_some()
+    );
+
+    // The laptop accepted the invitation: the colleague is its pinned governor.
+    let mut laptop = device_tree(LAPTOP, "Research");
+    laptop.desktop.workspaces[0].set_owner(person.clone());
+    let mut joined = Workspace::new(WorkspaceId(salted(LAPTOP, 9)), "Their project");
+    joined.room = room;
+    laptop.desktop.workspaces.push(joined);
+    laptop.pin_room_authority(room, colleague_origin.clone());
+    assert!(ship_room(
+        &mut colleague,
+        &mut laptop,
+        room,
+        &colleague_origin
+    ));
+    let listed = member_workspaces(&laptop, &person);
+    assert_eq!(
+        listed
+            .get(&room)
+            .and_then(|entry| entry.governor.as_deref()),
+        Some(colleague_origin.as_str())
+    );
+
+    let mut board = device_tree(BOARD, "Board home");
+    board.desktop.workspaces[0].set_owner(person.clone());
+    let board_home = board.desktop.active;
+    board.local_person = Some(key);
+    board
+        .authenticated_persons
+        .insert(origin_of(&laptop_device), key);
+    let mut laptop_list = list_for(&laptop_device);
+    let mut board_list = list_for(&board_device);
+    laptop_list.publish_local(&laptop, &person);
+    let update = laptop_list.snapshot(&laptop_device.key, 10).expect("list");
+    board_list
+        .merge(&update, &laptop_device.cert, 20)
+        .expect("same person");
+    assert!(board_list.adopt_into(&mut board, &person));
+    assert_eq!(
+        board.room_authority(room),
+        RoomAuthority::Peer(colleague_origin.clone()),
+        "the board pins the room's real governor"
+    );
+    assert_eq!(
+        board.desktop.active, board_home,
+        "joining never moves focus"
+    );
+
+    // The governor's document is admitted, and with it this person's
+    // membership.
+    assert!(ship_room(
+        &mut colleague,
+        &mut board,
+        room,
+        &colleague_origin
+    ));
+    let held = board
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .expect("joined");
+    assert_eq!(held.owner.as_deref(), Some("person-colleague"));
+    assert!(held.role_of_at(&person, 0).is_some());
+
+    // A device of this same person cannot rewrite someone else's room's
+    // governance, even if it claims to govern it.
+    laptop.room_authority.insert(room, RoomAuthority::Local);
+    laptop
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|workspace| workspace.room == room)
+        .expect("held")
+        .capabilities
+        .push(CapOverride::membership(
+            Subject::person("person-mallory"),
+            room.to_string(),
+            Verb::Write,
+        ));
+    assert!(!ship_room(
+        &mut laptop,
+        &mut board,
+        room,
+        &origin_of(&laptop_device)
+    ));
+    assert!(!member_of(&board, room, "person-mallory"));
 }

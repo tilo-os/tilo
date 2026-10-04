@@ -20,6 +20,12 @@
 //! then is written to the directory, and one that appeared or was renamed in
 //! the directory is brought into this device's tree. Nothing deletes a
 //! workspace yet, so the list only grows.
+//!
+//! Membership belongs to the person, not to a device, so the list holds
+//! every room the person is in: the rooms they own, which any of their
+//! devices governs, and rooms someone else invited them to, listed with the
+//! peer that governs them so another of their devices pins that same
+//! governor instead of trusting whichever device answers first.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,13 +35,22 @@ use tilo_user_identity::{
     DeviceCert, DirectoryError, DirectoryUpdate, RevocationList, WorkspaceDirectory,
 };
 
-use crate::shell::state::{RoomId, UserId, WorkspaceTree};
+use crate::shell::state::{PeerOrigin, RoomAuthority, RoomId, UserId, WorkspaceTree};
+
+/// One workspace as the person's list holds it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Listed {
+    pub name: String,
+    /// The peer governing a room someone else owns, as an origin
+    /// (`iroh:<endpoint>`); `None` for a room the person owns.
+    pub governor: Option<String>,
+}
 
 /// The person's workspace list as this device holds and last agreed it.
 pub struct PersonalWorkspaces {
     directory: WorkspaceDirectory,
-    /// The list as of the last reconciliation, room → name.
-    agreed: BTreeMap<RoomId, String>,
+    /// The list as of the last reconciliation.
+    agreed: BTreeMap<RoomId, Listed>,
     /// Where the directory and `agreed` survive a restart; `None` keeps
     /// them in memory only.
     store: Option<PathBuf>,
@@ -44,25 +59,54 @@ pub struct PersonalWorkspaces {
 #[derive(Serialize, Deserialize)]
 struct Stored {
     directory: Vec<u8>,
-    agreed: BTreeMap<String, String>,
+    agreed: BTreeMap<String, Listed>,
 }
 
-/// The rooms of `tree` that are `person`'s own workspaces, with their names.
-/// A room governed by a durable host has its own enrollment and a room only
-/// offered by another device's continuation is not a workspace yet, so
-/// neither is listed.
-pub fn owned_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId, String> {
+/// The rooms of `tree` that `person` is in, with their names and who
+/// governs them: rooms the person owns, and rooms where they hold a live
+/// membership under a governor this device pinned. A room governed by a
+/// durable host has its own enrollment and a room only offered by another
+/// device's continuation is not a workspace yet, so neither is listed; nor
+/// is someone else's room whose governor this device does not know.
+pub fn member_workspaces(tree: &WorkspaceTree, person: &str) -> BTreeMap<RoomId, Listed> {
+    let now = tilo_clock::unix_now();
+    let person = person.to_string();
     tree.desktop
         .workspaces
         .iter()
         .filter(|workspace| {
             !workspace.room.is_nil()
-                && workspace.owner.as_deref() == Some(person)
                 && !tree.requires_native_owner(workspace.room)
                 && !tree.continuation_rooms.contains(&workspace.room)
         })
-        .map(|workspace| (workspace.room, workspace.name.clone()))
+        .filter_map(|workspace| {
+            let governor = if workspace.owner.as_deref() == Some(person.as_str()) {
+                None
+            } else {
+                let member = workspace
+                    .role_of_at(&person, now)
+                    .is_some_and(|role| role != crate::shell::state::CapRole::Denied);
+                match tree.room_authority(workspace.room) {
+                    RoomAuthority::Peer(governor) if member => Some(governor.as_str().to_string()),
+                    _ => return None,
+                }
+            };
+            Some((
+                workspace.room,
+                Listed {
+                    name: workspace.name.clone(),
+                    governor,
+                },
+            ))
+        })
         .collect()
+}
+
+/// The governing peer an entry names, when it names a real endpoint.
+fn governor_origin(governor: &str) -> Option<PeerOrigin> {
+    let endpoint = governor.strip_prefix("iroh:")?;
+    endpoint.parse::<iroh::EndpointId>().ok()?;
+    Some(PeerOrigin::peer_id(endpoint))
 }
 
 /// The directory's stable id for `room`: the room's collaboration topic.
@@ -93,7 +137,7 @@ impl PersonalWorkspaces {
                 let agreed = stored
                     .agreed
                     .into_iter()
-                    .filter_map(|(room, name)| Some((RoomId::parse(&room)?, name)))
+                    .filter_map(|(room, listed)| Some((RoomId::parse(&room)?, listed)))
                     .collect();
                 Some((directory, agreed))
             });
@@ -110,18 +154,20 @@ impl PersonalWorkspaces {
     /// directory. Returns whether the directory changed, which is when the
     /// other devices need a new snapshot.
     pub fn publish_local(&mut self, tree: &WorkspaceTree, person: &str) -> bool {
-        let owned = owned_workspaces(tree, person);
+        let listed = member_workspaces(tree, person);
         let mut changed = false;
-        for (room, name) in &owned {
-            if self.agreed.get(room) == Some(name) {
+        for (room, entry) in &listed {
+            if self.agreed.get(room) == Some(entry) {
                 continue;
             }
+            let id = entry_id(*room);
             match self
                 .directory
-                .add_room_workspace(entry_id(*room), &room.to_string(), name)
+                .add_room_workspace(id, &room.to_string(), &entry.name)
+                .and_then(|()| self.directory.set_governor(id, entry.governor.as_deref()))
             {
                 Ok(()) => {
-                    self.agreed.insert(*room, name.clone());
+                    self.agreed.insert(*room, entry.clone());
                     changed = true;
                 }
                 Err(error) => {
@@ -139,22 +185,37 @@ impl PersonalWorkspaces {
     /// `tree`: join each new workspace's room as `person`'s own, and take a
     /// new name. Returns whether `tree` changed.
     pub fn adopt_into(&mut self, tree: &mut WorkspaceTree, person: &UserId) -> bool {
-        let listed: BTreeMap<RoomId, String> = self
+        let listed: BTreeMap<RoomId, Listed> = self
             .directory
             .list_workspaces()
             .into_iter()
             .filter_map(|entry| {
                 let room = RoomId::parse(entry.room.as_deref()?)?;
-                (!room.is_nil() && entry_id(room) == entry.id).then_some((room, entry.name))
+                (!room.is_nil() && entry_id(room) == entry.id).then_some((
+                    room,
+                    Listed {
+                        name: entry.name,
+                        governor: entry.governor,
+                    },
+                ))
             })
             .collect();
         let mut changed = false;
-        for (room, name) in listed {
-            if self.agreed.get(&room) == Some(&name) {
+        for (room, entry) in listed {
+            if self.agreed.get(&room) == Some(&entry) {
                 continue;
             }
-            changed |= tree.adopt_personal_room(room, &name, person);
-            self.agreed.insert(room, name);
+            let governor = match entry.governor.as_deref() {
+                None => None,
+                Some(governor) => match governor_origin(governor) {
+                    Some(origin) => Some(origin),
+                    // An entry naming no usable governor is skipped: a
+                    // device must never guess who governs someone's room.
+                    None => continue,
+                },
+            };
+            changed |= tree.adopt_personal_room(room, &entry.name, person, governor.as_ref());
+            self.agreed.insert(room, entry);
         }
         self.persist();
         changed
@@ -203,7 +264,7 @@ impl PersonalWorkspaces {
             agreed: self
                 .agreed
                 .iter()
-                .map(|(room, name)| (room.to_string(), name.clone()))
+                .map(|(room, listed)| (room.to_string(), listed.clone()))
                 .collect(),
         };
         let Ok(bytes) = postcard::to_allocvec(&stored) else {
