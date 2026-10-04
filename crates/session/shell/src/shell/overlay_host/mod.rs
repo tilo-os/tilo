@@ -4014,6 +4014,7 @@ impl ShellOverlayHost {
             display_size,
             hdr_static_metadata,
             ref input_sink,
+            tab,
         } = *stream;
         let key = (source_peer, surface_id);
         if let Some(tab_id) = self.peer_stream_tabs.get(&key).copied() {
@@ -4047,31 +4048,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let tab_id = {
-            let state = chrome.borrow();
-            let tree = state.tree();
-            tree.desktop.active_workspace().and_then(|workspace| {
-                workspace.strips.iter().find_map(|strip| {
-                    strip.window_groups.iter().find_map(|group| {
-                        group.tabs.iter().find_map(|tab| match &tab.tile {
-                            crate::shell::state::TileContent::PeerWindow {
-                                app_id: candidate,
-                                ..
-                            }
-                            | crate::shell::state::TileContent::HostedWindow {
-                                app_id: candidate,
-                                ..
-                            } if candidate == app_id
-                                && !self.peer_stream_tabs.values().any(|id| *id == tab.id) =>
-                            {
-                                Some(tab.id)
-                            }
-                            _ => None,
-                        })
-                    })
-                })
-            })
-        };
+        let tab_id = self.stream_tab(&chrome, app_id, tab);
         let Some(tab_id) = tab_id else {
             return false;
         };
@@ -4098,6 +4075,51 @@ impl ShellOverlayHost {
             }
         }
         false
+    }
+
+    /// The tab a stream starting now mounts into: exactly the one it names,
+    /// wherever it is, or for a stream naming none the first free tab of its
+    /// app in the active workspace.
+    fn stream_tab(&self, chrome: &Chrome, app_id: &str, tab: u64) -> Option<u64> {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        let unclaimed = |id: u64| !self.peer_stream_tabs.values().any(|claimed| *claimed == id);
+        if tab != 0 {
+            tree.desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| &workspace.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .find(|candidate| {
+                    candidate.id == tab
+                        && matches!(
+                            candidate.tile,
+                            crate::shell::state::TileContent::HostedWindow { .. }
+                                | crate::shell::state::TileContent::PeerWindow { .. }
+                        )
+                })
+                .map(|candidate| candidate.id)
+                .filter(|id| unclaimed(*id))
+        } else {
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group.tabs.iter().find_map(|tab| match &tab.tile {
+                            crate::shell::state::TileContent::PeerWindow {
+                                app_id: candidate,
+                                ..
+                            }
+                            | crate::shell::state::TileContent::HostedWindow {
+                                app_id: candidate,
+                                ..
+                            } if candidate == app_id && unclaimed(tab.id) => Some(tab.id),
+                            _ => None,
+                        })
+                    })
+                })
+            })
+        }
     }
 
     /// Decode the newest frame into the mounted peer view. The network inbox

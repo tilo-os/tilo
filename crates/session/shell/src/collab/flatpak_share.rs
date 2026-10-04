@@ -206,6 +206,9 @@ pub struct SharedFlatpakSession {
     /// lets late-joining viewers know when it's safe to start decoding.
     stream_sender: Arc<SurfaceStreamSender>,
     color_override: Arc<Mutex<ColorOverride>>,
+    /// The workspace tab holding the window, announced with the stream so a
+    /// viewer shows it in exactly that tab; `0` names none.
+    tab: u64,
 }
 
 impl SharedFlatpakSession {
@@ -309,6 +312,7 @@ impl SharedFlatpakSession {
             active: Arc::new(AtomicBool::new(true)),
             stream_sender,
             color_override: Arc::new(Mutex::new(None)),
+            tab: 0,
         })
     }
 
@@ -473,6 +477,18 @@ impl SharedFlatpakSession {
         (self.width, self.height)
     }
 
+    /// Name the workspace tab the window is in, for the stream start.
+    #[must_use]
+    pub fn with_tab(mut self, tab: u64) -> Self {
+        self.tab = tab;
+        self
+    }
+
+    /// The workspace tab the stream names; `0` when none.
+    pub fn tab(&self) -> u64 {
+        self.tab
+    }
+
     pub fn snapshot_config(&self) -> FlatpakShareConfig {
         self.config.clone()
     }
@@ -509,6 +525,7 @@ impl SharedFlatpakSession {
             colorimetry,
             hdr_static_metadata: hdr_static,
             bit_depth,
+            tab: self.tab,
         }
     }
 
@@ -562,6 +579,29 @@ impl SharedFlatpakSession {
     /// nothing staged, or a swallowed encode error (logged once per
     /// consecutive run) — matches the compositor's "encode or drop" contract.
     #[tracing::instrument(level = "trace", skip(self))]
+    /// When a captured frame the throttle held back is due to be encoded;
+    /// `None` when nothing waits. A window that goes still right after a
+    /// change commits nothing more, so its last frame is sent at this time
+    /// rather than on a commit that never comes.
+    pub fn staged_due(&self) -> Option<Instant> {
+        if !self.active.load(Ordering::Acquire)
+            || self
+                .staged_frame
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_none()
+        {
+            return None;
+        }
+        Some(
+            self.throttle
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_due()
+                .unwrap_or(self.origin),
+        )
+    }
+
     pub fn encode_next_frame(&self, now: Instant) -> Option<EncodedFrame> {
         if !self.active.load(Ordering::Acquire) {
             return None;
@@ -968,6 +1008,7 @@ mod tests {
                     hdr_static_metadata,
                     bit_depth,
                     app_id,
+                    tab: _,
                 } => {
                     assert_eq!(surface, 42);
                     assert_eq!(source_peer, 0xBEEF);
