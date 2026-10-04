@@ -31,7 +31,7 @@ pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -646,6 +646,16 @@ pub enum Action {
     /// The slot user's desktop layout removed, so the next session starts
     /// with none.
     ResetDesktopState,
+    /// The desktop of a login restarted in place (`tilo-session` on
+    /// SIGUSR1): the login, its user manager and its services stayed.
+    RestartDesktop {
+        user: String,
+    },
+    /// A user unit of the session's account restarted.
+    RestartUserUnit {
+        user: String,
+        unit: String,
+    },
     /// Recorded but not activated; takes effect at the next session restart.
     Deferred {
         reason: String,
