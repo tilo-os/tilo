@@ -461,7 +461,7 @@ impl VideoEditorApp {
                     if let Some(m) = self.project.media.iter_mut().find(|m| m.id == mid) {
                         m.has_audio = true;
                     }
-                    self.dispatch_media(state, mid);
+                    self.dispatch_media(mid);
                     let Some(cid) = self
                         .project
                         .clips
@@ -471,7 +471,7 @@ impl VideoEditorApp {
                     else {
                         continue;
                     };
-                    self.attach_linked_audio(state, cid);
+                    self.attach_linked_audio(cid);
                 }
                 // Select the market pair's picture half, and park the playhead
                 // inside it, so one shot shows the selected state and the drone
@@ -526,11 +526,7 @@ impl VideoEditorApp {
                         t.pan = pan;
                     }
                     if let Some(t) = self.project.track(tid).cloned() {
-                        self.actions.dispatch(
-                            state,
-                            VIDEO_EDITOR_ACTION_TYPE,
-                            &upsert_track_action(&t),
-                        );
+                        self.submit(&upsert_track_action(&t));
                     }
                 }
                 // What a monitor would have measured playing this: a run of
@@ -606,7 +602,7 @@ impl VideoEditorApp {
                 // the grade is unmistakable in the capture.
                 self.set_num(NumField::Saturation, 0.72);
                 if let Some(id) = self.selected() {
-                    self.dispatch_clip(state, id);
+                    self.dispatch_clip(id);
                 }
                 self.zoom = 30.0;
             }
@@ -626,7 +622,7 @@ impl VideoEditorApp {
                     self.selection.select_only(c.id);
                 }
                 self.playhead = 14.0;
-                self.split_selected(state);
+                self.split_selected();
                 self.zoom = 40.0;
             }
             // Rect-dependent interactions are arranged in `draw` (the layout
