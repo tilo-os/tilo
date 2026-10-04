@@ -198,10 +198,6 @@ fn seed_doc() -> AutoCommit {
     let _ = doc.put(&automerge::ObjId::Root, "toggle_1", true);
     let _ = doc.put(&automerge::ObjId::Root, "check_1", false);
     let _ = doc.put(&automerge::ObjId::Root, "slider_1", 0.5);
-    if let Ok(text_id) = doc.put_object(&automerge::ObjId::Root, "text_1", automerge::ObjType::Text)
-    {
-        let _ = doc.splice_text(&text_id, 0, 0, "Edit me");
-    }
     doc
 }
 
@@ -268,9 +264,9 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
                         .push(Box::new(tilo_ui::widget::Checkbox::new("chk", "check_1")))
                         .push(Box::new(tilo_ui::widget::Slider::new("sld", "slider_1")))
                         .push(Box::new(
-                            tilo_ui::widget::TextInput::new(vec![])
-                                .with_id("txt")
-                                .with_on_change_path("text_1"),
+                            tilo_ui::widget::TextInput::local()
+                                .with_initial_value("Edit me")
+                                .with_id("txt"),
                         )),
                 ))
                 .push(caption("row_indicators"))
