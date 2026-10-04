@@ -79,39 +79,35 @@ pub trait Effect: Sized + 'static {
             .collect()
     }
 
-    /// This effect with its arguments bound, as one operation that takes
-    /// none: what a live row offers for the entity it names (copy this
-    /// account's code), with the declaration's label and contract.
+    /// This effect with its arguments as one action that takes none: what a
+    /// live row offers (stop *this* process), answered by the vocabulary's
+    /// handler like any other invocation of the effect, under the same
+    /// contract as its declaration.
     fn bound(&self) -> ActionSpec {
         let id = self.id();
-        let payload = Payload {
-            effect: id.to_owned(),
-            args: self.arguments(),
-        };
-        let declared = Self::declarations().into_iter().find(|decl| decl.id == id);
-        let label = declared.as_ref().map_or(id, |decl| decl.label);
-        let mut spec = ActionSpec::typed_operation(
-            id,
-            label,
-            label,
-            OperationKind::Effect,
+        let encoded = EncodedAction::encode_operation(
             Self::OPERATION,
-            Vec::new(),
-            move |_| {
-                EncodedAction::encode_operation(Self::OPERATION, &payload).unwrap_or_else(|_| {
-                    EncodedAction {
-                        type_id: Self::OPERATION.to_owned(),
-                        payload: Vec::new(),
-                    }
-                })
+            &Payload {
+                effect: id.to_owned(),
+                args: self.arguments(),
             },
-        );
-        if let Some(decl) = declared {
-            let declared = decl.spec(Self::OPERATION);
-            spec.description = declared.description;
-            spec.contract = declared.contract;
+        )
+        .unwrap_or_else(|_| EncodedAction {
+            type_id: Self::OPERATION.to_owned(),
+            payload: Vec::new(),
+        });
+        match Self::declarations().into_iter().find(|decl| decl.id == id) {
+            Some(decl) => decl.spec_with(Self::OPERATION, Vec::new(), move |_| encoded.clone()),
+            None => ActionSpec::typed_operation(
+                id,
+                id,
+                id,
+                OperationKind::Effect,
+                Self::OPERATION,
+                Vec::new(),
+                move |_| encoded.clone(),
+            ),
         }
-        spec
     }
 
     /// Decode one invocation's payload, as the operation's specs encode it.
@@ -164,26 +160,37 @@ impl EffectDecl {
     /// The published action of this effect under `operation`.
     pub fn spec(&self, operation: &'static str) -> ActionSpec {
         let id = self.id;
+        self.spec_with(operation, self.params.clone(), move |args| {
+            EncodedAction::encode_operation(
+                operation,
+                &Payload {
+                    effect: id.to_owned(),
+                    args: args.to_json(),
+                },
+            )
+            .unwrap_or_else(|_| EncodedAction {
+                type_id: operation.to_owned(),
+                payload: Vec::new(),
+            })
+        })
+    }
+
+    /// The published action of this effect, taking `params` and encoding
+    /// an invocation with `build`.
+    fn spec_with(
+        &self,
+        operation: &'static str,
+        params: Vec<ActionParam>,
+        build: impl Fn(&tilo_actions::ActionArgs) -> EncodedAction + Send + Sync + 'static,
+    ) -> ActionSpec {
         let mut spec = ActionSpec::typed_operation(
-            id,
+            self.id,
             self.label,
             self.label,
             OperationKind::Effect,
             operation,
-            self.params.clone(),
-            move |args| {
-                EncodedAction::encode_operation(
-                    operation,
-                    &Payload {
-                        effect: id.to_owned(),
-                        args: args.to_json(),
-                    },
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: operation.to_owned(),
-                    payload: Vec::new(),
-                })
-            },
+            params,
+            build,
         );
         if !self.description.is_empty() {
             spec = spec.with_description(self.description);
@@ -357,6 +364,19 @@ mod tests {
             Sample::Reload
         );
         assert!(Sample::decode("wipe", &serde_json::Map::new()).is_err());
+
+        // Bound to its arguments, the effect takes none and keeps its
+        // declaration's contract.
+        let bound = Sample::Wipe { passes: 3 }.bound();
+        assert_eq!(bound.id, "wipe");
+        assert_eq!(bound.label, "Wipe");
+        assert!(bound.params().is_empty());
+        assert_eq!(bound.contract.confirmation, ConfirmationPolicy::Confirm);
+        let encoded = bound.build_json(&serde_json::Map::new()).unwrap();
+        assert_eq!(
+            Sample::from_payload(&encoded.payload).unwrap(),
+            Sample::Wipe { passes: 3 }
+        );
         assert!(Sample::decode("format", &serde_json::Map::new()).is_err());
     }
 
