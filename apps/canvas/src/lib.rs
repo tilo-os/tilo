@@ -35,6 +35,7 @@ pub mod resource;
 pub mod sample;
 pub mod selection;
 pub mod strokes;
+pub mod subject;
 pub mod surface;
 pub mod svg;
 pub mod thumb;
