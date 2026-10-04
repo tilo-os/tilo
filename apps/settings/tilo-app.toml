@@ -91,3 +91,6 @@ after_action = ["Screen reader"]
 [providers]
 mime = []
 ext  = []
+# `settings://models/<model-id>` opens Agent Models at that model's card;
+# `settings://<pane>` opens a pane. A link only shows; it changes nothing.
+schemes = ["settings"]

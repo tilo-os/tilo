@@ -83,6 +83,30 @@ impl Opened {
     pub fn launched(&self) -> bool {
         matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
     }
+
+    /// The typed result an open action answers with: what happened and
+    /// which application holds the document now. `tab` is the focused tab
+    /// when the document was already open.
+    pub fn to_value(&self, path: &Path) -> serde_json::Value {
+        match self {
+            Opened::Launched { app } => serde_json::json!({
+                "opened": "launched",
+                "path": path,
+                "app": app.package_id,
+            }),
+            Opened::Focused { app, tab } => serde_json::json!({
+                "opened": "focused",
+                "path": path,
+                "app": app.package_id,
+                "tab": tab,
+            }),
+            Opened::HostLaunched { app } => serde_json::json!({
+                "opened": "host-launched",
+                "path": path,
+                "app": app.desktop_id,
+            }),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
