@@ -20,8 +20,8 @@
     reason = "tile arithmetic is on cell counts far below 2^23 and kurbo float geometry"
 )]
 
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tilo_wet_media::{
     Canvas, Heightfield, LayerPainter, MediumEngine, Painted, Rgb, Settings, Texture, windowed,
@@ -322,98 +322,27 @@ fn cells(value: f64) -> usize {
     value.round().clamp(0.0, 1e7) as usize
 }
 
-/// The threads that simulate tiles while the window keeps drawing.
+/// How many tiles are simulated at once in the background.
+const WORKERS: usize = 4;
+
+/// The tiles being simulated in the background, and those finished.
 #[derive(Default)]
-struct Queue {
-    waiting: VecDeque<Job>,
+struct Shared {
     running: HashSet<blake3::Hash>,
     done: Vec<(blake3::Hash, ImageData)>,
-    closed: bool,
 }
 
-struct Pool {
-    queue: Mutex<Queue>,
-    wake: Condvar,
-}
-
-impl Pool {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn start() -> Option<Arc<Self>> {
-        let pool = Arc::new(Self {
-            queue: Mutex::default(),
-            wake: Condvar::new(),
-        });
-        let threads = std::thread::available_parallelism()
-            .map_or(2, std::num::NonZero::get)
-            .saturating_sub(1)
-            .clamp(1, 4);
-        for index in 0..threads {
-            let worker = Arc::clone(&pool);
-            std::thread::Builder::new()
-                .name(format!("canvas-detail-{index}"))
-                .spawn(move || worker.work())
-                .ok()?;
-        }
-        Some(pool)
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn start() -> Option<Arc<Self>> {
-        None
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Queue> {
-        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn work(&self) {
-        loop {
-            let job = {
-                let mut queue = self.lock();
-                loop {
-                    if queue.closed {
-                        return;
-                    }
-                    if let Some(job) = queue.waiting.pop_front() {
-                        queue.running.insert(job.key);
-                        break job;
-                    }
-                    queue = self
-                        .wake
-                        .wait(queue)
-                        .unwrap_or_else(PoisonError::into_inner);
-                }
-            };
-            let image = job.run();
-            let mut queue = self.lock();
-            queue.running.remove(&job.key);
-            queue.done.push((job.key, image));
-        }
-    }
-}
-
-/// Tiles simulated so far, and the threads simulating more.
+/// Tiles simulated so far, and the work simulating more.
 #[derive(Default)]
 pub struct Tiles {
     ready: HashMap<blake3::Hash, (ImageData, u64)>,
     frame: u64,
-    pool: Option<Arc<Pool>>,
-    started: bool,
+    shared: Arc<Mutex<Shared>>,
     /// Jobs wanted this frame, nearest the middle of the view first.
     wanted: Vec<Job>,
     /// Whether some tile shown is still being simulated.
     pending: bool,
     mosaics: HashMap<String, (blake3::Hash, ImageData)>,
-}
-
-impl Drop for Tiles {
-    fn drop(&mut self) {
-        if let Some(pool) = &self.pool {
-            pool.lock().closed = true;
-            pool.wake.notify_all();
-        }
-    }
 }
 
 /// A picture of part of a layer at a level, built from its tiles.
@@ -439,47 +368,49 @@ pub struct Request<'a> {
 }
 
 impl Tiles {
-    /// Start a frame: take in the tiles the threads finished.
+    fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Start a frame: take in the tiles finished in the background.
     pub fn begin(&mut self) {
         self.frame += 1;
         self.pending = false;
         self.wanted.clear();
-        if let Some(pool) = &self.pool {
-            let done = std::mem::take(&mut pool.lock().done);
-            for (key, image) in done {
-                self.ready.insert(key, (image, self.frame));
-            }
+        let done = std::mem::take(&mut self.lock().done);
+        for (key, image) in done {
+            self.ready.insert(key, (image, self.frame));
         }
     }
 
-    /// Hand this frame's wanted tiles to the threads, and forget the
-    /// oldest tiles beyond what is kept.
+    /// Start simulating this frame's wanted tiles in the background, as
+    /// many at once as there are workers, and forget the oldest tiles
+    /// beyond what is kept.
     pub fn end(&mut self) {
-        if !self.started {
-            self.started = true;
-            self.pool = Pool::start();
-        }
         let wanted = std::mem::take(&mut self.wanted);
-        match &self.pool {
-            Some(pool) => {
-                let mut queue = pool.lock();
-                let running = queue.running.clone();
-                queue.waiting = wanted
-                    .into_iter()
-                    .filter(|job| !running.contains(&job.key))
-                    .collect();
-                self.pending |= !queue.waiting.is_empty() || !queue.running.is_empty();
-                drop(queue);
-                pool.wake.notify_all();
+        let mut shared = self.shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut starting = Vec::new();
+        for job in wanted {
+            if starting.len() + shared.running.len() >= WORKERS {
+                break;
             }
-            None => {
-                // Without threads, one tile a frame keeps the window live.
-                if let Some(job) = wanted.first() {
-                    let image = job.run();
-                    self.ready.insert(job.key, (image, self.frame));
-                    self.pending = true;
-                }
+            if shared.running.insert(job.key) {
+                starting.push(job);
             }
+        }
+        let busy = !shared.running.is_empty();
+        drop(shared);
+        self.pending |= busy;
+        for job in starting {
+            let shared = Arc::clone(&self.shared);
+            // Detached: a tile finished after the view moved on is kept
+            // for when it comes back.
+            drop(ui::rt::app().spawn_blocking(move || {
+                let image = job.run();
+                let mut shared = shared.lock().unwrap_or_else(PoisonError::into_inner);
+                shared.running.remove(&job.key);
+                shared.done.push((job.key, image));
+            }));
         }
         if self.ready.len() > KEEP {
             let mut ages: Vec<(u64, blake3::Hash)> = self
@@ -593,38 +524,15 @@ impl Tiles {
         })
     }
 
-    /// Simulate `jobs` not yet ready now, on as many threads as there are.
+    /// Simulate `jobs` not yet ready now, side by side where the platform
+    /// can.
     fn run_now<'a>(&mut self, jobs: impl Iterator<Item = &'a Job>) {
+        use rayon::prelude::*;
         let todo: Vec<&Job> = jobs
             .filter(|job| !self.ready.contains_key(&job.key))
             .collect();
-        #[cfg(not(target_arch = "wasm32"))]
-        let done: Vec<(blake3::Hash, ImageData)> = {
-            let threads = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
-            let next = std::sync::atomic::AtomicUsize::new(0);
-            let results = Mutex::new(Vec::new());
-            std::thread::scope(|scope| {
-                for _ in 0..threads.min(todo.len()) {
-                    scope.spawn(|| {
-                        loop {
-                            let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let Some(job) = todo.get(index) else {
-                                break;
-                            };
-                            let image = job.run();
-                            results
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .push((job.key, image));
-                        }
-                    });
-                }
-            });
-            results.into_inner().unwrap_or_else(PoisonError::into_inner)
-        };
-        #[cfg(target_arch = "wasm32")]
         let done: Vec<(blake3::Hash, ImageData)> =
-            todo.iter().map(|job| (job.key, job.run())).collect();
+            todo.par_iter().map(|job| (job.key, job.run())).collect();
         for (key, image) in done {
             self.ready.insert(key, (image, self.frame));
         }
