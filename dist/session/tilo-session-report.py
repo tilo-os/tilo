@@ -177,6 +177,7 @@ def flight_report(path: Path) -> dict[str, object]:
         for line in lines
         if "DRM direct scanout unavailable" in line
         or "DRM direct frame failed" in line
+        or "DRM direct scanout degraded" in line
     ]
     launch_latency = {}
     for package, metrics in sorted(launch_samples.items()):
