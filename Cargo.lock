@@ -13206,6 +13206,7 @@ dependencies = [
  "collab-types",
  "compat-service",
  "desktop-policy",
+ "durable-store",
  "ed25519-dalek 3.0.0",
  "emoji",
  "file-explorer",

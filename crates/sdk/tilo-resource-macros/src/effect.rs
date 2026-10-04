@@ -105,6 +105,7 @@ struct VariantOptions {
     sensitive: bool,
     device_only: bool,
     risk: Option<syn::Path>,
+    programmatic: bool,
     permission: Option<String>,
 }
 
@@ -138,11 +139,13 @@ fn variant_options(attrs: &[syn::Attribute]) -> syn::Result<VariantOptions> {
                 options.device_only = true;
             } else if meta.path.is_ident("risk") {
                 options.risk = Some(meta.value()?.parse::<syn::LitStr>()?.parse::<syn::Path>()?);
+            } else if meta.path.is_ident("programmatic") {
+                options.programmatic = true;
             } else {
                 return Err(meta.error(
                     "expected `label`, `view`, `row`, `job`, `cancellable`, `returns`, \
                      `destructive`, `privileged`, `sensitive`, `idempotent`, `device_only`, \
-                     `risk` or `permission`",
+                     `risk`, `programmatic` or `permission`",
                 ));
             }
             Ok(())
@@ -323,6 +326,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote!(::std::option::Option::None)
         };
         let row = options.row;
+        let programmatic = options.programmatic;
         let kind = if options.view {
             quote!(View)
         } else {
@@ -342,6 +346,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
                 permission: #krate::__private::PermissionRequirement::#permission,
                 device_only: #device_only,
                 risk_of: #risk_of,
+                programmatic: #programmatic,
             }
         });
 

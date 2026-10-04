@@ -638,6 +638,8 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     let mut arms = Vec::new();
     let mut risks = Vec::new();
     let mut permissions = Vec::new();
+    // The least any action asks, ranked from none to administering.
+    let mut least: Option<(u8, proc_macro2::TokenStream)> = None;
     let mut change_kinds = Vec::new();
     let mut consts = Vec::new();
     let mut decls = Vec::new();
@@ -846,6 +848,17 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
         } else {
             quote!(.describe(#description))
         };
+        let rank = match action.permission.as_deref() {
+            Some("none") => 0,
+            Some("read") => 1,
+            Some("comment") => 2,
+            None | Some("write") => 3,
+            Some("invite") => 4,
+            _ => 5,
+        };
+        if least.as_ref().is_none_or(|(least, _)| rank < *least) {
+            least = Some((rank, permission.clone()));
+        }
         permissions.push(quote! {
             #action_enum::#variant { .. } => #krate::__private::PermissionRequirement::#permission,
         });
@@ -927,6 +940,14 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
     };
     // An action declared at another level than writing is applied at that
     // level too, whichever door it comes through.
+    let least_fn = match least {
+        Some((rank, least)) if rank != 3 => quote! {
+            fn least_permission() -> #krate::__private::PermissionRequirement {
+                #krate::__private::PermissionRequirement::#least
+            }
+        },
+        _ => quote!(),
+    };
     let permission_fn = if permissions.is_empty() {
         quote!()
     } else {
@@ -936,6 +957,8 @@ fn expand_resource(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Resul
                     #(#permissions)*
                 }
             }
+
+            #least_fn
         }
     };
     let body = if arms.is_empty() {

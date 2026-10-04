@@ -114,6 +114,7 @@ pub struct HostContext {
     handoff: Option<PlaybackHandoff>,
     launch_options: Vec<LaunchOption>,
     private: bool,
+    lent: Vec<Box<dyn std::any::Any>>,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -504,6 +505,7 @@ impl HostContext {
             handoff: None,
             launch_options: Vec::new(),
             private: false,
+            lent: Vec::new(),
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -562,6 +564,17 @@ impl HostContext {
     /// The playback handoff the host handed over, once.
     pub fn take_handoff(&mut self) -> Option<PlaybackHandoff> {
         self.handoff.take()
+    }
+    /// Lend the component a service of the host that mounts it in its own
+    /// process: a connection to the session's process supervisor for a
+    /// terminal the shell hosts. The component takes it by type; a host
+    /// that lends nothing leaves the app on its own services.
+    pub fn lend<T: std::any::Any>(&mut self, service: T) {
+        self.lent.push(Box::new(service));
+    }
+    /// The services the host lent, once.
+    pub fn take_lent(&mut self) -> Vec<Box<dyn std::any::Any>> {
+        std::mem::take(&mut self.lent)
     }
     /// Hand the component the options of its own that its launch named
     /// (`--purpose number`). The host has already checked that the

@@ -87,6 +87,31 @@ pub(crate) struct Launched {
     pub(crate) options: Vec<ui_core::application::LaunchOption>,
     pub(crate) file: Option<ui_core::application::OpenFile>,
     pub(crate) handoff: Option<ui_core::application::PlaybackHandoff>,
+    /// The services the host that mounts the app in-process lent it.
+    pub(crate) lent: Lent,
+}
+
+/// What an in-process host lent the app
+/// ([`HostContext::lend`](ui_core::application::HostContext::lend)), each
+/// taken once by the view or surface that uses it.
+#[derive(Default)]
+pub(crate) struct Lent(std::cell::RefCell<Vec<Box<dyn Any>>>);
+
+impl Lent {
+    pub(crate) fn new(services: Vec<Box<dyn Any>>) -> Self {
+        Self(std::cell::RefCell::new(services))
+    }
+
+    /// The lent service of type `T`, once.
+    pub(crate) fn take<T: 'static>(&self) -> Option<T> {
+        let mut services = self.0.borrow_mut();
+        let index = services.iter().position(|service| service.is::<T>())?;
+        services
+            .remove(index)
+            .downcast::<T>()
+            .ok()
+            .map(|service| *service)
+    }
 }
 
 impl Run {

@@ -367,6 +367,18 @@ impl<R: Resource> SurfaceCx<R> {
         super::launch::flag(&self.run.launched.options, name)
     }
 
+    /// The service of type `T` the host that mounts the app in its own
+    /// process lent it ([`HostContext::lend`](ui_core::application::HostContext::lend)),
+    /// taken once: the shell's connection to the session's process
+    /// supervisor for a terminal it hosts. `None` in the app's own process,
+    /// and for a past version or a capture, which start nothing.
+    pub fn take_lent<T: 'static>(&self) -> Option<T> {
+        if !self.run.mode.is_live() {
+            return None;
+        }
+        self.run.launched.lent.take::<T>()
+    }
+
     /// Whether the window is private, as
     /// [`ViewCx::is_private`](super::ViewCx::is_private).
     pub fn is_private(&self) -> bool {

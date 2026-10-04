@@ -2628,6 +2628,20 @@ impl ShellNetwork {
             return;
         };
         let record_id = self.register_local_record(&app_id, cluster_id, record_id);
+        let ws = personal_continuity_topic_id(&user_public_key);
+        // The person's always-on hosts keep it for their devices that are
+        // away: on the continuity topic, whose only member on a host is the
+        // person, and to host sessions only, never to gossip neighbours.
+        let _ = self.cmd_tx.try_send(NetCmd::PublishToHosts {
+            ws,
+            msg: NeighbourMsg::AppDocument {
+                peer: self.local_peer_id_hash(),
+                app_id: app_id.clone(),
+                cluster_id: cluster_id.to_owned(),
+                record_id: record_id.clone(),
+                envelope: Box::new(envelope.clone()),
+            },
+        });
         let payload = PersonalFabricPayload::Document {
             app_id,
             record_id,
@@ -2646,7 +2660,6 @@ impl ShellNetwork {
         if !self.personal_fabric_allowed() {
             return;
         }
-        let ws = personal_continuity_topic_id(&user_public_key);
         let targets: Vec<iroh::EndpointId> = self
             .authenticated_personal_routes
             .lock()
@@ -2671,6 +2684,52 @@ impl ShellNetwork {
                 payload: payload.clone(),
             });
         }
+    }
+
+    /// A person-room document an always-on host kept on the person's
+    /// continuity topic, written by `author`: taken in only when that topic is
+    /// this person's and the author is a device their root certified.
+    fn dispatch_hosted_person_document(
+        &self,
+        ws: u64,
+        author: iroh::EndpointId,
+        msg: NeighbourMsg,
+    ) {
+        let NeighbourMsg::AppDocument {
+            app_id,
+            record_id,
+            envelope,
+            ..
+        } = msg
+        else {
+            return;
+        };
+        let Some(user) = self.personal_continuity_user else {
+            return;
+        };
+        if ws != personal_continuity_topic_id(&user) {
+            tracing::warn!(
+                ws,
+                "person room document outside the continuity topic; dropping"
+            );
+            return;
+        }
+        let origin = crate::shell::state::PeerOrigin::peer(&author);
+        let Some(identity) = self.peer_identities.get(&origin) else {
+            tracing::debug!(author = %author, "person room document from an unknown device; dropping");
+            return;
+        };
+        if !identity.is_same_user(&user) {
+            tracing::warn!(author = %author, "person room document from another person's device; dropping");
+            return;
+        }
+        self.dispatch_person_document(
+            author,
+            identity.device_pubkey,
+            app_id,
+            &record_id,
+            *envelope,
+        );
     }
 
     /// A person-room document from one of this person's other devices,
@@ -2755,17 +2814,16 @@ impl ShellNetwork {
         let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id) else {
             return;
         };
-        if self.is_in_room(&cluster_id) {
-            self.handle_document_message(
-                peer,
-                app_id,
-                cluster_id,
-                record_id,
-                collab_types::Role::Editor,
-                true,
-                *envelope,
-            );
-        }
+        // The person's own records come back from their always-on hosts as
+        // their owner wrote them.
+        let role = if self.is_local_person_room(&cluster_id) {
+            collab_types::Role::Owner
+        } else if self.is_in_room(&cluster_id) {
+            collab_types::Role::Editor
+        } else {
+            return;
+        };
+        self.handle_document_message(peer, app_id, cluster_id, record_id, role, true, *envelope);
     }
 
     /// Queue a received signed document for the broker's drainer.
@@ -2975,9 +3033,17 @@ impl ShellNetwork {
     /// before was dropped here while nothing held the record, and the app
     /// would otherwise miss the room's history.
     pub fn request_room_replay(&self, cluster_id: &str) {
-        if let Some(room) = RoomId::parse(cluster_id)
-            .filter(|room| !room.is_nil() && self.local_person_room() != Some(*room))
+        // The person's own room is kept by their always-on hosts on the
+        // continuity topic.
+        if self.is_local_person_room(cluster_id)
+            && let Some(user) = self.personal_continuity_user
         {
+            let _ = self.cmd_tx.try_send(NetCmd::Replay {
+                ws: personal_continuity_topic_id(&user),
+            });
+            return;
+        }
+        if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) {
             let _ = self.cmd_tx.try_send(NetCmd::Replay {
                 ws: room_topic_id(room),
             });
@@ -6080,6 +6146,15 @@ impl ShellNetwork {
         replayed: bool,
         msg: NeighbourMsg,
     ) {
+        // A record of the person's own room arrives from another of their
+        // devices over the personal fabric, or kept by their always-on host
+        // on their continuity topic; never as room traffic.
+        if let NeighbourMsg::AppDocument { cluster_id, .. } = &msg
+            && self.is_local_person_room(cluster_id)
+        {
+            self.dispatch_hosted_person_document(ws, peer, msg);
+            return;
+        }
         if let Some(expected) = Self::explicit_topic_for_message(&msg)
             && expected != ws
         {
@@ -11853,6 +11928,31 @@ mod tests {
         envelope
     }
 
+    /// `commands` hand one person-room document of `cluster` to the
+    /// person's always-on hosts, on their continuity topic, and gossip it
+    /// nowhere.
+    fn assert_kept_for_the_persons_hosts(commands: &[NetCmd], user: &[u8; 32], cluster: &str) {
+        assert!(
+            commands.iter().all(|command| !matches!(
+                command,
+                NetCmd::Publish { .. } | NetCmd::NativePublish { .. } | NetCmd::Replay { .. }
+            )),
+            "a person-room document is never gossiped and never reaches a room topic"
+        );
+        let hosted: Vec<_> = commands
+            .iter()
+            .filter_map(|command| match command {
+                NetCmd::PublishToHosts { ws, msg } => Some((*ws, msg)),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            matches!(hosted.as_slice(), [(ws, NeighbourMsg::AppDocument { cluster_id, .. })]
+                if *ws == personal_continuity_topic_id(user) && cluster_id == cluster),
+            "the person's always-on hosts keep it on their continuity topic: {hosted:?}"
+        );
+    }
+
     /// A record in the person's own room goes from one of their devices to
     /// another over the authenticated personal fabric, never on a room topic,
     /// and reaches the other device's apps as the room owner's write.
@@ -11876,13 +11976,7 @@ mod tests {
             person_document(&user, record, &laptop_signing),
         );
         let commands: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
-        assert!(
-            commands.iter().all(|command| !matches!(
-                command,
-                NetCmd::Publish { .. } | NetCmd::NativePublish { .. } | NetCmd::Replay { .. }
-            )),
-            "a person-room document never reaches a room topic or host"
-        );
+        assert_kept_for_the_persons_hosts(&commands, &user, &cluster);
         let payloads: Vec<_> = commands
             .into_iter()
             .filter_map(|command| match command {
@@ -12020,8 +12114,12 @@ mod tests {
         net.request_room_replay(&person_room.to_string());
         let leaked: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
         assert!(
-            leaked.is_empty(),
-            "nothing about the person room leaves for anyone but the person's devices: {leaked:?}"
+            leaked.iter().all(|command| matches!(
+                command,
+                NetCmd::PublishToHosts { ws, .. } | NetCmd::Replay { ws }
+                    if *ws == personal_continuity_topic_id(&user)
+            )),
+            "nothing about the person room leaves for anyone but the person's devices and hosts: {leaked:?}"
         );
 
         net.dispatch_scrollback_request(room_topic_id(person_room), 0xBEEF, artifact, u64::MAX, 8);
@@ -12091,7 +12189,7 @@ mod tests {
                 command,
                 NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::Publish { .. }
             )),
-            "an edit made while the phone is away reaches nobody"
+            "an edit made while the phone is away reaches no device directly"
         );
         assert_eq!(net.take_person_snapshot_request(), None);
 
@@ -12123,6 +12221,92 @@ mod tests {
             "the phone's return asks the local apps for their snapshots"
         );
         assert_eq!(net.take_person_snapshot_request(), None, "once");
+    }
+
+    /// What the person's always-on host kept on their continuity topic
+    /// reaches a device that comes online when no other of their devices
+    /// is: written by one of the person's devices, never by anyone else's,
+    /// and never from a room topic.
+    #[test]
+    fn a_person_record_kept_by_their_host_reaches_a_device_alone_online() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xD1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let cluster = collab_types::person_room(&user).to_string();
+        let continuity = personal_continuity_topic_id(&user);
+        let record = "history";
+        let laptop = iroh::SecretKey::from_bytes(&[0xD2; 32]);
+        let laptop_signing = ed25519_dalek::SigningKey::from_bytes(&[0xD2; 32]);
+        let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0xD3; 32]);
+        let stranger = iroh::SecretKey::from_bytes(&[0xD4; 32]);
+        let stranger_signing = ed25519_dalek::SigningKey::from_bytes(&[0xD4; 32]);
+
+        let (phone, mut sent) = personal_continuity_network_for_test(user);
+        // A fresh app on the phone asks the person's hosts for what they kept.
+        phone.register_local_record("so.tilo.tube", &cluster, record);
+        phone.request_room_replay(&cluster);
+        assert!(
+            std::iter::from_fn(|| sent.try_recv().ok())
+                .any(|command| matches!(command, NetCmd::Replay { ws } if ws == continuity)),
+            "the replay is asked on the continuity topic"
+        );
+
+        // The host replays the laptop's write; the laptop itself is offline,
+        // known to the phone only by the certificate the host replayed.
+        authenticated_personal_peer_on_topic(
+            &phone,
+            &root,
+            &laptop,
+            crate::network::actor::MembershipEpoch::for_test(1),
+            continuity,
+        );
+        authenticated_personal_peer_on_topic(
+            &phone,
+            &stranger_root,
+            &stranger,
+            crate::network::actor::MembershipEpoch::for_test(1),
+            continuity,
+        );
+        let kept = |author: &iroh::SecretKey, signing: &ed25519_dalek::SigningKey| {
+            let msg = NeighbourMsg::AppDocument {
+                peer: 7,
+                app_id: "so.tilo.tube".into(),
+                cluster_id: cluster.clone(),
+                record_id: crate::network::wire_record::wire_record_id(
+                    &cluster,
+                    "so.tilo.tube",
+                    record,
+                ),
+                envelope: Box::new(person_document(&user, record, signing)),
+            };
+            (author.public(), msg)
+        };
+        let inbound = phone.inbound_documents_handle();
+        let (author, msg) = kept(&stranger, &stranger_signing);
+        phone.dispatch_neighbour_msg(continuity, author, None, true, msg);
+        assert!(
+            inbound.lock().unwrap().is_empty(),
+            "another person's device writes nothing here"
+        );
+        let (author, msg) = kept(&laptop, &laptop_signing);
+        phone.dispatch_neighbour_msg(
+            room_topic_id(RoomId::new()),
+            author,
+            None,
+            true,
+            msg.clone(),
+        );
+        assert!(
+            inbound.lock().unwrap().is_empty(),
+            "never from a room topic"
+        );
+        phone.dispatch_neighbour_msg(continuity, author, None, true, msg);
+        let queued = inbound.lock().unwrap();
+        let [document] = queued.as_slice() else {
+            panic!("the kept document reaches the broker queue once");
+        };
+        assert_eq!(document.cluster_id, cluster);
+        assert_eq!(document.record_id, record);
+        assert_eq!(document.role, collab_types::Role::Owner);
     }
 
     /// History of a person-room record kept by an earlier session is
