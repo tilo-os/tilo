@@ -515,10 +515,9 @@ pub(crate) fn theme_resource(spec: &ThemeSpec, next_order: u32) -> Resource {
         ThemesEffect::Export { theme },
     ] {
         // The installed app's catalogue offers them while no window is open.
-        if let Some(mut bound) = effect.bound_spec() {
-            bound.contract.discovery = DiscoveryScope::Launchable;
-            child = child.with_action(bound);
-        }
+        let mut bound = effect.bound();
+        bound.contract.discovery = DiscoveryScope::Launchable;
+        child = child.with_action(bound);
     }
 
     child = child.with_action(immediate_spec(
