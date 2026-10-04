@@ -272,10 +272,11 @@ fn search(query: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Say what is about to take a while. On stderr, so `--json` output stays
+/// clean, and whether or not a terminal is watching: the Terminal's shell
+/// forwards host commands through pipes, and silence there reads as a hang.
 fn announce(message: &str) {
-    if std::io::stderr().is_terminal() {
-        eprintln!("{message}");
-    }
+    eprintln!("{message}");
 }
 
 fn progress_reporter() -> impl FnMut(DownloadProgress) {
