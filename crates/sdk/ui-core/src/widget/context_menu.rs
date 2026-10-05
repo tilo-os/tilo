@@ -7,7 +7,6 @@
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
 use crate::widget::{AppModel, ModelPath};
-use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
@@ -24,7 +23,10 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 
-pub type MenuAction = Arc<dyn Fn() + Send + Sync>;
+/// What a menu row runs. Menus live on the UI thread with the widgets that
+/// open them, so a row takes the toolkit's usual single-threaded callback:
+/// it may capture `Rc` state like any `Button::on_click`.
+pub type MenuAction = std::rc::Rc<dyn Fn()>;
 
 /// Separators are purely visual and ignored by [`ContextMenu::click_item`].
 #[derive(Clone)]
@@ -83,16 +85,16 @@ impl MenuItem {
 
     pub fn action<F>(label: impl Into<String>, action: F) -> Self
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn() + 'static,
     {
-        Self::command(label.into(), Arc::new(action))
+        Self::command(label.into(), std::rc::Rc::new(action))
     }
 
     /// A command row with a themed leading icon. Menus containing icon rows
     /// reserve the same gutter for every command so labels stay aligned.
     pub fn icon_action<F>(icon: Icon, label: impl Into<String>, action: F) -> Self
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn() + 'static,
     {
         Self::action(label, action).with_icon(icon)
     }
@@ -103,7 +105,7 @@ impl MenuItem {
 
     pub fn destructive_action<F>(label: impl Into<String>, action: F) -> Self
     where
-        F: Fn() + Send + Sync + 'static,
+        F: Fn() + 'static,
     {
         let mut item = Self::action(label, action);
         if let MenuItem::Action { destructive, .. } = &mut item {
@@ -119,7 +121,7 @@ impl MenuItem {
     /// A row that opens a nested menu of `items` beside it: on hover, a
     /// click, Enter or the arrow towards it. Its chevron says so.
     pub fn submenu(label: impl Into<String>, items: Vec<MenuItem>) -> Self {
-        let mut item = Self::command(label.into(), Arc::new(|| {}));
+        let mut item = Self::command(label.into(), std::rc::Rc::new(|| {}));
         if let MenuItem::Action { submenu, .. } = &mut item {
             *submenu = Some(items);
         }
@@ -2072,8 +2074,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
     use winit::event::{DeviceId, TouchPhase};
 
-    /// Callbacks must be `Send + Sync` (the `MenuAction` bound), so the
-    /// counter is an `Arc<AtomicU32>`.
+    /// A shared counter the rows' callbacks bump.
     fn open_menu() -> (ContextMenu, Arc<AtomicU32>) {
         let fired = Arc::new(AtomicU32::new(0));
         let f1 = fired.clone();
