@@ -2282,11 +2282,27 @@ impl WorkspaceTree {
         // resource limits (and resets the patch log, see `sync_room_doc`);
         // it reports a refusal as text, so keep this API's error type and
         // the detail in the log.
-        let candidate = tilo_peer_state::room::candidate(self.room_docs.get(&room), changes)
-            .map_err(|error| {
-                tracing::warn!(%error, room = %room, "room changes refused");
-                automerge::AutomergeError::Fail
-            })?;
+        // A local rename may still live only in the cache when a delayed
+        // reply arrives. Stage it in a copy of the existing room document
+        // before merging, so projection cannot erase it. Keep this private:
+        // a malformed or unauthorized reply must leave our heads unchanged.
+        let mut staged_before = None;
+        if self.governs_room(room)
+            && let Some(before) = self.room_docs.get(&room)
+            && let Some(workspace) = self.workspace_in_room(room)
+            && let Some(name) = Self::extract_governed_fields(before).0
+            && name != workspace.name
+        {
+            use automerge::transaction::Transactable as _;
+            let mut staged = before.clone();
+            staged.put(automerge::ROOT, "name", workspace.name.clone())?;
+            staged_before = Some(staged);
+        }
+        let before = staged_before.as_ref().or_else(|| self.room_docs.get(&room));
+        let candidate = tilo_peer_state::room::candidate(before, changes).map_err(|error| {
+            tracing::warn!(%error, room = %room, "room changes refused");
+            automerge::AutomergeError::Fail
+        })?;
 
         if Self::declared_room_mismatches(&candidate, room) {
             return Ok(false);

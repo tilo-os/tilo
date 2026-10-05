@@ -2634,7 +2634,9 @@ jobs:
           # approves its boot, and a denial, a replayed exchange, an
           # uncertified boot key and its removal from the fleet each leave it
           # at the passphrase prompt.
-          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing" --unlock
+          nearby_wake=()
+          if [[ $DEV_GATE == true && '${{ matrix.arch }}' == x86_64 ]]; then nearby_wake=(--wake); fi
+          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing" --unlock "${nearby_wake[@]}"
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
