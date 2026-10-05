@@ -435,8 +435,8 @@ mod tests {
             library_dispatcher_for_test(),
             crate::content::load_sample_library(),
         );
-        let mut seeded = doc.clone();
-        app.sync(&mut seeded, &ui::automerge::ROOT);
+        let seeded = doc.clone();
+        app.sync(&seeded, &ui::automerge::ROOT);
         let extras: Vec<_> = <BooksApp as ResourceSurface<Ebook, BooksEffect>>::live_rows(&app)
             .into_iter()
             .map(LiveRow::into_resource)

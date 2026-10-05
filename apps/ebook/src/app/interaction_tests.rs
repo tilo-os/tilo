@@ -7,6 +7,7 @@ use crate::content::load_sample_library;
 use crate::model::AnnoKind;
 use serial_test::serial;
 use ui::presence::PresenceCtx;
+use ui::widget::Edits;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, KeyEvent};
 
@@ -38,7 +39,7 @@ fn staged(scenario: &str) -> (BooksApp, AutoCommit) {
         action.apply(&mut doc).unwrap();
     }
     let mut app = app_with_sample();
-    app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+    app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
     app.sync(&doc, &automerge::ROOT);
     app.stage_scenario(scenario);
     (app, doc)
@@ -47,7 +48,7 @@ fn staged(scenario: &str) -> (BooksApp, AutoCommit) {
 fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
     let deadline = tilo_test_env::hang_deadline();
     while ui::time::now() < deadline {
-        app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+        app.settle(&mut Edits::lend(doc), &automerge::ROOT);
         app.sync(doc, &automerge::ROOT);
         if app.import_loading.is_none() {
             return;
@@ -117,7 +118,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
             &mut app,
             "books.library.hide-read",
             &A11yAction::ToggleCheck,
-            &mut doc,
+            &mut Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(BooksDoc::read_library_prefs(&doc).hide_read);
@@ -184,7 +185,7 @@ fn reader_controls_are_accessible_and_live() {
             &mut app,
             "books.reader.bookmark",
             &A11yAction::Activate,
-            &mut doc,
+            &mut Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -210,7 +211,7 @@ fn reader_controls_are_accessible_and_live() {
 
         app.dispatch(
             Action::SetMode(ReadMode::Continuous),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         frame(&mut app, &mut doc, 1000.0, 720.0);
         let id = app.book_id();
@@ -231,7 +232,7 @@ fn reader_controls_are_accessible_and_live() {
             &mut app,
             "books.reader.progress",
             &A11yAction::SetValue("75%".into()),
-            &mut doc,
+            &mut Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(app.chapter, 3);
@@ -260,7 +261,7 @@ fn reader_controls_are_accessible_and_live() {
             &mut app,
             "books.number.text-size",
             &A11yAction::Increment,
-            &mut doc,
+            &mut Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(BooksDoc::read_settings(&doc).font_scale > before);
@@ -272,7 +273,7 @@ fn reader_controls_are_accessible_and_live() {
         let mut doc = AutoCommit::new();
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Shortcuts;
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         app.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
         let theme = Theme::light().with_text_scale(2.0);
@@ -400,7 +401,7 @@ fn app_with_math_sample() -> BooksApp {
 /// Run one full headless frame so `self.hits` reflects the current view.
 fn frame(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) {
     let root = automerge::ROOT;
-    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    app.settle(&mut Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
     app.reconcile_flaps();
@@ -472,7 +473,7 @@ fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -491,7 +492,7 @@ fn click(app: &mut BooksApp, doc: &mut AutoCommit, p: Point) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -520,7 +521,7 @@ fn wheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -550,7 +551,7 @@ fn hwheel(app: &mut BooksApp, doc: &mut AutoCommit, lines: f32) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -574,7 +575,7 @@ fn send(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -619,7 +620,7 @@ fn ptr_up(app: &mut BooksApp, doc: &mut AutoCommit) {
 /// Draw one settled frame into a `Scene` (for pixel-level assertions).
 fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Scene {
     let root = automerge::ROOT;
-    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    app.settle(&mut Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
     app.reconcile_flaps();
@@ -682,7 +683,7 @@ fn feed(app: &mut BooksApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -716,7 +717,7 @@ fn key_named_mods(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -744,7 +745,7 @@ fn key_char_mods(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: ui::widget::Edits::lend(doc),
+            state: Edits::lend(doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1160,7 +1161,7 @@ fn schemes_are_listed_created_and_applied() {
         // High-contrast built-in tint → true-black page, white ink.
         app.dispatch(
             Action::SetReadTheme(ReadTheme::HighContrast),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         app.refresh_from_doc(&doc);
         let pal = app.resolve_palette(&theme);
@@ -1177,7 +1178,7 @@ fn schemes_are_listed_created_and_applied() {
         // Sepia on an OS high-contrast theme must not keep warm paper.
         app.dispatch(
             Action::SetReadTheme(ReadTheme::Sepia),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         app.refresh_from_doc(&doc);
         let hc = Theme::high_contrast();
@@ -1195,7 +1196,7 @@ fn schemes_are_listed_created_and_applied() {
         // Dark tint → the OS theme's raised surface, not a hardcoded charcoal.
         app.dispatch(
             Action::SetReadTheme(ReadTheme::Dark),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         app.refresh_from_doc(&doc);
         let dark = app.resolve_palette(&theme);
@@ -1220,7 +1221,7 @@ fn schemes_are_listed_created_and_applied() {
         BooksDoc::write_schemes(&mut doc, &schemes);
         app.dispatch(
             Action::SetScheme("scheme_z".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         app.refresh_from_doc(&doc);
         let ocean = app.resolve_palette(&theme);
@@ -1325,12 +1326,11 @@ fn colour_picker_edits_or_leaves_a_scheme() {
             .find(|node| node.name.as_deref() == Some("Red"))
             .and_then(|node| node.action_target.clone())
             .expect("each swatch carries its own action");
-        let root = automerge::ROOT;
         assert!(app.perform_semantic_action(
             &red,
             &A11yAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &root
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT
         ));
         assert_eq!(
             page_of(&doc, "scheme_x"),
@@ -1340,8 +1340,8 @@ fn colour_picker_edits_or_leaves_a_scheme() {
         assert!(app.perform_semantic_action(
             "color_picker.done",
             &A11yAction::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &root
+            &mut Edits::lend(&mut doc),
+            &automerge::ROOT
         ));
         assert_eq!(page_of(&doc, "scheme_x"), [0xEF, 0x44, 0x44]);
     }
@@ -1444,10 +1444,7 @@ fn font_manager_and_system_picker_set_fonts() {
         // Open the font manager's system-family picker.
         app.view = View::Settings;
         app.settings_tab = SettingsTab::Fonts;
-        app.dispatch(
-            Action::OpenFontPicker,
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::OpenFontPicker, &mut Edits::lend(&mut doc));
         frame(&mut app, &mut doc, 1200.0, 860.0);
 
         // The picker records an add-hit per installed family — real system fonts.
@@ -1488,10 +1485,7 @@ fn font_manager_and_system_picker_set_fonts() {
             .expect("the family is now a registered reading font");
 
         // Select it as the reading font → the body font resolves to that family.
-        app.dispatch(
-            Action::SetFont(entry.id),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::SetFont(entry.id), &mut Edits::lend(&mut doc));
         app.refresh_from_doc(&doc);
         assert_eq!(app.active_font().kind, FontKind::Named(fam.clone()));
         let (choice, _mult, _sig, mono) = app.body_font();
@@ -1619,7 +1613,7 @@ fn pointer_selection_spans_words_blocks_and_paragraphs() {
 
         app.dispatch(
             Action::SetColor(HiColor::Yellow),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         app.refresh_from_doc(&doc);
 
@@ -2237,7 +2231,7 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
         );
         // A page turn pokes the bubble; the next frame draws it (its chevrons are
         // hit-testable) and it keeps requesting frames so it can fade on its own.
-        app.dispatch(Action::NextPage, &mut ui::widget::Edits::lend(&mut doc));
+        app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(
             find_hit(&app, |a| matches!(a, Action::NextPage)).is_some(),
@@ -2330,7 +2324,7 @@ fn page_modes_and_turn_animation() {
         // Switch to continuous scroll through the real command path.
         app.dispatch(
             Action::SetMode(ReadMode::Continuous),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert_eq!(app.settings.mode, ReadMode::Continuous, "mode switched");
@@ -2362,10 +2356,7 @@ fn page_modes_and_turn_animation() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1280.0, 820.0);
-        app.dispatch(
-            Action::SetMode(ReadMode::TwoUp),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::SetMode(ReadMode::TwoUp), &mut Edits::lend(&mut doc));
         frame(&mut app, &mut doc, 1280.0, 820.0);
         assert_eq!(app.settings.mode, ReadMode::TwoUp);
         // A spread aligns to an even left page.
@@ -2380,7 +2371,7 @@ fn page_modes_and_turn_animation() {
         }
         // A page turn advances by a whole spread (two pages), or rolls chapter.
         let (c0, p0) = (app.chapter, app.page);
-        app.dispatch(Action::NextPage, &mut ui::widget::Edits::lend(&mut doc));
+        app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         frame(&mut app, &mut doc, 1280.0, 820.0);
         if app.chapter == c0 {
             assert_eq!(app.page, p0 + 2, "a spread turns two pages at once");
@@ -2414,7 +2405,7 @@ fn page_modes_and_turn_animation() {
 
         // A forward turn (pages to spare) advances and starts the slide.
         let (c0, p0) = (app.chapter, app.page);
-        app.dispatch(Action::NextPage, &mut ui::widget::Edits::lend(&mut doc));
+        app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         assert_ne!((app.chapter, app.page), (c0, p0), "the page advanced");
         assert!(
             app.needs_animation_frame(),
@@ -2434,14 +2425,14 @@ fn page_modes_and_turn_animation() {
         // Continuous scroll scrolls instead of turning, so no slide is scheduled.
         app.dispatch(
             Action::SetMode(ReadMode::Continuous),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         frame(&mut app, &mut doc, 1000.0, 700.0); // settles + clears the prior turn
         assert!(
             app.page_turn.is_none(),
             "the paged turn cleared after settling"
         );
-        app.dispatch(Action::NextPage, &mut ui::widget::Edits::lend(&mut doc));
+        app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         assert!(
             app.page_turn.is_none(),
             "continuous mode never starts a page-turn slide"
@@ -2453,7 +2444,7 @@ fn page_modes_and_turn_animation() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        app.dispatch(Action::NextPage, &mut ui::widget::Edits::lend(&mut doc));
+        app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         assert!(app.page_turn.is_some());
 
         Widget::set_motion_reduced(&mut app, true);
@@ -2503,10 +2494,7 @@ fn highlight_markers_reanchor_and_open_comments() {
             ),
         );
         ptr_up(&mut app, &mut doc);
-        app.dispatch(
-            Action::SetColor(HiColor::Green),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
         app.refresh_from_doc(&doc);
         let hl = BooksDoc::list_annotations(&doc)
             .into_iter()
@@ -2621,10 +2609,7 @@ fn highlight_markers_reanchor_and_open_comments() {
             ),
         );
         ptr_up(&mut app, &mut doc);
-        app.dispatch(
-            Action::SetColor(HiColor::Green),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
         app.refresh_from_doc(&doc);
         let group = BooksDoc::list_annotations(&doc)
             .into_iter()
@@ -2739,7 +2724,7 @@ fn highlights_are_written_and_recoloured_from_selections() {
         dbl_click(&mut app, &mut doc, p);
         app.dispatch(
             Action::SetColor(HiColor::Yellow),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         app.refresh_from_doc(&doc);
         assert_eq!(count(&doc), 1);
@@ -2747,20 +2732,14 @@ fn highlights_are_written_and_recoloured_from_selections() {
 
         // Re-select the same word; picking a DIFFERENT colour replaces it.
         dbl_click(&mut app, &mut doc, p);
-        app.dispatch(
-            Action::SetColor(HiColor::Green),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
         app.refresh_from_doc(&doc);
         assert_eq!(count(&doc), 1, "different colour replaces (never layers)");
         assert_eq!(color_of(&doc), Some(HiColor::Green));
 
         // Re-select the same word; picking the SAME colour toggles it off.
         dbl_click(&mut app, &mut doc, p);
-        app.dispatch(
-            Action::SetColor(HiColor::Green),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
         app.refresh_from_doc(&doc);
         assert_eq!(count(&doc), 0, "same colour again removes the highlight");
     }
@@ -3394,14 +3373,14 @@ fn importing_and_removing_books_keeps_one_identity() {
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
-        app.import_and_open_for_test(&mut ui::widget::Edits::lend(&mut doc), &pa);
+        app.import_and_open_for_test(&mut Edits::lend(&mut doc), &pa);
         let id = app.library[0].id.clone();
         // A highlight made while reading the first copy.
         BooksDoc::upsert_annotation(&mut doc, &Annotation::new(&id, AnnoKind::Highlight, 0, 1));
         assert_eq!(BooksDoc::annotations_for(&doc, &id).len(), 1);
 
         // Open the *same bytes* from a completely different path.
-        app.import_and_open_for_test(&mut ui::widget::Edits::lend(&mut doc), &pb);
+        app.import_and_open_for_test(&mut Edits::lend(&mut doc), &pb);
         assert_eq!(
             app.library.len(),
             1,
@@ -3427,15 +3406,12 @@ fn importing_and_removing_books_keeps_one_identity() {
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
-        app.import_and_open_for_test(&mut ui::widget::Edits::lend(&mut doc), &path);
+        app.import_and_open_for_test(&mut Edits::lend(&mut doc), &path);
         assert_eq!(app.library.len(), 1);
         assert_eq!(BooksDoc::read_library_entries(&doc).len(), 1);
 
         let id = app.library[0].id.clone();
-        app.dispatch(
-            Action::RemoveFromLibrary(id),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::RemoveFromLibrary(id), &mut Edits::lend(&mut doc));
         assert!(app.library.is_empty(), "removed from the shelf");
         assert!(
             BooksDoc::read_library_entries(&doc).is_empty(),
@@ -3457,10 +3433,7 @@ fn importing_and_removing_books_keeps_one_identity() {
             .insert(retained_source.clone(), retained_id);
 
         let id = app.library[0].id.clone();
-        app.dispatch(
-            Action::RemoveFromLibrary(id),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::RemoveFromLibrary(id), &mut Edits::lend(&mut doc));
 
         assert!(
             !app.watched_sources.contains_key(&removed_source),
@@ -3579,7 +3552,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
 
-        app.import_and_open_for_test(&mut ui::widget::Edits::lend(&mut doc), &shared_path);
+        app.import_and_open_for_test(&mut Edits::lend(&mut doc), &shared_path);
         let shared_idx = app
             .library
             .iter()
@@ -3607,14 +3580,11 @@ fn workspace_sharing_materialises_and_verifies_books() {
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 720.0);
-        app.import_and_open_for_test(&mut ui::widget::Edits::lend(&mut doc), &src);
+        app.import_and_open_for_test(&mut Edits::lend(&mut doc), &src);
         assert!(!app.book_is_shared(0), "starts local");
 
         let id = app.library[0].id.clone();
-        app.dispatch(
-            Action::ShareToWorkspace(id),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::ShareToWorkspace(id), &mut Edits::lend(&mut doc));
         assert!(
             app.book_is_shared(0),
             "sharing puts the book on the workspace"
@@ -3631,7 +3601,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
-        app.import_and_open_for_test(&mut ui::widget::Edits::lend(&mut doc), &source);
+        app.import_and_open_for_test(&mut Edits::lend(&mut doc), &source);
         let id = app.library[0].id.clone();
         let payload =
             crate::actions::effect_payload(&crate::resource::BooksEffect::Share { book: id });
@@ -3645,7 +3615,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
             !BooksDoc::read_library_entries(&doc)[0].shared,
             "the shared row is not advertised before materialisation commits"
         );
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         assert!(app.book_is_shared(0));
         assert!(BooksDoc::read_library_entries(&doc)[0].shared);
@@ -3735,7 +3705,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
         let mut app =
             BooksApp::with_library(crate::resource::library_dispatcher_for_test(), Vec::new());
         let mut doc = AutoCommit::new();
-        app.import_and_open_for_test(&mut ui::widget::Edits::lend(&mut doc), &source);
+        app.import_and_open_for_test(&mut Edits::lend(&mut doc), &source);
         let payload = crate::actions::effect_payload(&crate::resource::BooksEffect::Share {
             book: app.library[0].id.clone(),
         });
@@ -3747,7 +3717,7 @@ fn workspace_sharing_materialises_and_verifies_books() {
             "the share stops as its caller asked"
         );
         assert!(app.take_effect_result(invocation).is_none());
-        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.settle(&mut Edits::lend(&mut doc), &automerge::ROOT);
         app.sync(&doc, &automerge::ROOT);
         assert!(
             !BooksDoc::read_library_entries(&doc)[0].shared,
@@ -3827,6 +3797,11 @@ fn annotation_cards_delete_and_jump_to_their_location() {
 
 // ---- single source of truth: affordance == palette ActionSpec -----------
 
+/// Deliver a library action with the typed loan native callbacks receive.
+fn dispatch(app: &mut BooksApp, doc: &mut AutoCommit, action: Action) {
+    app.dispatch(action, &mut Edits::lend(doc));
+}
+
 /// The selection toolbar dispatches the palette highlight actions, trashes covered highlights and shows in continuous mode.
 #[test]
 fn selection_toolbar_dispatches_palette_highlight_actions() {
@@ -3879,10 +3854,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         )
         .unwrap();
         // Dispatch the swatch's action through the real handler a click invokes.
-        app.dispatch(
-            Action::SetColor(HiColor::Yellow),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Yellow));
         assert_eq!(
             BooksDoc::list_annotations(&doc),
             BooksDoc::list_annotations(&expected),
@@ -3907,10 +3879,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
         // Highlight a word.
         let p = page_point(&app);
         dbl_click(&mut app, &mut doc, p);
-        app.dispatch(
-            Action::SetColor(HiColor::Blue),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        dispatch(&mut app, &mut doc, Action::SetColor(HiColor::Blue));
         app.refresh_from_doc(&doc);
         assert_eq!(
             BooksDoc::list_annotations(&doc)
@@ -3939,10 +3908,7 @@ fn selection_toolbar_dispatches_palette_highlight_actions() {
     {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
-        app.dispatch(
-            Action::SetMode(ReadMode::Continuous),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        dispatch(&mut app, &mut doc, Action::SetMode(ReadMode::Continuous));
         frame(&mut app, &mut doc, 1000.0, 700.0);
         // Seed a live selection near the top of the flow and redraw.
         app.sel = Some(TextSel {
@@ -4020,7 +3986,7 @@ fn bookmarks_and_their_shortcuts() {
         app.settings_tab = SettingsTab::Shortcuts;
         app.dispatch(
             Action::BeginShortcutCapture(ReaderShortcut::Bookmark),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
 
         assert!(
@@ -4281,7 +4247,11 @@ fn reading_position_persists_across_reopen() {
 
         let mut receiver = app_with_sample();
         let mut target = AutoCommit::new();
-        assert!(receiver.restore_continuation_metadata(&metadata, &mut target, &automerge::ROOT,));
+        assert!(receiver.restore_continuation_metadata(
+            &metadata,
+            &mut Edits::lend(&mut target),
+            &automerge::ROOT,
+        ));
         assert_eq!(
             receiver.library[receiver.book_idx].id,
             sender.library[sender.book_idx].id
@@ -4322,10 +4292,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
         ptr_down(&mut app, &mut doc);
         ptr_move(&mut app, &mut doc, end);
         ptr_up(&mut app, &mut doc);
-        app.dispatch(
-            Action::SetColor(HiColor::Green),
-            &mut ui::widget::Edits::lend(&mut doc),
-        );
+        app.dispatch(Action::SetColor(HiColor::Green), &mut Edits::lend(&mut doc));
         app.refresh_from_doc(&doc);
         let hl = BooksDoc::list_annotations(&doc)
             .into_iter()
@@ -4387,7 +4354,7 @@ fn comments_are_added_edited_and_deleted_through_the_overlay() {
         dbl_click(&mut app, &mut doc, p);
         app.dispatch(
             Action::SetColor(HiColor::Yellow),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         app.refresh_from_doc(&doc);
         let group = BooksDoc::list_annotations(&doc)
@@ -4564,7 +4531,7 @@ fn font_rename_editor_commits_cancels_and_fits() {
         // then lay the editor out with another frame.
         app.dispatch(
             Action::BeginRenameFont("serif".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         frame(&mut app, &mut doc, 1000.0, 800.0);
         assert!(app.renaming.is_some(), "a rename is in progress");
@@ -4613,7 +4580,7 @@ fn font_rename_editor_commits_cancels_and_fits() {
 
         app.dispatch(
             Action::BeginRenameFont("serif".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         frame(&mut app, &mut doc, 1000.0, 800.0);
         key_char(&mut app, &mut doc, "Q"); // would-be new value
@@ -4651,7 +4618,7 @@ fn font_rename_editor_commits_cancels_and_fits() {
 
         app.dispatch(
             Action::BeginRenameFont("mono".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut Edits::lend(&mut doc),
         );
         frame(&mut app, &mut doc, 1000.0, 800.0);
         let field = app
@@ -4791,7 +4758,7 @@ fn reader_text_rows_fit_at_2x() {
 /// renderer both carry `scale`, exactly as the live host applies it.
 fn frame_at_text_scale(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64, scale: f32) {
     let root = automerge::ROOT;
-    app.settle(&mut ui::widget::Edits::lend(doc), &automerge::ROOT);
+    app.settle(&mut Edits::lend(doc), &automerge::ROOT);
     app.sync(doc, &root);
     app.rect = Rect::new(0.0, 0.0, w, h);
     app.reconcile_flaps();

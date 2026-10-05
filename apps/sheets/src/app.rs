@@ -7548,7 +7548,9 @@ pub(crate) mod tests {
             // Import into a brand-new, empty document via the real import path.
             let mut fresh = attached_app();
             let mut doc2 = AutoCommit::new();
-            fresh.import_tables(&mut doc2, tables).unwrap();
+            fresh
+                .import_tables(&mut Edits::lend(&mut doc2), tables)
+                .unwrap();
 
             // The formula came back as a formula, not its computed value.
             assert_eq!(SheetsDoc::cell_raw(&doc2, 0, (4, 1)), "=SUM(B2:D2)");
