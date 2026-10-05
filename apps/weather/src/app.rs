@@ -1014,7 +1014,7 @@ mod interaction_tests {
             assert!(app.nav.children_mut()[0].perform_semantic_action(
                 target,
                 &ui::a11y::Action::Activate,
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root,
             ));
             assert!(app.update(&mut state.doc, &state.root));

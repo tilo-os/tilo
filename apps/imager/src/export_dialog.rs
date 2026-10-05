@@ -355,7 +355,7 @@ mod tests {
                 &cursor_move(),
                 1.0,
                 Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -366,7 +366,7 @@ mod tests {
                 &escape_event(),
                 1.0,
                 Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(!dialog.is_open());
@@ -376,7 +376,7 @@ mod tests {
                 &left_click(),
                 1.0,
                 Modifiers::default(),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(!dialog.is_open());

@@ -3964,7 +3964,7 @@ mod tests {
                 app,
                 "disks.tab:smart",
                 &A11yAction::Activate,
-                doc,
+                &mut ui::widget::Edits::lend(doc),
                 &ui::automerge::ROOT,
             ));
             assert_eq!(app.tab, Tab::Smart);

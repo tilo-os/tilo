@@ -2916,7 +2916,7 @@ mod tests {
         assert!(app.perform_semantic_action(
             "snippets.expand.field.name",
             &ui::a11y::Action::SetValue("Grün".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(
@@ -2926,13 +2926,13 @@ mod tests {
         assert!(!app.perform_semantic_action(
             "snippets.body",
             &ui::a11y::Action::SetValue("hidden edit".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(app.perform_semantic_action(
             "snippets.expand.cancel",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(!app.expand_open_for_test());
@@ -2950,7 +2950,7 @@ mod tests {
             &mut app,
             &target,
             &ui::a11y::Action::Focus,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -2961,7 +2961,7 @@ mod tests {
             &mut app,
             &target,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(

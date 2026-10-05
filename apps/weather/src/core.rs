@@ -4766,7 +4766,7 @@ mod helper_tests {
             assert!(pane.perform_semantic_action(
                 search.action_target.as_deref().unwrap(),
                 &Action::SetValue("city".into()),
-                &mut state,
+                &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             assert_eq!(core.borrow().search_query, "city");
@@ -4779,7 +4779,7 @@ mod helper_tests {
             assert!(pane.perform_semantic_action(
                 row.action_target.as_deref().unwrap(),
                 &Action::Activate,
-                &mut state,
+                &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             let mut core = core.borrow_mut();

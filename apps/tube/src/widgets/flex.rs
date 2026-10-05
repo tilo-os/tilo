@@ -942,14 +942,12 @@ mod accessibility_tests {
         assert!(node.state.focusable);
         Widget::set_focus(&mut control, true);
         assert!(Widget::is_focused(&control));
-        assert!(
-            Widget::perform_action(
-                &mut control,
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits<'_>::new(),
-                &automerge::ROOT,
-            )
-        );
+        assert!(Widget::perform_action(
+            &mut control,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        ));
         assert_eq!(
             crate::action::drain(&bus),
             vec![Action::Navigate(crate::model::Route::Home)]

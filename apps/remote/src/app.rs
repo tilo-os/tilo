@@ -6801,7 +6801,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state,
+                state: ui::widget::Edits::lend(state),
                 path: &automerge::ROOT,
                 handled: &mut h,
                 focus_target: &mut ft,
@@ -7088,7 +7088,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &format!("remote.connection:{id}:favorite"),
                 &ui::a11y::Action::ToggleCheck,
-                &mut doc(),
+                &mut ui::widget::Edits::lend(&mut doc()),
                 &automerge::ROOT,
             ));
             assert_eq!(app.workspace.get(id).expect("connection").favorite, !before);
@@ -7101,13 +7101,13 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "remote.field:host",
                 &ui::a11y::Action::SetValue("build.internal".into()),
-                &mut doc(),
+                &mut ui::widget::Edits::lend(&mut doc()),
                 &automerge::ROOT,
             ));
             assert!(app.perform_semantic_action(
                 "remote.field:port",
                 &ui::a11y::Action::SetValue("22ssh".into()),
-                &mut doc(),
+                &mut ui::widget::Edits::lend(&mut doc()),
                 &automerge::ROOT,
             ));
             assert_eq!(app.draft.host, "build.internal");
@@ -7137,7 +7137,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "remote.form.save",
                 &ui::a11y::Action::Activate,
-                &mut doc(),
+                &mut ui::widget::Edits::lend(&mut doc()),
                 &automerge::ROOT,
             ));
             assert!(app.form_validation.submitted);

@@ -3054,7 +3054,7 @@ mod tests {
             assert!(osk.perform_semantic_action(
                 target,
                 &AccessibilityAction::Activate,
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(osk.pending_text(), "q");
@@ -4021,7 +4021,12 @@ mod tests {
     }
 
     fn semantic(osk: &mut OskWidget, target: &str, action: &AccessibilityAction) -> bool {
-        osk.perform_semantic_action(target, action, &mut AutoCommit::new(), &automerge::ROOT)
+        osk.perform_semantic_action(
+            target,
+            action,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT,
+        )
     }
 
     fn activate(osk: &mut OskWidget, target: &str) -> bool {

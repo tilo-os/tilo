@@ -6195,7 +6195,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut h,
                 focus_target: &mut ft,
@@ -6318,7 +6318,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &AccessAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(board.matches_source(app.source.as_ref().unwrap()));
@@ -6383,7 +6383,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "imager:profile:keyboard",
                 &AccessAction::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
@@ -6399,7 +6399,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "imager:hit:confirm-field",
                 &AccessAction::SetValue(target_name),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.confirm_matches());

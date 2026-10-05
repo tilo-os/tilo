@@ -5914,7 +5914,7 @@ mod tests {
         assert!(f.app.perform_semantic_action(
             "backups.hit:Tab(Destinations)",
             &A11yAction::Activate,
-            &mut f.state.doc,
+            &mut ui::widget::Edits::lend(&mut f.state.doc),
             &f.state.root,
         ));
         assert_eq!(f.view(), View::Destinations);
