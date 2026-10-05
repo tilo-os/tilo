@@ -1281,3 +1281,121 @@ fn manual_owner_commands_refuse_host_impersonation_and_agent_instruction_carrier
         before
     );
 }
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario: a relayed successor followed, then contested, then reopened"
+)]
+fn a_joined_room_follows_a_successor_another_member_relays_and_reopens_following_it() {
+    let joined = enrolled();
+    let root = SigningKey::from_bytes(&[62; 32]);
+    let successor = SigningKey::from_bytes(&[69; 32]).verifying_key().to_bytes();
+    let (governor, host, cutoff) = joined
+        .owner
+        .with_current(joined.room, |view| {
+            let peer = view.peer();
+            let host = peer
+                .certificates()
+                .into_iter()
+                .find(|cert| cert.device_public_key == successor)
+                .ok_or("the host is certified")?;
+            let cutoff = peer
+                .admitted_room()
+                .ok_or("the room is admitted")?
+                .clone()
+                .get_heads()
+                .into_iter()
+                .map(|head| head.0)
+                .collect::<Vec<_>>();
+            Ok((peer.authority().clone(), host, cutoff))
+        })
+        .unwrap();
+    let mut revocation = tilo_user_identity::RevocationEntry {
+        user_public_key: governor.user_public_key,
+        revoked_device_public_key: governor.device_public_key,
+        revoked_at_ns: 5,
+        reason: tilo_user_identity::RevocationReason::Lost,
+        signature: [0; 64],
+    };
+    tilo_user_identity::sign_revocation_entry(&mut revocation, &root).unwrap();
+    let record = tilo_peer_state::succession::GovernorSuccession::sign(
+        ROOM,
+        governor,
+        revocation.clone(),
+        host.clone(),
+        cutoff,
+        &root,
+    )
+    .unwrap();
+    let relayed = NeighbourMsg::GovernorSuccession {
+        room: ROOM.into(),
+        records: vec![postcard::to_stdvec(&record).unwrap()],
+    };
+    // Another member relays the record; the owner follows the successor.
+    joined
+        .owner
+        .receive(
+            joined.room,
+            TransportOrigin::RelayDelta([9; 32]),
+            relayed.clone(),
+            joined.now,
+        )
+        .unwrap();
+    let following = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(joined.room, |view| {
+                Ok((
+                    view.peer().authority().clone(),
+                    view.peer().revocations().contains(&revocation),
+                    view.peer().succession_message()?,
+                ))
+            })
+            .unwrap()
+    };
+    assert_eq!(
+        following(&joined.owner),
+        (host.clone(), true, Some(relayed))
+    );
+    let rival_key = SigningKey::from_bytes(&[70; 32]);
+    let mut rival = crate::testing::certificate(&root, &rival_key, "Rival");
+    rival.capabilities.can_act_as_host = true;
+    tilo_user_identity::sign_device_cert(&mut rival, &root).unwrap();
+    let rival = tilo_peer_state::succession::GovernorSuccession::sign(
+        ROOM,
+        record.previous.clone(),
+        revocation.clone(),
+        rival,
+        record.cutoff,
+        &root,
+    )
+    .unwrap();
+    // A second successor relayed contests the room, and the owner keeps the
+    // contest though it refused the message.
+    assert!(
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RelayDelta([9; 32]),
+                NeighbourMsg::GovernorSuccession {
+                    room: ROOM.into(),
+                    records: vec![postcard::to_stdvec(&rival).unwrap()],
+                },
+                joined.now,
+            )
+            .is_err()
+    );
+    let contested = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(joined.room, |view| {
+                Ok(view.peer().contested_succession().is_some())
+            })
+            .unwrap()
+    };
+    assert!(contested(&joined.owner));
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    assert!(contested(&reopened));
+    assert_eq!(following(&reopened).0, host);
+}

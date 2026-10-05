@@ -84,6 +84,8 @@ pub struct Scope {
     live: Mutex<bool>,
     cursor: Mutex<cursor::Cursor>,
     refresh_sent: Mutex<Option<std::time::Instant>>,
+    /// The governor successions last relayed on this session.
+    successions_sent: Mutex<Option<NeighbourMsg>>,
 }
 impl Scope {
     #[must_use]
@@ -96,6 +98,7 @@ impl Scope {
             live: Mutex::new(true),
             cursor: Mutex::new(cursor::Cursor::default()),
             refresh_sent: Mutex::new(None),
+            successions_sent: Mutex::new(None),
         }
     }
     #[must_use]
@@ -245,6 +248,9 @@ impl Scope {
         {
             tracing::debug!(%error, "native sealed write renewal blocked");
         }
+        if let Err(error) = self.relay_successions(session) {
+            tracing::debug!(%error, "native governor succession relay blocked");
+        }
         self.connect.owner.with_outgoing(
             self.connect.room,
             std::time::SystemTime::now(),
@@ -290,6 +296,37 @@ impl Scope {
                 )
             },
         )
+    }
+}
+impl Scope {
+    /// Relay the root-signed governor successions this replica knows of
+    /// through the host, once per change: a member that cannot reach the
+    /// room's new governor learns from them who governs, and the host keeps
+    /// them for members that connect later.
+    fn relay_successions(&self, session: &RelayCoeditSession) -> Result<(), String> {
+        let Some(message) = self
+            .connect
+            .owner
+            .with_current(self.connect.room, |view| view.peer().succession_message())?
+        else {
+            return Ok(());
+        };
+        let mut sent = self
+            .successions_sent
+            .lock()
+            .map_err(|_| "native succession relay poisoned")?;
+        if sent.as_ref() == Some(&message) {
+            return Ok(());
+        }
+        let (channel, _) = tilo_peer_state::transport::retention(&message, false)
+            .ok_or("governor succession has no retention channel")?;
+        let bytes = postcard::to_stdvec(&message).map_err(|e| e.to_string())?;
+        session
+            .publish_checkpoint(channel, bytes)
+            .map_err(|e| e.to_string())?;
+        *sent = Some(message);
+        drop(sent);
+        Ok(())
     }
 }
 /// Only the authenticated relay pump can construct this. Generic gossip messages

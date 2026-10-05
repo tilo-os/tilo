@@ -434,6 +434,14 @@ pub enum NeighbourMsg {
         offset: u64,
         bytes: Vec<u8>,
     },
+    /// The root-signed records handing `room`'s governance from a revoked
+    /// governing device to another device of the same identity, as any
+    /// device that holds them relays them. Each record is opaque here and
+    /// self-authenticating: a receiver checks it against the root of the
+    /// governor it already trusts, whoever sent it, so a member that cannot
+    /// reach the new governor still learns who governs. Appended to preserve
+    /// every existing Postcard discriminant.
+    GovernorSuccession { room: String, records: Vec<Vec<u8>> },
 }
 
 #[cfg(test)]
@@ -491,6 +499,13 @@ mod tests {
         all.extend(fixtures_input_permissions_and_identity());
         all.extend(fixtures_app_crdt_and_scrollback());
         all.extend(fixtures_channel_governance());
+        all.push((
+            "governor succession",
+            NeighbourMsg::GovernorSuccession {
+                room: ROOM.into(),
+                records: vec![vec![1, 2], vec![3]],
+            },
+        ));
         all
     }
 
@@ -868,10 +883,11 @@ mod tests {
             NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
             NeighbourMsg::RecordContentWant { .. } => "RecordContentWant",
             NeighbourMsg::RecordContentPiece { .. } => "RecordContentPiece",
+            NeighbourMsg::GovernorSuccession { .. } => "GovernorSuccession",
         }
     }
 
-    const VARIANT_COUNT: usize = 28;
+    const VARIANT_COUNT: usize = 29;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -1072,6 +1088,13 @@ mod tests {
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee40efefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefef09",
+            ),
+        ),
+        (
+            "governor succession",
+            concat!(
+                "1c2436623366396131302d303030302d343030302d383030302d303030303030",
+                "303030303063020201020103",
             ),
         ),
     ];

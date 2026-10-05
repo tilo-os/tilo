@@ -50,6 +50,9 @@ fn ancestors(
     }
     Ok(covered)
 }
+/// Most records one relayed succession message carries: a whole chain, and
+/// a rival for each of its links.
+pub const MAX_RELAYED: usize = 2 * MAX_SUCCESSIONS;
 
 /// The root's statement that `successor` governs `room` in place of the
 /// revoked `previous` governing device, whose governance ends at `cutoff`.
@@ -224,17 +227,17 @@ impl GovernorSuccession {
     /// Returns an error if a cutoff head is missing, the previous governor
     /// wrote past it, or another actor changed governance past it.
     pub fn check_cutoff(&self, doc: &AutoCommit) -> Result<(), String> {
-        self.check_history(doc, false)
+        self.check_causal_history(doc, false)
     }
 
     /// A published succession permits its successor's transition and the
     /// history descending from it. Governance before that transition must
     /// still be covered, including changes later reverted or merged away.
     pub(crate) fn check_recorded_history(&self, doc: &AutoCommit) -> Result<(), String> {
-        self.check_history(doc, true)
+        self.check_causal_history(doc, true)
     }
 
-    fn check_history(&self, doc: &AutoCommit, recorded: bool) -> Result<(), String> {
+    fn check_causal_history(&self, doc: &AutoCommit, recorded: bool) -> Result<(), String> {
         let mut doc = doc.clone();
         doc.reset_diff_cursor();
         let changes = doc
@@ -268,10 +271,16 @@ impl GovernorSuccession {
                     .get(&key)
                     .is_some_and(|records| records.contains(self))
             };
+            after.isolate_at(&[*hash]);
+            if actor.as_slice() != self.successor.device_public_key
+                && crate::topology::validate(Some(&before), &after, &hex::encode(actor), "")
+                    .is_err()
+            {
+                return Err("room topology changed outside its actor's ownership after the succession cutoff".into());
+            }
             if recorded && contains(&preceding) {
                 continue;
             }
-            after.isolate_at(&[*hash]);
             let following = recorded_all(&after)?;
             if recorded
                 && contains(&following)
@@ -289,6 +298,83 @@ impl GovernorSuccession {
         }
         Ok(())
     }
+
+    /// Check the signed causal transition and all governance before it.
+    /// Authenticated delivery does not excuse unrelated history past the cutoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for incomplete cutoff or unvouched governance history.
+    pub fn check_history(&self, doc: &AutoCommit) -> Result<(), String> {
+        self.check_recorded_history(doc)
+    }
+
+    /// As [`Self::check_cutoff`] for a replica following this record before
+    /// the room history that carries it reaches it: when `doc` lacks part of
+    /// the cutoff, whether the previous governor wrote past it is decided
+    /// when that history arrives, so only a complete cutoff is checked here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `doc` holds the whole cutoff and its history past
+    /// the cutoff is not the successor's ([`Self::check_history`]).
+    pub fn check_cutoff_held(&self, doc: &AutoCommit) -> Result<(), String> {
+        if self
+            .cutoff
+            .iter()
+            .all(|head| doc.get_change_by_hash(&ChangeHash(*head)).is_some())
+        {
+            self.check_history(doc)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Check `doc` against every link of `chain`: no governor on it wrote past
+/// its own cutoff, and the history past the last cutoff is the last
+/// successor's ([`GovernorSuccession::check_history`]). The last cutoff's
+/// history holds every earlier one. With `held`, a cutoff `doc` does not
+/// hold yet is decided when the history arrives
+/// ([`GovernorSuccession::check_cutoff_held`]).
+///
+/// # Errors
+///
+/// Returns the first link the history does not satisfy.
+pub fn check_chain(
+    chain: &[GovernorSuccession],
+    doc: &AutoCommit,
+    held: bool,
+) -> Result<(), String> {
+    let Some((last, earlier)) = chain.split_last() else {
+        return Ok(());
+    };
+    let holds = |link: &GovernorSuccession| {
+        link.cutoff
+            .iter()
+            .all(|head| doc.get_change_by_hash(&ChangeHash(*head)).is_some())
+    };
+    for link in earlier {
+        if !held || holds(link) {
+            link.check_recorded_history(doc)?;
+        }
+    }
+    if !held || holds(last) {
+        last.check_history(doc)?;
+    }
+    Ok(())
+}
+
+/// Successions by the hex key of the governor each one replaces.
+pub type Recorded = BTreeMap<String, Vec<GovernorSuccession>>;
+
+/// Add `record` under its own governor's key, once.
+fn insert(all: &mut Recorded, record: GovernorSuccession) {
+    let records = all.entry(record.key()).or_default();
+    if !records.contains(&record) {
+        records.push(record);
+        records.sort_by_key(|record| record.signature);
+    }
 }
 
 /// Every succession `doc` records, by the hex key of the governor each one
@@ -298,10 +384,8 @@ impl GovernorSuccession {
 /// # Errors
 ///
 /// Returns an error if a recorded succession does not decode.
-pub fn recorded_all(
-    doc: &impl ReadDoc,
-) -> Result<BTreeMap<String, Vec<GovernorSuccession>>, String> {
-    let mut all: BTreeMap<String, Vec<GovernorSuccession>> = BTreeMap::new();
+pub fn recorded_all(doc: &impl ReadDoc) -> Result<Recorded, String> {
+    let mut all = Recorded::new();
     for (value, map) in doc
         .get_all(ROOT, SUCCESSIONS_FIELD)
         .map_err(|error| error.to_string())?
@@ -320,20 +404,64 @@ pub fn recorded_all(
                 let record: GovernorSuccession =
                     postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
                 // A record kept under another governor's key claims nothing.
-                if record.key() != key {
-                    continue;
-                }
-                let records = all.entry(key.clone()).or_default();
-                if !records.contains(&record) {
-                    records.push(record);
+                if record.key() == key {
+                    insert(&mut all, record);
                 }
             }
         }
     }
-    for records in all.values_mut() {
-        records.sort_by_key(|record| record.signature);
+    Ok(all)
+}
+
+/// What `doc` records together with `extra`: successions a replica followed
+/// before its room history recorded them.
+///
+/// # Errors
+///
+/// Returns an error if a recorded succession does not decode.
+pub fn merged(doc: Option<&AutoCommit>, extra: &[GovernorSuccession]) -> Result<Recorded, String> {
+    let mut all = match doc {
+        Some(doc) => recorded_all(doc)?,
+        None => Recorded::new(),
+    };
+    for record in extra {
+        insert(&mut all, record.clone());
     }
     Ok(all)
+}
+
+/// Decode records relayed in a [`crate::NeighbourMsg::GovernorSuccession`].
+///
+/// # Errors
+///
+/// Returns an error if there are too many records or one does not decode.
+pub fn decode_relayed(records: &[Vec<u8>]) -> Result<Vec<GovernorSuccession>, String> {
+    if records.len() > MAX_RELAYED {
+        return Err("too many relayed governor successions".into());
+    }
+    records
+        .iter()
+        .map(|bytes| postcard::from_bytes(bytes).map_err(|error| error.to_string()))
+        .collect()
+}
+
+/// Encode `all` for relaying, in a canonical order so devices relaying the
+/// same records send the same message.
+///
+/// # Errors
+///
+/// Returns an error if a record does not encode.
+pub fn encode_relayed(all: &Recorded) -> Result<Vec<Vec<u8>>, String> {
+    let mut records = all
+        .values()
+        .flatten()
+        .map(|record| postcard::to_stdvec(record).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if records.len() > MAX_RELAYED {
+        return Err("too many governor successions to relay".into());
+    }
+    records.sort();
+    Ok(records)
 }
 
 /// The successions `doc` records for the governing device `previous`.
@@ -356,6 +484,10 @@ pub enum Walk {
     /// Following a succession now: each link verified at this time, and the
     /// room history checked against each cutoff.
     Follow { now_ns: u64 },
+    /// Following records relayed without the room history that carries them:
+    /// each link verified at this time; the caller checks the cutoffs against
+    /// the history it holds.
+    Relayed { now_ns: u64 },
     /// Re-reading successions the replica followed before: each link's
     /// signatures and history, without requiring certificates to remain live.
     Followed,
@@ -379,6 +511,50 @@ pub(crate) fn check_recorded_ancestry(
     Ok(())
 }
 
+/// Recheck pending signed links even when restore already pins their successor.
+pub(crate) fn check_followed_ancestry(
+    followed: &[GovernorSuccession],
+    doc: Option<&AutoCommit>,
+    room: &str,
+    authority: &DeviceCert,
+) -> Result<(), String> {
+    let Some(first) = followed.first() else {
+        return Ok(());
+    };
+    if followed.len() > MAX_SUCCESSIONS
+        || first.previous.user_public_key != authority.user_public_key
+    {
+        return Err("invalid followed governor succession chain".into());
+    }
+    let mut current = &first.previous;
+    for link in followed {
+        link.verify_at(room, current, None)?;
+        current = &link.successor;
+    }
+    if current != authority {
+        return Err("durable admission namespace mismatch".into());
+    }
+    if let Some(doc) = doc {
+        check_chain(followed, doc, true)?;
+    }
+    Ok(())
+}
+
+fn distinct_successors(records: &[GovernorSuccession]) -> usize {
+    records
+        .iter()
+        .map(|record| record.successor.device_public_key)
+        .collect::<BTreeSet<_>>()
+        .len()
+}
+
+fn contested(count: usize, governor: &[u8; 32]) -> String {
+    format!(
+        "contested governor succession: {count} successors recorded for governor {}",
+        hex::encode(governor)
+    )
+}
+
 /// Walk the successions `doc` records from the governing device `pinned`:
 /// the chain of records leading to the current governor, verified link by
 /// link. Empty when `doc` records no succession of `pinned`.
@@ -394,11 +570,26 @@ pub fn chain(
     pinned: &DeviceCert,
     walk: Walk,
 ) -> Result<Vec<GovernorSuccession>, String> {
+    chain_in(&recorded_all(doc)?, Some(doc), room, pinned, walk)
+}
+
+/// As [`chain`], over the successions `all`; `doc` is the room history a
+/// [`Walk::Follow`] checks each cutoff against.
+///
+/// # Errors
+///
+/// As [`chain`]; a [`Walk::Follow`] without a history fails.
+pub fn chain_in(
+    all: &Recorded,
+    doc: Option<&AutoCommit>,
+    room: &str,
+    pinned: &DeviceCert,
+    walk: Walk,
+) -> Result<Vec<GovernorSuccession>, String> {
     let now_ns = match walk {
-        Walk::Follow { now_ns } => Some(now_ns),
+        Walk::Follow { now_ns } | Walk::Relayed { now_ns } => Some(now_ns),
         Walk::Followed => None,
     };
-    let all = recorded_all(doc)?;
     let mut links = Vec::new();
     let mut current = pinned.clone();
     loop {
@@ -410,23 +601,83 @@ pub fn chain(
             .filter(|record| record.verify_at(room, &current, now_ns).is_ok())
             .cloned()
             .collect::<Vec<_>>();
-        let record = match records.len() {
+        // The root signing one successor again (another cutoff, say) names
+        // no rival; only a different successor contests the room.
+        let successors = distinct_successors(&records);
+        let record = match successors {
             0 => return Ok(links),
             1 => records.remove(0),
-            _ => {
-                return Err(format!(
-                    "contested governor succession: {} successors recorded for governor {}",
-                    records.len(),
-                    hex::encode(current.device_public_key)
-                ));
-            }
+            count => return Err(contested(count, &current.device_public_key)),
         };
         if links.len() >= MAX_SUCCESSIONS {
             return Err("governor succession chain is too long".into());
         }
-        record.check_recorded_history(doc)?;
+        if let Some(doc) = doc {
+            if matches!(walk, Walk::Follow { .. })
+                || (!matches!(walk, Walk::Relayed { .. })
+                    && recorded(doc, &record.previous.device_public_key)?.contains(&record))
+            {
+                record.check_recorded_history(doc)?;
+            }
+        } else if matches!(walk, Walk::Follow { .. }) {
+            return Err("room history missing".into());
+        }
         current = record.successor.clone();
         links.push(record);
+    }
+}
+
+/// The chain of successions in `all` that ends at the governing device `to`,
+/// first link first: how a replica pinned to `to` from the start reads the
+/// room's earlier governors. Empty when no record names `to` as successor.
+/// Each link's signatures are checked, not the time.
+///
+/// # Errors
+///
+/// Returns an error if a governor on the chain has more than one validly
+/// signed successor (the room is contested), or the chain is too long.
+pub fn lineage(
+    all: &Recorded,
+    room: &str,
+    to: &DeviceCert,
+) -> Result<Vec<GovernorSuccession>, String> {
+    let valid = |record: &&GovernorSuccession| {
+        record.room == room
+            && record.previous.user_public_key == to.user_public_key
+            && record.verify_signed().is_ok()
+    };
+    let mut links = Vec::new();
+    let mut current = to.clone();
+    loop {
+        let mut naming = all
+            .values()
+            .flatten()
+            .filter(valid)
+            .filter(|record| record.successor == current)
+            .collect::<Vec<_>>();
+        let Some(record) = naming.pop() else {
+            links.reverse();
+            return Ok(links);
+        };
+        if !naming.is_empty() {
+            return Err("governor succession names one successor for two governors".into());
+        }
+        let rivals = distinct_successors(
+            &all.get(&record.key())
+                .into_iter()
+                .flatten()
+                .filter(valid)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        if rivals > 1 {
+            return Err(contested(rivals, &record.previous.device_public_key));
+        }
+        if links.len() >= MAX_SUCCESSIONS {
+            return Err("governor succession chain is too long".into());
+        }
+        current = record.previous.clone();
+        links.push(record.clone());
     }
 }
 
@@ -435,9 +686,12 @@ pub fn chain(
 /// room's under `to`. Each link was verified when a replica followed it.
 #[must_use]
 pub fn succeeded(doc: &impl ReadDoc, from: &[u8; 32], to: &[u8; 32]) -> bool {
-    let Ok(all) = recorded_all(doc) else {
-        return false;
-    };
+    recorded_all(doc).is_ok_and(|all| succeeded_in(&all, from, to))
+}
+
+/// As [`succeeded`], over the successions `all`.
+#[must_use]
+pub fn succeeded_in(all: &Recorded, from: &[u8; 32], to: &[u8; 32]) -> bool {
     let mut current = *from;
     for _ in 0..MAX_SUCCESSIONS {
         let Some([record]) = all.get(&hex::encode(current)).map(Vec::as_slice) else {
@@ -577,5 +831,94 @@ mod tests {
         let mut unrevoked = record;
         unrevoked.revocation.signature = [3; 64];
         assert!(unrevoked.verify(ROOM, &previous, 10).is_err());
+    }
+
+    #[test]
+    fn a_replica_pinned_to_a_successor_reads_its_lineage() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let first = device(&root, 2, DeviceCapabilities::host());
+        let second = device(&root, 3, DeviceCapabilities::primary());
+        let third = device(&root, 4, DeviceCapabilities::host());
+        let mut doc = AutoCommit::new()
+            .with_actor(automerge::ActorId::from(first.device_public_key.to_vec()));
+        doc.put(ROOT, "name", "room").unwrap();
+        doc.commit();
+        let cutoff: Vec<[u8; 32]> = doc.get_heads().into_iter().map(|head| head.0).collect();
+        let link = |previous: &DeviceCert, successor: &DeviceCert| {
+            GovernorSuccession::sign(
+                ROOM,
+                previous.clone(),
+                revocation(&root, previous),
+                successor.clone(),
+                cutoff.clone(),
+                &root,
+            )
+            .unwrap()
+        };
+        let one = link(&first, &second);
+        let two = link(&second, &third);
+        let all = merged(None, &[two.clone(), one.clone()]).unwrap();
+        assert_eq!(
+            lineage(&all, ROOM, &third).unwrap(),
+            vec![one.clone(), two.clone()]
+        );
+        assert_eq!(lineage(&all, ROOM, &second).unwrap(), vec![one.clone()]);
+        assert!(lineage(&all, ROOM, &first).unwrap().is_empty());
+        assert!(succeeded_in(
+            &all,
+            &first.device_public_key,
+            &third.device_public_key
+        ));
+
+        // A second successor for a governor on the chain contests it.
+        let rival = link(&first, &third);
+        let contested = merged(None, &[one.clone(), two.clone(), rival]).unwrap();
+        assert!(lineage(&contested, ROOM, &third).is_err());
+        assert!(chain_in(&contested, None, ROOM, &first, Walk::Relayed { now_ns: 10 }).is_err());
+
+        // Relayed records decode as encoded, in one order whoever relays them.
+        let relayed = encode_relayed(&all).unwrap();
+        assert_eq!(
+            relayed,
+            encode_relayed(&merged(None, &[one, two]).unwrap()).unwrap()
+        );
+        assert_eq!(
+            merged(None, &decode_relayed(&relayed).unwrap()).unwrap(),
+            all
+        );
+        assert!(decode_relayed(&vec![relayed[0].clone(); MAX_RELAYED + 1]).is_err());
+    }
+
+    #[test]
+    fn a_replica_behind_the_cutoff_decides_it_when_the_history_arrives() {
+        let root = SigningKey::from_bytes(&[1; 32]);
+        let previous = device(&root, 2, DeviceCapabilities::host());
+        let successor = device(&root, 3, DeviceCapabilities::primary());
+        let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(
+            previous.device_public_key.to_vec(),
+        ));
+        doc.put(ROOT, "name", "before").unwrap();
+        doc.commit();
+        let behind = doc.fork();
+        doc.put(ROOT, "name", "cutoff").unwrap();
+        doc.commit();
+        let record = GovernorSuccession::sign(
+            ROOM,
+            previous.clone(),
+            revocation(&root, &previous),
+            successor,
+            doc.get_heads().into_iter().map(|head| head.0).collect(),
+            &root,
+        )
+        .unwrap();
+        record.check_cutoff_held(&behind).unwrap();
+        assert!(record.check_cutoff(&behind).is_err());
+        record.check_cutoff_held(&doc).unwrap();
+        let mut past = doc.fork().with_actor(automerge::ActorId::from(
+            previous.device_public_key.to_vec(),
+        ));
+        past.put(ROOT, "name", "after").unwrap();
+        past.commit();
+        assert!(record.check_cutoff_held(&past).is_err());
     }
 }

@@ -23,6 +23,7 @@ mod collaboration;
 mod pages;
 mod revocations;
 mod stewardship;
+mod succession;
 #[cfg(test)]
 mod tests;
 #[cfg(feature = "agents")]
@@ -511,6 +512,8 @@ struct RoomsInner {
     /// A room may lack a revocation or hold an unpublished change: the
     /// revocation watcher revisits every room.
     revocations_pending: std::sync::atomic::AtomicBool,
+    /// Held while a room is taken over from another governor.
+    takeovers: AsyncMutex<()>,
 }
 
 /// The authority governing one room, as the room's workspace refers to it.
@@ -565,6 +568,7 @@ impl Rooms {
                 calls: Arc::default(),
                 page_joins: std::sync::Mutex::default(),
                 revocations_pending: std::sync::atomic::AtomicBool::new(false),
+                takeovers: AsyncMutex::new(()),
             }),
         };
         let rooms = this

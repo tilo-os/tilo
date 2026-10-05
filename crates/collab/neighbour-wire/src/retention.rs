@@ -130,6 +130,22 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             route.extend_from_slice(&update.author_device_public_key);
             return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
         }
+        // Each distinct set of succession records is its own baseline, so
+        // the host keeps every set any device relayed: two records naming
+        // different successors stay visible to everyone, and a device that
+        // joins later still learns who governs.
+        NeighbourMsg::GovernorSuccession { room, records } => {
+            let mut route = b"governor-succession\0".to_vec();
+            route.extend_from_slice(room.as_bytes());
+            route.push(0);
+            let mut digest = blake3::Hasher::new();
+            for record in records {
+                digest.update(&(record.len() as u64).to_le_bytes());
+                digest.update(record);
+            }
+            route.extend_from_slice(digest.finalize().as_bytes());
+            return Some((*blake3::hash(&route).as_bytes(), Retention::Checkpoint));
+        }
         _ => return None,
     };
     Some((*blake3::hash(route).as_bytes(), kind))
@@ -411,5 +427,29 @@ mod tests {
         )
         .expect("documents are retained");
         assert_eq!(channel, *blake3::hash(b"app\0app\0doc").as_bytes());
+    }
+
+    #[test]
+    fn succession_checkpoints_keep_rivals_rooms_and_record_boundaries_distinct() {
+        let checkpoint = |room: &str, records| {
+            let (channel, kind) = retention(
+                &NeighbourMsg::GovernorSuccession {
+                    room: room.into(),
+                    records,
+                },
+                false,
+            )
+            .expect("succession records must survive relay reconnects");
+            assert!(matches!(kind, Retention::Checkpoint));
+            channel
+        };
+        let original = checkpoint("room", vec![vec![1], vec![2, 3]]);
+        assert_eq!(original, checkpoint("room", vec![vec![1], vec![2, 3]]));
+        assert_ne!(
+            original,
+            checkpoint("other-room", vec![vec![1], vec![2, 3]])
+        );
+        assert_ne!(original, checkpoint("room", vec![vec![1], vec![4, 5]]));
+        assert_ne!(original, checkpoint("room", vec![vec![1, 2], vec![3]]));
     }
 }

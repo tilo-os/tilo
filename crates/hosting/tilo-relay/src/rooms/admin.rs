@@ -1,7 +1,8 @@
 //! Owner-only room administration and admitted members' self-attributed audit.
 //!
 //! One bounded postcard request and reply per bidirectional stream, as in the
-//! workspace-join protocol. The request names the caller's certificate; the
+//! workspace-join protocol. A takeover alone sends a second frame, the room's
+//! custody, read only once its caller and record are accepted. The request names the caller's certificate; the
 //! relay accepts it only for the authenticated Iroh endpoint it arrived on.
 
 use std::time::Duration;
@@ -21,6 +22,9 @@ use super::{
 pub const ROOM_ADMIN_ALPN: &[u8] = b"tilo-room-admin/1";
 
 const MAX_REQUEST_BYTES: usize = 64 * 1024;
+/// Largest replica a device hands the relay to take a room over from. Read
+/// only once the device and its succession record are accepted.
+const MAX_CUSTODY_BYTES: usize = 16 * 1024 * 1024;
 const MAX_REPLY_BYTES: usize = 4 * 1024 * 1024;
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT_EXCHANGES: usize = 64;
@@ -98,6 +102,21 @@ pub enum RoomCommand {
         /// Canonical redacted public receipt; never action arguments or results.
         redacted: Vec<u8>,
     },
+    /// Govern the room `succession` hands this relay, signed by the
+    /// identity's root after it revoked the room's previous governor. The
+    /// request is followed by a [`TakeOverCustody`] frame.
+    TakeOver {
+        /// The root-signed record naming this relay as successor.
+        succession: Box<tilo_peer_state::succession::GovernorSuccession>,
+    },
+}
+
+/// The room state a device hands the relay with [`RoomCommand::TakeOver`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct TakeOverCustody {
+    /// The device's durable replica of the room, pinned to the previous
+    /// governor; without it the relay uses what it retains of the room.
+    replica: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,6 +174,8 @@ pub enum RoomAdminError {
 pub struct RoomAdminProtocol {
     rooms: Rooms,
     exchanges: std::sync::Arc<tokio::sync::Semaphore>,
+    /// One custody frame in memory at a time.
+    custody: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 impl RoomAdminProtocol {
@@ -164,6 +185,7 @@ impl RoomAdminProtocol {
         Self {
             rooms,
             exchanges: std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_EXCHANGES)),
+            custody: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -181,10 +203,13 @@ impl RoomAdminProtocol {
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         let request: RoomAdminRequest = postcard::from_bytes(&bytes)
             .map_err(|error| RoomAdminError::Codec(error.to_string()))?;
-        let reply = if request.device_cert.device_public_key == remote {
-            self.execute(&request.device_cert, request.command).await
-        } else {
+        let reply = if request.device_cert.device_public_key != remote {
             RoomReply::Refused("certificate does not match the authenticated endpoint".into())
+        } else if let RoomCommand::TakeOver { succession } = request.command {
+            self.take_over(&request.device_cert, *succession, &mut recv)
+                .await
+        } else {
+            self.execute(&request.device_cert, request.command).await
         };
         let bytes = postcard::to_stdvec(&reply)
             .map_err(|error| RoomAdminError::Codec(error.to_string()))?;
@@ -200,6 +225,39 @@ impl RoomAdminProtocol {
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
         connection.closed().await;
         Ok(())
+    }
+
+    /// Read the replica a takeover hands over only once the caller and its
+    /// record are accepted, then take the room over.
+    async fn take_over(
+        &self,
+        device: &DeviceCert,
+        succession: tilo_peer_state::succession::GovernorSuccession,
+        recv: &mut iroh::endpoint::RecvStream,
+    ) -> RoomReply {
+        if let Err(error) = self.rooms.check_take_over(device, &succession).await {
+            let _ = recv.stop(0u32.into());
+            return RoomReply::Refused(error.to_string());
+        }
+        let Ok(_custody) = self.custody.clone().try_acquire_owned() else {
+            let _ = recv.stop(0u32.into());
+            return RoomReply::Refused("another room is being taken over".into());
+        };
+        let custody = match crate::framing::read_frame(recv, MAX_CUSTODY_BYTES).await {
+            Ok(bytes) => postcard::from_bytes::<TakeOverCustody>(&bytes),
+            Err(error) => return RoomReply::Refused(format!("room custody: {error}")),
+        };
+        match custody {
+            Ok(custody) => self
+                .rooms
+                .take_over(device, succession, custody.replica)
+                .await
+                .map_or_else(
+                    |error| RoomReply::Refused(error.to_string()),
+                    RoomReply::Room,
+                ),
+            Err(error) => RoomReply::Refused(format!("room custody: {error}")),
+        }
     }
 
     async fn execute(&self, device: &DeviceCert, command: RoomCommand) -> RoomReply {
@@ -256,6 +314,9 @@ impl RoomAdminProtocol {
                 .map(|done| RoomReply::Governance {
                     generation: done.generation,
                 }),
+            RoomCommand::TakeOver { .. } => Err(super::CollaborationError::new(
+                "a takeover carries the room's custody",
+            )),
         };
         result.unwrap_or_else(|error| RoomReply::Refused(error.to_string()))
     }
@@ -309,9 +370,19 @@ impl RoomAdminClient {
         relay: iroh::EndpointAddr,
         command: RoomCommand,
     ) -> Result<RoomReply, RoomAdminError> {
-        let reply = n0_future::time::timeout(EXCHANGE_TIMEOUT, self.exchange(relay, command))
-            .await
-            .map_err(|_| RoomAdminError::Timeout)??;
+        self.send_with(relay, command, None).await
+    }
+
+    async fn send_with(
+        &self,
+        relay: iroh::EndpointAddr,
+        command: RoomCommand,
+        custody: Option<Vec<u8>>,
+    ) -> Result<RoomReply, RoomAdminError> {
+        let reply =
+            n0_future::time::timeout(EXCHANGE_TIMEOUT, self.exchange(relay, command, custody))
+                .await
+                .map_err(|_| RoomAdminError::Timeout)??;
         match reply {
             RoomReply::Refused(reason) => Err(RoomAdminError::Refused(reason)),
             reply => Ok(reply),
@@ -322,6 +393,7 @@ impl RoomAdminClient {
         &self,
         relay: iroh::EndpointAddr,
         command: RoomCommand,
+        custody: Option<Vec<u8>>,
     ) -> Result<RoomReply, RoomAdminError> {
         let bytes = postcard::to_stdvec(&RoomAdminRequest {
             device_cert: self.device_cert.clone(),
@@ -340,8 +412,18 @@ impl RoomAdminClient {
         crate::framing::write_frame(&mut send, &bytes)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
-        send.finish()
-            .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
+        // A relay that refuses a takeover stops reading before its custody:
+        // its reply says why.
+        let custody_sent = match custody {
+            Some(custody) => crate::framing::write_frame(&mut send, &custody)
+                .await
+                .is_ok(),
+            None => true,
+        };
+        if custody_sent {
+            send.finish()
+                .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
+        }
         let reply = crate::framing::read_frame(&mut recv, MAX_REPLY_BYTES)
             .await
             .map_err(|error| RoomAdminError::Transport(error.to_string()))?;
@@ -405,6 +487,44 @@ impl RoomAdminClient {
             .await?
         {
             RoomReply::Invitation(issued) => Ok(issued),
+            reply => Err(unexpected(&reply)),
+        }
+    }
+}
+
+impl RoomAdminClient {
+    /// Hand the relay at `relay` the room `succession` names: the relay
+    /// takes it over as its new governor, from `replica` (this device's
+    /// durable replica of the room, pinned to the previous governor) or,
+    /// without one, from what the relay retains of the room.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::send`].
+    pub async fn take_over(
+        &self,
+        relay: iroh::EndpointAddr,
+        succession: tilo_peer_state::succession::GovernorSuccession,
+        replica: Option<Vec<u8>>,
+    ) -> Result<RoomSummary, RoomAdminError> {
+        let custody = postcard::to_stdvec(&TakeOverCustody { replica })
+            .map_err(|error| RoomAdminError::Codec(error.to_string()))?;
+        if custody.len() > MAX_CUSTODY_BYTES {
+            return Err(RoomAdminError::Codec(
+                "room custody exceeds the wire limit".into(),
+            ));
+        }
+        match self
+            .send_with(
+                relay,
+                RoomCommand::TakeOver {
+                    succession: Box::new(succession),
+                },
+                Some(custody),
+            )
+            .await?
+        {
+            RoomReply::Room(summary) => Ok(summary),
             reply => Err(unexpected(&reply)),
         }
     }

@@ -137,6 +137,9 @@ pub(super) struct PeerCore<S: Storage> {
     pub(super) adopting: bool,
     /// Why governance is refused: two successors for one governor.
     pub(super) contested: Option<String>,
+    /// Successions this replica follows from their root-signed records
+    /// alone, until the room history that records them reaches it.
+    pub(super) followed: Vec<crate::succession::GovernorSuccession>,
     pub(super) _retention: S::Retention,
 }
 impl Clone for PeerCore<LegacyNative> {
@@ -157,6 +160,7 @@ impl Clone for PeerCore<LegacyNative> {
             native_cut_publisher: self.native_cut_publisher,
             adopting: self.adopting,
             contested: self.contested.clone(),
+            followed: self.followed.clone(),
             _retention: (),
         }
     }

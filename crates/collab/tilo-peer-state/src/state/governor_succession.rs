@@ -21,11 +21,13 @@ pub enum Custody {
 }
 
 impl StatePeer {
-    /// The state a successor governs from: the first of `sources` whose room
-    /// history the succession's root-signed cutoff vouches for. A replica of
-    /// the identity's own devices comes first; a relay's retention is the
-    /// fallback, replayed into a replica pinned to the previous governor so
-    /// that every message passes the checks any member applies.
+    /// The state a successor governs from: the first of `sources` that holds
+    /// the previous governor's history up to the succession's root-signed
+    /// cutoff, and nothing past it that changes governance
+    /// ([`GovernorSuccession::check_history`]). A relay's retention is
+    /// replayed into a replica pinned to the previous governor, so that every
+    /// message passes the checks any member applies; a replica that follows
+    /// exactly this succession from its records is pinned back first.
     ///
     /// # Errors
     ///
@@ -39,9 +41,10 @@ impl StatePeer {
     ) -> Result<Self, String> {
         succession.verify(&succession.room, &succession.previous, now_ns(now))?;
         let mut refusals = Vec::new();
+        let mut custody = None;
         for source in sources {
             let candidate = match source {
-                Custody::Replica(peer) => Ok(*peer),
+                Custody::Replica(peer) => Ok(Self::unfollow(*peer, succession)),
                 Custody::Retained(messages) => Self::replay(succession, messages, now),
             };
             if candidate
@@ -57,23 +60,39 @@ impl StatePeer {
                     return Err("custody is of another room or governor".into());
                 }
                 succession.check_cutoff(
-                    &**peer
-                        .core
+                    peer.core
                         .room_doc
-                        .as_ref()
+                        .as_deref()
                         .ok_or("custody holds no room governance")?,
                 )?;
                 Ok(peer)
             });
             match checked {
-                Ok(peer) => return Ok(peer),
+                // Preserve source preference while still observing verified
+                // revocations carried by every remaining custody source.
+                Ok(peer) if custody.is_none() => custody = Some(peer),
+                Ok(_) => {}
                 Err(error) => refusals.push(error),
             }
         }
-        Err(format!(
-            "no custody of the room verifies against its succession: {}",
-            refusals.join("; ")
-        ))
+        custody.ok_or_else(|| {
+            format!(
+                "no custody of the room verifies against its succession: {}",
+                refusals.join("; ")
+            )
+        })
+    }
+
+    /// A replica that already follows exactly `succession` from its records
+    /// alone, pinned back to the previous governor so the successor takes it
+    /// over as any custody: its history does not record the succession yet.
+    fn unfollow(mut peer: Self, succession: &GovernorSuccession) -> Self {
+        if peer.core.authority == succession.successor && peer.core.followed == [succession.clone()]
+        {
+            peer.core.authority = succession.previous.clone();
+            peer.core.followed.clear();
+        }
+        peer
     }
 
     fn replay(
@@ -90,6 +109,11 @@ impl StatePeer {
         )?;
         peer.select_admission_v5().map_err(err)?;
         for (author, message) in messages {
+            // Relayed successions would move the replay past the governor
+            // whose history it rebuilds.
+            if matches!(message, NeighbourMsg::GovernorSuccession { .. }) {
+                continue;
+            }
             // A member's write that no longer admits is not the room's
             // governance; the cutoff check decides whether what remains is.
             let _ = peer.receive_from(
@@ -244,7 +268,11 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Option<Vec<GovernorSuccession>>, AdmissionError> {
         self.check_contest(candidate, now)?;
-        self.succession_chain(candidate, source, now)
+        let chain = self.succession_chain(candidate, source, now)?;
+        if let Some(chain) = &chain {
+            succession::check_chain(chain, candidate, false)?;
+        }
+        Ok(chain)
     }
 
     /// Refuse `candidate` when this replica's room is contested, or when it
@@ -261,7 +289,8 @@ impl StatePeer {
         if let Some(reason) = &self.core.contested {
             return Err(reason.clone().into());
         }
-        let before = match self.core.room_doc.as_deref() {
+        let admitted = self.core.room_doc.as_deref();
+        let before = match admitted {
             Some(admitted) => succession::recorded_all(admitted)?,
             None => BTreeMap::new(),
         };
@@ -269,13 +298,17 @@ impl StatePeer {
         if before == after {
             return Ok(());
         }
+        // Successions followed from their records alone count as accepted.
+        let known = succession::merged(admitted, &self.core.followed)?;
         let root = self.core.authority.user_public_key;
         for (key, records) in &after {
-            let Some(accepted) = before.get(key) else {
+            let Some(accepted) = known.get(key) else {
                 continue;
             };
             let rival = records.iter().find(|record| {
-                !accepted.contains(record)
+                !accepted
+                    .iter()
+                    .any(|known| known.successor == record.successor)
                     && record.previous.user_public_key == root
                     && record
                         .verify(&self.core.room, &record.previous, now_ns(now))
@@ -298,10 +331,189 @@ impl StatePeer {
         let only_added = before
             .iter()
             .all(|(key, records)| after.get(key) == Some(records));
-        if !(self.core.adopting && only_added) {
-            return Err("only a successor taking the room over records a succession".into());
+        if (self.core.adopting && only_added) || self.joins_successor(&after)? {
+            return Ok(());
+        }
+        Err("only a successor taking the room over records a succession".into())
+    }
+
+    /// Whether this replica, pinned to the governor it was given and holding
+    /// no room history yet, takes a room whose successions `recorded` are
+    /// exactly the chain that leads to that governor: a device invited by a
+    /// successor joins its room as it stands.
+    fn joins_successor(&mut self, recorded: &succession::Recorded) -> Result<bool, AdmissionError> {
+        if self.core.room_doc.is_some() {
+            return Ok(false);
+        }
+        let lineage = match succession::lineage(recorded, &self.core.room, &self.core.authority) {
+            Ok(lineage) => lineage,
+            Err(error) if error.starts_with(CONTESTED) => {
+                self.core.contested = Some(error.clone());
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut chained = BTreeMap::<String, Vec<GovernorSuccession>>::new();
+        for link in lineage {
+            chained.entry(link.key()).or_default().push(link);
+        }
+        Ok(!chained.is_empty() && chained == *recorded)
+    }
+
+    /// Follow the root-signed succession `records` any device relayed, before
+    /// the room history that carries them reaches this replica: from the
+    /// governor it follows, each record verified against that governor's
+    /// root, the root's revocation of it is held and its successor followed.
+    /// From then on the revoked governor is refused, and the successor's room
+    /// is taken once it arrives ([`Self::adopt_followed`]). A record naming a
+    /// different successor for a governor already followed contests the room.
+    pub(super) fn follow_relayed(
+        &mut self,
+        records: Vec<GovernorSuccession>,
+        now: SystemTime,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        if let Some(reason) = &self.core.contested {
+            return Err(reason.clone().into());
+        }
+        let admitted = self.core.room_doc.as_deref();
+        let known = succession::merged(admitted, &self.core.followed)?;
+        let mut offered = self.core.followed.clone();
+        offered.extend(records);
+        let all = succession::merged(admitted, &offered)?;
+        let root = self.core.authority.user_public_key;
+        for (key, accepted) in &known {
+            let rival = all.get(key).into_iter().flatten().find(|record| {
+                !accepted
+                    .iter()
+                    .any(|known| known.successor == record.successor)
+                    && record.previous.user_public_key == root
+                    && record
+                        .verify(&self.core.room, &record.previous, now_ns(now))
+                        .is_ok()
+            });
+            if let Some(rival) = rival {
+                let reason = format!(
+                    "{CONTESTED}: the identity's root named both {} and {} to succeed governor {key}; neither is followed",
+                    accepted
+                        .first()
+                        .map_or_else(String::new, |record| hex::encode(
+                            record.successor.device_public_key
+                        )),
+                    hex::encode(rival.successor.device_public_key),
+                );
+                self.core.contested = Some(reason.clone());
+                return Err(reason.into());
+            }
+        }
+        let chain = match succession::chain_in(
+            &all,
+            admitted,
+            &self.core.room,
+            &self.core.authority,
+            succession::Walk::Relayed {
+                now_ns: now_ns(now),
+            },
+        ) {
+            Ok(chain) => chain,
+            Err(error) if error.starts_with(CONTESTED) => {
+                self.core.contested = Some(error.clone());
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if chain.is_empty() {
+            return Ok(AdmissionReport::metadata(super::ReceiveOutcome::default()));
+        }
+        if let Some(admitted) = admitted {
+            succession::check_chain(&chain, admitted, true)?;
+        }
+        let mut staged = self.clone();
+        if staged.core.followed.len().saturating_add(chain.len()) > succession::MAX_SUCCESSIONS {
+            return Err("governor succession chain is too long".into());
+        }
+        staged.follow_links(chain.clone(), now)?;
+        staged.core.followed.extend(chain);
+        *self = staged;
+        Ok(AdmissionReport::metadata(super::ReceiveOutcome {
+            metadata_changed: true,
+            ..Default::default()
+        }))
+    }
+
+    /// Re-pin to the end of `chain`: each link's revocation held, its
+    /// successor's certificate admitted.
+    fn follow_links(
+        &mut self,
+        chain: Vec<GovernorSuccession>,
+        now: SystemTime,
+    ) -> Result<(), AdmissionError> {
+        for link in chain {
+            if self
+                .core
+                .revocations
+                .revocation_of(
+                    &link.successor.user_public_key,
+                    &link.successor.device_public_key,
+                )
+                .is_some()
+            {
+                return Err("the successor is revoked".into());
+            }
+            self.core
+                .revocations
+                .insert(link.revocation.clone())
+                .map_err(err)?;
+            self.core.certificates.insert(
+                link.successor.device_public_key,
+                VerifiedCertificate::new(link.successor.clone(), now_ns(now))?,
+            );
+            self.core.authority = link.successor;
         }
         Ok(())
+    }
+
+    /// When this replica follows successions its room history does not
+    /// record yet and `candidate`, sent by the governor it follows, records
+    /// them all: the chain to admit `candidate` with, as when it came from the
+    /// successor directly. Each cutoff is checked against `candidate`.
+    pub(super) fn followed_chain(
+        &mut self,
+        candidate: &AutoCommit,
+        now: SystemTime,
+    ) -> Result<Option<Vec<GovernorSuccession>>, AdmissionError> {
+        if self.core.followed.is_empty() {
+            return Ok(None);
+        }
+        self.check_contest(candidate, now)?;
+        let recorded = succession::recorded_all(candidate)?;
+        let carried = self.core.followed.iter().all(|link| {
+            recorded
+                .get(&link.key())
+                .is_some_and(|records| records.contains(link))
+        });
+        if !carried {
+            return Ok(None);
+        }
+        succession::check_chain(&self.core.followed, candidate, false)?;
+        Ok(Some(self.core.followed.clone()))
+    }
+
+    /// The root-signed successions this replica knows of, recorded or
+    /// followed, as any device relays them: a member that cannot reach the
+    /// successor learns from this who governs. `None` when there are none.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a recorded succession does not decode or encode.
+    pub fn succession_message(&self) -> Result<Option<NeighbourMsg>, String> {
+        let all = succession::merged(self.core.room_doc.as_deref(), &self.core.followed)?;
+        if all.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(NeighbourMsg::GovernorSuccession {
+            room: self.core.room.clone(),
+            records: succession::encode_relayed(&all)?,
+        }))
     }
 
     /// Refuse when the room is contested, or `candidate` contests it.
@@ -366,45 +578,28 @@ impl StatePeer {
             expected.insert(link.key(), vec![link.clone()]);
         }
         let mut staged = self.clone();
-        for link in chain {
-            if staged
-                .core
-                .revocations
-                .revocation_of(
-                    &link.successor.user_public_key,
-                    &link.successor.device_public_key,
-                )
-                .is_some()
-            {
-                return Err("the successor is revoked".into());
-            }
-            staged
-                .core
-                .revocations
-                .insert(link.revocation.clone())
-                .map_err(err)?;
-            staged.core.certificates.insert(
-                link.successor.device_public_key,
-                VerifiedCertificate::new(link.successor.clone(), now_ns(now))?,
-            );
-            staged.core.authority = link.successor;
-        }
+        staged.follow_links(chain, now)?;
         staged.core.adopting = true;
         let report =
             staged.receive_with_context(source, message, now, retained_replay, strict_report);
         staged.core.adopting = false;
         let report = report?;
         // The change records exactly the successions it is followed for.
-        if succession::recorded_all(
+        let recorded = succession::recorded_all(
             staged
                 .core
                 .room_doc
                 .as_deref()
                 .ok_or("room governance missing")?,
-        )? != expected
-        {
+        )?;
+        if recorded != expected {
             return Err("a succession change records other successions".into());
         }
+        staged.core.followed.retain(|link| {
+            !recorded
+                .get(&link.key())
+                .is_some_and(|records| records.contains(link))
+        });
         *self = staged;
         Ok(report)
     }
@@ -425,7 +620,10 @@ impl StatePeer {
         let recorded = succession::recorded_all(candidate)?;
         let current = self.core.authority.device_public_key;
         let mut governors = std::collections::BTreeSet::from([current]);
-        for records in recorded.values() {
+        for records in recorded
+            .values()
+            .chain(succession::merged(None, &self.core.followed)?.values())
+        {
             for record in records {
                 governors.insert(record.previous.device_public_key);
                 governors.insert(record.successor.device_public_key);
@@ -465,10 +663,8 @@ impl StatePeer {
         if *author == current {
             return !self.core.revocations.revokes(&self.core.authority);
         }
-        self.core
-            .room_doc
-            .as_deref()
-            .is_some_and(|doc| succession::succeeded(doc, author, &current))
+        succession::merged(self.core.room_doc.as_deref(), &self.core.followed)
+            .is_ok_and(|all| succession::succeeded_in(&all, author, &current))
     }
 }
 

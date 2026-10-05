@@ -3,6 +3,257 @@ use crate::{Custody, TransportOrigin};
 use tilo_automerge::ApplyIncoming;
 use tilo_user_identity::{DeviceCapabilities, RevocationEntry, RevocationReason};
 
+fn following_fixture() -> Fixture {
+    let mut f = fixture();
+    f.peer
+        .receive_from(
+            TransportOrigin::RelayDelta(f.writer.verifying_key().to_bytes()),
+            NeighbourMsg::GovernorSuccession {
+                room: f.peer.room().into(),
+                records: vec![postcard::to_stdvec(&f.record).unwrap()],
+            },
+            f.now,
+        )
+        .unwrap();
+    f
+}
+
+#[test]
+fn legacy_contested_v7_restores_and_nested_envelopes_refuse() {
+    let f = fixture();
+    let envelope = crate::state::DurableContested {
+        version: 7,
+        contested: "historical competing successor".into(),
+        state: f.peer.durable().unwrap(),
+    };
+    let bytes = postcard::to_stdvec(&envelope).unwrap();
+    let restored = StatePeer::restore(
+        &bytes,
+        f.peer.room(),
+        f.record.previous.clone(),
+        f.peer.certificates(),
+        f.peer.core.revocations.clone(),
+        f.now,
+    )
+    .unwrap();
+    assert_eq!(
+        restored.contested_succession(),
+        Some(envelope.contested.as_str())
+    );
+    assert_eq!(restored.authority(), f.peer.authority());
+    assert_eq!(
+        postcard::take_from_bytes::<u32>(&restored.durable().unwrap())
+            .unwrap()
+            .0,
+        8
+    );
+    let nested = crate::state::DurableContested {
+        state: bytes,
+        ..envelope
+    };
+    assert!(
+        StatePeer::restore(
+            &postcard::to_stdvec(&nested).unwrap(),
+            f.peer.room(),
+            f.record.previous,
+            f.peer.certificates(),
+            f.peer.core.revocations.clone(),
+            f.now,
+        )
+        .err()
+        .expect("invalid durable state must refuse")
+        .contains("invalid contested durable envelope")
+    );
+}
+
+#[test]
+fn relayed_follow_restores_with_previous_or_successor_already_pinned() {
+    let f = following_fixture();
+    let bytes = f.peer.durable().unwrap();
+    assert_eq!(postcard::take_from_bytes::<u32>(&bytes).unwrap().0, 8);
+    for pinned in [f.record.previous.clone(), f.record.successor.clone()] {
+        let restored = StatePeer::restore(
+            &bytes,
+            f.peer.room(),
+            pinned,
+            f.peer.certificates(),
+            f.peer.core.revocations.clone(),
+            f.now,
+        )
+        .unwrap();
+        assert_eq!(restored.authority(), &f.record.successor);
+        assert!(restored.revocations().contains(&f.record.revocation));
+        assert_eq!(
+            restored.succession_message().unwrap(),
+            f.peer.succession_message().unwrap()
+        );
+    }
+}
+
+#[test]
+fn relayed_follow_restore_rechecks_tainted_history_under_both_pins() {
+    let mut f = following_fixture();
+    f.peer.core.room_doc = Some(reverted_governance(&f.peer, [95; 32]).into());
+    let bytes = f.peer.durable().unwrap();
+    for pinned in [f.record.previous.clone(), f.record.successor.clone()] {
+        let error = StatePeer::restore(
+            &bytes,
+            f.peer.room(),
+            pinned,
+            f.peer.certificates(),
+            f.peer.core.revocations.clone(),
+            f.now,
+        )
+        .err()
+        .expect("invalid durable state must refuse");
+        assert!(
+            error.contains("room governance changed after the succession cutoff"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn relayed_follow_restore_refuses_forged_link_even_with_successor_pinned() {
+    let mut f = following_fixture();
+    f.peer.core.followed[0].signature[0] ^= 1;
+    let error = StatePeer::restore(
+        &f.peer.durable().unwrap(),
+        f.peer.room(),
+        f.record.successor,
+        f.peer.certificates(),
+        f.peer.core.revocations.clone(),
+        f.now,
+    )
+    .err()
+    .expect("invalid durable state must refuse");
+    assert!(
+        error.contains("succession is not signed by the identity's root"),
+        "{error}"
+    );
+}
+
+#[test]
+fn new_follow_envelope_refuses_empty_and_nested_metadata() {
+    let f = following_fixture();
+    let inner = f.peer.durable().unwrap();
+    for envelope in [
+        crate::state::DurableSuccession {
+            version: 8,
+            contested: None,
+            followed: Vec::new(),
+            state: fixture().peer.durable().unwrap(),
+        },
+        crate::state::DurableSuccession {
+            version: 8,
+            contested: None,
+            followed: vec![f.record.clone()],
+            state: inner,
+        },
+    ] {
+        assert!(
+            StatePeer::restore(
+                &postcard::to_stdvec(&envelope).unwrap(),
+                f.peer.room(),
+                f.record.previous.clone(),
+                f.peer.certificates(),
+                f.peer.core.revocations.clone(),
+                f.now,
+            )
+            .err()
+            .expect("invalid durable state must refuse")
+            .contains("invalid governor succession durable envelope")
+        );
+    }
+}
+
+#[test]
+fn custody_refuses_successor_revocation_from_a_later_clean_source() {
+    let mut f = fixture();
+    let clean = f.peer.clone();
+    let mut revoked = f.record.revocation.clone();
+    revoked.revoked_device_public_key = f.record.successor.device_public_key;
+    tilo_user_identity::sign_revocation_entry(&mut revoked, &SigningKey::from_bytes(&[1; 32]))
+        .unwrap();
+    f.peer.core.revocations.insert(revoked).unwrap();
+    let error = StatePeer::take_custody(
+        &f.record,
+        [
+            Custody::Replica(Box::new(clean)),
+            Custody::Replica(Box::new(f.peer)),
+        ],
+        f.now,
+    )
+    .err()
+    .expect("a clean early source must not hide a later verified revocation");
+    assert!(error.contains("the successor is revoked"), "{error}");
+}
+
+#[test]
+fn custody_refuses_reverted_foreign_topology_but_preserves_an_owner_tail() {
+    let mut f = fixture();
+    let owner = SigningKey::from_bytes(&[3; 32]).verifying_key().to_bytes();
+    let mut initial = f.peer.admitted_room().unwrap().clone();
+    initial.set_actor(automerge::ActorId::from(
+        f.writer.verifying_key().to_bytes().to_vec(),
+    ));
+    let owners = initial
+        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+        .unwrap();
+    initial.put(owners, "ffff", hex::encode(owner)).unwrap();
+    let contents = initial.put_object(ROOT, "contents", ObjType::Map).unwrap();
+    let strip = initial
+        .put_object(contents, "ffff000000000001", ObjType::Map)
+        .unwrap();
+    initial.put(&strip, "name", "Before").unwrap();
+    initial.commit();
+    f.peer
+        .receive_from(
+            TransportOrigin::RelayDelta(f.writer.verifying_key().to_bytes()),
+            message(initial, f.peer.room()),
+            f.now,
+        )
+        .unwrap();
+    f.record = GovernorSuccession::sign(
+        f.peer.room(),
+        f.record.previous,
+        f.record.revocation,
+        f.record.successor,
+        f.peer
+            .admitted_room()
+            .unwrap()
+            .clone()
+            .get_heads()
+            .into_iter()
+            .map(|head| head.0)
+            .collect(),
+        &SigningKey::from_bytes(&[1; 32]),
+    )
+    .unwrap();
+    for (actor, expected) in [([95; 32], false), (owner, true)] {
+        let mut peer = f.peer.clone();
+        let mut document = peer.admitted_room().unwrap().clone();
+        document.set_actor(automerge::ActorId::from(actor.to_vec()));
+        document.put(&strip, "name", "After").unwrap();
+        document.commit();
+        if !expected {
+            document.put(&strip, "name", "Before").unwrap();
+            document.commit();
+        }
+        peer.receive_from(
+            TransportOrigin::RelayDelta(f.writer.verifying_key().to_bytes()),
+            message(document, peer.room()),
+            f.now,
+        )
+        .unwrap();
+        assert_eq!(
+            StatePeer::take_custody(&f.record, [Custody::Replica(Box::new(peer))], f.now).is_ok(),
+            expected,
+            "custody must retain topology ownership through reverted history"
+        );
+    }
+}
+
 struct Fixture {
     peer: StatePeer,
     writer: SigningKey,

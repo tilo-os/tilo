@@ -29,10 +29,10 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestDevice, TestUser};
 
-const APP: &str = "so.tilo.chat";
+pub(super) const APP: &str = "so.tilo.chat";
 
 /// An endpoint whose key is the device's own, as a device dials with.
-async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
+pub(super) async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
     iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&device.sk.to_bytes()))
         .bind()
@@ -40,7 +40,7 @@ async fn device_endpoint(device: &TestDevice) -> iroh::Endpoint {
         .unwrap()
 }
 
-async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> Relay {
+pub(super) async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> Relay {
     Relay::start(
         RelayConfig {
             state_root: state.to_path_buf(),
@@ -57,7 +57,11 @@ async fn start(state: &std::path::Path, alice: &TestUser, host: &TestDevice) -> 
     .unwrap()
 }
 
-async fn session(relay: &Relay, device: &TestDevice, workspace_id: u64) -> RelayCoeditSession {
+pub(super) async fn session(
+    relay: &Relay,
+    device: &TestDevice,
+    workspace_id: u64,
+) -> RelayCoeditSession {
     let client = RelayClient::connect_to_pinned_host(
         device_endpoint(device).await,
         relay.node_addr(),
@@ -102,7 +106,7 @@ async fn receive_until(
 
 /// As [`receive_until`], for a replica that is sent messages it refuses:
 /// a refused message changes nothing and is skipped.
-async fn receive_refusing_until(
+pub(super) async fn receive_refusing_until(
     what: &str,
     session: &RelayCoeditSession,
     peer: &mut StatePeer,
@@ -128,7 +132,7 @@ async fn receive_refusing_until(
 
 /// As [`receive_refusing_until`], keeping every message with its author as
 /// the relay retained it.
-async fn receive_logging_until(
+pub(super) async fn receive_logging_until(
     what: &str,
     session: &RelayCoeditSession,
     peer: &mut StatePeer,
@@ -156,7 +160,7 @@ async fn receive_logging_until(
 
 /// Invite `person` to `room` and redeem the invitation on `device`: the
 /// replica its bootstrap gives that device.
-async fn join(
+pub(super) async fn join(
     admin: &RoomAdminClient,
     address: &iroh::EndpointAddr,
     room: &str,
@@ -212,7 +216,7 @@ async fn join(
     peer
 }
 
-fn revoke(person: &TestUser, device: [u8; 32]) -> tilo_user_identity::RevocationEntry {
+pub(super) fn revoke(person: &TestUser, device: [u8; 32]) -> tilo_user_identity::RevocationEntry {
     let mut revocation = tilo_user_identity::RevocationEntry {
         user_public_key: person.user_pk,
         revoked_device_public_key: device,
@@ -234,7 +238,7 @@ fn hello(
     }
 }
 
-fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
+pub(super) fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
     let (channel, kind) = neighbour_wire::retention(message, false).unwrap();
     let body = postcard::to_stdvec(message).unwrap();
     if kind == neighbour_wire::Retention::Checkpoint {
@@ -246,7 +250,7 @@ fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
 }
 
 /// Set `key` to `value` in `peer`'s copy of the record and sign the change.
-fn write(
+pub(super) fn write(
     peer: &mut StatePeer,
     key: &str,
     value: &str,
@@ -260,7 +264,7 @@ fn write(
         .unwrap()
 }
 
-fn text(peer: &StatePeer, key: &str) -> Option<String> {
+pub(super) fn text(peer: &StatePeer, key: &str) -> Option<String> {
     let doc = AutoCommit::load(&peer.document(APP, "")?).ok()?;
     doc.get(ROOT, key)
         .ok()
@@ -268,12 +272,12 @@ fn text(peer: &StatePeer, key: &str) -> Option<String> {
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-fn member_device(peer: &StatePeer, device: [u8; 32]) -> bool {
+pub(super) fn member_device(peer: &StatePeer, device: [u8; 32]) -> bool {
     peer.governed_access(SystemTime::now())
         .is_ok_and(|access| access.member_devices.contains(&device))
 }
 
-fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
+pub(super) fn role(peer: &StatePeer, device: [u8; 32]) -> Option<collab_types::Role> {
     peer.permissions(device, SystemTime::now())
         .ok()
         .map(|(role, _, _)| role)
@@ -1328,7 +1332,7 @@ async fn a_relay_whose_device_is_revoked_stops_governing() {
 }
 
 /// The heads of `peer`'s admitted room: the history a succession vouches for.
-fn room_heads(peer: &StatePeer) -> Vec<[u8; 32]> {
+pub(super) fn room_heads(peer: &StatePeer) -> Vec<[u8; 32]> {
     peer.admitted_room()
         .unwrap()
         .clone()
@@ -1340,7 +1344,7 @@ fn room_heads(peer: &StatePeer) -> Vec<[u8; 32]> {
 
 /// Every governance message `after` adds to `before`'s room, as its governor
 /// publishes them.
-fn governance_since(
+pub(super) fn governance_since(
     before: &StatePeer,
     after: &mut StatePeer,
     key: &ed25519_dalek::SigningKey,

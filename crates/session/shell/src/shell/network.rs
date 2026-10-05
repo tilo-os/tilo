@@ -7671,7 +7671,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsGovernance { .. }
             | NeighbourMsg::MlsAccessRequest { .. }
             | NeighbourMsg::MlsGovernanceAck { .. }
-            | NeighbourMsg::PersonalWorkspaces { .. } => None,
+            | NeighbourMsg::PersonalWorkspaces { .. }
+            | NeighbourMsg::GovernorSuccession { .. } => None,
         }
     }
 

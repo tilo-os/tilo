@@ -491,16 +491,40 @@ impl NativeWorkspaceOwner {
     ) -> Result<AdmissionReport, String> {
         if !matches!(
             message,
-            NeighbourMsg::SyncResp { .. } | NeighbourMsg::AppDocument { .. }
+            NeighbourMsg::SyncResp { .. }
+                | NeighbourMsg::AppDocument { .. }
+                | NeighbourMsg::GovernorSuccession { .. }
         ) {
             return Err("native owner admits only workspace state messages".into());
         }
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        let report = candidate
-            .peer
-            .receive_from_report(origin, message, now)
-            .map_err(|e| e.to_string())?;
+        let relayed = matches!(message, NeighbourMsg::GovernorSuccession { .. });
+        let report = match candidate.peer.receive_from_report(origin, message, now) {
+            Ok(report) => report,
+            Err(error) => {
+                // A refusal that contests the room leaves it contested; the
+                // refusal changed nothing else.
+                let contested = candidate.peer.contested_succession().is_some()
+                    && self.with_current(room, |view| {
+                        Ok(view.peer.contested_succession().is_none())
+                    })?;
+                if contested {
+                    candidate.record.peer = candidate.peer.durable()?;
+                    candidate.record.generation = candidate
+                        .record
+                        .generation
+                        .checked_add(1)
+                        .ok_or("native owner generation exhausted")?;
+                    self.publish_room(room, candidate, None)?;
+                }
+                return Err(error.to_string());
+            }
+        };
+        // Records relayed again change nothing to keep.
+        if relayed && !report.summary().metadata_changed {
+            return Ok(report);
+        }
         publication::retire(&mut candidate)?;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = candidate

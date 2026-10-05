@@ -162,6 +162,7 @@ pub(in crate::state) fn restore(
         native_cut_publisher: None,
         adopting: false,
         contested: None,
+        followed: Vec::new(),
         _retention: (),
     };
     let mut media_policy = None;

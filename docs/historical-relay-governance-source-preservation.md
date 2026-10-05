@@ -105,3 +105,49 @@ expired-history restore. Removing either the custody history defense or the
 successor-pinned restore defense makes its strict production assertion fail
 with exit 100; restoring the exact source makes the focused suite pass.
 Published #3660 remains parent-owned at its revocation-only head.
+
+
+The committed source of #2801 is released to the independent recovery branch
+`codex/historical-governor-takeover` by the merge lane's exact clearance receipt.
+Only the delta from `19f7982f2afadc2e016a22beddf587fca1e49ac0` to
+`ac35d7ac12b1f01ca7269d56bdf02c4e25892770` is consumed: 17 paths, patch SHA-256
+`8b79fc3034f350c7381d0c52f29a4b21dde2e56771437d30fac4c98b0425eb09`.
+The original two commits, `cef36057823335aba35b8ab50b3804b6faf4499a` and
+`ac35d7ac12b1f01ca7269d56bdf02c4e25892770`, remain the immutable recovery source.
+The fourteen dirty paths in the author's worktree are not part of this port;
+no ownership, modifications or cleanup of them is implied.
+
+This successor path retains #3672's strict causal cutoff, signed transition,
+read isolation of admitted state, known-revocation refusal and restore checks
+under both governor pins. Authenticated delivery does not excuse governance
+outside the signed causal history. The new topology control distinguishes
+an owner's content tail from an unauthorized actor's reverted change.
+Custody selection preserves source preference but checks every supplied source
+for successor revocation before returning: a clean early retention must not
+hide a later verified revocation. The source-order control fails on the
+unmodified combined port before that repair.
+
+The old contested durable version 7 decoder remains unchanged in shape.
+Pending follow records use a distinct version 8 envelope; restore verifies
+both their signatures and held causal history even when the caller already
+pins their successor. Empty and nested envelopes refuse. Current wire
+variants and receipt commands retain their discriminants; new succession
+and takeover variants are appended after them.
+
+Capability semantics remain the current Read floor. Every positive verb
+implies Read, and a Read restriction is a read-only ceiling. Room membership,
+revocation and signed custody checks do not introduce per-record Read denial.
+TIL-352 is Canceled; TIL-493 is an open Xaver-owned decision without an accepted
+option. Neither issue authorizes changing those rules in this port.
+
+
+The takeover port's focused runtime qualification covers nineteen peer
+succession controls, the three original real takeover scenarios, all six
+inherited governed-room scenarios, joined-room follow/contest persistence,
+and six neighbour-wire codec and retention tests. Six production mutations
+remove the cutoff, recorded restore, pending restore, topology, revocation
+source-order or revoked-caller defense individually; each strict assertion
+fails with exit 100, and exact source restoration follows every case.
+Scoped all-target Clippy passes with warnings denied. The required shell
+integration-target compilation remains part of the final restored-candidate
+check. Cargo.lock and capability definitions are unchanged from #3672.
