@@ -3779,7 +3779,12 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn on_external_event(&mut self, payload: &str, _state: &mut AppModel, _root: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        _state: &mut ui::widget::Edits<'_>,
+        _root: &ModelPath,
+    ) {
         if payload == CONSOLE_WAKE {
             self.serve_console();
         } else if payload == NETWORK_WAKE_EVENT {
@@ -3825,7 +3830,7 @@ impl Widget for InstallerApp {
     fn start_operation(
         &mut self,
         op: &ui::host_operation::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped().filter(|r| r.type_id == op::OPERATION_TYPE) else {
@@ -3916,7 +3921,7 @@ mod tests {
         let composed = app.composed.as_deref_mut().expect("composed step");
         let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
         assert!(
-            control.perform_action(action, doc, &automerge::ROOT),
+            control.perform_action(action, &mut ui::widget::Edits::lend(doc), &automerge::ROOT),
             "{id} refused {action:?}"
         );
         app.sync(doc, &automerge::ROOT);
@@ -3933,19 +3938,13 @@ mod tests {
 
     /// Run the press a control or the Enter key queues, then let the app
     /// sync. Nothing reaches the document.
-    fn run(
-        app: &mut InstallerApp,
-        doc: &mut AutoCommit,
-        resource: &str,
-        action: &str,
-        args: Value,
-    ) {
+    fn run(app: &mut InstallerApp, doc: &AutoCommit, resource: &str, action: &str, args: Value) {
         app.run_press(Press::new(resource, action, args));
         app.sync(doc, &automerge::ROOT);
         assert_eq!(doc.length(automerge::ROOT), 0, "a press wrote the document");
     }
 
-    fn next(app: &mut InstallerApp, doc: &mut AutoCommit) {
+    fn next(app: &mut InstallerApp, doc: &AutoCommit) {
         run(app, doc, op::SESSION, "next", Value::Null);
     }
 
@@ -4224,8 +4223,8 @@ mod tests {
         // Phase `secret_fields_never_enter_automerge_history`.
         {
             let mut app = InstallerApp::with_disks(sample());
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             for path in [
                 "installer.username",
                 "installer.full_name",
@@ -4244,7 +4243,7 @@ mod tests {
             app.step = Step::Account;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             // Empty username → blocked.
             activate(&mut app, &mut doc, "Next");
@@ -4263,12 +4262,12 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             *app.password.lock().unwrap() = "correct horse battery".to_string();
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(&*secret_copy(&app.password), "correct horse battery");
             assert_eq!(app.install_options().pin.as_str(), "correct horse battery");
         }
@@ -4282,13 +4281,13 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.step, Step::Disk);
 
             // The Next button is disabled; Enter runs the same action.
-            next(&mut app, &mut doc);
+            next(&mut app, &doc);
             assert_eq!(app.step, Step::Disk, "must not advance without a disk");
             assert_eq!(app.status, "Select a disk to continue");
         }
@@ -4298,7 +4297,7 @@ mod tests {
             app.step = Step::Disk;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             // Pick the second disk with its row.
             activate(&mut app, &mut doc, "/dev/nvme0n1");
@@ -4329,11 +4328,11 @@ mod tests {
             // shell out to a missing backend): the action is unavailable.
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Disk;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            run(&mut app, &mut doc, op::REVIEW, "begin", Value::Null);
+            run(&mut app, &doc, op::REVIEW, "begin", Value::Null);
             assert_eq!(app.step, Step::Disk);
             assert_eq!(app.install_state, InstallState::Idle);
             assert!(!app.install_launched);
@@ -4366,7 +4365,7 @@ mod tests {
             let mut app = InstallerApp::with_disks(sample());
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             // Default is English (US) → xkb us, no variant.
             assert_eq!(app.keymap(), "English (US)");
             let opts = app.install_options();
@@ -4389,15 +4388,15 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.selected_fs, 0);
             assert_eq!(app.filesystem(), "btrfs");
 
             run(
                 &mut app,
-                &mut doc,
+                &doc,
                 op::OPTIONS,
                 "set-filesystem",
                 serde_json::json!({ "filesystem": "xfs" }),
@@ -4409,13 +4408,13 @@ mod tests {
         {
             let mut app = InstallerApp::with_disks(sample());
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             run(
                 &mut app,
-                &mut doc,
+                &doc,
                 op::OPTIONS,
                 "set-security-key",
                 serde_json::json!({ "enabled": true }),
@@ -4426,9 +4425,9 @@ mod tests {
         // Phase `options_step_uses_seeded_hostname_and_timezone`.
         {
             let mut app = InstallerApp::with_disks(sample());
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(local_text(&app.hostname), "tilo");
             assert_eq!(app.timezone(), "UTC");
             let opts = app.install_options();
@@ -4471,15 +4470,15 @@ mod tests {
     fn media_codecs_are_an_explicit_opt_in_that_threads_into_install_options() {
         let mut app = InstallerApp::with_disks(sample());
         app.step = Step::Options;
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
+        app.sync(&doc, &root);
         assert!(!app.codecs, "media codecs are not selected by default");
         assert!(!app.install_options().codecs);
         let codecs = |enabled: bool| serde_json::json!({ "enabled": enabled });
         run(
             &mut app,
-            &mut doc,
+            &doc,
             op::OPTIONS,
             "set-media-codecs",
             codecs(true),
@@ -4488,7 +4487,7 @@ mod tests {
         assert!(app.install_options().codecs);
         run(
             &mut app,
-            &mut doc,
+            &doc,
             op::OPTIONS,
             "set-media-codecs",
             codecs(false),
@@ -4552,12 +4551,12 @@ mod tests {
             assert_eq!(app.available_filesystem_indices(), vec![0, 1]);
             app.set_filesystem_support(filesystem_support_from_manifest("ext4\nxfs\n"));
             app.step = Step::Options;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             run(
                 &mut app,
-                &mut doc,
+                &doc,
                 op::OPTIONS,
                 "set-filesystem",
                 serde_json::json!({ "filesystem": "ext4" }),
@@ -4614,11 +4613,11 @@ mod tests {
             app.step = Step::Review;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert!(!app.recovery_ack);
 
             // An unacknowledged recovery key must block every native install.
-            run(&mut app, &mut doc, op::REVIEW, "begin", Value::Null);
+            run(&mut app, &doc, op::REVIEW, "begin", Value::Null);
             assert_eq!(app.install_state, InstallState::Idle);
             assert_eq!(
                 app.step,
@@ -4689,17 +4688,17 @@ mod tests {
             app.recovery_ack = true;
             *app.password.lock().unwrap() = "804927".to_string();
             *app.password_confirmation.lock().unwrap() = "804927".to_string();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
-            run(&mut app, &mut doc, op::REVIEW, "begin", Value::Null);
+            run(&mut app, &doc, op::REVIEW, "begin", Value::Null);
             assert_eq!(app.step, Step::Review);
             assert_eq!(app.install_state, InstallState::Idle);
             assert!(app.status.contains("Type /dev/sda exactly"));
 
             app.erase_confirmation.set("/dev/sda".to_string());
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert!(app.destructive_confirmation_ready());
             assert!(app.status.is_empty(), "typing clears the stale refusal");
             assert!(
@@ -4723,21 +4722,21 @@ mod tests {
             let mut app = InstallerApp::with_disks(sample());
             app.selected_disk = Some(0);
             app.step = Step::Review;
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             let _ = build(&mut app);
             assert!(!app.take_structure_dirty());
             for (index, character) in "/dev/sd".chars().enumerate() {
                 app.erase_confirmation.update(|typed| typed.push(character));
-                app.sync(&mut doc, &root);
+                app.sync(&doc, &root);
                 assert!(
                     !app.take_structure_dirty(),
                     "partial input rebuilt at {index}"
                 );
             }
             app.erase_confirmation.update(|typed| typed.push('a'));
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert!(
                 app.take_structure_dirty(),
                 "exact confirmation must enable Begin"
@@ -5110,7 +5109,7 @@ mod tests {
 
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             activate(&mut app, &mut doc, "guided_extent_1");
             assert_eq!(app.guided_alongside_plan(), Some(plans[1].clone()));
             let options = app.install_options();
@@ -5214,7 +5213,7 @@ mod tests {
 
             app.on_external_event(
                 &format!("{PREFLIGHT_OK_PREFIX}stale:stale result"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert_eq!(app.step, Step::Disk);
@@ -5222,7 +5221,7 @@ mod tests {
 
             app.on_external_event(
                 &format!("{PREFLIGHT_FAIL_PREFIX}current:EFI has less than 1 GiB free"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert_eq!(app.step, Step::Disk);
@@ -5231,7 +5230,7 @@ mod tests {
             app.storage_preflight_request = Some("retry".into());
             app.on_external_event(
                 &format!("{PREFLIGHT_OK_PREFIX}retry:prepared storage check passed"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert_eq!(app.step, Step::Account);
@@ -5290,12 +5289,12 @@ mod tests {
             assert!(opts.alongside_root.is_empty());
 
             // The running-installer disk can never be switched to Erase.
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             run(
                 &mut app,
-                &mut doc,
+                &doc,
                 op::STORAGE,
                 "set-method",
                 serde_json::json!({ "method": "erase" }),
@@ -5362,7 +5361,7 @@ mod tests {
             app.step = Step::Review;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             activate(&mut app, &mut doc, "Back");
             assert_eq!(app.step, Step::Options);
@@ -5384,7 +5383,7 @@ mod tests {
                 app.build_composition(&Theme::dark()).as_ref(),
                 "Back"
             ));
-            run(&mut app, &mut doc, op::SESSION, "back", Value::Null);
+            run(&mut app, &doc, op::SESSION, "back", Value::Null);
             assert_eq!(app.step, Step::Keyboard);
         }
         // Phase `failed_install_recovery_returns_to_unselected_storage_review`.
@@ -5398,7 +5397,7 @@ mod tests {
             app.install_launched = true;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             activate(&mut app, &mut doc, "Review storage");
             assert_eq!(app.step, Step::Disk);
@@ -5421,13 +5420,21 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            app.on_external_event("==> step one", &mut doc, &root);
-            app.on_external_event("==> step two", &mut doc, &root);
+            app.on_external_event(
+                "==> step one",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            app.on_external_event(
+                "==> step two",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
             assert!(app.status_lines.iter().any(|l| l == "==> step one"));
             assert!(app.status_lines.iter().any(|l| l == "==> step two"));
             assert_eq!(app.install_state, InstallState::Running);
 
-            app.on_external_event(CTRL_DONE, &mut doc, &root);
+            app.on_external_event(CTRL_DONE, &mut ui::widget::Edits::lend(&mut doc), &root);
             assert_eq!(app.install_state, InstallState::Done);
             assert!(
                 app.take_focus_reset(),
@@ -5441,8 +5448,12 @@ mod tests {
             app.install_state = InstallState::Running;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.on_external_event("error: no space left on device", &mut doc, &root);
-            app.on_external_event(CTRL_FAIL, &mut doc, &root);
+            app.on_external_event(
+                "error: no space left on device",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
+            app.on_external_event(CTRL_FAIL, &mut ui::widget::Edits::lend(&mut doc), &root);
             assert_eq!(app.install_state, InstallState::Failed);
             assert_eq!(
                 app.status_lines.last().map(String::as_str),
@@ -5498,7 +5509,11 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
 
-            app.on_external_event("::tilo-recovery-key::abcd-efgh-ijkl-mnop", &mut doc, &root);
+            app.on_external_event(
+                "::tilo-recovery-key::abcd-efgh-ijkl-mnop",
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.recovery_key.as_deref(), Some("abcd-efgh-ijkl-mnop"));
             assert!(
                 app.status_lines.is_empty(),
@@ -5512,7 +5527,7 @@ mod tests {
             app.install_state = InstallState::Running;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             assert!(
                 !has_test_id(
@@ -5523,7 +5538,11 @@ mod tests {
             );
 
             let key = "abcd-efgh-ijkl-mnop";
-            app.on_external_event(&format!("{RECOVERY_KEY_PREFIX}{key}"), &mut doc, &root);
+            app.on_external_event(
+                &format!("{RECOVERY_KEY_PREFIX}{key}"),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
             assert!(has_test_id(
                 app.build_composition(&Theme::dark()).as_ref(),
                 "recovery_key_copy"
@@ -5539,7 +5558,7 @@ mod tests {
 
             app.on_external_event(
                 &format!("{RECOVERY_KEY_PREFIX}replacement-key"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert!(
@@ -5558,14 +5577,14 @@ mod tests {
             app.install_state = InstallState::Running;
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             app.on_external_event(
                 &format!("{RECOVERY_KEY_PREFIX}failure-safe-key"),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             );
-            app.on_external_event(CTRL_FAIL, &mut doc, &root);
+            app.on_external_event(CTRL_FAIL, &mut ui::widget::Edits::lend(&mut doc), &root);
             assert!(has_test_id(
                 app.build_composition(&Theme::dark()).as_ref(),
                 "recovery_key_copy"
@@ -5578,7 +5597,7 @@ mod tests {
             app.install_state = InstallState::Done;
             // Reboot stays disabled until the key is confirmed saved; the
             // action refuses the same way.
-            run(&mut app, &mut doc, op::POWER, "reboot", Value::Null);
+            run(&mut app, &doc, op::POWER, "reboot", Value::Null);
             assert!(app.status.contains("Save the recovery key"));
 
             activate(&mut app, &mut doc, "recovery_key_saved");
