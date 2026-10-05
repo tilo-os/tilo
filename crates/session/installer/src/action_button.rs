@@ -18,7 +18,7 @@
 //! Every colour is read from the [`Theme`]; nothing is hard-coded.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -166,7 +166,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -205,7 +205,11 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(button.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert_eq!(
                 presses.take().map(|press| press.address.action),
                 Some("reboot".to_string())
@@ -214,7 +218,11 @@ mod tests {
             assert!(button.is_focused(), "AT activation must not steal focus");
             // A disabled button runs nothing.
             let mut disabled = button.disabled(true);
-            assert!(!disabled.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(!disabled.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert!(presses.take().is_none());
         }
         // Phase `recovery_ack_is_a_cleanly_named_native_checkbox`.
@@ -477,7 +485,7 @@ impl Widget for ActionButton {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         let accepted = matches!(action, ui::a11y::Action::Activate)

@@ -84,8 +84,8 @@ fn app(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
     let mut app = InstallerApp::with_disks(Vec::new()).with_backend(backend.clone());
     // Pin the hardware so the secret policy is deterministic on any host.
     app.tpm2 = false;
-    let mut doc = AutoCommit::new();
-    app.sync(&mut doc, &automerge::ROOT);
+    let doc = AutoCommit::new();
+    app.sync(&doc, &automerge::ROOT);
     (app, doc)
 }
 
@@ -241,7 +241,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         by_row.recovery_key = Some(KEY.into());
         // A queued press is checked against the current published availability.
         by_row.control(op::POWER, "reboot", Value::Null).fire();
-        by_row.sync(&mut row_doc, &automerge::ROOT);
+        by_row.sync(&row_doc, &automerge::ROOT);
         let reason = by_row
             .publish()
             .iter()
@@ -275,7 +275,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             )
             .unwrap();
@@ -302,7 +302,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
                 op::OPERATION_TYPE,
                 &stale,
             ),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         );
         assert!(refused.is_err());

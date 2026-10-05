@@ -5447,7 +5447,7 @@ impl RoomActivityPane {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers,
-                state: tree.document_mut(),
+                state: ui::widget::Edits::lend(tree.document_mut()),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

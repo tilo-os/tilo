@@ -2153,8 +2153,13 @@ impl Widget for GreeterApp {
         Some(request)
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
-        let (state, _root) = ui::doc::document_ref(state, root);
+    fn on_external_event(
+        &mut self,
+        payload: &str,
+        state: &mut ui::widget::Edits<'_>,
+        root: &ModelPath,
+    ) {
+        let (state, _root) = ui::doc::document_ref(state.doc(), root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state);
             return;
@@ -2329,7 +2334,11 @@ mod tests {
             .and_then(|composed| find_mut(composed, id))
             .unwrap_or_else(|| panic!("{id} is on the screen"));
         assert!(
-            control.perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT),
+            control.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(doc),
+                &automerge::ROOT
+            ),
             "{id} accepts activation"
         );
         app.sync(doc, &automerge::ROOT);
@@ -2369,7 +2378,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state,
+                state: ui::widget::Edits::lend(state),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2491,7 +2500,7 @@ mod tests {
     impl Laid {
         fn new(
             app: &mut GreeterApp,
-            doc: &mut AutoCommit,
+            doc: &AutoCommit,
             viewport: (f32, f32),
             theme: &Theme,
         ) -> Self {
@@ -2551,7 +2560,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: doc,
+                    state: ui::widget::Edits::lend(doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -2563,8 +2572,8 @@ mod tests {
     }
 
     fn layout_at_with_theme(app: &mut GreeterApp, viewport: (f32, f32), theme: &Theme) {
-        let mut doc = AutoCommit::new();
-        let _ = Laid::new(app, &mut doc, viewport, theme);
+        let doc = AutoCommit::new();
+        let _ = Laid::new(app, &doc, viewport, theme);
     }
 
     fn inside(outer: Rect, inner: Rect) -> bool {
@@ -2685,17 +2694,17 @@ mod tests {
         // Phase `picker_selection_drives_the_started_session`.
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
 
             // The picker starts on the session that signing in would start.
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.selected_session, 0);
             assert_eq!(app.session_choice.with(Clone::clone), "Tilo");
 
             // What the picker stores on a selection.
             app.session_choice.set("Weston".to_owned());
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.selected_session, 1);
             assert_eq!(
                 app.sessions[app.selected_session].argv,
@@ -2706,15 +2715,15 @@ mod tests {
             // A label that names no known session leaves the choice alone.
             app.session_choice
                 .set("a session that went away".to_owned());
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.selected_session, 1, "choice survives a stale label");
             assert!(untouched(&doc), "the choice stays out of the document");
         }
         // Phase `no_session_is_a_clear_error_not_a_crash`.
         {
             let mut app = GreeterApp::with_sessions_and_login_user(Vec::new(), Some(quick_user()));
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             seed_password(&app, "pw");
             app.attempt_login(AuthMethod::Password);
             assert_eq!(app.notice, Notice::Error("greeter-error-no-session"));
@@ -2753,8 +2762,8 @@ mod tests {
                 "an unavailable factor must not appear in the form or focus order"
             );
 
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             app.attempt_login(AuthMethod::Fingerprint);
             assert_eq!(app.notice, Notice::Hint("greeter-hint-no-fingerprint"));
             assert_eq!(app.phase, AuthPhase::Idle);
@@ -2776,8 +2785,8 @@ mod tests {
         // Phase `fingerprint_auth_explicitly_uses_no_password`.
         {
             let mut app = GreeterApp::with_sessions(one_session());
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
 
             assert_eq!(
                 app.take_auth_secret(AuthMethod::Password),
@@ -2830,7 +2839,7 @@ mod tests {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
 
             type_username(&mut app, &mut doc, "alice");
             assert_eq!(typed_username(&app), "alice");
@@ -2839,7 +2848,7 @@ mod tests {
                 "the typed username stays out of the document"
             );
             assert!(dispatch_enter(&mut app, &mut doc, "greeter.username"));
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.notice, Notice::Hint("greeter-hint-passcode"));
             assert_eq!(app.phase, AuthPhase::Idle);
         }
@@ -2847,8 +2856,8 @@ mod tests {
         {
             let mut app =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             seed_password(&app, "pw");
             // The test runner is not greetd.
             assert!(std::env::var_os("GREETD_SOCK").is_none());
@@ -2898,7 +2907,7 @@ mod tests {
                 "the serialized Automerge history must not contain the passcode"
             );
             let mut app = app;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert!(untouched(&doc));
             let secret = app
                 .take_auth_secret(AuthMethod::Password)
@@ -2909,15 +2918,15 @@ mod tests {
         // Phase `submit_while_busy_is_ignored`.
         for phase in [AuthPhase::Authenticating, AuthPhase::Starting] {
             let mut app = GreeterApp::with_sessions(one_session());
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             app.phase = phase;
             app.username.set("alice".to_owned());
             seed_password(&app, "pw");
 
             app.requests.sign_in.set(true);
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.phase, phase);
             assert!(
                 !app.requests.sign_in.get(),
@@ -3009,8 +3018,8 @@ mod tests {
         {
             let mut app =
                 GreeterApp::with_sessions_and_login_user(one_session(), Some(quick_user()));
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 typed_username(&app),
                 "tester",
@@ -3104,7 +3113,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(dispatch_enter(&mut app, &mut doc, field));
             assert!(app.requests.sign_in.get(), "Enter in {field} signs in");
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.notice, Notice::Hint("greeter-hint-username"));
             assert!(untouched(&doc));
         }
@@ -3197,7 +3206,7 @@ mod tests {
             let mut app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             app.begin_authenticating();
             assert_eq!(app.status_text(), "Signing in…");
             let payload = AuthUpdate::Prompt {
@@ -3205,7 +3214,7 @@ mod tests {
                 is_error: false,
             }
             .encode();
-            app.on_external_event(&payload, &mut doc, &root);
+            app.on_external_event(&payload, &mut ui::widget::Edits::lend(&mut doc), &root);
             assert_eq!(app.phase, AuthPhase::Authenticating);
             assert_eq!(app.status_text(), "Place your finger on the reader");
         }
@@ -3214,9 +3223,13 @@ mod tests {
             let mut app = GreeterApp::with_sessions(one_session());
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             app.begin_authenticating();
-            app.on_external_event(&AuthUpdate::Accepted.encode(), &mut doc, &root);
+            app.on_external_event(
+                &AuthUpdate::Accepted.encode(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.phase, AuthPhase::Starting);
             assert!(app.phase.is_busy(), "inputs stay inert while handing over");
             assert_eq!(app.status_text(), "Starting your session…");
@@ -3277,7 +3290,7 @@ mod tests {
                 GreeterApp::with_sessions_and_login_user(one_session(), personal.then(quick_user));
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             if !personal {
                 app.username.set("alice".to_owned());
             }
@@ -3285,7 +3298,11 @@ mod tests {
             app.begin_authenticating();
             let _ = Widget::take_focus_reset(&mut app);
 
-            app.on_external_event(&AuthUpdate::Failed(failure).encode(), &mut doc, &root);
+            app.on_external_event(
+                &AuthUpdate::Failed(failure).encode(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &root,
+            );
 
             assert_eq!(
                 app.phase,
@@ -3383,14 +3400,14 @@ mod tests {
         // Phase `the_power_menu_runs_each_action_once`.
         for action in PowerAction::ALL {
             let mut app = GreeterApp::with_sessions(one_session());
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             app.requests.power.set(Some(action));
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.last_power_action, Some(action));
             app.last_power_action = None;
-            app.sync(&mut doc, &root);
+            app.sync(&doc, &root);
             assert_eq!(app.last_power_action, None, "{action:?} ran once");
         }
     }
@@ -3441,7 +3458,7 @@ mod tests {
                 Some(quick_user()),
             ));
             let mut doc = AutoCommit::new();
-            let mut laid = Laid::new(&mut app, &mut doc, viewport, &theme);
+            let mut laid = Laid::new(&mut app, &doc, viewport, &theme);
             set_focus_by_id(&mut app, "greeter.password");
             // The first frame paints everything; what counts is every frame
             // after it.
@@ -3475,7 +3492,7 @@ mod tests {
 
             for c in ["h", "u", "n", "t", "e", "r", "2"] {
                 laid.deliver(&mut app, &mut doc, &char_event(c));
-                app.sync(&mut doc, &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 assert!(
                     !app.take_structure_dirty(),
                     "a keystroke at {viewport:?} rebuilt the screen"
@@ -3651,9 +3668,9 @@ mod tests {
     #[test]
     fn several_accounts_are_listed_and_choosing_one_resets_the_form() {
         let mut app = GreeterApp::for_shot(AuthScenario::Accounts);
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
+        app.sync(&doc, &root);
         let ids = focusables(&app);
         assert_eq!(ids.first().map(String::as_str), Some("greeter.password"));
         assert!(ids.contains(&"greeter.account.ada".to_string()), "{ids:?}");
@@ -3673,7 +3690,7 @@ mod tests {
             .position(|user| user.username == "ada")
             .expect("ada is listed");
         app.requests.account.set(Some(ada));
-        app.sync(&mut doc, &root);
+        app.sync(&doc, &root);
         assert_eq!(
             app.login_user.as_ref().map(|u| u.username.as_str()),
             Some("ada")

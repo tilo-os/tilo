@@ -253,8 +253,8 @@ mod tests {
     use super::*;
 
     fn sync(view: &mut KeyboardView) {
-        let mut doc = automerge::AutoCommit::new();
-        view.sync(&mut doc, &automerge::ROOT);
+        let doc = automerge::AutoCommit::new();
+        view.sync(&doc, &automerge::ROOT);
         assert_eq!(automerge::ReadDoc::length(&doc, automerge::ROOT), 0);
     }
 
