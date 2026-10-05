@@ -332,6 +332,8 @@ pub enum ViewRequest {
     Fit,
     /// One artwork unit to a screen pixel.
     Actual,
+    /// Whole screen pixels per artwork cell.
+    Pixel,
 }
 
 /// Where the magic wand and the bucket look for colour.
@@ -518,6 +520,10 @@ impl Tools {
     pub fn choose_preset(&self, preset: Preset) {
         let dynamics = Dynamics::of(preset, &BTreeMap::new());
         self.preset.set(preset);
+        if preset.pixel() {
+            self.size.set(1.0);
+            self.view.set(Some(ViewRequest::Pixel));
+        }
         self.flow.set(dynamics.flow);
         self.hardness.set(dynamics.hardness);
         self.smoothing.set(dynamics.smoothing);

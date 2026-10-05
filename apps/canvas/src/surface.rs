@@ -1327,7 +1327,14 @@ impl CanvasSurface {
                 id: Some(id),
                 points,
                 size: ink.width,
-                brush: Some("eraser".into()),
+                brush: Some(
+                    if self.tools.preset.with(|preset| preset.pixel()) {
+                        "pixel-eraser"
+                    } else {
+                        "eraser"
+                    }
+                    .into(),
+                ),
                 clip,
                 opacity: (strength < 1.0).then_some((strength * 100.0).round() / 100.0),
                 params: (hardness < 0.995).then(|| {
@@ -1429,6 +1436,14 @@ impl CanvasSurface {
             Some(focal) => self.viewport.zoom_at(factor, focal),
             None => self.viewport.zoom_by(factor),
         }
+        if self.tools.preset.with(|preset| preset.pixel()) {
+            let zoom = self.zoom();
+            self.viewport.set_zoom(if factor > 1.0 {
+                zoom.ceil()
+            } else {
+                zoom.floor().max(1.0)
+            });
+        }
         self.moved_by_hand = true;
     }
 
@@ -1469,6 +1484,10 @@ impl CanvasSurface {
                 ViewRequest::ZoomIn => self.zoom_by(ZOOM_STEP, None),
                 ViewRequest::ZoomOut => self.zoom_by(1.0 / ZOOM_STEP, None),
                 ViewRequest::Fit => self.zoom_to_fit(),
+                ViewRequest::Pixel => {
+                    self.viewport.set_zoom(self.zoom().floor().max(1.0));
+                    self.moved_by_hand = true;
+                }
                 ViewRequest::Actual => {
                     self.viewport.set_zoom(1.0);
                     self.moved_by_hand = true;
@@ -1476,6 +1495,12 @@ impl CanvasSurface {
             }
         }
         self.follow_width();
+        if self.tools.preset.with(|preset| preset.pixel()) {
+            self.viewport.set_zoom(self.zoom().floor().max(1.0));
+            let origin = self.viewport.content_point_to_screen(Point::ORIGIN);
+            self.viewport
+                .pan_by(origin.x - origin.x.round(), origin.y - origin.y.round());
+        }
         let zoom = self.zoom();
         if self.tools.zoom.with(|shown| (*shown - zoom).abs() > 1e-9) {
             // The readout is drawn before the canvas: wake the window so it

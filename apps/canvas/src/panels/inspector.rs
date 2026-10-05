@@ -1016,7 +1016,7 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
     };
     let mut rows: Vec<Element> = Vec::new();
     let preset = Preset::of(&mark.style);
-    if plain && preset != Preset::Eraser {
+    if plain && !preset.erases() {
         let dispatch = cx.dispatcher();
         let targets = ids.to_vec();
         let ink = mark.style.stroke.clone().unwrap_or_default();

@@ -171,6 +171,8 @@ impl ArtworkResource {
     pub const SET_CROP: ActionRef<Self, (Vec<String>, Vec<f64>)> =
         ActionRef::new("edit-marks", &["ids", "crop"]);
     /// `edit-marks` straightening a picture, in degrees.
+    pub const SET_PIXELATED: ActionRef<Self, (Vec<String>, bool)> =
+        ActionRef::new("edit-marks", &["ids", "pixelated"]);
     pub const SET_STRAIGHTEN: ActionRef<Self, (Vec<String>, f64)> =
         ActionRef::new("edit-marks", &["ids", "straighten"]);
     /// `edit-marks` mirroring marks `horizontal` or `vertical`.
@@ -244,6 +246,8 @@ pub struct Compare {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Export {
+    /// Omit the artwork ground for a transparent PNG or WebP.
+    pub transparent: Option<bool>,
     /// Pixels per artwork unit, 0.05 to 4 (default 1).
     pub scale: Option<f64>,
     /// `png` (default, or the path's), `jpeg` or `webp` (lossless).
