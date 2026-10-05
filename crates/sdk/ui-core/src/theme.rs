@@ -554,9 +554,21 @@ impl Theme {
     #[must_use]
     pub fn with_text_scale(mut self, factor: f32) -> Self {
         let factor = factor.clamp(0.5, 4.0);
+        self.regrow_icons(self.text_scale, factor);
         self.text_scale = factor;
         self.multiply_type_sizes(factor);
         self
+    }
+
+    /// Glyph metrics follow the text scale by
+    /// [`crate::tokens::Metrics::icon_growth`]: re-grow them from the scale
+    /// they were grown for to `to`.
+    fn regrow_icons(&mut self, from: f32, to: f32) {
+        use crate::tokens::Metrics;
+        let factor = Metrics::icon_growth(to) / Metrics::icon_growth(from);
+        if (factor - 1.0).abs() > f32::EPSILON {
+            self.tokens.metrics = self.tokens.metrics.with_icons_scaled(factor);
+        }
     }
 
     fn multiply_type_sizes(&mut self, factor: f32) {
@@ -564,7 +576,7 @@ impl Theme {
     }
 
     /// This theme with the accessibility text scale taken back out: type at
-    /// its 1× sizes, everything else unchanged. For content whose size is
+    /// its 1× sizes (glyphs too), everything else unchanged. For content whose size is
     /// the document's own (a slide's text, laid out at the slide's size and
     /// then scaled as a whole), which must not grow a second time with the
     /// reader's text setting. [`Theme::with_text_scale`] multiplies, so it
@@ -574,6 +586,7 @@ impl Theme {
         let mut theme = self.clone();
         if (theme.text_scale - 1.0).abs() > f32::EPSILON {
             theme.multiply_type_sizes(1.0 / theme.text_scale);
+            theme.regrow_icons(theme.text_scale, 1.0);
             theme.text_scale = 1.0;
         }
         theme
@@ -623,6 +636,7 @@ impl Theme {
         let ui_ratio = ui_scale / self.ui_scale;
         self.multiply_type_sizes(text_scale / self.text_scale * ui_ratio);
         self.multiply_dimensions(ui_ratio);
+        self.regrow_icons(self.text_scale, text_scale);
         // Unlike the public builder, preserve independently customized aliases.
         self.radius_standard *= f64::from(ui_ratio);
         self.padding_standard *= ui_ratio;

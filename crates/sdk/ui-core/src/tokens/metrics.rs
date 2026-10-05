@@ -165,6 +165,28 @@ impl Metrics {
         }
     }
 
+    /// The factor the glyph metrics (`icon_sm`, `icon_md`, `icon_lg`) grow
+    /// by at a given accessibility text scale: the square root of
+    /// [`Self::text_growth`]. A glyph sits beside the text it labels, so it
+    /// grows with it, as symbols follow Dynamic Type; it grows less than the
+    /// letters, since a glyph already reads at a smaller size than a word and
+    /// still has to fit the control the text has grown. 2x text gives
+    /// glyphs about 1.41x. Never below 1.
+    #[must_use]
+    pub fn icon_growth(text_scale: f32) -> f32 {
+        Self::text_growth(text_scale).sqrt()
+    }
+
+    /// These metrics with the glyph sizes multiplied by `factor`; see
+    /// [`Self::icon_growth`].
+    #[must_use]
+    pub fn with_icons_scaled(mut self, factor: f32) -> Self {
+        self.icon_sm *= factor;
+        self.icon_md *= factor;
+        self.icon_lg *= factor;
+        self
+    }
+
     /// Every metric multiplied by `factor`. Used by `ui_scale`; never by a
     /// custom theme's spacing preference.
     #[must_use]

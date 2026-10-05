@@ -168,7 +168,7 @@ the font catalog.
 | `Reading` | 16 / 400 / 1.6, serif | Long-form documents and books |
 | `Code` | 13 / 400 / 1.5, mono | Code and terminal |
 
-- Sizes derive from one base (Body = base); text scale changes everything at once.
+- Sizes derive from one base (Body = base); text scale changes everything at once. Glyphs grow with it by `Metrics::icon_growth` (the square root of the text growth), and a timeline's hour by `TimelineDensity`.
 - Modifiers keep the role: `.strong()`, `.numeric()` (tabular figures), `.italic()`.
 - Apps never pick OpenType features: text says what it is (numeric, secret,
   identifier, link, code) and the toolkit applies what the face supports
