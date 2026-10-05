@@ -546,6 +546,42 @@ impl Widget for ListPane {
         Some(self.core.borrow().list_accessibility())
     }
 
+    fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &ui::a11y::Action,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ui::widget::ModelPath,
+    ) -> bool {
+        // Synthetic list rows belong to this measured leaf, not the app root.
+        // Resolve only a currently presented row, so removed or filtered rows
+        // cannot reuse an old semantic target.
+        let mut core = self.core.borrow_mut();
+        let selected = core.list.hits.iter().find_map(|(_, candidate)| {
+            let Action::OpenSnippet(id) = candidate else {
+                return None;
+            };
+            (candidate.semantic_id() == target
+                && core.visible.contains(id)
+                && core.library.get(*id).is_some())
+            .then(|| candidate.clone())
+        });
+        let Some(selected) = selected else {
+            return false;
+        };
+        match action {
+            ui::a11y::Action::Activate => {
+                core.apply(selected);
+                true
+            }
+            ui::a11y::Action::Focus => {
+                core.list.focused = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         self.core.borrow().list_tooltip(point)
     }

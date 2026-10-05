@@ -82,6 +82,33 @@ fn every_scenario_reaches_its_state() {
     );
 }
 
+#[test]
+fn rename_scenario_keeps_its_real_inline_editor_focused() {
+    check(Some("rename"), (1280, 720)).expect("the real double-click rename remains focused");
+}
+
+fn rename_focus_diagnostics(driver: &FrameHarness) -> Vec<ui::a11y::AccessNode> {
+    fn access(node: &ui::a11y::AccessNode, fields: &mut Vec<ui::a11y::AccessNode>) {
+        if node.role == ui::a11y::Role::TextInput {
+            fields.push(node.clone());
+        }
+        for child in &node.children {
+            access(child, fields);
+        }
+    }
+    fn retained(node: &InspectionNode, fields: &mut Vec<ui::a11y::AccessNode>) {
+        if let Some(semantics) = &node.semantics {
+            access(semantics, fields);
+        }
+        for child in &node.children {
+            retained(child, fields);
+        }
+    }
+    let mut fields = Vec::new();
+    retained(&driver.inspection().root, &mut fields);
+    fields
+}
+
 fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
     ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<NotesShell>::capture_at(scenario, viewport)
@@ -107,6 +134,14 @@ fn check(scenario: Option<&str>, viewport: (u32, u32)) -> Result<(), String> {
     })?;
     let blocks = panel.editor().blocks();
     let driver = app.harness();
+    if scenario == Some("rename") {
+        eprintln!(
+            "rename after capture settlement: native_focus={:?} accessible_focus={:?} fields={:?}",
+            driver.focused(),
+            driver.focused_access_node(),
+            rename_focus_diagnostics(driver)
+        );
+    }
     let modal_hides_blocks = scenario == Some("code_group_drag");
     let rects = blocks
         .iter()
