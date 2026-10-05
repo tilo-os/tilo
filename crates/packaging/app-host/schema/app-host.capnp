@@ -90,4 +90,15 @@ interface AppHost {
     repositories @12 () -> (json :Text);
     # Fixed read-only host probes. The confined Store never executes host tools.
     flatpakStatus @13 () -> (available :Bool, installed :Text, remotes :Text);
+    # Resolve the chosen identity against this device's signed catalogue, then
+    # use the shared installer, including thin payload and exact runtime setup.
+    installOffer @14 (registry :Text, appId :Text, version :Text,
+                      expectedRoot :Data, expectedPublisher :Data,
+                      expectedSizeBytes :UInt64) -> (id :Data);
+    # Cached AppStream rows from one configured repository, isolated from failures
+    # in other remotes. Queries have fixed arguments and bounded output/time.
+    flatpakCatalogue @15 (remote :Text, userManaged :Bool) -> (rows :Text);
+    # Install only from an existing repository in this account's Flatpak scope.
+    flatpakInstallRemote @16 (remote :Text, appId :Text, branch :Text) -> (status :Text);
+
 }

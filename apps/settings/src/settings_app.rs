@@ -596,15 +596,23 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build(
-            &self.cx,
-            self.selected,
-            &self.search_query,
-            &self.sidebar_selection,
-        );
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
-            shell.set_sidebar(Some(nav));
+            // Keep the retained navigation's viewport and focus when only
+            // the selected pane changes.
+            if let Some(nav) = shell.sidebar_mut::<ui::widget::NavList>() {
+                nav.set_filter(&self.search_query);
+                if nav.selected_id().as_deref() != Some(self.selected.slug()) {
+                    nav.set_selected(Some(self.selected.slug()));
+                }
+            } else {
+                shell.set_sidebar(Some(sidebar::build(
+                    &self.cx,
+                    self.selected,
+                    &self.search_query,
+                    &self.sidebar_selection,
+                )));
+            }
             shell.set_content(content);
             shell.set_content_title(self.selected.label());
         }
@@ -738,14 +746,12 @@ impl Widget for SettingsApp {
             // Filtering changes only navigation. Reconstructing the active
             // pane here would discard its transient state and reseed its
             // document bindings on every search character.
-            let nav = sidebar::build(
-                &self.cx,
-                self.selected,
-                &self.search_query,
-                &self.sidebar_selection,
-            );
-            if let Some(shell) = &mut self.shell {
-                shell.set_sidebar(Some(nav));
+            if let Some(nav) = self
+                .shell
+                .as_mut()
+                .and_then(NavShell::sidebar_mut::<ui::widget::NavList>)
+            {
+                nav.set_filter(&self.search_query);
             }
         }
 
@@ -969,6 +975,61 @@ mod tests {
             ui::headless::viewport((w, h)),
             theme.clone(),
         )
+    }
+
+    #[test]
+    fn selecting_a_scrolled_sidebar_row_keeps_the_navigation_in_place() {
+        fn row_rect(app: &Framed<SettingsApp>, category: Category) -> Option<vello::kurbo::Rect> {
+            Framed::harness(app)
+                .a11y_nodes()
+                .into_iter()
+                .find_map(|(_, node)| {
+                    if node.role() != ui::accesskit::Role::TreeItem
+                        || node.label() != Some(category.label().as_str())
+                    {
+                        return None;
+                    }
+                    node.bounds().map(|bounds| {
+                        vello::kurbo::Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1)
+                    })
+                })
+        }
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = layout_at(config.app(), 1200.0, 520.0);
+        // Shared lists publish the actual visible rows, so choose a measured
+        // destination near the viewport's bottom rather than an offscreen id.
+        let (category, original) = Category::ALL
+            .iter()
+            .filter_map(|&category| {
+                let rect = row_rect(&app, category)?;
+                (category != app.selected() && rect.y0 >= 200.0 && rect.y1 <= 520.0)
+                    .then_some((category, rect))
+            })
+            .max_by(|a, b| a.1.y0.total_cmp(&b.1.y0))
+            .expect("a real visible navigation row");
+        let harness = Framed::harness_mut(&mut app);
+        harness.send(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(100.0, 300.0),
+        });
+        harness.scroll(0.0, -3.0);
+        let scrolled = row_rect(&app, category).expect("scrolled navigation row");
+        assert!(
+            scrolled.y0 < original.y0,
+            "the real wheel route scrolled the sidebar"
+        );
+        assert!(
+            scrolled.y0 >= 0.0 && scrolled.y1 <= 520.0,
+            "the destination is visible before activation: {scrolled:?}"
+        );
+        let center = scrolled.center();
+        Framed::harness_mut(&mut app).click_at(center.x, center.y);
+        assert_eq!(app.selected(), category, "the actual row selected its pane");
+        let selected = row_rect(&app, category).expect("selected navigation row");
+        assert_eq!(
+            selected, scrolled,
+            "selection must retain the navigation's scroll offset"
+        );
     }
 
     /// The app opens on the default category unless told otherwise; a real

@@ -95,6 +95,35 @@ impl BlockingClient {
         parse_id(bytes)
     }
 
+    /// Install the exact signed catalogue offer through the shared installer.
+    ///
+    /// # Errors
+    /// Returns why the selected offer, runtime or installation was refused.
+    pub fn install_offer(
+        &self,
+        registry: &str,
+        expected: &InstallExpectation,
+    ) -> Result<PackageId, String> {
+        let mut request = self.client.install_offer_request();
+        {
+            let mut params = request.get();
+            params.set_registry(registry);
+            params.set_app_id(&expected.app_id);
+            params.set_version(&expected.version);
+            params.set_expected_root(expected.package_root.as_bytes());
+            params.set_expected_publisher(&expected.publisher);
+            params.set_expected_size_bytes(expected.size_bytes);
+        }
+        let response = self.wait(request.send().promise)?;
+        parse_id(
+            response
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_id()
+                .map_err(|error| error.to_string())?,
+        )
+    }
+
     /// List the packages the host service can launch: the user's, and the
     /// read-only system packages they do not shadow.
     ///
@@ -250,10 +279,52 @@ impl BlockingClient {
         )
     }
 
-    /// Read the host's Flatpak state without executing tools in the app sandbox.
+    /// Read cached app metadata from one configured Flatpak repository.
     ///
     /// # Errors
-    /// Returns an error if the service cannot observe its host installation.
+    /// Returns why the repository cannot be read on this device.
+    pub fn flatpak_catalogue(&self, remote: &str, user_managed: bool) -> Result<String, String> {
+        let mut request = self.client.flatpak_catalogue_request();
+        request.get().set_remote(remote);
+        request.get().set_user_managed(user_managed);
+        let response = self.wait(request.send().promise)?;
+        response
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_rows()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Install from a configured repository belonging to this account.
+    ///
+    /// # Errors
+    /// Returns why the repository or installation was refused.
+    pub fn flatpak_install_remote(
+        &self,
+        remote: &str,
+        app_id: &str,
+        branch: &str,
+    ) -> Result<String, String> {
+        let mut request = self.client.flatpak_install_remote_request();
+        request.get().set_remote(remote);
+        request.get().set_app_id(app_id);
+        request.get().set_branch(branch);
+        let response = self.wait(request.send().promise)?;
+        response
+            .get()
+            .map_err(|e| e.to_string())?
+            .get_status()
+            .map_err(|e| e.to_string())?
+            .to_string()
+            .map_err(|e| e.to_string())
+    }
+
+    /// Read host Flatpak state without executing tools in the app sandbox.
+    ///
+    /// # Errors
+    /// Returns why the host installation cannot be read.
     pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
         let response = self.wait(self.client.flatpak_status_request().send().promise)?;
         let result = response.get().map_err(|e| e.to_string())?;

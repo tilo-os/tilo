@@ -109,11 +109,14 @@ pub fn store_card(
     }
     let action_btn = action_btn
         .control_size(ControlSize::Small)
-        .with_enabled(!operation_active)
+        .with_enabled(!operation_active && item.unavailable_action(action).is_none())
         .tooltip(if operation_active {
             format!("{} {} is in progress", action.progress_label(), item.name)
         } else {
-            format!("{} {}", action.label(), item.name)
+            item.unavailable_action(action).map_or_else(
+                || format!("{} {}", action.label(), item.name),
+                |(_, reason)| reason,
+            )
         });
 
     let mut card = ui::widget::Card::new(Box::new(body))
@@ -131,6 +134,12 @@ pub fn provenance(item: &StoreItem) -> String {
     let kind = match &item.source {
         StoreSource::Tilo { .. } => "Tilo app",
         StoreSource::Flathub => "Flatpak app",
+        StoreSource::FlatpakRemote { title, .. } => {
+            return match item.latest_version() {
+                "" => format!("Flatpak app from {title}"),
+                version => format!("Flatpak app from {title}, version {version}"),
+            };
+        }
     };
     let version = item.latest_version();
     if version.is_empty() {

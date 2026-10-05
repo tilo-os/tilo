@@ -284,6 +284,21 @@ impl ClientInput {
 
 // Pure helpers — no seat, no widgets. Unit-testable in isolation.
 
+fn monotonic_time_ns() -> Option<u128> {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: the out pointer refers to a live timespec for the entire call.
+    if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now) } != 0 {
+        return None;
+    }
+    u128::try_from(now.tv_sec)
+        .ok()?
+        .checked_mul(1_000_000_000)?
+        .checked_add(u128::try_from(now.tv_nsec).ok()?)
+}
+
 /// Mint a fresh input serial. Wayland clients ignore events whose serial goes backwards, so every delivered event gets its own.
 fn mint_serial(state: &mut State) -> Serial {
     state.serial_counter = state.serial_counter.wrapping_add(1);
@@ -451,6 +466,16 @@ impl State {
         } else {
             KeyState::Released
         };
+        let observed_surface = keyboard
+            .current_focus()
+            .as_ref()
+            .map(super::state::surface_id);
+        let delivery_time_ns = (forward
+            && has_focus
+            && pressed
+            && std::env::var_os("TILO_PROFILE_PRESENTATION").is_some())
+        .then(monotonic_time_ns)
+        .flatten();
         let intercepted: Option<()> = keyboard.input(
             self,
             keycode.saturating_add(8).into(),
@@ -467,6 +492,20 @@ impl State {
         );
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
+            if let Some((delivery_time_ns, observed_surface)) =
+                delivery_time_ns.zip(observed_surface)
+            {
+                eprintln!(
+                    "tilo-physical-delivery {}",
+                    serde_json::json!({
+                        "wayland_serial": u32::from(serial),
+                        "surface_id": observed_surface,
+                        "clock_id": libc::CLOCK_MONOTONIC,
+                        "delivery_time_ns": delivery_time_ns,
+                        "input_time_ns": self.physical_key_input_time_ns.filter(|origin| u128::from(*origin) <= delivery_time_ns),
+                    })
+                );
+            }
             record_activation_serial(self, serial, surface_id);
             if pressed {
                 let app = self

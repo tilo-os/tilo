@@ -22,8 +22,8 @@ use ui::widget::{
 };
 
 use super::{
-    PAGE_SIZE, StoreApp, Theme, action_code, format_size, full_publisher, short_publisher,
-    visible_operation_status,
+    PAGE_SIZE, StoreApp, Theme, action_code, format_size, full_publisher, remote_state_label,
+    short_publisher, visible_operation_status,
 };
 use crate::bindings;
 use crate::model::{StoreItem, StoreSource, StoreTrust};
@@ -170,6 +170,7 @@ impl StoreApp {
             .map(|item| match &item.source {
                 StoreSource::Tilo { .. } => "Tilo",
                 StoreSource::Flathub => "Flathub",
+                StoreSource::FlatpakRemote { name, .. } => name.as_str(),
             })
             .collect::<std::collections::BTreeSet<_>>()
             .len();
@@ -437,7 +438,11 @@ impl StoreApp {
             action.label(),
         )
         .role(ButtonRole::Primary)
-        .tooltip(format!("{} {}", action.label(), item.name));
+        .with_enabled(item.unavailable_action(action).is_none())
+        .tooltip(item.unavailable_action(action).map_or_else(
+            || format!("{} {}", action.label(), item.name),
+            |(_, reason)| reason,
+        ));
         if let Some(binding) = bindings::package(item, action) {
             primary = primary.on_action(binding);
         }
@@ -771,29 +776,33 @@ impl StoreApp {
             .remotes
             .iter()
             .map(|remote| {
-                let queue = std::rc::Rc::clone(&self.queued_invocations);
-                let binding = bindings::remove_remote(remote);
-                Box::new(
-                    ListRow::new(format!("store.remote.{}", remote.name), &remote.title)
+                let mut row =
+                    ListRow::new(format!("store.{}", remote.resource_id()), &remote.title)
                         .icon(Icon::Globe)
                         .secondary(&remote.url)
-                        .meta(if remote.disabled {
-                            "Disabled"
-                        } else {
-                            "Enabled"
-                        })
-                        .action(Icon::Trash, "Remove remote", move || {
-                            if let Some(invocation) =
-                                binding.as_ref().and_then(|binding| binding.invoke(()).ok())
-                            {
-                                queue.borrow_mut().push(invocation);
-                            }
-                        }),
-                ) as Element
+                        .meta(remote_state_label(remote));
+                if !remote.disabled
+                    && let Some(binding) = bindings::effect(&StoreEffect::BrowseRemote {
+                        remote: remote.resource_id(),
+                    })
+                {
+                    row = row.on_action(binding.clone()).action_binding(
+                        Icon::Globe,
+                        ui::i18n!("store-remote-browse"),
+                        binding,
+                    );
+                }
+                if remote.user_managed
+                    && let Some(binding) = bindings::remove_remote(remote)
+                {
+                    row = row.action_binding(Icon::Trash, "Remove remote", binding);
+                }
+                Box::new(row) as Element
             })
             .collect();
         let mut children: Vec<Element> = Vec::new();
         children.extend(self.operation_notice());
+        children.push(Self::prose(&ui::i18n!("store-remotes-description")));
         children.push(Box::new(form));
         if !rows.is_empty() {
             let count = rows.len();
@@ -839,6 +848,9 @@ fn trust_explanation(item: &StoreItem, locally_retained: bool) -> &'static str {
             "Publisher identity and package integrity are verified. This is not an independent quality review."
         }
         StoreTrust::Flathub => "Tilo has not independently reviewed this app.",
+        StoreTrust::ConfiguredRemote => {
+            "This metadata comes from a configured repository. Tilo has not independently reviewed the app."
+        }
     }
 }
 
@@ -911,6 +923,7 @@ fn publisher_properties(item: &StoreItem) -> Vec<Property> {
     let source = match &item.source {
         StoreSource::Tilo { registry_name } => registry_name.clone(),
         StoreSource::Flathub => "Flathub".to_string(),
+        StoreSource::FlatpakRemote { title, .. } => title.clone(),
     };
     let mut rows = vec![Property::new("Catalogue", source)];
     match item.publisher_pubkey_hex.as_deref() {
@@ -962,11 +975,25 @@ pub(super) fn device_properties(item: &StoreItem) -> Vec<(&'static str, String)>
                 .into(),
             ),
         ],
-        (StoreSource::Flathub, InstalledState::Not) => {
+        (StoreSource::Flathub | StoreSource::FlatpakRemote { .. }, InstalledState::Not) => {
             vec![("On this device", "Not installed".into())]
         }
         (
-            StoreSource::Flathub,
+            StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
+            InstalledState::Installed {
+                version,
+                user_managed: false,
+                ..
+            },
+        ) => vec![(
+            "On this device",
+            ui::i18n::I18nManager::format(
+                "store-device-provided-version",
+                &[("version", ui::i18n::ArgValue::Text(version.clone()))],
+            ),
+        )],
+        (
+            StoreSource::Flathub | StoreSource::FlatpakRemote { .. },
             InstalledState::Installed {
                 version, available, ..
             },

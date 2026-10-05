@@ -2509,6 +2509,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn preview_and_keep_preserve_the_staged_refresh_rate() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let current = OutputMode {
+            width: 2944,
+            height: 1840,
+            refresh_mhz: 59_999,
+        };
+        let requested = OutputMode {
+            refresh_mhz: 89_999,
+            ..current
+        };
+        let mut pane = model(vec![display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![current, requested],
+        )]);
+        pane.apply(&DisplayEffect::SetDisplayMode {
+            display: "eDP-1".into(),
+            mode: requested.label(),
+        })
+        .unwrap();
+        pane.apply(&DisplayEffect::ApplyDisplayChanges).unwrap();
+        let mut transaction = DisplayTransaction::load().expect("Apply requests a preview");
+        assert_eq!(transaction.state, DisplayTransactionState::Requested);
+        assert_eq!(transaction.candidate.outputs["eDP-1"].mode, Some(requested));
+        let preview_id = transaction.id;
+        pane.settle(&transaction);
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
+        transaction.save().unwrap();
+        pane.settle(&transaction);
+        pane.apply(&DisplayEffect::KeepDisplayChanges).unwrap();
+        let mut kept = DisplayTransaction::load().unwrap();
+        assert_eq!(kept.id, preview_id, "Keep confirms the original preview");
+        assert_eq!(kept.state, DisplayTransactionState::ConfirmRequested);
+        assert_eq!(kept.candidate.outputs["eDP-1"].mode, Some(requested));
+        pane.settle(&kept);
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+
+        // The compositor commits the kept arrangement before acknowledging it.
+        kept.candidate.save_for(&kept.set).unwrap();
+        kept.state = DisplayTransactionState::Confirmed;
+        kept.deadline_unix_ms = None;
+        kept.save().unwrap();
+        pane.settle(&DisplayTransaction::load().unwrap());
+        assert!(pane.pending_candidate.is_none());
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+    }
+
     /// Scale labels, the person's display scale, and a staged plan that is
     /// applied, kept and reverted.
     #[test]
