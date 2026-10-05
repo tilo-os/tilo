@@ -417,3 +417,39 @@ fn a_cleaned_jpeg_photograph_stays_a_jpeg_of_about_its_size() {
         jpeg.len()
     );
 }
+
+#[test]
+fn finder_completion_uses_a_selection_contract_the_broker_can_admit() {
+    let mut app = TestApp::<App>::new().unwrap();
+    let resources = app.harness().resources();
+    let art = resources
+        .iter()
+        .find(|resource| resource.kind == "canvas.artwork")
+        .unwrap();
+    let select = art
+        .actions
+        .iter()
+        .find(|action| action.id == "select")
+        .unwrap();
+    assert_eq!(
+        select.contract.advertised_confirmation(),
+        ui::tilo_actions::ConfirmationPolicy::None
+    );
+    let invoke = canvas::ArtworkResource::SELECT_FOUND.with((
+        Some("M 4 4 L 12 4 L 12 12 L 4 12 Z".into()),
+        None,
+        None,
+        None,
+    ));
+    app.invoke(invoke).unwrap();
+    assert!(
+        app.state()
+            .selection
+            .unwrap()
+            .region()
+            .bounds()
+            .unwrap()
+            .area()
+            > 0.0
+    );
+}

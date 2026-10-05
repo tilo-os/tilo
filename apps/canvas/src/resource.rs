@@ -17,6 +17,14 @@ use crate::actions::{
 };
 use crate::model::Artwork;
 
+/// Resolved path, matte, combination mode and feather of a finder result.
+pub type FoundSelection = (
+    Option<String>,
+    Option<crate::model::Matte>,
+    Option<String>,
+    Option<f64>,
+);
+
 /// The operation type the canvas surface answers views and effects under.
 pub const VIEW_TYPE: &str = "canvas.view";
 
@@ -135,6 +143,9 @@ impl ArtworkResource {
     /// `use-selection`: what to make of it, on a layer, in a colour.
     pub const USE_SELECTION: ActionRef<Self, (String, Option<String>, Option<String>)> =
         ActionRef::new("use-selection", &["do", "layer", "colour"]);
+    /// A completed finder selects through the declared document action.
+    pub const SELECT_FOUND: ActionRef<Self, FoundSelection> =
+        ActionRef::new("select", &["d", "matte", "mode", "feather"]);
     /// `select` inverting the selection.
     pub const SELECT_INVERT: ActionRef<Self, bool> = ActionRef::new("select", &["invert"]);
     /// `select` growing (or, negative, shrinking) the selection by units.

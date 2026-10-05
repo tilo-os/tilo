@@ -2238,9 +2238,10 @@ impl CanvasSurface {
         {
             return Err(format!("there is no picture layer {layer:?}"));
         }
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let prepared =
-            crate::subject::prepare(&select, &mut self.tools.renderer.borrow_mut(), text, &art)?;
+        let pictures = self.pictures.clone();
+        let content = crate::content::store();
+        let sampled = art.clone();
+        let request = select.clone();
         let phase = ui::i18n::I18nManager::lookup_plain(if select.subject == Some(true) {
             "canvas-finding-subject"
         } else {
@@ -2251,7 +2252,7 @@ impl CanvasSurface {
         Ok(cx.thread(
             move |progress| {
                 progress.report(phase, None, None);
-                prepared.finish()
+                pictures.prepare(&sampled, content, &request)?.finish()
             },
             move |surface, result, cx| {
                 surface.finding = false;
@@ -2270,7 +2271,10 @@ impl CanvasSurface {
                 if subject && let Value::Object(fields) = &mut answer {
                     fields.insert("found_by".into(), json!({"model": found.model, "load_ms": found.load_ms, "infer_ms": found.infer_ms, "refine_ms": found.refine_ms}));
                 }
-                cx.apply(&action);
+                let CanvasAction::Select(select) = action else {
+                    return Err("the finder did not produce a selection".into());
+                };
+                cx.invoke(ArtworkResource::SELECT_FOUND.with((select.d, select.matte, select.mode, select.feather)));
                 Ok(ui::framework::Effected::value(answer))
             },
         ))
