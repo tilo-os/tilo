@@ -15546,6 +15546,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-device-admin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "clap",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "hex",
+ "iroh",
+ "iroh-relay",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-user-identity",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-dialogs"
 version = "0.1.0"
 dependencies = [
