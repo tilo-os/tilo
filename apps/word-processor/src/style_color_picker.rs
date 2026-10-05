@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::ColorCompat;
 use ui::PresenceCtx;
@@ -48,7 +48,7 @@ pub(super) struct EventArgs<'a> {
     pub(super) event: &'a WindowEvent,
     pub(super) scale: f64,
     pub(super) modifiers: Modifiers,
-    pub(super) state: &'a mut AutoCommit,
+    pub(super) state: ui::widget::Edits<'a>,
     pub(super) root: &'a ObjId,
     pub(super) host: Rect,
     pub(super) panel: Rect,
@@ -146,7 +146,7 @@ impl StyleColorPicker {
             event,
             scale,
             modifiers,
-            state,
+            mut state,
             root,
             host,
             panel,
@@ -211,7 +211,7 @@ impl StyleColorPicker {
                     &mut ui::widget::EventCtx {
                         scale_factor: scale,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path: root,
                         handled: &mut handled,
                         focus_target: &mut focused,

@@ -25,6 +25,47 @@ pub trait SettingsSource: Send + Sync {
 
     /// Changes whenever the document does, so readers can cache it.
     fn revision(&self) -> u64;
+
+    /// Rings every time [`Self::revision`] changes, so a reader waiting for
+    /// a change wakes at once instead of looking again and again.
+    fn changes(&self) -> &ChangeSignal;
+}
+
+/// Wakes the readers of a [`SettingsSource`] when its document changes.
+#[derive(Default)]
+pub struct ChangeSignal {
+    listeners: Mutex<Vec<std::sync::Weak<Listener>>>,
+}
+
+/// What a reader runs when the document changed: hand the news on, nothing
+/// slow; it runs on the thread that made or noticed the change.
+pub type Listener = dyn Fn() + Send + Sync;
+
+impl ChangeSignal {
+    /// Call `listener` after every change for as long as the caller keeps
+    /// it.
+    pub fn listen(&self, listener: &Arc<Listener>) {
+        let mut listeners = self
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        listeners.retain(|known| known.strong_count() > 0);
+        listeners.push(Arc::downgrade(listener));
+    }
+
+    /// The document changed: wake every reader still listening.
+    pub fn ring(&self) {
+        let listeners: Vec<Arc<Listener>> = self
+            .listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect();
+        for listener in listeners {
+            listener();
+        }
+    }
 }
 
 static SOURCE: RwLock<Option<Arc<dyn SettingsSource>>> = RwLock::new(None);
@@ -70,6 +111,7 @@ pub struct HostDocument {
     doc: Mutex<Map<String, Value>>,
     revision: AtomicU64,
     persist: Box<Persist>,
+    changes: ChangeSignal,
 }
 
 impl HostDocument {
@@ -81,6 +123,7 @@ impl HostDocument {
             doc: Mutex::new(initial),
             revision: AtomicU64::new(1),
             persist: Box::new(persist),
+            changes: ChangeSignal::default(),
         }
     }
 }
@@ -104,11 +147,17 @@ impl SettingsSource for HostDocument {
         (self.persist)(&next)?;
         *doc = next;
         self.revision.fetch_add(1, Ordering::AcqRel);
+        drop(doc);
+        self.changes.ring();
         Ok(())
     }
 
     fn revision(&self) -> u64 {
         self.revision.load(Ordering::Acquire)
+    }
+
+    fn changes(&self) -> &ChangeSignal {
+        &self.changes
     }
 }
 

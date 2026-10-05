@@ -136,7 +136,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         .or_else(|| b.last())
         .map(|block| block.id.clone())
         .unwrap_or_default();
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: anchor.clone(),
             caret_offset: 0,
@@ -156,7 +156,7 @@ fn publish_word_processor_actions(peer: &mut TypedPeer, doc: &AutoCommit) {
     let actions = typed_peer::exported_actions(&resources);
     assert!(
         actions.iter().any(|action| {
-            action.resource == "word-processor.document" && action.action == "insert-table"
+            action.resource == "tilo.rich-text" && action.action == "insert-table"
         }),
         "the production Word Processor surface must export insert-table"
     );
@@ -408,7 +408,6 @@ fn a_person_typing_and_the_agent_working_both_land() {
         // there is no half-typed line here to wait out.
         settle: Duration::ZERO,
         await_document: Duration::ZERO,
-        directory: None,
         permissions: granted("Scribe"),
         content: ContentStore::memory(),
     };

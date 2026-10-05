@@ -12,6 +12,10 @@ pub struct CurrentHost {
     pub additional_certificates: Mutex<Vec<DeviceCert>>,
     pub checks: AtomicUsize,
     pub time: Option<crate::peer_actions::PolicyTime>,
+    /// Whether this host governs its room, as a standalone runtime governs its
+    /// own: then only its own device (or this host itself) escapes the
+    /// foreign-device cap there.
+    pub governs_room: std::sync::atomic::AtomicBool,
 }
 
 impl CurrentHost {
@@ -26,6 +30,7 @@ impl CurrentHost {
             additional_certificates: Mutex::new(vec![]),
             checks: AtomicUsize::new(0),
             time,
+            governs_room: std::sync::atomic::AtomicBool::new(false),
         })
     }
 }
@@ -33,6 +38,17 @@ impl CurrentHost {
 impl crate::peer_actions::CertificateAuthority for CurrentHost {
     fn policy_time(&self) -> Result<Option<crate::peer_actions::PolicyTime>, String> {
         Ok(self.time.clone())
+    }
+    fn governs(&self, room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+        self.governs_room.load(Ordering::SeqCst)
+            && room.to_string() == self.route.cluster_id
+            && device.is_none_or(|device| {
+                self.certificate
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .is_some_and(|cert| &cert.device_public_key == device)
+            })
     }
     fn authorize(&self, room: uuid::Uuid, cert: &DeviceCert) -> Result<(), String> {
         if room.to_string() != self.route.cluster_id
@@ -323,6 +339,33 @@ impl OriginalRoom {
         expires_at_ns: Option<u64>,
         persist_path: Option<std::path::PathBuf>,
     ) -> Self {
+        Self::hosting(capabilities, expires_at_ns, persist_path, None)
+    }
+
+    /// The room on a host that keeps record content through `content`:
+    /// `room` when it is the same room another host holds.
+    pub fn with_record_content(
+        content: Arc<crate::record_content::RouteContent>,
+        room: Option<tilo_desktop_model::RoomId>,
+    ) -> Self {
+        Self::hosting(
+            DeviceCapabilities::host(),
+            None,
+            None,
+            Some((content, room)),
+        )
+    }
+
+    fn hosting(
+        capabilities: DeviceCapabilities,
+        expires_at_ns: Option<u64>,
+        persist_path: Option<std::path::PathBuf>,
+        record_content: Option<(
+            Arc<crate::record_content::RouteContent>,
+            Option<tilo_desktop_model::RoomId>,
+        )>,
+    ) -> Self {
+        let (record_content, room) = record_content.unzip();
         let root = SigningKey::from_bytes(&[83; 32]);
         let key = SigningKey::from_bytes(&[84; 32]);
         let cert = signed_device(&root, &key, "original worker", capabilities, expires_at_ns);
@@ -332,6 +375,9 @@ impl OriginalRoom {
             crate::test_support::WorkspaceId(83),
             "Original room",
         );
+        if let Some(room) = room.flatten() {
+            workspace.room = room;
+        }
         workspace.set_owner(principal_id_for_root(cert.user_public_key));
         workspace.owner = None;
         workspace.capabilities = workspace
@@ -353,12 +399,16 @@ impl OriginalRoom {
             crate::test_owner::owner_commit::OwnerCommitMailbox::bounded(8);
         let publisher =
             PeerPublisher::with_owner_commit(Arc::new(LifecycleSink), Arc::new(owner_handle));
-        let (state, _) = CapnpBrokerState::new(
+        let mut services = membership.services();
+        services.record_content = record_content;
+        let (state, _) = CapnpBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
             publisher,
-            Some(membership.clone()),
+            Some(membership.authority()),
             None,
+            None,
+            services,
         );
         let authority = CurrentHost::new(&route, &cert, Some(origin.capture().unwrap()));
         assert!(state.certificate_authority.set(authority.clone()).is_ok());

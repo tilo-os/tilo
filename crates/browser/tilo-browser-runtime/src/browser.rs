@@ -1744,10 +1744,10 @@ pub fn invoke_component_action(
         m.pending = true;
         m.window.request_redraw();
         Ok(match started {
-            ui::widget::ResourceOperationStart::Completed(output) => {
+            ui::host_operation::ResourceOperationStart::Completed(output) => {
                 serde_json::json!({"state": "completed", "output": output})
             }
-            ui::widget::ResourceOperationStart::Accepted => {
+            ui::host_operation::ResourceOperationStart::Accepted => {
                 serde_json::json!({"state": "accepted"})
             }
         }

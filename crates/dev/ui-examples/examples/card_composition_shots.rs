@@ -13,16 +13,16 @@ fn cards() -> Element {
     Box::new(CardGrid::content_sized(vec![
         Box::new(Card::composed(Box::new(Text::new("A focused terminal for everyday work.")))
             .with_title("Terminal")
-            .with_footer(Box::new(Actions::new(Button::new("terminal-open", "Open", None).primary())))),
+            .with_footer(Box::new(Actions::new(Button::new("terminal-open", "Open").primary())))),
         Box::new(Card::composed(Box::new(Text::new("Keep your documents and projects together. Search shared folders, review recent changes, and continue working with your team across connected devices.")))
             .with_title("Workspace")
-            .with_footer(Box::new(Actions::new(Button::new("workspace-install", "Install workspace", None).primary())
-                .secondary(Button::new("workspace-details", "Details", None))))),
+            .with_footer(Box::new(Actions::new(Button::new("workspace-install", "Install workspace").primary())
+                .secondary(Button::new("workspace-details", "Details"))))),
         Box::new(Card::composed(Box::new(Text::new("Your connections are ready. Refresh remote services to discover updates and sync changes from your other devices.")))
             .with_title("Remote connections")
-            .with_footer(Box::new(Actions::new(Button::new("remote-refresh", "Refresh all connections", None)
+            .with_footer(Box::new(Actions::new(Button::new("remote-refresh", "Refresh all connections")
                 .with_icon(tilo_ui::icons::Icon::Refresh).primary())
-                .secondary(Button::new("remote-details", "View details", None))))),
+                .secondary(Button::new("remote-details", "View details"))))),
     ]))
 }
 

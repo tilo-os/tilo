@@ -13,8 +13,8 @@ impl TwoKids {
     fn new() -> Self {
         Self {
             kids: vec![
-                Box::new(Button::new("ok", "OK", None)),
-                Box::new(Button::new("cancel", "Cancel", None)),
+                Box::new(Button::new("ok", "OK")),
+                Box::new(Button::new("cancel", "Cancel")),
             ],
         }
     }
@@ -75,8 +75,8 @@ impl ModalHost {
     fn new(want_open: Rc<Cell<bool>>) -> Self {
         Self {
             outer: vec![
-                Box::new(Button::new("a", "Open", None)),
-                Box::new(Button::new("b", "Other", None)),
+                Box::new(Button::new("a", "Open")),
+                Box::new(Button::new("b", "Other")),
             ],
             modal: ModalDialog::new("Confirm", TwoKids::new()),
             want_open,
@@ -84,7 +84,7 @@ impl ModalHost {
     }
 }
 impl Widget for ModalHost {
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         self.modal.set_open(self.want_open.get());
         for c in &mut self.outer {
             c.sync(s, p);
@@ -156,7 +156,7 @@ fn modal_focus_trap_confines_cycles_restores_and_names_the_dialog() {
     {
         use crate::widget::{Column, Container};
         let root = Column::new()
-            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(Button::new("background", "Background")))
             .push(Box::new(
                 Container::new()
                     .with_focus_trap()

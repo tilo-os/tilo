@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -800,7 +800,7 @@ impl Widget for PlacesSidebar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -1085,7 +1085,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1492,7 +1492,11 @@ mod tests {
             assert_eq!(node.children[1].set_size, Some(sidebar.place_count()));
 
             let mut doc = AutoCommit::new();
-            assert!(sidebar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(sidebar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(matches!(
                 sink.borrow().last(),
                 Some(FileCommand::Navigate(path)) if path.ends_with("Documents")

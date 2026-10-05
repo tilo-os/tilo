@@ -102,9 +102,17 @@ impl VideoDoc {
         let _ = doc.put(&proj, "width", i64::from(p.width));
         let _ = doc.put(&proj, "height", i64::from(p.height));
         let _ = doc.put(&proj, "format_explicit", p.format_explicit);
+        Self::write_marks(doc, p.mark_in, p.mark_out);
+        // Markers have their own actions and map. Metadata updates deliberately
+        // do not rewrite that map from a stale project snapshot.
+    }
+
+    /// Write the timeline's in and out marks.
+    pub fn write_marks(doc: &mut AutoCommit, mark_in: Option<f64>, mark_out: Option<f64>) {
+        let proj = Self::map(doc, "project");
         // An absent mark is an absent key, not a sentinel: a peer that reads
         // 0.0 for "no in mark" cannot tell it from a mark on the first frame.
-        for (key, mark) in [("mark_in", p.mark_in), ("mark_out", p.mark_out)] {
+        for (key, mark) in [("mark_in", mark_in), ("mark_out", mark_out)] {
             match mark {
                 Some(t) => {
                     let _ = doc.put(&proj, key, t);
@@ -114,8 +122,6 @@ impl VideoDoc {
                 }
             }
         }
-        // Markers have their own actions and map. Metadata updates deliberately
-        // do not rewrite that map from a stale project snapshot.
     }
 
     pub fn upsert_media(doc: &mut AutoCommit, m: &MediaItem) {

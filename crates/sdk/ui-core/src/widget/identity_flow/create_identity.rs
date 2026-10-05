@@ -272,7 +272,7 @@ impl CreateIdentityScreen {
                 &mut crate::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled,
                     focus_target: ctx.focus_target,
@@ -532,7 +532,7 @@ impl CreateIdentityScreen {
 }
 
 impl Widget for CreateIdentityScreen {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -824,7 +824,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut target,

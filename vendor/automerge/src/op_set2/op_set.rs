@@ -892,7 +892,13 @@ impl OpSet {
             }
             index += ops.width(seq_type, self.text_encoding);
         }
-        None
+        // An element deleted after every visible one: it sits at the end,
+        // where the fast path finds it.
+        Some(FoundOpId {
+            op,
+            index,
+            visible: false,
+        })
     }
 
     pub(crate) fn action_iter_range(&self, range: &Range<usize>) -> ActionIter<'_> {

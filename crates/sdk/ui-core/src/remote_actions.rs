@@ -237,6 +237,7 @@ impl RemoteActions {
     ) -> LocalState<InvocationCall> {
         let answer = LocalState::new(RemoteCall::Pending);
         let request = InvokeRequest {
+            on_behalf_of: None,
             invocation: InvocationId::new(),
             target,
             argument,

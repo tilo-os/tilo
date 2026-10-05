@@ -14,7 +14,19 @@
 use ui::theme::Theme;
 use vello::peniko::Color;
 
-use crate::storage::SaveStatus;
+/// Whether the notebook's changes are on disk, as the status bubble says it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum SaveStatus {
+    /// Nothing waits to be written.
+    #[default]
+    Saved,
+    /// A write is queued or in progress.
+    Saving,
+    /// The last write failed; sticky until a write succeeds.
+    Failed,
+    /// The record exists only in this session and has no durable writer.
+    SessionOnly,
+}
 
 /// Snapshot of the note's status. Cheap to clone (small strings, two
 /// numbers, one enum).

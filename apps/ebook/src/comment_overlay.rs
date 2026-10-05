@@ -147,7 +147,7 @@ impl CommentOverlay {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         let Some(editor) = self.editor.as_mut() else {
@@ -263,16 +263,8 @@ impl CommentOverlay {
 
     /// Write comment `id` in the SDK editor; it shows the comment on the
     /// next sync.
-    pub(crate) fn begin_editing(&mut self, id: Uuid, library: Option<&Dispatcher<Ebook>>) {
+    pub(crate) fn begin_editing(&mut self, id: Uuid, library: &Dispatcher<Ebook>) {
         self.editor = Some(NoteEditor::new(id, 13.0, "Write a comment…", library));
-    }
-
-    /// Edit the comment being written through the library's dispatcher from
-    /// now on.
-    pub(crate) fn attach(&mut self, library: &Dispatcher<Ebook>) {
-        if let Some(editor) = self.editor.as_mut() {
-            editor.attach(library);
-        }
     }
 
     pub(crate) fn finish_editing(&mut self) {
@@ -284,7 +276,7 @@ impl CommentOverlay {
     }
 
     /// Bring the comment being written up to date with the document.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(editor) = self.editor.as_mut() {
             editor.sync(state, root);
         }
@@ -766,10 +758,10 @@ mod tests {
             let id = comment.id;
             crate::doc::BooksDoc::upsert_annotation(&mut doc, &comment);
             doc.commit();
-            let (_app, library) = crate::resource::library_dispatcher_for_test();
+            let library = crate::resource::library_dispatcher_for_test();
             let mut overlay = CommentOverlay::default();
-            overlay.begin_editing(id, Some(&library));
-            overlay.sync(&mut doc, &automerge::ROOT);
+            overlay.begin_editing(id, &library);
+            overlay.sync(&doc, &automerge::ROOT);
             let taffy = TaffyTree::new();
             let modifiers = Modifiers::default();
             let press = |overlay: &mut CommentOverlay, doc: &mut AutoCommit, key: WindowEvent| {
@@ -778,7 +770,7 @@ mod tests {
                     event: &key,
                     scale_factor: 1.0,
                     modifiers,
-                    state: doc,
+                    state: ui::widget::Edits::lend(doc),
                     root: &automerge::ROOT,
                     node_id: NodeId::new(0),
                     taffy: &taffy,

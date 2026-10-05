@@ -764,7 +764,7 @@ pub fn source(svg: &str) -> Result<String, String> {
         return Ok(svg.to_owned());
     }
     let bytes = if let Some(hash) = ui::tilo_actions::content_hash(trimmed) {
-        tilo_content::ContentStore::for_app()
+        crate::content::store()
             .read(hash)
             .ok_or_else(|| format!("no stored content {trimmed}"))?
     } else if trimmed.starts_with('/') {

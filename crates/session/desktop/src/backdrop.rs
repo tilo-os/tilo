@@ -439,8 +439,7 @@ impl Default for DesktopBackdrop {
 impl Widget for DesktopBackdrop {
     ui::provides!(
         dyn ui::permissions::capability::PermissionGated,
-        dyn ui::presence::capability::PublishesPresence,
-        dyn ui::undo::UndoPoints
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn build_layout(
@@ -610,17 +609,6 @@ impl Widget for DesktopBackdrop {
         // Clearing happens implicitly via cache_rect becoming non-zero.
         if let Some(child) = &mut self.child {
             child.mark_drawn();
-        }
-    }
-}
-
-impl ui::undo::UndoPoints for DesktopBackdrop {
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| ui::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            ui::undo::on_commit(child);
         }
     }
 }

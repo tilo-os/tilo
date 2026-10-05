@@ -192,8 +192,8 @@ fn shoot(shell: &mut NavShell, w: u32, h: u32, out: &Path, set: impl Fn(&mut Nav
     // it to the resolved open/closed state).
     shell.snap();
 
-    let mut state = AutoCommit::new();
-    shell.sync(&mut state, &automerge::ObjId::Root);
+    let state = AutoCommit::new();
+    shell.sync(&state, &automerge::ObjId::Root);
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();

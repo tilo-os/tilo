@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -733,7 +733,7 @@ impl Widget for DistributionChart {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {

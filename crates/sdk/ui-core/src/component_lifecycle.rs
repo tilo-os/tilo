@@ -56,13 +56,6 @@ pub trait ComponentLifecycle: Widget {
             .collect()
     }
 
-    /// A durable writer owned by this root rather than the host. `None` means
-    /// no such writer exists. Implementations wait for all pending writes and
-    /// report failure; a queued flush is not success.
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        None
-    }
-
     /// Admit or defer the primary native window's ordinary close request.
     /// Roots that defer must later produce a one-shot close intent.
     fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
@@ -73,6 +66,21 @@ pub trait ComponentLifecycle: Widget {
     fn take_window_close_intent(&mut self) -> bool {
         false
     }
+
+    /// The component this root's own component asked to show in its place
+    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)),
+    /// for the host that mounted it. A component nested deeper answers to
+    /// the host that mounted it, so the default reaches no child.
+    fn take_replacement(&mut self) -> Option<crate::application::ComponentReplacement> {
+        None
+    }
+}
+
+/// The component `widget`'s own component asked to show in its place.
+pub fn take_replacement(
+    widget: &mut dyn Widget,
+) -> Option<crate::application::ComponentReplacement> {
+    capability_mut::<dyn ComponentLifecycle>(widget)?.take_replacement()
 }
 
 /// Unsaved external documents under `widget`.
@@ -138,13 +146,6 @@ pub fn take_component_close_reports(
         .into_iter()
         .flat_map(take_component_close_reports)
         .collect()
-}
-
-/// Flush `widget`'s own durable writer, if it has one.
-pub fn try_flush_owned_persistence(
-    widget: &mut (impl Widget + ?Sized),
-) -> Option<Result<(), String>> {
-    capability_mut::<dyn ComponentLifecycle>(widget)?.try_flush_owned_persistence()
 }
 
 /// `widget`'s answer to an ordinary window close request.

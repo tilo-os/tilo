@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -602,7 +602,7 @@ impl Widget for BreadcrumbBar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         matches!(action, ui::a11y::Action::Activate) && self.activate_keyboard_segment()
@@ -743,14 +743,22 @@ mod tests {
             assert!(node.children[2].state.selected);
 
             let mut doc = automerge::AutoCommit::new();
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(matches!(
                 sink.borrow().last(),
                 Some(FileCommand::Navigate(path)) if path == Path::new("/home/u/Documents")
             ));
 
             bar.keyboard_index = Some(2);
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(
                 bar.take_edit_requested(),
                 "current crumb enters path editing"

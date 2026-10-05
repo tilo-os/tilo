@@ -47,7 +47,7 @@ pub mod engine;
 pub mod model;
 pub mod paint;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
 
 pub use app::BackupsApp;
 pub use resource::{BackupLocation, Backups, BackupsShell};

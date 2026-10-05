@@ -478,7 +478,7 @@ fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
         format!("{source} · v{latest}")
     };
     let mut row = LiveRow::new(app_row_id(&item.id), "store.app", item.name.clone())
-        .presented(ResourcePresentation {
+        .presentation(ResourcePresentation {
             detail: (!detail.is_empty()).then_some(detail),
             badge: Some(badge),
             preview: None,
@@ -528,7 +528,7 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
 }
 
 fn safety_back_button() -> ui::widget::Button {
-    let mut button = ui::widget::Button::new("store.safety.back", "Back", None);
+    let mut button = ui::widget::Button::new("store.safety.back", "Back");
     if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
         button = button.on_action(binding);
     }
@@ -556,9 +556,10 @@ pub struct StoreApp {
     worker: Option<StoreWorker>,
     /// Merged item feed.
     items: Vec<StoreItem>,
-    /// Retained global-search projection. It is rebuilt only after a changed
-    /// worker snapshot and resolves palette addresses against live rows.
-    search_index: crate::search_provider::StoreSearchIndex,
+    /// The complete catalogue directory: every app by id and its search
+    /// entries. The worker rebuilds it only after a changed snapshot, and a
+    /// search hit's address resolves against it.
+    directory: crate::search::StoreDirectory,
     /// The items' names and descriptions, indexed while they stay the same.
     item_index: ui::search::ListIndex,
     /// Active source-side filter (`All | Tilo | Flatpak | Installed`). Kept
@@ -568,7 +569,7 @@ pub struct StoreApp {
     active_category: Option<String>,
     /// Current search query, applied to the merged catalogue. Search is
     /// intentionally window-local; resources remain globally searchable via
-    /// `search_index` without making a colleague's catalogue jump around.
+    /// `directory` without making a colleague's catalogue jump around.
     query: String,
     query_state: ui::LocalState<String>,
     source_filter_state: ui::LocalState<String>,
@@ -656,7 +657,7 @@ impl StoreApp {
             dispatcher: None,
             worker: None,
             items: Vec::new(),
-            search_index: crate::search_provider::StoreSearchIndex::default(),
+            directory: crate::search::StoreDirectory::default(),
             item_index: ui::search::ListIndex::default(),
             active_filter: SourceFilter::All,
             active_category: None,
@@ -701,16 +702,19 @@ impl StoreApp {
         self
     }
 
-    /// Share the retained action/search catalogue with the serialized worker.
-    /// The worker updates it before publishing a UI snapshot, which keeps
-    /// refresh indexing out of the render/input path.
+    /// Share the catalogue directory with the serialized worker. The worker
+    /// updates it before publishing a UI snapshot, which keeps rebuilding
+    /// the directory out of the render/input path.
     #[must_use]
-    pub fn with_search_index(
-        mut self,
-        search_index: crate::search_provider::StoreSearchIndex,
-    ) -> Self {
-        self.search_index = search_index;
+    pub fn with_directory(mut self, directory: crate::search::StoreDirectory) -> Self {
+        self.directory = directory;
         self
+    }
+
+    /// Every app of the complete catalogue as a search entry, the ones the
+    /// current filter hides too.
+    pub(crate) fn catalogue_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.directory.entries()
     }
 
     /// Start the worker of a live window: the catalogue loads, and package
@@ -724,7 +728,7 @@ impl StoreApp {
         // The first presented frame is the catalogue chrome ("Loading
         // apps…"), not a cleared swapchain: the worker is already in flight.
         self.set_worker_busy(true);
-        self.worker = Some(StoreWorker::spawn(self.search_index.clone(), wake));
+        self.worker = Some(StoreWorker::spawn(self.directory.clone(), wake));
     }
 
     /// Edit reports through `dispatcher`.
@@ -896,7 +900,7 @@ impl StoreApp {
             self.items.push(detail.clone());
         }
         self.focused_detail = Some(detail.id);
-        self.search_index.sync(&self.items);
+        self.directory.sync(&self.items);
         self.structure_dirty = true;
     }
 
@@ -919,7 +923,7 @@ impl StoreApp {
     /// category chip row from `items` on the next `build_layout`.
     pub fn set_items(&mut self, items: Vec<StoreItem>) {
         self.items = items;
-        self.search_index.sync(&self.items);
+        self.directory.sync(&self.items);
         self.structure_dirty = true;
     }
 
@@ -1327,7 +1331,6 @@ impl StoreApp {
         let mut primary = ui::widget::Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
             action.label(),
-            None,
         )
         .primary()
         .tooltip(format!("{} {}", action.label(), item.name));
@@ -1343,7 +1346,6 @@ impl StoreApp {
             let mut button = ui::widget::Button::new(
                 &format!("store.app.{}.{}", item.id, action_code(pin_action)),
                 pin_action.label(),
-                None,
             )
             .tooltip(format!("{} {}", pin_action.label(), item.name));
             if let Some(binding) = bindings::package(item, pin_action) {
@@ -1353,7 +1355,7 @@ impl StoreApp {
         }
         if let Some(remove_action) = item.remove_action() {
             let mut button =
-                ui::widget::Button::new(&format!("store.app.{}.remove", item.id), "Remove", None)
+                ui::widget::Button::new(&format!("store.app.{}.remove", item.id), "Remove")
                     .ghost()
                     .tooltip(format!("Remove {}", item.name));
             if let Some(binding) = bindings::package(item, remove_action) {
@@ -1382,7 +1384,7 @@ impl StoreApp {
                 lines
             },
         );
-        let mut back = ui::widget::Button::new("store.detail.back", "Back to apps", None)
+        let mut back = ui::widget::Button::new("store.detail.back", "Back to apps")
             .with_icon(Icon::ArrowLeft)
             .fit_content(40.0)
             .tooltip("Return to the catalogue");
@@ -1400,17 +1402,15 @@ impl StoreApp {
         let mut report = ui::widget::Button::new(
             &format!("store.report.create.{}", item.id),
             "Create report draft",
-            None,
         )
         .fit_content(40.0)
         .tooltip("Create a local, collaborative report draft");
         if let Some(binding) = bindings::draft_report(item) {
             report = report.on_action(binding);
         }
-        let mut moderation =
-            ui::widget::Button::new("store.safety.detail", "Moderation details", None)
-                .fit_content(40.0)
-                .tooltip("Review the Store trust and moderation model");
+        let mut moderation = ui::widget::Button::new("store.safety.detail", "Moderation details")
+            .fit_content(40.0)
+            .tooltip("Review the Store trust and moderation model");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
             moderation = moderation.on_action(binding);
         }
@@ -1510,7 +1510,6 @@ impl StoreApp {
             let key_button = ui::widget::Button::new(
                 &format!("store.publisher.copy.{}", item.id),
                 &format!("Publisher · {}", short_publisher(item)),
-                None,
             )
             .ghost()
             .fit_content(40.0)
@@ -1687,7 +1686,6 @@ impl StoreApp {
         let mut primary = ui::widget::Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
             action.label(),
-            None,
         );
         if let Some(binding) = bindings::package(item, action) {
             primary = primary.on_action(binding);
@@ -1701,7 +1699,6 @@ impl StoreApp {
             let mut button = ui::widget::Button::new(
                 &format!("store.app.{}.{}", item.id, action_code(pin_action)),
                 pin_action.label(),
-                None,
             );
             if let Some(binding) = bindings::package(item, pin_action) {
                 button = button.on_action(binding);
@@ -1714,7 +1711,7 @@ impl StoreApp {
         }
         if let Some(remove_action) = item.remove_action() {
             let mut button =
-                ui::widget::Button::new(&format!("store.app.{}.remove", item.id), "Remove", None);
+                ui::widget::Button::new(&format!("store.app.{}.remove", item.id), "Remove");
             if let Some(binding) = bindings::package(item, remove_action) {
                 button = button.on_action(binding);
             }
@@ -1725,7 +1722,6 @@ impl StoreApp {
         let mut report_button = ui::widget::Button::new(
             &format!("store.report.create.{}", item.id),
             "Create report draft",
-            None,
         );
         if let Some(binding) = bindings::draft_report(item) {
             report_button = report_button.on_action(binding);
@@ -1759,7 +1755,7 @@ impl StoreApp {
             }
             Box::new(row)
         };
-        let mut back = ui::widget::Button::new("store.detail.back", "Back to apps", None);
+        let mut back = ui::widget::Button::new("store.detail.back", "Back to apps");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
             back = back.on_action(binding);
         }
@@ -2051,7 +2047,7 @@ impl StoreApp {
                 .tooltip("Create a local, collaborative report draft"),
         );
         let mut moderation_button =
-            ui::widget::Button::new("store.safety.detail", "Moderation details", None);
+            ui::widget::Button::new("store.safety.detail", "Moderation details");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowTrust) {
             moderation_button = moderation_button.on_action(binding);
         }
@@ -2147,11 +2143,8 @@ impl StoreApp {
             ));
         } else {
             for report in &self.reports {
-                let mut export = ui::widget::Button::new(
-                    &format!("{}.export", report.id),
-                    "Export evidence",
-                    None,
-                );
+                let mut export =
+                    ui::widget::Button::new(&format!("{}.export", report.id), "Export evidence");
                 if let Some(binding) =
                     bindings::report(|app| StoreEffect::ExportEvidence { app }, &report.app_id)
                 {
@@ -2172,7 +2165,7 @@ impl StoreApp {
                         ];
                         for (action, label, effect) in case_actions {
                             let key = format!("{}.{}", report.id, action);
-                            let mut button = ui::widget::Button::new(&key, label, None);
+                            let mut button = ui::widget::Button::new(&key, label);
                             if let Some(binding) = bindings::report(effect, &report.app_id) {
                                 button = button.on_action(binding);
                             }
@@ -2180,7 +2173,7 @@ impl StoreApp {
                         }
                     } else {
                         let key = format!("{}.submit", report.id);
-                        let mut submit = ui::widget::Button::new(&key, "Submit report", None)
+                        let mut submit = ui::widget::Button::new(&key, "Submit report")
                             .tooltip("Sign and submit this report to the authoritative registry");
                         if let Some(binding) = bindings::report(
                             |app| StoreEffect::SubmitReport { app },
@@ -2301,7 +2294,7 @@ impl StoreApp {
         reason = "the machine-scoped remote editor and its canonical remove controls are deliberately composed together so their responsive layouts cannot diverge"
     )]
     fn build_remotes(&self, theme: &Theme) -> Box<dyn Widget> {
-        let mut back = ui::widget::Button::new("store.remotes.back", "Back to apps", None);
+        let mut back = ui::widget::Button::new("store.remotes.back", "Back to apps");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
             back = back.on_action(binding);
         }
@@ -2328,7 +2321,6 @@ impl StoreApp {
             let mut remove = ui::widget::Button::new(
                 &format!("store.remote.{}.remove", remote.name),
                 "Remove remote",
-                None,
             );
             if let Some(binding) = bindings::remove_remote(remote) {
                 remove = remove.on_action(binding);
@@ -2413,13 +2405,13 @@ impl StoreApp {
                 .with_kind(ui::widget::TextInputKind::Url)
                 .with_placeholder("Repository URL"),
         );
-        let mut add = ui::widget::Button::new("store.remote.add", "Add remote", None);
+        let mut add = ui::widget::Button::new("store.remote.add", "Add remote");
         if let Some(binding) = bindings::add_remote(&self.remote_name_state, &self.remote_url_state)
         {
             add = add.on_action(binding);
         }
         let add: Box<dyn Widget> = Box::new(add.primary());
-        let mut refresh = ui::widget::Button::new("store.remote.refresh", "Refresh", None);
+        let mut refresh = ui::widget::Button::new("store.remote.refresh", "Refresh");
         if let Some(binding) = bindings::effect(&StoreEffect::RefreshRemotes) {
             refresh = refresh.on_action(binding);
         }
@@ -2511,19 +2503,19 @@ impl StoreApp {
         if let Some(binding) = bindings::search() {
             search = search.on_action(binding);
         }
-        let mut refresh_btn = ui::widget::Button::new("store.refresh", "Refresh", None);
+        let mut refresh_btn = ui::widget::Button::new("store.refresh", "Refresh");
         if let Some(binding) = bindings::effect(&StoreEffect::Refresh) {
             refresh_btn = refresh_btn.on_action(binding);
         }
         let refresh_btn = refresh_btn.tooltip("Refresh configured catalogues");
-        let mut remotes_btn = ui::widget::Button::new("store.remotes", "Remotes", None)
+        let mut remotes_btn = ui::widget::Button::new("store.remotes", "Remotes")
             .with_icon(Icon::Globe)
             .fit_content(40.0)
             .tooltip("Manage Flatpak remotes");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowRemotes) {
             remotes_btn = remotes_btn.on_action(binding);
         }
-        let mut safety_btn = ui::widget::Button::new("store.safety", "Trust", None)
+        let mut safety_btn = ui::widget::Button::new("store.safety", "Trust")
             .with_icon(Icon::Shield)
             .fit_content(40.0)
             .tooltip("Understand signatures, review, reports and appeals");
@@ -2830,7 +2822,7 @@ impl StoreApp {
                     ));
                 if self.items.is_empty() && !self.worker_busy {
                     let mut refresh =
-                        ui::widget::Button::new("store.empty.refresh", "Refresh catalog", None)
+                        ui::widget::Button::new("store.empty.refresh", "Refresh catalog")
                             .primary()
                             .fit_content(40.0)
                             .tooltip("Refresh configured catalogues");
@@ -3141,14 +3133,14 @@ impl StoreApp {
         if page_count > 1 {
             let mut paging = Row::new();
             if page > 0 {
-                let mut previous = ui::widget::Button::new("store.page.previous", "Previous", None);
+                let mut previous = ui::widget::Button::new("store.page.previous", "Previous");
                 if let Some(binding) = bindings::effect(&StoreEffect::PreviousPage) {
                     previous = previous.on_action(binding);
                 }
                 paging = paging.push(Box::new(previous.tooltip("Previous catalogue page")));
             }
             if page + 1 < page_count {
-                let mut next = ui::widget::Button::new("store.page.next", "Next", None);
+                let mut next = ui::widget::Button::new("store.page.next", "Next");
                 if let Some(binding) = bindings::effect(&StoreEffect::NextPage) {
                     next = next.on_action(binding);
                 }
@@ -3336,9 +3328,7 @@ impl StoreApp {
 }
 
 impl Widget for StoreApp {
-    ui::provides!(dyn ui::search::capability::SearchSource);
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_worker();
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
@@ -3535,12 +3525,6 @@ impl Widget for StoreApp {
                 .as_ref()
                 .is_some_and(|images| images.pending() > 0)
             || self.worker.as_ref().is_some_and(StoreWorker::has_pending)
-    }
-}
-
-impl ui::search::capability::SearchSource for StoreApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
@@ -3911,7 +3895,7 @@ impl StoreApp {
         } else {
             format!("{count} updates available: {names} and {more} more")
         };
-        let mut button = ui::widget::Button::new("store.update-all", "Update all", None)
+        let mut button = ui::widget::Button::new("store.update-all", "Update all")
             .with_icon(Icon::Refresh)
             .fit_content(40.0)
             .tooltip("Install the newest version of every app listed under Updates");
@@ -4212,11 +4196,15 @@ impl StoreApp {
                 let item = self.items.iter().find(|item| item.id == app_id)?;
                 return Some(LiveRow::new(id, "store.review", review_label(item)));
             }
+            // An app the current filter hides is still in the directory, so
+            // a search hit for it resolves.
             return self
                 .items
                 .iter()
                 .find(|item| item.id == rest)
-                .map(|item| app_row(item, self.flatpak_available));
+                .cloned()
+                .or_else(|| self.directory.app(rest))
+                .map(|item| app_row(&item, self.flatpak_available));
         }
         if let Some(key) = id.strip_prefix("publisher:") {
             let item = self.items.iter().find(|item| publisher_of(item).0 == key)?;
@@ -4352,7 +4340,6 @@ mod tests {
     use super::*;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
     use automerge::{AutoCommit, ReadDoc};
-    use ui::search::SearchProvider;
     use ui::tilo_resource::Resource as _;
 
     fn item(name: &str, source: StoreSource, cat: &str, installed: InstalledState) -> StoreItem {
@@ -4555,8 +4542,8 @@ mod tests {
     fn resource_snapshots_are_bounded_and_resolve_canonically() {
         // Case `worker_snapshot_does_not_reindex_on_the_ui_thread`.
         {
-            let index = crate::search_provider::StoreSearchIndex::default();
-            let mut app = StoreApp::new().with_search_index(index.clone());
+            let directory = crate::search::StoreDirectory::default();
+            let mut app = StoreApp::new().with_directory(directory.clone());
             let indexed = item(
                 "Indexed catalogue row",
                 StoreSource::Flathub,
@@ -4574,13 +4561,22 @@ mod tests {
             // If `set_items_from_worker` ever silently rebuilt it, this assertion
             // would instead find the rendered row and reintroduce refresh work to
             // the frame path.
-            index.sync(&[indexed]);
+            directory.sync(std::slice::from_ref(&indexed));
             app.set_items_from_worker(vec![rendered]);
 
             assert_eq!(app.items()[0].name, "Rendered worker snapshot");
-            let hits = index.provider().search("Indexed catalogue row");
-            assert_eq!(hits.len(), 1);
-            assert_eq!(hits[0].title, "Indexed catalogue row");
+            let titles: Vec<String> = app
+                .catalogue_search_entries()
+                .into_iter()
+                .map(|entry| entry.title)
+                .collect();
+            assert_eq!(titles, ["Indexed catalogue row"]);
+            // The hit resolves to its app though the rendered rows leave it out.
+            let row = app
+                .live_row(&format!("app:{}", indexed.id))
+                .expect("a directory app resolves")
+                .into_resource();
+            assert!(row.actions.iter().any(|action| action.id == "show-details"));
         }
 
         // Case `published_rows_are_bounded_and_omitted_apps_resolve_by_id`.
@@ -4703,11 +4699,11 @@ mod tests {
         // Case `unsubmitted_remote_draft_stays_on_its_device`.
         {
             let mut app = seeded_app();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             app.remote_name_state.set("studio-tools".into());
             app.remote_url_state
                 .set("https://apps.tilo.so/artifacts/repo".into());
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(doc.keys(&automerge::ROOT).all(|key| {
                 !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
             }));
@@ -5055,7 +5051,7 @@ mod tests {
                             &mut ui::widget::EventCtx {
                                 scale_factor: 1.0,
                                 modifiers: &winit::event::Modifiers::default(),
-                                state: &mut doc,
+                                state: ui::widget::Edits::lend(&mut doc),
                                 path: &automerge::ROOT,
                                 handled: &mut false,
                                 focus_target: &mut focus,
@@ -5074,7 +5070,7 @@ mod tests {
                     assert_eq!(
                         primary.perform_action(
                             &ui::a11y::Action::Activate,
-                            &mut doc,
+                            &mut ui::widget::Edits::lend(&mut doc),
                             &automerge::ROOT
                         ),
                         !busy
@@ -5389,9 +5385,9 @@ mod tests {
         // Case `typed_search_query_filters_through_local_sync`.
         {
             let mut app = seeded_app();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             app.query_state.set("Term".into());
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.query(), "Term");
             let names: Vec<&str> = app
                 .visible_items()
@@ -5409,8 +5405,8 @@ mod tests {
             let heads = doc.get_heads();
             first.source_filter_state.set("Tilo".into());
             first.category_filter_state.set("Games".into());
-            first.sync(&mut doc, &automerge::ROOT);
-            second.sync(&mut doc, &automerge::ROOT);
+            first.sync(&doc, &automerge::ROOT);
+            second.sync(&doc, &automerge::ROOT);
             assert_eq!(first.active_filter(), SourceFilter::Tilo);
             assert_eq!(first.active_category(), Some("Games"));
             assert_eq!(second.active_filter(), SourceFilter::All);
