@@ -468,3 +468,51 @@ fn the_picker_offers_run_on_for_the_persons_relays_and_agents_name_one() {
         "a relay is named by its endpoint id"
     );
 }
+
+#[test]
+fn native_terminal_requests_the_same_person_confirmed_host_shell_allow() {
+    let mut sessions = crate::sessions::Sessions::standalone();
+    assert!(sessions.request_allow());
+    let ui::widget::AppHostIntent::AllowHostShell { reply } = sessions.take_intent().unwrap()
+    else {
+        panic!("expected host shell permission");
+    };
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    assert_eq!(sessions.take_allow_answer(), Some(false));
+    assert_eq!(sessions.take_allow_answer(), None);
+}
+
+#[test]
+fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
+    let allowed = Rc::new(RefCell::new(false));
+    let gate = allowed.clone();
+    let (mut widget, _) = tab(RecentTarget::none(), move |target| {
+        if target.is_host() && !*gate.borrow() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    });
+    let mut doc = AutoCommit::new();
+    widget.sync(&mut doc, &ROOT);
+    widget
+        .switch_target(&mut doc, &ROOT, &SessionTarget::Host, Requester::Person)
+        .unwrap();
+    let intent = ui::widget::capability::capability_mut::<dyn ui::AppWidget>(&mut widget)
+        .unwrap()
+        .take_host_intent()
+        .expect("native runtime must see the request");
+    let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
+        panic!("expected host permission");
+    };
+    assert!(
+        ui::widget::capability::capability_mut::<dyn ui::AppWidget>(&mut widget)
+            .unwrap()
+            .take_host_intent()
+            .is_none()
+    );
+    *allowed.borrow_mut() = true;
+    reply.upgrade().unwrap().borrow_mut().answer = Some(true);
+    widget.sync(&mut doc, &ROOT);
+    assert_eq!(widget.session_state(), &OpenState::Open);
+}

@@ -2503,6 +2503,7 @@ impl TerminalWidget {
 
 impl Widget for TerminalWidget {
     ui::provides!(
+        dyn ui::AppWidget,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
