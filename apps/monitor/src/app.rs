@@ -14,14 +14,15 @@
 //! cached in `Hit` and consulted by `handle_event` on the next input —
 //! the same pattern the toolkit's `DataTable` uses for its column rects.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use ui::framework::LiveRow;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
@@ -38,7 +39,7 @@ use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_actions::{ActionAddress, Resource};
+use ui::tilo_actions::ActionAddress;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -379,89 +380,35 @@ pub(crate) fn process_row(process: &ProcessInfo) -> LiveRow {
     .fold(row, LiveRow::effect)
 }
 
-/// Retained, bounded-search index over the current live process snapshot.
-/// It is refreshed only when the sampler replaces that snapshot, never while
-/// the user types, and search hits resolve back to the exact PID generation.
-#[derive(Clone)]
-struct MonitorProcessSearchProvider {
-    catalog: SearchCatalog,
-    snapshot: Arc<RwLock<HashMap<String, ProcessInfo>>>,
+/// `value` as one line of searchable text, bounded like a published label.
+fn indexed_text(value: &str) -> String {
+    value
+        .chars()
+        .take(MAX_PROCESS_RESOURCE_LABEL_CHARS)
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
 }
 
-impl MonitorProcessSearchProvider {
-    fn new(processes: &[ProcessInfo]) -> Self {
-        let provider = Self {
-            catalog: SearchCatalog::new("Processes"),
-            snapshot: Arc::new(RwLock::new(HashMap::new())),
-        };
-        provider.refresh(processes);
-        provider
-    }
-
-    fn indexed_text(value: &str) -> String {
-        value
-            .chars()
-            .take(MAX_PROCESS_RESOURCE_LABEL_CHARS)
-            .map(|ch| if ch.is_control() { ' ' } else { ch })
-            .collect()
-    }
-
-    fn refresh(&self, processes: &[ProcessInfo]) {
-        let mut current = HashMap::with_capacity(processes.len());
-        for process in processes {
-            let id = process_resource_id(process.pid, process.started_at);
-            let _ = self.catalog.upsert(
-                id.clone(),
-                format!(
-                    "{}\u{1f}{}\u{1f}{}",
-                    Self::indexed_text(&process.name),
-                    Self::indexed_text(&process.user),
-                    process.pid
-                ),
-                SearchResult::for_action(
-                    "Processes",
-                    process_resource_label(process),
-                    ActionAddress::new(id.clone(), "inspect"),
-                )
-                .with_subtitle(format!(
-                    "PID {} · {}",
-                    process.pid,
-                    Self::indexed_text(&process.user)
-                )),
-            );
-            current.insert(id, process.clone());
-        }
-        let mut snapshot = self
-            .snapshot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for id in snapshot.keys().filter(|id| !current.contains_key(*id)) {
-            self.catalog.remove(id);
-        }
-        *snapshot = current;
-    }
-}
-
-impl CatalogSearchProvider for MonitorProcessSearchProvider {
-    fn provider_name(&self) -> &'static str {
-        "Processes"
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(self.catalog.clone())
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
-        (address.action == "inspect")
-            .then(|| {
-                self.snapshot
-                    .read()
-                    .ok()?
-                    .get(&address.resource)
-                    .map(|process| process_row(process).into_resource())
-            })
-            .flatten()
-    }
+/// `process` as a search hit: found by its name, user or PID, and opening
+/// the exact PID generation it names.
+fn process_search_entry(process: &ProcessInfo) -> ui::tilo_resource::SearchEntry {
+    let id = process_resource_id(process.pid, process.started_at);
+    ui::tilo_resource::SearchEntry::new(
+        process_resource_label(process),
+        format!(
+            "{} {} {}",
+            indexed_text(&process.name),
+            indexed_text(&process.user),
+            process.pid
+        ),
+    )
+    .invoking(ActionAddress::new(id, "inspect"))
+    .grouped("Processes")
+    .subtitled(format!(
+        "PID {} · {}",
+        process.pid,
+        indexed_text(&process.user)
+    ))
 }
 
 /// A scrollbar's on-screen geometry, recorded during `draw` so `handle_event`
@@ -568,9 +515,6 @@ struct Hit {
     summary_cells: Vec<Rect>,
     /// Back affordance returning from the pushed detail to the table (narrow).
     detail_back: Rect,
-    /// The "Confirm kills" preference toggle pill in the toolbar — the only UI
-    /// that reaches the local `confirm_kill` preference.
-    confirm_toggle: Rect,
     /// The process table's vertical row scrollbar (present when rows overflow).
     v_scrollbar: Option<ScrollBarHit>,
     /// The process table's horizontal column scrollbar (present on overflow).
@@ -600,7 +544,6 @@ impl Hit {
             menu_items: Vec::new(),
             summary_cells: Vec::new(),
             detail_back: Rect::ZERO,
-            confirm_toggle: Rect::ZERO,
             v_scrollbar: None,
             h_scrollbar: None,
             page_scrollbar: None,
@@ -617,7 +560,6 @@ pub struct MonitorApp {
     sampler: Sampler,
     /// Retained global-search/directory index. Its entries carry the same
     /// PID-generation ids as every resource action and update only per sample.
-    process_search: MonitorProcessSearchProvider,
     prefs: Prefs,
     /// The person's Monitor preferences when hosted, and the value last
     /// stored, which tells a change made here from one made elsewhere.
@@ -824,11 +766,9 @@ impl MonitorApp {
         last_refresh: Instant,
         sampler: Sampler,
     ) -> Self {
-        let process_search = MonitorProcessSearchProvider::new(&model.processes);
         Self {
             model,
             sampler,
-            process_search,
             prefs: Prefs::default(),
             preferences: None,
             tab: Tab::Processes,
@@ -901,7 +841,6 @@ impl MonitorApp {
     fn refresh_live_snapshot(&mut self) {
         let selected_before = self.selected_identity();
         self.sampler.refresh(&mut self.model);
-        self.process_search.refresh(&self.model.processes);
         self.last_refresh = ui::time::now();
         self.clear_recycled_selection(selected_before);
         self.record_proc_cpu();
@@ -1174,6 +1113,15 @@ impl MonitorApp {
             .collect()
     }
 
+    /// Every process running here as a search hit.
+    pub(crate) fn process_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.model
+            .processes
+            .iter()
+            .map(process_search_entry)
+            .collect()
+    }
+
     /// The live row of the exact process generation `id` names.
     pub(crate) fn live_process_row(&self, id: &str) -> Option<LiveRow> {
         let (pid, started_at) = parse_process_resource_id(id)?;
@@ -1312,7 +1260,6 @@ impl MonitorApp {
             self.model
                 .processes
                 .retain(|p| p.pid != pid || p.started_at != started_at);
-            self.process_search.refresh(&self.model.processes);
             if self.selected_pid == Some(pid) {
                 self.selected_pid = None;
             }
@@ -3210,9 +3157,6 @@ impl MonitorApp {
             "≣ Flat"
         };
         w += TOOLBAR_PILL_GAP + f64::from(tr.measure(tree_text, fs, None).0) + 24.0;
-        // Confirm-kills pill (reserved so the toolbar stacks before the pill
-        // cluster crowds the search box; dropped only at extreme-narrow widths).
-        w += TOOLBAR_PILL_GAP + f64::from(tr.measure("Confirm kills", fs, None).0) + 24.0;
         w
     }
 
@@ -3255,17 +3199,6 @@ impl MonitorApp {
         ) + 44.0
     }
 
-    fn confirm_filter_width(tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        f64::from(
-            tr.measure(
-                "Confirm kills",
-                ts(tr, theme.tokens.typography.scale.sm),
-                None,
-            )
-            .0,
-        ) + 24.0
-    }
-
     /// On very narrow windows a search row plus a single filters row is not
     /// enough: the labelled tree, aggregation and preferences would run out
     /// of the toolbar. Give the two preferences a third row instead of
@@ -3275,8 +3208,7 @@ impl MonitorApp {
             && avail_w
                 < self.primary_filter_row_width(tr, theme)
                     + Self::kernel_filter_width(tr, theme)
-                    + Self::confirm_filter_width(tr, theme)
-                    + 2.0 * TOOLBAR_PILL_GAP
+                    + TOOLBAR_PILL_GAP
     }
 
     /// Height the toolbar occupies at `avail_w`: one row when the search box
@@ -3292,7 +3224,7 @@ impl MonitorApp {
     }
 
     /// Draw one centered-label toggle pill: filled/stroked capsule, accent
-    /// tinted when `on`. Shared by the sum/tree/confirm-kills toolbar pills —
+    /// tinted when `on`. Shared by the sum/tree toolbar pills —
     /// the kernel-threads toggle has its own switch-knob visual and isn't
     /// drawn through this.
     fn draw_toggle_pill(
@@ -3446,7 +3378,7 @@ impl MonitorApp {
     }
 
     /// Draw the Tree/Flat view pill, left of the sum pill. Returns its rect
-    /// (the confirm-kills pill's right edge).
+    /// (the left edge of the pill cluster).
     fn draw_tree_flat_pill(
         &mut self,
         scene: &mut Scene,
@@ -3472,43 +3404,6 @@ impl MonitorApp {
         Self::draw_toggle_pill(scene, t, tr, theme, tree_r, tree_text, self.tree_mode);
         self.hit.tree_toggle = tree_r;
         tree_r
-    }
-
-    /// Draw the "Confirm kills" preference pill, left of the tree pill — the
-    /// only affordance that reaches the local `confirm_kill` preference.
-    /// Drawn whenever it fits within the pills row; at extreme-narrow widths
-    /// (where the toolbar is already stacked) it's dropped rather than
-    /// clipped off the left edge. Returns the left edge of the pill cluster,
-    /// so the search box stops before it and the two can never overlap
-    /// however narrow the window.
-    fn draw_confirm_kills_pill(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        pills_row: Rect,
-        tree_r: Rect,
-    ) -> f64 {
-        let fs = ts(tr, theme.tokens.typography.scale.sm);
-        let confirm_text = "Confirm kills";
-        let cfw = f64::from(tr.measure(confirm_text, fs, None).0) + 24.0;
-        let confirm_x1 = tree_r.x0 - TOOLBAR_PILL_GAP;
-        let confirm_x0 = confirm_x1 - cfw;
-        if confirm_x0 < pills_row.x0 {
-            self.hit.confirm_toggle = Rect::ZERO;
-            return tree_r.x0;
-        }
-        let confirm_r = Rect::new(
-            confirm_x0,
-            pills_row.y0 + 2.0,
-            confirm_x1,
-            pills_row.y1 - 2.0,
-        );
-        let ck = self.prefs.confirm_kill;
-        Self::draw_toggle_pill(scene, t, tr, theme, confirm_r, confirm_text, ck);
-        self.hit.confirm_toggle = confirm_r;
-        confirm_r.x0
     }
 
     /// Draw the search box in `search_row`. Stacked: full width on its own
@@ -3644,8 +3539,7 @@ impl MonitorApp {
             // both device-local preferences remain directly reachable below.
             let next_x1 = self.draw_sum_mode_pill(scene, t, tr, theme, view_row, view_row.x1);
             self.draw_tree_flat_pill(scene, t, tr, theme, view_row, next_x1);
-            let kernel = self.draw_kernel_toggle_pill(scene, t, tr, theme, kernel_row);
-            self.draw_confirm_kills_pill(scene, t, tr, theme, kernel_row, kernel);
+            self.draw_kernel_toggle_pill(scene, t, tr, theme, kernel_row);
             self.draw_toolbar_search_box(scene, t, tr, theme, search_row, true, search_row.x1);
             return;
         }
@@ -3665,7 +3559,7 @@ impl MonitorApp {
         let next_x1 =
             self.draw_sum_mode_pill(scene, t, tr, theme, pills_row, kt_r.x0 - TOOLBAR_PILL_GAP);
         let tree_r = self.draw_tree_flat_pill(scene, t, tr, theme, pills_row, next_x1);
-        let cluster_left = self.draw_confirm_kills_pill(scene, t, tr, theme, pills_row, tree_r);
+        let cluster_left = tree_r.x0;
 
         // ---- search box in `search_row` -----------------------------------
         let search_r =
@@ -4438,7 +4332,7 @@ impl MonitorApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -4749,11 +4643,6 @@ impl MonitorApp {
             self.prefs.show_kernel_threads = !self.prefs.show_kernel_threads;
             self.clear_selection_if_filtered_out();
             self.clamp_scroll();
-            return true;
-        }
-        // Confirm-kills preference toggle (local to this window/device).
-        if self.hit.confirm_toggle.contains(p) {
-            self.prefs.confirm_kill = !self.prefs.confirm_kill;
             return true;
         }
         // Tree/Flat view toggle.
@@ -5153,20 +5042,6 @@ impl MonitorApp {
                 ));
             }
         }
-        if self.hit.confirm_toggle.area() > 0.0 {
-            targets.push((
-                "monitor.confirm-kills".to_string(),
-                self.hit.confirm_toggle,
-                AccessNode::new(Role::ToggleButton)
-                    .with_name("Confirm force kills")
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .checked(self.prefs.confirm_kill),
-                    )
-                    .with_bounds(self.hit.confirm_toggle),
-            ));
-        }
         if self.hit.search.area() > 0.0 {
             let search = self
                 .search_input
@@ -5320,9 +5195,7 @@ impl MonitorApp {
 }
 
 impl Widget for MonitorApp {
-    ui::provides!(dyn ui::search::capability::SearchSource);
-
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // The preferences follow the person's settings, never the shared
         // document.
         self.sync_preferences();
@@ -5433,7 +5306,7 @@ impl Widget for MonitorApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.handled,
             );
@@ -5502,7 +5375,7 @@ impl Widget for MonitorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -5537,9 +5410,6 @@ impl Widget for MonitorApp {
             }
             "monitor.sum-mode" if activated && self.tree_mode => {
                 self.sum_mode = self.sum_mode.toggled();
-            }
-            "monitor.confirm-kills" if activated => {
-                self.prefs.confirm_kill = !self.prefs.confirm_kill;
             }
             _ => {
                 if let Some(index) = target.strip_prefix("monitor.summary.") {
@@ -5728,12 +5598,6 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
-    }
-}
-
-impl ui::search::capability::SearchSource for MonitorApp {
-    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
-        vec![Box::new(self.process_search.clone())]
     }
 }
 
@@ -6597,12 +6461,10 @@ mod tests {
             );
         }
 
-        // Phase `force_kill_contract_does_not_follow_local_dialog_preference`.
+        // Phase `force_kill_contract_is_always_confirmed`.
         {
-            let mut a = app();
+            let a = app();
             let pid = a.selected_pid.unwrap();
-            a.prefs.confirm_kill = true;
-            a.prefs.confirm_kill = false;
             let process = a
                 .live_process_row(&resource_id_for(&a, pid))
                 .expect("process row")
@@ -6664,7 +6526,6 @@ mod tests {
         // action rather than sending a process signal from the paint surface.
         {
             let mut a = app();
-            a.prefs.confirm_kill = true;
             let pid = a.selected_pid.unwrap();
             a.hit.kill_btn = Rect::new(0.0, 0.0, 96.0, 32.0);
             let mut h = false;
@@ -6954,7 +6815,6 @@ mod tests {
                     ("tree", a.hit.tree_toggle),
                     ("sum", a.hit.sum_toggle),
                     ("kernel", a.hit.kernel_toggle),
-                    ("confirm", a.hit.confirm_toggle),
                 ] {
                     if pill == Rect::ZERO {
                         continue; // sum pill is absent in flat mode; confirm is dropped at extreme narrow
@@ -7014,16 +6874,11 @@ mod tests {
                 let mut a = app();
                 draw_at(&mut a, w, 720.0);
                 let content = Rect::new(OUTER_PAD, 0.0, w - OUTER_PAD, 720.0);
-                assert!(
-                    a.hit.confirm_toggle != Rect::ZERO,
-                    "w={w}: the persisted Confirm kills preference must stay reachable"
-                );
                 let controls = [
                     ("search", a.hit.search),
                     ("tree", a.hit.tree_toggle),
                     ("sum", a.hit.sum_toggle),
                     ("kernel", a.hit.kernel_toggle),
-                    ("confirm", a.hit.confirm_toggle),
                 ];
                 for (name, r) in controls {
                     if r == Rect::ZERO {
@@ -7121,27 +6976,6 @@ mod tests {
             assert!(
                 (a.hit.summary_cells[0].width() - wide_card_w).abs() < 1.0,
                 "card width returns to its wide value after resize round-trip"
-            );
-        }
-
-        // Phase `confirm_pill_is_laid_out_on_wide_toolbar`.
-        // The confirm pill is actually laid out on the real draw path at a normal
-        // width (not just a hand-seated rect).
-        {
-            let mut a = app();
-            draw_at(&mut a, 1280.0, 720.0);
-            assert_ne!(
-                a.hit.confirm_toggle,
-                Rect::ZERO,
-                "confirm pill drawn at a normal width"
-            );
-            assert!(
-                !overlaps(a.hit.confirm_toggle, a.hit.search),
-                "confirm pill clears the search box"
-            );
-            assert!(
-                !overlaps(a.hit.confirm_toggle, a.hit.tree_toggle),
-                "confirm pill clears the tree pill"
             );
         }
     }
@@ -7423,7 +7257,6 @@ mod tests {
         {
             let mut a = app();
             a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            a.prefs.confirm_kill = true;
             let pid = a.model.processes[5].pid;
             a.hit.rows = vec![(pid, Rect::new(100.0, 200.0, 600.0, 222.0))];
             let mut h = false;
@@ -7608,7 +7441,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -7950,23 +7783,9 @@ mod tests {
             assert_eq!(disk_scroll, a.resources_scroll_for_stat(3, bw, vh));
         }
 
-        // Phase `confirm_kills_pill_is_local_and_does_not_ungate_resource_kill`.
-        // The Confirm-kills pill changes only this window's preference; the
-        // published force-kill action remains host-confirmed regardless.
+        // Phase `force_kill_always_enters_the_host_confirmed_contract`.
         {
             let mut a = app();
-            assert!(a.prefs.confirm_kill, "confirm defaults on");
-            a.hit.confirm_toggle = Rect::new(0.0, 0.0, 140.0, 30.0);
-            let mut doc = AutoCommit::new();
-            let mut h = false;
-            a.on_click(Point::new(10.0, 10.0), &mut h);
-            assert!(h);
-            assert!(!a.prefs.confirm_kill, "pill toggled the pref off");
-            assert!(
-                doc.get_heads().is_empty(),
-                "local safety preference is not shared"
-            );
-            // All visible force-kill routes still enter the host-owned contract.
             let pid = a.visible_rows()[0].pid;
             a.request_process_control(pid, |process| MonitorEffect::Kill { process });
             assert_eq!(
@@ -8273,13 +8092,11 @@ mod tests {
             tail.started_at = 88_881;
             tail.name = "searchable-tail-worker".into();
             a.model.processes.push(tail.clone());
-            a.process_search.refresh(&a.model.processes);
 
-            let provider = ui::search::capability::search_providers(&a)
-                .pop()
-                .expect("process provider");
-            let hit = provider
-                .search_limited("tail-worker", 1)
+            let provider = ui::framework::testing::search_source::<crate::resource::Monitor>(
+                a.process_search_entries(),
+            );
+            let hit = ui::search::SearchProvider::search_limited(&provider, "tail-worker", 1)
                 .pop()
                 .expect("the omitted catalogue tail remains globally searchable");
             let address = hit.action_address().expect("search result has an action");
@@ -8289,7 +8106,7 @@ mod tests {
             );
             assert_eq!(address.action, "inspect");
             assert!(
-                provider.resolve_action_resource(&address).is_some(),
+                a.live_process_row(&address.resource).is_some(),
                 "the search address materializes the exact resource, not a PID-only fallback"
             );
         }
@@ -8342,7 +8159,7 @@ mod tests {
                     monitor_process_target(process.pid, process.started_at.saturating_add(1))
                 ),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(taken(&mut a).is_none());
@@ -8409,28 +8226,21 @@ mod tests {
                 &mut first,
                 "monitor.interval:3000",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert!(Widget::perform_semantic_action(
                 &mut first,
                 "monitor.auto-refresh",
                 &ui::a11y::Action::ToggleCheck,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert!(Widget::perform_semantic_action(
                 &mut first,
                 "monitor.kernel-threads",
                 &ui::a11y::Action::ToggleCheck,
-                &mut doc,
-                &root,
-            ));
-            assert!(Widget::perform_semantic_action(
-                &mut first,
-                "monitor.confirm-kills",
-                &ui::a11y::Action::ToggleCheck,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             // Window state (and device prefs) must not enter the shared
@@ -8442,7 +8252,7 @@ mod tests {
             first.selected_pid = first.model.processes.last().map(|process| process.pid);
 
             // A shared-document sync must not import first's uncommitted fields.
-            second.sync(&mut doc, &root);
+            second.sync(&doc, &root);
             assert_eq!(second.prefs, Prefs::default());
             assert!(second.search_input.value().is_empty());
             assert_eq!(second.sort_key, SortKey::Cpu);
@@ -8490,7 +8300,7 @@ mod tests {
                 &mut a,
                 "monitor.summary.2",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(a.tab, Tab::Resources);
@@ -8512,7 +8322,7 @@ mod tests {
                     process_resource_id(pid, started_at)
                 ),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(a.expanded.contains(&pid));
@@ -8531,7 +8341,7 @@ mod tests {
                     process_resource_id(pid, started_at)
                 ),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -8554,7 +8364,7 @@ mod tests {
                 &mut a,
                 &format!("{}:kill", monitor_process_target(pid, started_at)),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -8564,15 +8374,6 @@ mod tests {
                 })
             );
             assert!(a.model.processes.iter().any(|process| process.pid == pid));
-
-            assert!(Widget::perform_semantic_action(
-                &mut a,
-                "monitor.confirm-kills",
-                &ui::a11y::Action::ToggleCheck,
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert!(!a.prefs.confirm_kill, "semantic preference toggle persists");
         }
 
         // Phase `process_source_permission_state_has_an_accessible_shared_retry`.
@@ -8592,7 +8393,7 @@ mod tests {
                 &mut a,
                 "monitor.process-source.retry",
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(

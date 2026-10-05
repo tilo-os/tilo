@@ -9,7 +9,8 @@ mod key;
 mod render;
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, InteractionCardPlacement, TERMINAL_INTERACTION_DWELL,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement,
+    TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
 /// Shared with the other widgets that frame a label in fixed-pixel insets
@@ -488,6 +489,9 @@ pub struct PresenceCtx {
     /// input device: applications may project its stable resource anchor to
     /// native geometry, while the generic painter shows a compact fallback.
     interactions: HashMap<tilo_actions::InvocationId, interaction::InteractionPresenceEntry>,
+    /// Last marker tip actually painted for each agent. This is local visual
+    /// continuity only: it never enters pointer presence or action state.
+    interaction_markers: HashMap<UserId, interaction::AgentMarkerContinuity>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
     /// Not serialised — purely a local render effect.

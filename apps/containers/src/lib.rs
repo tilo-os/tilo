@@ -45,7 +45,7 @@ pub mod panels;
 pub mod podman;
 pub mod presentation;
 pub mod resource;
-pub mod search_provider;
+pub mod search;
 pub mod terminal;
 
 pub use app::ContainersApp;

@@ -39,7 +39,6 @@ uuid.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
-tilo-test-env = { path = "../../crates/dev/test-env" }
 tempfile.workspace = true
 tilo-automerge.workspace = true
 

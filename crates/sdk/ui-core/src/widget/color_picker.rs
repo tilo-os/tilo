@@ -1042,7 +1042,7 @@ impl ColorPicker {
 }
 
 impl Widget for ColorPicker {
-    fn sync(&mut self, _state: &mut AppModel, _root: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {
         if let Some(color) = self
             .local_state
             .as_mut()
@@ -1375,7 +1375,7 @@ impl Widget for ColorPicker {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -1402,7 +1402,7 @@ impl Widget for ColorPicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         let crate::a11y::Action::SetValue(value) = action else {
@@ -1495,7 +1495,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1753,12 +1753,12 @@ mod tests {
             let state = crate::LocalState::new(initial);
             let mut left = ColorPicker::from_state(&state);
             let mut right = ColorPicker::from_state(&state);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
             left.set_color(expected);
             assert!(state.with(|color| ColorPicker::colors_equal(color, &expected)));
             assert!(left.take_changed().is_none());
-            Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut right, &doc, &automerge::ROOT);
             assert_eq!(right.hex_string(), "#ABCDEF");
             assert!(right.take_changed().is_none());
         }
@@ -1777,7 +1777,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("#36A2EB".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(picker.hex_string(), "#36A2EB");
@@ -1790,7 +1790,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("blue".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(picker.hex_string(), "#36A2EB");
@@ -1905,7 +1905,7 @@ mod tests {
                 &mut p,
                 &target,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.hex_string(), "#10B981");
@@ -1913,7 +1913,7 @@ mod tests {
                 &mut p,
                 &format!("{TARGET_SWATCH}9"),
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
         }
@@ -2019,7 +2019,7 @@ mod tests {
                 &mut p,
                 TARGET_DONE,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(matches!(
@@ -2030,7 +2030,7 @@ mod tests {
                 &mut p,
                 TARGET_VALUE,
                 &Action::SetValue("#ABCDEF".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.hex_string(), "#ABCDEF");

@@ -35,7 +35,6 @@ apps/maps/src/draw.rs literal_color 0
 apps/maps/src/offline_panel.rs white_or_black 0
 apps/music/src/app/render.rs white_or_black 0
 apps/music/src/art.rs white_or_black 3
-apps/notes/src/shots.rs literal_color 0
 apps/pdf-viewer/src/app_draw.rs white_or_black 0
 apps/pdf-viewer/src/render.rs literal_color 10
 apps/pdf-viewer/src/render.rs white_or_black 3

@@ -200,6 +200,8 @@ pub struct Project {
     pub nodes: BTreeMap<NodeId, TreeNode>,
     pub root: NodeId,
     next_id: NodeId,
+    /// Nodes read from disk since [`Self::take_read_from_disk`] last asked.
+    read_from_disk: Vec<NodeId>,
 }
 
 impl Project {
@@ -209,6 +211,7 @@ impl Project {
             nodes: BTreeMap::new(),
             root: 0,
             next_id: 0,
+            read_from_disk: Vec::new(),
         };
         let root = p.alloc();
         p.nodes.insert(
@@ -469,13 +472,83 @@ impl Project {
     /// Add a disk-backed folder under `parent`. Its children are read lazily
     /// from `path` the first time it is expanded (`load_children`).
     pub fn add_disk_folder(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
-        self.insert_folder(parent, name, Some(path.to_path_buf()), false)
+        if let Some(id) = self.claim_disk_node(parent, name, path, true) {
+            return id;
+        }
+        let id = self.insert_folder(parent, name, Some(path.to_path_buf()), false);
+        self.identify_from_disk(id);
+        id
     }
 
     /// Add a disk-backed file under `parent`. Its content is read lazily from
     /// `path` the first time the buffer is opened (`file_seed`).
     pub fn add_disk_file(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
-        self.insert_file(parent, name, "", Some(path.to_path_buf()))
+        if let Some(id) = self.claim_disk_node(parent, name, path, false) {
+            return id;
+        }
+        let id = self.insert_file(parent, name, "", Some(path.to_path_buf()));
+        self.identify_from_disk(id);
+        id
+    }
+
+    /// The identity of the entry `name` read from disk under `parent`: the
+    /// same for the same place in the project on every launch and every
+    /// device that opens it, so reopening a folder meets the records it
+    /// left.
+    fn disk_identity(&self, parent: Option<NodeId>, name: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let path = match parent {
+            Some(parent) => format!("{}/{name}", self.path_of(parent)),
+            None => name.to_string(),
+        };
+        let digest = Sha256::digest(path.as_bytes());
+        let mut bytes = [0u8; 16];
+        for (byte, digested) in bytes.iter_mut().zip(digest.iter()) {
+            *byte = *digested;
+        }
+        uuid::Builder::from_random_bytes(bytes)
+            .into_uuid()
+            .to_string()
+    }
+
+    /// Give the node `id`, just read from disk, its identity, and note it
+    /// for the project to record.
+    fn identify_from_disk(&mut self, id: NodeId) {
+        let Some(node) = self.nodes.get(&id) else {
+            return;
+        };
+        let identity = self.disk_identity(node.parent, &node.name.clone());
+        if let Some(node) = self.nodes.get_mut(&id) {
+            node.resource_id = identity;
+        }
+        self.read_from_disk.push(id);
+    }
+
+    /// A node the project's records already put at this place: it is the
+    /// entry on disk, read now.
+    fn claim_disk_node(
+        &mut self,
+        parent: NodeId,
+        name: &str,
+        path: &Path,
+        folder: bool,
+    ) -> Option<NodeId> {
+        let identity = self.disk_identity(Some(parent), name);
+        let id = self.node_for_resource(&identity)?;
+        let node = self.nodes.get_mut(&id)?;
+        if node.is_folder() != folder {
+            return None;
+        }
+        node.disk_path = Some(path.to_path_buf());
+        if let NodeKind::Folder { loaded, .. } = &mut node.kind {
+            *loaded = false;
+        }
+        Some(id)
+    }
+
+    /// The nodes read from disk since the last call.
+    pub fn take_read_from_disk(&mut self) -> Vec<NodeId> {
+        std::mem::take(&mut self.read_from_disk)
     }
 
     fn insert_folder(
@@ -608,6 +681,7 @@ impl Project {
         let root = p.root;
         // Point the root at the real directory and mark it unloaded so
         // `load_children` reads it.
+        p.identify_from_disk(root);
         if let Some(node) = p.nodes.get_mut(&root) {
             node.disk_path = Some(path);
             if let NodeKind::Folder {
@@ -701,6 +775,7 @@ impl Project {
             .map_or_else(|| "/".to_string(), dir_display_name);
         let mut p = Project::new(&parent_name);
         let root = p.root;
+        p.identify_from_disk(root);
         let node = p.add_disk_file(root, &file_name, path);
         Ok((p, node))
     }

@@ -78,7 +78,7 @@ const MAX_OFFSET: f32 = 0.35;
 const MIN_LEARNING_RATE: f32 = 0.05;
 
 /// Bound on the number of per-key offsets retained.
-const MAX_LEARNED_KEYS: usize = 64;
+pub(crate) const MAX_LEARNED_KEYS: usize = 64;
 
 /// One letter key the resolver may choose.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -184,6 +184,20 @@ impl TouchModel {
     /// Number of keys with a learned offset.
     pub fn learned_keys(&self) -> usize {
         self.offsets.len()
+    }
+
+    /// Every learned offset, by letter.
+    pub fn offsets(&self) -> &BTreeMap<char, KeyOffset> {
+        &self.offsets
+    }
+
+    /// Take `offsets` as where this user tends to hit each letter.
+    pub fn adopt(&mut self, offsets: &BTreeMap<char, KeyOffset>) {
+        self.offsets = offsets
+            .iter()
+            .take(MAX_LEARNED_KEYS)
+            .map(|(letter, offset)| (*letter, *offset))
+            .collect();
     }
 
     /// Forget every learned offset.

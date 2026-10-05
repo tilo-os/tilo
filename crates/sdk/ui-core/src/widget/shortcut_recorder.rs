@@ -3,11 +3,16 @@
 //! The displayed keycaps are the control: click them, or focus them and press
 //! Enter/Space, then type the replacement chord. Escape cancels. A reset
 //! affordance is present only while the value differs from its default.
+//!
+//! The chord shown is a [`crate::LocalState`]; a recorded chord is offered to
+//! the action the recorder is bound to ([`ShortcutRecorder::on_action`]),
+//! which decides whether it is taken — the state then shows what was stored.
 
 use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::binding::{BoxedBinding, Pulled};
+use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -30,10 +35,12 @@ const RESET_SIZE: f64 = 26.0;
 
 pub struct ShortcutRecorder {
     id: String,
-    /// The chord text, as a document key.
+    /// The chord shown.
     stored: BoxedBinding<String>,
-    /// Whether the model rejected the chord (`<key>.error`).
-    rejected: BoxedBinding<bool>,
+    /// Whether the chord shown was refused.
+    rejected: Option<BoxedBinding<bool>>,
+    /// Where a recorded chord goes.
+    action: Option<ActionEmitter<String>>,
     default: String,
     value: String,
     invalid: bool,
@@ -46,13 +53,16 @@ pub struct ShortcutRecorder {
 }
 
 impl ShortcutRecorder {
-    pub fn new(id: &str, path: &str, value: &str, default: &str) -> Self {
+    /// A recorder showing `state`'s chord, whose default is `default`.
+    pub fn new(id: &str, state: &crate::LocalState<String>, default: &str) -> Self {
+        let (value, stored) = super::binding::local(state);
         Self {
             id: id.into(),
-            stored: crate::doc_binding::str_key(path),
-            rejected: crate::doc_binding::bool_key(&format!("{path}.error")),
+            stored,
+            rejected: None,
+            action: None,
             default: default.into(),
-            value: value.into(),
+            value,
             invalid: false,
             rect: Rect::ZERO,
             pointer: None,
@@ -61,6 +71,20 @@ impl ShortcutRecorder {
             platform: PlatformConventions::default(),
             interaction: InteractionEnvironment::default(),
         }
+    }
+
+    /// Offer every recorded chord, and a reset to the default, to `binding`.
+    #[must_use]
+    pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
+        self.action = Some(ActionEmitter::new(binding));
+        self
+    }
+
+    /// Show the chord as unavailable while `refused` holds.
+    #[must_use]
+    pub fn with_refused(mut self, refused: &crate::LocalState<bool>) -> Self {
+        self.rejected = Some(super::binding::local(refused).1);
+        self
     }
 
     fn reset_rect(&self) -> Option<Rect> {
@@ -83,14 +107,20 @@ impl ShortcutRecorder {
         binding_from_text(&self.value)
     }
 
-    fn write(&mut self, state: &mut AppModel, root: &ModelPath, value: String) {
-        self.stored.push(state, root, &value);
+    fn write(&mut self, _state: &AppModel, _root: &ModelPath, value: String) {
+        if let Some(action) = &mut self.action {
+            let _ = action.emit(value.clone());
+        } else {
+            self.stored.publish(&value);
+        }
         self.value = value;
         self.capturing = false;
     }
 }
 
 impl Widget for ShortcutRecorder {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.interaction.keyboard_family =
@@ -105,11 +135,15 @@ impl Widget for ShortcutRecorder {
         self.interaction = environment;
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Pulled::Value(value) = self.stored.pull(state, root) {
             self.value = value;
         }
-        self.invalid = matches!(self.rejected.pull(state, root), Pulled::Value(true));
+        if let Some(rejected) = &mut self.rejected
+            && let Pulled::Value(invalid) = rejected.pull(state, root)
+        {
+            self.invalid = invalid;
+        }
     }
 
     fn build_layout(
@@ -257,7 +291,7 @@ impl Widget for ShortcutRecorder {
                 let Some(point) = self.pointer else { return };
                 if let Some(reset) = self.reset_rect().filter(|r| r.contains(point)) {
                     let _ = reset;
-                    self.write(ctx.state, ctx.path, self.default.clone());
+                    self.write(ctx.state.doc(), ctx.path, self.default.clone());
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                 } else if self.chord_rect().contains(point) {
@@ -274,7 +308,7 @@ impl Widget for ShortcutRecorder {
                         self.capturing = false;
                     } else if let Some(value) = chord_from_event(&event.logical_key, *ctx.modifiers)
                     {
-                        self.write(ctx.state, ctx.path, value);
+                        self.write(ctx.state.doc(), ctx.path, value);
                     }
                     *ctx.handled = true;
                 } else if matches!(
@@ -335,7 +369,7 @@ impl Widget for ShortcutRecorder {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate) {
@@ -417,23 +451,59 @@ fn chord_from_event(key: &Key, modifiers: winit::event::Modifiers) -> Option<Str
     Some(parts.join("+"))
 }
 
+impl crate::widget::controls::ActionControls for ShortcutRecorder {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        match &self.action {
+            Some(action) => vec![action.metadata(&self.id)],
+            None => vec![ControlBindingMetadata {
+                control_id: self.id.clone(),
+                kind: ControlBindingKind::SemanticAction(self.id.clone()),
+            }],
+        }
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recorder(value: &str, default: &str) -> ShortcutRecorder {
+        ShortcutRecorder::new("x", &crate::LocalState::new(value.to_owned()), default)
+    }
 
     #[test]
     fn binding_display_names_keys_and_offers_reset_only_when_changed() {
         // Case `reset_exists_only_for_a_changed_binding`.
         {
-            let unchanged = ShortcutRecorder::new("x", "x", "Super+Left", "Super+Left");
+            let unchanged = recorder("Super+Left", "Super+Left");
             assert!(unchanged.reset_rect().is_none());
-            let changed = ShortcutRecorder::new("x", "x", "Super+H", "Super+Left");
+            let changed = recorder("Super+H", "Super+Left");
             assert!(changed.reset_rect().is_some());
         }
 
         // Case `visual_binding_uses_readable_named_keys`.
         {
-            let recorder = ShortcutRecorder::new("x", "x", "Super+Down", "Super+Left");
+            let recorder = recorder("Super+Down", "Super+Left");
             assert_eq!(
                 recorder
                     .binding()

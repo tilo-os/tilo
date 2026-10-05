@@ -1446,6 +1446,7 @@ mod tests {
         argument: InvokeArgument,
     ) -> InvokeRequest {
         InvokeRequest {
+            on_behalf_of: None,
             invocation,
             target: RemoteActionTarget {
                 provider: tilo_relay_protocol::agents::AGENTS_PROVIDER.into(),

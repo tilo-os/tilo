@@ -10,6 +10,7 @@ use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
     RestoreInput,
 };
+use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
@@ -33,10 +34,10 @@ use {
 
 use super::dispatch::Dispatcher;
 use super::effect::Effects;
-use super::launch::{Command, LaunchInput};
+use super::launch::{Command, Helper, LaunchInput};
 use super::live::Live;
 use super::root::ResourceRoot;
-use super::scenario::{Fixture, Run};
+use super::scenario::{Fixture, Launched, Run};
 use super::view::ViewCx;
 
 /// A framework app: one resource type and a view of it.
@@ -56,7 +57,9 @@ pub trait ResourceApp: 'static {
     /// How every window hosting the app treats it: focus after a rebuild,
     /// live appearance, and whether captures withhold it. An app that shows
     /// secrets declares `capture_protected` here, so the live launch, the
-    /// shell and every other host of its component protect it alike.
+    /// shell and every other host of its component protect it alike; an
+    /// on-screen keyboard declares its window an
+    /// [input surface](ui_core::application::WindowRole::InputSurface).
     const BEHAVIOUR: ComponentBehaviour = ComponentBehaviour::DEFAULT;
     /// Media types (`type/subtype`, lowercase) of the files the app opens
     /// when a host hands it one (a file association, a file dropped on its
@@ -69,6 +72,35 @@ pub trait ResourceApp: 'static {
     /// How many arguments (paths, URLs) a launch may name;
     /// [`Self::launch_record`] and [`Self::launch`] receive them.
     const ARGUMENTS: usize = 0;
+    /// The app keeps one record per room, the room's own, rather than one
+    /// per window: every window of the app in the room opens that record,
+    /// and the first one creates it (and applies [`Self::seed`]). A room's
+    /// conversation is such a record.
+    const ROOM_RECORD: bool = false;
+    /// The app's own command-line options that take a value
+    /// (`--purpose number` or `--purpose=number`): how this window runs
+    /// rather than what it opens. [`Self::launch`] reads them from its
+    /// [`LaunchInput::option`], views and surfaces from
+    /// [`ViewCx::launch_option`] and
+    /// [`SurfaceCx::launch_option`](super::SurfaceCx::launch_option).
+    const OPTIONS: &'static [&'static str] = &[];
+    /// The app's own switches, which take no value (`--debug-hit-areas`):
+    /// [`LaunchInput::flag`], [`ViewCx::launch_flag`],
+    /// [`SurfaceCx::launch_flag`](super::SurfaceCx::launch_flag).
+    const FLAGS: &'static [&'static str] = &[];
+    /// Whether the app opens private windows (`--private`): a window on a
+    /// profile of its own that is thrown away with the process — its record,
+    /// settings and files never reach the person's — and that attaches to
+    /// no runtime, so nothing it shows syncs or is shared. It holds none of
+    /// the person's own records ([`ViewCx::person`] answers `None`), and its
+    /// view tells with [`ViewCx::is_private`].
+    const PRIVATE_WINDOWS: bool = false;
+    /// The history of a file of the mounted filesystem the app shows (the
+    /// file selected in a file manager), a History scope beside the
+    /// resource's own: its versions are read, previewed and restored through
+    /// the filesystem's projection, not the app's document. The app's
+    /// surface names the file with [`SurfaceCx::file_history`](super::SurfaceCx::file_history).
+    const FILE_HISTORY: Option<FileHistory> = None;
 
     /// Build the view. Called once for the live app, and again for every
     /// historical version History mode shows (with a read-only context), so
@@ -109,9 +141,27 @@ pub trait ResourceApp: 'static {
     /// participant's permissions, attributed, undoable and in history. A
     /// launch that shows something rather than changing the resource (a
     /// link to one item, a file to look at before acting on it) invokes one
-    /// of the app's effects ([`Invoke::effect`]) through the same door.
+    /// of the app's effects ([`Invoke::effect`]) through the same door. A
+    /// capture launched on nothing takes none: its [scenario](Self::scenario)
+    /// stages the record.
+    ///
+    /// When the record was already there, [`LaunchInput::record`] reads it
+    /// as it is: a launch on a file can tell that the file changed since
+    /// the record last read or wrote it.
     fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Self::Resource>> {
         let _ = (input, created);
+        Vec::new()
+    }
+
+    /// What a record a launch naming `input` creates starts with besides
+    /// the resource's [`initialize`](Resource::initialize): the content of
+    /// the file it was launched on. The actions are written into the
+    /// record's genesis, so they must depend on nothing but `input` — two
+    /// devices that each create the record of one file converge on one
+    /// document only if both write the same genesis. They are nobody's
+    /// edit: no history entry, no undo.
+    fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Self::Resource>> {
+        let _ = input;
         Vec::new()
     }
 
@@ -119,6 +169,17 @@ pub trait ResourceApp: 'static {
     fn commands() -> &'static [Command] {
         &[]
     }
+
+    /// The helpers the app's binary also is ([`Helper`]), asked in order
+    /// before the app starts.
+    fn helpers() -> &'static [Helper] {
+        &[]
+    }
+
+    /// Whether the app takes part in the workspace runtime of the room it is
+    /// launched in. An app that only runs on this device (an imager on a
+    /// platform without the runtime) says no.
+    const ATTACHES_RUNTIME: bool = true;
 
     /// The app's message catalog, loaded before its view is built in every
     /// host that mounts the app, so the view's lookups find its messages.
@@ -159,6 +220,23 @@ pub trait ResourceApp: 'static {
         Vec::new()
     }
 
+    /// What a person does in the scene that the scenario's actions and
+    /// staged view state cannot show: text typed into an editor, a drag
+    /// held over its drop target, a menu opened with a right click. Driven
+    /// on `input` through the window's own event path after the actions
+    /// and staging, so the frame shows the app's real answer to that input.
+    /// Must be deterministic, like the rest of the scenario.
+    ///
+    /// # Errors
+    /// Returns why the input could not be given (its target is missing).
+    fn scenario_input(
+        name: Option<&str>,
+        input: &mut ui_core::headless::FrameHarness,
+    ) -> Result<(), String> {
+        let _ = (name, input);
+        Ok(())
+    }
+
     /// What a brand-new record starts with that depends on who creates it or
     /// where: the creator as its owner, a first-run import of settings that
     /// already exist on this device. Everything that depends on neither is
@@ -177,22 +255,44 @@ pub trait ResourceApp: 'static {
     }
 }
 
+/// The History scope of [`ResourceApp::FILE_HISTORY`]: the files of the
+/// mounted filesystem an app shows.
+#[derive(Clone, Copy)]
+pub struct FileHistory {
+    /// What the scope is called in History: "Selected file".
+    pub title: &'static str,
+    /// Draws one version of a file, from its bytes as the projection read
+    /// them.
+    pub preview: ui_core::history_mode::checked_files::FilePreviewFactory,
+}
+
 /// What [`ResourceApp::seed`] may read: who is creating the record, and the
-/// app's host — its settings, files and secrets on this device.
+/// app's host — its settings, files and secrets on this device — when the
+/// record is created in a window. A participant without one (an agent, a
+/// room service: [`seed_record`](super::seed_record)) creates it with no
+/// host: what a seed imports from the device is the device's own to seed.
 pub struct SeedCx<'a> {
-    context: &'a HostContext,
+    pub(crate) me: &'a str,
+    pub(crate) device: &'a str,
+    pub(crate) host: Option<&'a HostContext>,
 }
 
 impl SeedCx<'_> {
     /// Who is creating the record: the id their views read as
     /// [`ViewCx::me`] and the seed's actions read as their author.
     pub fn me(&self) -> &str {
-        &self.context.author().0
+        self.me
     }
 
-    /// The app's host on this device.
-    pub fn host(&self) -> &HostContext {
-        self.context
+    /// The device creating the record.
+    pub fn device(&self) -> &str {
+        self.device
+    }
+
+    /// The app's host on this device; `None` for a participant without a
+    /// window.
+    pub fn host(&self) -> Option<&HostContext> {
+        self.host
     }
 }
 
@@ -229,7 +329,14 @@ struct DefinitionKey<A>(std::marker::PhantomData<A>);
 
 /// The toolkit application definition of `A`, created once per process.
 pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
-    leaked(TypeId::of::<DefinitionKey<A>>(), || ApplicationDefinition {
+    leaked(TypeId::of::<DefinitionKey<A>>(), || {
+        super::kinds::register::<A>();
+        definition_of::<A>()
+    })
+}
+
+fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
+    ApplicationDefinition {
         app_id: A::ID,
         title: A::TITLE,
         icon: icon::<A>(),
@@ -237,8 +344,9 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
         required: vec![],
         optional: vec![],
         opens: A::OPENS,
+        room_record: A::ROOM_RECORD,
         create: create::<A>,
-    })
+    }
 }
 
 fn icon<A: ResourceApp>() -> IconDescriptor {
@@ -273,6 +381,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     reader: Reader<A::Resource>,
     editing: Editing,
     storage: AppStorage,
+    hosted: super::settings::Hosted,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
     let (permissions, read_only, me, run) = match editing {
@@ -286,13 +395,14 @@ pub(crate) fn build_root<A: ResourceApp>(
         }
         Editing::ReadOnly => (None, true, None, Run::past()),
     };
+    let run = run.for_participant(me.as_deref());
     let label = A::label(reader.state());
     let resource_id = <A::Resource as Resource>::KIND;
     let published = tilo_resource::publish::<A::Resource>(resource_id, &label, reader.state());
     let live = Live::new(reader);
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(A::ID, resource_id, read_only, me.as_deref());
-    let storage = super::settings::ViewStorage::new(storage);
+    let storage = super::settings::ViewStorage::new(storage, hosted.attach(A::ID, A::TITLE));
     // Effects and projection drains run in a window someone uses only:
     // History shows a past version, and a capture reaches nothing outside.
     let effects = (permissions.is_some() && run.mode.is_live())
@@ -325,7 +435,7 @@ pub(crate) fn action_registry<A: ResourceApp>() -> tilo_actions::ActionRegistry 
 /// Apply a new record's [`ResourceApp::seed`] through the replayable
 /// executor: attributed to `author` as their edits are, and recorded as
 /// content from outside, which no undo takes back.
-fn apply_seed<A: ResourceApp>(
+pub(crate) fn apply_seed<A: ResourceApp>(
     doc: &mut tilo_resource::Doc,
     author: &str,
     seed: &[Invoke<A::Resource>],
@@ -364,6 +474,26 @@ fn apply_seed<A: ResourceApp>(
     Ok(())
 }
 
+/// Write a launch's [`ResourceApp::genesis`] into the record's genesis:
+/// built at time zero and applied as the genesis writes everything, so every
+/// device that creates the record writes the same change.
+fn write_genesis<A: ResourceApp>(
+    doc: &mut tilo_resource::Doc,
+    genesis: &[Invoke<A::Resource>],
+) -> Result<(), String> {
+    for invoke in genesis {
+        let actions = if invoke.is_group() {
+            tilo_resource::group::build_group::<A::Resource>(&invoke.arguments, 0)?.actions
+        } else {
+            vec![invoke.build(0)?]
+        };
+        for action in &actions {
+            tilo_actions::Action::apply(action, doc).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 #[allow(
     clippy::needless_pass_by_value,
     reason = "the toolkit's ComponentFactory signature passes the target owned"
@@ -376,24 +506,67 @@ fn create<A: ResourceApp>(
     if let Some(catalog) = A::catalog() {
         catalog.ensure();
     }
-    let created = matches!(target, LaunchTarget::New);
+    // A record of its own, or the room's record an app keeps one of
+    // (`ResourceApp::ROOM_RECORD`), opened for the first time.
+    let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew);
+    record_content(&mut context);
+    let file = context.take_open_file();
+    let arguments = context.take_launch_arguments();
+    let options = context.take_launch_options();
     if created {
-        let seed = A::seed(&SeedCx { context: &context });
+        let genesis = A::genesis(
+            &LaunchInput::new(&arguments, file.as_ref())
+                .with_options(&options)
+                .with_content(context.content()),
+        );
         let author = context.author().0.clone();
+        let seed = A::seed(&SeedCx {
+            me: &author,
+            device: context.device_id(),
+            host: Some(&context),
+        });
         context
             .initialize_new_record_seeded(
-                |doc| <A::Resource as Resource>::initialize(doc).map_err(|error| error.to_string()),
+                |doc| {
+                    <A::Resource as Resource>::initialize(doc)
+                        .map_err(|error| error.to_string())?;
+                    write_genesis::<A>(doc, &genesis)
+                },
                 |doc| apply_seed::<A>(doc, &author, &seed),
             )
             .map_err(LaunchError::Record)?;
     }
-    let file = context.take_open_file();
-    let arguments = context.take_launch_arguments();
+    let capture = context.capture().is_some();
+    let file_history = A::FILE_HISTORY.map(|_| FileHistorySource::default());
+    // A window someone uses can open another record in its place; a
+    // capture shows the one it staged.
+    let opener = (!capture).then(|| {
+        let reopener = context.reopener();
+        super::launch::OpenHere::new(move |arguments| open_in_place::<A>(&reopener, arguments))
+    });
     let run = match context.capture().cloned() {
         Some(capture) => prepare_capture::<A>(&mut context, capture.scenario())?,
-        None => Run::live(context.content().cloned()),
+        None => Run::live(context.content().cloned()).in_private(context.is_private()),
+    };
+    if let Some(file) = &file {
+        file.report_opened(<A::Resource as Resource>::KIND);
     }
-    .launched_on(&arguments);
+    let handoff = context.take_handoff();
+    let lent = super::scenario::Lent::new(context.take_lent());
+    let run = run
+        .launched(Launched {
+            arguments,
+            options,
+            file,
+            handoff,
+            lent,
+        })
+        .opening_with(opener)
+        .showing_file_history(
+            file_history
+                .clone()
+                .map(|source| (source, super::preview::file_history_witness::<A>())),
+        );
     let permissions = context.live_permissions();
     let reader = context
         .read_record(Reader::<A::Resource>::read)
@@ -408,19 +581,54 @@ fn create<A: ResourceApp>(
             run,
         },
         context.storage(),
+        super::settings::Hosted {
+            // A private window keeps nothing of the person's: their own
+            // records are not even opened.
+            person: (!context.is_private())
+                .then(|| context.person_records().cloned())
+                .flatten(),
+            device: Some(context.device_id().to_owned()),
+        },
     );
-    if let Some(file) = &file {
-        file.report_opened(<A::Resource as Resource>::KIND);
-    }
-    for invoke in A::launch(&LaunchInput::new(&arguments, file.as_ref()), created) {
-        root.dispatcher().invoke(invoke);
+    // A capture launched on nothing is staged by its scenario alone: what a
+    // launch on nothing takes reads from this device (a library, the last
+    // folder), which a screenshot must not depend on. A capture launched on
+    // a file takes that file, as the command line does.
+    let record = root.live().get();
+    let launch = root.launch().with_record(&*record);
+    if !capture || !launch.is_empty() {
+        for invoke in A::launch(&launch, created) {
+            root.dispatcher().invoke(invoke);
+        }
     }
     let mut component = AppComponent::new(context, Box::new(root), action_registry::<A>());
     component.set_behaviour(A::BEHAVIOUR);
-    component
-        .register_document_history(super::preview::history_definition::<A>())
-        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+    let history = super::preview::history_definition::<A>();
+    match file_history {
+        Some(files) => component.register_document_and_file_history(history, files),
+        None => component.register_document_history(history),
+    }
+    .map_err(|error| LaunchError::Operation(error.to_string()))?;
     Ok(component)
+}
+
+/// Join the content store the host lent a window to its record's route:
+/// content the record references and this device lacks is asked of the
+/// route, and content the app stores reaches the record's other readers.
+/// A capture keeps its fixture's store as it is: it reaches nothing outside.
+fn record_content(context: &mut HostContext) {
+    if context.capture().is_some() {
+        return;
+    }
+    let Some(local) = context.content().cloned() else {
+        return;
+    };
+    let lane = ui_core::collaboration::record_content::ContentLane::of(
+        context.app_id(),
+        context.record().id.as_str(),
+    );
+    context
+        .provide_content(ui_core::collaboration::record_content::RecordContent::store(local, lane));
 }
 
 /// Prepare a capture's scene before its view is built: the app's fixture,
@@ -529,14 +737,62 @@ fn prepare_app<A: ResourceApp>(
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let arguments = args.positionals();
-    let named = A::launch_record(&LaunchInput::new(arguments, None));
-    let mut prepared = prepare_named(definition, args, named)?;
+    let options = launch_options::<A>(args);
+    let named = A::launch_record(&LaunchInput::new(arguments, None).with_options(&options));
+    let private = A::PRIVATE_WINDOWS && args.has(PRIVATE_FLAG);
+    let mut prepared = prepare_named(definition, args, named, private)?;
     hand_launch(definition, arguments, &mut prepared)?;
+    prepared.context.provide_launch_options(options);
+    // The session launches the target of a playback handoff with where it
+    // stood in its environment; a capture continues nothing.
+    if args.shots.is_none()
+        && let Some(handoff) = process_handoff()
+    {
+        prepared.context.provide_handoff(handoff);
+    }
     Ok(prepared)
 }
 
+/// The playback handoff the session handed this process at its start.
+#[cfg(tilo_native_runner)]
+fn process_handoff() -> Option<ui_core::application::PlaybackHandoff> {
+    let position_ms = std::env::var("TILO_MEDIA_HANDOFF_POSITION_MS")
+        .ok()?
+        .parse()
+        .ok()?;
+    Some(ui_core::application::PlaybackHandoff {
+        position_ms,
+        resume_playing: std::env::var("TILO_MEDIA_HANDOFF_RESUME_PLAYING")
+            .is_ok_and(|value| value == "1"),
+        title: std::env::var("TILO_MEDIA_HANDOFF_TITLE")
+            .ok()
+            .filter(|title| !title.trim().is_empty()),
+    })
+}
+
+/// The options of `A`'s own that `args` named, in declaration order.
+#[cfg(tilo_native_runner)]
+fn launch_options<A: ResourceApp>(args: &LaunchArgs) -> Vec<ui_core::application::LaunchOption> {
+    let options = A::OPTIONS.iter().filter_map(|&name| {
+        args.value(name)
+            .map(|value| ui_core::application::LaunchOption {
+                name: name.to_owned(),
+                value: Some(value.to_owned()),
+            })
+    });
+    let flags = A::FLAGS
+        .iter()
+        .filter(|&&name| args.has(name))
+        .map(|&name| ui_core::application::LaunchOption {
+            name: name.to_owned(),
+            value: None,
+        });
+    options.chain(flags).collect()
+}
+
 /// Hand a prepared component what its launch named: the arguments, and the
-/// file the first one names when the app opens its type.
+/// file the first one names when the app opens its type and it is a path
+/// rather than a URL.
 ///
 /// # Errors
 /// A file of a type the app opens that cannot be read.
@@ -546,15 +802,60 @@ pub(crate) fn hand_launch(
     arguments: &[String],
     prepared: &mut PreparedComponentInputs,
 ) -> Result<(), LaunchError> {
-    if let Some(path) = arguments.first().map(std::path::Path::new)
+    hand_launch_to(definition, arguments, &mut prepared.context)
+}
+
+/// Hand `context` what a launch naming `arguments` names: the arguments,
+/// and on a device with paths the file the first one names when the app
+/// opens its type.
+///
+/// # Errors
+/// A file of a type the app opens that cannot be read.
+fn hand_launch_to(
+    definition: &ApplicationDefinition,
+    arguments: &[String],
+    context: &mut HostContext,
+) -> Result<(), LaunchError> {
+    // A URL (`https://…`, `file://…`) is an argument for the app to resolve,
+    // not a path on this device.
+    #[cfg(tilo_native_runner)]
+    if let Some(path) = arguments
+        .first()
+        .filter(|argument| !argument.contains("://"))
+        .map(std::path::Path::new)
         && let Some(file) = launched_file(definition, path)?
     {
-        prepared.context.provide_open_file(file);
+        context.provide_open_file(file);
     }
-    prepared
-        .context
-        .provide_launch_arguments(arguments.to_vec());
+    #[cfg(not(tilo_native_runner))]
+    let _ = definition;
+    context.provide_launch_arguments(arguments.to_vec());
     Ok(())
+}
+
+/// Open, in the window `reopener` belongs to, what a launch of `A` naming
+/// `arguments` opens ([`ResourceApp::launch_record`], [`ResourceApp::launch`]):
+/// the component built for that record takes the window, its own record and
+/// history with it. The store's refusal of the record, an unreadable file
+/// or the app's refusal to build leaves the window as it is, and is the
+/// answer the returned outcome gives.
+fn open_in_place<A: ResourceApp>(
+    reopener: &ui_core::application::Reopener,
+    arguments: Vec<String>,
+) -> ui_core::application::ReplacementOutcome {
+    // Built when the host takes it: the record store is busy while the
+    // asking view handles the event or operation that asked.
+    reopener.replace_with(move |reopener| {
+        let definition = definition::<A>();
+        let record =
+            A::launch_record(&LaunchInput::new(&arguments, None)).unwrap_or_else(RecordId::minted);
+        let (mut context, target) = reopener.prepare(definition, record)?;
+        hand_launch_to(definition, &arguments, &mut context)?;
+        let component = definition.instantiate(context, target, RestoreInput::None)?;
+        Ok(ui_core::application::ComponentReplacement::new(
+            component, arguments,
+        ))
+    })
 }
 
 /// The file at `path` to hand the component, when `definition` opens its
@@ -594,7 +895,7 @@ fn prepare_definition(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<PreparedComponentInputs, LaunchError> {
-    prepare_named(definition, args, None)
+    prepare_named(definition, args, None, false)
 }
 
 #[cfg(tilo_native_runner)]
@@ -602,12 +903,14 @@ fn prepare_named(
     definition: &ApplicationDefinition,
     args: &LaunchArgs,
     named: Option<RecordId>,
+    private: bool,
 ) -> Result<PreparedComponentInputs, LaunchError> {
     let inputs = ComponentRunnerInputs::from_native_process();
-    // Captures, audits and headless driving never touch the user's profile:
-    // they run on a private one removed with the process, unless a headless
-    // drive names its profile with `--data-dir`.
-    let isolated = args.shots.is_some()
+    // Captures, audits, headless driving and private windows never touch the
+    // user's profile: they run on a private one removed with the process,
+    // unless a headless drive names its profile with `--data-dir`.
+    let isolated = private
+        || args.shots.is_some()
         || args.responsive_matrix.is_some()
         || args.native_audit
         || (args.headless.is_some() && args.value("--data-dir").is_none());
@@ -617,7 +920,8 @@ fn prepare_named(
             .tempdir()
             .map_err(operation)?;
         let root = profile.path().join("state");
-        let settings = profile.path().join("settings.json");
+        let profile_root = profile.path().to_path_buf();
+        let content = profile_content(profile.path());
         let mut host = ApplicationHost::new_with_profile_lifetime(
             root,
             "capture-device".into(),
@@ -628,6 +932,7 @@ fn prepare_named(
             Rc::new(CaptureProfile(profile)),
         )?;
         let mut prepared = prepare_on(&mut host, definition, CAPTURE_INSTANCE, named, inputs)?;
+        prepared.context.provide_content(content);
         // An audit and a headless drive certify and drive the app someone
         // uses; only a screenshot is built from fixtures.
         if args.shots.is_some() || args.responsive_matrix.is_some() {
@@ -635,7 +940,14 @@ fn prepare_named(
                 .context
                 .provide_capture(Capture::new(args.scenario.clone()));
         }
-        return Ok(super::testing::with_settings_file(prepared, settings));
+        if private {
+            prepared.context.provide_private();
+        }
+        return Ok(super::testing::in_profile(
+            prepared,
+            &profile_root,
+            definition.app_id,
+        ));
     }
     if let Some(directory) = args.value("--data-dir") {
         let author = ui_core::collaboration::local_user_id();
@@ -645,17 +957,32 @@ fn prepare_named(
             role_permissions(&author.0, Role::Owner),
         )?;
         return prepare_on(&mut host, definition, DATA_DIR_INSTANCE, named, inputs).map(
-            |prepared| {
-                super::testing::with_settings_file(
+            |mut prepared| {
+                prepared
+                    .context
+                    .provide_content(super::testing::data_dir_content(directory.as_ref()));
+                super::testing::in_profile(
                     prepared,
-                    super::testing::data_dir_settings(directory.as_ref()),
+                    &super::testing::data_dir_root(directory.as_ref()),
+                    definition.app_id,
                 )
             },
         );
     }
     let mut native = NativeProcessHost::open(definition)?;
     let instance = native.instance_id();
-    prepare_on(native.host_mut(), definition, instance, named, inputs)
+    let mut prepared = prepare_on(native.host_mut(), definition, instance, named, inputs)?;
+    prepared
+        .context
+        .provide_content(tilo_content::ContentStore::for_app());
+    Ok(prepared)
+}
+
+/// The content store of a profile the launch keeps in `directory`: the
+/// bytes its records name live with them, and go with them.
+#[cfg(tilo_native_runner)]
+pub(crate) fn profile_content(directory: &std::path::Path) -> tilo_content::ContentStore {
+    tilo_content::ContentStore::in_dir(directory.join("content"))
 }
 
 /// Take the launch's actions ([`ResourceApp::launch`]) as the live host's
@@ -682,13 +1009,32 @@ fn shot_viewport<A: ResourceApp>(args: &LaunchArgs) -> (u32, u32) {
 #[cfg(tilo_native_runner)]
 struct LiveOptionsKey<A>(std::marker::PhantomData<A>);
 
-/// The options a live launch of `A` takes: its profile and its commands.
+/// The options a live launch of `A` takes: its profile, its commands and its
+/// own options.
 #[cfg(tilo_native_runner)]
 fn live_options<A: ResourceApp>() -> &'static [&'static str] {
     leaked(TypeId::of::<LiveOptionsKey<A>>(), || {
         let mut options = vec!["--data-dir"];
         options.extend(A::commands().iter().map(|command| command.option));
+        options.extend(A::OPTIONS);
         options
+    })
+    .as_slice()
+}
+
+#[cfg(tilo_native_runner)]
+struct LiveFlagsKey<A>(std::marker::PhantomData<A>);
+
+/// The switches a live launch of `A` takes: its own, and `--private` when it
+/// opens private windows.
+#[cfg(tilo_native_runner)]
+fn live_flags<A: ResourceApp>() -> &'static [&'static str] {
+    leaked(TypeId::of::<LiveFlagsKey<A>>(), || {
+        let mut flags = A::FLAGS.to_vec();
+        if A::PRIVATE_WINDOWS {
+            flags.push(PRIVATE_FLAG);
+        }
+        flags
     })
     .as_slice()
 }
@@ -706,10 +1052,14 @@ fn run_command<A: ResourceApp>(args: &LaunchArgs) -> Result<bool, LaunchError> {
     Ok(false)
 }
 
+/// The flag that opens a private window of an app that offers them.
+#[cfg(tilo_native_runner)]
+const PRIVATE_FLAG: &str = "--private";
+
 #[cfg(tilo_native_runner)]
 /// The launch specification of `A`, for apps that add options to it.
 pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
-    LaunchSpec::from_definition(definition::<A>())
+    let spec = LaunchSpec::from_definition(definition::<A>())
         .component_host(prepare_app::<A>)
         .native_services()
         .capture_scenario(capture::<A>)
@@ -719,6 +1069,24 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
         .command_handler(run_command::<A>)
         .allowed_options(&["--data-dir"])
         .allowed_live_options(live_options::<A>())
+        .allowed_live_flags(live_flags::<A>());
+    let spec = if !A::ATTACHES_RUNTIME {
+        spec.runtime_attachment(|_| false)
+    } else if A::PRIVATE_WINDOWS {
+        // A private window is nobody's runtime participant: it neither syncs
+        // nor shares what it shows.
+        spec.runtime_attachment(|args| !args.has(PRIVATE_FLAG))
+    } else {
+        spec
+    };
+    // An input surface types into other apps' fields: nothing drives it
+    // without a person. It is a session service the compositor starts
+    // without a room, so it has no workspace runtime to attach to.
+    if A::BEHAVIOUR.window == ui_core::application::WindowRole::InputSurface {
+        spec.disable_headless().runtime_attachment(|_| false)
+    } else {
+        spec
+    }
 }
 
 #[cfg(not(tilo_native_runner))]
@@ -746,5 +1114,30 @@ pub fn definition_launch_spec(definition: &'static ApplicationDefinition) -> Lau
 /// feature); a host without it drives [`launch_spec`] itself.
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub fn run<A: ResourceApp>() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(code) = run_helper::<A>(&args) {
+        #[allow(
+            clippy::exit,
+            reason = "a helper the binary is ends the process with its own exit code"
+        )]
+        std::process::exit(code);
+    }
     crate::launch::run_or_exit(&launch_spec::<A>());
+}
+
+/// Run the first of `A`'s [helpers](ResourceApp::helpers) that `args` is
+/// for, answering the exit code the process ends with; `None` when the
+/// command line is the app's own.
+pub fn run_helper<A: ResourceApp>(args: &[String]) -> Option<i32> {
+    for helper in A::helpers() {
+        match (helper.run)(args) {
+            Ok(None) => {}
+            Ok(Some(code)) => return Some(code),
+            Err(error) => {
+                eprintln!("Error: {error}");
+                return Some(1);
+            }
+        }
+    }
+    None
 }

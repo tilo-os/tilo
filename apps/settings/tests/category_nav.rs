@@ -80,7 +80,7 @@ fn click_at(app: &mut Framed<SettingsApp>, center: Point) {
 /// The host's `sync` against the live document.
 fn sync(app: &mut Framed<SettingsApp>) {
     let (app, state) = Framed::split(app);
-    app.sync(&mut state.doc, &state.root);
+    app.sync(&state.doc, &state.root);
 }
 
 /// Walk the live tree for the `SidebarRow` carrying `label`, returning its

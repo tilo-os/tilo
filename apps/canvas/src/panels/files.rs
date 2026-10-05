@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-use ui::framework::{Dispatcher, Live};
+use ui::framework::{Dispatcher, Live, Setting};
 use ui::portal::{FileFilter, PickRequest, PortalOutcome};
 use ui::prelude::*;
 use ui::vello::Scene;
@@ -19,7 +19,7 @@ use ui::winit::event::WindowEvent;
 use ui::{PresenceCtx, TextRenderer, Theme};
 
 use crate::actions::{CanvasAction, NewArtwork, OpenArtwork};
-use crate::document::{self, ArtworkFile, EXTENSION, Recent, recents};
+use crate::document::{self, ArtworkFile, EXTENSION, Recent, RecentArtworks};
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::resource::ArtworkResource;
@@ -41,6 +41,7 @@ enum Pending {
 pub struct FileDesk {
     content: Element,
     tools: Tools,
+    recents: Setting<RecentArtworks>,
     live: Live<ArtworkResource>,
     dispatch: Dispatcher<ArtworkResource>,
     chooser: Option<(Pending, Receiver<PortalOutcome>)>,
@@ -51,13 +52,14 @@ impl FileDesk {
     pub fn new(
         content: Element,
         tools: Tools,
+        recents: Setting<RecentArtworks>,
         live: Live<ArtworkResource>,
         dispatch: Dispatcher<ArtworkResource>,
     ) -> Self {
-        tools.recents.set(recents::read());
         Self {
             content,
             tools,
+            recents,
             live,
             dispatch,
             chooser: None,
@@ -278,9 +280,8 @@ impl FileDesk {
             Ok(opened) => opened,
             Err(why) => {
                 if !path.exists() {
-                    self.tools
-                        .recents
-                        .set(recents::forget(&path.display().to_string()));
+                    let gone = path.display().to_string();
+                    self.keep_recents(|recents| recents.forget(&gone));
                 }
                 self.say("canvas-open-failed", &[("why", why.into())]);
                 return;
@@ -311,7 +312,7 @@ impl FileDesk {
     /// Save the artwork to `path`; keep working there when `follow`.
     fn save_to(&self, path: &Path, follow: bool) {
         let file = ArtworkFile::of(&self.live.get());
-        let packed = document::pack(&file, &tilo_content::ContentStore::for_app())
+        let packed = document::pack(&file, &crate::content::store())
             .and_then(|(bytes, _missing)| document::write(path, &bytes));
         match packed {
             Ok(()) => {
@@ -336,14 +337,23 @@ impl FileDesk {
             .map_or(0, |since| {
                 u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
             });
-        self.tools.recents.set(recents::remember(Recent {
+        let recent = Recent {
             path: path.display().to_string(),
             title: file.title.clone(),
             width: file.width,
             height: file.height,
             at_ms,
             thumbnail: None,
-        }));
+        };
+        self.keep_recents(|recents| recents.remember(recent));
+    }
+
+    /// Change the recent artworks. Best effort: a device that keeps no
+    /// settings for the app simply shows no recent artworks.
+    fn keep_recents(&self, change: impl FnOnce(&mut RecentArtworks)) {
+        if let Err(error) = self.recents.update(change) {
+            tracing::warn!(%error, "could not remember the recent artworks");
+        }
     }
 }
 
@@ -474,7 +484,7 @@ impl ui::widget::Decorator for FileDesk {
         "FileDesk"
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.take();
         self.poll();
         self.content.sync(state, path);

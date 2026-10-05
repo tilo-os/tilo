@@ -259,7 +259,7 @@ impl ShellOverlayHost {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut ui::widget::AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> Option<bool> {
         if crate::shell::portal_dialog::accessibility::is_sheet_target(target) {

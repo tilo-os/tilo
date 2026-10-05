@@ -3,7 +3,7 @@
 //! through it.
 //!
 //! The guest is built from an environment record whose images are fixture
-//! trees: a runtime whose `usr` is the machine's own `/usr` and a tool that
+//! trees: a materialized native shell/runtime closure and a tool that
 //! adds one command. The assertions are on bytes that came back from `bash`
 //! running inside it, and on what it left on the host.
 
@@ -210,7 +210,17 @@ fn without_a_runtime_the_open_is_refused_in_words_and_the_connection_stays_usabl
 pub fn fixture_images(root: &Path) {
     let runtime = root.join(PackageId::from_bytes(RUNTIME).to_hex());
     std::fs::create_dir_all(runtime.join("etc")).unwrap();
-    std::os::unix::fs::symlink("/usr", runtime.join("usr")).unwrap();
+    for program in ["bash", "id", "touch", "cat"] {
+        let source = PathBuf::from("/usr/bin").join(program);
+        fixture_file(&runtime, &source);
+        if let Some(closure) = ush::helper_runtime::HelperRuntime::resolve(&source).unwrap() {
+            fixture_file(&runtime, &closure.loader);
+            for library in closure.libraries.values() {
+                fixture_file(&runtime, library);
+            }
+        }
+    }
+    std::os::unix::fs::symlink("bash", runtime.join("usr/bin/sh")).unwrap();
     std::fs::write(
         runtime.join("etc/passwd"),
         "root:x:0:0:root:/root:/bin/bash\n",
@@ -233,18 +243,38 @@ pub fn fixture_images(root: &Path) {
     .unwrap();
 }
 
+// Copy bytes into the fixture instead of putting another overlay-backed
+// host /usr underneath it. Guest root aliases resolve /lib* into /usr/lib*.
+fn fixture_file(runtime: &Path, source: &Path) {
+    let relative = source.strip_prefix("/").unwrap();
+    let relative = if relative.starts_with("lib") || relative.starts_with("lib64") {
+        PathBuf::from("usr").join(relative)
+    } else {
+        relative.to_path_buf()
+    };
+    let destination = runtime.join(relative);
+    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    std::fs::copy(source, destination).unwrap();
+}
+
 /// Can this machine build the guest at all? The probe performs the mounts
 /// the runtime performs — a user namespace mapping the real uid, `/usr` as a
-/// read-only overlay of two lowers — not something that merely correlates
-/// with them. Inside a build container whose own `/usr` is an overlay, the
-/// kernel refuses to stack on it, and the guest tests say so and stop.
+/// read-only overlay of the materialized runtime and tool lowers. It probes
+/// the subject the tests actually use, including on an overlay-backed host.
 pub fn guest_unavailable() -> Option<String> {
     let Some(bwrap) = which_bwrap() else {
         return Some("bwrap is not installed".into());
     };
     let dir = tempfile::tempdir().ok()?;
-    let lower = dir.path().join("lower");
-    std::fs::create_dir_all(&lower).ok()?;
+    fixture_images(dir.path());
+    let lower = dir
+        .path()
+        .join(PackageId::from_bytes(TOOL).to_hex())
+        .join("usr");
+    let runtime = dir
+        .path()
+        .join(PackageId::from_bytes(RUNTIME).to_hex())
+        .join("usr");
     // SAFETY: `geteuid`/`getegid` cannot fail.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
     let probe = std::process::Command::new(bwrap)
@@ -252,13 +282,15 @@ pub fn guest_unavailable() -> Option<String> {
         .args(["--uid", &uid.to_string(), "--gid", &gid.to_string()])
         .arg("--overlay-src")
         .arg(&lower)
-        .args(["--overlay-src", "/usr", "--ro-overlay", "/usr"])
+        .arg("--overlay-src")
+        .arg(&runtime)
+        .args(["--ro-overlay", "/usr"])
         .args(["--symlink", "usr/bin", "/bin"])
         .args(["--symlink", "usr/sbin", "/sbin"])
         .args(["--symlink", "usr/lib", "/lib"])
         .args(["--symlink", "usr/lib64", "/lib64"])
         .args(["--proc", "/proc", "--dev", "/dev"])
-        .arg("/usr/bin/true")
+        .args(["/usr/bin/bash", "-c", "exit 0"])
         .output();
     match probe {
         Ok(o) if o.status.success() => None,
@@ -280,19 +312,16 @@ fn which_bwrap() -> Option<PathBuf> {
 /// asks for the default environment, a descriptor arrives, and a shell in a
 /// guest built from the record answers on it — with the tool the record
 /// lists, at the real uid, writing into the directory the record grants.
-/// Skipped, loudly and with the reason, where the machine can't build a
-/// guest at all.
+/// A machine that cannot build the actual guest must fail this check.
 #[test]
 fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    let Some(reason) = guest_unavailable() else {
-        run_handoff();
-        return;
-    };
-    eprintln!(
-        "serve_handoff: not exercising the guest on this machine — {reason}. \
-         The protocol half is still covered by the tests above."
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
     );
+    run_handoff();
 }
 
 /// The record: the default environment, one tool, one granted directory.

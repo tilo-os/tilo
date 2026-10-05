@@ -6,7 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::sync::Arc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -1187,7 +1187,7 @@ impl Widget for ContextMenu {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
@@ -1387,7 +1387,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1561,7 +1561,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 100);
@@ -1578,7 +1578,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 0);

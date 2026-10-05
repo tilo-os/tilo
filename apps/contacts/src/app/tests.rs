@@ -1,13 +1,32 @@
 use super::*;
+use crate::doc::ContactsDoc;
+use crate::model::sample_contacts;
+use automerge::AutoCommit;
 use automerge::ROOT;
-use automerge::ReadDoc;
 use taffy::{AvailableSpace, Dimension, Size, Style};
 use tilo_automerge::ApplyIncoming;
-use ui::headless::Framed;
 use vello::kurbo::Point;
 
-/// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
-const HANG_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+/// The surface presenting the sample book, as a capture shows it. Detached
+/// from a door, it edits nothing: tests of what an edit writes run the app.
+fn sampled() -> ContactsApp {
+    let mut app = ContactsApp::new();
+    app.present_book(&crate::resource::ContactsState {
+        contacts: crate::resource::sample_book(),
+    });
+    app
+}
+
+/// The book `app` presents, as the framework publishes it.
+fn published(app: &ContactsApp) -> Vec<tilo_actions::Resource> {
+    vec![ui::tilo_resource::publish::<crate::resource::Contacts>(
+        "contacts.book",
+        "Contacts",
+        &crate::resource::ContactsState {
+            contacts: app.store.contacts.clone(),
+        },
+    )]
+}
 
 /// Sample seeding, view, edit, popup and importing frames render without panicking and with legible chips and a busy announcement.
 #[test]
@@ -43,9 +62,9 @@ fn every_view_mode_renders_legibly() {
 
     // --- phase: seeds_sample_contacts_and_selects_one ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = sampled();
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         assert_eq!(app.store.len(), 7);
         assert!(app.selected.is_some(), "a contact must be auto-selected");
         // The seeded selection points at a real, richly-populated record.
@@ -55,16 +74,16 @@ fn every_view_mode_renders_legibly() {
 
     // --- phase: view_mode_frame_does_not_panic ---
     {
-        let mut app = ContactsApp::sample();
+        let mut app = sampled();
         drive_frame(&mut app, 1280, 800);
     }
 
     // --- phase: edit_mode_with_repeated_fields_frame_does_not_panic ---
     {
-        let mut app = ContactsApp::sample();
+        let mut app = sampled();
         // Seed first.
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         // Enter edit on the selected contact and add repeated fields.
         let c = app
             .selected
@@ -85,9 +104,9 @@ fn every_view_mode_renders_legibly() {
 
     // --- phase: calendar_and_type_popups_frame_does_not_panic ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = sampled();
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         let c = app
             .selected
             .and_then(|id| app.store.get(id))
@@ -111,9 +130,9 @@ fn every_view_mode_renders_legibly() {
 
     // --- phase: importing_state_is_visible_and_announced_as_busy ---
     {
-        let mut app = ContactsApp::sample();
+        let mut app = sampled();
         drive_frame(&mut app, 1280, 800);
-        app.shots_show_loading();
+        app.stage_loading();
         let tree = app.accessibility().expect("contacts accessibility tree");
         let import = access_target(&tree, "contacts.import").expect("import action");
         assert_eq!(import.name.as_deref(), Some("Importing contacts"));
@@ -123,144 +142,39 @@ fn every_view_mode_renders_legibly() {
     }
 }
 
-/// Resource and search providers stay bounded on large books, resolve exactly, and their activations reveal the addressed contact or group.
+/// The window offers importing and exporting the book beside its actions.
+#[test]
+fn the_window_offers_import_and_export_on_the_book() {
+    let mut app = Live::live_sample(1280, 800);
+    let resources = app.app.harness().resources();
+    let book = resources
+        .iter()
+        .find(|resource| {
+            resource.id.as_str() == <crate::resource::Contacts as ui::tilo_resource::Resource>::KIND
+        })
+        .expect("the address book");
+    for id in ["import-vcard", "export-all-vcard"] {
+        assert!(
+            book.actions.iter().any(|action| action.id == id),
+            "{id} is on the book"
+        );
+    }
+}
+
+/// Search hits and published open operations reveal the addressed contact or group.
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
 )]
 #[test]
-fn resource_and_search_providers_bound_large_books() {
-    // --- phase: real_resource_provider_bounds_large_book_snapshot_and_exact_lookup ---
+fn search_and_open_operations_reveal_their_target() {
+    // --- phase: search_hit_invokes_the_exported_open_action ---
+    // Contacts folds its address book into the unified search through its
+    // resource's entries. A field-only query finds the contact, and the hit
+    // invokes the same published `open` view operation agents and
+    // accessibility consume.
     {
-        const LARGE: usize = 5_000;
-
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        let template = app.store.contacts[0].clone();
-        app.store.contacts = (0..LARGE)
-            .map(|index| {
-                let mut contact = template.clone();
-                contact.id = uuid::Uuid::from_u128(7_000_000 + index as u128);
-                contact.first = format!("Contact {index}");
-                contact.last.clear();
-                contact.groups.clear();
-                contact
-            })
-            .collect();
-        let late_id = app.store.contacts.last().expect("late contact").id;
-        app.store
-            .contacts
-            .last_mut()
-            .expect("late contact")
-            .groups
-            .push(GroupEntry::new("Late group"));
-        app.rebuild_resource_index();
-
-        let root = ContactsApp::publish_resources(&app, &doc);
-        assert_eq!(root.len(), 1);
-        assert!(
-            app.resource_snapshot_materialized.get()
-                <= crate::actions::MAX_CONTEXT_CONTACT_RESOURCES,
-            "root snapshot materialised {} contacts",
-            app.resource_snapshot_materialized.get()
-        );
-
-        let contact_id = crate::actions::contact_resource_id(late_id);
-        let contact = ContactsApp::publish_resource(&app, &doc, &contact_id)
-            .expect("late contact resolves through the real provider");
-        assert_eq!(contact.kind, "contacts.contact");
-        assert_eq!(app.resource_exact_materialized.get(), 1);
-
-        let group_id = crate::actions::group_resource_id("Late group");
-        let group = ContactsApp::publish_resource(&app, &doc, &group_id)
-            .expect("late group resolves through the real provider");
-        assert_eq!(group.kind, "contacts.group");
-        assert_eq!(app.resource_exact_materialized.get(), 0);
-
-        app.store.contacts.pop();
-        assert!(
-            ContactsApp::publish_resource(&app, &doc, &contact_id).is_none(),
-            "a stale exact id must not redirect to the preceding contact"
-        );
-        assert_eq!(app.resource_exact_materialized.get(), 0);
-    }
-
-    // --- phase: ordinary_local_update_syncs_a_large_book_without_full_retained_rebuild ---
-    {
-        const LARGE: usize = 5_000;
-
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        let template = app.store.contacts[0].clone();
-        let mut contacts = Vec::with_capacity(LARGE);
-        contacts.extend((0..LARGE - 1).map(|index| Contact {
-            id: uuid::Uuid::from_u128(9_000_000 + index as u128),
-            first: format!("Directory {index}"),
-            ..Contact::default()
-        }));
-        // Keep the one document-backed row at the late position so this test
-        // detects any accidental linear local lookup during `sync`.
-        contacts.push(template.clone());
-        app.store.contacts = contacts;
-        app.rebuild_resource_index();
-        app.refresh_search_provider();
-        app.search_heads.clone_from(&app.model_heads);
-        app.resource_index_rebuilds.set(0);
-        app.local_change_index_lookups.set(0);
-        let refreshes_before = app.search_provider.full_refreshes();
-
-        let id = template.id;
-        let action = crate::actions::set_favorite_action(id.to_string(), !template.favorite);
-        app.try_perform_action(&mut doc, &action)
-            .expect("current local row accepts an action");
-        let position = *app
-            .resource_index
-            .contacts
-            .get(&id)
-            .expect("late contact has a retained stable-id position");
-        assert_eq!(position, LARGE - 1, "the edited record is the late row");
-        app.store.contacts[position].favorite = !template.favorite;
-        app.sync(&mut doc, &ROOT);
-
-        assert_eq!(
-            app.resource_index_rebuilds.get(),
-            0,
-            "a one-contact local update must not sort/rebuild the large resource index"
-        );
-        assert_eq!(
-            app.search_provider.full_refreshes(),
-            refreshes_before,
-            "sync applies a one-contact search delta instead of rebuilding the catalogue"
-        );
-        assert!(
-            app.local_change_index_lookups.get() <= 2,
-            "the local change inspected {} records instead of using the stable-id map",
-            app.local_change_index_lookups.get()
-        );
-        assert!(
-            ui::search::SearchProvider::resolve_action_resource(
-                &app.search_provider,
-                &crate::actions::open_contact_address(id),
-            )
-            .is_some(),
-            "the incrementally maintained generation still resolves the late edited record"
-        );
-    }
-
-    // --- phase: search_provider_row_invokes_the_exported_open_action ---
-    // Contacts folds its address book into the unified Ctrl+K palette. A
-    // field-only query ensures the selected row is the provider hit (not the
-    // separately listed action), then activation leaves the palette as the
-    // same brokered `open` view operation agents and accessibility consume.
-    {
-        let mut app = ContactsApp::new();
-        for c in sample_contacts() {
-            app.store.upsert(c);
-        }
-        app.rebuild_resource_index();
-        app.refresh_search_provider();
+        let mut app = Live::live_sample(1280, 800);
         let id = app
             .store
             .contacts
@@ -268,53 +182,24 @@ fn resource_and_search_providers_bound_large_books() {
             .find(|contact| contact.display_name() == "Grace Hopper")
             .expect("Grace is seeded")
             .id;
-        let mut doc = AutoCommit::new();
-        let mut palette = ui::ActionPalette::new();
-        palette.load_open_resources(&ui::resources::resources(&app, &doc));
-        palette.set_providers(ui::search::capability::search_providers(&app));
-        palette.open();
-        palette.set_query("navy");
-        assert_eq!(palette.result_labels(), vec!["Grace Hopper"]);
-
-        assert!(app.selected.is_none(), "nothing selected yet");
-        palette.activate_selected();
-        let operation = palette
-            .take_operation()
-            .expect("canonical search hit queued a broker operation");
-        assert_eq!(operation.kind, tilo_actions::OperationKind::View);
-        assert_eq!(
-            operation
-                .context
-                .resource
-                .as_ref()
-                .map(|resource| resource.id.as_str()),
-            Some(crate::actions::contact_resource_id(id).as_str())
+        app.selected = None;
+        let entries = <crate::resource::Contacts as ui::tilo_resource::Resource>::search(
+            &crate::resource::ContactsState {
+                contacts: app.book(),
+            },
         );
-        assert!(
-            palette.take_navigation().is_none(),
-            "legacy navigation was not used"
-        );
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload
-                ),
-                &mut doc,
-                &ROOT
-            )
-            .expect("open operation succeeds"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        let hits: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.text.to_lowercase().contains("navy"))
+            .collect();
+        assert_eq!(hits.len(), 1, "the organisation finds one contact");
+        assert_eq!(hits[0].title, "Grace Hopper");
+        let address = hits[0].action.clone().expect("the hit invokes an action");
+        assert_eq!(address, crate::actions::open_contact_address(id));
+        app.app
+            .call_on(&address.resource, &address.action, serde_json::json!({}))
+            .expect("the open operation succeeds");
+        app.settle();
         assert_eq!(app.selected, Some(id), "the open action selected Grace");
     }
 
@@ -325,11 +210,7 @@ fn resource_and_search_providers_bound_large_books() {
     // behind a filter. This drives the canonical action address exported to
     // search, accessibility and agents.
     {
-        let mut app = ContactsApp::new();
-        for c in sample_contacts() {
-            app.store.upsert(c);
-        }
-        app.rebuild_resource_index();
+        let mut app = sampled();
         // Grace Hopper is in "Work" only; narrowing the list to "Friends"
         // (Alan Turing's group) filters her out of the visible set.
         app.group_filter = Some("Friends".to_string());
@@ -348,33 +229,16 @@ fn resource_and_search_providers_bound_large_books() {
             "the Friends group filter hides Grace before activation"
         );
 
-        let mut doc = AutoCommit::new();
-        let resources = ui::resources::resources(&app, &doc);
+        let resources = published(&app);
         let address = crate::actions::open_contact_address(id);
         let spec = tilo_actions::door::resolve(&resources, &address)
             .expect("the search address resolves in the agent-visible tree");
-        let encoded = match &spec.input {
-            tilo_actions::ActionInput::Immediate(encoded) => encoded,
-            tilo_actions::ActionInput::Prompted { .. }
-            | tilo_actions::ActionInput::Deferred { .. } => {
-                panic!("open takes no arguments")
-            }
-        };
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload
-                ),
-                &mut doc,
-                &ROOT
-            )
-            .expect("open operation succeeds"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        let encoded = ui::testing::action_contract::spec_encoding(spec, None);
+        let effect = <crate::actions::ContactsEffect as ui::tilo_resource::Effect>::from_payload(
+            &encoded.payload,
+        )
+        .expect("the address names a contacts effect");
+        app.perform_effect(effect).expect("open succeeds");
 
         assert_eq!(app.selected, Some(id), "activation selected Grace");
         assert!(
@@ -393,10 +257,7 @@ fn resource_and_search_providers_bound_large_books() {
     // select the filter, and leave a real matching list for keyboard/pointer
     // users as well as Ctrl+K and agents.
     {
-        let mut app = ContactsApp::new();
-        for contact in sample_contacts() {
-            app.store.upsert(contact);
-        }
+        let mut app = sampled();
         app.search.set_text("nothing will match this");
         app.group_filter = Some("Friends".into());
         let group = app
@@ -405,26 +266,10 @@ fn resource_and_search_providers_bound_large_books() {
             .into_iter()
             .find(|group| group == "Work")
             .expect("samples expose Work");
-        let operation = crate::actions::ContactsOperation::OpenGroup {
+        app.perform_effect(crate::actions::ContactsEffect::OpenGroup {
             name: group.clone(),
-        };
-        let payload = serde_json::to_vec(&operation).expect("view operation serializes");
-
-        assert!(matches!(
-            Widget::start_operation(
-                &mut app,
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    crate::actions::CONTACTS_OPERATION_TYPE,
-                    &payload
-                ),
-                &mut AutoCommit::new(),
-                &ROOT
-            )
-            .expect("group open succeeds"),
-            Some(ui::widget::ResourceOperationStart::Completed(_))
-        ));
+        })
+        .expect("group open succeeds");
         assert_eq!(app.group_filter.as_deref(), Some(group.as_str()));
         assert!(
             app.search.value().is_empty(),
@@ -455,9 +300,9 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     tr.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
 
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     let child = app.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy
         .new_with_children(
@@ -512,7 +357,7 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
 fn single_pane_push_navigation_follows_width() {
     // --- phase: narrow_frame_resolves_single_pane_push ---
     {
-        let mut app = ContactsApp::sample();
+        let mut app = sampled();
         // A narrow viewport drives the single-pane master-detail push.
         drive_frame(&mut app, 480, 860);
         assert!(app.narrow, "a narrow viewport resolves to single-pane push");
@@ -525,14 +370,14 @@ fn single_pane_push_navigation_follows_width() {
 
     // --- phase: narrow_selection_pushes_detail_then_back_returns_to_list ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = sampled();
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         drive_frame(&mut app, 480, 860);
         assert!(app.narrow);
         // Snap the push to the detail pane (as a row selection would) and
         // confirm the pushed-detail frame renders without panicking.
-        app.shots_show_detail();
+        app.push.snap(PushPane::Detail);
         assert_eq!(app.push.pane(), PushPane::Detail);
         drive_frame(&mut app, 480, 860);
         // The Back affordance must be laid out (hittable) in the pushed pane.
@@ -544,7 +389,7 @@ fn single_pane_push_navigation_follows_width() {
 
     // --- phase: wide_frame_stays_docked_side_by_side ---
     {
-        let mut app = ContactsApp::sample();
+        let mut app = sampled();
         drive_frame(&mut app, 1280, 800);
         assert!(
             !app.narrow,
@@ -603,12 +448,8 @@ fn single_pane_push_navigation_follows_width() {
         // Guards against the "responsive on first launch, frozen after resize"
         // bug: the breakpoint must be re-derived from the CURRENT width on
         // every layout pass, not cached from the first frame.
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-
         // Lay the SAME instance out wide, then narrow, then wide again.
-        let mut app = frame_at(app, doc, 1280, 800);
+        let mut app = Live::sample(1280, 800);
         assert!(!app.narrow, "wide viewport is the docked split");
         assert!(
             app.list_rect.x1 <= app.detail_rect.x0 + 0.001,
@@ -634,7 +475,7 @@ fn single_pane_push_navigation_follows_width() {
 fn text_scale_reflows_geometry_and_names_fit() {
     // --- phase: two_hundred_percent_text_reflows_and_scales_interaction_geometry ---
     {
-        let mut app = ContactsApp::sample();
+        let mut app = sampled();
         let large_text = Theme::dark().with_text_scale(2.0);
         drive_frame_with_theme(&mut app, 1440, 900, &large_text);
         assert!(app.narrow, "large text reflows master/detail to one pane");
@@ -650,7 +491,7 @@ fn text_scale_reflows_geometry_and_names_fit() {
         );
         assert_eq!(app.hit.search.height(), field_h);
 
-        app.shots_edit_contact();
+        app.stage_edit_contact();
         app.layout();
         let form = app.form.as_ref().expect("edit form");
         let first = form
@@ -716,20 +557,13 @@ fn text_scale_reflows_geometry_and_names_fit() {
 }
 
 /// Saves round-trip through the document; refused saves, favourites and deletes reconcile and announce errors without claiming success.
+#[allow(
+    clippy::too_many_lines,
+    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+)]
 #[test]
 fn saves_persist_and_refusals_never_claim_success() {
-    // --- phase: save_round_trips_through_doc ---
-    {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        let c = app
-            .selected
-            .and_then(|id| app.store.get(id))
-            .cloned()
-            .unwrap();
-        let id = c.id;
-        app.begin_edit(c, false);
+    fn set_title(app: &mut ContactsApp, title: &str) {
         app.form
             .as_mut()
             .and_then(|form| {
@@ -739,72 +573,96 @@ fn saves_persist_and_refusals_never_claim_success() {
             })
             .expect("the editor exposes a title input")
             .ti
-            .set_text("Edited Title");
-        app.save_edit(&mut doc);
+            .set_text(title);
+    }
+
+    // --- phase: save_round_trips_through_doc ---
+    {
+        let mut app = Live::sample(1280, 800);
+        let c = app
+            .selected
+            .and_then(|id| app.store.get(id))
+            .cloned()
+            .unwrap();
+        let id = c.id;
+        app.begin_edit(c, false);
+        set_title(&mut app, "Edited Title");
+        app.save_edit();
+        app.settle();
         assert_eq!(app.mode, Mode::View);
-        let stored = ContactsDoc::list_contacts(&doc);
+        let stored = app.book();
         let r = stored.iter().find(|x| x.id == id).unwrap();
         assert_eq!(r.title, "Edited Title");
     }
 
     // --- phase: refused_save_reconciles_and_announces_an_error_without_claiming_success ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = Live::sample(1280, 800);
         let contact = app
             .selected
             .and_then(|id| app.store.get(id))
             .cloned()
             .unwrap();
-        ContactsDoc::delete_contact(&mut doc, contact.id);
         app.begin_edit(contact.clone(), false);
-        app.save_edit(&mut doc);
+        set_title(&mut app, "Unsaved draft");
+        // A collaborator deletes the record while it is being edited.
+        app.app
+            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+        app.settle();
+        app.save_edit();
+        app.settle();
 
         assert_eq!(app.mode, Mode::Edit, "the rejected draft remains editable");
-        assert!(app.form.is_some());
+        assert_eq!(
+            app.form.as_ref().map(|form| form.draft.title.as_str()),
+            Some("Unsaved draft"),
+            "the person's text is kept"
+        );
         assert!(
             app.store.get(contact.id).is_none(),
-            "store reconciles from the document"
+            "the store follows the document"
         );
         let message = app
             .toast
             .as_ref()
-            .map(|(message, _)| message.as_str())
+            .map(|(message, _)| message.clone())
             .unwrap();
-        assert!(message.starts_with("Couldn't save contact:"));
+        assert!(message.starts_with("Couldn't save contact:"), "{message}");
         let tree = app.accessibility().unwrap();
         assert!(
-            live_message(&tree, message).is_some(),
+            live_message(&tree, &message).is_some(),
             "the refusal is announced through the retained live region"
         );
     }
 
     // --- phase: refused_favorite_and_delete_reconcile_without_false_success ---
     {
-        // Simulate a peer deleting the record after this replica rendered its
-        // detail controls. Both public mutations must use the action result,
-        // not their stale local projection.
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        // A peer deletes the record after this replica rendered its detail
+        // controls. Both mutations go to the door, which refuses them; the
+        // stale projection is taken back and the refusal announced.
+        let mut app = Live::sample(1280, 800);
         let contact = app
             .selected
             .and_then(|id| app.store.get(id))
             .cloned()
             .unwrap();
-        ContactsDoc::delete_contact(&mut doc, contact.id);
+        app.app
+            .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
+        app.settle();
+        app.store.upsert(contact.clone());
+        app.selected = Some(contact.id);
 
-        assert!(
-            !app.toggle_favorite(&mut doc, contact.id),
-            "a tombstoned favorite toggle is rejected"
-        );
+        assert!(app.toggle_favorite(contact.id), "the toggle is submitted");
+        app.settle();
         assert!(
             app.store.get(contact.id).is_none(),
             "favorite refusal reconciles"
         );
         let favorite_error = app.toast.as_ref().unwrap().0.clone();
-        assert!(favorite_error.starts_with("Couldn't update favorite:"));
+        assert!(
+            favorite_error.starts_with("Couldn't change the address book:"),
+            "{favorite_error}"
+        );
         assert!(
             live_message(&app.accessibility().unwrap(), &favorite_error).is_some(),
             "the favorite refusal is announced"
@@ -814,18 +672,36 @@ fn saves_persist_and_refusals_never_claim_success() {
         // delete-confirmation path against the same tombstone.
         app.store.upsert(contact.clone());
         app.selected = Some(contact.id);
-        app.delete_selected(&mut doc, contact.id);
+        app.delete_selected(contact.id);
+        app.settle();
         assert!(
             app.store.get(contact.id).is_none(),
             "delete refusal reconciles"
         );
         let delete_error = app.toast.as_ref().unwrap().0.clone();
-        assert!(delete_error.starts_with("Couldn't delete contact:"));
+        assert!(delete_error.starts_with("Couldn't change the address book:"));
         assert_ne!(delete_error, "Contact deleted", "no false success toast");
         assert!(
             live_message(&app.accessibility().unwrap(), &delete_error).is_some(),
             "the delete refusal is announced"
         );
+    }
+
+    // --- phase: a_participant_who_may_only_view_cannot_save ---
+    {
+        let mut app = Live::mount(
+            ui::framework::testing::TestApp::with_role(ui::Role::Viewer).unwrap(),
+            (1280, 800),
+        );
+        let draft = Contact::new();
+        app.begin_edit(draft, true);
+        set_title(&mut app, "Not mine to add");
+        app.save_edit();
+        app.settle();
+        assert_eq!(app.mode, Mode::Edit, "the draft stays open");
+        assert!(app.book().is_empty(), "nothing reached the document");
+        let message = app.toast.as_ref().unwrap().0.clone();
+        assert!(message.starts_with("Couldn't save contact:"), "{message}");
     }
 }
 
@@ -836,7 +712,7 @@ fn saves_persist_and_refusals_never_claim_success() {
 // =================================================================
 
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{DeviceId, ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 /// Build a `KeyboardInput` winit event. winit 0.30's `KeyEvent` carries a
@@ -873,18 +749,20 @@ fn device_id() -> DeviceId {
 /// Mounts the app in the production frame host so tests can pump events
 /// through the production `Widget::handle_event`.
 struct Harness {
-    app: Framed<ContactsApp>,
+    app: Live,
 }
 
 impl Harness {
     fn new(w: u32, h: u32) -> Self {
         Harness {
-            app: Framed::new(
-                ui::State::new(),
-                ContactsApp::sample(),
-                (w, h),
-                Theme::dark(),
-            ),
+            app: Live::sample(w, h),
+        }
+    }
+
+    /// The sample book in a window someone uses, where effects and jobs run.
+    fn live(w: u32, h: u32) -> Self {
+        Harness {
+            app: Live::live_sample(w, h),
         }
     }
 
@@ -892,22 +770,16 @@ impl Harness {
     /// draw populates draw-time hit rects (e.g. `detail_field_hits` for
     /// double-click-to-edit), exactly as the live renderer does each frame.
     fn relayout(&mut self) {
-        Framed::harness_mut(&mut self.app)
-            .recompose()
-            .expect("contacts frame lays out");
+        self.app.recompose();
     }
 
-    fn doc(&self) -> &AutoCommit {
-        &Framed::harness(&self.app).state().doc
-    }
-
-    fn parts(&mut self) -> (&mut ContactsApp, &mut AutoCommit) {
-        let (app, state) = Framed::split(&mut self.app);
-        (app, &mut state.doc)
+    /// The address book as the document holds it.
+    fn book(&mut self) -> Vec<Contact> {
+        self.app.book()
     }
 
     fn dispatch(&mut self, event: &WindowEvent) -> bool {
-        Framed::harness_mut(&mut self.app).dispatch_to_root_with(event, &Modifiers::default())
+        self.app.dispatch(event, ModifiersState::empty())
     }
 
     fn move_to(&mut self, p: Point) {
@@ -954,7 +826,7 @@ impl Harness {
     /// Dispatch a key event with explicit modifier state through the real
     /// `handle_event` path.
     fn dispatch_key_mods(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
-        Framed::harness_mut(&mut self.app).dispatch_to_root_with(event, &mods.into())
+        self.app.dispatch(event, mods)
     }
 
     /// Press a single `Named` key (no modifiers).
@@ -1031,10 +903,8 @@ impl Harness {
     }
 
     /// The stored (committed) contact for `id`, read back from the CRDT doc.
-    fn doc_contact(&self, id: ContactId) -> Option<Contact> {
-        ContactsDoc::list_contacts(self.doc())
-            .into_iter()
-            .find(|c| c.id == id)
+    fn doc_contact(&mut self, id: ContactId) -> Option<Contact> {
+        self.book().into_iter().find(|c| c.id == id)
     }
 
     /// Focus the edit-form field for `slot` by clicking its laid-out rect
@@ -1474,9 +1344,8 @@ fn context_menu_opens_canonical_contact_actions() {
         let id = h.row_id(0);
 
         // Read the CRDT-backed favorite state (not just the in-memory store).
-        let fav_in_doc = |doc: &AutoCommit, id: ContactId| {
-            ContactsDoc::list_contacts(doc)
-                .into_iter()
+        let fav_in_doc = |book: Vec<Contact>, id: ContactId| {
+            book.into_iter()
                 .find(|c| c.id == id)
                 .map(|c| c.favorite)
                 .expect("contact present in doc")
@@ -1516,7 +1385,7 @@ fn context_menu_opens_canonical_contact_actions() {
             "store flag flipped"
         );
         assert_eq!(
-            fav_in_doc(h.doc(), id),
+            fav_in_doc(h.book(), id),
             !before,
             "CRDT favorite flag flipped"
         );
@@ -1546,7 +1415,7 @@ fn context_menu_opens_canonical_contact_actions() {
             .popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
         h.press_left(rows[fav_idx].center());
         assert_eq!(
-            fav_in_doc(h.doc(), id),
+            fav_in_doc(h.book(), id),
             before,
             "second toggle restores the CRDT flag"
         );
@@ -1561,7 +1430,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
         let mut h = Harness::new(1280, 800);
         let id = h.row_id(0);
         h.app.confirm_delete = Some(id);
-        let before = ContactsDoc::list_contacts(h.doc()).len();
+        let before = h.book().len();
         h.relayout();
         let del = h
             .app
@@ -1575,16 +1444,14 @@ fn delete_confirmation_dispatches_the_palette_action() {
             h.app.confirm_delete.is_none(),
             "the modal closes after confirming"
         );
-        let after = ContactsDoc::list_contacts(h.doc()).len();
+        let after = h.book().len();
         assert_eq!(
             after,
             before - 1,
             "Delete removes the contact from the CRDT doc"
         );
         assert!(
-            !ContactsDoc::list_contacts(h.doc())
-                .iter()
-                .any(|c| c.id == id),
+            !h.book().iter().any(|c| c.id == id),
             "the deleted contact is gone from the document"
         );
     }
@@ -1596,8 +1463,9 @@ fn delete_confirmation_dispatches_the_palette_action() {
         // "Delete contact" spec builds for the same contact.
         let mut h = Harness::new(1280, 800);
         let id = h.row_id(0);
-        let expected =
-            crate::actions::encode(&crate::actions::delete_contact_action(id.to_string()));
+        let expected = h
+            .app
+            .book_after(&crate::actions::delete_contact_action(id.to_string()));
         h.app.confirm_delete = Some(id);
         h.relayout();
         let del = h
@@ -1609,14 +1477,12 @@ fn delete_confirmation_dispatches_the_palette_action() {
             .primary_rect();
         h.press_left(del.center());
         assert_eq!(
-            h.app.last_dispatched(),
-            Some(&expected),
-            "the confirm-delete button and the palette build the identical EncodedAction",
+            h.book(),
+            expected,
+            "the confirm-delete button does what the palette's Delete does",
         );
         assert!(
-            !ContactsDoc::list_contacts(h.doc())
-                .iter()
-                .any(|c| c.id == id),
+            !h.book().iter().any(|c| c.id == id),
             "and it actually deleted the contact",
         );
     }
@@ -1657,9 +1523,7 @@ fn delete_confirmation_dispatches_the_palette_action() {
         assert!(h.app.confirm_delete.is_none(), "Cancel closes the dialog");
         assert!(h.app.store.get(id).is_some(), "Cancel never deletes");
         assert!(
-            ContactsDoc::list_contacts(h.doc())
-                .iter()
-                .any(|c| c.id == id),
+            h.book().iter().any(|c| c.id == id),
             "Cancel leaves the document untouched"
         );
     }
@@ -1681,7 +1545,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let row = h.row_center(0);
         let id = h.row_id(0);
         let before = h.app.store.get(id).unwrap().favorite;
-        let expected = crate::actions::encode(&crate::actions::set_favorite_action(
+        let expected = h.app.book_after(&crate::actions::set_favorite_action(
             id.to_string(),
             !before,
         ));
@@ -1699,9 +1563,9 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             .unwrap();
         h.press_left(rows[fav_idx].center());
         assert_eq!(
-            h.app.last_dispatched(),
-            Some(&expected),
-            "the favourite affordance and the palette build the identical EncodedAction",
+            h.book(),
+            expected,
+            "the favourite affordance does what the palette's favorite does",
         );
     }
 
@@ -1713,22 +1577,25 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         let mut h = Harness::new(1280, 800);
         let id = h.row_id(0);
         let before = h.app.store.len();
-        // Dispatch a delete straight into the doc through the executor, bypassing
-        // the app's own affordances (exactly as the shell's Ctrl+K palette would).
+        // Invoke the palette's delete through the door, bypassing the app's
+        // own affordances (exactly as the shell's Ctrl+K palette would).
+        h.app
+            .app
+            .call_on(
+                &crate::actions::contact_resource_id(id),
+                "delete",
+                serde_json::json!({}),
+            )
+            .expect_err("deleting asks for confirmation");
         let action = crate::actions::delete_contact_action(id.to_string());
-        let encoded = crate::actions::encode(&action);
-        let mut tx = tilo_actions::LocalTransport::new();
-        tilo_actions::dispatch(h.parts().1, &action, encoded, &mut tx).unwrap();
-        // The store hasn't seen it yet — it still holds the contact.
-        assert!(
-            h.app.store.get(id).is_some(),
-            "store is stale before the reconciling sync"
-        );
-        let (app, doc) = h.parts();
-        app.sync(doc, &ROOT);
+        h.app
+            .app
+            .invoke_confirmed(ui::tilo_resource::Invoke::apply(&action).unwrap())
+            .unwrap();
+        h.app.settle();
         assert!(
             h.app.store.get(id).is_none(),
-            "the reconciling sync dropped the deleted contact"
+            "the presented book dropped the deleted contact"
         );
         assert_eq!(h.app.store.len(), before - 1);
     }
@@ -1762,12 +1629,10 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         // (delete) so the production `show_toast` fires, then prove the frame
         // loop keeps itself awake and clears the toast once its lifetime
         // elapses, and idles afterwards.
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = sampled();
         let id = app.selected.unwrap();
 
-        app.delete_selected(&mut doc, id);
+        app.delete_selected(id);
         assert!(app.toast.is_some(), "deleting a contact raises a toast");
         assert!(
             app.needs_animation_frame(),
@@ -1854,7 +1719,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
             Some(other_id),
             "switched to the clicked contact"
         );
-        let stored = ContactsDoc::list_contacts(h.doc());
+        let stored = h.book();
         let edited = stored.iter().find(|x| x.id == cur).unwrap();
         assert_eq!(
             edited.title, "Brand New Title",
@@ -1886,7 +1751,7 @@ fn switching_while_editing_is_guarded_by_the_unsaved_modal() {
         let g = h.app.unsaved_geometry();
         h.press_left(g.discard.center());
         assert_eq!(h.app.selected, Some(other_id));
-        let stored = ContactsDoc::list_contacts(h.doc());
+        let stored = h.book();
         let unchanged = stored.iter().find(|x| x.id == cur).unwrap();
         assert_eq!(
             unchanged.title, original_title,
@@ -2019,7 +1884,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
     {
         let mut h = Harness::new(1280, 800);
         let store_before = h.app.store.len();
-        let doc_before = ContactsDoc::list_contacts(h.doc()).len();
+        let doc_before = h.book().len();
         // Start a new contact via the keyboard shortcut, focus the name, type.
         assert!(h.press_char("n"), "'n' starts a new contact");
         assert_eq!(h.app.mode, Mode::Edit);
@@ -2033,11 +1898,7 @@ fn edits_commit_only_on_save_and_cancel_discards() {
             store_before,
             "a half-typed new contact isn't in the store"
         );
-        assert_eq!(
-            ContactsDoc::list_contacts(h.doc()).len(),
-            doc_before,
-            "nor in the doc",
-        );
+        assert_eq!(h.book().len(), doc_before, "nor in the doc");
         // Cancel → still nothing, no "No Name"/"Ghost" phantom left behind.
         h.press_left(h.app.hit.cancel.center());
         assert_eq!(h.app.mode, Mode::View);
@@ -2172,10 +2033,10 @@ fn open_edit_forms_ignore_bare_keys_and_start_clean() {
         // A freshly-opened New Contact form (with the two empty seeded
         // phone/email rows) must not be considered dirty — otherwise the
         // unsaved guard would fire on the very first contact switch.
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        app.shots_new_contact();
+        let mut app = sampled();
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
+        app.stage_new_contact();
         assert!(
             !app.form_is_dirty(),
             "an untouched New Contact form is clean"
@@ -2204,8 +2065,13 @@ fn search_field_focus_and_typing_narrow_the_list() {
         // Focus the search field with '/', then type a query via keystrokes.
         assert!(h.press_char("/"), "'/' focuses search");
         assert!(h.app.search.is_focused());
+        let versions = h.app.app.versions().len();
         h.type_text("hopper");
         assert_eq!(h.app.search.value(), "hopper");
+        assert!(
+            h.app.app.versions().len() == versions,
+            "a query is the window's own, never a document edit"
+        );
         let visible = h.app.visible_ids();
         assert_eq!(visible.len(), 1, "only Grace Hopper matches 'hopper'");
         assert_eq!(h.app.store.get(visible[0]).unwrap().last, "Hopper");
@@ -2398,10 +2264,10 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
 
     // --- phase: group_filter_shot_defers_its_anchor_until_layout_exists ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        app.shots_show_group_filter();
+        let mut app = sampled();
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
+        app.stage_group_filter();
         drive_frame(&mut app, 1_280, 800);
         assert!(matches!(
             app.popup,
@@ -2811,6 +2677,7 @@ fn scratch_export() -> (PathBuf, PathBuf) {
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
+    std::fs::create_dir_all(&dir).expect("scratch export directory");
     let vcf = dir.join("out.vcf");
     (dir, vcf)
 }
@@ -2822,7 +2689,7 @@ fn vcf_export_writes_the_selected_book() {
     // --- phase: export_selection_parks_then_save_portal_path_writes_the_vcf ---
     {
         let (dir, vcf) = scratch_export();
-        let mut h = Harness::new(1280, 800);
+        let mut h = Harness::live(1280, 800);
         // Open the export dialog via the toolbar Export button.
         h.press_left(h.app.hit.export.center());
         assert!(
@@ -2851,12 +2718,11 @@ fn vcf_export_writes_the_selected_book() {
         assert_eq!(h.app.export_dialog.selection().len(), 1);
         assert!(h.app.export_dialog.selection().contains(&first_id));
 
-        // Export 3.0 → closes the dialog and parks the selection for the Save
-        // dialog. It must NOT write anything before the user chooses a path.
-        // A recording host stands in for the desktop and will answer the Save
-        // dialog with `vcf`.
+        // Export 3.0 → closes the dialog and asks where to save. A recording
+        // host stands in for the desktop and answers the Save dialog with
+        // `vcf`.
         let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ExportOutcome::Opened(vcf.clone()));
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(vcf.clone()));
         let _host = ui::host::enter(&services);
         let g = h
             .app
@@ -2867,49 +2733,45 @@ fn vcf_export_writes_the_selected_book() {
             !h.app.export_dialog.is_open(),
             "choosing a version closes the dialog"
         );
-        {
-            let (ids, version) = h.app.pending_export.as_ref().expect("selection is parked");
-            assert_eq!(ids, &vec![first_id], "the one ticked contact is parked");
-            assert_eq!(*version, VCardVersion::V3, "the chosen version is parked");
-        }
-        assert!(h.app.portal_in_flight(), "the Save dialog is in flight");
-        assert!(
-            !vcf.exists(),
-            "nothing is written until a destination is chosen"
-        );
+        assert!(h.app.portal_in_flight(), "the export runs");
 
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1, "exactly one Save dialog was requested");
         assert_eq!(picks[0].title(), "Export contacts");
 
-        // Drain the destination the Save dialog returned through one real
-        // frame's sync — which writes the file.
-        let (app, doc) = h.parts();
-        app.sync(doc, &ROOT);
-        assert!(
-            h.app.pending_export.is_none(),
-            "the parked selection was consumed"
-        );
-        assert!(!h.app.portal_in_flight(), "draining clears the request");
+        // The file is written off the UI thread; the export ends on the
+        // frame after.
+        let deadline = ui::time::now() + std::time::Duration::from_secs(30);
+        while h.app.portal_in_flight() && ui::time::now() < deadline {
+            h.app.settle();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(!h.app.portal_in_flight(), "the export ended");
         let body = std::fs::read_to_string(&vcf).expect("export wrote a vcf to the chosen path");
         assert_eq!(
             body.matches("BEGIN:VCARD").count(),
             1,
             "exactly the ticked contact"
         );
+        assert!(body.contains("VERSION:3.0"), "as the chosen version");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: write_export_round_trips_every_contact ---
+    // --- phase: exporting_everything_writes_every_contact ---
     {
-        // The hermetic write core: hand it every visible id + a version and it
-        // writes a matching .vcf to the given path.
+        // The export effect, as the palette or an agent invokes it, saves
+        // every contact as vCard 4.0 where the person chooses.
         let (dir, vcf) = scratch_export();
-        let mut h = Harness::new(1280, 800);
-        let ids = h.app.store.filtered_sorted("", None, h.app.sort);
-        let total = ids.len();
-        h.app.write_export(&ids, VCardVersion::V4, &vcf);
+        let mut h = Harness::live(1280, 800);
+        let total = h.app.store.filtered_sorted("", None, h.app.sort).len();
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(vcf.clone()));
+        let _host = ui::host::enter(&services);
+        h.app
+            .app
+            .effect_confirmed(&crate::actions::ContactsEffect::ExportAllVcard)
+            .expect("the export runs");
         let body = std::fs::read_to_string(&vcf).unwrap();
         assert_eq!(
             body.matches("BEGIN:VCARD").count(),
@@ -2937,14 +2799,17 @@ fn scratch_book() -> (PathBuf, PathBuf) {
 
 /// Run the live Import action under a recording host whose multi-select
 /// chooser answers `outcome`, and check the app asked for that chooser.
-fn import_with(app: &mut ContactsApp, outcome: ImportOutcome) {
+fn import_with(app: &mut Live, outcome: ui::portal::MultiOutcome) {
     let (services, recorder) = ui::host::HostServices::recording();
     recorder.respond_to_pick_multiple(outcome);
-    ui::host::scoped(&services, || app.request_import());
+    let result = ui::host::scoped(&services, || {
+        app.app.effect(&crate::actions::ContactsEffect::ImportVcard)
+    });
     let picks = recorder.pick_requests();
     assert_eq!(picks.len(), 1, "one file chooser was requested");
     assert_eq!(picks[0].title(), "Import contacts");
     assert!(picks[0].is_multiple(), "Import picks several files at once");
+    result.expect("the import runs");
 }
 
 /// A live launch with no saved book is empty, and the first-run state is actionable by pointer, keyboard and assistive tech.
@@ -2955,8 +2820,8 @@ fn first_run_is_empty_and_actionable() {
         // The live app must NOT invent sample contacts on an empty store.
         let (dir, _path) = scratch_book();
         let mut app = ContactsApp::new();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &ROOT);
         assert!(
             app.store.is_empty(),
             "a fresh disk-backed launch shows an empty book"
@@ -2975,7 +2840,7 @@ fn first_run_is_empty_and_actionable() {
     {
         let mut app = ContactsApp::new();
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         drive_frame(&mut app, 760, 620);
 
         assert!(app.store.is_empty());
@@ -3010,14 +2875,14 @@ fn first_run_is_empty_and_actionable() {
         assert!(app.perform_semantic_action(
             "contacts.empty.new",
             &ui::a11y::Action::Focus,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(app.empty_action_focused);
         assert!(app.perform_semantic_action(
             "contacts.empty.new",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert_eq!(app.mode, Mode::Edit);
@@ -3035,119 +2900,29 @@ fn first_run_is_empty_and_actionable() {
 fn saved_book_persists_across_restarts_and_imports() {
     // --- phase: created_contact_persists_across_a_restart ---
     // The production restart path: a contact created through the real edit
-    // flow goes into the shared document, the store writes that document,
-    // and a second launch reading the store finds the contact again.
+    // flow goes into the book's document, which the app's record keeps, and
+    // a second launch on the same profile finds the contact again.
     {
-        let home = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", home.path())
-            .remove("TILO_PACKAGE_ID");
-
-        // First launch.
-        let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
-        let mut doc = store.load_or_new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
-        assert!(app.store.is_empty(), "a fresh store shows an empty book");
+        let mut app = Live::empty(1280, 800);
+        assert!(app.store.is_empty(), "a fresh profile shows an empty book");
         let mut c = Contact::new();
         c.first = "Persisted".into();
         c.last = "Person".into();
         c.phones.push(Labeled::new("mobile", "+1 555 0100"));
         app.begin_edit(c, true);
-        app.save_edit(&mut doc);
+        app.save_edit();
+        app.settle();
         assert_eq!(app.store.len(), 1, "the contact is in the working set");
-        store.save(&mut doc).unwrap();
-        drop((store, doc, app)); // the process exits here
 
-        // Second launch ("reboot"): a new app over the reloaded document.
-        let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
-        let mut doc2 = store2.load().unwrap().expect("the store has a document");
-        let mut app2 = ContactsApp::new();
-        app2.sync(&mut doc2, &ROOT);
+        let app = app.reopen();
         assert_eq!(
-            app2.store.len(),
+            app.store.len(),
             1,
             "the saved contact loads on the next launch"
         );
-        let loaded = &app2.store.contacts[0];
+        let loaded = &app.store.contacts[0];
         assert_eq!(loaded.first, "Persisted");
         assert_eq!(loaded.phones[0].value, "+1 555 0100");
-    }
-
-    // --- phase: a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save ---
-    // The property the old save path destroyed, asserted in the app that
-    // had the bug.
-    //
-    // The old save path rebuilt a fresh `AutoCommit` from the contact list on
-    // every write. The document it produced shared no history — and no
-    // object identity — with the one it came from, so merging it with a
-    // replica that had diverged produced two unrelated `contacts` objects
-    // and every record twice. Round-tripping through the store instead must
-    // leave the two sides mergeable: one shared object, each side's edit
-    // present exactly once.
-    {
-        let home = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", home.path())
-            .remove("TILO_PACKAGE_ID");
-        let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
-        let mut doc = store.new_document();
-
-        // A shared ancestor: one contact both sides know about.
-        let mut shared = Contact::new();
-        shared.first = "Ada".into();
-        shared.last = "Lovelace".into();
-        let shared_id = shared.id;
-        ContactsDoc::upsert_contact(&mut doc, &shared);
-        store.save(&mut doc).unwrap();
-
-        // A peer forks here and adds a contact of its own.
-        let mut peer = doc.fork();
-        let mut theirs = Contact::new();
-        theirs.first = "Grace".into();
-        theirs.last = "Hopper".into();
-        let their_id = theirs.id;
-        ContactsDoc::upsert_contact(&mut peer, &theirs);
-
-        // Meanwhile this app adds one and the session ends.
-        let mut mine = Contact::new();
-        mine.first = "Alan".into();
-        mine.last = "Turing".into();
-        let my_id = mine.id;
-        ContactsDoc::upsert_contact(&mut doc, &mine);
-        store.save(&mut doc).unwrap();
-        drop((store, doc));
-
-        // Restart, then merge the peer that diverged before the save.
-        let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
-        let mut restored = store2.load().unwrap().expect("the saved document");
-        restored
-            .merge_incoming(&mut peer)
-            .expect("a stored book merges with a peer");
-
-        let book = ContactsDoc::list_contacts(&restored);
-        assert_eq!(
-            book.len(),
-            3,
-            "each side's contact appears exactly once, not duplicated: {:?}",
-            book.iter().map(|c| c.first.clone()).collect::<Vec<_>>()
-        );
-        for (id, name) in [(shared_id, "Ada"), (my_id, "Alan"), (their_id, "Grace")] {
-            let found = book.iter().filter(|c| c.id == id).count();
-            assert_eq!(
-                found, 1,
-                "{name} must be present exactly once, found {found}"
-            );
-        }
-        // The decisive check: both sides edited the *same* contacts object.
-        // A rebuilt-from-scratch save would have made two, and the merge
-        // would leave a conflict at the key.
-        assert_eq!(
-            restored.get_all(&ROOT, "contacts").unwrap().len(),
-            1,
-            "history was preserved, so the merge reconciled one object rather \
-             than colliding two unrelated ones"
-        );
     }
 
     // --- phase: import_reads_real_vcf_files_and_persists_them ---
@@ -3171,14 +2946,12 @@ fn saved_book_persists_across_restarts_and_imports() {
         )
         .unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = Live::empty(1280, 800);
         assert!(app.store.is_empty());
 
         // Drive the parse+merge core directly with the paths the portal would
         // have handed back (the picker itself can't run headless).
-        let summary = app.import_paths(&mut doc, &[vcf_a, vcf_b]);
+        let summary = app.import_paths(&[vcf_a, vcf_b]);
         assert_eq!(
             summary.created, 3,
             "all three cards across the two files were imported"
@@ -3198,13 +2971,11 @@ fn saved_book_persists_across_restarts_and_imports() {
         assert!(firsts.contains("Ada"));
         assert!(firsts.contains("Grace"));
 
-        // The import reached the shared document, which is what the store
-        // writes — so it survives a restart.
-        assert_eq!(
-            ContactsDoc::list_contacts(&doc).len(),
-            3,
-            "written to the doc"
-        );
+        // The import reached the book's document, as one step.
+        app.settle();
+        assert_eq!(app.book().len(), 3, "written to the doc");
+        assert!(app.app.undo(), "the import is one undo step");
+        assert!(app.book().is_empty());
         let _ = path;
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -3212,36 +2983,19 @@ fn saved_book_persists_across_restarts_and_imports() {
 
     // --- phase: deleting_a_contact_persists_the_removal ---
     {
-        let home = tempfile::tempdir().unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_DATA_HOME", home.path())
-            .remove("TILO_PACKAGE_ID");
-        // Seed a book into the store, then delete one contact and restart.
-        let book = sample_contacts();
-        let removed = book[0].id;
-        let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
-        let mut doc = store.new_document();
-        for c in &book {
-            ContactsDoc::upsert_contact(&mut doc, c);
-        }
-        store.save(&mut doc).unwrap();
-
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = Live::sample(1280, 800);
         let before = app.store.len();
-        assert_eq!(before, book.len(), "the seeded book loaded");
-        app.delete_selected(&mut doc, removed);
-        store.save(&mut doc).unwrap();
-        drop((store, doc, app));
+        let removed = app.store.contacts[0].id;
+        app.delete_selected(removed);
+        app.settle();
 
-        // Reload from the store: the deletion stuck.
-        let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
-        let doc2 = store2.load().unwrap().expect("document after restart");
-        let reloaded = ContactsDoc::list_contacts(&doc2);
+        // Relaunch: the deletion stuck.
+        let mut app = app.reopen();
+        let reloaded = app.book();
         assert_eq!(
             reloaded.len(),
             before - 1,
-            "the removal was written to the store"
+            "the removal was written to the record"
         );
         assert!(!reloaded.iter().any(|c| c.id == removed));
     }
@@ -3262,14 +3016,12 @@ fn imports_recognise_identities_without_duplicating() {
         let vcf = dir.join("contacts-export.vcf");
         std::fs::write(&vcf, vcard::to_vcard(&card, VCardVersion::V4)).unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = Live::empty(1280, 800);
 
-        let first = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+        let first = app.import_paths(std::slice::from_ref(&vcf));
         assert_eq!(first.created, 1);
         assert_eq!(app.store.len(), 1);
-        let second = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+        let second = app.import_paths(std::slice::from_ref(&vcf));
         assert_eq!(second.created, 0);
         assert_eq!(second.unchanged, 1);
         assert_eq!(
@@ -3293,13 +3045,11 @@ fn imports_recognise_identities_without_duplicating() {
         )
         .unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
-        let first = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+        let mut app = Live::empty(1280, 800);
+        let first = app.import_paths(std::slice::from_ref(&vcf));
         let imported_id = app.store.contacts[0].id;
         let imported_phone_id = app.store.contacts[0].phones[0].id;
-        let second = app.import_paths(&mut doc, std::slice::from_ref(&vcf));
+        let second = app.import_paths(std::slice::from_ref(&vcf));
 
         assert_eq!(first.created, 1);
         assert_eq!(second.created, 0);
@@ -3314,8 +3064,6 @@ fn imports_recognise_identities_without_duplicating() {
     {
         let card = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Grace Hopper\r\nN:Hopper;Grace;;;\r\nTEL;TYPE=work:+1 202 555 0143\r\nEMAIL:grace@example.com\r\nCATEGORIES:Pioneers\r\nEND:VCARD\r\n";
         let mut ancestor = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut ancestor, &ROOT);
         ancestor.commit();
         let mut left = ancestor.fork();
         let mut right = ancestor.fork();
@@ -3362,20 +3110,18 @@ fn imports_recognise_identities_without_duplicating() {
         std::fs::write(&original_file, vcard::to_vcard(&original, VCardVersion::V4)).unwrap();
         std::fs::write(&malicious_file, malicious).unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
-        assert_eq!(app.import_paths(&mut doc, &[original_file]).created, 1);
+        let mut app = Live::empty(1280, 800);
+        assert_eq!(app.import_paths(&[original_file]).created, 1);
 
-        let result = app.import_paths(&mut doc, &[malicious_file]);
+        let result = app.import_paths(&[malicious_file]);
         assert_eq!(result.conflicts, 1);
         assert!(result.failure_message().contains("review"));
-        let resources = ui::resources::resources(&app, &doc);
-        let review = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.kind == "contacts.import-conflict")
-            .expect("the pending collision has an addressable review resource");
+        let review = app
+            .import_conflict_rows()
+            .into_iter()
+            .next()
+            .expect("the pending collision has an addressable review resource")
+            .into_resource();
         assert!(
             review
                 .actions
@@ -3414,22 +3160,17 @@ fn imports_recognise_identities_without_duplicating() {
         // book stays empty and disk is untouched — the button never silently
         // invents contacts.
         let (dir, path) = scratch_book();
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = Live::empty(1280, 800);
         assert!(app.store.is_empty());
 
         // Empty selection.
-        assert!(!app.import_paths(&mut doc, &[]).completed());
-        // A cancelled picker drained through the real path.
-        import_with(&mut app, ImportOutcome::Cancelled);
-        app.sync(&mut doc, &ROOT);
+        assert!(!app.import_paths(&[]).completed());
+        // A cancelled picker, through the import effect.
+        import_with(&mut app, ui::portal::MultiOutcome::Cancelled);
+        app.settle();
 
         assert!(app.store.is_empty(), "import of nothing adds nothing");
-        assert!(
-            ContactsDoc::list_contacts(&doc).is_empty(),
-            "and writes nothing to the doc"
-        );
+        assert!(app.book().is_empty(), "and writes nothing to the doc");
         assert!(!path.exists(), "and never touches disk");
         let _ = &path;
         assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
@@ -3437,216 +3178,52 @@ fn imports_recognise_identities_without_duplicating() {
     }
 }
 
-/// Import/export jobs are portal-brokered, merge through sync, and parser generations fence stale or exhausted workers.
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
-)]
+/// Importing reads the chosen files off the UI thread and merges them as
+/// one step; an export with nothing chosen asks for no file.
 #[test]
-fn import_export_jobs_are_brokered_and_generation_fenced() {
-    // --- phase: import_drain_merges_selected_files_through_sync ---
-    {
-        // The live plumbing end to end: an ImportOutcome::Selected on the
-        // channel is drained by `sync` (the per-frame drain) and merged into
-        // the book — exactly what the portal worker feeds after the user picks
-        // files. Only the host dialog is stood in for by a recording host; the
-        // request, drain, parse and merge are real.
-        let (dir, path) = scratch_book();
-        std::fs::create_dir_all(&dir).unwrap();
-        let vcf = dir.join("incoming.vcf");
-        std::fs::write(
-        &vcf,
-        "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Drained Person\r\nN:Person;Drained;;;\r\nEND:VCARD\r\n",
-    )
-    .unwrap();
-
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        let _ = &path;
-        app.sync(&mut doc, &ROOT);
-        assert!(app.store.is_empty());
-
-        // Run the live Import action with the host's chooser picking `vcf`,
-        // then run one real frame's sync — which drains it.
-        import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
-        assert!(
-            app.portal_in_flight(),
-            "a request is in flight until drained"
-        );
-        // The picker is drained on this frame; parsing happens on a worker so
-        // a slow vCard cannot block rendering. Drive a few frames instead of
-        // assuming the scheduler has already run that worker.
-        let deadline = ui::time::now() + HANG_BOUND;
-        while ui::time::now() < deadline {
-            app.sync(&mut doc, &ROOT);
-            if !app.portal_in_flight() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        assert!(
-            !app.portal_in_flight(),
-            "draining the outcome clears the request"
-        );
-        assert_eq!(app.store.len(), 1, "the drained selection was imported");
-        assert_eq!(app.store.contacts[0].first, "Drained");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // --- phase: stale_background_parser_cannot_apply_or_leave_an_accepted_import_pending ---
-    {
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
-        let mut stale = Contact::new();
-        stale.first = "Stale worker".into();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        app.import_generation = 2;
-        app.import_parse_rx = Some(receiver);
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_invocation = Some(invocation);
-        sender
-            .send(ParsedImport {
-                generation: 1,
-                contacts: vec![stale],
-                errors: 0,
-            })
-            .unwrap();
-
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            app.store.is_empty(),
-            "wrong-generation data never reaches the book"
-        );
-        assert!(app.import_parse_rx.is_none());
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
-    }
-
-    // --- phase: brokered_file_operations_refuse_legacy_direct_paths ---
-    {
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::sample();
-        app.sync(&mut doc, &ROOT);
-        for operation in [
-            crate::actions::ContactsOperation::ImportVcard {
-                path: Some("/etc/passwd".into()),
-            },
-            crate::actions::ContactsOperation::ExportAllVcard {
-                path: Some("/tmp/contacts.vcf".into()),
-            },
-        ] {
-            let payload = serde_json::to_vec(&operation).unwrap();
-            let error = app
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::Effect,
-                        crate::actions::CONTACTS_OPERATION_TYPE,
-                        &payload,
-                    ),
-                    &mut doc,
-                    &ROOT,
-                )
-                .expect_err("a broker cannot bypass the system file picker");
-            assert!(error.contains("system file picker"));
-            assert!(app.resource_invocation.is_none());
-        }
-    }
-
-    // --- phase: exhausted_parser_generation_refuses_a_new_import_and_settles_the_job ---
+fn import_and_export_run_through_the_file_chooser() {
+    // --- phase: chosen_files_import_through_the_import_effect ---
     {
         let (dir, _path) = scratch_book();
         std::fs::create_dir_all(&dir).unwrap();
-        let vcf = dir.join("generation-limit.vcf");
-        std::fs::write(&vcf, "BEGIN:VCARD\r\nFN:Never Parsed\r\nEND:VCARD\r\n").unwrap();
+        let vcf = dir.join("incoming.vcf");
+        std::fs::write(
+            &vcf,
+            "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Drained Person\r\nN:Person;Drained;;;\r\nEND:VCARD\r\n",
+        )
+        .unwrap();
 
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_invocation = Some(invocation);
-        app.import_generation = u64::MAX;
-        import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
+        let mut app = Live::empty(1280, 800);
+        assert!(app.store.is_empty());
+        import_with(&mut app, ui::portal::MultiOutcome::Selected(vec![vcf]));
+        assert!(!app.portal_in_flight(), "the import ended");
+        assert_eq!(app.book().len(), 1, "the chosen file was imported");
+        assert_eq!(app.book()[0].first, "Drained");
+        assert!(app.app.undo(), "the import is one undo step");
+        assert!(app.book().is_empty());
 
-        app.sync(&mut doc, &ROOT);
-        assert!(
-            app.store.is_empty(),
-            "no wrapped parser generation can apply data"
-        );
-        assert!(app.import_parse_rx.is_none());
-        assert_eq!(
-            app.import_generation,
-            u64::MAX,
-            "the exhausted token is never reused"
-        );
-        assert!(
-            app.toast
-                .as_ref()
-                .is_some_and(|(message, _)| message.contains("generation exhausted"))
-        );
-        assert!(matches!(
-            app.poll_resource_operation(invocation, false, &doc, &ROOT),
-            Some(tilo_actions::InvocationUpdate::Failed { .. })
-        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // --- phase: cancelling_at_generation_max_invalidates_the_worker_without_wrapping ---
+    // --- phase: a_running_import_refuses_a_second ---
     {
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::new();
-        app.sync(&mut doc, &ROOT);
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let invocation = tilo_actions::InvocationId::new();
-        app.resource_invocation = Some(invocation);
-        app.import_parse_rx = Some(receiver);
-        app.import_generation = u64::MAX;
-
-        let update = app
-            .poll_resource_operation(invocation, true, &doc, &ROOT)
-            .expect("accepted import is settled when cancelled");
-        assert!(matches!(
-            update,
-            tilo_actions::InvocationUpdate::Cancelled { .. }
-        ));
-        assert!(
-            app.import_parse_rx.is_none(),
-            "the worker result is detached"
-        );
-        assert_eq!(
-            app.import_generation,
-            u64::MAX,
-            "cancellation never wraps to 0"
-        );
-        assert!(
-            app.toast
-                .as_ref()
-                .is_some_and(|(message, _)| message.contains("generation exhausted"))
-        );
-        // The worker can still finish in the background, but its disconnected
-        // receiver means no stale contacts can reach this app instance.
-        let _ = sender.send(ParsedImport {
-            generation: u64::MAX,
-            contacts: vec![Contact::new()],
-            errors: 0,
+        let mut app = Live::empty(1280, 800);
+        let _running = app.begin_file_work(FileWork::Import).unwrap();
+        let (services, _recorder) = ui::host::HostServices::recording();
+        let refused = ui::host::scoped(&services, || {
+            app.app.effect(&crate::actions::ContactsEffect::ImportVcard)
         });
-        app.sync(&mut doc, &ROOT);
-        assert!(app.store.is_empty());
+        assert!(refused.is_err(), "one file operation runs at a time");
     }
 
     // --- phase: export_with_empty_selection_never_opens_the_portal ---
     {
         // Choosing a version with nothing ticked must not spin up a Save
-        // dialog or park anything — it guides the user instead.
-        let mut h = Harness::new(1280, 800);
-        let opened = h.app.request_export(Vec::new(), VCardVersion::V3);
+        // dialog — it guides the user instead.
+        let mut h = Harness::live(1280, 800);
+        let opened = h.app.request_export(&[], VCardVersion::V3);
         assert!(!opened, "an empty selection does not open the Save dialog");
-        assert!(h.app.pending_export.is_none(), "nothing is parked");
-        assert!(!h.app.portal_in_flight(), "no portal request is in flight");
+        assert!(!h.app.portal_in_flight(), "no export runs");
         match &h.app.toast {
             Some((msg, _)) => assert!(msg.to_lowercase().contains("select")),
             None => panic!("an empty export must surface a guiding toast"),
@@ -3663,25 +3240,24 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
 fn duplicate_and_conflict_review_is_accessible() {
     // --- phase: import_conflict_review_is_visible_accessible_and_resolves_both_choices ---
     {
-        fn conflicting_app() -> (ContactsApp, AutoCommit, Contact, Contact) {
+        fn conflicting_app(w: u32, h: u32) -> (Live, Contact, Contact) {
             let original = sample_contacts().into_iter().next().unwrap();
             let mut incoming = original.clone();
             incoming.emails[0].value = "attacker@example.invalid".into();
-            let mut doc = AutoCommit::new();
-            let mut app = ContactsApp::new();
-            app.sync(&mut doc, &ROOT);
+            let mut app = Live::empty(w, h);
             let mut summary = ImportSummary::default();
             let mut first_new = None;
-            app.absorb_import_contact(&mut doc, original.clone(), &mut summary, &mut first_new);
-            app.absorb_import_contact(&mut doc, incoming.clone(), &mut summary, &mut first_new);
+            app.absorb_import_contact(original.clone(), &mut summary, &mut first_new);
+            app.settle();
+            app.absorb_import_contact(incoming.clone(), &mut summary, &mut first_new);
             assert_eq!(summary.conflicts, 1);
-            (app, doc, original, incoming)
+            app.recompose();
+            (app, original, incoming)
         }
 
         // Wide rendering exposes a real modal rather than only a toast or a
         // palette resource, and its two decisions are in the semantic tree.
-        let (app, doc, original, _) = conflicting_app();
-        let mut app = frame_at(app, doc, 1280, 800);
+        let (mut app, original, _) = conflicting_app(1280, 800);
         let token = app.import_conflicts[0].token;
         let keep = import_conflict_target(token, "keep-existing");
         let import_as_new = import_conflict_target(token, "import-as-new");
@@ -3700,7 +3276,7 @@ fn duplicate_and_conflict_review_is_accessible() {
             .layout_in(rect, &Theme::dark(), &mut tr);
         assert!(app.modal_capture().is_some(), "review dialog is painted");
         assert!(perform(&mut app, &keep, &ui::a11y::Action::Activate));
-        sync_doc(&mut app);
+        app.settle();
         assert!(app.import_conflicts.is_empty());
         assert_eq!(app.store.len(), 1);
         assert_eq!(
@@ -3711,8 +3287,7 @@ fn duplicate_and_conflict_review_is_accessible() {
         // Import-as-new is the destructive, confirmation-labelled decision.
         // It mints a fresh local id and dispatches the normal CreateContact
         // action, never patching the contact identified by the untrusted UID.
-        let (app, doc, original, incoming) = conflicting_app();
-        let mut app = frame_at(app, doc, 560, 720);
+        let (mut app, original, incoming) = conflicting_app(560, 720);
         let token = app.import_conflicts[0].token;
         let import_as_new = import_conflict_target(token, "import-as-new");
         app.ensure_import_conflict_dialog();
@@ -3732,7 +3307,7 @@ fn duplicate_and_conflict_review_is_accessible() {
             &import_as_new,
             &ui::a11y::Action::Activate,
         ));
-        sync_doc(&mut app);
+        app.settle();
         assert!(app.import_conflicts.is_empty());
         assert_eq!(app.store.len(), 2);
         assert_eq!(
@@ -3742,19 +3317,12 @@ fn duplicate_and_conflict_review_is_accessible() {
         assert!(app.store.contacts.iter().any(|contact| {
             contact.id != original.id && contact.emails[0].value == incoming.emails[0].value
         }));
-        assert!(
-            app.last_dispatched().is_some(),
-            "Import as new uses ContactsAction"
-        );
+        assert_eq!(app.book().len(), 2, "Import as new reached the document");
     }
 
     // --- phase: narrow_duplicate_review_is_scrollable_and_exposes_explicit_value_choices ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        app.shots_show_duplicate_review();
-        let mut app = frame_at(app, doc, 390, 844);
+        let mut app = Live::scenario("duplicate-review", 390, 844);
         app.text_scale = 2.0;
 
         let review = app.duplicate_review.as_ref().expect("review is open");
@@ -3797,22 +3365,7 @@ fn duplicate_and_conflict_review_is_accessible() {
 
     // --- phase: discovered_duplicates_have_a_canonical_responsive_review_route ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        let survivor = app
-            .selected
-            .and_then(|id| app.store.get(id))
-            .cloned()
-            .expect("sample selection exists");
-        let mut source = survivor;
-        source.id = uuid::Uuid::new_v4();
-        source.notes = "Independent import that needs review".into();
-        app.store.upsert(source);
-        app.duplicate_candidate = crate::actions::duplicate_candidates(&app.store.contacts, 1)
-            .into_iter()
-            .next();
-        app.duplicate_candidate_heads.clone_from(&app.model_heads);
+        let mut app = Live::scenario("duplicates", 1_280, 800);
         let candidate = app
             .duplicate_candidate
             .clone()
@@ -3820,7 +3373,6 @@ fn duplicate_and_conflict_review_is_accessible() {
 
         // The wide toolbar reserves a separate hit target, so its action never
         // crowds import/export/new and is exposed with the safety explanation.
-        let mut app = frame_at(app, doc, 1_280, 800);
         assert!(app.hit.duplicates.area() > 0.0);
         for other in [app.hit.import, app.hit.export, app.hit.new] {
             assert!(
@@ -3913,12 +3465,10 @@ fn modals_and_editors_expose_semantic_action_routes() {
         assert!(h.press_named(NamedKey::Space));
         assert_eq!(h.app.export_dialog.selection().len(), h.app.store.len());
 
-        let (app, doc) = h.parts();
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut h.app,
             "contacts.export.select-none",
-            &ui::a11y::Action::Activate,
-            doc,
-            &ROOT,
+            &ui::a11y::Action::Activate
         ));
         assert!(h.app.export_dialog.selection().is_empty());
         let id = h
@@ -3928,8 +3478,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
             .rows[0]
             .0;
         let target = format!("contacts.export.row:{id}");
-        let (app, doc) = h.parts();
-        assert!(app.perform_semantic_action(&target, &ui::a11y::Action::ToggleCheck, doc, &ROOT,));
+        assert!(perform(&mut h.app, &target, &ui::a11y::Action::ToggleCheck));
         assert!(h.app.export_dialog.selection().contains(&id));
 
         h.app.store.contacts = (0..1_000)
@@ -3985,12 +3534,10 @@ fn modals_and_editors_expose_semantic_action_routes() {
         assert!(access_target(&tree, "contacts.unsaved.discard").is_some());
         assert!(h.press_named(NamedKey::Tab));
         assert_eq!(h.app.unsaved_focus, UnsavedFocus::Discard);
-        let (app, doc) = h.parts();
-        assert!(app.perform_semantic_action(
+        assert!(perform(
+            &mut h.app,
             "contacts.unsaved.discard",
-            &ui::a11y::Action::Activate,
-            doc,
-            &ROOT,
+            &ui::a11y::Action::Activate
         ));
         assert!(h.app.pending_switch.is_none());
         assert_eq!(h.app.selected, Some(other));
@@ -3998,10 +3545,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
 
     // --- phase: detail_and_editor_semantics_reach_the_same_durable_action_path ---
     {
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        let mut app = frame_at(app, doc, 1280, 800);
+        let mut app = Live::sample(1280, 800);
 
         let id = app.selected.expect("sample contact is selected");
         let favorite = app.store.get(id).expect("selected contact exists").favorite;
@@ -4023,7 +3567,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
             "semantic activation updates the visible model"
         );
         assert_eq!(
-            ContactsDoc::list_contacts(doc_of(&app))
+            app.book()
                 .into_iter()
                 .find(|contact| contact.id == id)
                 .map(|contact| contact.favorite),
@@ -4056,7 +3600,7 @@ fn modals_and_editors_expose_semantic_action_routes() {
         );
         assert!(perform(&mut app, &save_target, &ui::a11y::Action::Activate,));
         assert_eq!(
-            ContactsDoc::list_contacts(doc_of(&app))
+            app.book()
                 .into_iter()
                 .find(|stored| stored.id == id)
                 .map(|stored| stored.first),
@@ -4079,12 +3623,11 @@ fn modals_and_editors_expose_semantic_action_routes() {
             }
         }
 
-        let mut app = ContactsApp::sample();
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
+        let mut app = Live::sample(1280, 800);
         let id = app.selected.unwrap();
-        app.begin_edit(app.store.get(id).cloned().unwrap(), false);
-        let mut app = frame_at(app, doc, 1280, 800);
+        let contact = app.store.get(id).cloned().unwrap();
+        app.begin_edit(contact, false);
+        app.recompose();
 
         let (type_row, _) = app.hit.type_chips[0];
         let type_target = type_chip_target(id, type_row);
@@ -4174,37 +3717,149 @@ fn live_message<'a>(node: &'a AccessNode, message: &str) -> Option<&'a AccessNod
         .find_map(|child| live_message(child, message))
 }
 
-/// Mount `app` over the case's `doc` in the production frame host and run one
-/// frame at `w`x`h`.
-fn frame_at(app: ContactsApp, doc: AutoCommit, w: u32, h: u32) -> Framed<ContactsApp> {
-    let mut state = ui::State::new();
-    assert!(
-        state.adopt_doc(doc),
-        "the harness adopts the case's document"
-    );
-    Framed::new(state, app, (w, h), Theme::dark())
+/// The contacts app as every host runs it — the framework root over the
+/// address book, its edits through the book's door — with its surface at hand
+/// for assertions about view state.
+struct Live {
+    app: ui::framework::testing::TestApp<crate::ContactsShell>,
+    /// The surface inside `app`'s widget tree, which owns it for as long as
+    /// `app` lives; the tree is built once and never replaced.
+    surface: *mut ContactsApp,
+    viewport: (u32, u32),
+}
+
+impl Live {
+    /// The sample book, as a capture stages it, at `w`x`h`.
+    fn sample(w: u32, h: u32) -> Self {
+        Self::mount(
+            ui::framework::testing::TestApp::capture_at(None, (w, h)).unwrap(),
+            (w, h),
+        )
+    }
+
+    /// The sample book in a window someone uses, where effects run.
+    fn live_sample(w: u32, h: u32) -> Self {
+        let mut app = ui::framework::testing::TestApp::<crate::ContactsShell>::new().unwrap();
+        for invoke in <crate::ContactsShell as ui::framework::ResourceApp>::scenario(None) {
+            app.invoke(invoke).unwrap();
+        }
+        app.settle();
+        Self::mount(app, (w, h))
+    }
+
+    /// The capture of `scenario`, at `w`x`h`.
+    fn scenario(scenario: &str, w: u32, h: u32) -> Self {
+        Self::mount(
+            ui::framework::testing::TestApp::capture_at(Some(scenario), (w, h)).unwrap(),
+            (w, h),
+        )
+    }
+
+    /// A fresh, empty book at `w`x`h`.
+    fn empty(w: u32, h: u32) -> Self {
+        Self::mount(ui::framework::testing::TestApp::new().unwrap(), (w, h))
+    }
+
+    fn mount(
+        mut app: ui::framework::testing::TestApp<crate::ContactsShell>,
+        viewport: (u32, u32),
+    ) -> Self {
+        app.harness().set_theme(Theme::dark());
+        app.harness()
+            .resize(viewport)
+            .expect("contacts frame lays out");
+        let surface = app
+            .with_widget(|surface: &mut ContactsApp| std::ptr::from_mut(surface))
+            .expect("the contacts surface is hosted");
+        Self {
+            app,
+            surface,
+            viewport,
+        }
+    }
+
+    fn harness_mut(&mut self) -> &mut ui::headless::FrameHarness {
+        self.app.harness()
+    }
+
+    /// Run the frame after an event: submitted edits apply, and what they
+    /// change is presented and drawn.
+    fn settle(&mut self) {
+        self.app.settle();
+    }
+
+    fn recompose(&mut self) {
+        self.app
+            .harness()
+            .recompose()
+            .expect("contacts frame lays out");
+    }
+
+    /// Deliver one window event to the app. What it submits applies on
+    /// the next frame ([`Self::settle`]).
+    fn dispatch(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
+        self.app
+            .harness()
+            .dispatch_to_root_with(event, &mods.into())
+    }
+
+    /// The address book as the document holds it once the edits submitted
+    /// so far have applied.
+    fn book(&mut self) -> Vec<Contact> {
+        self.settle();
+        self.app.state().contacts
+    }
+
+    /// Close the app and launch it again on the same profile, as after a
+    /// restart.
+    fn reopen(self) -> Self {
+        let viewport = self.viewport;
+        Self::mount(self.app.reopen().expect("the app relaunches"), viewport)
+    }
+
+    /// The address book as it would be after `action`, applied to a copy of
+    /// the document as the palette's action of the same name applies it.
+    fn book_after(&self, action: &crate::actions::ContactsAction) -> Vec<Contact> {
+        let mut peer = self.app.peer_document();
+        tilo_actions::Action::apply(action, &mut peer).expect("the palette's action applies");
+        ContactsDoc::list_contacts(&peer)
+    }
+}
+
+impl std::ops::Deref for Live {
+    type Target = ContactsApp;
+
+    fn deref(&self) -> &ContactsApp {
+        // SAFETY: `surface` points into the tree `app` owns and never
+        // rebuilds; `&self` keeps `app` alive and unborrowed.
+        unsafe { &*self.surface }
+    }
+}
+
+impl std::ops::DerefMut for Live {
+    fn deref_mut(&mut self) -> &mut ContactsApp {
+        // SAFETY: as in `deref`; `&mut self` makes this the only access.
+        unsafe { &mut *self.surface }
+    }
 }
 
 /// Lay the same instance out at `w`x`h`, to simulate a live window resize (the
 /// ui loop re-runs layout on the existing widget when the allocation changes).
-fn rerender_at(app: &mut Framed<ContactsApp>, w: u32, h: u32) {
-    Framed::harness_mut(app)
+fn rerender_at(app: &mut Live, w: u32, h: u32) {
+    app.harness_mut()
         .relayout_themed((w, h), Theme::dark())
         .expect("contacts frame lays out");
 }
 
-fn perform(app: &mut Framed<ContactsApp>, target: &str, action: &ui::a11y::Action) -> bool {
-    let (app, state) = Framed::split(app);
-    app.perform_semantic_action(target, action, &mut state.doc, &ROOT)
-}
-
-fn sync_doc(app: &mut Framed<ContactsApp>) {
-    let (app, state) = Framed::split(app);
-    app.sync(&mut state.doc, &ROOT);
-}
-
-fn doc_of(app: &Framed<ContactsApp>) -> &AutoCommit {
-    &Framed::harness(app).state().doc
+/// Perform `action` on the semantic `target` the surface publishes, as
+/// assistive technology does, and run the frame after it.
+fn perform(app: &mut Live, target: &str, action: &ui::a11y::Action) -> bool {
+    let handled = app
+        .harness_mut()
+        .perform_semantic_named("contacts", Some(target), action)
+        .is_ok();
+    app.settle();
+    handled
 }
 
 /// Form rows, pills, panel lifts, rows and toolbar faces are authored at 1x and grow with the text scale on every preset.

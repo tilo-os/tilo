@@ -19,14 +19,14 @@
 )]
 
 use std::collections::HashMap;
-use ui::doc::read_bool;
 
-use automerge::{AutoCommit, ReadDoc};
+use automerge::AutoCommit;
 use settings::SettingsApp;
 use settings::categories::Category;
 use taffy::{NodeId, TaffyTree};
+use ui::framework::HostDelivery as _;
 use ui::text_render::TextRenderer;
-use ui::widget::{ResourceOperation, Widget};
+use ui::widget::Widget;
 use vello::kurbo::{Point, Rect};
 
 const W: f32 = 1200.0;
@@ -133,7 +133,7 @@ fn click_at(
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -152,13 +152,10 @@ fn click_at(
                 .expect("Settings control actions use the toolkit control resource");
             let payload = serde_json::to_vec(control).expect("control id is valid JSON");
             let started = app
-                .start_operation(
-                    &ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        "tilo.ui.control.invoke",
-                        &payload,
-                    ),
+                .start_encoded(
+                    tilo_actions::OperationKind::View,
+                    "tilo.ui.control.invoke",
+                    &payload,
                     doc,
                     &root,
                 )
@@ -205,11 +202,10 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let mut app = config
             .app()
             .with_category(Category::Network)
-            .with_width_hint(NW)
-            .with_narrow_content_shot();
+            .with_width_hint(NW);
         let mut doc = AutoCommit::new();
         let (taffy, node) = lay_out_at(&mut app, NW, NH);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert!(app.is_narrow(), "440px resolves to the narrow layout");
         assert!(
             !app.sidebar_open(),
@@ -221,7 +217,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let back = app.back_button_rect();
         assert!(back.width() > 0.0, "the back arrow has a resolved rect");
         click_at(&mut app, &taffy, node, &mut doc, back.center());
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let _ = app.take_structure_dirty();
         let _ = lay_out_at(&mut app, NW, NH);
         assert!(
@@ -244,16 +240,8 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let _ = navigate(&mut app, &mut doc, Category::Network);
         let root = automerge::ROOT;
         let heads = doc.get_heads();
-        app.sync(&mut doc, &root);
+        app.sync(&doc, &root);
         assert_eq!(doc.get_heads(), heads);
-        assert!(
-            read_bool(
-                &doc,
-                &automerge::ROOT,
-                settings::panes::network::WIFI_ENABLED_KEY
-            )
-            .is_none()
-        );
     }
 }
 
@@ -271,30 +259,12 @@ fn all_panels_navigate_and_seed_their_controls() {
         // The pane rebuilt by navigate's final layout seeds on its next
         // sync; run one so the seed lands before we assert on it.
         let heads_before_idle_sync = doc.get_heads();
-        app.sync(&mut doc, &automerge::ROOT);
-        // Hardware panes render from process-local snapshots and must not
-        // seed their primary device state into the collaborative document.
-        let seeded_key = match target {
-            Category::Network => Some(settings::panes::network::WIFI_ENABLED_KEY),
-            Category::Bluetooth => Some(settings::panes::bluetooth::BT_ENABLED_KEY),
-            Category::Sound => Some(settings::panes::audio::VOLUME_KEY),
-            Category::Displays => Some(settings::panes::display::BRIGHTNESS_KEY),
-            Category::Storage => Some(settings::panes::storage::CLEAN_KEY),
-            Category::Printers => Some("settings.printers.refresh"),
-            Category::Users => Some("settings.users.add"),
-            Category::AgentModels => Some("agent_models.local.confirm"),
-            _ => None,
-        };
-        if let Some(key) = seeded_key {
-            assert_eq!(
-                doc.get_heads(),
-                heads_before_idle_sync,
-                "{target:?} idle sync must leave the collaborative document unchanged"
-            );
-            assert!(
-                doc.get(&automerge::ROOT, key).ok().flatten().is_none(),
-                "{target:?} must keep device-local control key {key} out of collaboration"
-            );
-        }
+        app.sync(&doc, &automerge::ROOT);
+        // Panes render from their models and never write the document.
+        assert_eq!(
+            doc.get_heads(),
+            heads_before_idle_sync,
+            "{target:?} idle sync must leave the collaborative document unchanged"
+        );
     }
 }

@@ -2,7 +2,6 @@
 
 use ui::time::{Duration, Instant};
 
-use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -174,7 +173,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<EndpointEffect> {
         let endpoint = self.focused?;
         if matches!(
@@ -213,7 +212,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         drive_hand_laid(&mut self.origin_input, event, scale, modifiers, doc);
         drive_hand_laid(&mut self.destination_input, event, scale, modifiers, doc);
@@ -225,7 +224,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<EndpointEffect> {
         let hit = self.hit_at(point)?;
         match hit {

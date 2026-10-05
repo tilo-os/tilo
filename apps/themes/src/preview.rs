@@ -254,6 +254,8 @@ impl PreviewPane {
         }
     }
 
+    /// Draw the specimen into `rect` without a layout pass.
+    #[cfg(test)]
     pub(crate) fn draw_snapshot(
         &mut self,
         scene: &mut Scene,
@@ -264,6 +266,7 @@ impl PreviewPane {
         self.rect = rect;
         self.draw_specimen(scene, t, tr);
     }
+
     fn draw_specimen(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer) {
         if self.rect.width() < 8.0 {
             return;

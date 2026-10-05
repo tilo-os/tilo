@@ -544,6 +544,9 @@ pub struct HostServices {
     /// and the shared sections (`settings_store::app_scope`). Without it
     /// apps have no settings beyond their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
+    /// Every app's live activity, as the host presents it. Without it no
+    /// app shows anything outside its windows.
+    pub live_activities: Option<Arc<runtime_collab::LiveActivities>>,
     pub wifi_continuity: Option<Arc<dyn WifiContinuityServices>>,
     pub nearby_transfer: Option<Arc<dyn NearbyTransferServices>>,
     /// What each application declared it may do on the action door under
@@ -556,4 +559,8 @@ pub struct HostServices {
     /// Where the launchable action catalogue survives a restart. Without it
     /// closed apps' actions are retained for this broker's lifetime only.
     pub launchable_catalogue: Option<std::path::PathBuf>,
+    /// Content records reference, kept on this device and asked of each
+    /// record's route (`offerBlob`, `wantBlob`, `subscribeBlobs`). Without
+    /// it apps' content stays in their own process.
+    pub record_content: Option<Arc<crate::record_content::RouteContent>>,
 }
