@@ -39,15 +39,21 @@ fn native_snapshot_of_unopened_editor_is_not_ready() {
 fn native_snapshot_tracks_durable_edits_and_caret_without_source_text() {
     let (_directory, mut app, manifest) = loaded_fixture();
     let (before, unsent, changed) = crate::test_support::with_doc(&mut app, move |app, doc| {
-        let before = app.native_input_snapshot(doc, &automerge::ROOT).unwrap();
+        let before = app
+            .native_input_snapshot(doc.doc(), &automerge::ROOT)
+            .unwrap();
         app.editor.set_focus(true);
         app.editor.set_caret_for_test(0, 0);
         // Existing editor editing method emits the real action request; the
         // app's production dispatcher is what updates the durable text.
         app.editor.insert_for_test(doc, "x");
-        let unsent = app.native_input_snapshot(doc, &automerge::ROOT).unwrap();
+        let unsent = app
+            .native_input_snapshot(doc.doc(), &automerge::ROOT)
+            .unwrap();
         app.dispatch_editor_text_edits(doc);
-        let changed = app.native_input_snapshot(doc, &automerge::ROOT).unwrap();
+        let changed = app
+            .native_input_snapshot(doc.doc(), &automerge::ROOT)
+            .unwrap();
         (before, unsent, changed)
     });
     assert_eq!(before["body_hash"], manifest.body_hash);
@@ -73,7 +79,7 @@ fn native_snapshot_observes_real_wheel_input_with_explicit_units() {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut *doc,
+                    state: doc.reborrow(),
                     path: &automerge::ROOT,
                     handled: &mut false,
                     focus_target: &mut None,
@@ -91,7 +97,8 @@ fn native_snapshot_observes_real_wheel_input_with_explicit_units() {
             delta: winit::event::MouseScrollDelta::LineDelta(0.0, -3.0),
             phase: winit::event::TouchPhase::Moved,
         });
-        app.native_input_snapshot(doc, &automerge::ROOT).unwrap()
+        app.native_input_snapshot(doc.doc(), &automerge::ROOT)
+            .unwrap()
     });
     assert_eq!(snapshot["offset_y"], 9.0);
     assert_eq!(snapshot["offset_y_unit"], "lines");

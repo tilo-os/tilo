@@ -45,6 +45,7 @@ mod lsp_workflow;
 mod surface;
 #[cfg(test)]
 mod tests;
+use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash};
 use taffy::style_helpers::length;
 use taffy::{Dimension, LengthPercentageAuto, NodeId, Size, Style, TaffyTree};
@@ -229,7 +230,7 @@ impl Widget for BottomPanelToggle {
             )
             && self
                 .button
-                .perform_action(&ui::a11y::Action::Activate, ctx.state, ctx.path)
+                .perform_action(&ui::a11y::Action::Activate, &mut ctx.state, ctx.path)
         {
             *ctx.handled = true;
             return;
@@ -300,7 +301,7 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.button.perform_action(action, state, path)
@@ -427,6 +428,7 @@ struct SearchProjectionRevision {
     /// Collaborative text and durable file metadata are authoritative in the
     /// CRDT, so its heads cheaply cover every remote/local document edit.
     document_heads: Vec<ChangeHash>,
+    pending_ops: usize,
     /// Filesystem/project and streamed-result changes are local projections,
     /// not necessarily CRDT mutations.
     /// `None` means this local revision counter is exhausted. In that state we
@@ -659,7 +661,7 @@ pub struct CodeApp {
 
 /// What a test runs with the editor and its document.
 #[cfg(test)]
-pub(crate) type TestHook = Box<dyn FnOnce(&mut CodeApp, &mut AutoCommit)>;
+pub(crate) type TestHook = Box<dyn FnOnce(&mut CodeApp, &mut ui::widget::Edits<'_>)>;
 
 /// A screenshot scenario being staged: `None` for a plain `--shots`.
 #[derive(Clone, Debug)]
@@ -1138,11 +1140,11 @@ impl CodeApp {
     /// event, so the editor sees its own edit before the next keystroke.
     fn submit_now(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         action: &actions::CodeEditorAction,
     ) -> Result<(), tilo_actions::ActionError> {
         match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action),
+            Some(dispatch) => dispatch.apply_now(doc, action),
             None => Err(tilo_actions::ActionError::Refused(
                 "the editor is not open on a project".into(),
             )),
@@ -1414,7 +1416,7 @@ impl CodeApp {
     /// prepares a before/after request; this boundary derives the compact
     /// character splice, dispatches the public action, and reconciles the
     /// optimistic paint cache if validation refuses it.
-    fn dispatch_editor_text_edits(&mut self, doc: &mut AutoCommit) {
+    fn dispatch_editor_text_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(edit) = self.editor.take_text_edit() else {
             return;
         };
@@ -1432,7 +1434,7 @@ impl CodeApp {
 
     fn dispatch_text_action(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         file_id: String,
         base: &str,
         next: &str,
@@ -1712,9 +1714,10 @@ impl CodeApp {
     /// document or a local project/result generation changed. This is
     /// intentionally separate from `search_providers`: opening the palette,
     /// typing, and unchanged frames do no filesystem, document, or LSP work.
-    fn refresh_search_entries(&mut self, doc: &mut AutoCommit) {
+    fn refresh_search_entries(&mut self, doc: &AutoCommit) {
         let revision = SearchProjectionRevision {
-            document_heads: doc.get_heads(),
+            document_heads: doc.base_heads(),
+            pending_ops: doc.pending_ops(),
             local_generation: self.search_projection_local_generation,
         };
         // Once the local identity space is exhausted there can be no safe
@@ -2016,7 +2019,7 @@ impl CodeApp {
     /// the action host; the rest are pure presentation.
     ///
     /// [`CodeEditorAction`]: crate::actions::CodeEditorAction
-    fn apply_command(&mut self, cmd: Command, doc: &mut AutoCommit) {
+    fn apply_command(&mut self, cmd: Command, doc: &mut ui::widget::Edits<'_>) {
         match cmd {
             Command::NewFile => {
                 // An untitled file at the project root, created through the
@@ -2173,7 +2176,7 @@ impl CodeApp {
     }
 
     /// Replace the current match, then step to the next one.
-    fn replace_current(&mut self, doc: &mut AutoCommit) {
+    fn replace_current(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
@@ -2209,7 +2212,7 @@ impl CodeApp {
     /// Replacements are applied last-to-first so each splice's index is still
     /// valid: replacing forwards would shift every later match by the
     /// difference in length.
-    fn replace_all(&mut self, doc: &mut AutoCommit) {
+    fn replace_all(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(node) = self.session.active_buffer().map(|b| b.node) else {
             return;
         };
@@ -2241,7 +2244,7 @@ impl CodeApp {
     }
 
     /// Apply whatever the find bar asked for this frame.
-    fn drain_find_events(&mut self, doc: &mut AutoCommit) {
+    fn drain_find_events(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for ev in self.find.take_events() {
             match ev {
                 FindEvent::QueryChanged => {
@@ -2519,7 +2522,9 @@ impl CodeApp {
         if replace {
             self.find.set_replacement("buffer");
         }
-        self.drain_find_events(&mut doc.clone());
+        // This shot stages only a query; authoring requests settle normally.
+        let _ = self.find.take_events();
+        self.find_current = None;
         self.refresh_find(doc);
         // Land on the first match so the current-match fill is visible.
         self.focus_match(if self.find_matches.is_empty() {
@@ -2907,7 +2912,7 @@ impl CodeApp {
     fn handle_conflict_prompt(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if let Some(choice) = Self::conflict_key(event) {
@@ -2992,7 +2997,7 @@ impl CodeApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
     ) -> bool {
@@ -3061,7 +3066,7 @@ impl CodeApp {
         let before = *ctx.handled;
         self.find
             .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        self.drain_find_events(ctx.state);
+        self.drain_find_events(&mut ctx.state);
         *ctx.handled && !before
     }
 
@@ -3075,7 +3080,7 @@ impl CodeApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         taffy: &TaffyTree<()>,
         handled: &mut bool,
     ) -> bool {
@@ -3100,7 +3105,7 @@ impl CodeApp {
                 &mut ui::widget::EventCtx {
                     scale_factor,
                     modifiers: &modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: &automerge::ROOT,
                     handled: &mut th,
                     focus_target: &mut tf,
@@ -3175,7 +3180,7 @@ impl CodeApp {
         if let Some(n) = self.editor_node {
             self.editor
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-            self.dispatch_editor_text_edits(ctx.state);
+            self.dispatch_editor_text_edits(&mut ctx.state);
         }
     }
 }
@@ -3287,23 +3292,7 @@ impl Widget for CodeApp {
         reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
     )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
-        #[cfg(test)]
-        if let Some(hook) = self.test_hook.take() {
-            hook(self, state);
-        }
-        if let Some(command) = self.pending_command.take() {
-            self.apply_command(command, state);
-        }
-        if let Some((node, target)) = self.pending_save.take() {
-            self.notice = None;
-            let saved = self.save_to(state, node, target);
-            self.finish_file_effect(if saved {
-                Ok(())
-            } else {
-                Err("file could not be saved".into())
-            });
-        }
+        let (state, path) = ui::doc::document_ref(state, path);
         if !self.seeded {
             self.seed_terminal();
         }
@@ -3317,9 +3306,7 @@ impl Widget for CodeApp {
         self.continue_staging(state);
         self.refresh_search_entries(state);
         self.editor.sync(state, path);
-        self.dispatch_editor_text_edits(state);
         self.find.sync(state, path);
-        self.drain_find_events(state);
 
         // A jump queued by a search hit or a cross-file definition lands once
         // the target buffer is actually bound.
@@ -3330,9 +3317,8 @@ impl Widget for CodeApp {
             self.pending_jump = None;
         }
 
-        // Pump the embedded terminal: its `sync` drains the PTY reader and
-        // reflects it into the grid (the plain `ui::App` loop never calls
-        // `update`, so pumping happens here — see `TerminalWidget::sync`).
+        // Show the terminal record; update drains its PTY and settlement
+        // records the resulting screen through the terminal's action door.
         if let Some(t) = self.terminal.as_mut() {
             t.sync(state, path);
         }
@@ -3373,6 +3359,33 @@ impl Widget for CodeApp {
         if chrome != self.laid_out {
             self.laid_out = chrome;
             self.structure_dirty = true;
+        }
+    }
+
+    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        #[cfg(test)]
+        if let Some(hook) = self.test_hook.take() {
+            hook(self, state);
+        }
+        if let Some(command) = self.pending_command.take() {
+            self.apply_command(command, state);
+        }
+        if let Some((node, target)) = self.pending_save.take() {
+            self.notice = None;
+            let saved = self.save_to(state, node, target);
+            self.finish_file_effect(if saved {
+                Ok(())
+            } else {
+                Err("file could not be saved".into())
+            });
+        }
+        self.dispatch_editor_text_edits(state);
+        self.drain_find_events(state);
+        for child in self.children_mut() {
+            child.settle(&mut state.reborrow(), path);
+        }
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.settle(&mut state.reborrow(), path);
         }
     }
 
@@ -3668,7 +3681,7 @@ impl Widget for CodeApp {
         // because closing the tab either way changes which of two versions of
         // the file survives.
         if self.close_prompt.is_some() {
-            self.handle_close_prompt(event, ctx.state, ctx.handled);
+            self.handle_close_prompt(event, ctx.state.doc(), ctx.handled);
             return;
         }
 
@@ -3681,7 +3694,7 @@ impl Widget for CodeApp {
         if self.handle_global_shortcuts(
             event,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.handled,
             ctx.focus_target,
         ) {
@@ -3692,7 +3705,7 @@ impl Widget for CodeApp {
         // is "which of these two versions of your file survives", and letting
         // keystrokes fall through to the buffer underneath it would be wrong.
         if self.conflict.is_some() {
-            self.handle_conflict_prompt(event, ctx.state, ctx.handled);
+            self.handle_conflict_prompt(event, &mut ctx.state, ctx.handled);
             return;
         }
 
@@ -3732,7 +3745,7 @@ impl Widget for CodeApp {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.taffy,
             ctx.handled,
         ) {
@@ -3756,7 +3769,7 @@ impl Widget for CodeApp {
 
         // Drain whatever the children produced, then refresh derived views.
         self.drain_child_events();
-        self.refresh_diagnostics(ctx.state);
+        self.refresh_diagnostics(ctx.state.doc());
         self.refresh_status();
         // Mirror panel tab changes into focus, if the panel switched itself.
         let _ = self.panel.take_tab_changed();
@@ -3880,17 +3893,20 @@ impl Widget for CodeApp {
             || self.terminal_visible()
     }
 
-    /// The explorer eases wheel scrolling and row transitions on its own
-    /// clock; it is the one child whose per-frame update this root runs.
+    /// Advance the explorer and drain the retained terminal before settlement.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        self.sidebar.update(state, path)
+        let mut changed = self.sidebar.update(state, path);
+        if let Some(terminal) = self.terminal.as_mut() {
+            changed |= terminal.update(state, path);
+        }
+        changed
     }
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while the sidebar flap is
         // mid-transition (so the slide + scrim fade play out) OR while a live
-        // terminal is visible — its PTY is drained from `sync`, which the App
-        // only re-runs while an animation frame is requested.
+        // terminal is visible — its PTY is drained during update, which the
+        // App repeats while an animation frame is requested.
         //
         // A running search or an in-flight file picker also needs frames: both
         // deliver over a channel drained in `sync`, so without a frame their
