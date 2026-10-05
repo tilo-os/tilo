@@ -101,6 +101,13 @@ pub fn label(action: &CanvasAction, doc: &Doc) -> Option<String> {
                 _ => return None,
             }
         }
+        other => return area_or_artwork(other),
+    })
+}
+
+/// Changes of the selected area and of the artwork itself.
+fn area_or_artwork(action: &CanvasAction) -> Option<String> {
+    Some(match action {
         CanvasAction::Select(select) => {
             if select.mode.as_deref() == Some("none") {
                 "Deselect".to_owned()
@@ -280,7 +287,7 @@ fn edit_marks(edit: &EditMarks, names: &Names<'_>) -> String {
     if let Some(opacity) = edit.opacity {
         return format!("Opacity {:.0}% for {marks}", opacity * 100.0);
     }
-    let named = [
+    let verbs = [
         (edit.crop.is_some(), "Crop"),
         (edit.straighten.is_some(), "Straighten"),
         (edit.adjust.is_some(), "Adjust"),
@@ -306,7 +313,7 @@ fn edit_marks(edit: &EditMarks, names: &Names<'_>) -> String {
         (edit.blend.is_some(), "Blend"),
         (edit.grain.is_some() || edit.feather.is_some(), "Texture"),
     ];
-    named.iter().find(|(changed, _)| *changed).map_or_else(
+    verbs.iter().find(|(changed, _)| *changed).map_or_else(
         || format!("Edit {marks}"),
         |(_, verb)| format!("{verb} {marks}"),
     )
