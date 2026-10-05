@@ -33,6 +33,9 @@
     )
 )]
 
+/// Release selection shared by catalogue clients and the verified installer.
+pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions};
+
 pub mod client;
 pub mod config;
 pub mod dev_env;
