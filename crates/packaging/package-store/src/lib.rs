@@ -49,7 +49,7 @@ pub use catalog::{
 #[cfg(feature = "store")]
 pub use image::{
     FleetSource, ImageShelf, ImageTrust, MaterializeError, SYSTEM_IMAGE_PUBLISHERS_FILE, Store,
-    check_tool_runtime, materialized_tree, tool_runtime,
+    check_tool_runtime, local_materialized_tree, materialized_tree, tool_runtime,
 };
 pub use layout::Layout;
 pub use registry::{InstalledPackage, Pinning, Registry, RegistryError};
