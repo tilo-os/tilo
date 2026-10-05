@@ -179,8 +179,8 @@ mod tests {
     impl Field {
         fn new(key: SubmitKey) -> Self {
             let mut host = Embedded::new(RichTextSurface::over(Draft::new()).with_submit(key));
-            let mut doc = AutoCommit::new();
-            host.sync(&mut doc, &ROOT);
+            let doc = AutoCommit::new();
+            host.sync(&doc, &ROOT);
             let mut text = ui::TextRenderer::new();
             host.layout(
                 Rect::new(0.0, 0.0, 400.0, 40.0),
@@ -200,11 +200,11 @@ mod tests {
                 event,
                 1.0,
                 &Modifiers::from(held),
-                &mut self.doc,
+                &mut ui::widget::Edits::lend(&mut self.doc),
                 &ROOT,
                 &mut handled,
             );
-            self.host.sync(&mut self.doc, &ROOT);
+            self.host.sync(&self.doc, &ROOT);
         }
 
         fn type_text(&mut self, text: &str) {
@@ -254,13 +254,13 @@ mod tests {
         let surface = field.host.widget_mut();
         assert!(surface.perform_action(
             &ui::a11y::Action::SetValue("first\nsecond".into()),
-            &mut field.doc,
+            &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));
         assert_eq!(field.host.widget().source().plain_text(), "first\nsecond");
         assert!(field.host.widget_mut().perform_action(
             &ui::a11y::Action::SetValue("one".into()),
-            &mut field.doc,
+            &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));
         assert_eq!(field.host.widget().source().plain_text(), "one");
@@ -353,7 +353,7 @@ mod tests {
         );
         assert_eq!(chat.host.widget().source().plain_text(), "one\ntwo");
         chat.host.widget_mut().source_mut().clear();
-        chat.host.sync(&mut chat.doc, &ROOT);
+        chat.host.sync(&chat.doc, &ROOT);
         assert!(chat.host.widget().source().is_empty());
         assert_eq!(chat.host.widget().editor().blocks()[0].text(), "");
     }

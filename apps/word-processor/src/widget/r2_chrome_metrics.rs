@@ -12,6 +12,7 @@
 use super::tests::{mount, mount_themed};
 use super::*;
 use ui::headless::Framed;
+use ui::widget::Edits;
 
 fn overlaps(a: Rect, b: Rect) -> bool {
     let i = a.intersect(b);
@@ -42,7 +43,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let mut state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
             wp.sync(&state.doc, &state.root);
-            wp.model_mut().insert_str(&mut state.doc, "Panel rows");
+            wp.model_mut()
+                .insert_str(&mut Edits::lend(&mut state.doc), "Panel rows");
             wp.set_styles_panel_open(true);
             let mut framed = mount_themed(state, wp, 1400, 900, &theme);
             let (wp, _) = Framed::split(&mut framed);
@@ -140,8 +142,10 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let mut state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
             wp.sync(&state.doc, &state.root);
-            wp.model_mut()
-                .insert_str(&mut state.doc, "A report about the report");
+            wp.model_mut().insert_str(
+                &mut Edits::lend(&mut state.doc),
+                "A report about the report",
+            );
             wp.stage_find_for_shot(&state.doc, "report");
             let mut framed = mount_themed(state, wp, 1200, 800, &theme);
             let (wp, _) = Framed::split(&mut framed);
@@ -224,7 +228,8 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let mut state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
             wp.sync(&state.doc, &state.root);
-            wp.model_mut().insert_str(&mut state.doc, "chips");
+            wp.model_mut()
+                .insert_str(&mut Edits::lend(&mut state.doc), "chips");
             let mut framed = mount_themed(state, wp, 1000, 700, &theme);
             let (wp, _) = Framed::split(&mut framed);
             let mut tr = renderer(scale);
@@ -286,9 +291,11 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
         wp.sync(&state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "Picture");
-        wp.model_mut().enter(&mut state.doc);
-        wp.model_mut().insert_image_bytes(&mut state.doc, PNG);
+        wp.model_mut()
+            .insert_str(&mut Edits::lend(&mut state.doc), "Picture");
+        wp.model_mut().enter(&mut Edits::lend(&mut state.doc));
+        wp.model_mut()
+            .insert_image_bytes(&mut Edits::lend(&mut state.doc), PNG);
         wp.sync(&state.doc, &state.root);
         let image = tilo_doc::model::open(&state.doc, &state.root)
             .ok()
@@ -413,7 +420,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
         wp.sync(&state.doc, &state.root);
-        wp.model_mut().insert_str(&mut state.doc, "Large text");
+        wp.model_mut()
+            .insert_str(&mut Edits::lend(&mut state.doc), "Large text");
         wp.set_styles_panel_open(true);
         let mut framed = mount_themed(state, wp, 800, 900, &theme);
         let (wp, _) = Framed::split(&mut framed);

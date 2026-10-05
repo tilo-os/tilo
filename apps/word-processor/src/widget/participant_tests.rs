@@ -10,6 +10,7 @@ use crate::actions::participant::{FindState, ParticipantView, ViewPoint};
 use crate::actions::{RegionKind, SearchTarget};
 use tilo_actions::{ActionInvoker, ParticipantId, Resource};
 use tilo_automerge::ApplyIncoming as _;
+use ui::widget::Edits;
 
 fn pid(name: &str) -> ParticipantId {
     ParticipantId::new(name).unwrap()
@@ -22,9 +23,10 @@ fn widget_with(texts: &[&str]) -> (WordProcessorWidget, ui::State, Vec<String>) 
     wp.sync(&state.doc, &state.root);
     for (i, text) in texts.iter().enumerate() {
         if i > 0 {
-            wp.model_mut().enter(&mut state.doc);
+            wp.model_mut().enter(&mut Edits::lend(&mut state.doc));
         }
-        wp.model_mut().insert_str(&mut state.doc, text);
+        wp.model_mut()
+            .insert_str(&mut Edits::lend(&mut state.doc), text);
     }
     wp.sync(&state.doc, &state.root);
     let ids = body_ids(&state.doc);
@@ -259,7 +261,7 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
         )],
         caret(&ids[0], 11),
     );
-    wp.apply_participant_edit(&invoker, &mut state.doc, outcome)
+    wp.apply_participant_edit(&invoker, &mut Edits::lend(&mut state.doc), outcome)
         .unwrap();
 
     assert_eq!(wp.model().block_texts(&state.doc)[0], "hello world");
@@ -284,7 +286,7 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
     assert!(
         wp.apply_participant_edit(
             &no_participant,
-            &mut state.doc,
+            &mut Edits::lend(&mut state.doc),
             (Vec::new(), caret(&ids[0], 0))
         )
         .is_err()
@@ -406,7 +408,7 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: &mut state.doc,
+            state: Edits::lend(&mut state.doc),
             path: &state.root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -463,7 +465,11 @@ fn assert_keyboard_action_parity(
             );
         }
         agent_widget
-            .apply_participant_edit(&invoker, &mut agent_state.doc, (envelopes, next))
+            .apply_participant_edit(
+                &invoker,
+                &mut Edits::lend(&mut agent_state.doc),
+                (envelopes, next),
+            )
             .unwrap();
     }
     assert_eq!(
@@ -540,7 +546,12 @@ fn keystrokes_match_their_published_primitives() {
             &["item"],
             |wp, state, ids| {
                 select_in(wp, &ids[0], 4, 4);
-                wp.dispatch_paragraph_style(&mut state.doc, "list_item", None, Some(false));
+                wp.dispatch_paragraph_style(
+                    &mut Edits::lend(&mut state.doc),
+                    "list_item",
+                    None,
+                    Some(false),
+                );
             },
             vec![Input::Named(NamedKey::Enter), Input::Named(NamedKey::Enter)],
             vec![Box::new(new_paragraph), Box::new(new_paragraph)],

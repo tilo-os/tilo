@@ -33,6 +33,8 @@ use tilo_actions::{
     Action, ActionArgs, ActionParam, ActionSpec, ContextRequirement, DoorError, EncodedAction,
     ExecutionLocus, ParamType, Resource,
 };
+#[cfg(test)]
+use ui::widget::Edits;
 
 use tilo_document::{BodyOrder, ClipAttr};
 
@@ -2191,9 +2193,10 @@ mod tests {
         wp.sync(&state.doc, &state.root);
         for (index, text) in paragraphs.iter().enumerate() {
             if index > 0 {
-                wp.model_mut().enter(&mut state.doc);
+                wp.model_mut().enter(&mut Edits::lend(&mut state.doc));
             }
-            wp.model_mut().insert_str(&mut state.doc, text);
+            wp.model_mut()
+                .insert_str(&mut Edits::lend(&mut state.doc), text);
         }
         let ids = order(&state.doc);
         (state, wp, ids)
