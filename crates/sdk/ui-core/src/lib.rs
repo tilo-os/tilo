@@ -115,6 +115,7 @@ pub mod accesskit_bridge;
 #[doc(hidden)]
 pub mod action_host;
 mod action_locus;
+pub mod table_model;
 pub use action_locus::ActionUiRoute;
 pub mod action_palette;
 pub mod animation;
