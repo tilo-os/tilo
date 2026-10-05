@@ -995,8 +995,11 @@ fn area_tools_show_subject_controls_while_a_mark_stays_selected() {
         );
         assert!(
             desk.app.harness().resources().iter().any(|resource| {
-                resource.label == "Select subject"
-                    && resource.actions.iter().any(|action| action.id == "invoke")
+                resource.kind == "canvas.artwork"
+                    && resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "find-area")
             }),
             "the same control must be reachable through actions"
         );

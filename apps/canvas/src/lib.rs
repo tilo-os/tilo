@@ -17,6 +17,7 @@ pub mod actions;
 pub mod adjust;
 pub mod answer;
 pub mod author;
+pub mod background;
 pub mod brushes;
 pub mod content;
 pub mod described;

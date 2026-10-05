@@ -38,6 +38,17 @@ fn halves(width: u32, height: u32) -> String {
 }
 
 fn view(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
+    let effect = args.as_object().and_then(|args| {
+        <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(action, args).ok()
+    });
+    if let Some(effect) = effect {
+        return app
+            .effect(&effect)
+            .expect("the view effect finishes")
+            .value
+            .unwrap_or(Value::Null);
+    }
+
     app.call(action, args).unwrap().unwrap()
 }
 
@@ -73,6 +84,50 @@ fn placed(app: &mut TestApp<App>) {
         json!({"marks": [{"id": "photo", "shape": {"kind": "image", "src": halves(200, 100), "x": 100, "y": 100}}]}),
     )
     .unwrap();
+}
+
+#[test]
+fn a_look_job_keeps_its_snapshot_while_another_edit_is_applied() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "set-artwork",
+        json!({"width": 64, "height": 64, "ground_colour": "#ff0000", "texture": "smooth"}),
+    )
+    .unwrap();
+    let look = canvas::resource::ViewOp::Look(Look {
+        size: Some(64),
+        format: Some("png".into()),
+        ..Default::default()
+    });
+    let invocation = app.start_effect(&look).unwrap();
+    app.call("set-artwork", json!({"ground_colour": "#0000ff"}))
+        .unwrap();
+    app.harness()
+        .wait_until(ui::time::Duration::from_secs(10), |harness| {
+            harness
+                .job_updates(invocation)
+                .iter()
+                .any(ui::tilo_actions::InvocationUpdate::is_terminal)
+        });
+    let updates = app.effect_progress();
+    let output = updates
+        .iter()
+        .find_map(|update| match update {
+            ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => Some(output),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("{updates:?}"));
+    let hash = ui::tilo_actions::content_hash(&output.resources[0]).unwrap();
+    let png = app.content().read(hash).unwrap();
+    let picture = image::load_from_memory(&png).unwrap().to_rgba8();
+    assert_eq!(picture.get_pixel(32, 32).0, [255, 0, 0, 255]);
+    let now = app.effect(&look).unwrap();
+    assert_ne!(
+        output.value.as_ref().unwrap()["revision"],
+        now.value.unwrap()["revision"]
+    );
+    assert!(app.undo(), "only the blue-ground edit is undone");
+    assert_eq!(app.state().ground.colour, "#ff0000");
 }
 
 #[test]
@@ -370,7 +425,14 @@ fn exports_are_written_where_the_caller_names() {
         ("export-svg", "/tmp/x.png"),
     ] {
         assert!(
-            app.call(action, json!({ "path": path })).is_err(),
+            app.effect(
+                &<canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(
+                    action,
+                    json!({"path": path}).as_object().unwrap()
+                )
+                .unwrap()
+            )
+            .is_err(),
             "{action} {path} is refused"
         );
     }
