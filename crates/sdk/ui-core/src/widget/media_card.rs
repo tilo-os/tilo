@@ -1382,10 +1382,12 @@ impl Widget for MediaGrid {
         match self.mode {
             GridMode::Columns => {
                 let columns = self.columns_for_width(width);
-                // Whole pixels: every card of the grid is the same width, so
-                // their art is the same height and their titles share a line.
+                // Equal fractional tracks fill the whole row; layout rounding
+                // distributes spare pixels instead of leaving a blank edge.
+                // Measure text at the narrowest rounded width so every card's
+                // title still fits its shared row height.
                 let column = card_column_width(width, columns, self.column_gap).floor();
-                let tracks = vec![length(crate::num::f32_of_f64(column)); columns];
+                let tracks = vec![taffy::style_helpers::fr(1.0_f32); columns];
                 if let Ok(current) = taffy.style(node)
                     && current.grid_template_columns != tracks
                 {
