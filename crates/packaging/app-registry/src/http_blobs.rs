@@ -15,6 +15,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
+use std::time::Duration;
 use tilo_app_package::chunks::{
     ChunkList, ChunkRef, ChunkedReader, MAX_CHUNK_LIST_BYTES, MAX_OBJECT_BYTES, Reassembly,
 };
@@ -45,14 +46,61 @@ impl HttpBlobs {
 
     fn client() -> Result<reqwest::Client> {
         tilo_net::http::client()
+            .connect_timeout(Duration::from_secs(10))
             .build()
             .context("build registry HTTP client")
     }
 
     /// GET `url`, or `None` on 404, refusing a body over `limit` bytes.
     async fn get_bounded(client: &reqwest::Client, url: &str, limit: u64) -> Result<Option<Bytes>> {
+        Self::get_with_deadline(client, url, limit, Duration::from_secs(120)).await
+    }
+
+    async fn get_with_deadline(
+        client: &reqwest::Client,
+        url: &str,
+        limit: u64,
+        deadline: Duration,
+    ) -> Result<Option<Bytes>> {
+        const ATTEMPTS: u32 = 3;
+        let mut attempt = 1;
+        loop {
+            match Self::get_once(client, url, limit, deadline).await {
+                Ok(bytes) => return Ok(bytes),
+                Err(error) => {
+                    let transient = error.chain().any(|cause| {
+                        cause.downcast_ref::<reqwest::Error>().is_some_and(|error| {
+                            error.is_connect() || error.is_timeout() || error.is_body()
+                        })
+                    });
+                    if !transient || attempt >= ATTEMPTS {
+                        // The app CLI shows a bounded installer detail. Put the
+                        // underlying cause before long content-addressed URLs.
+                        let cause = error
+                            .chain()
+                            .last()
+                            .map(ToString::to_string)
+                            .unwrap_or_default();
+                        return Err(anyhow!(
+                            "{cause} (after {attempt} HTTP attempt(s)); {error:#}"
+                        ));
+                    }
+                    tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+                    attempt = attempt.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    async fn get_once(
+        client: &reqwest::Client,
+        url: &str,
+        limit: u64,
+        deadline: Duration,
+    ) -> Result<Option<Bytes>> {
         let response = client
             .get(url)
+            .timeout(deadline)
             .send()
             .await
             .with_context(|| format!("GET {url}"))?;
@@ -224,5 +272,146 @@ impl BlobFetcher for HttpBlobs {
             self.deliver(&runtime, &client, hash, sink)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+
+    fn server(responses: Vec<Vec<u8>>) -> (String, std::thread::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let count = responses.len();
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = [0; 1024];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                stream.write_all(&response).unwrap();
+            }
+            count
+        });
+        (format!("http://{address}"), worker)
+    }
+
+    fn response(length: usize, body: &[u8]) -> Vec<u8> {
+        let mut bytes =
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n")
+                .into_bytes();
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn interrupted_payload_is_retried_then_verified() {
+        let body = b"verified runtime payload";
+        let hash = BlobHash::of(body);
+        let (url, worker) = server(vec![
+            response(body.len(), b"partial"),
+            response(body.len(), body),
+        ]);
+        let blobs = HttpBlobs::new(url).fetch_all(&[hash]).await.unwrap();
+        assert_eq!(blobs, vec![Bytes::from_static(body)]);
+        assert_eq!(worker.join().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn permanent_interruption_stops_after_three_attempts_with_source_error() {
+        let (url, worker) = server(vec![response(20, b"partial"); 3]);
+        let hash = BlobHash::of(b"expected");
+        let error = HttpBlobs::new(url)
+            .fetch_all(&[hash])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("read http://"), "{error}");
+        assert!(error.contains("after 3 HTTP attempt(s)"), "{error}");
+        assert!(
+            error.contains("body"),
+            "underlying transport error missing: {error}"
+        );
+        assert_eq!(worker.join().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn stalled_requests_obey_deadlines_and_exhaust_bounded_retries() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = [0; 1024];
+                assert!(stream.read(&mut request).unwrap() > 0);
+                held.push(stream);
+            }
+            // Keep every response silent and open until the request deadlines
+            // have expired; EOF cannot stand in for a timeout in this test.
+            held
+        });
+        let client = HttpBlobs::client().unwrap();
+        let start = std::time::Instant::now();
+        let error = HttpBlobs::get_with_deadline(
+            &client,
+            &format!("http://{address}/stalled"),
+            8,
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("after 3 HTTP attempt(s)"), "{error}");
+        assert!(error.contains("timed out"), "{error}");
+        assert!(start.elapsed() < Duration::from_secs(5));
+        worker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn connection_refusal_is_retried_with_a_finite_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client = HttpBlobs::client().unwrap();
+        let error = HttpBlobs::get_bounded(&client, &format!("http://{address}/missing"), 8)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("after 3 HTTP attempt(s)"), "{error}");
+        assert!(
+            error.to_ascii_lowercase().contains("connection refused"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn size_and_integrity_failures_are_not_retried() {
+        let client = HttpBlobs::client().unwrap();
+        let (url, worker) = server(vec![response(9, b"oversized")]);
+        let error = HttpBlobs::get_bounded(&client, &url, 8)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("8-byte object ceiling"), "{error}");
+        assert!(error.contains("after 1 HTTP attempt(s)"), "{error}");
+        assert_eq!(worker.join().unwrap(), 1);
+
+        let (url, worker) = server(vec![response(7, b"corrupt")]);
+        let hash = BlobHash::of(b"correct");
+        let error = HttpBlobs::new(url)
+            .fetch_all(&[hash])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("do not hash to the payload blob"), "{error}");
+        assert_eq!(worker.join().unwrap(), 1);
     }
 }
