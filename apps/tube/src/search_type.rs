@@ -7,7 +7,6 @@ use ui::tilo_resource::SearchEntry;
 
 const MAX_INDEXED_ENTITIES: usize = 100;
 /// Live answers kept for queries the palette may still ask about.
-const MAX_LIVE_ANSWERS: usize = 16;
 
 /// The videos, creators, playlists and watch history Tube shows, as search
 /// entries, each naming the exact resource and action that opens it. Kept to

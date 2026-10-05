@@ -10,7 +10,7 @@ use ui::LocalState;
 use ui::icons::Icon;
 use ui::widget::{
     Button, ButtonRole, ControlSize, DatePicker, Dropdown, Element, Field, Form, FormPage,
-    FormSection, LabelPlacement, Row, TextInput, TextInputKind, Widget,
+    FormSection, LabelPlacement, Row, TextInput, TextInputKind, Toggle, Widget,
 };
 
 use crate::model::{Address, Birthday, Contact, GroupEntry, Labeled, group_names_equal};
@@ -167,9 +167,11 @@ pub(crate) struct EditForm {
     pub is_new: bool,
     pub fields: Vec<(Slot, LocalState<String>)>,
     pub types: Vec<(TypeTarget, LocalState<String>)>,
+    /// A cancellable favorite choice, committed with the other fields on Save.
+    pub favorite: LocalState<bool>,
     /// The birthday calendar is shown under the field.
     pub calendar_open: bool,
-    /// Initial field focus when a property opens its editor.
+    /// Field focus requested by an editor affordance or Enter progression.
     pub focus: Option<Slot>,
     /// Where the form is scrolled to; it survives the form being rebuilt
     /// when a row is added or removed.
@@ -248,6 +250,7 @@ impl EditForm {
             .map(|(target, value)| (target, LocalState::new(value)))
             .collect();
         Self {
+            favorite: LocalState::new(draft.favorite),
             base: draft.clone(),
             draft,
             is_new,
@@ -294,19 +297,9 @@ impl EditForm {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_kind(&self, target: TypeTarget, value: &str) {
-        if let Some((_, state)) = self
-            .types
-            .iter()
-            .find(|(candidate, _)| *candidate == target)
-        {
-            write(state, value);
-        }
-    }
-
     /// Fold every field's text and every row's kind into the draft.
     pub(crate) fn collect(&mut self) {
+        self.draft.favorite = self.favorite.with(|value| *value);
         let values: Vec<(Slot, String)> = self
             .fields
             .iter()
@@ -451,6 +444,7 @@ impl EditForm {
         }
         self.fields = fields;
         self.types = types;
+        self.favorite.set(draft.favorite);
         self.draft = draft;
         self.base = canonical.clone();
         self.layout_key() != before
@@ -537,7 +531,7 @@ impl EditForm {
             || draft.addresses.iter().any(|a| !a.is_empty())
     }
 
-    fn input(&self, slot: Slot) -> TextInput {
+    fn input(&self, slot: Slot, shared: &Shared) -> TextInput {
         let mut input = self
             .state(slot)
             .map_or_else(TextInput::local, TextInput::from_state)
@@ -555,7 +549,8 @@ impl EditForm {
             Slot::Notes => input.set_multiline(true),
             _ => {}
         }
-        input
+        let submit = std::rc::Rc::clone(shared);
+        input.on_submit(move |_| submit.borrow_mut().push(Request::AdvanceField(slot)))
     }
 
     fn type_menu(&self, target: TypeTarget) -> Option<Dropdown> {
@@ -582,7 +577,7 @@ impl EditForm {
             row = row.push(Box::new(menu));
         }
         Box::new(
-            row.push(Box::new(self.input(slot))).push(Box::new(
+            row.push(Box::new(self.input(slot, shared))).push(Box::new(
                 Button::icon_only(
                     &format!("contacts.form.remove.{}", target.key()),
                     Icon::X,
@@ -593,12 +588,12 @@ impl EditForm {
         )
     }
 
-    fn pair(&self, left: Slot, right: Slot) -> Element {
+    fn pair(&self, left: Slot, right: Slot, shared: &Shared) -> Element {
         Box::new(
             Row::new()
                 .no_wrap()
-                .push(Box::new(self.input(left)))
-                .push(Box::new(self.input(right))),
+                .push(Box::new(self.input(left, shared)))
+                .push(Box::new(self.input(right, shared))),
         )
     }
 
@@ -619,10 +614,16 @@ impl EditForm {
     /// measure.
     pub(crate) fn element(&self, shared: &Shared) -> Element {
         let name = FormSection::new("Name")
-            .field(Field::new("First name", self.input(Slot::First)))
-            .field(Field::new("Last name", self.input(Slot::Last)))
-            .field(Field::new("Organization", self.input(Slot::Org)))
-            .field(Field::new("Job title", self.input(Slot::Title)));
+            .field(Field::new("First name", self.input(Slot::First, shared)))
+            .field(Field::new("Last name", self.input(Slot::Last, shared)))
+            .field(Field::new("Organization", self.input(Slot::Org, shared)))
+            .field(Field::new("Job title", self.input(Slot::Title, shared)))
+            .field(Field::new(
+                "Favorite",
+                Toggle::from_state(&self.favorite)
+                    .with_id("contacts.form.favorite")
+                    .with_accessible_name("Favorite"),
+            ));
 
         let mut phones = FormSection::new("Phone");
         for i in 0..self.draft.phones.len() {
@@ -640,8 +641,8 @@ impl EditForm {
         for i in 0..self.draft.addresses.len() {
             addresses = addresses
                 .content(self.typed_row(TypeTarget::Addr(i), Slot::AddrStreet(i), shared))
-                .content(self.pair(Slot::AddrCity(i), Slot::AddrRegion(i)))
-                .content(self.pair(Slot::AddrPostal(i), Slot::AddrCountry(i)));
+                .content(self.pair(Slot::AddrCity(i), Slot::AddrRegion(i), shared))
+                .content(self.pair(Slot::AddrPostal(i), Slot::AddrCountry(i), shared));
         }
         addresses = addresses.content(Self::add_button("Add address", RowKind::Address, shared));
 
@@ -652,7 +653,7 @@ impl EditForm {
         };
         let mut details = FormSection::new("Details")
             .field(
-                Field::new("Birthday", self.input(Slot::Birthday))
+                Field::new("Birthday", self.input(Slot::Birthday, shared))
                     .with_help("Year, month and day, such as 1990-04-25"),
             )
             .content(Box::new(
@@ -679,12 +680,12 @@ impl EditForm {
             ));
         }
         details = details
-            .field(Field::new("Website", self.input(Slot::Website)))
+            .field(Field::new("Website", self.input(Slot::Website, shared)))
             .field(
-                Field::new("Groups", self.input(Slot::Groups))
+                Field::new("Groups", self.input(Slot::Groups, shared))
                     .with_help("Separate groups with commas"),
             )
-            .field(Field::new("Notes", self.input(Slot::Notes)));
+            .field(Field::new("Notes", self.input(Slot::Notes, shared)));
 
         // Labels stand above their fields, so every field, repeated row,
         // button and the calendar share the form's one leading edge.

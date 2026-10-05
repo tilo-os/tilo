@@ -1656,19 +1656,23 @@ impl FrameHarness {
     ) -> RootDispatch {
         let mut handled = false;
         let mut focus_target = None;
-        self.root.handle_event(
-            event,
-            &mut EventCtx {
-                scale_factor: self.input_scale,
-                modifiers,
-                state: crate::widget::Edits::lend(&mut self.state.doc),
-                path: &self.state.root,
-                handled: &mut handled,
-                focus_target: &mut focus_target,
-                node_id: self.child_node,
-                taffy: &self.taffy,
-            },
-        );
+        let mut ctx = EventCtx {
+            scale_factor: self.input_scale,
+            modifiers,
+            state: crate::widget::Edits::lend(&mut self.state.doc),
+            path: &self.state.root,
+            handled: &mut handled,
+            focus_target: &mut focus_target,
+            node_id: self.child_node,
+            taffy: &self.taffy,
+        };
+        if let Some(history) = &mut self.history {
+            // child_node is the History composition, not the app's node.
+            // Use its retained mapping without a host frame or focus routing.
+            history.route_event(self.root.as_mut(), event, &mut ctx);
+        } else if self.history_layout.is_none_or(|layout| layout.app_visible) {
+            self.root.handle_event(event, &mut ctx);
+        }
         RootDispatch {
             handled,
             focus_target,
@@ -2086,10 +2090,17 @@ impl FrameHarness {
                 .as_ref()
                 .is_some_and(|wake| wake.dirty.get());
         self.with_schedule_roots(|roots| FrameSchedule {
-            needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame()),
+            needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || self
+                    .presence
+                    .interaction_animation_demand(crate::time::now(), &self.theme),
             next_wake_deadline: roots
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
+                .chain(
+                    self.presence
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
             queued_work,
@@ -3078,6 +3089,32 @@ impl FrameHarness {
                 &mut self.text,
                 &self.theme,
                 &self.presence,
+            );
+        }
+        let interaction_now = crate::time::now();
+        self.presence.prune_interactions(interaction_now);
+        if self.presence.has_visible_interactions(interaction_now)
+            && let Some((tree, bindings)) = self.retained_action_geometry()
+        {
+            let viewport = Rect::new(
+                0.0,
+                0.0,
+                f64::from(self.viewport.0),
+                f64::from(self.viewport.1),
+            );
+            crate::action_locus::draw_action_presence(
+                &mut crate::paint::PaintCtx::new(
+                    &mut self.scene,
+                    Affine::IDENTITY,
+                    &mut self.text,
+                    &self.theme,
+                ),
+                &mut self.presence,
+                &tree,
+                &bindings,
+                viewport,
+                "retained-primary",
+                interaction_now,
             );
         }
         self.presence.pop_viewport(previous_viewport);

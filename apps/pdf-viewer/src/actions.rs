@@ -1702,7 +1702,10 @@ fn signature_resource(signature: &Signature) -> Resource {
     let mut resource = Resource::new(
         format!("pdf.signature:{}", signature.id),
         "pdf.signature",
-        format!("Signature by {} · p.{}", signature.signer, signature.page),
+        format!(
+            "Signature by {} on page {}",
+            signature.signer, signature.page
+        ),
     );
     if let Some(spec) = encode_spec(
         "delete",

@@ -15,7 +15,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui::tilo_resource::Resource as _;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -40,7 +39,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::actions::{self, FeedsAction, FeedsResourceCtx};
+use crate::actions::{self, FeedsAction};
 use crate::chrome::{Anchor, HeaderButton, reader_settings_panel};
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::list_pane::{ListPane, ListState};
@@ -367,8 +366,6 @@ pub(crate) struct Core {
     pub(crate) menu: Option<OpenMenu>,
     pub(crate) toast: Option<(String, Instant)>,
     pub(crate) refresh: RefreshState,
-    resource_refresh_invocation: Option<tilo_actions::InvocationId>,
-    resource_refresh_result: Option<tilo_actions::InvocationUpdate>,
     pub(crate) pending_doc_writes: Vec<DocWrite>,
     /// Canonical mutations implied by a brokered View operation: opening an
     /// unread article from search queues the same `MarkRead` a click sends,
@@ -387,7 +384,6 @@ pub(crate) struct Core {
 
     /// The hermetic `--shots`/demo build seeds the bundled sample library;
     /// the live app starts empty on the person's document.
-    demo: bool,
     /// The pointer, in window coordinates.
     pub(crate) pointer: Point,
     /// The window, for dialogs and menus.
@@ -416,8 +412,6 @@ impl Core {
             menu: None,
             toast: None,
             refresh: RefreshState::default(),
-            resource_refresh_invocation: None,
-            resource_refresh_result: None,
             pending_doc_writes: Vec::new(),
             pending_resource_actions: Vec::new(),
             import_rx: None,
@@ -430,7 +424,6 @@ impl Core {
             read_settings: None,
             refresh_reply: None,
 
-            demo,
             pointer: Point::ZERO,
             window: Rect::ZERO,
             show_pane: None,
@@ -626,70 +619,6 @@ impl Core {
         if let Err(error) = dispatcher.apply_now(edits, action) {
             self.set_toast(format!("The library was not changed: {error}"));
         }
-    }
-
-    /// The presentation context the palette needs to build the reader,
-    /// folder and feed actions, from the mirrored store.
-    pub(crate) fn feeds_resource_ctx(&self) -> FeedsResourceCtx {
-        actions::resource_ctx_from_library_with_limits(
-            &self.store,
-            actions::MAX_CONTEXT_FOLDER_RESOURCES,
-            actions::MAX_CONTEXT_FEED_RESOURCES,
-            actions::MAX_CONTEXT_ARTICLE_RESOURCES,
-            actions::MAX_CONTEXT_TAG_RESOURCES,
-        )
-    }
-
-    /// Only the resource context needed for one exact lazy address: bound
-    /// to one folder, tag, feed and/or article rather than the archive size.
-    pub(crate) fn feeds_resource_ctx_for(&self, id: &str) -> Option<FeedsResourceCtx> {
-        if id == "feeds.reader" || id == "feeds.reader-settings" {
-            return Some(self.feeds_resource_ctx());
-        }
-        let mut ctx = FeedsResourceCtx::default();
-        if let Some(raw) = id.strip_prefix("feeds.folder:") {
-            let folder_id = raw.parse::<Id>().ok()?;
-            let folder = self.store.folder(folder_id)?;
-            ctx.folders.push(actions::FolderRef {
-                id: folder.id,
-                name: folder.name.clone(),
-                collapsed: folder.collapsed,
-            });
-        } else if let Some(raw) = id.strip_prefix("feeds.subscription:") {
-            let feed_id = raw.parse::<Id>().ok()?;
-            let feed = self.store.feed(feed_id)?;
-            ctx.feeds.push(actions::FeedRef {
-                id: feed.id,
-                title: feed.title.clone(),
-                folder: feed.folder,
-                unread: self.store.unread_ids_for(Filter::Feed(feed.id)),
-                articles: Vec::new(),
-            });
-        } else if id.starts_with("feeds.tag:") {
-            let name = actions::tag_from_resource_id(id)?;
-            if !self.store.has_tag(&name) {
-                return None;
-            }
-            ctx.tags.push(actions::TagRef { name });
-        } else {
-            let article_id = id.strip_prefix("feeds.article:")?.parse::<Id>().ok()?;
-            let article = self.store.article(article_id)?;
-            let feed = self.store.feed(article.feed_id)?;
-            ctx.feeds.push(actions::FeedRef {
-                id: feed.id,
-                title: feed.title.clone(),
-                folder: feed.folder,
-                unread: Vec::new(),
-                articles: vec![actions::ArticleRef {
-                    id: article.id,
-                    title: article.title.clone(),
-                    read: article.read,
-                    starred: article.starred,
-                    tags: article.tags.clone(),
-                }],
-            });
-        }
-        Some(ctx)
     }
 
     // --- reading settings -------------------------------------------------
@@ -1339,13 +1268,6 @@ impl Core {
         self.drain_open_link();
     }
 
-    /// Show the library the framework resource already holds. An empty
-    /// projection does not wipe feeds that have not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::FeedsState) {
-        self.store.clone_from(&state.store);
-        self.ensure_selection();
-    }
-
     // --- links --------------------------------------------------------------
 
     pub(crate) fn open_selected_link(&mut self) {
@@ -1846,43 +1768,12 @@ impl FeedsApp {
 
     // --- framework host ---------------------------------------------------------
 
-    /// Show the library the framework resource already holds.
-    pub(crate) fn adopt_resource_state(&self, state: &crate::resource::FeedsState) {
-        self.core.borrow_mut().adopt_resource_state(state);
-    }
-
     /// Attach the framework dispatcher when hosted as a resource surface.
     pub(crate) fn attach_framework(
         &self,
         dispatcher: ui::framework::Dispatcher<crate::resource::Feeds>,
     ) {
         self.core.borrow_mut().dispatcher = Some(dispatcher);
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.core.borrow().dispatcher.is_some()
-    }
-
-    pub(crate) fn published_reader(&self) -> Vec<tilo_actions::Resource> {
-        let core = self.core.borrow();
-        ui::tilo_resource::publish::<crate::resource::Feeds>(
-            crate::resource::Feeds::KIND,
-            "Feeds",
-            &crate::resource::FeedsState {
-                store: core.store.clone(),
-            },
-        )
-        .children
-    }
-
-    pub(crate) fn feeds_resource_ctx_for(&self, id: &str) -> Option<FeedsResourceCtx> {
-        self.core.borrow().feeds_resource_ctx_for(id)
-    }
-
-    /// Test-only: mark the sink hosted without constructing a dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&self) {
-        // The production host supplies the dispatcher; this helper is detached.
     }
 
     // --- observation --------------------------------------------------------------
@@ -1905,44 +1796,6 @@ impl FeedsApp {
             .feeds
             .is_empty()
             .then_some(crate::list_pane::EMPTY_LIBRARY_TITLE)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn store_feed_ids(&self) -> Vec<Id> {
-        self.core
-            .borrow()
-            .store
-            .feeds
-            .iter()
-            .map(|f| f.id)
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn store_folder_ids(&self) -> Vec<Id> {
-        self.core
-            .borrow()
-            .store
-            .folders
-            .iter()
-            .map(|f| f.id)
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn store_article_ids(&self) -> Vec<Id> {
-        self.core
-            .borrow()
-            .store
-            .articles
-            .iter()
-            .map(|a| a.id)
-            .collect()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn store_unread_ids(&self, filter: Filter) -> Vec<Id> {
-        self.core.borrow().store.unread_ids_for(filter)
     }
 
     #[cfg(test)]
@@ -2281,9 +2134,6 @@ impl ui::widget::Decorator for FeedsApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        {
-            let (doc, _) = ui::doc::document_ref(state, path);
-        }
         if self.settled_layouts >= SETTLED_LAYOUTS {
             self.stage_pending_scenario();
         }
@@ -2737,6 +2587,7 @@ impl FeedsApp {
     ) -> Result<(), String> {
         self.core.borrow_mut().change_read_settings(change)
     }
+    #[cfg(test)]
     pub(crate) fn read_settings_for_test(&self) -> ReadSettings {
         self.core.borrow().settings
     }

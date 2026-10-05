@@ -715,7 +715,7 @@ readers = ["crates/doc/format-host/tests/integration.rs"]
 package = "notes"
 inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
 readers = [
-  "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
+  "apps/notes/src/app.rs",
   "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
   "apps/notes/tests/effects.rs",
 ]

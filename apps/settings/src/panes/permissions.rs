@@ -299,7 +299,7 @@ fn cap_view(cap: &CapOverride) -> Option<CapView> {
             } else {
                 t("perm-verb-ro")
             };
-            ("Files", format!("{p}  ·  {verb}"), Tint::Files)
+            ("Files", format!("{verb}: {p}"), Tint::Files)
         }
         Scope::Device(d) if d == "camera" => ("Camera", t("perm-capture-video"), Tint::Camera),
         Scope::Device(d) if d == "microphone" => {
@@ -731,7 +731,7 @@ mod tests {
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             button_labels(pane.as_ref(), &mut labels);
-            assert_eq!(labels, vec!["Open current workspace access"]);
+            assert_eq!(labels, vec!["Open workspace access"]);
         }
 
         // Case `cap_view_maps_each_scope_to_its_kind`.
@@ -799,7 +799,7 @@ mod tests {
                 "two pills per grant"
             );
             // Intro + one workspace + enforcement cards are all present.
-            assert!(count_named(pane.as_ref(), "Card") >= 3);
+            assert!(count_named(pane.as_ref(), "Section") >= 3);
         }
     }
 
@@ -841,7 +841,7 @@ mod tests {
             );
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
             assert!(
                 !labels
                     .iter()
@@ -855,8 +855,8 @@ mod tests {
             build_layout_of(&mut pane);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"No workspace access grants".to_string()));
-            assert!(!labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"No workspace access".to_string()));
+            assert!(!labels.contains(&"Workspace access can't be checked".to_string()));
         }
 
         // Case `workspace_without_app_grants_is_omitted`.
@@ -881,7 +881,7 @@ mod tests {
             assert_eq!(count_named(pane.as_ref(), "Badge"), 0);
             let mut labels = Vec::new();
             text_labels(pane.as_ref(), &mut labels);
-            assert!(labels.contains(&"Workspace access status unavailable".to_string()));
+            assert!(labels.contains(&"Workspace access can't be checked".to_string()));
         }
     }
 }

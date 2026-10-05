@@ -691,7 +691,11 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
             ctx.text(
                 label,
                 &m.badge,
-                crate::widget::avatar::initial_ink(fill, theme),
+                colors.ink_on(
+                    fill,
+                    theme.text_primary,
+                    crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                ),
                 Point::new(pill.x0 + pad / 2.0, pill.y0 + pad / 4.0),
                 None,
             );

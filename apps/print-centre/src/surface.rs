@@ -310,18 +310,6 @@ impl Door {
         dispatcher.effect(&effect);
         Ok(())
     }
-
-    fn effect(&self, effect: &PrintCentreEffect) {
-        if let Some(dispatcher) = &self.0 {
-            dispatcher.effect(effect);
-        }
-    }
-
-    fn invoke(&self, invoke: ui::tilo_resource::Invoke<PrintDefaults>) {
-        if let Some(dispatcher) = &self.0 {
-            dispatcher.invoke(invoke);
-        }
-    }
 }
 
 /// The page the surface shows.

@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -47,7 +47,7 @@ use winit::event::WindowEvent;
 
 use ui::icons::Icon;
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::text_render::{ParagraphAlign, TextRenderer};
 use ui::theme::Theme;
@@ -187,6 +187,7 @@ pub struct ImagerApp {
     /// brackets the undo boundary and applies it through the executor so it
     /// records one Ctrl+Z step and replays byte-identically on peers.
     dispatcher: Option<Dispatcher<Imager>>,
+    control_actions: Option<ui::framework::Actions<Imager>>,
     live: bool,
     reaches_machine: bool,
     dirty: bool,
@@ -245,6 +246,7 @@ impl ImagerApp {
             commands: Rc::new(RefCell::new(Vec::new())),
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             dispatcher: None,
+            control_actions: None,
             live: false,
             reaches_machine: true,
             dirty: true,
@@ -319,6 +321,11 @@ impl ImagerApp {
         self.source.is_some()
     }
 
+    #[cfg(test)]
+    pub(crate) fn resource_source(&self) -> Option<&Source> {
+        self.source.as_ref()
+    }
+
     fn source_is_official(&self, source: &Source) -> bool {
         source.kind == SourceKind::TiloImage
             && source.installable
@@ -330,19 +337,6 @@ impl ImagerApp {
                     && release.size == source.size
                     && format!("{} {}", release.name, release.version) == source.name
             })
-    }
-
-    /// Read-only projections used to build the searchable resource hierarchy.
-    /// The target list and job state describe this machine, so publishing them
-    /// does not turn them into shared authority.
-    pub(crate) fn resource_source(&self) -> Option<&Source> {
-        self.source.as_ref()
-    }
-    pub(crate) fn resource_targets(&self) -> &[TargetDrive] {
-        &self.targets
-    }
-    pub(crate) fn resource_progress(&self) -> &Progress {
-        &self.progress
     }
 
     /// The last profile [`EncodedAction`](tilo_actions::EncodedAction) an
@@ -385,20 +379,6 @@ impl ImagerApp {
         self.dispatcher = Some(dispatcher);
         self.jobs = Some(jobs);
         self.live = self.reaches_machine && mode.is_live();
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.dispatcher.is_some()
-    }
-
-    /// Whether startup has finished reconciling an in-flight write helper.
-    pub(crate) fn startup_write_reconciled(&self) -> bool {
-        self.startup_write_state_reconciled
-    }
-
-    /// Whether a write/verify worker channel is open on this surface.
-    pub(crate) fn job_active(&self) -> bool {
-        self.job_control.is_some()
     }
 
     /// Stage the peer-local confirmation for a deterministic offscreen frame.
@@ -508,13 +488,6 @@ impl ImagerApp {
     }
 }
 
-/// Whether this process should enumerate real block devices. The live binary
-/// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
-/// document's seeded/posed state is authoritative and no `lsblk` runs.
-fn live_probe_enabled() -> bool {
-    std::env::var("IMAGER_LIVE").is_ok()
-}
-
 /// The step titles the stepper shows.
 fn stepper_labels() -> [&'static str; 6] {
     Step::all().map(|step| step.title())
@@ -524,6 +497,11 @@ fn stepper_labels() -> [&'static str; 6] {
 // Composition
 // =========================================================================
 impl ImagerApp {
+    pub(crate) fn attach_control_actions(&mut self, actions: ui::framework::Actions<Imager>) {
+        self.control_actions = Some(actions);
+        self.dirty = true;
+    }
+
     fn button(&self, id: &str, label: &str, command: Command) -> Button {
         command_button(&self.commands, id, label, command)
     }
@@ -644,7 +622,8 @@ impl ImagerApp {
         if matches!(self.step, Step::Drive | Step::Customize | Step::Confirm) {
             row = row.push(Box::new(
                 self.button("imager.back", "Back", Command::Back)
-                    .with_icon(Icon::ChevronLeft),
+                    .with_icon(Icon::ChevronLeft)
+                    .control_size(ControlSize::Large),
             ));
         }
         row = row.push(Box::new(Spacer::new()));
@@ -692,7 +671,7 @@ impl ImagerApp {
                 )
                 .role(ButtonRole::Primary),
         };
-        row.push(Box::new(primary))
+        row.push(Box::new(primary.control_size(ControlSize::Large)))
     }
 
     // ---- Image -------------------------------------------------------------
@@ -912,13 +891,28 @@ impl ImagerApp {
     // ---- Customize ---------------------------------------------------------
 
     fn customize_body(&self) -> Column {
-        let body = page::body("Prepare the setup");
+        let mut body = page::body("Prepare the setup");
+        if let Some(source) = &self.source {
+            body = body.push(Box::new(
+                Text::new(&format!("Selected image: {}", source.name)).with_role(TextRole::Caption),
+            ));
+        }
+        if let Some(binding) = self
+            .control_actions
+            .as_ref()
+            .and_then(|actions| actions.effect(&ImagerEffect::ExportConfig))
+        {
+            body = body.push(Box::new(
+                Button::new("imager.export-config", "Preview embedded setup").on_action(binding),
+            ));
+        }
         if !self.customizable() {
             return body.push(Box::new(Text::new(PLAIN_BODY).dimmed()));
         }
         body.push(page::form_block(crate::customize::form(
             &self.profile,
             &self.commands,
+            self.control_actions.as_ref(),
             self.shot_timezone_open,
         )))
     }
@@ -2522,27 +2516,6 @@ mod tests {
         }
     }
 
-    fn accessible_named<'a>(
-        node: &'a ui::a11y::AccessNode,
-        name: &str,
-    ) -> Option<&'a ui::a11y::AccessNode> {
-        if node.name.as_deref() == Some(name) {
-            return Some(node);
-        }
-        node.children
-            .iter()
-            .find_map(|child| accessible_named(child, name))
-    }
-
-    fn accessible_focus_order(node: &ui::a11y::AccessNode, names: &mut Vec<String>) {
-        if node.state.focusable {
-            names.push(node.name.clone().unwrap_or_default());
-        }
-        for child in &node.children {
-            accessible_focus_order(child, names);
-        }
-    }
-
     /// Accessible semantics, selection labels, live regions and tab order.
     #[test]
     #[allow(
@@ -2686,7 +2659,15 @@ mod tests {
             assert_eq!(stepper.value(), Some("Step 1 of 6"));
             let bounds = stepper.bounds().unwrap();
             assert!(bounds.x0 >= 0.0 && bounds.x1 <= f64::from(viewport.0));
-            assert!(bounds.height() >= 40.0);
+            assert!(
+                bounds.height()
+                    >= f64::from(Theme::dark().text(ui::TextRole::Caption).line_height_px()),
+                "the passive progress label fits its measured line"
+            );
+            assert!(
+                h.targets()["imager.next"].height() >= 40.0,
+                "wizard navigation retains its accessible target floor"
+            );
         }
     }
 
@@ -2944,6 +2925,11 @@ mod tests {
                 control: crate::release::DownloadControl::default(),
             });
 
+            let release_names = app
+                .releases
+                .iter()
+                .map(|release| release.display_name())
+                .collect::<Vec<_>>();
             let mut view = harness(app, AutoCommit::new(), (1180, 820));
             assert!(
                 view.a11y_nodes()
@@ -2953,11 +2939,25 @@ mod tests {
             let release_nodes = view
                 .controls()
                 .into_iter()
-                .filter(|c| c.id.starts_with("imager.release."))
+                .filter(|control| {
+                    control
+                        .name
+                        .as_ref()
+                        .is_some_and(|name| release_names.contains(name))
+                })
                 .collect::<Vec<_>>();
-            assert!(
-                release_nodes.iter().filter(|c| !c.disabled).count() <= 1,
-                "other releases wait for the active download"
+            assert_eq!(
+                release_nodes.len(),
+                release_names.len(),
+                "every offered release has an actual accessible row"
+            );
+            assert_eq!(
+                release_nodes
+                    .iter()
+                    .filter(|control| !control.disabled)
+                    .count(),
+                1,
+                "only the active release remains enabled during its download"
             );
             let app = view.root_mut::<ImagerApp>();
             assert!(
@@ -3045,7 +3045,7 @@ mod tests {
                 .is_none(),
             "destructive consent never enters the shared document"
         );
-        host.harness().click_named("imager.next").unwrap();
+        host.harness().click_named("imager.write").unwrap();
         host.with_widget::<ImagerApp, _>(|a| {
             assert_eq!(a.step, Step::Confirm);
             assert_eq!(a.progress.phase, JobPhase::Idle);
@@ -3238,7 +3238,7 @@ mod tests {
                 app.status.contains("disconnected"),
                 "the privileged writer's actionable cause reaches the UI"
             );
-            let mut h = harness(app, AutoCommit::new(), (1180, 820));
+            let h = harness(app, AutoCommit::new(), (1180, 820));
             assert!(
                 h.inspection_json().unwrap().contains("disconnected"),
                 "the writer's actionable cause is exposed by the retained result"

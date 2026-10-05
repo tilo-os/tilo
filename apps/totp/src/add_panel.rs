@@ -453,15 +453,6 @@ impl Widget for AddForm {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // How tall the form may grow depends on the window it stands in.
-        if let Some(window) = presence.viewport.get() {
-            let height = window.height() as f32;
-            if (height - self.viewport_h).abs() > 0.5 {
-                self.viewport_h = height;
-                self.rebuild();
-                self.relayout = true;
-            }
-        }
         self.tree.draw(scene, transform, text, theme, presence);
     }
 
@@ -979,6 +970,18 @@ impl AddAccountPanel {
 
     /// Scroll the form with the wheel: a modal dialog does not pass wheel
     /// events to its content.
+    /// Budget the form against the window, before the modal installs its own body viewport.
+    pub fn set_window_height(&mut self, height: f32) {
+        if let Some(dialog) = &mut self.dialog {
+            let form = dialog.content_mut();
+            if (height - form.viewport_h).abs() > 0.5 {
+                form.viewport_h = height;
+                form.rebuild();
+                form.relayout = true;
+            }
+        }
+    }
+
     pub fn handle_wheel(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let Some(dialog) = &mut self.dialog {
             dialog.content_mut().handle_event(event, ctx);
@@ -1282,7 +1285,14 @@ pub(crate) mod tests {
             .harness()
             .a11y_nodes()
             .into_iter()
-            .find(|(_, node)| node.label() == Some(name) && node.bounds().is_some())
+            .find(|(_, node)| {
+                node.label() == Some(name)
+                    && node.bounds().is_some()
+                    && (matches!(
+                        format!("{:?}", node.role()).as_str(),
+                        "Button" | "TextInput" | "RadioButton"
+                    ))
+            })
             .and_then(|(_, node)| node.bounds())
         {
             return Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
@@ -1298,13 +1308,60 @@ pub(crate) mod tests {
             .unwrap_or_else(|| panic!("missing actual control {name}"))
     }
 
+    fn reveal(app: &mut Hosted, name: &str) {
+        for _ in 0..30 {
+            let target = rect(app, name);
+            let body = panel(app, |panel| {
+                panel
+                    .dialog
+                    .as_mut()
+                    .unwrap()
+                    .content_mut()
+                    .tree
+                    .content_viewport_rect()
+            });
+            if body.contains(target.center()) {
+                return;
+            }
+            // Footer and header actions lie outside the scrollable form.
+            if matches!(name, "Cancel" | "Add account" | "Close") {
+                return;
+            }
+            let at = body.center();
+            app.harness().send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            });
+            app.harness()
+                .scroll(0.0, if target.y0 < body.y0 { 3.0 } else { -3.0 });
+            settle(app);
+        }
+        let target = rect(app, name);
+        let geometry = panel(app, |panel| {
+            let form = panel.dialog.as_mut().unwrap().content_mut();
+            (
+                form.tree.content_viewport_rect(),
+                form.tree.offset_y(),
+                form.tree.max_offset_y(),
+                form.viewport_h,
+            )
+        });
+        panic!(
+            "control {name} {target:?} cannot be scrolled into the actual form viewport {geometry:?}"
+        );
+    }
+
     pub(crate) fn click(app: &mut Hosted, name: &str) {
+        if panel(app, |panel| panel.is_open()) {
+            reveal(app, name);
+        }
         let at = rect(app, name).center();
         app.harness().click_at(at.x, at.y);
         settle(app);
     }
 
     pub(crate) fn type_into(app: &mut Hosted, name: &str, text: &str) {
+        reveal(app, name);
         app.harness().click_named(name).unwrap();
         app.harness().type_text(text);
         settle(app);
@@ -1361,7 +1418,20 @@ pub(crate) mod tests {
             "new setup-link field takes caret"
         );
         click(&mut app, "Advanced options");
-        assert!(panel(&mut app, |p| p.sheet.borrow().advanced_open));
+        let disclosure = rect(&mut app, "Advanced options");
+        let geometry = panel(&mut app, |p| {
+            let dialog = p.dialog.as_mut().unwrap();
+            (
+                dialog.body_rect(),
+                dialog.content_mut().tree.content_viewport_rect(),
+                dialog.content_mut().tree.offset_y(),
+                dialog.content_mut().tree.max_offset_y(),
+            )
+        });
+        assert!(
+            panel(&mut app, |p| p.sheet.borrow().advanced_open),
+            "actual disclosure {disclosure:?}, modal/form/offset geometry {geometry:?}"
+        );
         let period = rect(&mut app, "totp-period");
         let body = panel(&mut app, |p| {
             p.dialog
@@ -1514,11 +1584,11 @@ pub(crate) mod tests {
             "pointer QR scan reaches host picker"
         );
         click(&mut app, "totp-paste-link");
-        type_into(
-            &mut app,
-            "totp-link",
-            "otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP",
-        );
+        reveal(&mut app, "totp-link");
+        app.harness().click_named("totp-link").unwrap();
+        app.harness()
+            .commit_text("otpauth://totp/Acme:bob?secret=JBSWY3DPEHPK3PXP");
+        settle(&mut app);
         assert_eq!(panel(&mut app, |p| p.field_snapshot().0), "Acme");
         assert_eq!(
             panel(&mut app, |p| p.field_snapshot().2),

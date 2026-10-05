@@ -2461,7 +2461,7 @@ impl CodeApp {
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
         state: &mut ui::widget::Edits<'_>,
-        taffy: &TaffyTree<()>,
+        _taffy: &TaffyTree<()>,
         handled: &mut bool,
     ) -> bool {
         let term_active = self.terminal_visible();

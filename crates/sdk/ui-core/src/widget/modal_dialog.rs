@@ -1914,6 +1914,14 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         let reorders = self.platform.dialog_action_order() != conventions.dialog_action_order();
         self.platform = conventions;

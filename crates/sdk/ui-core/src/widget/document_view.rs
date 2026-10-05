@@ -455,8 +455,10 @@ impl<K> crate::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::resources::resources(self.child.as_ref(), doc)
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // The host visits the admitted child after this boundary. A view
+        // owns no declarations of its own and must not publish them twice.
+        Vec::new()
     }
     fn document_action_result(
         &self,
@@ -517,6 +519,26 @@ mod tests {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
     use super::*;
+
+    #[test]
+    fn model_view_publishes_each_admitted_child_resource_once() {
+        use crate::widget::ToggleGroup;
+        use crate::widget::toggle_group::Segment;
+        let state = crate::LocalState::new(0_u8);
+        let mut view = ModelView::from_state(&state, |_| {
+            Box::new(
+                ToggleGroup::new(vec![Segment::new("One"), Segment::new("Two")], 0)
+                    .on_view("model-view-mode", |_| {}),
+            )
+        });
+        let doc = AutoCommit::new();
+        view.sync(&doc, &automerge::ROOT);
+        let resources = crate::widget::published_resources(&view, &doc);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].id.as_str(), "tilo.control:model-view-mode");
+        assert_eq!(resources[0].actions.len(), 1);
+        assert_eq!(resources[0].actions[0].id, "select");
+    }
 
     fn string(doc: &AutoCommit, key: &str) -> String {
         match doc.get(&ROOT, key) {

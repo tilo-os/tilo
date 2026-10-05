@@ -7,7 +7,6 @@
 
 use ui::prelude::{Model, tilo_resource};
 use ui::widget::Tone;
-use vello::peniko::Color;
 
 /// The eight syslog severities, ordered most-severe (`Emerg`, level 0) to
 /// least-severe (`Debug`, level 7). Level numbers match RFC 5424 and the

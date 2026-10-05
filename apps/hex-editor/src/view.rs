@@ -37,7 +37,6 @@ use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

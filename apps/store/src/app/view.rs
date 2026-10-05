@@ -148,10 +148,10 @@ impl StoreApp {
                     )),
             ));
         }
-        self.operation_error.as_ref().map(|_| {
+        self.operation_error.as_ref().map(|error| {
             Box::new(
                 Banner::error("The last operation failed")
-                    .with_message(visible_operation_status(&self.status_line)),
+                    .with_message(visible_operation_status(error)),
             ) as Element
         })
     }
@@ -287,11 +287,8 @@ impl StoreApp {
         // refreshing. The visible action goes through the same one-shot
         // `store.refresh` resource action as the pointer, keyboard, assistive
         // technology and agents, so each requests one serialized operation.
-        let empty = if self.operation_error.is_some() {
-            EmptyState::error(
-                "Catalogues offline",
-                visible_operation_status(&self.status_line),
-            )
+        let empty = if let Some(error) = &self.operation_error {
+            EmptyState::error("Catalogues offline", visible_operation_status(error))
         } else {
             EmptyState::new("No apps available")
                 .with_message("Add or enable a catalogue you trust, then refresh.")

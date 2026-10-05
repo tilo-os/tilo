@@ -313,7 +313,6 @@ enum ToolbarHit {
     ZoomValue,
     Tool(Tool),
     /// Choose the marker colour (from the colour popover).
-    Swatch(Swatch),
     /// Open the marker-colour popover from its well.
     MarkerColour,
     ZoomIn,

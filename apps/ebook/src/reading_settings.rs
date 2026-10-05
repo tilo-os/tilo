@@ -5,7 +5,7 @@
 //! responsible for persisting those effects in the books document.
 
 use automerge::ObjId;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Point, Rect};
 
 use ui::TextRole;
 use ui::icons::Icon;

@@ -17,10 +17,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
-use ui::search::{
-    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCatalog, SearchCatalogError,
-    SearchCursor, SearchResult,
-};
+#[cfg(test)]
+use ui::search::{DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor};
+use ui::search::{SearchCatalog, SearchCatalogError, SearchResult};
 use ui::tilo_resource::SearchEntry;
 
 use crate::actions::{
@@ -298,7 +297,10 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         LibraryRow::open(
             "photos.timeline",
             crate::strings::tr("photos-timeline"),
-            format!("{} photographs · chronological", library.photos.len()),
+            format!(
+                "{} photographs in chronological order",
+                library.photos.len()
+            ),
         )
         .found_by(format!(
             "Timeline\0photos.timeline\0chronological\0{} photographs\0open",
@@ -313,7 +315,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = timeline_month_resource_id(month);
         insert(
             id.clone(),
-            LibraryRow::open(&id, month, format!("Timeline month · {count} photographs"))
+            LibraryRow::open(&id, month, format!("{count} photographs in this month"))
                 .found_by(format!("timeline\0month\0{count} photographs\0open"))
                 .seeded(MaterializationSeed::TimelineMonth {
                     month: month.clone(),
@@ -325,7 +327,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = timeline_day_resource_id(day);
         insert(
             id.clone(),
-            LibraryRow::open(&id, day, format!("Timeline day · {count} photographs"))
+            LibraryRow::open(&id, day, format!("{count} photographs on this day"))
                 .found_by(format!("timeline\0day\0{count} photographs\0open"))
                 .seeded(MaterializationSeed::TimelineDay {
                     day: day.clone(),
@@ -348,7 +350,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         LibraryRow::open(
             "photos.places",
             "Places",
-            format!("Offline map · {located_count} located photographs"),
+            format!("Offline map with {located_count} located photographs"),
         )
         .found_by(format!(
             "photos.places\0map\0location\0{located_count} photographs\0open"
@@ -437,7 +439,7 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
             LibraryRow::open(
                 &id,
                 label.clone(),
-                format!("Place · {count} photographs · offline map"),
+                format!("{count} photographs at this place, available on the offline map"),
             )
             .found_by(format!(
                 "photos.place\0place\0{count} photographs\0map\0open"
@@ -447,13 +449,16 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
     }
     for (folder, count) in folders {
         let id = folder_resource_id(&folder);
-        let mut row =
-            LibraryRow::open(&id, folder.clone(), format!("Folder · {count} photographs"))
-                .found_by(format!("photos.folder\0folder\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Folder {
-                    label: folder,
-                    count,
-                });
+        let mut row = LibraryRow::open(
+            &id,
+            folder.clone(),
+            format!("Folder containing {count} photographs"),
+        )
+        .found_by(format!("photos.folder\0folder\0{count} photographs\0open"))
+        .seeded(MaterializationSeed::Folder {
+            label: folder,
+            count,
+        });
         row.icon = "folder";
         insert(id, row);
     }
@@ -461,19 +466,23 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = person_resource_id(&person);
         insert(
             id.clone(),
-            LibraryRow::open(&id, person.clone(), format!("Person · {count} photographs"))
-                .found_by(format!("photos.person\0person\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Person {
-                    label: person,
-                    count,
-                }),
+            LibraryRow::open(
+                &id,
+                person.clone(),
+                format!("Person identified in {count} photographs"),
+            )
+            .found_by(format!("photos.person\0person\0{count} photographs\0open"))
+            .seeded(MaterializationSeed::Person {
+                label: person,
+                count,
+            }),
         );
     }
     for (tag, count) in tags {
         let id = tag_resource_id(&tag);
         insert(
             id.clone(),
-            LibraryRow::open(&id, tag.clone(), format!("Tag · {count} photographs"))
+            LibraryRow::open(&id, tag.clone(), format!("Tag used on {count} photographs"))
                 .found_by(format!("photos.tag\0tag\0{count} photographs\0open"))
                 .seeded(MaterializationSeed::Tag { label: tag, count }),
         );
@@ -482,21 +491,29 @@ fn library_rows(library: &crate::model::PhotoLibrary) -> BTreeMap<String, Librar
         let id = object_resource_id(&object);
         insert(
             id.clone(),
-            LibraryRow::open(&id, object.clone(), format!("Object · {count} photographs"))
-                .found_by(format!("photos.object\0object\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Object {
-                    label: object,
-                    count,
-                }),
+            LibraryRow::open(
+                &id,
+                object.clone(),
+                format!("Object identified in {count} photographs"),
+            )
+            .found_by(format!("photos.object\0object\0{count} photographs\0open"))
+            .seeded(MaterializationSeed::Object {
+                label: object,
+                count,
+            }),
         );
     }
     for (pet, count) in pets {
         let id = pet_resource_id(&pet);
         insert(
             id.clone(),
-            LibraryRow::open(&id, pet.clone(), format!("Pet · {count} photographs"))
-                .found_by(format!("photos.pet\0pet\0{count} photographs\0open"))
-                .seeded(MaterializationSeed::Pet { label: pet, count }),
+            LibraryRow::open(
+                &id,
+                pet.clone(),
+                format!("Pet identified in {count} photographs"),
+            )
+            .found_by(format!("photos.pet\0pet\0{count} photographs\0open"))
+            .seeded(MaterializationSeed::Pet { label: pet, count }),
         );
     }
     rows

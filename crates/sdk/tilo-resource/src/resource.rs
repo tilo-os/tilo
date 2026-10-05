@@ -119,8 +119,10 @@ pub trait Resource: Sized + 'static {
     /// keystroke at a time, the values a slider passes through in one drag.
     /// The default keeps every action its own step.
     ///
-    /// Only edits applied immediately (`Dispatcher::apply_now` in
-    /// `tilo-app`) continue one another, and a surface ends the gesture
+    /// Immediate edits (`Dispatcher::apply_now` in `tilo-app`) and native
+    /// keyboard/IME edits from action-bound text fields may continue one
+    /// another. Programmatic/agent invocations remain separate steps.
+    /// A surface ends an immediate pointer gesture
     /// (`Dispatcher::settle`) when the pointer is let go, so the next drag
     /// of the same slider is a step of its own.
     fn coalesces(previous: &Self::Action, next: &Self::Action) -> bool {

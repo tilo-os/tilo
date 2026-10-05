@@ -17,9 +17,7 @@
 
 use ui::TextRole;
 use ui::tilo_actions::ActionBinding;
-use ui::widget::{
-    Actions, Avatar, AvatarSize, Button, Card, Column, Container, ControlSize, Row, Text, Widget,
-};
+use ui::widget::{Avatar, AvatarSize, Button, Column, Container, ControlSize, Row, Text, Widget};
 
 use crate::model::{ActionKind, StoreItem, StoreSource};
 

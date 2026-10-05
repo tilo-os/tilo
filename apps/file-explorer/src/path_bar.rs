@@ -20,7 +20,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -594,6 +594,59 @@ mod tests {
             let input = bar.accessibility().expect("editable path semantics");
             assert_eq!(input.role, Role::TextInput);
             assert!(input.state.focusable);
+        }
+    }
+
+    /// The app supplies real navigation targets and root anchors to the
+    /// shared trail, whose measured rendering retains the current folder.
+    #[test]
+    fn shared_breadcrumb_preserves_roots_targets_and_narrow_current_folder() {
+        use ui::icons::Icon;
+        let home = Path::new("/home/u");
+        assert_eq!(breadcrumb_root_icon(home, Some(home), &[]), Icon::Home);
+        assert_eq!(
+            breadcrumb_root_icon(Path::new("/"), Some(home), &[]),
+            Icon::HardDrive
+        );
+        for (path, expected) in [
+            ("/home/u", vec!["Home"]),
+            (
+                "/home/u/Documents/Projects/shared/current/Reports",
+                vec![
+                    "Home",
+                    "Documents",
+                    "Projects",
+                    "shared",
+                    "current",
+                    "Reports",
+                ],
+            ),
+        ] {
+            let mut bar = PathBar::new(new_sink());
+            bar.set_path(PathBuf::from(path), Some(home.to_path_buf()), Vec::new());
+            assert_eq!(bar.crumbs.segments(), expected);
+            assert_eq!(bar.targets.first().map(PathBuf::as_path), Some(home));
+            assert_eq!(
+                bar.targets.last().map(PathBuf::as_path),
+                Some(Path::new(path))
+            );
+            assert_eq!(
+                bar.accessibility().unwrap().value.as_deref(),
+                expected.last().copied()
+            );
+            let mut text = TextRenderer::new();
+            for theme in [Theme::dark(), Theme::light()] {
+                let wide = bar.crumbs.visible_segments(900.0, &theme, &mut text);
+                assert_eq!(wide, expected);
+                let narrow = bar.crumbs.visible_segments(240.0, &theme, &mut text);
+                assert_eq!(narrow.first().map(String::as_str), Some("Home"));
+                assert_eq!(narrow.last().map(String::as_str), expected.last().copied());
+                if expected.len() > 4 {
+                    assert!(narrow.iter().any(|label| label == "…"));
+                } else {
+                    assert_eq!(bar.crumbs.separator_count(), 0);
+                }
+            }
         }
     }
 

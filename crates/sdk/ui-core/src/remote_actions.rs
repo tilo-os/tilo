@@ -94,6 +94,16 @@ pub type CatalogueCall = RemoteCall<CataloguePage>;
 /// An invocation: its latest lifecycle update.
 pub type InvocationCall = RemoteCall<InvocationUpdate>;
 
+/// Receipt for a request to cancel a running invocation. Acknowledgement is
+/// not a terminal invocation outcome; callers must keep observing the original
+/// [`InvocationCall`] until it reports `Cancelled` or another terminal state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CancellationCall {
+    Pending,
+    Acknowledged,
+    Refused(ActionHostError),
+}
+
 enum Transport {
     /// Through the application's collaboration connection.
     Session,
@@ -112,6 +122,7 @@ struct CatalogueWalk {
 
 struct Running {
     answer: LocalStateWriter<InvocationCall>,
+    cancellation: Option<LocalState<CancellationCall>>,
     /// When to observe it next, while the host is still running it.
     observe_at: Option<Instant>,
 }
@@ -235,10 +246,26 @@ impl RemoteActions {
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
     ) -> LocalState<InvocationCall> {
+        self.invoke_with_id(InvocationId::new(), target, argument, confirmation)
+    }
+
+    /// Invoke an action with a caller-owned stable identity.
+    ///
+    /// Use this when the durable object that caused the request already has a
+    /// UUID. Reusing that UUID across reconnects lets the host deduplicate a
+    /// retry after an acknowledgement is lost; it does not grant any authority.
+    #[must_use]
+    pub fn invoke_with_id(
+        &self,
+        invocation: InvocationId,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+    ) -> LocalState<InvocationCall> {
         let answer = LocalState::new(RemoteCall::Pending);
         let request = InvokeRequest {
             on_behalf_of: None,
-            invocation: InvocationId::new(),
+            invocation,
             target,
             argument,
             context: None,
@@ -249,6 +276,7 @@ impl RemoteActions {
             request.invocation,
             Running {
                 answer: answer.writer(),
+                cancellation: None,
                 observe_at: None,
             },
         );
@@ -261,6 +289,29 @@ impl RemoteActions {
     pub fn is_busy(&self) -> bool {
         let inner = self.lock();
         !inner.catalogue.is_empty() || !inner.invocations.is_empty()
+    }
+
+    /// Ask the host to cancel an invocation this client is still observing.
+    /// Repeated calls share one request and receipt. `Acknowledged` means only
+    /// that the host accepted the cancellation request; the invocation's own
+    /// call is the authority for whether it actually stopped.
+    #[must_use]
+    pub fn cancel(&self, invocation: InvocationId) -> Option<LocalState<CancellationCall>> {
+        let answer = {
+            let mut inner = self.lock();
+            let running = inner.invocations.get_mut(&invocation)?;
+            if let Some(answer) = &running.cancellation {
+                let refused = answer.with(|state| matches!(state, CancellationCall::Refused(_)));
+                if !refused {
+                    return Some(answer.clone());
+                }
+            }
+            let answer = LocalState::new(CancellationCall::Pending);
+            running.cancellation = Some(answer.clone());
+            answer
+        };
+        self.send(RemoteActionMessage::Cancel { invocation });
+        Some(answer)
     }
 
     fn send(&self, message: RemoteActionMessage) {
@@ -406,11 +457,19 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             }
             None
         }
+        RemoteActionMessage::CancelResponse { invocation, result } => {
+            let running = inner.invocations.get_mut(&invocation)?;
+            let answer = running.cancellation.as_ref()?;
+            answer.set(match result {
+                Ok(()) => CancellationCall::Acknowledged,
+                Err(error) => CancellationCall::Refused(error),
+            });
+            None
+        }
         RemoteActionMessage::CatalogueRequest { .. }
         | RemoteActionMessage::Invoke(_)
         | RemoteActionMessage::Observe { .. }
         | RemoteActionMessage::Cancel { .. }
-        | RemoteActionMessage::CancelResponse { .. }
         | RemoteActionMessage::RecordRequest { .. }
         | RemoteActionMessage::RecordResponse { .. } => None,
     }

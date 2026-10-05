@@ -84,7 +84,14 @@ fn nothing_has_been_measured_before_a_test_runs() {
 
 #[test]
 fn the_run_button_stops_a_running_test_through_its_published_action() {
-    let mut app = staged("running", (1280, 800));
+    use ui::framework::{ResourceApp, ResourceSurface};
+    let mut app = HeadlessApp::<SpeedTestShell>::new().unwrap();
+    for invoke in SpeedTestShell::scenario(Some("running")) {
+        app.invoke(invoke).unwrap();
+    }
+    app.with_widget(|surface: &mut speed_test::app::SpeedTestApp| surface.stage(Some("running")))
+        .expect("the production surface stages its running fixture");
+    app.harness().resize((1280, 800)).unwrap();
     let harness = app.harness();
     let stop = harness
         .a11y_node_named("Stop test")

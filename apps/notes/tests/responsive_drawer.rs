@@ -67,8 +67,12 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
 
         // The top-bar toggle opens the drawer.
         let btn = surface(&mut app, |notes| notes.menu_btn_center_for_test());
-        dispatch(&mut app, &cursor_moved(btn.x, btn.y));
-        dispatch(&mut app, &mouse_press());
+        app.harness().click_at(btn.x, btn.y);
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
+        );
         assert!(
             surface(&mut app, |notes| notes.drawer_open_for_test()),
             "clicking the top-bar button must open the drawer"
@@ -83,6 +87,11 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
             .expect("row 0 should be laid out");
         dispatch(&mut app, &cursor_moved(row.x, row.y));
         dispatch(&mut app, &mouse_press());
+        let mut release = mouse_press();
+        if let WindowEvent::MouseInput { state, .. } = &mut release {
+            *state = ElementState::Released;
+        }
+        dispatch(&mut app, &release);
         assert_eq!(
             surface(&mut app, |notes| notes.selected_for_test()),
             Some(welcome),
@@ -112,8 +121,12 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
             "480px at 2× is a drawer layout"
         );
         let btn = surface(&mut app, |notes| notes.menu_btn_center_for_test());
-        dispatch(&mut app, &cursor_moved(btn.x, btn.y));
-        dispatch(&mut app, &mouse_press());
+        app.harness().click_at(btn.x, btn.y);
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
+        );
         assert!(
             surface(&mut app, |notes| notes.drawer_open_for_test()),
             "the toggle opens the drawer"

@@ -19,7 +19,6 @@ use library::{
     local_library_accessibility_nodes, shared_accessibility_nodes, shared_accessibility_targets,
 };
 
-use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use ui::widget::{AppModel, ModelPath};
@@ -42,8 +41,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::video_player::{PlayerSetting, PlayerSettingEvent};
 use ui::widget::{
-    ActionEmitter, Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, SidebarDrawer,
-    VideoPlayer, Widget,
+    Button, ButtonFace, FloatingSurfaceProvider, FullscreenProvider, SidebarDrawer, VideoPlayer,
+    Widget,
 };
 
 use ui::framework::{
@@ -148,27 +147,8 @@ enum LibraryTab {
 /// What the picture area says when the decoder cannot play a video.
 const DECODER_FAILURE: &str = "The decoder could not play this video.";
 
-/// A capture scenario that plays a real file: `open:` and its path.
-pub(crate) const OPEN_CAPTURE: &str = "open:";
-
-/// Every named capture scenario.
-pub(crate) const CAPTURE_SCENARIOS: &[&str] = &[
-    "empty",
-    "loading",
-    "error",
-    "native-error",
-    "playing",
-    "paused",
-    "settings",
-    "metadata",
-    "library",
-    "library-focus",
-    "recent",
-    "shared",
-    "fullscreen",
-];
-
 /// The clip a capture plays, and what the library lists beside it.
+#[cfg(test)]
 const DEMO_TITLE: &str = "Harbour at dusk";
 const DEMO_QUEUE: &[(&str, &str)] = &[
     ("https://demo.local/market.mp4", "Market morning"),
@@ -270,19 +250,6 @@ fn configure_player_settings(player: &mut VideoPlayer, autoplay: bool, loop_enab
 )]
 fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> NodeId {
     taffy.new_with_children(style, children).unwrap()
-}
-
-fn find_resource<'a>(
-    resources: &'a [tilo_actions::Resource],
-    id: &str,
-) -> Option<&'a tilo_actions::Resource> {
-    resources.iter().find_map(|resource| {
-        if resource.id.0 == id {
-            Some(resource)
-        } else {
-            find_resource(&resource.children, id)
-        }
-    })
 }
 
 fn video_open_request() -> PickRequest {
@@ -1017,7 +984,7 @@ impl PlayerApp {
                 self.sync_decoder_settings();
                 self.player.open_settings_menu(None);
             }
-            Some("library" | "recent" | "library-focus" | "shared") => {
+            Some("library" | "recent" | "library-focus") => {
                 for (url, title) in DEMO_QUEUE {
                     self.ensure_queued(
                         media::Source::Remote { url: (*url).into() },
@@ -1149,22 +1116,6 @@ impl PlayerApp {
         self.open_error = Some(DECODER_FAILURE.into());
         self.dirty = true;
     }
-
-    /// Whether a capture of an opened file can stop waiting: its first
-    /// picture arrived or the decoder reported why it never will.
-    pub(crate) fn capture_settled(&self) -> bool {
-        self.has_media_frame() || self.open_error.is_some()
-    }
-
-    /// Whether the engine decodes the file with the real backend rather than
-    /// synthesizing frames.
-    pub(crate) fn decodes_for_real(&self) -> bool {
-        self.player
-            .engine()
-            .is_some_and(media::MediaEngine::is_real_decode)
-    }
-
-    /// Drop collaborative playback: a capture is local, and opens no socket.
 
     fn open_path(&mut self, path: &Path) -> Result<(), String> {
         let source = source_for_path(path);
@@ -2265,7 +2216,7 @@ impl PlayerApp {
         }
     }
 
-    fn handle_app_pointer(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
+    fn handle_app_pointer(&mut self, _state: &mut ui::widget::Edits<'_>) -> bool {
         self.drawer.resolve(self.rect);
         let in_list = self.library_list_rect.contains(self.last_cursor);
         if self.library_visible && self.drawer.sidebar_contains(self.last_cursor) {
@@ -2865,8 +2816,8 @@ impl Widget for PlayerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ModelPath,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
         if self.history.perform_semantic_action(target, action) {
             true

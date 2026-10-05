@@ -8,7 +8,7 @@ const APP: &str = "so.tilo.test";
 
 /// A mount of `checkout` for `author`, as `HostContext::callback_binding`
 /// makes one.
-fn mount(
+pub(super) fn mount(
     records: &RecordStore,
     checkout: &RecordCheckout,
     author: &str,

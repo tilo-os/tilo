@@ -64,7 +64,7 @@ fn char_key_event(s: &str) -> WindowEvent {
 /// A faithful stand-in for `ui::App` covering focus + the rebuild-on-filter
 /// cycle. Owns the app, its live taffy tree + node map, and the focus state.
 struct Harness {
-    app: SettingsApp,
+    app: Box<SettingsApp>,
     doc: AutoCommit,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
@@ -80,7 +80,7 @@ impl Harness {
     fn new() -> Self {
         let config = crate::support::ScratchConfig::new();
         let mut h = Harness {
-            app: config.app(),
+            app: Box::new(config.app()),
             doc: AutoCommit::new(),
             taffy: TaffyTree::new(),
             node_map: HashMap::new(),
@@ -115,24 +115,25 @@ impl Harness {
             )
             .unwrap();
         self.app.sync(&self.doc, &root());
-        let measure_map = node_map.clone();
         let mut tr = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
+        let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: this harness exclusively owns this unchanged app and its
+        // exact live layout pointers for both admission and measurement.
+        unsafe {
+            bindings.rebuild(&*self.app, &taffy, outer, &node_map);
+            ui::widget::compute_widget_layout(
+                &mut taffy,
                 outer,
                 taffy::Size {
                     width: taffy::AvailableSpace::Definite(W),
                     height: taffy::AvailableSpace::Definite(H),
                 },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
+                &node_map,
+                &bindings,
+                &mut tr,
             )
             .unwrap();
+        }
         self.app.apply_layout(&taffy, app_node, Point::ORIGIN);
         // Settling sync — the just-built leaf controls (search field, rows)
         // read back their bound CRDT values (this is what the shots harness
@@ -163,7 +164,7 @@ impl Harness {
             }
         }
         let mut order = Vec::new();
-        walk(self.app_node, &self.app, &self.taffy, &mut order);
+        walk(self.app_node, &*self.app, &self.taffy, &mut order);
         self.focus_order = order;
     }
 
@@ -254,7 +255,7 @@ impl Harness {
         // Frame: sync consumes the field's SEARCH_KEY write; a changed query
         // flags a structure rebuild, which we run preserving focus by ordinal.
         self.app.sync(&self.doc, &root());
-        if Widget::take_structure_dirty(&mut self.app) {
+        if Widget::take_structure_dirty(&mut *self.app) {
             self.rebuild();
         }
     }
@@ -293,7 +294,7 @@ impl Harness {
             if out.is_some() {
                 return;
             }
-            if w.name() == "TextInput" {
+            if w.test_id() == Some("settings.search") {
                 *out = Some(w);
                 return;
             }
@@ -302,7 +303,7 @@ impl Harness {
             }
         }
         let mut out = None;
-        walk(&self.app, &mut out);
+        walk(&*self.app, &mut out);
         out
     }
 
@@ -325,7 +326,7 @@ impl Harness {
             }
         }
         let mut n = 0;
-        walk(&self.app, &mut n);
+        walk(&*self.app, &mut n);
         n
     }
 }

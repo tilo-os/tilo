@@ -4470,7 +4470,7 @@ impl PhotosApp {
             }
             PhotosEffect::ManagePeopleRecognition => {
                 self.notice = Some(
-                    "Open Settings › Models to install and start a signed local face-recognition model"
+                    "Open Models in Settings to install and start a signed local face-recognition model"
                         .to_owned(),
                 );
             }
@@ -12573,7 +12573,7 @@ impl PhotosApp {
             }
             PhotosEffect::ManagePeopleRecognition => {
                 self.notice = Some(
-                    "Open Settings › Models to install and start a signed local face-recognition model"
+                    "Open Models in Settings to install and start a signed local face-recognition model"
                         .to_owned(),
                 );
             }

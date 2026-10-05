@@ -8,8 +8,6 @@
 //! undoable document mutations.
 
 use tilo_doc::snapshot::BlockView;
-#[cfg(test)]
-use ui::widget::Edits;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;

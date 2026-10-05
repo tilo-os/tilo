@@ -25,7 +25,6 @@ use crate::swap::{Swap, SwapHandle};
 use crate::vars;
 
 /// The document key the method picker's value lives at.
-pub(crate) const METHOD_PATH: &str = "sel_method";
 
 /// Ids of the blank row each table ends with.
 #[derive(Clone, Debug)]

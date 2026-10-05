@@ -651,7 +651,7 @@ pub fn set_pad_button(config: &mut TabletConfig, button: u32, choice: PadButtonC
     }
 }
 
-/// "Ring 1", or "Ring 1 · Mode 2" when its group has several modes.
+/// "Ring 1", or "Ring 1, mode 2" when its group has several modes.
 fn dial_label(dial: PadDial, mode: u32, modes: u32) -> String {
     let (key, index) = match dial {
         PadDial::Ring(index) => ("input-pad-ring", index),
@@ -2309,7 +2309,7 @@ mod tests {
             assert!((exact.key_repeat_slider_value() - 0.675).abs() < f64::EPSILON);
             assert_eq!(
                 exact.key_repeat_description(),
-                "37 keys per second · starts after 275 ms"
+                "37 keys per second, starts after 275 ms"
             );
 
             let partial = pane_with(
@@ -2482,7 +2482,7 @@ mod tests {
             ],
             "a row per ring mode and per strip"
         );
-        assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1 · Mode 2");
+        assert_eq!(dial_label(PadDial::Ring(0), 1, 4), "Ring 1, mode 2");
         assert_eq!(dial_label(PadDial::Strip(1), 0, 1), "Strip 2");
         pane.observe_devices(Some(&snapshot));
         assert!(

@@ -703,7 +703,7 @@ impl PrintersModel {
                         ),
                     })
                     .collect::<Vec<_>>()
-                    .join(" · ");
+                    .join("\n");
                 t_args("settings-printers-supplies-list", &[("list", list.into())])
             }
             None if printer.telemetry.available => t("settings-printers-supplies-unreported"),
@@ -781,7 +781,7 @@ impl PrintersModel {
         let reason = job
             .state_reasons
             .first()
-            .map_or(String::new(), |reason| format!(" · {reason}"));
+            .map_or(String::new(), |reason| format!("\n{reason}"));
         let retry_label = t("settings-printers-retry");
         let cancel_label = t("settings-printers-cancel");
         let mut action_row = Row::new()
@@ -820,12 +820,12 @@ impl PrintersModel {
                 .with_intrinsic_height()
                 .push(Box::new(action_row))
                 .push(Box::new(
-                    Text::new(&format!("{} · {} · {}", job.owner, size, job.submitted))
+                    Text::new(&format!("{}\n{}\n{}", job.owner, size, job.submitted))
                         .with_role(ui::TextRole::Caption)
                         .dimmed(),
                 ))
                 .push(Box::new(
-                    Text::new(&format!("{state} · {progress}{reason}"))
+                    Text::new(&format!("{state}\n{progress}{reason}"))
                         .with_role(ui::TextRole::Caption)
                         .dimmed(),
                 )),

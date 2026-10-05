@@ -46,8 +46,6 @@ use crate::resource::{ReportProjection, Store, StoreEffect};
 use crate::sources::distinct_categories;
 use crate::worker::{Outcome, Request, StoreWorker};
 mod view;
-use crate::bindings;
-use ui::icons::Icon;
 
 /// Build a taffy node from `children` already built in the same tree.
 /// `new_with_children` only fails when a child id does not resolve in this
@@ -344,17 +342,6 @@ fn publisher_of(item: &StoreItem) -> (String, String) {
     )
 }
 
-fn safety_back_button() -> ui::widget::Button {
-    let mut button = ui::widget::Button::new("store.safety.back", "Back");
-    if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
-        button = button.on_action(binding);
-    }
-    button
-        .with_icon(Icon::ArrowLeft)
-        .control_size(ui::widget::ControlSize::Regular)
-        .tooltip("Return to the app catalogue")
-}
-
 /// Root widget.
 #[allow(
     clippy::struct_excessive_bools,
@@ -525,7 +512,7 @@ impl StoreApp {
         if self.worker.is_some() {
             return;
         }
-        self.flatpak_available = crate::flathub_client::flatpak_available();
+        // Host capabilities arrive with the worker snapshot, never a sandbox subprocess.
         self.images = Some(crate::images::image_store());
         // The first presented frame is the catalogue chrome ("Loading
         // apps…"), not a cleared swapchain: the worker is already in flight.
@@ -1154,6 +1141,7 @@ impl StoreApp {
             if let Some(detail) = snap.detail {
                 self.set_detail_from_worker(detail);
             }
+            self.set_flatpak_available(snap.flatpak_available);
             self.set_remotes(snap.remotes);
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
@@ -1846,7 +1834,6 @@ impl StoreApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bindings;
     use crate::model::{InstalledState, StoreItem, StoreItemVersion, StoreSource, StoreTrust};
     use crate::widgets::{CardAction, CardDetails};
     use automerge::{AutoCommit, ReadDoc};

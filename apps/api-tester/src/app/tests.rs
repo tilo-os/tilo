@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::actions::API_TESTER_ACTION_TYPE;
+use crate::doc::ApiDoc;
 use crate::resource::ApiTesterShell;
 use automerge::ROOT;
 use ui::framework::testing::TestApp;
@@ -807,4 +808,82 @@ fn rereading_the_document_keeps_the_order_on_screen() {
     assert_eq!(app.active_env, Some(second));
     assert_ne!(app.active_env, Some(first));
     assert_eq!((names(&app), collections(&app)), before);
+}
+
+/// The app's retained shared navigation paints long saved-request and history
+/// labels within its measured row, including at twice the text size.
+#[test]
+fn long_navigation_labels_fit_the_shared_rows() {
+    fn find(widget: &mut dyn Widget, theme: &Theme, text: &mut ui::TextRenderer) -> usize {
+        if widget.name() == "NavList" {
+            let rect = widget.get_rect();
+            let mut scene = vello::Scene::new();
+            widget.draw(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                text,
+                theme,
+                &ui::presence::PresenceCtx::default(),
+            );
+            let mut glyphs = 0;
+            for run in &scene.encoding().resources.glyph_runs {
+                for glyph in scene
+                    .encoding()
+                    .resources
+                    .glyphs
+                    .get(run.glyphs.clone())
+                    .expect("painted run has valid glyph range")
+                {
+                    let y = f64::from(run.transform.translation[1] + glyph.y);
+                    assert!(
+                        y >= rect.y0 && y < rect.y1,
+                        "navigation glyph {y} escapes {rect:?}"
+                    );
+                    glyphs += 1;
+                }
+            }
+            assert!(glyphs > 0, "the actual retained list paints text");
+            return 1;
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .map(|child| find(child, theme, text))
+            .sum()
+    }
+    let long = "a very long saved request or history path with Unicode café and many more words";
+    for scale in [1.0, 2.0] {
+        let mut app = TestApp::<ApiTesterShell>::capture(None).unwrap();
+        let workspace = app.state();
+        let collection = workspace.collections.first().expect("sample collection");
+        let request = collection.requests.first().expect("sample request");
+        app.invoke(
+            Invoke::apply(&actions::rename_request_action(
+                collection.id,
+                request.id,
+                long,
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut entry = workspace.history.first().expect("sample history").clone();
+        entry.id = uuid::Uuid::new_v4();
+        entry.url = format!("https://example.invalid/{long}");
+        app.invoke(Invoke::apply(&actions::ApiTesterAction::RecordHistory { entry }).unwrap())
+            .unwrap();
+        let theme = Theme::dark().with_text_scale(scale);
+        app.harness().set_theme(theme.clone());
+        app.harness().relayout();
+        app.settle();
+        assert!(
+            app.harness().inspection_json().unwrap().contains(long),
+            "long labels remain semantically complete"
+        );
+        let mut text = ui::TextRenderer::new();
+        text.set_text_scale(scale);
+        let lists = app
+            .with_surface::<ApiTesterApp, _>(|surface| find(surface, &theme, &mut text))
+            .unwrap();
+        assert!(lists > 0, "the production view contains shared navigation");
+    }
 }

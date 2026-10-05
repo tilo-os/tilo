@@ -33,11 +33,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::toast::{ToastKind, ToastStack};
 use ui::widget::{
-    ActionEmitter, FullscreenProvider, NavItem, NavList, NavMode, NavSection, NavShell,
-    VideoPlayer, Widget,
+    FullscreenProvider, NavItem, NavList, NavMode, NavSection, NavShell, VideoPlayer, Widget,
 };
 
-use crate::action::{self, Action, ActionBus, Invocations, SettingFlag};
+use crate::action::{self, Action, ActionBus, Invocations};
 use crate::actions::{TubeAction, TubeEffect};
 use crate::api::{Request, Update, Worker};
 use crate::history::WatchHistory;
@@ -140,26 +139,6 @@ pub struct TubeApp {
     /// narrow screenshot captures the summoned rail + scrim rather than an
     /// empty closed flap. Never set by the live app.
     force_sidebar_open_shot: bool,
-    /// Last resolved docked/overlay state, to detect a breakpoint crossing on
-    /// resize and trigger a rebuild that re-seeds the split + drops a stale
-    /// user preference.
-    last_nav_overlay: Option<bool>,
-    /// The docked/overlay resolution the *current* widget tree was seeded
-    /// with. The first `build_layout` runs before any width is known (rect
-    /// ZERO ⇒ overlay assumed), so once the true width lands in
-    /// `apply_layout` we compare against this and rebuild if the seed was
-    /// wrong — a wide window re-seeds its rail open on the next frame instead
-    /// of being stuck on the unknown-width default.
-    built_overlay: Option<bool>,
-    /// `NAV_BREAKPOINT` as the live split resolves it under the theme the
-    /// tree was last built with (`AuthoredExtent::text`, HIG §9.6). The app's
-    /// own narrow/wide decisions compare against this, never the constant,
-    /// so they agree with the split at every text scale.
-    nav_breakpoint: f64,
-    /// `screens::NAV_RAIL_W` resolved like the split's icon sidebar
-    /// (`AuthoredExtent::icon`: follows `ui_scale`, not the text scale).
-    nav_rail_w: f64,
-
     /// Whether this instance should reach out to the live data backend. Set by
     /// [`TubeApp::online`] — the live binary turns it on; the `--shots` /
     /// offscreen path leaves it off so every screenshot stays hermetic on the
@@ -265,10 +244,6 @@ impl TubeApp {
             search_requested: false,
             sidebar_open: None,
             force_sidebar_open_shot: false,
-            last_nav_overlay: None,
-            built_overlay: None,
-            nav_breakpoint: f64::from(Theme::default().tokens.metrics.compact_breakpoint),
-            nav_rail_w: f64::from(Theme::default().tokens.metrics.rail_width),
             online: false,
             kicked_off: false,
             playing_id: None,

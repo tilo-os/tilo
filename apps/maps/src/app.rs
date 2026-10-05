@@ -51,7 +51,9 @@ use crate::map_info_sheet::{MapInfo, MapInfoSheet};
 use crate::model::{LatLon, MapModel, Panel, Place, TransitMode, TransitTimeMode, TravelMode};
 use crate::net::{self, NetMsg};
 use crate::offline_panel::{OFFLINE_AREAS_REFUSED, OfflineAction, OfflineFrame, OfflinePanel};
-use crate::place_search::{LocalPlaces, PlaceSearch};
+#[cfg(test)]
+use crate::place_search::LocalPlaces;
+use crate::place_search::PlaceSearch;
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileFault, TileId, TileLayer, TileStyle};
 use crate::traffic::{Congestion, TrafficData};
@@ -1172,9 +1174,9 @@ impl MapsApp {
         matches!(self.model.panel, Panel::Directions) && self.endpoints.overlay_active()
     }
 
-    /// What the platform search finds at once: the places the map knows,
-    /// the points of interest around the view, and the recent searches an
-    /// empty query lists.
+    /// Send the newest query the platform search is waiting on to the
+    /// geocoder, once. The reply answers the palette's pending page.
+    #[cfg(test)]
     fn local_places(&self) -> LocalPlaces {
         LocalPlaces {
             places: self.model.places.clone(),
@@ -1188,8 +1190,6 @@ impl MapsApp {
         }
     }
 
-    /// Send the newest query the platform search is waiting on to the
-    /// geocoder, once. The reply answers the palette's pending page.
     fn pump_place_search(&mut self) {
         let Some(query) = self.place_search.take_query() else {
             return;

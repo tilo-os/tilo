@@ -25,7 +25,7 @@ use ui::surface;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
+use ui::widget::toast::{ToastAnchor, ToastCard, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
     MediaCardFace, MediaSize, SkeletonFace, SkeletonShape, Slider, SliderFace, TransportControl,
@@ -748,14 +748,20 @@ impl Widget for MusicApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Reported once: an app that is not rebuilt right away (a tab behind
         // another) must not ask again on every frame.
-        let visible = Some(matches!(self.view, View::Home));
+        let visible = Some((matches!(self.view, View::Home), !self.nav_back.is_empty()));
         let file_changed =
             std::mem::replace(&mut self.open_file_layout_visible, visible) != visible;
         self.history.take_rebuilt() || file_changed
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children: Vec<&dyn Widget> = vec![&self.open_file_button, &self.search_button];
+        let mut children: Vec<&dyn Widget> = vec![&self.search_button];
+        if self.view == View::Home {
+            children.push(&self.open_file_button);
+        }
+        if !self.nav_back.is_empty() {
+            children.push(&self.back_button);
+        }
         children.extend(self.history.button().map(|button| button as &dyn Widget));
         children.extend(
             self.track_tables
@@ -766,8 +772,13 @@ impl Widget for MusicApp {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children: Vec<&mut (dyn Widget + '_)> =
-            vec![&mut self.open_file_button, &mut self.search_button];
+        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.search_button];
+        if self.view == View::Home {
+            children.push(&mut self.open_file_button);
+        }
+        if !self.nav_back.is_empty() {
+            children.push(&mut self.back_button);
+        }
         children.extend(
             self.history
                 .button_mut()
@@ -827,6 +838,10 @@ impl Widget for MusicApp {
         // callbacks queue requests; apply them at the next sync through the
         // same canonical actions as the palette, without waiting for another
         // pointer event.
+        if self.back_requested.replace(false) {
+            self.on_back();
+            self.dirty = true;
+        }
         self.drain_table_requests(state);
         // Progress in-flight downloads and re-apply their device-local cache
         // projection on top of the just-reloaded shared library.
@@ -852,10 +867,13 @@ impl Widget for MusicApp {
         // `new_leaf` failure (which a freshly-created tree with one valid
         // leaf style cannot produce) has no propagation path here.
         self.drawer.scale_for(theme);
-        let children = vec![
-            self.open_file_button.build_layout(taffy, theme, node_map),
-            self.search_button.build_layout(taffy, theme, node_map),
-        ];
+        let mut children = vec![self.search_button.build_layout(taffy, theme, node_map)];
+        if self.view == View::Home {
+            children.push(self.open_file_button.build_layout(taffy, theme, node_map));
+        }
+        if !self.nav_back.is_empty() {
+            children.push(self.back_button.build_layout(taffy, theme, node_map));
+        }
         #[allow(
             clippy::expect_used,
             reason = "the child belongs to this same tree; Widget::build_layout has no error return"
@@ -969,13 +987,22 @@ impl Widget for MusicApp {
 
         if let Ok(children) = ctx.taffy.children(ctx.node_id) {
             if let Some(node) = children.first() {
-                self.open_file_button
+                self.search_button
                     .handle_event(event, &mut ctx.reborrow(ctx.path, *node));
             }
             if !*ctx.handled
+                && self.view == View::Home
                 && let Some(node) = children.get(1)
             {
-                self.search_button
+                self.open_file_button
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+            }
+            let back_index = 1 + usize::from(self.view == View::Home);
+            if !*ctx.handled
+                && !self.nav_back.is_empty()
+                && let Some(node) = children.get(back_index)
+            {
+                self.back_button
                     .handle_event(event, &mut ctx.reborrow(ctx.path, *node));
             }
         }
@@ -1696,6 +1723,9 @@ impl MusicApp {
                 self.catalogue_invocation = Some(invocation);
                 Ok(ui::framework::Effected::Pending)
             }
+            MusicEffect::ToggleLike { .. } => {
+                Err("Catalogue likes require the admitted resource effect".into())
+            }
             MusicEffect::OpenFile => {
                 self.begin_local_file_pick(invocation)?;
                 Ok(ui::framework::Effected::Pending)
@@ -2106,21 +2136,6 @@ impl MusicApp {
         } else if self.bar_press.is_some() {
             // A now-playing-bar swipe is in progress; consume moves so
             // the gesture is resolved on release.
-            *handled = true;
-        }
-    }
-
-    /// Right-click: open a track's context menu where one is registered.
-    fn on_right_click(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
-        if let Some(Action::Play { queue, index }) = self.hit_test(self.mouse)
-            && let Some(track) = queue.get(index)
-        {
-            let action = Action::OpenTrackMenu {
-                track: track.clone(),
-                in_playlist: None,
-                queue_index: None,
-            };
-            self.dispatch(action, state);
             *handled = true;
         }
     }
@@ -2661,12 +2676,13 @@ impl MusicApp {
                 .paint_toggle(ctx.scene, ctx.transform, ctx.text, ctx.theme);
         }
         if face.back.width() > 0.0 {
-            self.icon_button(
-                ctx,
-                ButtonFace::icon_only(face.back, Icon::ChevronLeft, "Back")
-                    .control_size(ControlSize::Regular),
-                false,
-                Action::Back,
+            self.back_button.apply_layout_external(face.back);
+            self.back_button.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &PresenceCtx::empty(),
             );
         }
 
@@ -2685,13 +2701,15 @@ impl MusicApp {
         );
         self.search_button.apply_layout_external(search);
         self.open_file_button.apply_layout_external(open);
-        self.open_file_button.draw(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            &PresenceCtx::empty(),
-        );
+        if self.view == View::Home {
+            self.open_file_button.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &PresenceCtx::empty(),
+            );
+        }
         self.search_button.draw(
             ctx.scene,
             ctx.transform,

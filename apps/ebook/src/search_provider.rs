@@ -113,7 +113,7 @@ impl SearchText for ChapterBody {
                 ))
                 .grouped(LOCATION_KIND)
                 .subtitled(format!(
-                    "{} · {chapter_title}",
+                    "{}: {chapter_title}",
                     BookSearch::book_title(&self.book)
                 ))
                 .with_icon(Icon::FileText.name()),

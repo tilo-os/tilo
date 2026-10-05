@@ -15,6 +15,59 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, TaffyTree};
 
+thread_local! {
+    static PHYSICAL_TEXT: Cell<bool> = const { Cell::new(false) };
+    static DRAINED_PHYSICAL_TEXT: Cell<bool> = const { Cell::new(false) };
+    static NATIVE_TEXT_EXECUTION: Cell<bool> = const { Cell::new(false) };
+}
+
+struct PhysicalTextScope(bool);
+impl Drop for PhysicalTextScope {
+    fn drop(&mut self) {
+        PHYSICAL_TEXT.with(|flag| flag.set(self.0));
+    }
+}
+
+/// Private producer provenance, copied into the exact owned queue entry.
+/// It confers no execution authority and is never decoded from a request.
+pub(crate) fn with_physical_text<T>(physical: bool, run: impl FnOnce() -> T) -> T {
+    let _scope = PhysicalTextScope(PHYSICAL_TEXT.with(|flag| flag.replace(physical)));
+    run()
+}
+
+pub(crate) fn physical_text() -> bool {
+    PHYSICAL_TEXT.with(Cell::get)
+}
+
+pub(crate) fn note_drained_physical_text(physical: bool) {
+    DRAINED_PHYSICAL_TEXT.with(|flag| flag.set(physical));
+}
+
+struct DrainTextScope(bool);
+impl Drop for DrainTextScope {
+    fn drop(&mut self) {
+        DRAINED_PHYSICAL_TEXT.with(|flag| flag.set(self.0));
+    }
+}
+
+fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, bool) {
+    let _scope = DrainTextScope(DRAINED_PHYSICAL_TEXT.with(|flag| flag.replace(false)));
+    let result = run();
+    (result, DRAINED_PHYSICAL_TEXT.with(Cell::get))
+}
+
+struct NativeTextScope(bool);
+impl Drop for NativeTextScope {
+    fn drop(&mut self) {
+        NATIVE_TEXT_EXECUTION.with(|flag| flag.set(self.0));
+    }
+}
+
+fn with_native_text<T>(physical: bool, run: impl FnOnce() -> T) -> T {
+    let _scope = NativeTextScope(NATIVE_TEXT_EXECUTION.with(|flag| flag.replace(physical)));
+    run()
+}
+
 /// Runtime destination; the domain address remains independent of UI instances.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BoundActionAddress {
@@ -97,6 +150,7 @@ impl From<BoundDispatchError> for BoundActionError {
 /// the reusable numeric instance or a domain resource ID.
 #[derive(Clone)]
 pub(crate) struct BoundActionTarget {
+    pub(crate) physical_text: bool,
     pub(crate) binding: CallbackBinding,
     pub(crate) address: BoundActionAddress,
 }
@@ -247,6 +301,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
             for invocation in binding.queued_controls.borrow().iter() {
                 output.push((
                     BoundActionTarget {
+                        physical_text: false,
                         address: BoundActionAddress {
                             instance_id: binding.instance_id,
                             address: invocation.address.clone(),
@@ -288,6 +343,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
             continuing.push(None);
             invocations.push((
                 BoundActionTarget {
+                    physical_text: false,
                     binding: binding.clone(),
                     address: BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -297,12 +353,13 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let Some((intent, on_behalf_of)) =
+        while let (Some((intent, on_behalf_of)), physical_text) = capture_physical_drain(|| {
             crate::widget::controls::take_attributed_control_invocation(widget)
-        {
+        }) {
             continuing.push(on_behalf_of);
             invocations.push((
                 BoundActionTarget {
+                    physical_text,
                     binding: binding.clone(),
                     address: BoundActionAddress {
                         instance_id: binding.instance_id,
@@ -490,6 +547,7 @@ impl BoundPublication {
             .ok_or_else(unknown)?;
         let _entry = binding.enter()?;
         Ok(Some(BoundActionTarget {
+            physical_text: false,
             address: BoundActionAddress {
                 instance_id: binding.instance_id,
                 address: tilo_actions::ActionAddress::new(resource, address.action.clone()),
@@ -1204,6 +1262,7 @@ pub(crate) fn select_bound_target(
             });
         }
         selected = Some(BoundActionTarget {
+            physical_text: false,
             binding: snapshot.binding.clone(),
             address: BoundActionAddress {
                 instance_id: snapshot.binding.instance_id,
@@ -1840,6 +1899,7 @@ pub(crate) fn execute_resource_operation(
         // Before apply, so a delete can still read the row it removes. Undo
         // of this span applies the compensating action instead of patches.
         note_compensating_action(doc, action.inverse_encoded(doc), encoded.clone());
+        note_native_text_policy(widget, doc, &encoded);
         let applied = match execute_document(
             doc,
             action.as_ref(),
@@ -2057,7 +2117,7 @@ pub(crate) fn invoke_resource_action(
                         argument,
                     )?;
                     let execute = |widget: &mut dyn Widget, doc: &mut AutoCommit, path: &ObjId| {
-                        execute_resource_operation(
+                        with_native_text(target.physical_text && actor == binding.author.0 && crate::history_source::authors::agent_principal_name(actor).is_none(), || execute_resource_operation(
                             widget,
                             doc,
                             path,
@@ -2075,7 +2135,7 @@ pub(crate) fn invoke_resource_action(
                                 ambient: ambient.or(Some(&binding.operation_context)),
                                 scope,
                             },
-                        )
+                        ))
                     };
                     let run = |doc: &mut AutoCommit| {
                     let mut operation = BoundOperation::enter(binding, doc, spec.kind)?;
@@ -2250,6 +2310,19 @@ pub(crate) struct PendingRecordAction {
     author: UserId,
     metadata: Option<String>,
     context: tilo_actions::ActionContext,
+    native_text: Option<NativeTextSpan>,
+    inverse: crate::state::CommittedSpanInverse,
+}
+
+struct NativeTextSpan {
+    action: tilo_actions::EncodedAction,
+    frontier: Vec<ChangeHash>,
+}
+
+struct NativeTextPolicy {
+    action: tilo_actions::EncodedAction,
+    continues: bool,
+    continuable: bool,
 }
 
 pub(crate) struct RecordActionState {
@@ -2313,12 +2386,14 @@ impl RecordActionState {
                 doc,
                 pending.context.change_message(),
             );
-            history.record_committed_span_in(
+            history.record_committed_span_with_inverse(
                 pending.before,
                 doc.get_heads(),
+                None,
                 pending.metadata,
-                pending.author,
-                pending.instance_id,
+                Some(pending.author),
+                Some(pending.instance_id),
+                pending.inverse,
             );
         }
         self.statuses.clear();
@@ -2356,6 +2431,7 @@ struct OperationSpan {
     undo_via: Option<tilo_actions::EncodedAction>,
     /// The forward action, so redo runs through `apply` as well.
     redo_via: Option<tilo_actions::EncodedAction>,
+    native_text: Option<NativeTextPolicy>,
 }
 
 fn operation_frame(doc: &AutoCommit) -> Option<FrameHandle> {
@@ -2484,6 +2560,50 @@ fn note_compensating_action(
     }
 }
 
+fn note_native_text_policy(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    encoded: &tilo_actions::EncodedAction,
+) {
+    if !NATIVE_TEXT_EXECUTION.with(Cell::get) {
+        return;
+    }
+    let Some(history) = crate::widget::capability::capability::<
+        dyn crate::history_mode::capability::DocumentHistory,
+    >(widget) else {
+        return;
+    };
+    let Some(handle) = operation_frame(doc) else {
+        return;
+    };
+    let mut owned = handle.borrow_mut();
+    let Some(frame) = owned.as_mut() else {
+        return;
+    };
+    let Some(operation) = frame.operations.last() else {
+        return;
+    };
+    let previous = frame
+        .state
+        .pending
+        .as_ref()
+        .filter(|pending| {
+            Rc::ptr_eq(&pending.owner, &operation.binding.closing)
+                && pending.author == operation.binding.author
+                && pending.instance_id == operation.binding.instance_id
+        })
+        .and_then(|pending| pending.native_text.as_ref());
+    let (continues, continuable) =
+        history.physical_text_policy(previous.map(|span| &span.action), encoded);
+    if let Some(operation) = frame.operations.last_mut() {
+        operation.native_text = Some(NativeTextPolicy {
+            action: encoded.clone(),
+            continues,
+            continuable,
+        });
+    }
+}
+
 /// Narrow shared producer hook. Called only when a typed action is about to
 /// execute; returning None preserves the legacy `ActionHost` path unchanged.
 pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash>> {
@@ -2543,7 +2663,26 @@ pub(crate) fn report_typed_action(
         .find_map(|scope| scope.cursor.as_ref())
         .cloned()
         .unwrap_or_else(|| before.clone());
-    frame.finish_pending_at(boundary, doc);
+    let native = frame
+        .operations
+        .last_mut()
+        .and_then(|operation| operation.native_text.take());
+    let continues = native.as_ref().is_some_and(|policy| policy.continues)
+        && frame.state.pending.as_ref().is_some_and(|pending| {
+            Rc::ptr_eq(&pending.owner, &binding.closing)
+                && pending.author == binding.author
+                && pending.instance_id == binding.instance_id
+                && pending
+                    .native_text
+                    .as_ref()
+                    .is_some_and(|span| span.frontier == before)
+                && frame.operations.last().is_some_and(|operation| {
+                    pending.inverse.undo_via.is_some() == operation.undo_via.is_some()
+                })
+        });
+    if !continues {
+        frame.finish_pending_at(boundary, doc);
+    }
     for operation in &mut frame.operations {
         operation.violation |= operation.effect
             && operation
@@ -2557,6 +2696,37 @@ pub(crate) fn report_typed_action(
         .last_mut()
         .map(|operation| (operation.undo_via.take(), operation.redo_via.take()))
         .unwrap_or((None, None));
+    if let Some(native) = native.filter(|policy| policy.continuable) {
+        if !continues {
+            let mut pending = PendingRecordAction::new(&binding, before);
+            pending.inverse = crate::state::CommittedSpanInverse { undo_via, redo_via };
+            frame.state.pending = Some(pending);
+        } else if let Some(pending) = frame.state.pending.as_mut() {
+            // The original compensation reverses the whole burst; redo uses
+            // the latest full-value action. Never substitute a later inverse.
+            pending.inverse.redo_via = redo_via;
+        }
+        if let Some(pending) = frame.state.pending.as_mut() {
+            pending.native_text = Some(NativeTextSpan {
+                action: native.action,
+                frontier: after.clone(),
+            });
+        }
+        if let Some(active) = frame.mutation.as_mut() {
+            active.before = (!active.binding.same_component(&binding)).then_some(after);
+        }
+        frame.state.statuses.clear();
+        frame.state.generation = frame
+            .state
+            .generation
+            .and_then(|value| value.checked_add(1));
+        return;
+    }
+    // A noncontinuable text edit still closes a preceding burst, then gets
+    // its own immediate entry, like every programmatic document action.
+    if continues {
+        frame.finish_pending_at(before.clone(), doc);
+    }
     frame.history.record_committed_span_with_inverse(
         before,
         after.clone(),
@@ -2609,6 +2779,7 @@ impl<'a> BoundOperation<'a> {
                 violation: false,
                 undo_via: None,
                 redo_via: None,
+                native_text: None,
             });
             depth
         };
@@ -2691,6 +2862,8 @@ impl PendingRecordAction {
             author: binding.author.clone(),
             metadata: None,
             context: binding.operation_context.clone(),
+            native_text: None,
+            inverse: crate::state::CommittedSpanInverse::default(),
         }
     }
 }
@@ -2837,12 +3010,14 @@ impl ActionFrame {
         if let Some(pending) = self.state.pending.take() {
             let author = pending.author.clone();
             let instance = pending.instance_id;
-            self.history.record_committed_span_in(
+            self.history.record_committed_span_with_inverse(
                 pending.before,
                 after,
+                None,
                 pending.metadata,
-                pending.author,
-                pending.instance_id,
+                Some(pending.author),
+                Some(pending.instance_id),
+                pending.inverse,
             );
             self.status(doc, &author, instance);
         }
@@ -4229,3 +4404,7 @@ mod author_writer_tests;
 #[cfg(test)]
 #[path = "bound_dispatch/device_actor_tests.rs"]
 mod device_actor_tests;
+
+#[cfg(test)]
+#[path = "bound_dispatch/native_text_tests.rs"]
+mod native_text_tests;

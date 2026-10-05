@@ -177,7 +177,7 @@ fn tilo_version_to_store(v: &RegistryVersion) -> StoreItemVersion {
 /// until a follow-up `fetch_appstream` populates the record.
 ///
 /// `installed_flatpaks` is the `(app_id, version)` snapshot from
-/// [`crate::flathub_client::installed_flatpaks`].
+/// the app-host service.
 pub fn flathub_placeholder_to_item(
     p: &PopularEntry,
     installed_flatpaks: &[(String, String)],

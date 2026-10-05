@@ -11,9 +11,6 @@
 //! This type owns no CRDT state and does no rendering — it holds the
 //! snapshot and formats the labels, which keeps it trivially unit-testable.
 
-use ui::theme::Theme;
-use vello::peniko::Color;
-
 /// Whether the notebook's changes are on disk, as the status bubble says it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum SaveStatus {

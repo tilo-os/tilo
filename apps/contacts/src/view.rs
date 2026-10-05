@@ -25,8 +25,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
 use ui::widget::{
-    AppModel, AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, ModelPath,
-    RowLeading, ScrollMetrics, Scrollbar, TaffyTreeExt, Widget,
+    AvatarFace, EmptyState, EmptyStateContent, Interaction, ListRowFace, RowLeading, ScrollMetrics,
+    Scrollbar, TaffyTreeExt, Widget,
 };
 
 use crate::form::{RowKind, Slot, TypeTarget};
@@ -66,6 +66,10 @@ pub(crate) enum Request {
     EditSelected,
     DeleteSelected,
     Save,
+    /// Enter submitted a shared input: focus the next field, or save at the end.
+    AdvanceField(Slot),
+    /// A local request to focus an existing draft field.
+    FocusField(Slot),
     Cancel,
     Add(RowKind),
     Remove(TypeTarget),

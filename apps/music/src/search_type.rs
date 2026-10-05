@@ -317,10 +317,10 @@ fn top_hit(top: &SearchTop) -> SearchHit {
 
 fn song_subtitle(artist: &str, duration_s: u32) -> String {
     if duration_s == 0 {
-        format!("Song · {artist}")
+        format!("Song by {artist}")
     } else {
         format!(
-            "Song · {artist} · {}",
+            "Song by {artist}, {}",
             ui::format::timecode(u64::from(duration_s))
         )
     }
@@ -404,17 +404,23 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
         let genre = lib
             .artist(&track.artist_id)
             .map_or("", |artist| artist.genre.as_str());
-        entries.push(
-            SearchEntry::new(track.title.clone(), String::new())
-                .field(artist, SearchWeight::Subtitle)
-                .field(genre, SearchWeight::Metadata)
-                .anchored(crate::actions::track_resource_id(&track.id))
-                .invoking(crate::actions::play_track_address(&track.id))
-                .grouped(kind_label(SONG_TYPE_ID))
-                .subtitled(song_subtitle(artist, track.duration_s))
-                .with_icon(kind_icon(SONG_TYPE_ID).name())
-                .boosted(i32::try_from(track.plays).unwrap_or(i32::MAX)),
-        );
+        let mut entry = SearchEntry::new(track.title.clone(), String::new())
+            .field(artist, SearchWeight::Subtitle)
+            .field(genre, SearchWeight::Metadata)
+            .anchored(crate::actions::track_resource_id(&track.id))
+            .invoking(crate::actions::play_track_address(&track.id))
+            .grouped(kind_label(SONG_TYPE_ID))
+            .subtitled(song_subtitle(artist, track.duration_s))
+            .with_icon(kind_icon(SONG_TYPE_ID).name())
+            .boosted(i32::try_from(track.plays).unwrap_or(i32::MAX));
+        entry.row = Some(ui::tilo_resource::SearchRow::shaped(
+            ui::tilo_resource::SearchRowShape::Media {
+                byline: Some(artist.into()),
+                duration: (track.duration_s > 0)
+                    .then(|| ui::format::timecode(u64::from(track.duration_s))),
+            },
+        ));
+        entries.push(entry);
     }
     for album in lib.albums.values() {
         let artist = lib.artist_name(&album.artist_id);
@@ -472,7 +478,7 @@ pub fn library_entries(lib: &Library) -> Vec<SearchEntry> {
                     track_id,
                 ))
                 .grouped("Playlist tracks")
-                .subtitled(format!("Open in {} · {artist}", playlist.name))
+                .subtitled(format!("Open in {} by {artist}", playlist.name))
                 .with_icon(kind_icon(SONG_TYPE_ID).name()),
             );
         }

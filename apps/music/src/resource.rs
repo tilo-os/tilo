@@ -203,6 +203,21 @@ impl ResourceSurface<Music, MusicEffect> for MusicApp {
     }
 
     fn effect(&mut self, effect: MusicEffect, cx: &mut EffectCx<Music, Self>) -> EffectAnswer {
+        if let MusicEffect::ToggleLike { track } = &effect {
+            if cx.dispatcher().read_only() {
+                return Err("Liking a song requires permission to edit the library".into());
+            }
+            let current = cx.live().get();
+            let _gesture = cx.dispatcher().begin_group();
+            if !current.tracks.contains_key(track) {
+                cx.apply(&self.catalogue_import_action(track)?);
+            }
+            cx.apply(&crate::actions::set_liked_action(
+                track,
+                !current.is_liked(track),
+            ));
+            return Ok(ui::framework::Effected::done());
+        }
         let invocation = cx.invocation().unwrap_or_default();
         let answer = self.begin_effect(invocation, effect)?;
         if matches!(answer, ui::framework::Effected::Pending) {

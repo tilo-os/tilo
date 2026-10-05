@@ -1183,9 +1183,42 @@ fn page_tree_keyboard_and_pointer_commands_are_gated_on_tree_focus() {
         let btn = n(&mut app).sidebar_new_page_btn_center_for_test();
         dispatch(&mut app, no_mods, &cursor_moved(btn.x, btn.y));
         let handled = dispatch(&mut app, no_mods, &mouse_press());
+        let mut release = mouse_press();
+        if let WindowEvent::MouseInput { state, .. } = &mut release {
+            *state = ElementState::Released;
+        }
+        // Keep the direct root press diagnostic above, then admit its
+        // release through the host that owns queued native control actions.
+        app.harness().send(&release);
+        app.settle();
 
         assert!(handled, "clicking the + button must be consumed");
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
+        );
         let pages = n(&mut app).workspace_pages_for_test();
+        if pages.len() != 2 {
+            let resources = app.harness().resources();
+            eprintln!(
+                "new-note target {:?}; native controls {:?}; contract violations {:?}",
+                app.harness().targets().get("new-note"),
+                resources
+                    .iter()
+                    .filter(|resource| resource.kind == "tilo.control")
+                    .map(|resource| (
+                        &resource.id,
+                        resource
+                            .actions
+                            .iter()
+                            .map(|action| &action.id)
+                            .collect::<Vec<_>>()
+                    ))
+                    .collect::<Vec<_>>(),
+                app.harness().component_contract_violations()
+            );
+        }
         assert_eq!(pages.len(), 2, "the + button must add exactly one page");
         let new_id = n(&mut app).selected_for_test().unwrap();
         let new_meta = pages.iter().find(|p| p.id == new_id).unwrap();

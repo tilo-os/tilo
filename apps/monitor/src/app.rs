@@ -208,7 +208,7 @@ fn process_search_entry(process: &ProcessInfo) -> ui::tilo_resource::SearchEntry
     .invoking(ActionAddress::new(id, "inspect"))
     .grouped("Processes")
     .subtitled(format!(
-        "PID {} · {}",
+        "PID {} owned by {}",
         process.pid,
         indexed_text(&process.user)
     ))

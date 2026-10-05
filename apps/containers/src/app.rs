@@ -16,7 +16,9 @@ use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::resource::ContainersEffect;
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use taffy::prelude::*;
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::control_custody::RawControlSlot;
@@ -527,23 +529,6 @@ impl ContainersApp {
     /// Open the new-container form on its image field.
     pub(crate) fn open_create(&mut self) {
         self.set_create_open(true);
-    }
-
-    pub(crate) fn set_create_field(
-        &mut self,
-        field: CreateField,
-        value: &str,
-    ) -> Result<(), String> {
-        let dispatcher = self
-            .dispatcher
-            .as_ref()
-            .ok_or_else(|| "the create form is not attached".to_owned())?;
-        crate::resource::create_field_dispatcher(dispatcher, field).apply(
-            &ui::tilo_resource::TextEdit::ReplaceText {
-                text: value.to_owned(),
-            },
-        );
-        Ok(())
     }
 
     /// Empty the draft, once a container was created from it.

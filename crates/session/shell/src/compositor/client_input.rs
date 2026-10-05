@@ -408,6 +408,10 @@ impl State {
             // Retire their held keys while the old client still owns focus,
             // before Smithay sends the next client its focus-enter key array.
             self.release_remote_keys_for_surface(previous);
+            let root = crate::compositor::foreign::store().sheet_root(previous);
+            if root != previous {
+                self.release_remote_keys_for_surface(root);
+            }
         }
         let target = match surface_id {
             Some(id) => self.client_input.surfaces.get(&id).map(|s| (id, s.clone())),
@@ -1006,6 +1010,7 @@ pub fn sync_keyboard_focus(state: &mut State, fb: &FrameBuilder) {
     // theirs types there until they use this device again.
     let candidate = state
         .focused_output_presentation_surface()
+        .or_else(|| state.headless_keyboard_focus())
         .or(overlay_focus)
         .or_else(|| state.personal_keyboard_focus())
         .or_else(|| {
@@ -1299,7 +1304,13 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
     };
     let view = crate::network::input_firewall::ShellView::new(
         tiles,
-        state.client_input.keyboard_focus(),
+        // Viewers address the streamed tile; Wayland enters its modal
+        // sheet. Compare against the tile's root while delivering to the
+        // real focused child, so Save dialogs keep the same guarded door.
+        state
+            .client_input
+            .keyboard_focus()
+            .map(|surface| crate::compositor::foreign::store().sheet_root(surface)),
         chrome_captures_input(fb),
         fb.host().palette_visible(),
     )

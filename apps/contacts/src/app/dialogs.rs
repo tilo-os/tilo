@@ -6,9 +6,9 @@
 
 use std::collections::HashSet;
 
-use automerge::AutoCommit;
 use ui::widget::{
-    Column, ControlSize, Dropdown, Element, Field, ModalDialog, Property, PropertyList, Row, Text,
+    Button, Column, ControlSize, Dropdown, Element, Field, ModalDialog, Property, PropertyList,
+    Row, Text, Widget,
 };
 use ui::{LocalState, TextRole};
 
@@ -37,6 +37,7 @@ pub(super) struct ExportDraft {
     /// One sentence: what is exported.
     pub(super) summary: String,
     pub(super) format: LocalState<String>,
+    pub(super) selected: LocalState<HashSet<ContactId>>,
 }
 
 impl ExportDraft {
@@ -46,6 +47,32 @@ impl ExportDraft {
         } else {
             VCardVersion::V4
         }
+    }
+}
+
+/// A shared checkbox table whose six-row window follows the current type
+/// and density. The full directory remains data; layout and AT mount only
+/// its viewport rather than a checkbox widget per contact.
+struct ExportSelection {
+    table: ui::widget::data_table::DataTable<Contact>,
+}
+impl ui::widget::Decorator for ExportSelection {
+    type Inner = ui::widget::data_table::DataTable<Contact>;
+    fn inner(&self) -> &Self::Inner {
+        &self.table
+    }
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.table
+    }
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &ui::Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let row = theme.text(ui::TextRole::Body).line_height_px() + theme.tokens.spacing.s2 * 2.0;
+        self.table.set_viewport(row * 6.0, row);
+        self.table.build_layout(taffy, theme, nodes)
     }
 }
 
@@ -339,13 +366,69 @@ impl ContactsApp {
                 .map(|(value, label)| ((*value).to_owned(), (*label).to_owned()))
                 .collect(),
         );
+        let rows: Vec<Contact> = self
+            .store
+            .filtered_sorted("", None, self.sort)
+            .into_iter()
+            .filter_map(|id| self.store.get(id).cloned())
+            .collect();
+        let check_state = export.selected.clone();
+        let selected = export.selected.clone();
+        let ids: Vec<ContactId> = rows.iter().map(|row| row.id).collect();
+        let toggled_ids = ids.clone();
+        let mut table = ui::widget::data_table::DataTable::new(vec![
+            ui::widget::data_table::ColumnDef::checkbox(
+                "selected",
+                "Include",
+                move |row: &Contact| check_state.with(|set| set.contains(&row.id)),
+            ),
+            ui::widget::data_table::ColumnDef::new(
+                "name",
+                "Contact",
+                ui::widget::data_table::ColumnWidth::Flex(1.0),
+            )
+            .with_text(|row: &Contact| row.display_name()),
+        ])
+        .with_id("contacts.export.selection")
+        .with_accessible_name("Contacts to export")
+        .on_check(move |index, checked| {
+            if let Some(id) = toggled_ids.get(index) {
+                selected.update(|set| {
+                    if checked {
+                        set.insert(*id);
+                    } else {
+                        set.remove(id);
+                    }
+                });
+            }
+        });
+        table.set_rows(rows);
+        let all_state = export.selected.clone();
+        let none_state = export.selected.clone();
+        let enabled = export.selected.clone();
         let content = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(body(&export.summary)))
+            .push(Box::new(
+                Row::new()
+                    .with_padding_rhythm(None, None)
+                    .push(Box::new(
+                        Button::new("contacts.export.all", "Select all").on_view(move || {
+                            all_state.set(ids.iter().copied().collect());
+                        }),
+                    ))
+                    .push(Box::new(
+                        Button::new("contacts.export.none", "Select none").on_view(move || {
+                            none_state.set(HashSet::new());
+                        }),
+                    )),
+            ))
+            .push(Box::new(ExportSelection { table }))
             .push(Box::new(Field::new("Format", format)));
         Some(Box::new(
             dialog("Export contacts", content, &self.shared, "Export", "Cancel")
+                .primary_enabled_if(move |_| enabled.with(|set| !set.is_empty()))
                 .with_test_id("contacts.export-dialog"),
         ))
     }
@@ -385,7 +468,23 @@ impl ContactsApp {
             (DialogKey::Export, DialogChoice::Primary) => {
                 if let Some(export) = self.export.take() {
                     let version = export.version();
-                    self.request_export(&export.ids, version);
+                    let initially_selected: HashSet<_> = export.ids.iter().copied().collect();
+                    let ids = export.selected.with(|set| {
+                        export
+                            .ids
+                            .iter()
+                            .copied()
+                            .filter(|id| set.contains(id))
+                            .chain(
+                                set.iter()
+                                    .copied()
+                                    .filter(|id| !initially_selected.contains(id)),
+                            )
+                            .collect::<Vec<_>>()
+                    });
+                    if !ids.is_empty() {
+                        self.request_export(&ids, version);
+                    }
                 }
             }
             (DialogKey::Export, _) => self.export = None,
@@ -394,7 +493,9 @@ impl ContactsApp {
     }
 
     pub(super) fn open_export(&mut self, ids: Vec<ContactId>, summary: String) {
+        let selected = LocalState::new(ids.iter().copied().collect());
         self.export = Some(ExportDraft {
+            selected,
             ids,
             summary,
             format: LocalState::new("4.0".to_owned()),

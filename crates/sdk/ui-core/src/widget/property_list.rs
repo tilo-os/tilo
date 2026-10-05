@@ -1054,7 +1054,21 @@ impl Widget for PropertyList {
     fn accessibility(&self) -> Option<AccessNode> {
         let children = self
             .properties()
-            .map(|property| row_node(&property.row(), property.accessible_value.as_deref()))
+            .enumerate()
+            .map(|(index, property)| {
+                let mut node = row_node(&property.row(), property.accessible_value.as_deref());
+                if let Some(layout) = self.layout.rows.get(index) {
+                    node = node.with_bounds(layout.rect);
+                    for (action, rect) in node
+                        .children
+                        .iter_mut()
+                        .zip(layout.actions.iter().flatten())
+                    {
+                        action.bounds = Some((*rect).into());
+                    }
+                }
+                node
+            })
             .collect();
         let mut node = AccessNode::new(Role::List)
             .with_bounds(self.rect)

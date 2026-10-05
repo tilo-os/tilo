@@ -27,7 +27,7 @@ use ui::tilo_resource::{self, Effect};
 use ui::time::{Duration, Instant};
 use ui::widget::{Button, Dropdown, Slider, TextInput, Toggle, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::effects::SettingsEffect;
@@ -220,7 +220,10 @@ const fn role_slug(role: SpeakerRoleSpec) -> &'static str {
 }
 
 fn trim_summary(trim: &SpeakerTrimInfo) -> String {
-    format!("{:.1} ms · {:+.1} dB", trim.delay_ms, trim.gain_db)
+    format!(
+        "{:.1} ms delay, {:+.1} dB gain",
+        trim.delay_ms, trim.gain_db
+    )
 }
 
 /// Metres sound travels per millisecond at room temperature.
@@ -253,7 +256,7 @@ fn measured_text(
             &[("metres", one_decimal(acoustic * SOUND_METRES_PER_MS).into())],
         ));
     }
-    parts.join(" · ")
+    parts.join("\n")
 }
 
 fn microphone_run_text(state: &CalibrationMicrophoneState) -> String {
@@ -1509,10 +1512,8 @@ struct RoomCanvas {
     rect: Rect,
     cursor: Point,
     dragging: Option<usize>,
+    marker_radius: f64,
 }
-
-const CANVAS_HEIGHT: f32 = 260.0; // floor-plan height, not a spacing token
-const DOT_RADIUS: f64 = 11.0; // speaker marker size on the floor plan
 
 impl RoomCanvas {
     fn new(points: ui::LocalState<Vec<(i32, i32)>>, labels: Vec<String>) -> Self {
@@ -1522,6 +1523,7 @@ impl RoomCanvas {
             rect: Rect::ZERO,
             cursor: Point::ZERO,
             dragging: None,
+            marker_radius: f64::from(ui::tokens::Metrics::BASE.icon_md) / 2.0,
         }
     }
 
@@ -1530,7 +1532,7 @@ impl RoomCanvas {
         let half = (self.rect.width() / 2.0)
             .min(self.rect.height() / 2.0)
             .max(1.0);
-        f64::from(ROOM_EXTENT_MM) / (half - DOT_RADIUS).max(1.0)
+        f64::from(ROOM_EXTENT_MM) / (half - self.marker_radius).max(1.0)
     }
 
     fn origin(&self) -> Point {
@@ -1569,15 +1571,18 @@ impl Widget for RoomCanvas {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.marker_radius = f64::from(theme.tokens.metrics.icon_md) / 2.0;
         let node = ui::widget::TaffyTreeExt::leaf_node(
             taffy,
             taffy::Style {
                 size: taffy::Size {
                     width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::length(CANVAS_HEIGHT),
+                    height: taffy::Dimension::length(
+                        theme.tokens.metrics.panel_width_utility * 13.0 / 16.0,
+                    ),
                 },
                 ..Default::default()
             },
@@ -1606,20 +1611,7 @@ impl Widget for RoomCanvas {
     ) {
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.panel);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            colors.overlay_subtle,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.rect, radius),
-        );
+        ui::surface::card(scene, transform, self.rect, radius, colors.overlay_subtle);
         let origin = self.origin();
         for ring in [1_000, 2_000, 3_000, 4_000] {
             let ring_radius = f64::from(ring) / self.scale();
@@ -1648,13 +1640,13 @@ impl Widget for RoomCanvas {
             None,
             &Circle::new(origin, 5.0),
         );
-        text_renderer.draw_text(
+        text_renderer.draw_style(
             scene,
             &t("speakers-room-you"),
-            theme.text(ui::TextRole::Caption).size,
             colors.text_dim,
             transform.pre_translate((origin.x + 8.0, origin.y + 4.0).into()),
             None,
+            &theme.text(ui::TextRole::Caption),
         );
         let points = self.points.with(Clone::clone);
         for (index, point) in points.iter().enumerate() {
@@ -1665,7 +1657,7 @@ impl Widget for RoomCanvas {
                 transform,
                 fill,
                 None,
-                &Circle::new(center, DOT_RADIUS),
+                &Circle::new(center, self.marker_radius),
             );
             if self.dragging == Some(index) {
                 scene.stroke(
@@ -1673,17 +1665,19 @@ impl Widget for RoomCanvas {
                     transform,
                     colors.border_focus,
                     None,
-                    &Circle::new(center, DOT_RADIUS + 3.0),
+                    &Circle::new(center, self.marker_radius + 3.0),
                 );
             }
             if let Some(label) = self.labels.get(index) {
-                text_renderer.draw_text(
+                text_renderer.draw_style(
                     scene,
                     label,
-                    theme.text(ui::TextRole::Caption).size,
                     colors.text_primary,
-                    transform.pre_translate((center.x + DOT_RADIUS + 4.0, center.y - 7.0).into()),
-                    Some(140.0),
+                    transform.pre_translate(
+                        (center.x + self.marker_radius + 4.0, center.y - 7.0).into(),
+                    ),
+                    Some(theme.tokens.metrics.chooser_width),
+                    &theme.text(ui::TextRole::Caption),
                 );
             }
         }
@@ -1714,7 +1708,7 @@ impl Widget for RoomCanvas {
                     .iter()
                     .enumerate()
                     .map(|(index, point)| (index, self.to_screen(*point).distance(self.cursor)))
-                    .filter(|(_, distance)| *distance <= DOT_RADIUS * 1.6)
+                    .filter(|(_, distance)| *distance <= self.marker_radius * 1.6)
                     .min_by(|left, right| left.1.total_cmp(&right.1))
                     .map(|(index, _)| index);
                 *ctx.handled |= self.dragging.is_some();
@@ -1982,7 +1976,17 @@ mod tests {
         assert!(microphone_switch(pane, "shelf").with(|on| *on));
         phone.set(true);
         settle(pane);
-        pane.listening_state.set("phone · Microphone".into());
+        let Step::Calibrate { group } = pane.setup.step() else {
+            panic!("the speaker set must be ready to calibrate");
+        };
+        let phone_label = pane
+            .setup
+            .listening_choices(group)
+            .into_iter()
+            .find(|microphone| microphone.device == "phone")
+            .expect("the phone microphone is available")
+            .label;
+        pane.listening_state.set(phone_label);
         settle(pane);
         microphone_switch(pane, "shelf").set(false);
         settle(pane);

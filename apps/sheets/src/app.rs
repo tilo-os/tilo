@@ -37,7 +37,6 @@ use ui::widget::{
     Button, ColorSwatchPicker, ContextMenu, EditOutcome, EditableLabel, Popover, PopoverSide,
     TextInput, Widget,
 };
-use uuid::Uuid;
 
 mod annotations;
 mod chrome;
@@ -399,7 +398,6 @@ pub struct SheetsApp {
     /// The heads that produced `searchable_sheets`. This is intentionally
     /// separate from `cache`: changing the active tab must not walk every
     /// workbook body or rebuild global-search postings.
-    search_projection_heads: Option<Vec<ChangeHash>>,
     /// Retained, Arc-backed catalogue handed to each Ctrl+K session by clone.
     /// It is refreshed only with a new search projection, never per query.
     /// Each tab's durable sheet identity, which the edits it offers name.
@@ -539,7 +537,6 @@ impl SheetsApp {
             dock_rect: Rect::ZERO,
             dock_cards: Vec::new(),
             dock_scroll: ui::widget::ScrollRegion::horizontal(),
-            search_projection_heads: None,
             sheet_ids: Vec::new(),
             tabs_heads: None,
             active_sheet: 0,

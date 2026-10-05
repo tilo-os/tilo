@@ -5,18 +5,14 @@
 #[cfg(test)]
 use super::file_metadata;
 use crate::resource::Contacts;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::rc::Rc;
 use ui::framework::{ChosenFile, Dispatcher};
 
-use automerge::AutoCommit;
-use ui::portal::{
-    FileFilter, MultiOutcome as ImportOutcome, PickRequest, PortalOutcome as ExportOutcome,
-};
+use ui::portal::{FileFilter, PickRequest};
 
-use super::{
-    ContactsApp, FileWork, FileWorkGuard, ImportConflict, MoreAction, ParsedImport, PendingMenu,
-};
+use super::{ContactsApp, FileWork, FileWorkGuard, ImportConflict, ParsedImport};
 
 use crate::model::{Contact, ContactId};
 use crate::vcard::{self, VCardVersion};
@@ -529,7 +525,10 @@ impl ContactsApp {
             .dispatcher
             .as_ref()
             .ok_or("the address book is not open")?;
-        dispatcher.effect(&crate::actions::ContactsEffect::ExportContact { contact: id });
+        dispatcher.effect_on(
+            &crate::actions::contact_resource_id(id),
+            &crate::actions::ContactsEffect::ExportContact { contact: id },
+        );
         Ok(true)
     }
 }
@@ -547,10 +546,13 @@ impl ContactsApp {
             .dispatcher
             .as_ref()
             .ok_or("the address book is not open")?;
-        dispatcher.effect(&crate::actions::ContactsEffect::OpenReview {
-            survivor: candidate.survivor_id,
-            source: candidate.source_id,
-        });
+        dispatcher.effect_on(
+            &crate::actions::duplicate_resource_id(candidate.survivor_id, candidate.source_id),
+            &crate::actions::ContactsEffect::OpenReview {
+                survivor: candidate.survivor_id,
+                source: candidate.source_id,
+            },
+        );
         Ok(true)
     }
 }

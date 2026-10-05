@@ -91,6 +91,7 @@ impl HelpOverlay {
     }
 
     /// The reference as plain lines, for assistive technology.
+    #[cfg(test)]
     pub(super) fn spoken_rows() -> Vec<String> {
         sections()
             .into_iter()

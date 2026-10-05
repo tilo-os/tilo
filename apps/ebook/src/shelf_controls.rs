@@ -6,7 +6,7 @@
 //!
 //! [`Dropdown`]: ui::widget::Dropdown
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use vello::kurbo::{Point, Rect};
 
 use ui::TextRole;

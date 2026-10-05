@@ -581,9 +581,37 @@ fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
         }
     });
     on_tab(&mut app, |widget| {
-        widget.switch_target(&SessionTarget::Host, Requester::Person)
-    })
-    .unwrap();
+        let tree = widget.accessibility().unwrap();
+        let picker = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Default environment"))
+            .expect("the current target must be an accessible picker");
+        assert_eq!(picker.role, ui::a11y::Role::Button);
+        assert!(widget.perform_semantic_action(
+            picker.action_target.as_deref().unwrap(),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &ROOT,
+        ));
+        let tree = widget.accessibility().unwrap();
+        let menu = tree
+            .children
+            .iter()
+            .find(|node| node.role == ui::a11y::Role::Menu)
+            .unwrap();
+        let host = menu
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("This device (unconfined)"))
+            .unwrap();
+        assert!(widget.perform_semantic_action(
+            host.action_target.as_deref().unwrap(),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &ROOT,
+        ));
+    });
     assert_eq!(
         on_tab(&mut app, |widget| widget.session_state().clone()),
         OpenState::AwaitingAllow

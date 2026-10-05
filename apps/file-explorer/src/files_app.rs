@@ -295,19 +295,6 @@ fn retry_row() -> Resource {
     )
 }
 
-/// The retry button beneath a failed listing, bound to [`retry_row`].
-#[allow(
-    clippy::expect_used,
-    reason = "the binding names the action the row it is built from exports"
-)]
-fn retry_button() -> Button {
-    let row = retry_row();
-    let spec = row.actions.first().expect("the retry row has its action");
-    let binding = tilo_actions::ActionBinding::new(&row, spec, |()| serde_json::Map::new())
-        .expect("the retry row exports its action");
-    Button::new(RETRY_ROW, &t("files-try-again")).on_action(binding)
-}
-
 /// The bookmarked places, as [`crate::resource::FileExplorer::children`]
 /// publishes them: each opens in the window.
 pub(crate) fn published_place_resources(favorites: &[favorites::Favorite]) -> Vec<Resource> {
@@ -705,7 +692,6 @@ pub struct FileExplorerWidget {
     stage_favorite_drag: bool,
     /// Per-user config dir for persisting favourites + zoom (`None` when the
     /// environment has no config dir — the UI still works, just doesn't persist).
-    config_dir: Option<PathBuf>,
     /// Icon/row zoom step (see [`crate::config`]); `0` = default.
     zoom_level: i32,
     /// Whether dotfiles are shown.
@@ -1703,7 +1689,6 @@ impl FileExplorerWidget {
             places_shown: None,
             places_choice: Rc::new(RefCell::new(None)),
             stage_favorite_drag: false,
-            config_dir: config_dir.map(Path::to_path_buf),
             zoom_level,
             show_hidden,
             user_dirs,

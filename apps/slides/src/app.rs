@@ -18,19 +18,19 @@ use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, Fill};
+use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::effects::SlidesEffect;
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, Effected, TextControl, ViewCx};
-use ui::icons::{Icon, draw_icon};
+use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::ActionDecl;
 use ui::widget::Embedded;
@@ -40,7 +40,6 @@ use ui::widget::{
     AudiencePresentationProvider, ColorPicker, Dropdown, FullscreenProvider, NumberInput,
     PageSidebar, PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
 };
-use ui::{ColorCompat, TextRole};
 
 use crate::actions::{self, SlidesDeck};
 use crate::assets::ImageStore;
@@ -59,8 +58,6 @@ use crate::strings::{tr, tr_args};
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 
-/// Logical pixels scrolled per mouse-wheel line notch.
-const WHEEL_LINE_PX: f64 = 48.0;
 /// Compressed presentation bytes are bounded before opening the ZIP.  Archive
 /// member and aggregate expansion limits live beside the ODP/PPTX readers.
 const MAX_PRESENTATION_FILE_BYTES: usize = 64 * 1024 * 1024;
@@ -163,55 +160,17 @@ fn save_document_request(suggested_name: &str) -> PickRequest {
     .filter(presentation_filter())
 }
 
-/// 1× floors for the editor chrome. Every row is derived from the measured
-/// line box of the text it carries plus spacing tokens (see
-/// [`ChromeMetrics`]); these floors reproduce the classic density exactly at
-/// 1× and only give way when larger text needs the room.
-const TOOLBAR_MIN_H: f64 = 56.0;
-const TOOLBAR_PILL_MIN_H: f64 = 34.0;
-const CONTROL_MIN_H: f64 = 30.0;
-const SMALL_PILL_MIN_H: f64 = 28.0;
-/// Colour swatches carry no text; they keep one fixed height.
-const SWATCH_H: f64 = 26.0;
-/// The speaker-notes box never shrinks below this, however tall the
-/// property sections above it grow.
-const NOTES_MIN_H: f64 = 188.0;
-/// Width reserved for the font-size `NumberInput` in the TYPE row.
-const FONT_INPUT_W: f64 = 136.0;
-/// Deliberately off-scale: the two lines of the toolbar title block sit this
-/// close so they read as one label with a caption, not two rows.
-const TITLE_LINE_GAP: f64 = 2.0;
-/// Base (unscaled) chrome font sizes; the renderer applies the accessibility
-/// scale once when it paints them.
-const FONT_CAPTION: f32 = 11.0;
-const FONT_SUBTITLE: f32 = 11.5;
-const FONT_PILL: f32 = 12.0;
-const FONT_CONTROL: f32 = 13.0;
-const FONT_HEADING: f32 = 16.0;
-const FONT_TITLE: f32 = 17.0;
-const RAIL_W: f64 = 212.0;
-const INSPECTOR_W: f64 = 296.0;
-/// Inset of the inspector's content column from the panel edges (top, sides
-/// and, below the last section, the bottom of its scrollable content).
-const INSPECTOR_PAD: f64 = 16.0;
-/// Half-size of a selection handle's *grab* zone (hit-test radius).
-const HANDLE: f64 = 9.0;
-/// How far outside the selected element's content box the resize handles sit,
-/// so a handle never covers the first glyph of left-anchored text (or any
-/// content at a corner). The selection ring is drawn at this same outset, so
-/// the ring passes through the handle centres and the whole selection
-/// decoration reads as a single frame *around* the content rather than over it.
-const HANDLE_OFFSET: f64 = 8.0;
-
 /// Below this allocated width (logical px) the editor switches from the
 /// docked side-by-side layout to a narrow layout where the slide rail
 /// collapses into an overlay flap. The slide canvas plus both side panels
 /// (rail + inspector) only fit comfortably above this width.
+#[cfg(test)]
 const NARROW_BREAKPOINT: f64 =
     (ui::tokens::Metrics::BASE.overview_width + ui::tokens::Metrics::BASE.content_min_width) as f64;
 /// Below this allocated width the inspector also collapses to a right-edge
 /// overlay flap. It intentionally matches the rail breakpoint: a compact
 /// window must never sacrifice the canvas to two permanent sidebars.
+#[cfg(test)]
 const INSPECTOR_BREAKPOINT: f64 = NARROW_BREAKPOINT;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
@@ -241,9 +200,6 @@ enum Guide {
     Vertical(f64),
     Horizontal(f64),
 }
-
-/// Snap threshold in *pixels*; converted to slide units per-drag.
-const SNAP_PX: f64 = 7.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Handle {
@@ -306,7 +262,6 @@ pub(super) enum Hit {
     Present,
     Overview,
     OpenSlide(usize),
-    CyclePalette,
     Insert(ElementKind),
     SelectSlide(usize),
     SetFill(String),
@@ -331,24 +286,6 @@ pub(super) enum Hit {
     /// Toggle the toolbar's insert-tool overflow ("More") menu.
     ToggleToolbarMenu,
     OpenLayoutMenu,
-}
-
-#[derive(Clone, Copy)]
-enum LabelColor {
-    Primary,
-    Dim,
-}
-
-#[derive(Clone)]
-struct Label {
-    pos: Point,
-    text: String,
-    font: f32,
-    color: LabelColor,
-    weight: TextWeight,
-    /// When set, the painter elides `text` with the renderer's own metrics to
-    /// fit this many final pixels, so layout only has to reserve the slot.
-    max_w: Option<f64>,
 }
 
 /// Framework event state shared by the small embedded-widget routers.
@@ -415,10 +352,6 @@ impl TextBoxEditor {
             .attach(deck.child::<tilo_document::RichText>(&id, wrap));
     }
 }
-
-/// Default size of the fill colour-picker popover, in logical px.
-const FILL_PICKER_W: f64 = 260.0;
-const FILL_PICKER_H: f64 = 220.0;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -504,7 +437,6 @@ pub struct SlidesApp {
     /// the rail's breakpoint so a mid-width window keeps the inspector docked
     /// (rail flap + docked inspector) and only the narrowest widths collapse
     /// both panels.
-    inspector_breakpoint: f64,
     /// Last instant the flap animation advanced, for frame-rate-independent
     /// easing across `draw` calls.
     last_flap_tick: ui::time::Instant,
@@ -518,7 +450,6 @@ pub struct SlidesApp {
     text_scale: f32,
     /// Width breakpoint between the docked and overlay rail layouts. A field
     /// (not a constant) so `--shots` can force a narrow layout deterministically.
-    breakpoint: f64,
 
     /// Monotonic revision of the loaded deck, bumped whenever the CRDT mirror
     /// is reloaded. The presentation cache includes it in its key, so a remote
@@ -666,11 +597,9 @@ impl SlidesApp {
             dispatch,
             rail_drawer: Self::new_drawers().0,
             inspector_drawer: Self::new_drawers().1,
-            inspector_breakpoint: INSPECTOR_BREAKPOINT,
             last_flap_tick: ui::time::now(),
             flap_uninitialised: true,
             text_scale: 1.0,
-            breakpoint: NARROW_BREAKPOINT,
             deck_rev: 0,
             images: ImageStore::new(content.clone()),
             content,
@@ -691,7 +620,7 @@ impl SlidesApp {
                 .with_step(2.0)
                 .with_suffix("pt")
                 .with_id("slides-font-size"),
-            fill_picker: ColorPicker::new(vello::peniko::Color::from_rgba8(90, 96, 240, 255)),
+            fill_picker: ColorPicker::new(Theme::default().tokens.colors.text_primary),
             fill_picker_open: false,
             fill_picker_needs_init: false,
             title_input: TextInput::local()
@@ -1356,20 +1285,16 @@ impl SlidesApp {
         Point::new((p.x - dest.x0) / s, (p.y - dest.y0) / s)
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.handles_of(...) call site consistent with the other \
-                  slide-space geometry helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
     fn handles_of(&self, dest: Rect, s: f64, el: &Element) -> Vec<(Handle, Rect)> {
         let er = render::element_dest(dest, s, el);
         // Anchor the handles on a rect outset from the content by
-        // `HANDLE_OFFSET`, so each handle sits just *outside* the element and
+        // the theme's related spacing, so each handle sits *outside* the element and
         // can never overlap the content (e.g. the first glyph of a left-anchored
         // title). Resize math keys off the pointer position, not these centres,
         // so pushing them outward doesn't change resize behaviour.
-        let hr = er.inflate(HANDLE_OFFSET, HANDLE_OFFSET);
+        let outset = self.chrome_metrics.s2;
+        let grab_radius = self.chrome_metrics.target * 0.25;
+        let hr = er.inflate(outset, outset);
         let cx = hr.center().x;
         let cy = hr.center().y;
         let pos = |h: Handle| -> Point {
@@ -1390,7 +1315,12 @@ impl SlidesApp {
                 let p = pos(*h);
                 (
                     *h,
-                    Rect::new(p.x - HANDLE, p.y - HANDLE, p.x + HANDLE, p.y + HANDLE),
+                    Rect::new(
+                        p.x - grab_radius,
+                        p.y - grab_radius,
+                        p.x + grab_radius,
+                        p.y + grab_radius,
+                    ),
                 )
             })
             .collect()
@@ -1425,9 +1355,6 @@ impl SlidesApp {
                 self.cur_slide = i.min(self.deck.slides.len().saturating_sub(1));
                 self.sel = None;
                 self.mode = Mode::Edit;
-            }
-            Hit::CyclePalette => {
-                self.submit(&actions::set_deck_palette_action(self.deck.palette.next()));
             }
             // Images can't be conjured from nothing — the tool opens the host
             // portal file chooser; the chosen file is inserted when it resolves.
@@ -1962,6 +1889,18 @@ impl SlidesApp {
         self.editing_text = false;
         self.sel = None;
         self.notes_caret_to_end = true;
+        let chrome = self.compute_chrome();
+        self.inspector_scroll
+            .set_viewport_rect(chrome.inspector_body);
+        self.inspector_scroll.set_content_size(
+            chrome.inspector_body.width() as f32,
+            chrome.inspector_content_h as f32,
+        );
+        if let Some(notes) = chrome.notes_box {
+            let overflow = (notes.y1 - chrome.inspector_body.y1).max(0.0);
+            self.inspector_scroll
+                .set_offset_y(self.inspector_scroll.offset_y() + overflow as f32);
+        }
     }
 
     fn end_notes_edit(&mut self) {
@@ -2365,19 +2304,6 @@ impl SlidesApp {
         self.title_input.draw(scene, t, tr, theme, presence);
     }
 
-    #[allow(
-        clippy::unused_self,
-        reason = "keeps the ergonomic self.label_color(...) call site consistent with the \
-                  other chrome draw helpers; converting to an associated function would read \
-                  worse at every call site for no benefit"
-    )]
-    fn label_color(&self, lc: LabelColor, theme: &Theme, _pal: &Palette) -> Color {
-        match lc {
-            LabelColor::Primary => theme.tokens.colors.text_primary,
-            LabelColor::Dim => theme.tokens.colors.text_dim,
-        }
-    }
-
     pub(super) fn draw_notes(
         &mut self,
         scene: &mut Scene,
@@ -2493,35 +2419,6 @@ fn is_pptx(path: &std::path::Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("pptx"))
 }
 
-fn mix_panel(a: Color, b: Color) -> Color {
-    Color::from_rgba8(
-        u16::midpoint(u16::from(a.r()), u16::from(b.r())) as u8,
-        u16::midpoint(u16::from(a.g()), u16::from(b.g())) as u8,
-        u16::midpoint(u16::from(a.b()), u16::from(b.b())) as u8,
-        255,
-    )
-}
-
-fn stroke_line(scene: &mut Scene, t: Affine, x0: f64, y0: f64, x1: f64, y1: f64, color: Color) {
-    let line = Line::new(Point::new(x0, y0), Point::new(x1, y1));
-    scene.stroke(&Stroke::new(1.0), t, color, None, &line);
-}
-
-/// Wash strength of a danger-tinted Neutral button (the Delete actions):
-/// a faint tint over the button face, matched to the classic `danger/38`.
-const DANGER_WASH: f32 = 0.15;
-
-/// Ink on the deck palette's accent fill (active buttons): white where it
-/// reads, stepped toward the contrasting extreme on a bright accent — one
-/// answer per palette, so a row of active pills never mixes polarities.
-fn on_accent(c: &ui::tokens::Colors, pal: &Palette) -> Color {
-    c.ink_on_any(
-        &[pal.accent],
-        Color::WHITE,
-        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-    )
-}
-
 impl SlidesApp {
     fn semantic_target(&self, hit: &Hit) -> String {
         match hit {
@@ -2536,7 +2433,6 @@ impl SlidesApp {
                     |slide| format!("slides.slide:{}", slide.id),
                 )
             }
-            Hit::CyclePalette => "slides.control.cycle-palette".into(),
             Hit::Insert(kind) => format!("slides.control.insert:{}", kind.as_str()),
             Hit::SetFill(role) => format!("slides.control.fill:{role}"),
             Hit::SetStroke(role) => format!("slides.control.stroke:{role}"),
@@ -2601,14 +2497,6 @@ impl SlidesApp {
                     &[("n", ArgValue::from(*index + 1))],
                 ),
                 AccessState::new().selected(*index == self.cur_slide),
-            ),
-            Hit::CyclePalette => (
-                Role::Button,
-                tr_args(
-                    "slides-a11y-change-theme",
-                    &[("name", ArgValue::from(self.deck.palette.label()))],
-                ),
-                AccessState::new(),
             ),
             Hit::Insert(kind) => (
                 Role::Button,
@@ -2740,7 +2628,6 @@ impl SlidesApp {
                 Hit::ToggleRail => Some(tr("slides-tip-toggle-slides")),
                 Hit::ToggleInspector => Some(tr("slides-tip-toggle-properties")),
                 Hit::Overview => Some(tr("slides-tip-overview")),
-                Hit::CyclePalette => Some(tr("slides-tip-theme")),
                 Hit::ToggleToolbarMenu => Some(tr("slides-tip-more-tools")),
                 _ => None,
             })
@@ -2931,6 +2818,8 @@ impl Widget for SlidesApp {
             self.presentation.invalidate_cache();
         }
         // Expire a settled cross-fade so `needs_animation_frame` can rest.
+        self.presentation
+            .set_fade(theme.tokens.motion.durations.base());
         self.presentation.expire_transition(theme.reduce_motion);
         // Measure first, so everything this frame lays out — the flap and rail
         // sync below, `compute_chrome`, and the hit-rects later events derive
@@ -2951,9 +2840,10 @@ impl Widget for SlidesApp {
                 // Hand the inspector's scroll model this frame's viewport and
                 // content extent; it clamps the stored offset and paints its
                 // bar from the same numbers `compute_chrome` shifted by.
-                self.inspector_scroll.set_viewport_rect(chrome.inspector);
+                self.inspector_scroll
+                    .set_viewport_rect(chrome.inspector_body);
                 self.inspector_scroll.set_content_size(
-                    chrome.inspector.width() as f32,
+                    chrome.inspector_body.width() as f32,
                     chrome.inspector_content_h as f32,
                 );
                 self.draw_editor(scene, transform, text_renderer, theme, &chrome);
@@ -2982,7 +2872,6 @@ impl Widget for SlidesApp {
         // The help overlay draws over every mode — including Present, where it
         // must appear (and be dismissable), otherwise a `?` press would set the
         // flag, suppress the overlay, and swallow all later navigation keys.
-        let palette = self.palette(theme);
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
         if let Some((message, kind)) = self.io_toast.as_ref() {
@@ -3022,8 +2911,6 @@ impl Widget for SlidesApp {
     fn set_motion_reduced(&mut self, reduced: bool) {
         if reduced {
             self.presentation.expire_transition(true);
-            let rail = self.rail_layout();
-            let inspector = self.inspector_layout();
             self.rail_drawer.snap(self.rail_open());
             self.inspector_drawer.snap(self.inspector_open());
         }
@@ -3829,7 +3716,9 @@ impl SlidesApp {
                 let dx = sp.x - start.x;
                 let dy = sp.y - start.y;
                 let (w, h) = self.selected_element().map_or((0.0, 0.0), |e| (e.w, e.h));
-                let thr = SNAP_PX / s.max(0.0001);
+                // Keep magnetic alignment within one themed related-spacing step
+                // on screen, independent of the slide canvas zoom.
+                let thr = self.chrome_metrics.s2 / s.max(0.0001);
                 let (nx, ny, guides) = self.snapped_move(&id, orig_x + dx, orig_y + dy, w, h, thr);
                 self.active_guides = guides;
                 if let Some(slide) = self.deck.slides.get_mut(self.cur_slide)
@@ -4017,7 +3906,7 @@ impl SlidesApp {
     /// own context menu, and the toolbar overflow dropdown. Returns `true`
     /// (and sets `*handled` as appropriate) when the press was consumed by
     /// either, so [`Self::on_press_editor`] should stop.
-    fn on_press_editor_menus(&mut self, chrome: &Chrome, p: Point, handled: &mut bool) -> bool {
+    fn on_press_editor_menus(&mut self, _chrome: &Chrome, p: Point, handled: &mut bool) -> bool {
         // The shared rail's own context menu is modal while open: the press
         // picks one of its rows or dismisses it, ahead of all other chrome.
         if self.page_sidebar.menu_open() {
@@ -4515,7 +4404,7 @@ impl SlidesApp {
         // Positive wheel deltas scroll the content up (toward the start), so we
         // subtract from the offset.
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => f64::from(y) * WHEEL_LINE_PX,
+            MouseScrollDelta::LineDelta(_, y) => f64::from(y) * self.chrome_metrics.wheel_line,
             MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
         };
         if dy == 0.0 {
@@ -5109,7 +4998,7 @@ impl SlidesApp {
 }
 
 mod editor_chrome;
-use editor_chrome::{ButtonKind, Chrome, ChromeMetrics, UiButton};
+use editor_chrome::{ButtonKind, Chrome, ChromeMetrics};
 
 impl SlidesApp {
     fn open_layout_picker(&mut self) {

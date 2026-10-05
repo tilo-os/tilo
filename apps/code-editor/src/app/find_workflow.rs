@@ -9,7 +9,7 @@
 
 use ui::widget::{FindBar, FindMatch, FindOptions, Findable};
 
-use super::{AutoCommit, CodeApp, EditorDoc, flat_index, replace_chars};
+use super::{CodeApp, EditorDoc, flat_index, replace_chars};
 use crate::find::{byte_ranges, matches_in};
 use crate::search::Query;
 
@@ -32,11 +32,6 @@ impl FindTarget<'_, '_> {
             return false;
         };
         let file_id = self.app.buffer_key(node);
-        let name = self
-            .app
-            .session
-            .active_buffer()
-            .map_or_else(|| "file".to_string(), |buffer| buffer.name.clone());
         let text = EditorDoc::read_buffer_key(self.doc, &file_id).unwrap_or_default();
         // Replacements are applied last-to-first so each splice's index is
         // still valid: replacing forwards would shift every later match by the

@@ -1079,3 +1079,100 @@ fn laid_out_pages_do_not_demand_a_relayout_while_scrolling() {
         );
     }
 }
+
+/// The shared settings switch keeps its named, stateful semantic surface;
+/// activation crosses the real typed effect boundary and pointer hit-testing
+/// stays within the switch rather than its whole form row.
+#[test]
+fn shared_settings_toggle_exposes_state_and_applies_the_preference() {
+    let mut app = live_app();
+    click(&mut app, "nav_settings");
+    let name = "Autoplay next video";
+    let id = app
+        .harness()
+        .a11y_node_named(name)
+        .expect("named shared switch");
+    let node = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(key, _)| *key == id)
+        .unwrap()
+        .1;
+    assert_eq!(node.role(), ui::accesskit::Role::Switch);
+    let before = node.toggled();
+    let bounds = node.bounds().unwrap();
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::Focus)
+        .unwrap();
+    assert_eq!(
+        app.harness().focused_access_node().unwrap().name.as_deref(),
+        Some(name)
+    );
+    app.harness()
+        .perform_a11y_action(id, &ui::a11y::Action::ToggleCheck)
+        .unwrap();
+    app.settle();
+    let id = app.harness().a11y_node_named(name).unwrap();
+    assert_ne!(
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .find(|(key, _)| *key == id)
+            .unwrap()
+            .1
+            .toggled(),
+        before,
+        "actual hosted effect changes the preference"
+    );
+    let rect = app
+        .with_surface::<TubeApp, _>(|surface| {
+            let toggle = find(surface, "switch_autoplay").expect("shared switch identity");
+            toggle.get_rect()
+        })
+        .unwrap();
+    assert!(rect.area() > 0.0 && bounds.width() > 0.0);
+    app.harness().click_at(rect.x0 - 1.0, rect.center().y);
+    app.settle();
+    let after_outside = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name) && node.role() == ui::accesskit::Role::Switch)
+        .unwrap()
+        .1
+        .toggled();
+    assert_ne!(
+        after_outside, before,
+        "outside press does not undo the semantic change"
+    );
+    app.harness().click_at(rect.center().x, rect.center().y);
+    app.settle();
+    let after_inside = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some(name) && node.role() == ui::accesskit::Role::Switch)
+        .unwrap()
+        .1
+        .toggled();
+    assert_eq!(
+        after_inside, before,
+        "inside press crosses the same typed preference route"
+    );
+}
+
+/// Missing fetched media still paints the actual shared card and banner
+/// placeholders, without submitting any decoded IMAGE draw.
+#[test]
+fn unfetched_media_paints_shared_placeholders() {
+    for route in [Route::Home, Route::Channel("ch_kurz".into())] {
+        let framed = mount(TubeApp::new().with_route_shot(route));
+        assert_eq!(image_draws(&framed), 0);
+        let scene = Framed::harness(&framed).scene();
+        assert!(
+            !scene.encoding().draw_tags.is_empty(),
+            "actual fallback scene paints"
+        );
+    }
+}

@@ -2287,7 +2287,7 @@ fn text_resource(sr: &SlideResource, er: &ElementResource) -> Resource {
 fn notes_resource(sr: &SlideResource) -> Resource {
     let (id, wrap) = notes_child(&sr.data.id);
     let label = if sr.data.notes.trim().is_empty() {
-        format!("Speaker notes · Slide {}", sr.idx + 1)
+        format!("Speaker notes for slide {}", sr.idx + 1)
     } else {
         element_label(ElementKind::Text, &sr.data.notes)
     };

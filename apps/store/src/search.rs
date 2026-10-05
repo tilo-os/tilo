@@ -120,7 +120,7 @@ fn app_entry(item: &StoreItem) -> SearchEntry {
         .invoking(ActionAddress::new(resource_id(item), "show-details"))
         .grouped("Apps")
         .subtitled(format!(
-            "{} · {} · {}",
+            "Version {2} from {0}. Trust: {1}.",
             item.source.short_label(),
             item.trust.label(),
             item.latest_version()

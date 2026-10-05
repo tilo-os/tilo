@@ -427,20 +427,6 @@ impl Chrome {
             .collect()
     }
 
-    /// The name and action target of each command the toolbar shows (not the
-    /// More chip), in order.
-    pub(crate) fn toolbar_targets(&self) -> Vec<(String, String)> {
-        let Some(root) = self.toolbar.accessibility() else {
-            return Vec::new();
-        };
-        root.children
-            .into_iter()
-            .filter(|node| node.role != ui::a11y::Role::Menu)
-            .filter_map(|node| Some((node.name?, node.action_target?)))
-            .filter(|(_, target)| target != "toolbar.overflow")
-            .collect()
-    }
-
     /// Where the toolbar's More chip is, when something folded into it.
     pub(crate) fn toolbar_chip(&self) -> Option<Rect> {
         self.toolbar_nodes()
@@ -448,19 +434,5 @@ impl Chrome {
             .find(|node| node.action_target.as_deref() == Some("toolbar.overflow"))
             .and_then(|node| node.bounds)
             .map(ui::a11y::AccessBounds::to_rect)
-    }
-
-    /// Activate a toolbar item the way assistive technology does.
-    pub(crate) fn activate_toolbar(
-        &mut self,
-        target: &str,
-        doc: &mut automerge::AutoCommit,
-    ) -> bool {
-        self.toolbar.perform_semantic_action(
-            target,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(doc),
-            &automerge::ROOT,
-        )
     }
 }

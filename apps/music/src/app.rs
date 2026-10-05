@@ -47,7 +47,7 @@ use crate::backend::{
 use crate::doc;
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
 use crate::model::{
-    Album, Artist, CacheState, CatalogueTrack, Library, Playback, RepeatMode, SearchResults, Track,
+    Album, Artist, CacheState, CatalogueTrack, Library, Playback, RepeatMode, Track,
 };
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
 #[cfg(test)]
@@ -286,7 +286,9 @@ pub struct MusicApp {
     /// The header's two actions, real retained buttons: open an audio file,
     /// and open the platform search for this app.
     open_file_button: ui::widget::Button,
-    open_file_layout_visible: Option<bool>,
+    open_file_layout_visible: Option<(bool, bool)>,
+    back_button: ui::widget::Button,
+    back_requested: std::rc::Rc<std::cell::Cell<bool>>,
     search_button: ui::widget::Button,
     /// Search opened from the app's own painted controls (a Browse tile).
     search_opener: ui::search::SearchOpener,
@@ -740,6 +742,7 @@ impl MusicApp {
             .keys()
             .map(|track_id| (track_id.clone(), CacheState::Cached))
             .collect();
+        let back_requested = std::rc::Rc::new(std::cell::Cell::new(false));
         Self {
             lib: Library::default(),
             library_heads: None,
@@ -755,6 +758,12 @@ impl MusicApp {
             catalogue_invocation: None,
             open_file_button: Self::make_open_file_button(),
             open_file_layout_visible: None,
+            back_button: {
+                let requested = std::rc::Rc::clone(&back_requested);
+                ui::widget::Button::icon_only("music-back", ui::icons::Icon::ChevronLeft, "Back")
+                    .on_view(move || requested.set(true))
+            },
+            back_requested,
             search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
             search_opener: ui::search::SearchOpener::new(),
             audio: AudioEngine::new(),
@@ -1236,6 +1245,24 @@ impl MusicApp {
         }
     }
 
+    /// The authoritative search result's metadata, for an admitted effect
+    /// importing a catalogue song into the shared library.
+    pub(crate) fn catalogue_import_action(
+        &self,
+        track: &str,
+    ) -> Result<crate::actions::MusicAction, String> {
+        let hit = self
+            .live_hits
+            .iter()
+            .find(|hit| hit.track.id == track)
+            .ok_or_else(|| "Catalogue song is no longer available".to_string())?;
+        Ok(crate::actions::import_track_action(
+            &hit.track,
+            &hit.album,
+            &hit.artist,
+        ))
+    }
+
     /// The rows this device shows beside the library: its player, queue and
     /// open file, and the tracks it keeps offline, which offer their removal.
     pub(crate) fn device_rows(&self) -> Vec<ui::framework::LiveRow> {
@@ -1265,6 +1292,28 @@ impl MusicApp {
             return Some(live_row(resource));
         }
         if let Some(track) = id.strip_prefix("music.track:") {
+            if !self.stored_library.tracks.contains_key(track)
+                && self.live_hits.iter().any(|hit| hit.track.id == track)
+            {
+                return self.publish_resource(id).map(|mut resource| {
+                    // An unpersisted catalogue result cannot declare a document
+                    // mutation beside the resource's authored action surface.
+                    // Its admitted effect imports the real song then submits
+                    // SetLiked through the canonical resource dispatcher.
+                    if let Some(action) = resource
+                        .actions
+                        .iter_mut()
+                        .find(|action| action.id == "toggle-like")
+                    {
+                        *action = ui::tilo_resource::Effect::bound(
+                            &crate::actions::MusicEffect::ToggleLike {
+                                track: track.to_owned(),
+                            },
+                        );
+                    }
+                    live_row(resource)
+                });
+            }
             return matches!(self.cache_state(track), CacheState::Cached)
                 .then(|| self.offline_row(track))
                 .flatten();

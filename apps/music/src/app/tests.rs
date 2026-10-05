@@ -1836,6 +1836,44 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
     }
 }
 
+#[test]
+fn a_live_catalogue_like_uses_the_admitted_effect_and_one_undo() {
+    let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
+    app.with_widget(|surface: &mut MusicApp| {
+        surface.disconnect();
+        surface.search_query = "daft punk".into();
+        surface.active_search_request = Some(41);
+        surface.apply_search_results("daft punk", 41, &sample_bundle());
+    })
+    .expect("the production surface accepts the actual worker reply");
+    let providers = ui::search::capability::search_providers(app.harness().root_widget());
+    assert_eq!(providers.len(), 1, "the platform owns Music search");
+    let hits = providers[0].search("One More Time");
+    let song = hits
+        .iter()
+        .find(|hit| hit.title == "One More Time")
+        .expect("the real catalogue reply is in platform search");
+    let row = song.action_address().unwrap().resource;
+    assert_eq!(
+        row.as_str(),
+        crate::actions::track_resource_id("yt:vid_one")
+    );
+    assert!(!app.state().tracks.contains_key("yt:vid_one"));
+    app.call_on(row.as_str(), "toggle-like", serde_json::json!({}))
+        .unwrap();
+    assert!(
+        app.state().tracks.contains_key("yt:vid_one"),
+        "actual song metadata is imported"
+    );
+    assert!(app.state().is_liked("yt:vid_one"));
+    assert!(app.undo(), "the admitted effect is one authored undo step");
+    assert!(!app.state().is_liked("yt:vid_one"));
+    assert!(
+        !app.state().tracks.contains_key("yt:vid_one"),
+        "undo restores the entire effect"
+    );
+}
+
 // ---- responsive sidebar -----------------------------------------------
 
 /// Set the app's allocated width directly (normally done by `apply_layout`)
@@ -4341,13 +4379,14 @@ fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, _doc: &mut Aut
     let address = hit
         .action_address()
         .expect("a hit invokes a published action");
-    let rows: Vec<_> = app
-        .device_rows()
-        .into_iter()
+    let row = app
+        .device_row(address.resource.as_str())
         .map(ui::framework::LiveRow::into_resource)
-        .collect();
-    let spec =
-        tilo_actions::door::resolve(&rows, &address).expect("the hit's actual live row resolves");
+        .or_else(|| app.publish_resource(address.resource.as_str()))
+        .expect("the actual authority door resolves the hit's row");
+    let rows = [row];
+    let spec = tilo_actions::door::resolve(&rows, &address)
+        .expect("the hit's published action resolves on its actual row");
     let encoded = ui::testing::action_contract::spec_encoding(spec, None);
     let effect = crate::actions::MusicEffect::from_payload(&encoded.payload)
         .expect("the published row names the typed music effect");

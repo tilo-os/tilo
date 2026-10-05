@@ -713,21 +713,6 @@ fn tool_actions(wp: &WordProcessorWidget) -> Vec<ToolAction> {
         .collect()
 }
 
-/// The `EncodedAction` a resource's immediate `ActionSpec` carries.
-fn spec_encoded(res: &tilo_actions::Resource, id: &str) -> tilo_actions::EncodedAction {
-    let spec = res
-        .actions
-        .iter()
-        .find(|a| a.id == id)
-        .unwrap_or_else(|| panic!("spec {id}"));
-    match &spec.input {
-        tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-        tilo_actions::ActionInput::Prompted { .. } | tilo_actions::ActionInput::Deferred { .. } => {
-            panic!("{id} is immediate")
-        }
-    }
-}
-
 /// The action the edit `id` bound to the window's view builds, as the
 /// palette or an agent would invoke it without arguments.
 fn bound_encoded(
@@ -8171,8 +8156,7 @@ fn render_responsive_review_shots() {
     // The menu is opened through the same toolbar action as a pointer or
     // screen-reader activation, proving compact colour/highlight commands
     // remain discoverable rather than merely existing in code.
-    let (wp, state) =
-        render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-before-more");
+    let (wp, _) = render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-before-more");
     wp.open_toolbar_overflow();
     let (wp, _) = render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-more");
     wp.open_toolbar_overflow();

@@ -6,20 +6,20 @@
 //! carry the commands: search, more and new above the list; favorite, edit
 //! and delete above the person.
 //!
-//! State lives in the Automerge document via [`ContactsDoc`]; the in-memory
+//! State lives in the Automerge document via [`crate::doc::ContactsDoc`]; the in-memory
 //! [`ContactStore`] is the working mirror the window reads. Every change to
 //! the book is a [`crate::actions::ContactsAction`] dispatched through one
 //! action sink, the same route Ctrl+K and agents take.
 
 use crate::resource::Contacts;
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 use ui::framework::{Dispatcher, Jobs};
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -28,7 +28,6 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use ui::LocalState;
 use ui::icons::Icon;
-use ui::portal::{MultiChannel as ImportChannel, PortalChannel as ExportChannel};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -38,12 +37,8 @@ use ui::widget::{
     NavPane, NavSection, NavShell, TaffyTreeExt, Widget,
 };
 
-use crate::doc::ContactsDoc;
 use crate::form::EditForm;
-use crate::model::{
-    Contact, ContactId, ContactStore, Labeled, SortKey, group_names_equal, normalize_text,
-    sample_contacts,
-};
+use crate::model::{Contact, ContactId, ContactStore, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
 use crate::view::{Bridge, ContactList, EmptyPane, ListEntry, Request, Shared, queue};
 
@@ -52,7 +47,6 @@ mod effects;
 mod files;
 
 use dialogs::{DialogKey, ExportDraft};
-use files::ImportSummary;
 
 /// Private presentation token; it is never written to the shared document.
 const FAVORITES_FILTER: &str = "\u{0}contacts:favorites";
@@ -192,6 +186,7 @@ pub struct ContactsApp {
     /// Whether the sort control stands under the overview's header: only
     /// while the list has rows to order.
     sort_shown: bool,
+    overview_controls_shown: Option<(bool, Option<FileWork>)>,
     /// The More menu's rows and whether each is enabled, as last handed to
     /// its button.
     more_shown: Vec<(MoreAction, bool)>,
@@ -318,10 +313,6 @@ impl ContactsApp {
         self.show_toast(format!("Couldn't {operation}: {error}"));
     }
 
-    fn has_duplicate_candidate(&self) -> bool {
-        self.duplicate_candidate.is_some()
-    }
-
     pub(crate) fn import_conflict_rows(&self) -> Vec<ui::framework::LiveRow> {
         self.import_conflicts
             .iter()
@@ -446,7 +437,7 @@ impl ContactsApp {
         let shared: Shared = std::rc::Rc::new(std::cell::RefCell::new(Bridge::default()));
         let destination = LocalState::new(Some(ALL_DESTINATION.to_owned()));
         let sort_choice = LocalState::new(sort_value(SortKey::Name).to_owned());
-        let shell = NavShell::new()
+        let mut shell = NavShell::new()
             .with_id("contacts.shell")
             .sidebar(Box::new(Self::sidebar_list(&[], &destination)))
             .overview(Box::new(ContactList::new(std::rc::Rc::clone(&shared))))
@@ -456,6 +447,7 @@ impl ContactsApp {
                 None,
             )))
             .overview_header("All contacts", overview_actions(&shared, Vec::new()));
+        shell.show(NavPane::Overview);
         Self {
             store,
             selected: None,
@@ -476,6 +468,7 @@ impl ContactsApp {
             destination,
             sort_choice,
             sort_shown: false,
+            overview_controls_shown: None,
             more_shown: Vec::new(),
             more_pick: std::sync::Arc::default(),
             sidebar_shown: Vec::new(),
@@ -521,14 +514,8 @@ impl ContactsApp {
     /// presented: open on the book's first, richly filled record, then pose
     /// `scenario`.
     pub(crate) fn stage_capture(&mut self, scenario: Option<&str>) {
-        if self.selected.is_none() {
-            self.selected = sample_contacts()
-                .first()
-                .map(|contact| contact.id)
-                .filter(|id| self.store.get(*id).is_some())
-                .or_else(|| self.visible_ids().first().copied());
-            self.list_stale = true;
-        }
+        self.selected = self.store.contacts.first().map(|contact| contact.id);
+        self.list_stale = true;
         match scenario {
             Some("detail") => self.shots_show_detail(),
             Some(name) => self.stage(name),
@@ -608,27 +595,12 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// A review of two cards for the same person that disagree on several
-    /// fields. Only the hermetic capture store changes; nothing is written
-    /// to the document.
+    /// Show the canonical duplicate pair staged through the resource's actions.
     fn stage_duplicate_review(&mut self) {
-        let Some(survivor) = self.selected.and_then(|id| self.store.get(id)).cloned() else {
+        let Some(candidate) = self.duplicate_candidate.clone() else {
             return;
         };
-        // A second card for the selected person, as an old phone's export
-        // would bring in: the same email, older details.
-        let mut source = survivor.clone();
-        source.id = uuid::Uuid::from_u128(survivor.id.as_u128().wrapping_add(0x100));
-        source.org = "Babbage & Co.".into();
-        source.title = "Translator".into();
-        source.notes = "Translated Menabrea's paper on the Analytical Engine.".into();
-        source.birthday = None;
-        self.store.upsert(source.clone());
-        if let Some(candidate) = crate::actions::duplicate_candidate(&survivor, &source) {
-            self.selected = Some(survivor.id);
-            self.duplicate_review = Some(DuplicateReview::new(survivor, source, candidate.reasons));
-            self.list_stale = true;
-        }
+        let _ = self.open_duplicate_review(candidate.survivor_id, candidate.source_id);
     }
 
     /// Ids currently visible after the group filter, in sort order.
@@ -853,22 +825,6 @@ impl ContactsApp {
         self.dirty = true;
         Ok(())
     }
-
-    /// The last action dispatched, for the `affordance == ActionSpec` covenant
-    /// tests.
-    #[cfg(test)]
-
-    fn indexed_contact(&self, id: ContactId) -> Option<&Contact> {
-        self.store.get(id)
-    }
-
-    /// Retain one deterministic, reviewable collision per document
-    /// generation. This uses the same bounded detector that publishes
-    /// canonical duplicate resources, but moves its O(book) work out of the
-    /// hot paint and accessibility paths.
-
-    /// The contextual Ctrl+K resource page is a bounded snapshot. It never
-    /// clones/sorts the entire address book merely because the palette opens.
 
     /// Whether an export is being set up or written.
     pub(crate) fn export_is_busy(&self) -> bool {
@@ -1247,13 +1203,7 @@ impl ContactsApp {
             None => None,
         };
         let sortable = !rows.is_empty();
-        if sortable != self.sort_shown {
-            self.sort_shown = sortable;
-            self.shell.set_overview_controls(
-                sortable.then(|| sort_control(&self.shared, &self.sort_choice)),
-            );
-            self.structure_dirty = true;
-        }
+        self.sort_shown = sortable;
         {
             let mut bridge = self.shared.borrow_mut();
             if bridge.rows != rows || bridge.empty_title != empty_title {
@@ -1287,12 +1237,42 @@ impl ContactsApp {
         );
     }
 
+    /// The shared list controls and a truthful, live announcement of the
+    /// file operation held by the same guard that prevents duplicate work.
+    fn publish_overview_controls(&mut self) {
+        let key = (self.sort_shown, self.file_work.get());
+        if self.overview_controls_shown == Some(key) {
+            return;
+        }
+        let mut controls = ui::widget::Column::new()
+            .with_no_padding()
+            .with_intrinsic_height();
+        if self.sort_shown {
+            controls = controls.push(sort_control(&self.shared, &self.sort_choice));
+        }
+        if let Some(work) = key.1 {
+            let label = match work {
+                FileWork::Import => "Importing contacts",
+                FileWork::Export => "Exporting contacts",
+            };
+            controls = controls.push(Box::new(
+                ui::widget::ProgressBar::indeterminate().with_label(label),
+            ));
+        }
+        self.shell.set_overview_controls(
+            (self.sort_shown || key.1.is_some()).then(|| Box::new(controls) as Element),
+        );
+        self.overview_controls_shown = Some(key);
+        self.structure_dirty = true;
+    }
+
     /// Hand the shell and the panes what the window shows now. Cheap when
     /// nothing changed: each part is rebuilt only when what it shows did.
     fn publish(&mut self) {
         if self.list_stale {
             self.publish_list();
         }
+        self.publish_overview_controls();
         self.publish_more();
         if self.selected.is_some_and(|id| self.store.get(id).is_none()) {
             self.selected = self.visible_ids().first().copied();
@@ -1507,6 +1487,8 @@ impl ContactsApp {
             }
             Request::DeleteSelected => self.confirm_delete = self.selected,
             Request::Save => self.save_edit(doc),
+            Request::FocusField(slot) => self.focus_form_field(slot),
+            Request::AdvanceField(slot) => self.advance_form_field(doc, slot),
             Request::Cancel => self.cancel_edit(),
             Request::Add(kind) => {
                 if let Some(form) = &mut self.form {
@@ -1532,13 +1514,46 @@ impl ContactsApp {
                 }
             }
             Request::OpenWebsite(url) => {
-                #[cfg(not(test))]
                 ui::widget::open_external_url(&url);
                 self.opened_url = Some(url);
             }
             Request::Dialog(choice) => self.answer_dialog(doc, choice),
         }
         self.dirty = true;
+    }
+
+    /// The shared field submitted Enter; the last input submits the same
+    /// Save action as the header, while an earlier input advances locally.
+    fn advance_form_field(&mut self, doc: &mut ui::widget::Edits<'_>, slot: crate::form::Slot) {
+        let next = self.form.as_ref().and_then(|form| {
+            let index = form
+                .fields
+                .iter()
+                .position(|(candidate, _)| *candidate == slot)?;
+            form.fields.get(index + 1).map(|(next, _)| *next)
+        });
+        if let Some(next) = next {
+            self.focus_form_field(next);
+        } else if self
+            .form
+            .as_ref()
+            .is_some_and(|form| form.fields.last().is_some_and(|(last, _)| *last == slot))
+        {
+            self.save_edit(doc);
+        }
+    }
+
+    /// Rebuild the retained form with the requested shared input focused.
+    /// Its local bindings and scroll offset survive; the host admits the new
+    /// focus owner through its ordinary composition pass.
+    fn focus_form_field(&mut self, slot: crate::form::Slot) {
+        if let Some(form) = &mut self.form
+            && form.fields.iter().any(|(candidate, _)| *candidate == slot)
+        {
+            form.focus = Some(slot);
+            self.form_epoch = self.form_epoch.wrapping_add(1);
+            self.dirty = true;
+        }
     }
 
     /// Keys the window answers when no control took them: moving through
@@ -1549,6 +1564,12 @@ impl ContactsApp {
         }
         if matches!(key.logical_key, Key::Named(NamedKey::Escape)) && self.mode == Mode::Edit {
             self.cancel_edit();
+            return true;
+        }
+        if self.mode == Mode::Edit && matches!(key.logical_key, Key::Named(NamedKey::Enter)) {
+            self.shared
+                .borrow_mut()
+                .push(Request::FocusField(crate::form::Slot::First));
             return true;
         }
         if self.mode != Mode::View {
@@ -1622,11 +1643,13 @@ impl Widget for ContactsApp {
                 self.show_toast(reason);
             }
         }
-        self.apply_requests(edits);
         self.shell.settle(edits, path);
         if let Some((_, dialog)) = &mut self.dialog {
             dialog.settle(edits, path);
         }
+        self.apply_requests(edits);
+        self.poll_destination();
+        self.publish();
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {

@@ -254,6 +254,9 @@ pub enum MusicEffect {
         track: String,
         queued: Option<usize>,
     },
+    /// Like or unlike a catalogue song, importing its real metadata first.
+    #[effect(row)]
+    ToggleLike { track: String },
     /// Add to queue
     #[effect(row)]
     AddToQueue { track: String },

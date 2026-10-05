@@ -1450,7 +1450,6 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
 
     eprintln!("phase concurrent_album_drafts_mint_distinct_stable_ids");
     {
-        let doc = AutoCommit::new();
         let mut left = test_app();
         let mut right = test_app();
         left.begin_new_album();

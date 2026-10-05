@@ -1,5 +1,50 @@
 //! Exact, read-only action geometry shared by native and retained browser hosts.
 
+/// Paint semantic activity against this frame's exact action bindings. Both
+/// native and retained hosts use this projection; an unresolved action remains
+/// in the activity rail rather than guessing a control from its label.
+pub(crate) fn draw_action_presence(
+    paint: &mut crate::paint::PaintCtx<'_>,
+    presence: &mut crate::presence::PresenceCtx,
+    tree: &crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    viewport: vello::kurbo::Rect,
+    surface: &str,
+    now: crate::time::Instant,
+) {
+    let mut resolved = Vec::new();
+    for interaction in presence.visible_interactions(now) {
+        let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {
+            continue;
+        };
+        let bounds = bounds.intersect(viewport);
+        if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
+            continue;
+        }
+        let user = crate::permissions::UserId(interaction.actor.id.clone());
+        let label = presence.interaction_status_label(&interaction);
+        presence.draw_peer_outline_labeled_within(
+            paint,
+            &user,
+            &label,
+            bounds,
+            f64::from(paint.theme.tokens.radii.detail),
+            viewport,
+        );
+        presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now);
+        resolved.push(interaction.invocation);
+    }
+    presence.draw_interactions_excluding(
+        paint.scene,
+        paint.transform,
+        viewport,
+        paint.text,
+        paint.theme,
+        now,
+        &resolved,
+    );
+}
+
 /// One visible expression of a domain action in the retained UI. The action
 /// address remains the execution identity; this route is presentation
 /// metadata for focus, presence, animation, and “show me where” behavior.

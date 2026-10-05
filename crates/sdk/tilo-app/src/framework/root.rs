@@ -45,6 +45,7 @@ pub(crate) struct ResourceRoot<R: Resource> {
     label: String,
     live: Live<R>,
     updaters: Updaters<R>,
+    action_bindings: super::controls::Actions<R>,
     /// The live revision bound controls last followed.
     followed: std::cell::Cell<u64>,
     _alive: Rc<()>,
@@ -273,6 +274,7 @@ impl<R: Resource> ResourceRoot<R> {
             store,
             live: cx.live,
             updaters: cx.updaters,
+            action_bindings: cx.action_bindings,
             followed: std::cell::Cell::new(0),
             _alive: alive,
             dispatch: cx.dispatch,
@@ -645,6 +647,9 @@ impl<R: Resource> ResourceRoot<R> {
         if let Err(error) = self.live.sync(doc) {
             tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }
+        // Refresh the same declarations the host publishes before rebuilt
+        // controls look up their bindings. Retained surface handles share it.
+        self.action_bindings.update(self.publication());
         // A surface may have synced the state itself after its own edit.
         let revision = self.live.revision();
         if revision != self.followed.get() {
@@ -1046,6 +1051,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.refresh(state);
         self.storage.refresh();
         self.content.sync(state, path);
+        self.action_bindings.update(self.publication());
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
@@ -1581,6 +1587,28 @@ impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for Resourc
             .is_some_and(
                 ui_core::history_mode::capability::DocumentHistory::provides_document_history,
             )
+    }
+
+    fn physical_text_policy(
+        &self,
+        previous: Option<&tilo_actions::EncodedAction>,
+        next: &tilo_actions::EncodedAction,
+    ) -> (bool, bool) {
+        if next.type_id != R::ACTION_TYPE {
+            return (false, false);
+        }
+        let Ok(next) = serde_json::from_slice::<R::Action>(&next.payload) else {
+            return (false, false);
+        };
+        let previous = previous
+            .filter(|encoded| encoded.type_id == R::ACTION_TYPE)
+            .and_then(|encoded| serde_json::from_slice::<R::Action>(&encoded.payload).ok());
+        (
+            previous
+                .as_ref()
+                .is_some_and(|previous| R::coalesces(previous, &next)),
+            R::continuable(&next),
+        )
     }
 
     fn document_action_applied(

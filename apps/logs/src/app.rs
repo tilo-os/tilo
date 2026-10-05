@@ -31,7 +31,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{ActionAddress, ActionBinding, ControlInvocation, OperationKind, Resource};
+use ui::tilo_actions::ControlInvocation;
 use ui::tokens::Spacing;
 use ui::widget::{
     Button, Element, FilterCount, InspectorPlacement, NavShell, SearchField, TaffyTreeExt, Widget,
@@ -42,7 +42,6 @@ use crate::journal::JournalLoadError;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::{JournalFixture, Logs};
 use crate::view::{Bridge, JournalPane, JournalRow, Placeholder, Request, Shared};
-use ui::tilo_resource::Effect as _;
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// The most recent journal records read.

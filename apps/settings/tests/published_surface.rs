@@ -43,17 +43,41 @@ fn a_sidebar_click_opens_the_pane_through_its_effect() {
         })
         .expect("the settings surface is mounted");
     let open = open_pane_address(Category::Bluetooth);
-    assert!(
-        bindings.iter().any(|binding| matches!(
-            &binding.kind,
-            ui::widget::ControlBindingKind::Action(address) if address.action == open.action
-        ) && binding.control_id == open.encode()),
-        "the Bluetooth row opens its pane through {}: {bindings:#?}",
-        open.action
+    let navigation = bindings
+        .iter()
+        .filter(|binding| {
+            matches!(
+                &binding.kind,
+                ui::widget::ControlBindingKind::Action(address)
+                    if address.resource == "settings.root" && address.action == open.action
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        navigation.len(),
+        Category::ALL.len(),
+        "every admitted category row has a typed open-pane binding: {bindings:#?}"
     );
-    app.harness()
-        .click_named(&Category::Bluetooth.label())
-        .expect("the Bluetooth row is on screen");
+    assert!(
+        navigation
+            .iter()
+            .all(|binding| binding.control_id.starts_with("node:")),
+        "shared navigation binds the actual retained row controls"
+    );
+    let bluetooth = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(_, node)| {
+            (node.label() == Some(Category::Bluetooth.label().as_str()))
+                .then(|| node.bounds())
+                .flatten()
+        })
+        .expect("the retained Bluetooth row exposes its actual pointer bounds");
+    app.harness().click_at(
+        (bluetooth.x0 + bluetooth.x1) / 2.0,
+        (bluetooth.y0 + bluetooth.y1) / 2.0,
+    );
     app.settle();
     let selected = app
         .surface::<settings::SettingsApp, _>(|settings| settings.selected())

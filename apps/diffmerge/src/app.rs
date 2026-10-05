@@ -18,9 +18,8 @@ use ui::widget::{AppModel, EmptyState, EmptyStateContent, ModelPath};
 
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::framework::{Dispatcher, EffectAnswer, EffectCx, EffectReply, Effected};
@@ -29,15 +28,15 @@ use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonFace, SegmentedFace, ToggleGroup, Widget};
+use ui::widget::Widget;
 
 use crate::actions::{DiffmergeAction, DiffmergeEffect};
 use crate::chrome::{Chrome, Command, Header};
 use crate::diff_view::DiffView;
 use crate::doc::{Comparison, MergeInputs, MergeState};
-use crate::i18n::{count, t, t_args, text};
+use crate::i18n::{count, t, t_args};
 use crate::merge_view::MergeView;
 use crate::resource::Diffmerge;
 use ui::chrome::status_bar;
@@ -651,10 +650,10 @@ impl DiffMergeApp {
                 let active = self
                     .diff
                     .active_block()
-                    .map(|b| format!("  ·  change {}/{}", b + 1, m.blocks.len().max(1)))
+                    .map(|b| format!(" Change {}/{}.", b + 1, m.blocks.len().max(1)))
                     .unwrap_or_default();
                 format!(
-                    "+{} additions   −{} deletions   ~{} modifications   {} change block(s){}",
+                    "{} additions, {} deletions and {} modifications in {} change block(s).{}",
                     m.added,
                     m.removed,
                     m.modified,
@@ -1137,6 +1136,7 @@ mod tests {
     use ui::framework::testing::TestApp;
     use ui::headless::Framed;
     use ui::tilo_resource::Resource as _;
+    use winit::event::MouseButton;
 
     /// A document as a new workspace starts.
     fn new_document() -> ui::State {
@@ -1194,6 +1194,32 @@ mod tests {
         app
     }
 
+    fn header_controls(app: &mut TestApp<DiffmergeShell>) -> Vec<ui::headless::Control> {
+        let controls = app.harness().controls();
+        [
+            "Diff",
+            "3-way merge",
+            "Previous change",
+            "Next change",
+            "Load sample",
+            "Open files",
+        ]
+        .into_iter()
+        .map(|name| {
+            controls
+                .iter()
+                .find(|control| {
+                    control.name.as_deref().is_some_and(|label| {
+                        label == name
+                            || (name == "3-way merge" && label == "Merge")
+                            || (name == "Load sample" && label == "Sample")
+                    })
+                })
+                .unwrap_or_else(|| panic!("missing header control {name}: {controls:?}"))
+                .clone()
+        })
+        .collect()
+    }
     fn first_conflict(state: &MergeState) -> usize {
         state
             .model
@@ -1483,7 +1509,9 @@ mod tests {
         let hits = app.merge.compact_source_hits();
         assert_eq!(hits.len(), 3, "phone has Base/Ours/Theirs source controls");
         assert_eq!(
-            hits.iter().map(|(_, name)| *name).collect::<Vec<_>>(),
+            hits.iter()
+                .map(|(_, name)| name.as_str())
+                .collect::<Vec<_>>(),
             vec!["Base", "Ours", "Theirs"]
         );
         for (rect, _) in &hits {
@@ -1515,7 +1543,13 @@ mod tests {
 
         // At tablet width the selector disappears because all three panes are
         // deliberately visible side by side.
-        rerender_merge_frame(&mut app, (800.0, 760.0));
+        rerender_merge_frame(
+            &mut app,
+            (
+                Theme::dark().tokens.metrics.compact_breakpoint + 160.0,
+                760.0,
+            ),
+        );
         assert!(app.merge.compact_source_hits().is_empty());
         assert!(
             Widget::accessibility(&app.merge)
@@ -1534,15 +1568,24 @@ mod tests {
     /// The compact source switcher is only useful when the surrounding chrome
     /// is usable too. Keep the complete one-row phone toolbar on screen and
     /// non-overlapping (both modes, file open/sample, and change navigation).
-    fn phone_toolbar_keeps_every_control_visible_without_overlap() {
-        let (app, state) = demo();
-        let app = merge_frame(app, state, (390.0, 760.0));
 
-        assert_eq!(app.tool_hits.len(), 6, "two modes and four actions");
-        let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
+    fn phone_toolbar_keeps_every_control_visible_without_overlap() {
+        let mut app = TestApp::<DiffmergeShell>::capture_at(Some("merge"), (390, 760)).unwrap();
+        let controls = header_controls(&mut app);
+        assert_eq!(controls.len(), 6, "two modes and four actions");
+        let mut rects: Vec<_> = controls
+            .iter()
+            .map(|control| control.bounds.expect("painted header target"))
+            .collect();
         rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
-        assert!(rects.iter().all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0));
-        assert!(rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0));
+        assert!(
+            rects.iter().all(|rect| rect.x0 >= 0.0 && rect.x1 <= 390.0),
+            "{rects:?}"
+        );
+        assert!(
+            rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
+            "{rects:?}"
+        );
     }
 
     /// Measured-text layout at 1x and 200%: toolbar controls, merge chips, merge
@@ -1558,64 +1601,70 @@ mod tests {
     /// Every toolbar control is sized from its measured label and centred on
     /// the measured bar, at 1× and at 200% text; the content starts below the
     /// bar that was actually painted.
-    #[expect(
-        clippy::float_cmp,
-        reason = "at 1x the scale literal and the authored toolbar height are reproduced exactly"
-    )]
-    fn toolbar_controls_fit_their_measured_labels_at_every_text_scale() {
-        let mut widths_at_1x: Vec<f64> = Vec::new();
-        for scale in [1.0f32, 2.0] {
-            let (app, state) = demo();
-            let app = frame_scaled(app, state, (800.0, 700.0), scale);
 
-            assert_eq!(
-                app.tool_hits.len(),
-                6,
-                "{scale}x: two modes and four actions"
-            );
-            let mut rects: Vec<_> = app.tool_hits.iter().map(|hit| hit.rect).collect();
-            rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
+    fn toolbar_controls_fit_their_measured_labels_at_every_text_scale() {
+        let mut unscaled = None;
+        for scale in [1.0f32, 2.0] {
+            let mut app = TestApp::<DiffmergeShell>::capture_at(Some("merge"), (800, 700)).unwrap();
+            app.harness()
+                .set_theme(Theme::dark().with_text_scale(scale));
+            app.harness().relayout();
+            app.settle();
+            let controls = header_controls(&mut app);
+            let mut rects: Vec<_> = controls
+                .iter()
+                .map(|control| control.bounds.expect("painted header control"))
+                .collect();
+            let header = app
+                .with_surface::<ui::widget::NavShell, _>(|shell| shell.geometry().header_height)
+                .unwrap();
             for rect in &rects {
+                assert!(rect.x0 >= 0.0 && rect.x1 <= 800.0, "{scale}x: {rect:?}");
                 assert!(
-                    rect.x0 >= 0.0 && rect.x1 <= 800.0,
-                    "{scale}x: control {rect:?} leaves the window"
+                    (rect.center().y - header / 2.0).abs() < 0.01,
+                    "{scale}x: {rect:?} header {header}"
                 );
-                assert!(
-                    (rect.center().y - app.toolbar_h / 2.0).abs() < 0.01,
-                    "{scale}x: control {rect:?} is off the bar's centre line"
-                );
-                assert!(
-                    rect.y1 <= app.toolbar_h + 0.01,
-                    "{scale}x: control escapes the bar"
-                );
+                assert!(rect.y1 <= header + 0.01, "{scale}x: {rect:?}");
             }
+            rects.sort_by(|a, b| a.x0.total_cmp(&b.x0));
             assert!(
                 rects.windows(2).all(|pair| pair[0].x1 <= pair[1].x0),
-                "{scale}x: toolbar controls overlap: {rects:?}"
+                "{rects:?}"
             );
-            let active = match app.mode {
-                Mode::Diff => app.diff.get_rect(),
-                Mode::Merge => app.merge.get_rect(),
-            };
-            assert!(
-                (active.y0 - app.toolbar_h).abs() < 0.01,
-                "{scale}x: content {active:?} does not start below the painted bar {}",
-                app.toolbar_h
-            );
-            assert!(
-                (active.y1 - 700.0).abs() < 0.01,
-                "{scale}x: content ends at the window"
-            );
-
-            let widths: Vec<f64> = app.tool_hits.iter().map(|hit| hit.rect.width()).collect();
-            if scale == 1.0 {
-                assert_eq!(app.toolbar_h, TOOLBAR_H, "1x keeps the design minimum");
-                widths_at_1x = widths;
+            app.with_surface::<DiffMergeApp, _>(|view| {
+                let active = match view.mode {
+                    Mode::Diff => view.diff.get_rect(),
+                    Mode::Merge => view.merge.get_rect(),
+                };
+                assert!(
+                    (active.y0 - header).abs() < 0.01,
+                    "{active:?} header {header}"
+                );
+                assert!(
+                    (active.y1 - view.content_rect().y1).abs() < 0.01,
+                    "content fills its area above the status bar"
+                );
+            })
+            .unwrap();
+            let label_widths: Vec<_> = [0usize, 1, 4]
+                .into_iter()
+                .filter_map(|index| controls.get(index))
+                .map(|control| control.bounds.unwrap().width())
+                .collect();
+            if let Some((previous_header, previous_widths)) = unscaled.take() {
+                assert!(
+                    header > previous_header,
+                    "200% text grows the shared header"
+                );
+                assert!(
+                    label_widths
+                        .iter()
+                        .zip(previous_widths)
+                        .all(|(wide, narrow)| *wide > narrow),
+                    "scaled text grows labelled controls"
+                );
             } else {
-                assert!(app.toolbar_h > TOOLBAR_H, "200% text needs a taller bar");
-                for (wide, narrow) in widths.iter().zip(&widths_at_1x) {
-                    assert!(wide > narrow, "a scaled label needs a wider control");
-                }
+                unscaled = Some((header, label_widths));
             }
         }
     }
@@ -1638,7 +1687,14 @@ mod tests {
                 "{w}x{h}@{scale}: the demo merge has chips"
             );
             let (_, _, chip_h) = app.merge.metrics_for_test();
-            let compact = pane.width() < 640.0;
+            let compact = pane.width()
+                < f64::from(
+                    Theme::dark()
+                        .with_text_scale(scale)
+                        .tokens
+                        .metrics
+                        .compact_breakpoint,
+                );
             let pane_x0 = if compact {
                 pane.x0
             } else {
@@ -1806,89 +1862,117 @@ mod tests {
     }
 
     fn toolbar_controls_have_semantic_names_focus_geometry_and_activation() {
-        let (app, state) = demo();
-        let mut app = merge_frame(app, state, (980.0, 720.0));
-        let (app, state) = Framed::split(&mut app);
-
-        let semantics = Widget::accessibility(&*app).expect("toolbar semantics");
-        let toolbar = semantics.children.first().expect("toolbar group");
-        assert_eq!(toolbar.children.len(), 6, "both modes and four actions");
-        assert!(toolbar.children.iter().all(|node| {
-            node.state.focusable && node.bounds.is_some() && node.action_target.is_some()
-        }));
-        let sample_index = toolbar
-            .children
+        use ui::headless::ControlInput;
+        let mut app = sample_app();
+        let controls = header_controls(&mut app);
+        let canvas = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.role == ui::accesskit::Role::Canvas
+                    && control
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("Diff between"))
+            })
+            .expect("actual diff canvas is admitted");
+        assert!(canvas.bounds.is_some());
+        assert!(canvas.verbs.iter().any(|verb| verb == "focus"));
+        app.harness()
+            .operate_control(&canvas.id, &ControlInput::Focus)
+            .unwrap();
+        assert!(
+            app.harness()
+                .controls()
+                .iter()
+                .any(|control| control.id == canvas.id && control.focused)
+        );
+        assert_eq!(controls.len(), 6, "both modes and four actions");
+        assert!(
+            controls.iter().all(|control| control.bounds.is_some()
+                && control.verbs.iter().any(|verb| verb == "activate")),
+            "actual exported controls: {controls:?}"
+        );
+        let sample = controls
             .iter()
-            .position(|node| node.name.as_deref() == Some("Load sample comparison"))
-            .expect("sample control");
-        assert!(Widget::focus_synthetic_accessibility(
-            &mut *app,
-            &[0, sample_index]
-        ));
-        assert_eq!(app.toolbar_focus, Some(Action::LoadSample));
-        assert!(Widget::perform_semantic_action(
-            &mut *app,
-            "diffmerge.toolbar.show-diff",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut state.doc),
-            &state.root,
-        ));
-        assert_eq!(app.mode, Mode::Diff);
+            .find(|control| control.name.as_deref() == Some("Load sample"))
+            .unwrap();
+        app.harness()
+            .operate_control(&sample.id, &ControlInput::Focus)
+            .unwrap();
+        assert!(
+            app.harness()
+                .controls()
+                .iter()
+                .any(|control| control.id == sample.id && control.focused)
+        );
+        let heads = app.read_document(|doc| doc.clone().get_heads());
+        let diff = controls
+            .iter()
+            .find(|control| control.name.as_deref() == Some("Diff"))
+            .unwrap();
+        app.harness()
+            .operate_control(&diff.id, &ControlInput::Press)
+            .unwrap();
+        app.settle();
+        assert_eq!(
+            app.with_surface::<DiffMergeApp, _>(|view| view.mode),
+            Some(Mode::Diff)
+        );
+        assert_eq!(
+            app.read_document(|doc| doc.clone().get_heads()),
+            heads,
+            "mode choice is view state"
+        );
     }
 
     fn toolbar_keyboard_tab_and_enter_follow_the_painted_control_order() {
-        use winit::event::Modifiers;
-
-        let (mut app, mut state) = demo();
-        let mut handled = false;
-        let mut focus = None;
-        let mut taffy = TaffyTree::new();
-        let node = taffy.new_leaf(Style::default()).unwrap();
-        let modifiers = Modifiers::default();
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::Tab)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
+        use ui::headless::ControlInput;
+        let mut app = sample_app();
+        let controls = header_controls(&mut app);
+        let diff = controls
+            .iter()
+            .find(|control| control.name.as_deref() == Some("Diff"))
+            .unwrap();
+        app.harness()
+            .operate_control(&diff.id, &ControlInput::Focus)
+            .unwrap();
+        app.harness().key("ArrowRight");
+        app.settle();
+        assert_eq!(
+            app.with_surface::<DiffMergeApp, _>(|view| view.mode),
+            Some(Mode::Merge)
         );
-        assert!(handled);
-        assert_eq!(app.toolbar_focus, Some(Action::ModeDiff));
-        handled = false;
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::Tab)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
+        for name in [
+            "Previous change",
+            "Next change",
+            "Load sample",
+            "Open files",
+        ] {
+            app.harness().tab(false);
+            assert!(
+                app.harness()
+                    .controls()
+                    .iter()
+                    .any(|control| control.focused && control.name.as_deref() == Some(name)),
+                "Tab reaches {name} in painted order"
+            );
+        }
+        let diff = header_controls(&mut app)
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some("Diff"))
+            .unwrap();
+        app.harness()
+            .operate_control(&diff.id, &ControlInput::Focus)
+            .unwrap();
+        app.harness().key("ArrowLeft");
+        app.harness().key("Enter");
+        app.settle();
+        assert_eq!(
+            app.with_surface::<DiffMergeApp, _>(|view| view.mode),
+            Some(Mode::Diff)
         );
-        assert_eq!(app.toolbar_focus, Some(Action::ModeMerge));
-        app.handle_event(
-            &keyboard_event(Key::Named(NamedKey::Enter)),
-            &mut ui::widget::EventCtx {
-                scale_factor: 1.0,
-                modifiers: &modifiers,
-                state: ui::widget::Edits::lend(&mut state.doc),
-                path: &state.root,
-                handled: &mut handled,
-                focus_target: &mut focus,
-                node_id: node,
-                taffy: &taffy,
-            },
-        );
-        assert_eq!(app.mode, Mode::Merge);
     }
 
     fn phone_diff_uses_an_accessible_one_source_switcher() {
@@ -1896,19 +1980,16 @@ mod tests {
         app.set_mode_for_test(Mode::Diff);
         let mut app = merge_frame(app, state, (390.0, 760.0));
         let (app, state) = Framed::split(&mut app);
-        let root = Widget::accessibility(&*app).expect("diff semantics");
-        let diff = root
-            .children
-            .iter()
-            .find(|child| {
-                child
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| name.starts_with("Diff between"))
-            })
-            .expect("active diff content");
+        let diff = Widget::accessibility(&app.diff).expect("active diff child is accessible");
+        assert!(
+            diff.name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("Diff between"))
+        );
+        let root = Widget::accessibility(&*app)
+            .expect("source controls are published by their actual action owner");
         assert_eq!(
-            diff.children
+            root.children
                 .iter()
                 .filter(|child| child
                     .name
@@ -1955,16 +2036,27 @@ mod tests {
     fn narrow_status_bubble_stays_within_the_viewport_for_long_errors() {
         let (app, state) = staged(Some("error"));
         let app = merge_frame(app, state, (390.0, 760.0));
-        let bubble = app.status_bubble_rect();
+        let error_area = app.content_rect();
         assert!(
-            bubble.x0 >= app.rect.x0 && bubble.x1 <= app.rect.x1,
-            "narrow status bubble must not clip: {bubble:?} in {:?}",
+            error_area.x0 >= app.rect.x0 && error_area.x1 <= app.rect.x1,
+            "error surface {error_area:?} in {:?}",
             app.rect
         );
         assert!(
-            bubble.y0 >= app.rect.y0 && bubble.y1 <= app.rect.y1,
-            "narrow status bubble must remain vertically visible: {bubble:?} in {:?}",
+            error_area.y0 >= app.rect.y0 && error_area.y1 <= app.rect.y1,
+            "error surface {error_area:?} in {:?}",
             app.rect
+        );
+        let semantics = app
+            .accessibility()
+            .expect("the visible error remains accessible");
+        assert!(
+            semantics
+                .children
+                .iter()
+                .any(|node| node.name.as_deref() == Some("File loading failed")
+                    && node.description.as_deref() == app.load_error.as_deref()),
+            "the shared error surface retains the full reason"
         );
     }
 
@@ -1975,12 +2067,9 @@ mod tests {
         let (app, state) = demo();
         let mut app = merge_frame(app, state, (980.0, 720.0));
         let (app, state) = Framed::split(&mut app);
-        let root = Widget::accessibility(&*app).expect("root semantics");
-        let merge = root
-            .children
-            .iter()
-            .find(|child| child.name.as_deref() == Some("Three-way merge"))
-            .expect("active merge content is not hidden behind toolbar chrome");
+        let merge = Widget::accessibility(&app.merge)
+            .expect("active merge content is exposed by the retained child");
+        assert_eq!(merge.name.as_deref(), Some("Three-way merge"));
         let target = merge
             .children
             .iter()

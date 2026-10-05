@@ -109,7 +109,7 @@ pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
     pub(crate) updaters: Updaters<R>,
     pub(crate) alive: Weak<()>,
     pub(crate) dispatch: Dispatcher<R>,
-    pub(crate) published: Rc<tilo_actions::Resource>,
+    pub(crate) action_bindings: Actions<R>,
     pub(crate) item: Option<Id>,
     pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
     pub(crate) saved: LocalState<RecordSaveStatus>,
@@ -145,7 +145,7 @@ impl<R: Resource> ViewCx<R> {
             updaters: Updaters::new(),
             alive: Rc::downgrade(alive),
             dispatch,
-            published: Rc::new(published),
+            action_bindings: Actions::new(Rc::new(published)),
             item: None,
             controls: Rc::default(),
             saved: LocalState::new(RecordSaveStatus::Saved),
@@ -556,21 +556,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     pub fn button(&self, label: &str, invoke: Invoke<R>) -> Button {
         let id = self.control_id(invoke.id);
         let button = Button::new(&id, label);
-        let Some(spec) = self
-            .published
-            .actions
-            .iter()
-            .find(|spec| spec.id == invoke.id)
-            .cloned()
-        else {
-            return disabled(button);
-        };
-        match ActionBinding::static_json(&self.published, &spec, invoke.arguments) {
-            Ok(binding) => button.on_action(binding),
-            Err(error) => {
-                tracing::warn!(%error, action = invoke.id, "button not bound");
-                disabled(button)
-            }
+        match self.actions().invocation(invoke) {
+            Some(binding) => button.on_action(binding),
+            None => disabled(button),
         }
     }
 
@@ -592,7 +580,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let live = self.live.clone();
         let updaters = self.updaters.clone();
         let dispatch = self.dispatch.clone();
-        let published = Rc::clone(&self.published);
+        let action_bindings = self.action_bindings.clone();
         let controls = Rc::clone(&self.controls);
         let saved = self.saved.clone();
         let stages = self.stages.clone();
@@ -616,7 +604,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     updaters: updaters.clone(),
                     alive: Rc::downgrade(alive),
                     dispatch: dispatch.clone(),
-                    published: Rc::clone(&published),
+                    action_bindings: action_bindings.clone(),
                     item: Some(id.clone()),
                     controls: Rc::clone(&controls),
                     saved: saved.clone(),
@@ -651,7 +639,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// The resource's published actions, for binding controls built outside
     /// the view function: the rows a table, list or tree creates on demand.
     pub fn actions(&self) -> Actions<R> {
-        Actions::new(Rc::clone(&self.published))
+        self.action_bindings.clone()
     }
 
     /// A value that follows `read` of the resource, for any toolkit control
@@ -700,7 +688,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
         let dispatch = self.dispatch.clone();
-        let published = Rc::clone(&self.published);
+        let action_bindings = self.action_bindings.clone();
         let item = self.item.clone();
         let saved = self.saved.clone();
         let stages = self.stages.clone();
@@ -718,7 +706,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                     updaters: updaters.clone(),
                     alive: Rc::downgrade(alive),
                     dispatch: dispatch.clone(),
-                    published: Rc::clone(&published),
+                    action_bindings: action_bindings.clone(),
                     item: item.clone(),
                     // Each build of the part names its controls afresh.
                     controls: Rc::default(),

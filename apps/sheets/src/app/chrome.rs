@@ -12,9 +12,9 @@
 
 use super::annotations::CardMetrics;
 use super::{
-    Affine, AutoCommit, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, Point,
-    PresenceCtx, PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole,
-    TextStyle, Theme, Widget, WindowEvent, count_f64, tab_palette_color,
+    Affine, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, Point, PresenceCtx,
+    PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole, TextStyle, Theme,
+    Widget, WindowEvent, count_f64, tab_palette_color,
 };
 use ui::chrome::HeaderRowFace;
 use ui::icons::Icon;

@@ -331,9 +331,24 @@ fn reached(
                 .is_some_and(|target| target.starts_with("notes.image-edit:"))
         }),
         Some("scrolled") => blocks.len() > 20,
-        Some("drawer") => observed(driver, |node| {
-            node.action_target.as_deref() == Some("notes.drawer") && node.state.checked == Some(true)
-        }),
+        Some("drawer") => {
+            // The retained shell publishes its real toggle rather than the
+            // former manually painted notes.drawer synthetic checkbox.
+            observed(driver, |node| {
+                node.name.as_deref() == Some("Hide sidebar") && !node.state.hidden
+            }) && observed(driver, |node| {
+                node.role == ui::a11y::Role::Tree && !node.state.hidden
+            }) && observed(driver, |node| {
+                // TreeView publishes geometry on the visible rows, not on
+                // its semantic Tree container. Require a genuinely laid-out
+                // row as well as the opened shell's dismiss control.
+                node.role == ui::a11y::Role::TreeItem && !node.state.hidden
+                    && node.bounds.is_some_and(|bounds| {
+                        let rect = bounds.to_rect();
+                        rect.width() > 0.0 && rect.height() > 0.0
+                    })
+            })
+        },
         Some("menu" | "note_menu") => observed(driver, |node| {
             node.role == ui::a11y::Role::Menu && !node.state.hidden
         }),
