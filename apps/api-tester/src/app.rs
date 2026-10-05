@@ -1074,6 +1074,7 @@ impl ApiTesterApp {
             | FormMode::NewVariable
             | FormMode::DeleteVariable => (String::new(), String::new()),
         };
+        self.nav.show(ui::widget::NavPane::Content);
         let fields = Fields::new(&initial);
         self.slots
             .dialog
@@ -1645,6 +1646,9 @@ impl ApiTesterApp {
         if let Some(name) = scenario {
             let mapped = if name == "rail-open" { "drawer" } else { name };
             self.stage(mapped);
+            if self.form.is_some() {
+                self.nav.snap();
+            }
         }
         self.stale.response = true;
     }

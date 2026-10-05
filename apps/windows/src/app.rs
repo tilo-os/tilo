@@ -2466,9 +2466,13 @@ mod tests {
         }
         // Case `platform_search_finds_apps_by_name_and_opens_them`.
         {
-            let mut app =
-                ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
-                    .unwrap();
+            let mut app = ui::prelude::TestApp::<crate::resource::WindowsShell>::new().unwrap();
+            app.with_surface::<WindowsApp, _>(|surface| {
+                surface.use_provider(Box::new(SampleProvider::new()));
+                surface.stage_scenario(Some("wide"));
+            })
+            .expect("authored catalogue over the live action host");
+            app.settle();
             let providers = ui::search::capability::search_providers(app.harness().root_widget());
             let hit = providers
                 .iter()

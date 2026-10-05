@@ -1882,8 +1882,15 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         let mut state = State::new();
         assert!(state.adopt_doc(doc));
         let mut framed = ui::headless::Framed::new(state, view, (800, 480), ui::Theme::dark());
-        ui::headless::Framed::harness_mut(&mut framed)
-            .perform_named("find-query", &Action::SetValue("private search".into()))
+        let harness = ui::headless::Framed::harness_mut(&mut framed);
+        let query = harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::TextInput)
+            .map(|(id, _)| id)
+            .expect("Find publishes its actual retained text input");
+        harness
+            .perform_a11y_action(query, &Action::SetValue("private search".into()))
             .expect("the hosted Find query owns its text-edit action");
         assert!(
             drain_writes(&writes).is_empty(),

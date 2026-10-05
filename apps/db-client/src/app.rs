@@ -1780,22 +1780,23 @@ mod tests {
                 }
                 has_schema(&app.harness().resources())
             });
-            app.start_effect(&DbEffect::Query {
-                sql: "SELECT 1".into(),
-            })
-            .unwrap();
+            // The start door returns a receipt only for an Accepted job;
+            // progress contains worker updates and the eventual result.
+            let invocation = app
+                .start_effect(&DbEffect::Query {
+                    sql: "SELECT 1".into(),
+                })
+                .expect("the canonical effect transport admits the database worker job");
             assert!(
-                app.effect_progress().iter().any(|update| matches!(
-                    update,
-                    tilo_actions::InvocationUpdate::Accepted { .. }
-                        | tilo_actions::InvocationUpdate::Progress { .. }
-                )),
-                "the worker invocation is admitted through the canonical effect transport"
+                !invocation.0.is_nil(),
+                "admission returns a usable invocation receipt"
             );
-            tilo_test_env::wait_until("the database worker to answer", || {
+            tilo_test_env::wait_until("the database worker to answer this invocation", || {
                 app.settle();
                 app.effect_progress().iter().any(|update| {
-                    matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. })
+                    matches!(update, tilo_actions::InvocationUpdate::Succeeded {
+                        invocation: completed, ..
+                    } if *completed == invocation)
                 })
             });
         }

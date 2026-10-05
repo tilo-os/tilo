@@ -653,7 +653,11 @@ mod tests {
                 assert_eq!(narrow.first().map(String::as_str), Some("Home"));
                 assert_eq!(narrow.last().map(String::as_str), expected.last().copied());
                 if expected.len() > 4 {
-                    assert!(narrow.iter().any(|label| label == "…"));
+                    assert_eq!(
+                        narrow,
+                        vec!["Home", "...", "current", "Reports"],
+                        "the shared trail preserves its root and final two targets"
+                    );
                 } else {
                     assert_eq!(bar.crumbs.separator_count(), 0);
                 }

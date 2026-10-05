@@ -3103,7 +3103,14 @@ impl BrowserWidget {
             }
             w.children().iter().find_map(|c| walk(*c, id))
         }
-        self.composed.as_ref().and_then(|c| walk(c.as_ref(), id))
+        self.composed
+            .as_ref()
+            .and_then(|c| walk(c.as_ref(), id))
+            .or_else(|| {
+                self.anchored_panel
+                    .as_ref()
+                    .and_then(|panel| walk(panel.as_ref(), id))
+            })
     }
 
     /// Publish the `WebView` surface rect as window fractions for the
@@ -4705,6 +4712,7 @@ mod architecture_tests {
     use super::*;
     use ui::framework::HostDelivery as _;
     use ui::tilo_actions::OperationKind;
+    use ui::widget::MenuButton;
 
     /// What the window does for the effect an encoded invocation names.
     fn effect_operation(payload: &[u8]) -> BrowserOperation {
@@ -4722,6 +4730,40 @@ mod architecture_tests {
         let mut tree = TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+    }
+
+    pub(super) fn activate_overflow_command(widget: &mut BrowserWidget, label: &str) {
+        fn menu(widget: &mut dyn Widget) -> Option<&mut MenuButton> {
+            if widget.test_id() == Some(toolbar::OVERFLOW_ID) {
+                return widget.as_any_mut()?.downcast_mut::<MenuButton>();
+            }
+            widget.children_mut().into_iter().find_map(menu)
+        }
+        fn target(node: ui::a11y::AccessNode, label: &str) -> Option<String> {
+            if node.name.as_deref() == Some(label) {
+                return node.action_target;
+            }
+            node.children
+                .into_iter()
+                .find_map(|child| target(child, label))
+        }
+        let menu = menu(
+            widget
+                .composed
+                .as_mut()
+                .expect("actual composition")
+                .as_mut(),
+        )
+        .expect("retained overflow menu");
+        menu.open(true);
+        let target = target(menu.accessibility().expect("exported menu"), label)
+            .expect("the command has its real semantic target");
+        assert!(menu.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &automerge::ROOT
+        ));
     }
 
     fn assert_no_document_control_paths(widget: &BrowserWidget) {
@@ -5182,8 +5224,6 @@ mod architecture_tests {
                 ("browser.forward", "browser.page", "forward"),
                 ("browser.reload", "browser.page", "reload"),
                 ("browser.library", "browser.history", "show-history"),
-                ("browser.pip", "browser.page", "picture-in-picture"),
-                ("browser.settings", "browser.settings", "show-settings"),
             ] {
                 assert_action_binding(&page, control, resource, action);
             }
@@ -5196,14 +5236,14 @@ mod architecture_tests {
                 "toggle-pause",
             );
             // The overflow menu's commands queue the same canonical actions.
-            for (resource, action) in [
-                ("browser.session", "toggle-pause"),
-                ("browser.page", "picture-in-picture"),
-                ("browser.settings", "show-settings"),
+            for (label, resource, action) in [
+                ("Pause history", "browser.session", "toggle-pause"),
+                ("Picture in Picture", "browser.page", "picture-in-picture"),
+                ("Settings", "browser.settings", "show-settings"),
             ] {
                 let mut page = BrowserWidget::new_headless();
                 compose(&mut page);
-                page.queue_command(resource, action)();
+                activate_overflow_command(&mut page, label);
                 assert!(page.run_pending_commands());
                 assert!(
                     page.pending_controls.iter().any(|invocation| {
@@ -5235,11 +5275,6 @@ mod architecture_tests {
             compose(&mut settings);
             assert_no_document_control_paths(&settings);
             for (control, resource, action) in [
-                (
-                    "browser.settings",
-                    crate::resource::Browser::KIND,
-                    "show-page",
-                ),
                 (
                     "settings.close",
                     crate::resource::Browser::KIND,
@@ -7250,9 +7285,17 @@ mod tests {
                 address_for(&widget, "browser.library").action,
                 "show-history"
             );
-            assert_eq!(
-                address_for(&widget, "browser.settings").action,
-                "show-settings"
+            super::architecture_tests::activate_overflow_command(&mut widget, "Settings");
+            assert!(widget.run_pending_commands());
+            assert!(
+                widget
+                    .pending_controls
+                    .iter()
+                    .any(
+                        |invocation| invocation.address.resource == "browser.settings"
+                            && invocation.address.action == "show-settings"
+                    ),
+                "the actual Settings menu command queues its canonical action"
             );
 
             widget.show_library = true;

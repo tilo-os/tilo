@@ -293,13 +293,24 @@ fn tab_traverses_every_control_in_order() {
     assert_eq!(stops[3].1.as_deref(), Some("Send"));
     assert_eq!(
         roles.get(4),
-        Some(&Role::Separator),
-        "fifth stop is the divider between the request and the response"
+        Some(&Role::Group),
+        "request tabs follow the endpoint row"
+    );
+    let divider = roles
+        .iter()
+        .position(|role| *role == Role::Separator)
+        .expect("the resize divider is keyboard reachable");
+    assert!(
+        divider > 4,
+        "the divider follows the request controls in directional focus order"
     );
     assert_eq!(
-        roles.get(5),
-        Some(&Role::Group),
-        "sixth stop is the request tabs"
+        roles
+            .iter()
+            .filter(|role| **role == Role::Separator)
+            .count(),
+        1,
+        "one retained request/response divider is reachable"
     );
 
     // Focus reaches the sidebar's list (arrows move through its rows) and
