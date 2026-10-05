@@ -77,9 +77,9 @@ impl crate::widget::Decorator for OwnedText {
         &mut self.input
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, root) = crate::doc::document(state, path);
+            let (doc, root) = crate::doc::document_ref(state, path);
             self.show(doc, root);
         }
         self.input.sync(state, path);

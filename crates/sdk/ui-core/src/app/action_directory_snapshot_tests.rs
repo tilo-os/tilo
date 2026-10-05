@@ -12,8 +12,8 @@ impl Widget for DeclaredDirectory {
         dyn crate::search::capability::SearchSource
     );
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = crate::doc::document(doc, path);
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = crate::doc::document_ref(doc, path);
         if let Some(change) = self.sync_change.as_ref().and_then(|change| change.take()) {
             doc.put(ROOT, change, true).unwrap();
         }

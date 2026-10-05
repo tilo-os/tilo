@@ -228,7 +228,7 @@ impl Widget for LiveOwner {
             self.resource_id
         })
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(

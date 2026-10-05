@@ -1176,7 +1176,7 @@ impl Widget for Button {
         }
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.observe_i18n_revision();
     }
 

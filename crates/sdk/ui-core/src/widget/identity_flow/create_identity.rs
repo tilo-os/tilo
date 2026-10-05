@@ -532,7 +532,7 @@ impl CreateIdentityScreen {
 }
 
 impl Widget for CreateIdentityScreen {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,

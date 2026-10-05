@@ -804,7 +804,7 @@ impl AccessibilityPane {
 }
 
 impl Widget for AccessibilityPane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // Controls follow the stored values; the composition itself does not
         // change with them.
         if self.appearance.refresh() {

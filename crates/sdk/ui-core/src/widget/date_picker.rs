@@ -297,7 +297,7 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(date) = self
             .local_state
             .as_mut()

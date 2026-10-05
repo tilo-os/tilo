@@ -788,7 +788,7 @@ impl Widget for Dropdown {
         self.drawn = Some(self.visual_signature());
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(selected) = binding.pull(state, root)
         {

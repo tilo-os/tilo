@@ -415,7 +415,7 @@ impl RegionPane {
 }
 
 impl Widget for RegionPane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.locale.refresh() {
             self.shown.show(*self.locale.get());
             // The preview card follows the values.

@@ -1266,7 +1266,7 @@ impl Widget for MainPanel {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.date_index.sync(state);
         let dates = self

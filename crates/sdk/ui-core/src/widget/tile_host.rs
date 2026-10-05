@@ -1996,7 +1996,7 @@ impl Widget for TileHost {
         children
     }
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         let _running = self.running();
         if !self.history_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
@@ -2016,7 +2016,7 @@ impl Widget for TileHost {
             // unavailable rather than inherited by the new component.
             let _ = self.collect_retained_updates_before_release();
             let mut answers = std::mem::take(&mut self.retained_updates);
-            let (doc, path) = crate::doc::document(s, p);
+            let (doc, path) = crate::doc::document_ref(s, p);
             for invocation in std::mem::take(&mut self.component_invocations) {
                 if let TileContent::App(app) = &mut self.content
                     && let Some(update) = app.poll_resource_operation(invocation, false, doc, path)
@@ -2068,7 +2068,7 @@ impl Widget for TileHost {
         }
     }
 
-    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let _running = self.running();
         // This custody is independent of the outer App State and remains
         // durable while History hides the live widget.
@@ -3330,9 +3330,9 @@ mod tests {
     impl Widget for Scribe {
         crate::provides!(dyn crate::record::capability::RecordScoped);
 
-        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             use automerge::transaction::Transactable;
-            let (state, path) = crate::doc::document(state, path);
+            let (state, path) = crate::doc::document_ref(state, path);
             let _ = state.put(path, "body", self.text.as_str());
         }
         fn build_layout(

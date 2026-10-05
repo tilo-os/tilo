@@ -340,7 +340,7 @@ impl FileToolbar {
 }
 
 impl Widget for FileToolbar {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.path_bar.sync(state, path);
     }
 

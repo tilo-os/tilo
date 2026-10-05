@@ -539,7 +539,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.recompute_layout();
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The dialog holds no CRDT-backed state itself; forward so embedded
         // content widgets still get their sync pass.
         self.content.sync(state, path);

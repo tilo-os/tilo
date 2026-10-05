@@ -790,35 +790,31 @@ mod component_adapter {
             };
             root.set_interaction_environment(environment);
         }
-        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
-            let (state, _) = crate::doc::document(state, path);
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.sync(document, record_root);
-                    let _ = binding.drain_owned_tree(root, document);
+                .read_document(state, |document, record_root| {
+                    if let Some(root) = self.component.root.as_deref_mut() {
+                        root.sync(document, record_root);
+                    }
                 })
                 .unwrap_or(());
             self.component.project_record_save_status();
         }
         fn update(
             &mut self,
-            state: &mut crate::widget::AppModel,
+            state: &crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
-            let (state, _) = crate::doc::document(state, path);
+            let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    let updated = root.update(document, record_root);
-                    let _ = binding.drain_owned_tree(root, document);
-                    updated
+                .read_document(state, |document, record_root| {
+                    self.component
+                        .root
+                        .as_deref_mut()
+                        .is_some_and(|root| root.update(document, record_root))
                 })
                 .unwrap_or(false)
         }

@@ -2323,11 +2323,11 @@ impl Widget for TerminalWidget {
         taffy::Size::ZERO
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.sync_document(state, root);
     }
 
-    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
         let pumped = self.pump();
         if pumped {
             let (doc, _) = ui::doc::document(state, root);

@@ -3741,7 +3741,7 @@ impl PasswordsSurface {
 }
 
 impl Widget for PasswordsSurface {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.transfer_poll_deadline.set(None);
         self.poll_transfers();
         if self

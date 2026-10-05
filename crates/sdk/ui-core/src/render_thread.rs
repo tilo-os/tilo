@@ -1400,10 +1400,10 @@ mod admission_tests {
             impl Widget for Root {
                 fn update(
                     &mut self,
-                    doc: &mut crate::widget::AppModel,
+                    doc: &crate::widget::AppModel,
                     path: &crate::widget::ModelPath,
                 ) -> bool {
-                    let (doc, path) = crate::doc::document(doc, path);
+                    let (doc, path) = crate::doc::document_ref(doc, path);
                     if let Some(value) = self.pending.take() {
                         doc.put(path, "label", value).unwrap();
                         true
@@ -1411,11 +1411,7 @@ mod admission_tests {
                         false
                     }
                 }
-                fn sync(
-                    &mut self,
-                    doc: &mut crate::widget::AppModel,
-                    path: &crate::widget::ModelPath,
-                ) {
+                fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
                     self.text.sync(doc, path);
                 }
                 fn build_layout(

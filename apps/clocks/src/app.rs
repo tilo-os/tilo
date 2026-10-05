@@ -1305,7 +1305,7 @@ fn schedules_notifications() -> bool {
 }
 
 impl Widget for ClocksApp {
-    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, d: &AppModel, p: &ModelPath) {
         let tick_base = ui::time::now();
         self.next_clock_tick = tick_base
             .checked_add(Duration::from_secs(1))

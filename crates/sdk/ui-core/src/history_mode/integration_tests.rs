@@ -1008,7 +1008,7 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![&mut self.0]
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         self.0.update(doc, path)
     }
     fn has_separate_document_owner(&self) -> bool {
@@ -2102,9 +2102,9 @@ impl Widget for RetainedLifecycleProbe {
     fn test_id(&self) -> Option<&str> {
         Some(self.id)
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         use automerge::ReadDoc;
-        let (doc, path) = crate::doc::document(doc, path);
+        let (doc, path) = crate::doc::document_ref(doc, path);
         increment(&self.handles.syncs);
         self.observed = doc
             .get(path, "body")
@@ -2135,7 +2135,7 @@ impl Widget for RetainedLifecycleProbe {
         increment(&self.handles.accepts);
         self.ready = true;
     }
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         increment(&self.handles.updates);
         false
     }
@@ -2320,9 +2320,9 @@ impl Widget for ReleasableLifecycleProbe {
     fn name(&self) -> &'static str {
         "ReleasableLifecycleProbe"
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         use automerge::ReadDoc;
-        let (doc, path) = crate::doc::document(doc, path);
+        let (doc, path) = crate::doc::document_ref(doc, path);
         self.handles.last_owner.replace(
             doc.get(path, "owner")
                 .unwrap()
@@ -2342,7 +2342,7 @@ impl Widget for ReleasableLifecycleProbe {
         self.ready = true;
         increment(&self.handles.accepts);
     }
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         false
     }
     fn build_layout(

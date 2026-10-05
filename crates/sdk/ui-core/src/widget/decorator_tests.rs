@@ -194,11 +194,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
             children: Vec<Box<dyn Widget>>,
         }
         impl Widget for Plain {
-            fn sync(
-                &mut self,
-                _state: &mut crate::widget::AppModel,
-                _path: &crate::widget::ModelPath,
-            ) {
+            fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
             }
             fn build_layout(
                 &mut self,
@@ -290,7 +286,7 @@ impl Widget for Recorder {
         dyn crate::resources::PublishesResources
     );
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.note("sync");
     }
 

@@ -318,7 +318,7 @@ impl Drop for DiskUsageApp {
 }
 
 impl Widget for DiskUsageApp {
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         if let Some(id) = self.chart.take_activated() {
             let path = PathBuf::from(id);
             if path.file_name().is_some_and(|n| n != ".") {

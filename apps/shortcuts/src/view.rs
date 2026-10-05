@@ -773,7 +773,7 @@ impl<K: PartialEq + 'static> ui::widget::Decorator for Keyed<K> {
         self.part.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let next = (self.key)();
         if self.current.as_ref() != Some(&next) {
             self.part = (self.build)();
@@ -813,7 +813,7 @@ impl ui::widget::Decorator for Sheet {
         &mut self.dialog
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let open = self.open.get();
         if open != self.dialog.is_open() {
             self.dialog.set_open(open);

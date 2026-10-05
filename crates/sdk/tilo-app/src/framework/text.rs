@@ -184,9 +184,9 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         &mut self.control
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, _) = ui_core::doc::document(state, path);
+            let (doc, _) = ui_core::doc::document_ref(state, path);
             self.follow(doc);
         }
         self.control.sync(state, path);

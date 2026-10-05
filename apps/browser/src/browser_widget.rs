@@ -4332,7 +4332,7 @@ impl Widget for BrowserWidget {
         clippy::too_many_lines,
         reason = "Browser's frame-level input routing remains ordered in one place."
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sync_frame(state, path);
         self.settle_replies();
     }

@@ -3845,7 +3845,7 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     fn test_id(&self) -> Option<&str> {
         Some("palette-history-owner")
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -4437,7 +4437,7 @@ impl crate::widget::Widget for ComponentControlOwner {
     fn name(&self) -> &str {
         &self.id
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -4643,7 +4643,7 @@ impl crate::widget::Widget for ComponentControlRoot {
     fn name(&self) -> &str {
         "Controlled component root"
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -5854,7 +5854,7 @@ impl crate::widget::Widget for CustodyDeniedRoot {
     fn name(&self) -> &str {
         "Controlled component boundary"
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
     }
     fn build_layout(

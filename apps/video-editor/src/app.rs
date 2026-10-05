@@ -6017,7 +6017,7 @@ impl Widget for VideoEditorApp {
         clippy::too_many_lines,
         reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);

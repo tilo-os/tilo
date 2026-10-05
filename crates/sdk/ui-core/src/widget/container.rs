@@ -260,7 +260,7 @@ impl Widget for Container {
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
             None => false,

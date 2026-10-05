@@ -135,7 +135,7 @@ impl Widget for ShortcutRecorder {
         self.interaction = environment;
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Pulled::Value(value) = self.stored.pull(state, root) {
             self.value = value;
         }

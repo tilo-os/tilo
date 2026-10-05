@@ -3232,7 +3232,7 @@ impl Widget for DisksApp {
         }
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Advance the eased slide every frame so the flap opens/collapses
         // smoothly. Mirrors the shared `NavSplit`'s fixed-step tick.
         let animating = self.flap.tick(self.split_layout(), 1.0 / 60.0);

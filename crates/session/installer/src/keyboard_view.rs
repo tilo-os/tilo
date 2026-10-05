@@ -121,8 +121,8 @@ impl KeyboardView {
 }
 
 impl Widget for KeyboardView {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document_ref(state, root);
         // Re-resolve every sync so the preview tracks the dropdown live.
         if let Some(name) = read_str_or_text(state, root, self.value_path.as_str())
             && let Some(l) = layouts::by_display_name(&name)

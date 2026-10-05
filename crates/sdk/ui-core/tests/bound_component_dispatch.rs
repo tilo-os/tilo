@@ -500,12 +500,12 @@ impl Leaf {
 impl Widget for Leaf {
     tilo_ui::provides!(dyn tilo_ui::resources::PublishesResources);
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = tilo_ui::doc::document_ref(doc, path);
         self.edit(doc, "sync");
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        let (doc, _) = tilo_ui::doc::document_ref(doc, path);
         self.edit(doc, "update");
         false
     }
@@ -767,10 +767,10 @@ impl Widget for Root {
         ))
     }
 
-    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, d: &AppModel, p: &ModelPath) {
         self.0.sync(d, p);
     }
-    fn update(&mut self, d: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, d: &AppModel, p: &ModelPath) -> bool {
         self.0.update(d, p)
     }
     fn build_layout(
@@ -1890,7 +1890,7 @@ thread_local! { static PANIC_VIEW: Cell<bool> = const { Cell::new(false) }; }
 
 struct ReplacingHost(TileHost, std::rc::Rc<Cell<bool>>);
 impl Widget for ReplacingHost {
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         if self.1.replace(false) {
             self.0
                 .replace_content(tilo_ui::widget::TileContent::Notice {
@@ -1948,7 +1948,7 @@ impl Widget for ReplacingHost {
 #[repr(transparent)]
 struct SameNameUnregisteredWrapper(Button);
 impl Widget for SameNameUnregisteredWrapper {
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,

@@ -4598,7 +4598,7 @@ impl Widget for SheetsApp {
         &crate::cell_actions::READERS
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         if let Some(locale) = &self.locale {
             self.global = locale.get();

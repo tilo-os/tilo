@@ -2549,7 +2549,7 @@ impl Widget for LogsApp {
         taffy::Size::ZERO
     }
 
-    fn sync(&mut self, doc: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, root: &ModelPath) {
         self.search_input.sync(doc, root);
         self.drain_read();
         // Live tail re-reads the journal once a poll interval has passed and

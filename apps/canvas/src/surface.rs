@@ -3131,7 +3131,7 @@ impl Widget for CanvasSurface {
         })
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.follow_keys();
         self.follow_view();
         // The panels show what is selected.

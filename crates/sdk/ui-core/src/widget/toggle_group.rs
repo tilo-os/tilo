@@ -1114,7 +1114,7 @@ impl Widget for ToggleGroup {
         "ToggleGroup"
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(index) = self.choice.as_mut().and_then(|choice| (choice.pull)()) {
             self.set_selected(index);
         }

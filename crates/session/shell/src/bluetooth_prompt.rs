@@ -363,7 +363,7 @@ fn pressed(event: &WindowEvent, key: NamedKey) -> bool {
 }
 
 impl Widget for PairingPromptView {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         // Reject wins over a simultaneous accept: the safe reading of an
         // ambiguous answer is "no".

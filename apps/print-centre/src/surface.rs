@@ -574,7 +574,7 @@ impl DashboardCard {
 }
 
 impl Widget for DashboardCard {
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -3514,7 +3514,7 @@ impl Default for PrintCentre {
     }
 }
 impl Widget for PrintCentre {
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         if self.poll_picker() {
             self.inner.sync(state, path);
             return true;
