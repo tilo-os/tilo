@@ -68,7 +68,10 @@ mod tests {
     /// document is the draft alone.
     #[test]
     fn navigation_and_lifecycle_verbs_leave_the_document_alone() {
-        let mut host = ui::prelude::TestApp::<crate::ContainersShell>::capture(None).unwrap();
+        let mut host = ui::prelude::TestApp::<crate::ContainersShell>::new().unwrap();
+        host.with_surface::<ContainersApp, _>(ContainersApp::stage_sample_engine)
+            .unwrap();
+        host.settle();
         let heads = host.harness().state_mut().doc.get_heads();
         let expected = host
             .with_widget::<ContainersApp, _>(|app| app.engine.containers[0].id.clone())

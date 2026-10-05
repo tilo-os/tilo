@@ -477,7 +477,12 @@ fn keyboard_pointer_and_semantic_navigation() {
 
         // The same container has a canonical row operation whose target is
         // bound by its published owner, rather than a caller-supplied id.
-        let mut hosted = TestApp::<ContainersShell>::capture(None).unwrap();
+        let mut hosted = TestApp::<ContainersShell>::new().unwrap();
+        hosted
+            .with_surface::<ContainersApp, _>(ContainersApp::stage_sample_engine)
+            .unwrap();
+        hosted.settle();
+        let heads = hosted.peer_document().get_heads();
         let address = format!("container:{expected}");
         hosted
             .effect_on(
@@ -492,6 +497,11 @@ fn keyboard_pointer_and_semantic_navigation() {
                 assert_eq!(app.selected(), Some(expected.as_str()));
             })
             .unwrap();
+        assert_eq!(
+            hosted.peer_document().get_heads(),
+            heads,
+            "the admitted row selection changes no document"
+        );
     }
 }
 
