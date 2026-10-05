@@ -27,9 +27,9 @@ use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState, EmptyStateContent,
-    Interaction, MediaArt, MediaCardFace, MediaSize, SkeletonFace, SkeletonShape, Slider,
-    SliderFace, TransportControl, TransportFace,
+    Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
+    MediaCardFace, MediaSize, SkeletonFace, SkeletonShape, Slider, SliderFace, TransportControl,
+    TransportFace,
 };
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -2517,6 +2517,7 @@ impl MusicApp {
         self.hits.clear();
         self.track_tables_drawn = 0;
         self.media_grids_drawn = 0;
+        self.page_parts_drawn = 0;
         self.sync_context_menu_geometry(ctx.theme);
         // Fold in any streaming-worker results (resolved stream URLs → audio
         // engine, real search hits → library), then keep live search results
@@ -2593,6 +2594,7 @@ impl MusicApp {
         self.body_hits = self.hits.len();
         self.track_tables.truncate(self.track_tables_drawn);
         self.media_grids.truncate(self.media_grids_drawn);
+        self.page_parts.truncate(self.page_parts_drawn);
         self.content_height = (end_y + scrolled) - body.y0 + look.gutter;
         self.body_scroll
             .set_content_size(body.width(), self.content_height);
@@ -3255,19 +3257,17 @@ impl MusicApp {
         y: f64,
         pls: &[PlaylistDisp],
     ) -> f64 {
-        let label = "New playlist";
-        let w = Self::button_width(ctx, label, Some(Icon::Plus), ControlSize::Regular);
-        let h = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let x = body.x0 + look.gutter;
-        self.button(
-            ctx,
-            Rect::new(x, y, x + w, y + h),
-            label,
-            Some(Icon::Plus),
-            ButtonRole::Secondary,
-            Action::BeginNewPlaylist,
-        );
-        let y = y + h + look.gutter;
+        let span = (body.x0 + look.gutter, body.x1 - look.gutter);
+        let y = self.page_part(ctx, span, y, "new-playlist".into(), |asked| {
+            Box::new(
+                ui::widget::Row::new().no_wrap().push(Box::new(
+                    Button::new("music.new-playlist", "New playlist", None)
+                        .with_icon(Icon::Plus)
+                        .role(ButtonRole::Secondary)
+                        .on_click(super::page_part::asking(asked, Action::BeginNewPlaylist)),
+                )),
+            )
+        }) + look.gutter;
         if pls.is_empty() {
             return Self::note(ctx, look, body, y, "Playlists you make appear here.");
         }
@@ -3548,6 +3548,30 @@ impl MusicApp {
             }
             cards.extend(grid.take_asked());
         }
+        for part in &mut self.page_parts {
+            if covered {
+                if let WindowEvent::CursorMoved { device_id, .. } = event {
+                    part.handle_event(
+                        &WindowEvent::CursorMoved {
+                            device_id: *device_id,
+                            position: winit::dpi::PhysicalPosition::new(f64::MIN, f64::MIN),
+                        },
+                        ctx,
+                    );
+                }
+                continue;
+            }
+            if !*ctx.handled {
+                part.handle_event(event, ctx);
+            }
+            if self.table_tooltip.is_none()
+                && let Some(tip) = part.tooltip_at(mouse)
+            {
+                self.table_tooltip = Some(tip);
+                self.dirty = true;
+            }
+            cards.extend(part.take_asked());
+        }
         let took = *ctx.handled;
         for action in cards {
             self.dispatch(action, ctx.state);
@@ -3609,6 +3633,30 @@ impl MusicApp {
                 None => Some(Action::RemoveFromQueue(offset + i)),
             },
         }
+    }
+
+    /// Place the next embedded part of the page from `top` across
+    /// `[left, right]`, rebuilt with `build` when `key` changed. Returns the
+    /// y below it.
+    fn page_part(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        span: (f64, f64),
+        top: f64,
+        key: String,
+        build: impl FnOnce(&super::page_part::Asked) -> ui::widget::Element,
+    ) -> f64 {
+        let index = self.page_parts_drawn;
+        self.page_parts_drawn += 1;
+        if self.page_parts.len() <= index {
+            self.page_parts.push(super::page_part::PagePart::new());
+        }
+        let clip = self.body_rect;
+        let Some(part) = self.page_parts.get_mut(index) else {
+            return top;
+        };
+        part.update(key, build);
+        part.place(ctx, span, top, clip)
     }
 
     /// A song's offline status in words, and whether it failed. A failure
@@ -3779,25 +3827,20 @@ impl MusicApp {
             }
             DetailKind::Playlist { own: false } => {}
         }
-        let h = ButtonFace::height(ControlSize::Regular, theme);
-        let mut bx = tx;
-        for (label, role, action) in buttons {
-            let w = Self::button_width(ctx, label, None, ControlSize::Regular);
-            if bx > tx && bx + w > right {
-                bx = tx;
-                ty += h + look.related;
+        // The actions are the toolkit's buttons in a wrapping row.
+        let key = format!("{buttons:?}");
+        let gap = ui::num::f32_of_f64(look.related);
+        let ty = self.page_part(ctx, (tx, right), ty, key, move |asked| {
+            let mut row = ui::widget::Row::new().with_gap(gap);
+            for (label, role, action) in buttons {
+                row = row.push(Box::new(
+                    Button::new(&format!("music.page.{label}"), label, None)
+                        .role(role)
+                        .on_click(super::page_part::asking(asked, action)),
+                ));
             }
-            self.button(
-                ctx,
-                Rect::new(bx, ty, bx + w, ty + h),
-                label,
-                None,
-                role,
-                action,
-            );
-            bx += w + look.related;
-        }
-        ty += h;
+            Box::new(row)
+        });
         art.y1.max(ty) + look.gutter
     }
 
@@ -4693,7 +4736,6 @@ impl MusicApp {
     /// Browse: the library's genres as cards. A card opens the platform
     /// search for Music with the genre filled in.
     fn draw_browse(&mut self, ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
-        let theme = ctx.theme;
         let mut y = y + look.gutter;
         let mut genres: Vec<(String, usize)> = Vec::new();
         for artist in self.lib.artists.values() {
@@ -4716,44 +4758,34 @@ impl MusicApp {
             return self.empty_page(ctx, body, y, &content, Some(Action::OpenSearch));
         }
         y = Self::section_heading(ctx, look, body, y, "Genres");
-        let rhythm = &theme.tokens.spacing.rhythm;
-        let gap = f64::from(rhythm.section);
-        let avail = (body.width() - 2.0 * look.gutter).max(0.0);
-        let cols = ui::widget::card_columns(avail, MediaSize::Regular.extent(theme), gap);
-        let w = ui::widget::card_column_width(avail, cols, gap);
-        let caption = theme.text(TextRole::Caption);
-        let caption_h = line_of(ctx, &caption);
-        for (i, (genre, artists)) in genres.iter().enumerate() {
-            let x = body.x0 + look.gutter + (i % cols) as f64 * (w + gap);
-            let face = CardFace::new().title(genre).pressable();
-            let h = face.height_for_body(ctx.text, theme, w, caption_h);
-            let top = y + (i / cols) as f64 * (h + gap);
-            let rect = Rect::new(x, top, x + w, top + h);
-            let hovered = self.body_hit(rect, Action::BrowseGenre(genre.clone()));
-            let face = face.interaction(Interaction {
-                hovered,
-                ..Interaction::default()
-            });
-            face.paint(ctx, rect);
-            let inner = face.body_rect(ctx.text, theme, rect);
-            let label = if *artists == 1 {
-                "1 artist".to_string()
-            } else {
-                format!("{artists} artists")
-            };
-            text_line(
-                ctx,
-                &label,
-                &caption,
-                look.dim,
-                Point::new(inner.x0, inner.y0),
-                inner.width(),
-            );
-            if i + 1 == genres.len() {
-                y = rect.y1;
-            }
-        }
-        y
+        // A genre is a card; pressing it opens search for the genre.
+        let key = format!("{genres:?}");
+        let span = (body.x0 + look.gutter, body.x1 - look.gutter);
+        self.page_part(ctx, span, y, key, move |asked| {
+            let cards = genres
+                .into_iter()
+                .map(|(genre, artists)| {
+                    let label = if artists == 1 {
+                        "1 artist".to_string()
+                    } else {
+                        format!("{artists} artists")
+                    };
+                    Box::new(
+                        ui::widget::Card::new(Box::new(
+                            ui::widget::Text::new(&label)
+                                .with_role(TextRole::Caption)
+                                .dimmed(),
+                        ))
+                        .with_title(genre.clone())
+                        .on_activate(
+                            format!("music.genre.{genre}"),
+                            super::page_part::asking(asked, Action::BrowseGenre(genre)),
+                        ),
+                    ) as ui::widget::Element
+                })
+                .collect();
+            Box::new(ui::widget::CardGrid::new(cards))
+        })
     }
 
     // ---- now playing bar --------------------------------------------------
@@ -5344,16 +5376,6 @@ impl MusicApp {
                 count: p.track_ids.len(),
             })
             .collect()
-    }
-
-    /// Register a click target that only counts when visible inside the body
-    /// viewport (so scrolled-away rows don't catch clicks under the chrome).
-    fn body_hit(&mut self, rect: Rect, action: Action) -> bool {
-        let cy = f64::midpoint(rect.y0, rect.y1);
-        if cy < self.body_rect.y0 || cy > self.body_rect.y1 {
-            return false;
-        }
-        self.push_hit(rect, action)
     }
 }
 

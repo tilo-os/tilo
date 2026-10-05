@@ -1699,21 +1699,19 @@ fn browse_and_the_live_catalogue_answer_platform_search() {
         app.playback_loaded = true;
         app.view = View::Browse;
         draw_once(&mut app, &mut doc);
-        // A genre card is a real, registered click target (not decoration).
-        let (rect, genre) = app
-            .hits
-            .iter()
-            .find_map(|h| match &h.action {
-                Action::BrowseGenre(g) => Some((h.rect, g.clone())),
-                _ => None,
-            })
-            .expect("a genre card registered a click target");
-        app.mouse = rect.center();
-        assert_eq!(
-            app.hit_test(app.mouse),
-            Some(Action::BrowseGenre(genre.clone()))
-        );
-        app.dispatch(Action::BrowseGenre(genre.clone()), &mut doc);
+        // A genre card is the shared card: a press on it opens search.
+        let genre = app
+            .lib
+            .artists
+            .values()
+            .map(|artist| artist.genre.clone())
+            .filter(|genre| !genre.is_empty())
+            .min()
+            .expect("a sample genre");
+        let card = page_widget(&app, &format!("music.genre.{genre}"));
+        send(&mut app, &cursor_at(card.center()), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        send(&mut app, &released(MouseButton::Left), &mut doc);
         assert_eq!(
             app.view,
             View::Browse,
@@ -4413,6 +4411,14 @@ fn has_play_of(app: &MusicApp, id: &str) -> bool {
             && slot.table.rows().iter().any(|row| row.id == id)
     })
 }
+/// Where the page's embedded widget with test id `id` stands.
+fn page_widget(app: &MusicApp, id: &str) -> Rect {
+    app.page_parts
+        .iter()
+        .find_map(|part| part.find(id))
+        .unwrap_or_else(|| panic!("the page shows {id}"))
+}
+
 fn has_nav(app: &MusicApp, view: View) -> bool {
     let want = Action::Nav(view);
     app.hits.iter().any(|h| h.action == want)
@@ -4478,12 +4484,8 @@ fn artist_and_album_pages_navigate_and_play() {
         draw_at(&mut app, &mut doc, 1280.0, 2400.0);
         // The full artist page surfaces a Follow control, related artists, and the
         // album + single as separate discography entries.
-        assert!(
-            app.hits
-                .iter()
-                .any(|h| h.action == Action::ToggleFollow("UCdaftpunk".into())),
-            "the artist page has a Follow control",
-        );
+        let follow = page_widget(&app, "music.page.Follow");
+        assert!(follow.width() > 0.0, "the artist page has a Follow control");
         assert!(
             has_nav(&app, View::Artist("UCjustice".into())),
             "related artists are navigable"
@@ -4532,14 +4534,16 @@ fn artist_and_album_pages_navigate_and_play() {
                 "album track {vid} is a playable row"
             );
         }
-        // The album header plays the whole album in track order.
-        let header = app.hits.iter().any(|h| {
-            matches!(
-                &h.action,
-                Action::Play { queue, index: 0 }
-                    if queue.len() == 3 && queue[0] == "yt:al_one" && queue[2] == "yt:al_three"
-            )
-        });
-        assert!(header, "the album header plays the whole album in order");
+        // The album header's Play plays the whole album in track order.
+        let play = page_widget(&app, "music.page.Play");
+        send(&mut app, &cursor_at(play.center()), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        send(&mut app, &released(MouseButton::Left), &mut doc);
+        assert_eq!(
+            app.pb.queue,
+            ["yt:al_one", "yt:al_two", "yt:al_three"],
+            "the album header plays the whole album in order"
+        );
+        assert_eq!(app.pb.current.as_deref(), Some("yt:al_one"));
     }
 }
