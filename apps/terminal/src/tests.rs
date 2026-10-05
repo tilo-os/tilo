@@ -435,7 +435,7 @@ fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -463,7 +463,7 @@ fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -491,7 +491,7 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -529,7 +529,7 @@ fn send_mouse_button_mods(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -550,7 +550,7 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -636,7 +636,7 @@ fn send_key_with_modifiers(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -679,7 +679,7 @@ fn send_key_without_text(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -2599,7 +2599,7 @@ fn ime_and_accessibility_expose_terminal_semantics() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3539,7 +3539,7 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -3568,7 +3568,7 @@ fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -3769,7 +3769,7 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

@@ -5070,7 +5070,7 @@ impl Widget for BackupsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
@@ -5507,7 +5507,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &m,
-                    state: &mut self.state.doc,
+                    state: ui::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5524,7 +5524,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &m,
-                    state: &mut self.state.doc,
+                    state: ui::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5565,7 +5565,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &m,
-                        state: &mut self.state.doc,
+                        state: ui::widget::Edits::lend(&mut self.state.doc),
                         path: &self.state.root,
                         handled: &mut handled,
                         focus_target: &mut focus,

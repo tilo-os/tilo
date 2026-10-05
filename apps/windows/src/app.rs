@@ -2766,7 +2766,7 @@ impl Widget for WindowsApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(

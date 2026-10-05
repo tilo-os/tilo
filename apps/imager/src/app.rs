@@ -5244,7 +5244,7 @@ impl Widget for ImagerApp {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.path,
         ) {
             *ctx.handled = true;
@@ -5378,7 +5378,7 @@ impl Widget for ImagerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as AccessAction;

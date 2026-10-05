@@ -23,7 +23,7 @@
 //! (that lives in the app's top strip).
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -615,7 +615,7 @@ impl Widget for SidebarRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -978,7 +978,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &mods,
-                        state: &mut doc,
+                        state: ui::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus,

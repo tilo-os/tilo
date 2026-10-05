@@ -6560,7 +6560,7 @@ impl Widget for VideoEditorApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                if self.handle_key(&key_event.logical_key, *ctx.modifiers, ctx.state, &r) {
+                if self.handle_key(&key_event.logical_key, *ctx.modifiers, &mut ctx.state, &r) {
                     *ctx.handled = true;
                 }
             }
@@ -6579,7 +6579,7 @@ impl Widget for VideoEditorApp {
                 {
                     self.place_cursor_at(&r, self.last_mouse);
                 }
-                self.handle_press(ctx.state, &r, ctx.modifiers.state().shift_key());
+                self.handle_press(&mut ctx.state, &r, ctx.modifiers.state().shift_key());
                 // Take the keyboard, the way every shared widget in `ui` does
                 // on a press. Without it the editor only ever held focus after
                 // a Tab, so a user who clicked into it and then used the arrow
@@ -7099,7 +7099,7 @@ impl Widget for VideoEditorApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::{Action, hash_key};

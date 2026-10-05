@@ -5,7 +5,6 @@
 //! person already here. The passphrase stays host-local; the collaborative
 //! profile only records the network name, device label, and whether to enroll.
 
-use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -221,9 +220,13 @@ impl WriteSetupPanel {
 
     /// Apply `action` now, inside the event that made it, so the field's
     /// next keystroke continues the same undo step.
-    fn dispatch(doc: &mut AutoCommit, edits: Option<&Dispatcher<Imager>>, action: &ImagerAction) {
+    fn dispatch(
+        doc: &mut ui::widget::Edits<'_>,
+        edits: Option<&Dispatcher<Imager>>,
+        action: &ImagerAction,
+    ) {
         if let Some(edits) = edits {
-            let _ = edits.apply_now(&mut ui::widget::Edits::lend(doc), action);
+            let _ = edits.apply_now(doc, action);
         }
     }
 
@@ -465,7 +468,7 @@ impl WriteSetupPanel {
             self.blur();
             self.focused = Some(SetupField::Enroll);
             Self::dispatch(
-                ctx.state,
+                &mut ctx.state,
                 edits,
                 &ImagerAction::SetEnrollLocalIdentity {
                     on: !profile.enroll_local_identity,
@@ -511,7 +514,7 @@ impl WriteSetupPanel {
                 Key::Named(NamedKey::Enter | NamedKey::Space)
             ) {
                 Self::dispatch(
-                    ctx.state,
+                    &mut ctx.state,
                     edits,
                     &ImagerAction::SetEnrollLocalIdentity {
                         on: !profile.enroll_local_identity,
@@ -565,7 +568,7 @@ impl WriteSetupPanel {
             };
         }
         if let Some(action) = Self::field_action(field, value) {
-            Self::dispatch(ctx.state, edits, &action);
+            Self::dispatch(&mut ctx.state, edits, &action);
         }
         SetupResponse {
             handled: true,

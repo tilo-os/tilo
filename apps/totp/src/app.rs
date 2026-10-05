@@ -1468,7 +1468,7 @@ impl Widget for AuthenticatorApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if self.add_panel.is_open() {

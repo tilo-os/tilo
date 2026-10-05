@@ -133,7 +133,7 @@ fn click_at(
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: doc.reborrow(),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,

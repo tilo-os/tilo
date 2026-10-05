@@ -536,7 +536,7 @@ impl Widget for TimeZoneMap {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
         match action {

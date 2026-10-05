@@ -1245,7 +1245,11 @@ impl PdfApp {
     /// Test-only: one frame's sync, then what it submitted applied to `doc`
     /// as the host applies it, and shown in the same frame.
     #[cfg(test)]
-    pub(crate) fn sync_settled(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
+    pub(crate) fn sync_settled(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        root: &automerge::ObjId,
+    ) {
         Widget::sync(self, doc, root);
         let Some(dispatcher) = self.dispatcher.clone() else {
             return;
@@ -1269,7 +1273,7 @@ impl PdfApp {
 
     pub(crate) fn perform_action(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         action: &crate::actions::PdfViewerAction,
     ) {
         let Some(dispatcher) = self.dispatcher.as_ref() else {
@@ -1281,7 +1285,7 @@ impl PdfApp {
             return;
         }
         if let Err(error) = dispatcher.apply_now_with(
-            &mut ui::widget::Edits::lend(state),
+            state,
             action,
             tilo_actions::ActionContext::for_action(APP_ID, "PDF Viewer", action),
         ) {
@@ -1534,7 +1538,7 @@ impl PdfApp {
 
     /// Author a new annotation drawn in card space: store its geometry in
     /// the page's PDF user space, anchored to the page occurrence.
-    fn author_annotation(&mut self, state: &mut AutoCommit, a: &Annotation) {
+    fn author_annotation(&mut self, state: &mut ui::widget::Edits<'_>, a: &Annotation) {
         let user = Annotation {
             created_ms: now_ms(),
             ..self.page_map(a.page).annotation_to_user(a)
@@ -1978,7 +1982,7 @@ impl PdfApp {
     /// Apply the events the shared page rail produced this gesture: selection
     /// jumps, drag-reorder, context-menu duplicate/move/delete, and the import
     /// affordance.
-    fn apply_sidebar_events(&mut self, state: &mut AutoCommit) {
+    fn apply_sidebar_events(&mut self, state: &mut ui::widget::Edits<'_>) {
         for ev in self.page_sidebar.take_events() {
             match ev {
                 PageSidebarEvent::Select(i) => self.go_to_page(i + 1),
@@ -3214,7 +3218,7 @@ impl PdfApp {
         bands
     }
 
-    fn commit_drag(&mut self, state: &mut AutoCommit) {
+    fn commit_drag(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(d) = self.drag.take() else { return };
         match d.tool {
             Tool::Highlight => {
@@ -3274,7 +3278,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    fn create_note(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    fn create_note(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
         let anno_id = Annotation::new_id();
         self.created_counter += 1;
         let comment_id = Comment::new_id();
@@ -3399,7 +3403,7 @@ impl PdfApp {
     /// Write the active edit's text to its durable home and clear the edit.
     /// An emptied comment body (with no replies) removes the note entirely so
     /// an abandoned marker never litters the page.
-    fn commit_edit(&mut self, state: &mut AutoCommit) {
+    fn commit_edit(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(e) = self.editing.take() else { return };
         let text = e.text();
         let clips = e.clips();
@@ -3526,7 +3530,7 @@ impl PdfApp {
         }
     }
 
-    fn place_signature(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    fn place_signature(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
         // Refuse to stamp an empty drawn signature — the user must draw one
         // first (or switch to a typed signature).
         let Some(ink) = self.composed_ink() else {
@@ -3639,7 +3643,7 @@ impl PdfApp {
 
     /// Act on a click on a form widget: edit text, toggle a check box, pick
     /// a radio button, or step a choice field to its next option.
-    fn activate_field(&mut self, state: &mut AutoCommit, w: &FieldWidgetHit) {
+    fn activate_field(&mut self, state: &mut ui::widget::Edits<'_>, w: &FieldWidgetHit) {
         if w.read_only {
             self.status_note = Some(format!("“{}” is read-only", w.name));
             self.dirty = true;
@@ -3683,7 +3687,12 @@ impl PdfApp {
 
     /// A click on a page with the select tool: form widgets first, then
     /// markup.
-    pub(crate) fn click_page(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    pub(crate) fn click_page(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        page: usize,
+        pt: (f64, f64),
+    ) {
         if let Some(widget) = self.field_at(page, pt) {
             self.activate_field(state, &widget);
             return;
@@ -3943,7 +3952,7 @@ impl PdfApp {
 
     /// Record a free text box's current (card-space) box and size in its
     /// page's user space.
-    fn persist_free_text_box(&mut self, state: &mut AutoCommit, id: &str) {
+    fn persist_free_text_box(&mut self, state: &mut ui::widget::Edits<'_>, id: &str) {
         let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
             return;
         };
@@ -3959,7 +3968,7 @@ impl PdfApp {
 
     /// Place a new free text box with its top-left corner at `pt` (card
     /// space) and start typing into it.
-    fn create_free_text(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    fn create_free_text(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
         const WIDTH: f64 = 180.0; // PDF points on the page, not UI spacing
         let size = model::FREE_TEXT_SIZE;
         let height = size * 1.2 * 2.0 + 4.0;
@@ -4001,7 +4010,7 @@ impl PdfApp {
     }
 
     /// Step a free text box's text size by `delta` points.
-    fn resize_free_text(&mut self, state: &mut AutoCommit, id: &str, delta: f64) {
+    fn resize_free_text(&mut self, state: &mut ui::widget::Edits<'_>, id: &str, delta: f64) {
         if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id)
             && let AnnoKind::FreeText { size, .. } = &mut a.kind
         {
@@ -4057,7 +4066,7 @@ impl PdfApp {
 
     /// Highlight the live text selection in `swatch` — one highlight annotation
     /// per selection band — then clear the selection.
-    fn highlight_selection(&mut self, state: &mut AutoCommit, swatch: Swatch) -> bool {
+    fn highlight_selection(&mut self, state: &mut ui::widget::Edits<'_>, swatch: Swatch) -> bool {
         let Some(sel) = self.selection else {
             return false;
         };
@@ -4093,7 +4102,7 @@ impl PdfApp {
 
     /// Attach a sticky note to the start of the live selection and open its
     /// editor (mirrors the ebook reader's note-from-selection flow).
-    fn note_from_selection(&mut self, state: &mut AutoCommit) -> bool {
+    fn note_from_selection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let bands = self.selection_page_bands();
         let Some(first) = bands.first().copied() else {
             return false;
@@ -4108,7 +4117,7 @@ impl PdfApp {
     }
 
     /// Route a shared-HUD action to this reader's commands.
-    fn apply_hud_action(&mut self, action: ui::HudAction, state: &mut AutoCommit) {
+    fn apply_hud_action(&mut self, action: ui::HudAction, state: &mut ui::widget::Edits<'_>) {
         match action {
             ui::HudAction::Copy => {
                 self.copy_selection();
@@ -4159,7 +4168,7 @@ impl PdfApp {
     /// selection that pointed at it, and force a redraw. Used by the Delete
     /// key, the sidebar item buttons, and the right-click context menu — so
     /// every delete affordance lands on the same model mutation.
-    fn delete_target(&mut self, target: &DeleteTarget, state: &mut AutoCommit) {
+    fn delete_target(&mut self, target: &DeleteTarget, state: &mut ui::widget::Edits<'_>) {
         match target {
             DeleteTarget::Annotation(id) => {
                 self.perform_action(state, &crate::actions::delete_annotation_action(id));
@@ -4196,7 +4205,7 @@ impl PdfApp {
     }
 
     /// Delete whichever markup the user currently has selected (Delete key).
-    fn delete_selected(&mut self, state: &mut AutoCommit) -> bool {
+    fn delete_selected(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         if let Some(id) = self.selected_anno.clone() {
             self.delete_target(&DeleteTarget::Annotation(id), state);
             true
@@ -5126,7 +5135,7 @@ impl Widget for PdfApp {
                 }
             };
             if let Some(target) = selected_target {
-                self.delete_target(&target, ctx.state);
+                self.delete_target(&target, &mut ctx.state);
                 self.context_menu = None;
                 *ctx.handled = true;
                 return;
@@ -5153,7 +5162,7 @@ impl Widget for PdfApp {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.handled,
         );
     }
@@ -5531,7 +5540,7 @@ impl Widget for PdfApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;

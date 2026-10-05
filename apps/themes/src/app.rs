@@ -23,7 +23,6 @@ use ui::tilo_actions;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::AutoCommit;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
@@ -441,13 +440,13 @@ impl ThemesApp {
     /// input event's document is at hand, so a drag shows every value it
     /// passes through and continues one undo step; queued for the host
     /// otherwise, as a bound control's action is.
-    fn submit(&self, doc: Option<&mut AutoCommit>, action: &ThemesAction) {
+    fn submit(&self, doc: Option<&mut ui::widget::Edits<'_>>, action: &ThemesAction) {
         let Some(dispatch) = &self.dispatch else {
             return;
         };
         match doc {
             Some(doc) => {
-                let _ = dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action);
+                let _ = dispatch.apply_now(doc, action);
             }
             None => dispatch.apply(action),
         }
@@ -456,7 +455,7 @@ impl ThemesApp {
     /// Turn what the person did on the controls since the last call into
     /// edits: library commands, the colour slot, values set on the controls
     /// and a committed inline name.
-    fn commit(&mut self, mut doc: Option<&mut AutoCommit>) {
+    fn commit(&mut self, mut doc: Option<&mut ui::widget::Edits<'_>>) {
         while let Some(command) = self.gallery.take_command() {
             if let Some(action) = self.process_command(&command) {
                 self.submit(doc.as_deref_mut(), &action);
@@ -1451,7 +1450,7 @@ impl Widget for ThemesApp {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.route_event(event, ctx);
-        self.commit(Some(&mut *ctx.state));
+        self.commit(Some(&mut ctx.state));
         // Letting go of a slider or the colour picker ends its gesture: the
         // values one drag passed through are one undo step, the next drag is
         // another.
@@ -1877,7 +1876,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: focus,

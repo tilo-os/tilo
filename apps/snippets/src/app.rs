@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::paint::PaintCtx;
@@ -479,7 +480,7 @@ impl SnippetsApp {
     /// text, applied now so the next keystroke splices the text it made.
     /// Typing a word is one undo step. A refused edit (a viewer's) writes
     /// nothing, and the editor shows the stored text again.
-    fn flush_body_edit(&mut self, doc: &mut AutoCommit) {
+    fn flush_body_edit(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(text) = self.body_editor.take_dirty() else {
             return;
         };
@@ -488,11 +489,9 @@ impl SnippetsApp {
         };
         let stored = SnippetsDoc::get(doc, id).map(|snippet| snippet.body);
         let applied = match (&self.body_edits, &stored) {
-            (Some(edits), Some(stored)) => splice_between(stored, &text).is_none_or(|edit| {
-                edits
-                    .apply_now(&mut ui::widget::Edits::lend(doc), &edit)
-                    .is_ok()
-            }),
+            (Some(edits), Some(stored)) => {
+                splice_between(stored, &text).is_none_or(|edit| edits.apply_now(doc, &edit).is_ok())
+            }
             _ => false,
         };
         if !applied {
@@ -515,7 +514,7 @@ impl SnippetsApp {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let modifiers = *ctx.modifiers;
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         if !self.body_available() {
             self.body_editor.set_focused(false);
             return false;
@@ -561,7 +560,7 @@ impl SnippetsApp {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut handled,
                 focus_target: ctx.focus_target,
@@ -1239,7 +1238,7 @@ impl ui::widget::Widget for SnippetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -1541,7 +1540,7 @@ impl SnippetsApp {
     /// embedded search editor have both had first refusal.
     fn dispatch_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let modifiers = *ctx.modifiers;
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         let path = ctx.path;
         let focus_target = &mut *ctx.focus_target;
         let node_id = ctx.node_id;
@@ -1557,7 +1556,7 @@ impl SnippetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path,
                         handled: &mut *ctx.handled,
                         focus_target,
@@ -1588,7 +1587,7 @@ impl SnippetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path,
                         handled: &mut *ctx.handled,
                         focus_target,
@@ -1605,7 +1604,7 @@ impl SnippetsApp {
                         &mut ui::widget::EventCtx {
                             scale_factor: ctx.scale_factor,
                             modifiers: &modifiers,
-                            state,
+                            state: state.reborrow(),
                             path,
                             handled: &mut *ctx.handled,
                             focus_target,
@@ -1787,7 +1786,7 @@ impl SnippetsApp {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut input_handled,
                 focus_target: &mut *ctx.focus_target,
@@ -2832,7 +2831,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

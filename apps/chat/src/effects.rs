@@ -14,8 +14,6 @@ use ui::framework::{EffectAnswer, EffectStatus, Effected};
 use ui::native_media::Command;
 use ui::tilo_resource::{self, Effect};
 
-use automerge::AutoCommit;
-
 use crate::app::{ChatApp, Focus};
 use crate::model::ChannelKind;
 
@@ -177,7 +175,10 @@ impl ChatApp {
     /// made through `doc` at once when the caller holds the document (the
     /// header button), else through the dispatcher, and joined once it is
     /// there.
-    pub(crate) fn start_call(&mut self, doc: Option<&mut AutoCommit>) -> Result<(), String> {
+    pub(crate) fn start_call(
+        &mut self,
+        doc: Option<&mut ui::widget::Edits<'_>>,
+    ) -> Result<(), String> {
         if !self.call_allows(crate::call::CallAction::Join) {
             return Err("Call action is not permitted".into());
         }

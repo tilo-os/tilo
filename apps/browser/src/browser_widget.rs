@@ -4294,7 +4294,7 @@ impl Continuable for BrowserWidget {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        _state: &mut AutoCommit,
+        _state: &mut ui::widget::Edits<'_>,
         _root: &ObjId,
     ) -> bool {
         metadata.schema_version == 1 && self.restore_page(&metadata.bytes)
@@ -5039,7 +5039,7 @@ impl Widget for BrowserWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if self
@@ -5856,7 +5856,7 @@ mod architecture_tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -5927,7 +5927,7 @@ mod architecture_tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 2.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut AutoCommit::new(),
+                    state: ui::widget::Edits::lend(&mut AutoCommit::new()),
                     path: &automerge::ROOT,
                     handled: &mut false,
                     focus_target: &mut None,
@@ -5997,7 +5997,7 @@ mod architecture_tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: ui::widget::Edits::lend(&mut doc),
                         path: &automerge::ROOT,
                         handled: &mut false,
                         focus_target: &mut target,
@@ -8827,7 +8827,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: ui::widget::Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,

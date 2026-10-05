@@ -8689,7 +8689,7 @@ impl Widget for FileExplorerWidget {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         let path = ctx.path;
         self.poll_share_result();
         self.poll_history_result();
@@ -8729,7 +8729,7 @@ impl Widget for FileExplorerWidget {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -9029,7 +9029,7 @@ impl Widget for FileExplorerWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;

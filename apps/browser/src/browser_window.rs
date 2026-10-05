@@ -518,7 +518,7 @@ impl Widget for BrowserWindow {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self
@@ -663,7 +663,7 @@ impl Continuable for BrowserWindow {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         self.page
@@ -898,7 +898,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::from(modifiers),
-                state: &mut AutoCommit::new(),
+                state: ui::widget::Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,

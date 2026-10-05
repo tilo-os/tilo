@@ -5,8 +5,9 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -341,11 +342,11 @@ impl CalculatorApp {
     /// Only ever call this for an action that genuinely mutates the document —
     /// the affordances gate on a real change (a non-empty history to clear, an
     /// existing row to toggle/delete).
-    fn submit(&self, doc: &mut AutoCommit, action: &CalculatorAction) {
+    fn submit(&self, doc: &mut ui::widget::Edits<'_>, action: &CalculatorAction) {
         if let Some(dispatch) = &self.dispatch {
             // A refusal (a participant who may only view) writes nothing, and
             // the stored rows are presented again.
-            let _ = dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action);
+            let _ = dispatch.apply_now(doc, action);
         }
     }
 
@@ -359,7 +360,7 @@ impl CalculatorApp {
 
     /// Add a graph row (empty, or a starter formula), select it, and submit
     /// its `AddGraph`.
-    fn add_graph(&mut self, kind: GraphKind, expr: &str, doc: &mut AutoCommit) {
+    fn add_graph(&mut self, kind: GraphKind, expr: &str, doc: &mut ui::widget::Edits<'_>) {
         self.settle_edit();
         let action = actions::add_graph_action(kind, expr);
         if let CalculatorAction::AddGraph { id, .. } = &action {
@@ -384,7 +385,12 @@ impl CalculatorApp {
     }
 
     /// Show or hide the `index`-th row of a graph list.
-    fn toggle_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut AutoCommit) -> bool {
+    fn toggle_graph_row(
+        &mut self,
+        kind: GraphKind,
+        index: usize,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         let rows = match kind {
             GraphKind::Curve2d => &mut self.model.funcs,
             GraphKind::Surface3d => &mut self.model.surfaces,
@@ -402,7 +408,13 @@ impl CalculatorApp {
     }
 
     /// Replace the formula of the `index`-th row of a graph list, as typed.
-    fn set_graph_expr(&mut self, kind: GraphKind, index: usize, expr: &str, doc: &mut AutoCommit) {
+    fn set_graph_expr(
+        &mut self,
+        kind: GraphKind,
+        index: usize,
+        expr: &str,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         let rows = match kind {
             GraphKind::Curve2d => &mut self.model.funcs,
             GraphKind::Surface3d => &mut self.model.surfaces,
@@ -418,7 +430,7 @@ impl CalculatorApp {
     }
 
     /// Empty the history.
-    fn clear_history(&mut self, doc: &mut AutoCommit) {
+    fn clear_history(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Only a non-empty history is a real mutation.
         if self.model.history.is_empty() {
             return;
@@ -434,7 +446,7 @@ impl CalculatorApp {
     /// the [`CommitHistory`](CalculatorAction::CommitHistory) action so the new
     /// history row lands on the shared, replayable, undoable path. A failed or
     /// empty evaluation commits nothing and dispatches nothing.
-    fn commit_equals(&mut self, doc: &mut AutoCommit) {
+    fn commit_equals(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(entry) = self.model.commit_equals() {
             self.submit(
                 doc,
@@ -460,7 +472,7 @@ impl CalculatorApp {
     /// editable starter — an empty curve, an example surface — through the
     /// same `AddGraph` action the palette offers, so it is undoable and
     /// reaches collaborators.
-    fn switch_mode(&mut self, m: Mode, doc: &mut AutoCommit) {
+    fn switch_mode(&mut self, m: Mode, doc: &mut ui::widget::Edits<'_>) {
         self.settle_edit();
         self.set_mode(m);
         match m {
@@ -573,7 +585,7 @@ impl CalculatorApp {
 
     // -- pointer routing -----------------------------------------------------
 
-    fn on_press(&mut self, p: Point, doc: &mut AutoCommit) {
+    fn on_press(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
         // A press ends the formula edit in progress: the next keystroke is
         // an undo step of its own.
         self.settle_edit();
@@ -609,7 +621,7 @@ impl CalculatorApp {
         }
     }
 
-    fn on_press_g3(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
+    fn on_press_g3(&mut self, p: Point, double: bool, doc: &mut ui::widget::Edits<'_>) {
         // Overlay-drawer chrome takes priority over the canvas underneath.
         if self.g3.toggle_at(p) {
             self.g3.toggle_panel();
@@ -645,7 +657,7 @@ impl CalculatorApp {
         }
     }
 
-    fn on_press_calc(&mut self, p: Point, doc: &mut AutoCommit) {
+    fn on_press_calc(&mut self, p: Point, doc: &mut ui::widget::Edits<'_>) {
         // History sidebar chrome takes priority over the keypad underneath.
         if self.calc.toggle_at(p) {
             self.calc.toggle_sidebar();
@@ -684,7 +696,7 @@ impl CalculatorApp {
         }
     }
 
-    fn on_press_g2(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
+    fn on_press_g2(&mut self, p: Point, double: bool, doc: &mut ui::widget::Edits<'_>) {
         // Overlay-drawer chrome takes priority over the canvas underneath.
         if self.g2.toggle_at(p) {
             self.g2.toggle_panel();
@@ -732,7 +744,7 @@ impl CalculatorApp {
     /// palette offers. The model is deliberately not spliced optimistically:
     /// the presented rows are the exact merged list a collaborator sees, and
     /// keep active-row clamping in one place (`adopt_resource_state`).
-    fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut AutoCommit) {
+    fn delete_graph_row(&mut self, kind: GraphKind, index: usize, doc: &mut ui::widget::Edits<'_>) {
         if let Some(id) = self.rows.graph_id(kind, index) {
             let action = actions::delete_graph_action(kind, id);
             self.submit(doc, &action);
@@ -857,7 +869,12 @@ impl CalculatorApp {
             && self.model.expr.is_empty()
     }
 
-    fn on_key(&mut self, key: &WKey, modifiers: winit::event::Modifiers, doc: &mut AutoCommit) {
+    fn on_key(
+        &mut self,
+        key: &WKey,
+        modifiers: winit::event::Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         self.on_key_with_paste(key, modifiers, doc, ui::clipboard_paste);
     }
 
@@ -865,7 +882,7 @@ impl CalculatorApp {
         &mut self,
         key: &WKey,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         paste: impl FnOnce() -> Option<String>,
     ) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
@@ -992,7 +1009,7 @@ impl CalculatorApp {
         &mut self,
         key: &WKey,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         self.g2.sync_fields(&self.model);
         let a = self.model.active_fn;
@@ -1017,7 +1034,7 @@ impl CalculatorApp {
         &mut self,
         key: &WKey,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         self.g3.sync_fields(&self.model);
         let a = self.model.active_surface;
@@ -1155,7 +1172,11 @@ impl CalculatorApp {
         Ok(())
     }
 
-    fn perform_effect(&mut self, effect: actions::CalculatorEffect, doc: &mut AutoCommit) {
+    fn perform_effect(
+        &mut self,
+        effect: actions::CalculatorEffect,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         let mode = match effect {
             actions::CalculatorEffect::Open { entry } => {
                 if let Some((_, past)) = self.rows.history.iter().find(|(row, _)| *row == entry) {
@@ -1206,10 +1227,9 @@ impl Widget for CalculatorApp {
             .then_some(winit::window::ImePurpose::Normal)
     }
 
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
         if let Some(effect) = self.pending_effect.take() {
-            let (doc, _) = ui::doc::document(state, path);
-            self.perform_effect(effect, doc);
+            self.perform_effect(effect, edits);
         }
     }
 
@@ -1368,7 +1388,7 @@ impl Widget for CalculatorApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_press(self.mouse, ctx.state);
+                self.on_press(self.mouse, &mut ctx.state);
                 *ctx.handled = true;
             }
             WindowEvent::MouseInput {
@@ -1395,13 +1415,13 @@ impl Widget for CalculatorApp {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
                 *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
-                self.on_key(&key_event.logical_key, *ctx.modifiers, ctx.state);
+                self.on_key(&key_event.logical_key, *ctx.modifiers, &mut ctx.state);
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.on_key(
                     &WKey::Character(text.clone().into()),
                     winit::event::Modifiers::default(),
-                    ctx.state,
+                    &mut ctx.state,
                 );
                 *ctx.handled = true;
             }
@@ -1621,7 +1641,7 @@ impl Widget for CalculatorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -1888,7 +1908,7 @@ impl CalculatorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use ui::a11y::Action;
         let Some(rest) = target.strip_prefix("calculator.graph.") else {
@@ -2810,7 +2830,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut st.doc,
+                state: ui::widget::Edits::lend(&mut st.doc),
                 path: &st.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3096,7 +3116,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut st.doc,
+                    state: ui::widget::Edits::lend(&mut st.doc),
                     path: &st.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -3113,7 +3133,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut st.doc,
+                    state: ui::widget::Edits::lend(&mut st.doc),
                     path: &st.root,
                     handled: &mut handled,
                     focus_target: &mut focus,

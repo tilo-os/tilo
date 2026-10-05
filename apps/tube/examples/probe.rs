@@ -1440,7 +1440,7 @@ fn run_bench_scroll(
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut state.doc,
+                    state: ui::widget::Edits::lend(&mut state.doc),
                     path: &state.root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,

@@ -15,6 +15,8 @@
 //! feed. The hermetic `--shots` / test path uses a self-contained sample
 //! source so screenshots and tests never touch the disk or a device.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -25,7 +27,7 @@ use tilo_clock::unix_now_i64;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect};
@@ -1378,7 +1380,11 @@ impl CameraApp {
     /// single mutation path shared with the Ctrl+K palette — to the document
     /// the event was handed, through the framework's dispatcher: checked,
     /// attributed, one undo step, replicated.
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CameraAction) {
+    fn perform_action(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        action: &crate::actions::CameraAction,
+    ) {
         if let Err(error) = self.try_perform_action(doc, action) {
             self.toast = Some(format!("Couldn't save change: {error}"));
         }
@@ -1388,7 +1394,7 @@ impl CameraApp {
     /// mutation (worker settlement and destructive resource effects).
     fn try_perform_action(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         action: &crate::actions::CameraAction,
     ) -> Result<(), String> {
         let Some(dispatcher) = &self.dispatcher else {
@@ -1396,7 +1402,7 @@ impl CameraApp {
         };
         dispatcher
             .apply_now_with(
-                &mut ui::widget::Edits::lend(doc),
+                doc,
                 action,
                 tilo_actions::ActionContext::for_action("so.tilo.camera", "Camera", action),
             )
@@ -1449,7 +1455,7 @@ impl CameraApp {
         }
     }
 
-    fn apply(&mut self, action: Action, doc: &mut AutoCommit, root: &ObjId) {
+    fn apply(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         self.dirty = true;
         // Any interaction clears a transient confirmation; the action below
         // sets a fresh one if it has something to report.
@@ -1499,7 +1505,7 @@ impl CameraApp {
         }
     }
 
-    fn apply_nav(&mut self, s: Screen, _doc: &mut AutoCommit, _root: &ObjId) {
+    fn apply_nav(&mut self, s: Screen, _doc: &mut ui::widget::Edits<'_>, _root: &ObjId) {
         // Remember which viewfinder an overlay was summoned from so its
         // back button returns there.
         if matches!(s, Screen::Settings)
@@ -1958,11 +1964,11 @@ impl CameraApp {
         }
     }
 
-    fn apply_back(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
+    fn apply_back(&mut self, _doc: &mut ui::widget::Edits<'_>, _root: &ObjId) {
         self.screen = self.return_to;
     }
 
-    fn apply_shutter(&mut self, _doc: &mut AutoCommit, _root: &ObjId) {
+    fn apply_shutter(&mut self, _doc: &mut ui::widget::Edits<'_>, _root: &ObjId) {
         if let Err(error) = self.arm_or_cancel_timer() {
             self.toast = Some(error);
         }
@@ -2047,7 +2053,7 @@ impl CameraApp {
         }
     }
 
-    fn apply_scan_action(&mut self, i: usize, doc: &mut AutoCommit, root: &ObjId) {
+    fn apply_scan_action(&mut self, i: usize, doc: &mut ui::widget::Edits<'_>, root: &ObjId) {
         if let Some(s) = self.scanned.clone() {
             // The chosen action (open / connect / copy) is external; the
             // scan-history row-insert is the collaborative action.
@@ -2526,7 +2532,7 @@ impl CameraApp {
         }
     }
 
-    fn hit(&mut self, pos: Point, doc: &mut AutoCommit, root: &ObjId) -> bool {
+    fn hit(&mut self, pos: Point, doc: &mut ui::widget::Edits<'_>, root: &ObjId) -> bool {
         let found = self
             .regions
             .iter()
@@ -2715,8 +2721,31 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "sync is the one ordered document/lifecycle boundary"
     )]
-    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        // Another window, or another of the person's devices, changed the
+        // capture preferences.
+        if let Some((person, device)) = &self.preferences {
+            let kept = Settings::from_parts(person.get(), device.get());
+            if kept != self.settings {
+                self.settings = kept;
+                self.dirty = true;
+            }
+        }
+
+        #[cfg(feature = "live-capture")]
+        self.poll_camera();
+
+        // Hermetic path has no frame clock: while recording, synthesize a
+        // procedural frame each tick so a real multi-frame clip accumulates.
+        if self.recording.is_some() && matches!(self.storage, Storage::Sample) {
+            let seed = Self::viewfinder_seed(self.facing).wrapping_add((self.frame_gen as u8) & 3);
+            let fb = frame::viewfinder(seed, 480, 270);
+            let _ = self.push_camera_frame(fb);
+            self.dirty = true;
+        }
+    }
+
+    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
         self.forget_cancelled();
         self.poll_document_job();
         // An empty record already reads as Photo / Back / default settings.
@@ -2931,27 +2960,6 @@ impl Widget for CameraApp {
                 self.toast = Some(format!("Save failed: {error}"));
             }
         }
-        // Another window, or another of the person's devices, changed the
-        // capture preferences.
-        if let Some((person, device)) = &self.preferences {
-            let kept = Settings::from_parts(person.get(), device.get());
-            if kept != self.settings {
-                self.settings = kept;
-                self.dirty = true;
-            }
-        }
-
-        #[cfg(feature = "live-capture")]
-        self.poll_camera();
-
-        // Hermetic path has no frame clock: while recording, synthesize a
-        // procedural frame each tick so a real multi-frame clip accumulates.
-        if self.recording.is_some() && matches!(self.storage, Storage::Sample) {
-            let seed = Self::viewfinder_seed(self.facing).wrapping_add((self.frame_gen as u8) & 3);
-            let fb = frame::viewfinder(seed, 480, 270);
-            let _ = self.push_camera_frame(fb);
-            self.dirty = true;
-        }
     }
 
     fn build_layout(
@@ -3046,7 +3054,7 @@ impl Widget for CameraApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.hit(self.last_mouse, ctx.state, ctx.path) {
+                if self.hit(self.last_mouse, &mut ctx.state, ctx.path) {
                     *ctx.handled = true;
                 }
             }
@@ -3094,7 +3102,7 @@ impl Widget for CameraApp {
                                 && !target.cancelled
                                 && target.rect.contains(point)
                             {
-                                self.apply(target.action, ctx.state, ctx.path);
+                                self.apply(target.action, &mut ctx.state, ctx.path);
                             }
                             *ctx.handled = true;
                         }
@@ -3168,7 +3176,7 @@ impl Widget for CameraApp {
                     _ => None,
                 };
                 if let Some(a) = act {
-                    self.apply(a, ctx.state, ctx.path);
+                    self.apply(a, &mut ctx.state, ctx.path);
                     *ctx.handled = true;
                 }
             }
@@ -3223,7 +3231,7 @@ impl Widget for CameraApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -7334,7 +7342,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,

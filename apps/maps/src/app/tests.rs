@@ -958,7 +958,7 @@ fn search_field_overlay_keys_and_history_dispatch() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &ctrl,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2463,7 +2463,7 @@ fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut state,
+            state: ui::widget::Edits::lend(&mut state),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,

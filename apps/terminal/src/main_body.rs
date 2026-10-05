@@ -2330,7 +2330,7 @@ impl Widget for TerminalWidget {
         self.pump()
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _root: &ModelPath) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _root: &automerge::ObjId) {
         self.record(edits);
     }
 
@@ -2828,7 +2828,7 @@ impl Widget for TerminalWidget {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -2851,7 +2851,7 @@ impl Widget for TerminalWidget {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == self.terminal_transcript_target() {

@@ -13,14 +13,18 @@
 //! search box on the list, plus global shortcuts (Escape to go back,
 //! Ctrl-N for a new connection, `/` to focus search).
 
+#[cfg(test)]
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::AppModel;
+use ui::widget::ModelPath;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use iroh_base::{EndpointId, SecretKey};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
@@ -1993,7 +1997,7 @@ impl RemoteApp {
     fn route_to_focused_field(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         ctx: &EventRouteCtx<'_>,
     ) -> bool {
         let Some(f) = self.focus else { return false };
@@ -2006,7 +2010,7 @@ impl RemoteApp {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: &ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2688,7 +2692,7 @@ impl Widget for RemoteApp {
         reason = "the widget trait requires one exhaustive event router so pointer, keyboard, IME, and accessibility routing share one ordering contract"
     )]
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
-        let state = &mut *event_ctx.state;
+        let state = &mut event_ctx.state;
         if !matches!(event, WindowEvent::CursorMoved { .. }) && self.tooltips.dismiss() {
             self.dirty = true;
         }
@@ -3313,7 +3317,7 @@ impl Widget for RemoteApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
@@ -3731,7 +3735,7 @@ impl RemoteApp {
         &mut self,
         p: Point,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         ctx: &EventRouteCtx<'_>,
     ) {
         if p != self.pointer {
@@ -3809,7 +3813,7 @@ impl RemoteApp {
     fn handle_left_press_event(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
         ctx: &EventRouteCtx<'_>,
     ) {
@@ -3889,7 +3893,7 @@ impl RemoteApp {
         event: &WindowEvent,
         logical_key: &Key,
         text: Option<&str>,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
         ctx: &EventRouteCtx<'_>,
     ) {

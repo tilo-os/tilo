@@ -1710,7 +1710,7 @@ impl VideoEditorApp {
     /// Activate whatever the pane cursor is on — the keyboard's Enter, routed
     /// through the same `perform_action_at` an assistive technology uses, so
     /// the two can never do different things.
-    pub(super) fn activate_focused(&mut self, state: &mut AutoCommit) -> bool {
+    pub(super) fn activate_focused(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         use ui::a11y::{Action, hash_key};
         let pane = self.focus.pane;
         let rest: Vec<u64> = match pane {

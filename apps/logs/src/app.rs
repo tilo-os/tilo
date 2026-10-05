@@ -2778,7 +2778,7 @@ impl Widget for LogsApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == "logs.search" {

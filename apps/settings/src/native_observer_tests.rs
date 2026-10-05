@@ -229,7 +229,7 @@ impl Harness {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut self.doc,
+                    state: ui::widget::Edits::lend(&mut self.doc),
                     path: &root(),
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -278,7 +278,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -402,7 +402,7 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut h.doc,
+                state: ui::widget::Edits::lend(&mut h.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -506,7 +506,7 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut h.doc,
+            state: ui::widget::Edits::lend(&mut h.doc),
             path: &root(),
             handled: &mut false,
             focus_target: &mut None,

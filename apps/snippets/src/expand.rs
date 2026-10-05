@@ -7,9 +7,11 @@
 //! and consumes all input while open. State is local (it's a transient
 //! per-peer flow, not part of the shared library).
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -550,7 +552,7 @@ impl ExpandModal {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> Option<ExpandOutcome> {
         if matches!(action, ui::a11y::Action::Activate) {

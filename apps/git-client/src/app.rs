@@ -7,12 +7,14 @@
 //! active screen (changes / history / panels). Events are routed by
 //! hit-testing the regions each screen emits.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -59,7 +61,7 @@ struct InputEventCtx<'a> {
     event: &'a WindowEvent,
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     path: &'a ObjId,
     taffy: &'a TaffyTree<()>,
 }
@@ -2951,7 +2953,7 @@ impl Widget for GitClientApp {
                     event,
                     scale_factor: ctx.scale_factor,
                     modifiers: *ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     taffy: ctx.taffy,
                 });
@@ -2965,7 +2967,7 @@ impl Widget for GitClientApp {
                     event,
                     scale_factor: ctx.scale_factor,
                     modifiers: *ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     taffy: ctx.taffy,
                 });
@@ -2979,7 +2981,7 @@ impl Widget for GitClientApp {
                     event,
                     scale_factor: ctx.scale_factor,
                     modifiers: *ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     taffy: ctx.taffy,
                 });
@@ -2996,7 +2998,7 @@ impl Widget for GitClientApp {
                 self.handle_key(
                     event,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                     ctx.handled,
@@ -3054,7 +3056,7 @@ impl Widget for GitClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -3318,7 +3320,7 @@ impl GitClientApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         taffy: &TaffyTree<()>,
     ) -> bool {
@@ -3329,7 +3331,7 @@ impl GitClientApp {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -3348,7 +3350,7 @@ impl GitClientApp {
             ctx.event,
             ctx.scale_factor,
             ctx.modifiers,
-            &mut *ctx.state,
+            &mut ctx.state,
             ctx.path,
             ctx.taffy,
         );
@@ -3357,7 +3359,7 @@ impl GitClientApp {
             ctx.event,
             ctx.scale_factor,
             ctx.modifiers,
-            &mut *ctx.state,
+            &mut ctx.state,
             ctx.path,
             ctx.taffy,
         );
@@ -3366,7 +3368,7 @@ impl GitClientApp {
             ctx.event,
             ctx.scale_factor,
             ctx.modifiers,
-            &mut *ctx.state,
+            &mut ctx.state,
             ctx.path,
             ctx.taffy,
         );
@@ -3389,7 +3391,7 @@ impl GitClientApp {
                     ctx.event,
                     ctx.scale_factor,
                     ctx.modifiers,
-                    &mut *ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                 );
@@ -3406,7 +3408,7 @@ impl GitClientApp {
                 ctx.event,
                 ctx.scale_factor,
                 ctx.modifiers,
-                &mut *ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
@@ -3419,7 +3421,7 @@ impl GitClientApp {
                 ctx.event,
                 ctx.scale_factor,
                 ctx.modifiers,
-                &mut *ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
@@ -3447,7 +3449,7 @@ impl GitClientApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         taffy: &TaffyTree<()>,
         handled: &mut bool,

@@ -3172,7 +3172,7 @@ impl ContainersApp {
     // Interaction
     // =================================================================
 
-    pub(crate) fn on_click(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
+    pub(crate) fn on_click(&mut self, doc: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         // Modal layers consume clicks even outside their controls. (The confirm
         // and prompt dialogs are modal and captured upstream in `handle_event`,
         // so they are never active here.)
@@ -3214,7 +3214,7 @@ impl ContainersApp {
     }
 
     /// Apply the resolved click hit against the engine/document.
-    pub(crate) fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
+    pub(crate) fn apply_hit(&mut self, doc: &mut ui::widget::Edits<'_>, hit: Hit) {
         match hit {
             Hit::Section(s) => self.show_section(s),
             Hit::ToggleSidebar => {
@@ -3369,7 +3369,7 @@ impl ContainersApp {
         }
     }
 
-    fn apply_hit_combo_pick(&mut self, doc: &mut AutoCommit, pos: usize) {
+    fn apply_hit_combo_pick(&mut self, doc: &mut ui::widget::Edits<'_>, pos: usize) {
         let typed = CreateDoc::read(doc).get(CreateField::Image).to_owned();
         let options = self.engine.image_references();
         let filtered = combobox::filter_options(&options, &typed);
@@ -3444,14 +3444,14 @@ impl ContainersApp {
                 self.select_container(None);
             }
             *ctx.handled = true;
-            self.refresh_view(ctx.state);
+            self.refresh_view(&mut ctx.state);
             return;
         }
 
         // Create modal owns the keyboard while open.
         if self.create_open {
             self.create_modal_key(event, ctx, key);
-            self.refresh_view(ctx.state);
+            self.refresh_view(&mut ctx.state);
             return;
         }
 
@@ -3492,7 +3492,7 @@ impl ContainersApp {
                 _ => {}
             }
         }
-        self.refresh_view(ctx.state);
+        self.refresh_view(&mut ctx.state);
     }
 
     fn create_modal_key(
@@ -3508,20 +3508,20 @@ impl ContainersApp {
         if on_image && self.combo.open {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
-                    let len = self.filtered_image_len(ctx.state);
+                    let len = self.filtered_image_len(&mut ctx.state);
                     self.combo.move_highlight(1, len);
                     *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let len = self.filtered_image_len(ctx.state);
+                    let len = self.filtered_image_len(&mut ctx.state);
                     self.combo.move_highlight(-1, len);
                     *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     // Pick the highlighted suggestion, else submit.
-                    let typed = CreateDoc::read(ctx.state)
+                    let typed = CreateDoc::read(&mut ctx.state)
                         .get(CreateField::Image)
                         .to_owned();
                     let options = self.engine.image_references();
@@ -3531,10 +3531,10 @@ impl ContainersApp {
                         .and_then(|&idx| options.get(idx))
                         .cloned()
                     {
-                        self.set_create_field(ctx.state, CreateField::Image, &reference);
+                        self.set_create_field(&mut ctx.state, CreateField::Image, &reference);
                         self.combo.close();
                     } else {
-                        self.submit_create(ctx.state);
+                        self.submit_create(&mut ctx.state);
                     }
                     *ctx.handled = true;
                     return;
@@ -3552,7 +3552,7 @@ impl ContainersApp {
                 *ctx.handled = true;
             }
             Key::Named(NamedKey::Enter) => {
-                self.submit_create(ctx.state);
+                self.submit_create(&mut ctx.state);
                 *ctx.handled = true;
             }
             _ => {
@@ -3562,7 +3562,7 @@ impl ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );

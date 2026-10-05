@@ -21,7 +21,7 @@ use std::rc::Rc;
 use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::framework::{ChosenFile, Dispatcher};
 use vello::Scene;
@@ -6787,7 +6787,7 @@ impl Widget for ContactsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -7521,7 +7521,7 @@ impl ContactsApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.handled,
             );
@@ -7540,7 +7540,7 @@ impl ContactsApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.handled,
             );
@@ -7737,7 +7737,7 @@ impl ContactsApp {
                     return true;
                 }
                 self.handle_click(
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.handled,
                     ctx.node_id,
                     ctx.taffy,
@@ -7843,7 +7843,7 @@ impl ContactsApp {
     /// function.
     fn handle_click(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
@@ -8343,7 +8343,7 @@ impl ContactsApp {
 
     fn forward_press_to_focused_input(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         node_id: NodeId,
         taffy: &TaffyTree<()>,
@@ -8364,7 +8364,7 @@ impl ContactsApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state,
+                    state: state.reborrow(),
                     path,
                     handled: &mut h,
                     focus_target: &mut sink,
@@ -8382,7 +8382,7 @@ impl ContactsApp {
                         &mut ui::widget::EventCtx {
                             scale_factor: 1.0,
                             modifiers: &modifiers,
-                            state,
+                            state: state.reborrow(),
                             path,
                             handled: &mut h,
                             focus_target: &mut s2,
@@ -8654,7 +8654,7 @@ impl ContactsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -8699,7 +8699,7 @@ impl ContactsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
