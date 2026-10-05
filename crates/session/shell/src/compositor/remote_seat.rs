@@ -118,6 +118,16 @@ impl RemoteSeats {
         self.seats.get(&peer)
     }
 
+    /// Whether a press of `keycode` by `peer` repeats a key it holds: the
+    /// sender's auto-repeat. Modifiers never repeat.
+    pub fn repeats(&self, peer: PeerId, keycode: u32) -> bool {
+        !is_modifier_key(keycode)
+            && self
+                .seats
+                .get(&peer)
+                .is_some_and(|seat| seat.pressed_keys.contains(&keycode))
+    }
+
     /// Fold one peer's key transition into the single seat presented to a
     /// legacy app. Returns `true` only when the physical Wayland seat should
     /// receive the transition.
