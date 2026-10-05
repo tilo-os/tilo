@@ -166,7 +166,7 @@ impl CapnpBrokerState {
                     })
                 };
                 if changed {
-                    self.publish_action_catalogue();
+                    self.publish_changed_action_catalogue();
                 }
                 continue;
             }
@@ -208,7 +208,7 @@ impl CapnpBrokerState {
             .lock()
             .map_err(|_| "membership service registry unavailable")?
             .insert(room.clone(), peer);
-        self.publish_action_catalogue();
+        self.publish_changed_action_catalogue();
         let state = self.clone();
         tokio::task::spawn_local(async move {
             while let Some(envelope) = receiver.recv().await {
@@ -243,8 +243,12 @@ impl CapnpBrokerState {
                     break;
                 }
             }
-            if let Ok(mut surfaces) = state.surfaces.lock() {
-                surfaces.remove(&peer);
+            let removed = state
+                .surfaces
+                .lock()
+                .is_ok_and(|mut surfaces| surfaces.remove(&peer).is_some());
+            if removed {
+                state.publish_changed_action_catalogue();
             }
             if let Ok(mut peers) = state.workspace_membership_peers.lock() {
                 peers.remove(&room);
@@ -431,6 +435,117 @@ fn membership_action(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::{HostServices, WorkspaceMemberships};
+
+    struct DiscoveryMemberships;
+
+    impl WorkspaceMemberships for DiscoveryMemberships {
+        fn requires_room(&self, _: &str) -> bool {
+            true
+        }
+
+        fn health(&self) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn execute(&self, _: OwnerCommitRequest) -> tilo_peer_state::owner_commit::CommitFuture {
+            Box::pin(async { Err("discovery fixture must not mutate the owner".into()) })
+        }
+    }
+
+    fn membership_surface_counts(state: &CapnpBrokerState, room: &str) -> (usize, usize) {
+        let surfaces = state.published_surfaces();
+        let matching = surfaces
+            .iter()
+            .filter(|surface| {
+                surface.app_id == APP
+                    && surface.route.record_id == RECORD
+                    && surface.route.cluster_id == room
+            })
+            .collect::<Vec<_>>();
+        (
+            matching.len(),
+            matching.iter().map(|surface| surface.actions.len()).sum(),
+        )
+    }
+
+    #[tokio::test]
+    async fn service_surface_lifecycle_invalidates_discovery_only_on_actual_changes() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut tree = crate::test_support::WorkspaceTree::default();
+                tree.desktop
+                    .workspaces
+                    .push(tilo_desktop_model::Workspace::new(
+                        tilo_desktop_model::WorkspaceId(1),
+                        "Discovery",
+                    ));
+                let room = tree.desktop.workspaces.first().unwrap().room.to_string();
+                let tree = tree.shared();
+                let state = CapnpBrokerState::new_configured(
+                    &Arc::new(super::super::FanoutState::new()),
+                    Arc::new(std::sync::Mutex::new(
+                        super::super::BrokerChannels::default(),
+                    )),
+                    super::super::PeerPublisher::disabled(),
+                    Some(tree.authority()),
+                    None,
+                    None,
+                    HostServices {
+                        workspace_memberships: Some(Arc::new(DiscoveryMemberships)),
+                        ..Default::default()
+                    },
+                )
+                .0;
+                assert_eq!(state.published_surfaces_generation(), 0);
+                state.refresh_workspace_membership_services().unwrap();
+                assert_eq!(state.published_surfaces_generation(), 1);
+                assert_eq!(membership_surface_counts(&state, &room), (1, 2));
+                state.refresh_workspace_membership_services().unwrap();
+                assert_eq!(
+                    state.published_surfaces_generation(),
+                    1,
+                    "unchanged polling is not a source mutation"
+                );
+                tree.write()
+                    .desktop
+                    .workspaces
+                    .first_mut()
+                    .unwrap()
+                    .capabilities
+                    .push(collab_types::CapOverride::membership(
+                        collab_types::Subject::agent("scribe"),
+                        room.clone(),
+                        collab_types::Verb::Read,
+                    ));
+                state.refresh_workspace_membership_services().unwrap();
+                assert_eq!(state.published_surfaces_generation(), 2);
+                assert_eq!(membership_surface_counts(&state, &room), (1, 3));
+                state.refresh_workspace_membership_services().unwrap();
+                assert_eq!(state.published_surfaces_generation(), 2);
+                let peer = *state
+                    .workspace_membership_peers
+                    .lock()
+                    .unwrap()
+                    .get(&room)
+                    .unwrap();
+                state.invocation_subscribers.lock().unwrap().remove(&peer);
+                for _ in 0..16 {
+                    if state.published_surfaces_generation() == 3 {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                assert_eq!(
+                    state.published_surfaces_generation(),
+                    3,
+                    "real service retirement invalidates discovery"
+                );
+                assert_eq!(membership_surface_counts(&state, &room), (0, 0));
+                drop(state);
+            })
+            .await;
+    }
 
     fn envelope(
         resource: &str,
