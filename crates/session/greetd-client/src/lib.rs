@@ -285,7 +285,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                             text: auth_message.clone(),
                             is_error: false,
                         });
-                        tracing::info!(prompt = %auth_message, "greetd auth info");
+                        tracing::info!("greetd auth info");
                         None
                     }
                     AuthMessageType::Error => {
@@ -298,7 +298,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                             text: auth_message.clone(),
                             is_error: true,
                         });
-                        tracing::warn!(prompt = %auth_message, "greetd auth message (error type)");
+                        tracing::warn!("greetd auth message (error type)");
                         None
                     }
                 };
@@ -328,7 +328,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                         description,
                     } => {
                         cancel_session(stream);
-                        tracing::warn!(?error_type, %description, "greetd could not start the session");
+                        tracing::warn!(?error_type, "greetd could not start the session");
                         return Err(AuthError::SessionStart(description));
                     }
                     Response::AuthMessage { auth_message, .. } => {
@@ -346,7 +346,7 @@ pub fn run_exchange_with<S: Read + Write, F: FnMut(AuthPrompt), G: FnMut()>(
                 // Reset greetd's session slot so the user can retry without
                 // a stuck half-open session.
                 cancel_session(stream);
-                tracing::warn!(?error_type, %description, "greetd auth error");
+                tracing::warn!(?error_type, "greetd auth error");
                 return Err(map_error(&error_type, description));
             }
         }
@@ -430,7 +430,7 @@ pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
                 description,
             } => {
                 cancel_session(stream);
-                tracing::warn!(?error_type, %description, "greetd verify error");
+                tracing::warn!(?error_type, "greetd verify error");
                 return Err(map_error(&error_type, description));
             }
         }
