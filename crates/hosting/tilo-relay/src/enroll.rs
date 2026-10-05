@@ -434,7 +434,15 @@ fn share_directory_like_parent(directory: &std::path::Path) -> anyhow::Result<()
         // SAFETY: geteuid has no preconditions.
         let euid = unsafe { libc::geteuid() };
         if current.mode() & 0o7777 != wanted && (euid == 0 || euid == current.uid()) {
-            std::fs::set_permissions(directory, std::fs::Permissions::from_mode(wanted))
+            // Through the directory opened without following a link, so a
+            // link swapped in after the check above is refused, not chmodded.
+            let opened = person_home::local::open_dir(directory)?;
+            let stat = person_home::local::fstat(&opened)?;
+            if stat.st_uid != current.uid() || stat.st_ino != current.ino() {
+                bail!("{} changed while it was being shared", directory.display());
+            }
+            std::fs::File::from(opened)
+                .set_permissions(std::fs::Permissions::from_mode(wanted))
                 .context("share the enrollment directory like its parent")?;
         }
     }
@@ -907,20 +915,52 @@ fn open_stage_dir(
     identity_root: &std::path::Path,
     stage_name: &str,
     create: bool,
-) -> anyhow::Result<std::os::fd::OwnedFd> {
+) -> anyhow::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
     let staging = enrollment_stage_dir(identity_root);
     if create {
         std::fs::create_dir_all(&staging)?;
     }
     let staging = person_home::local::open_dir(&staging)
         .with_context(|| format!("open {}", enrollment_stage_dir(identity_root).display()))?;
-    person_home::local::open_owned_subdir(
+    let stage = person_home::local::open_owned_subdir(
         &staging,
         stage_name,
         person_home::local::own_uid(),
         create.then_some(0o700),
     )?
-    .with_context(|| format!("staged enrollment {stage_name} is missing"))
+    .with_context(|| format!("staged enrollment {stage_name} is missing"))?;
+    Ok((staging, stage))
+}
+
+/// Every file an enrollment stages.
+const STAGED_FILES: [&str; 9] = [
+    "record.json",
+    "registry.json",
+    "fleet.json",
+    "home-peers.json",
+    "direct-peers.json",
+    "rooms.json",
+    "user-pubkey.bin",
+    "per-user-cert.bin",
+    "default-cert.bin",
+];
+
+/// Remove a committed enrollment's staging through the descriptors that were
+/// checked: its known files, then the directory itself, which fails rather
+/// than recursing if anything else is in it.
+fn remove_stage(staging: &std::os::fd::OwnedFd, stage: &std::os::fd::OwnedFd, stage_name: &str) {
+    use std::os::fd::AsRawFd as _;
+    for name in STAGED_FILES {
+        let Ok(name) = std::ffi::CString::new(name) else {
+            continue;
+        };
+        // SAFETY: `stage` is open and `name` is NUL-terminated.
+        unsafe { libc::unlinkat(stage.as_raw_fd(), name.as_ptr(), 0) };
+    }
+    if let Ok(name) = std::ffi::CString::new(stage_name) {
+        // SAFETY: `staging` is open and `name` is NUL-terminated.
+        unsafe { libc::unlinkat(staging.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    }
 }
 
 fn write_staged(
@@ -989,7 +1029,7 @@ fn stage_personal_enrollment(
         hex::encode(payload.nonce),
         hex::encode(payload.cert.device_public_key)
     );
-    let stage_dir = open_stage_dir(identity_root, &stage_name, true)?;
+    let (_, stage_dir) = open_stage_dir(identity_root, &stage_name, true)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
     write_staged(&stage_dir, "record.json", &projection.identity, 0o600)?;
     write_staged(&stage_dir, "registry.json", &projection.registry, 0o600)?;
@@ -1078,7 +1118,7 @@ fn commit_staged_personal_enrollment(
     {
         bail!("personal enrollment marker is invalid");
     }
-    let stage_dir = open_stage_dir(identity_root, &marker.stage_name, false)?;
+    let (staging, stage_dir) = open_stage_dir(identity_root, &marker.stage_name, false)?;
     let cert_bytes = read_staged(&stage_dir, "default-cert.bin")?;
     let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&cert_bytes)?;
     if cert.user_public_key != marker.user_public_key
@@ -1173,8 +1213,7 @@ fn commit_staged_personal_enrollment(
     {
         directory.sync_all()?;
     }
-    drop(stage_dir);
-    let _ = std::fs::remove_dir_all(enrollment_stage_dir(identity_root).join(&marker.stage_name));
+    remove_stage(&staging, &stage_dir, &marker.stage_name);
     Ok(record)
 }
 
@@ -1210,12 +1249,20 @@ fn recover_personal_enrollments(
         ) {
             Ok(Some(bytes)) => bytes,
             Ok(None) => continue,
-            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => continue,
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                eprintln!("note: not recovering enrollment marker {name}: {error}");
+                continue;
+            }
         };
         let marker: PersonalEnrollmentMarker = serde_json::from_slice(&bytes)
             .context("personal enrollment recovery marker is invalid")?;
         if marker.identity_dir == identity_dir && marker.commit_ready {
+            // A confirmed enrollment whose staging is gone or is no longer
+            // this account's cannot be finished; it must not block this join.
+            if let Err(error) = open_stage_dir(identity_root, &marker.stage_name, false) {
+                eprintln!("warning: abandoning enrollment marker {name}: {error:#}");
+                continue;
+            }
             commit_staged_personal_enrollment(
                 identity_root,
                 paths,
@@ -3429,6 +3476,31 @@ mod tests {
             .unwrap();
             assert!(!paths.device_cert.exists());
             assert_eq!(std::fs::read_dir(&identity_dir).unwrap().count(), 0);
+        }
+        // A confirmed enrollment whose staging another account took away is
+        // abandoned by recovery rather than blocking every later join.
+        {
+            let scope = tempfile::tempdir().unwrap();
+            let identity_root = scope.path().join("root");
+            let identity_dir = scope.path().join("identities");
+            std::fs::create_dir(&identity_dir).unwrap();
+            let (paths, marker_path, marker) =
+                staged_ready(&identity_root, &identity_dir, [37; 16]);
+            std::fs::rename(
+                stage_dir_of(&identity_root, &marker),
+                scope.path().join("taken"),
+            )
+            .unwrap();
+            recover_personal_enrollments(
+                &identity_root,
+                &identity_dir,
+                &paths,
+                &PersonHome::Direct,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert!(!paths.device_cert.exists());
+            assert!(marker_path.exists());
         }
         // Undisturbed, the same enrollment publishes into the person's
         // directory, owned by the account that ran it, with no chown.

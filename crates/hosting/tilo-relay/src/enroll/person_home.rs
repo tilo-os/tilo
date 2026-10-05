@@ -513,7 +513,7 @@ pub mod local {
         CString::new(name).map_err(|_| invalid("name contains NUL"))
     }
 
-    fn fstat(fd: &OwnedFd) -> io::Result<libc::stat> {
+    pub fn fstat(fd: &OwnedFd) -> io::Result<libc::stat> {
         // SAFETY: an all-zero stat is a valid out-parameter.
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: `fd` is open and `stat` is writable.
@@ -634,6 +634,11 @@ pub mod local {
             Err(error) => return Err(error),
         };
         let fd = checked(fd, libc::S_IFREG, owner, name)?;
+        // A second name for the file may be one another account linked to
+        // something this account owns; only a file with one name is read.
+        if fstat(&fd)?.st_nlink != 1 {
+            return Err(invalid(format!("{name} has more than one name")));
+        }
         let mut bytes = Vec::new();
         std::fs::File::from(fd)
             .take((limit as u64).saturating_add(1))
@@ -792,11 +797,23 @@ pub mod local {
         create_dir: bool,
     ) -> io::Result<()> {
         if create_dir {
-            use std::os::unix::fs::DirBuilderExt as _;
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)?;
+            if owner == 0 {
+                // Root acting for itself creates only the last component,
+                // inside a parent it owns, never through a linked ancestor.
+                let (Some(parent), Some(name)) =
+                    (dir.parent(), dir.file_name().and_then(|name| name.to_str()))
+                else {
+                    return Err(invalid("directory has no parent"));
+                };
+                let parent = open_owned_dir(parent, owner)?;
+                open_owned_subdir(&parent, name, owner, Some(0o700))?;
+            } else {
+                use std::os::unix::fs::DirBuilderExt as _;
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(dir)?;
+            }
         }
         let dir = open_owned_dir(dir, owner)?;
         write_file_at(&dir, file, bytes, owner, mode)

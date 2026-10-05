@@ -149,8 +149,19 @@ fn lock_list(path: &Path) -> io::Result<advisory_lock::FileLock> {
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
     }
     let file = options.open(std::path::PathBuf::from(lock))?;
-    if !file.metadata()?.file_type().is_file() {
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() {
         return Err(invalid("device list lock is not a regular file"));
+    }
+    // Every account of the device-trust group takes this lock, whatever
+    // umask created it (root's 022 would leave it 0640).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        // SAFETY: geteuid has no preconditions.
+        if metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o660 != 0o660 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o660))?;
+        }
     }
     advisory_lock::FileLock::exclusive(file)
 }
