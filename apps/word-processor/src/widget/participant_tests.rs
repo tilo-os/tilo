@@ -775,6 +775,42 @@ fn writer_view<O>(
         .expect("the app's view is Writer's widget")
 }
 
+/// The PNG `hash` holds sits as an image block, with its real size and the
+/// paragraph after it, right after the second of the opening's paragraphs
+/// `ids`; its bytes are referenced and described by the document.
+fn assert_png_placed_after(doc: &AutoCommit, ids: &[String], hash: &str, png: &[u8]) {
+    let containers = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
+    let blocks = tilo_doc::model::materialize(doc, &containers).blocks;
+    assert_eq!(blocks.len(), 5);
+    assert_eq!(blocks[0].id, ids[0]);
+    assert_eq!(blocks[0].text, "Hello to Tilo");
+    assert_eq!(blocks[1].id, ids[1]);
+    assert_eq!(blocks[1].text, "");
+    assert_eq!(blocks[2].kind, "image");
+    assert_eq!(
+        blocks[2].attrs.get("blob"),
+        Some(&tilo_doc::AttrVal::Str(hash.to_owned()))
+    );
+    assert_eq!(
+        blocks[2].attrs.get("width"),
+        Some(&tilo_doc::AttrVal::Int(2))
+    );
+    assert_eq!(
+        blocks[2].attrs.get("height"),
+        Some(&tilo_doc::AttrVal::Int(1))
+    );
+    assert_eq!(blocks[3].kind, "paragraph");
+    assert!(blocks[3].text.is_empty());
+    assert_eq!(blocks[4].id, ids[2]);
+    assert_eq!(blocks[4].kind, "paragraph");
+    assert!(blocks[4].text.is_empty());
+    assert!(tilo_doc::model::referenced_content(doc, &containers).contains(hash));
+    let meta = tilo_doc::model::blob_meta(doc, &containers, hash).unwrap();
+    assert_eq!(meta.mime, "image/png");
+    assert_eq!((meta.w, meta.h), (2, 1));
+    assert_eq!(meta.len, u64::try_from(png.len()).unwrap());
+}
+
 /// Synthetic opening proof only: two host-minted person executions drive actual
 /// Writer actions on one document. No Photos export or MCP transport is involved.
 #[test]
@@ -796,7 +832,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
             .unwrap();
     }
     app.settle();
-    let ids = app.read_document(|doc| body_ids(doc));
+    let ids = app.read_document(body_ids);
     assert_eq!(ids.len(), 3);
     assert!(app.read_document(|doc| {
         tilo_doc::model::open(doc, &automerge::ROOT)
@@ -859,36 +895,7 @@ fn two_person_executions_type_the_opening_and_place_real_png_independently() {
         serde_json::json!({tilo_actions::PROMPTED_PARAM: hash}),
     );
     let doc = app.read_document(Clone::clone);
-    let containers = tilo_doc::model::open(&doc, &automerge::ROOT).unwrap();
-    let blocks = tilo_doc::model::materialize(&doc, &containers).blocks;
-    assert_eq!(blocks.len(), 5);
-    assert_eq!(blocks[0].id, ids[0]);
-    assert_eq!(blocks[0].text, "Hello to Tilo");
-    assert_eq!(blocks[1].id, ids[1]);
-    assert_eq!(blocks[1].text, "");
-    assert_eq!(blocks[2].kind, "image");
-    assert_eq!(
-        blocks[2].attrs.get("blob"),
-        Some(&tilo_doc::AttrVal::Str(hash.clone()))
-    );
-    assert_eq!(
-        blocks[2].attrs.get("width"),
-        Some(&tilo_doc::AttrVal::Int(2))
-    );
-    assert_eq!(
-        blocks[2].attrs.get("height"),
-        Some(&tilo_doc::AttrVal::Int(1))
-    );
-    assert_eq!(blocks[3].kind, "paragraph");
-    assert!(blocks[3].text.is_empty());
-    assert_eq!(blocks[4].id, ids[2]);
-    assert_eq!(blocks[4].kind, "paragraph");
-    assert!(blocks[4].text.is_empty());
-    assert!(tilo_doc::model::referenced_content(&doc, &containers).contains(&hash));
-    let meta = tilo_doc::model::blob_meta(&doc, &containers, &hash).unwrap();
-    assert_eq!(meta.mime, "image/png");
-    assert_eq!((meta.w, meta.h), (2, 1));
-    assert_eq!(meta.len, u64::try_from(png.len()).unwrap());
+    assert_png_placed_after(&doc, &ids, &hash, &png);
     assert_eq!(content.read(&hash).unwrap(), png);
     assert_eq!(
         writer_view(&mut app, |wp, doc| wp
