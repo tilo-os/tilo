@@ -4,6 +4,7 @@
 
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::ApplyIncoming;
+use ui::widget::Edits;
 
 use super::*;
 use crate::actions::{
@@ -273,10 +274,16 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         app.sync_settled(&mut state.doc, &state.root);
         let author = ui::collaboration::local_user_id();
 
-        app.perform_action(&mut state.doc, &highlight("first", "source-1", 100.0));
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &highlight("first", "source-1", 100.0),
+        );
         let history = state.revision_history();
         let after_first = history.heads().to_vec();
-        app.perform_action(&mut state.doc, &highlight("second", "source-1", 300.0));
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &highlight("second", "source-1", 300.0),
+        );
         assert!(ids(&state.doc).iter().any(|(id, _)| id == "second"));
 
         // Every edit is a revision with an author and a time in the document's
@@ -333,11 +340,14 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             cur: (360.0, 165.0),
             points: vec![],
         });
-        app.commit_drag(&mut state.doc);
-        app.create_note(&mut state.doc, 1, (120.0, 300.0));
-        app.perform_action(&mut state.doc, &rotate_page_action("source-1", 90));
+        app.commit_drag(&mut Edits::lend(&mut state.doc));
+        app.create_note(&mut Edits::lend(&mut state.doc), 1, (120.0, 300.0));
         app.perform_action(
-            &mut state.doc,
+            &mut Edits::lend(&mut state.doc),
+            &rotate_page_action("source-1", 90),
+        );
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
             &set_form_value_action("name", &FormEntry::Text("x".into())),
         );
         assert_eq!(
@@ -362,7 +372,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             .expect("the sample has a thread");
         let replies_before = PdfDoc::list_comments(&state.doc)[0].replies.len();
         app.perform_action(
-            &mut state.doc,
+            &mut Edits::lend(&mut state.doc),
             &crate::actions::add_reply_action(&thread, "commenter", "A reply"),
         );
         assert_eq!(
@@ -370,7 +380,10 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             replies_before + 1,
             "a commenter's reply is added"
         );
-        app.perform_action(&mut state.doc, &highlight("nope", "source-1", 50.0));
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &highlight("nope", "source-1", 50.0),
+        );
         assert!(
             ids(&state.doc).iter().all(|(id, _)| id != "nope"),
             "a commenter's markup is refused"
@@ -481,30 +494,30 @@ fn exports_are_deterministic_and_carry_page_operations() {
             cur: (120.0, 60.0),
             points: vec![(40.0, 40.0), (80.0, 70.0), (120.0, 40.0)],
         });
-        app.commit_drag(&mut state.doc);
-        app.create_note(&mut state.doc, 1, (250.0, 30.0));
+        app.commit_drag(&mut Edits::lend(&mut state.doc));
+        app.create_note(&mut Edits::lend(&mut state.doc), 1, (250.0, 30.0));
         app.editing.as_mut().unwrap().set_text("Please confirm");
-        app.commit_edit(&mut state.doc);
+        app.commit_edit(&mut Edits::lend(&mut state.doc));
         let name = app
             .field_widgets_on(1)
             .into_iter()
             .find(|w| w.name == "name")
             .expect("the name field is on page 1");
-        app.activate_field(&mut state.doc, &name);
+        app.activate_field(&mut Edits::lend(&mut state.doc), &name);
         app.editing.as_mut().unwrap().set_text("Grace Hopper");
-        app.commit_edit(&mut state.doc);
+        app.commit_edit(&mut Edits::lend(&mut state.doc));
         let agree = app
             .field_widgets_on(1)
             .into_iter()
             .find(|w| w.name == "agree")
             .unwrap();
-        app.activate_field(&mut state.doc, &agree);
+        app.activate_field(&mut Edits::lend(&mut state.doc), &agree);
         let colour = app
             .field_widgets_on(1)
             .into_iter()
             .find(|w| w.name == "colour")
             .unwrap();
-        app.activate_field(&mut state.doc, &colour);
+        app.activate_field(&mut Edits::lend(&mut state.doc), &colour);
         assert_eq!(
             PdfDoc::form_values(&state.doc).get("colour"),
             Some(&FormEntry::Choice("Green".into())),
@@ -594,10 +607,19 @@ fn exports_are_deterministic_and_carry_page_operations() {
                 "Ada",
             )
         };
-        app.author_annotation(&mut state.doc, &a);
-        app.perform_action(&mut state.doc, &rotate_page_action("source-3", 90));
-        app.perform_action(&mut state.doc, &move_page_plan_action("source-3", None));
-        app.perform_action(&mut state.doc, &delete_page_plan_action("source-2"));
+        app.author_annotation(&mut Edits::lend(&mut state.doc), &a);
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &rotate_page_action("source-3", 90),
+        );
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &move_page_plan_action("source-3", None),
+        );
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &delete_page_plan_action("source-2"),
+        );
         app.sync_settled(&mut state.doc, &state.root);
         let stored = PdfDoc::list_annotations(&state.doc);
         assert_eq!(stored.len(), 1);

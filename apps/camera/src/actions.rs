@@ -614,7 +614,7 @@ mod tests {
         let mut app = CameraApp::sample();
         let mut doc = AutoCommit::new();
         crate::resource::sample_capture().apply(&mut doc).unwrap();
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         app.present_record(
             &<crate::resource::Camera as ui::tilo_resource::Resource>::read(&doc).unwrap(),
         );
@@ -668,7 +668,7 @@ mod tests {
     /// The resource a sample Camera publishes once it has synced `doc`.
     fn published(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = CameraApp::sample();
-        app.sync(&mut doc.clone(), &ROOT);
+        app.sync(&doc.clone(), &ROOT);
         let state = <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap();
         app.present_record(&state);
         tree(&app.camera_resource_ctx(), &state)

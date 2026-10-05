@@ -198,7 +198,7 @@ mod tests {
                 200,
             );
             let mut index = NoteDateIndex::default();
-            index.sync(&mut doc);
+            index.sync(&doc);
             assert_eq!(
                 index.get(a),
                 NoteDates {
@@ -216,7 +216,7 @@ mod tests {
                 ),
                 300,
             );
-            index.sync(&mut doc);
+            index.sync(&doc);
             assert_eq!(
                 index.get(a),
                 NoteDates {
@@ -227,10 +227,10 @@ mod tests {
             assert_eq!(index.get(b).edited, Some(200));
             let mut restored = AutoCommit::load(&doc.save()).unwrap();
             let mut restored_index = NoteDateIndex::default();
-            restored_index.sync(&mut restored);
+            restored_index.sync(&restored);
             assert_eq!(restored_index.get(a), index.get(a));
             let heads = restored.get_heads();
-            restored_index.sync(&mut restored);
+            restored_index.sync(&restored);
             assert_eq!(restored.get_heads(), heads, "viewing metadata is read-only");
         }
 
@@ -246,7 +246,7 @@ mod tests {
             let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
             apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 500);
             let mut index = NoteDateIndex::default();
-            index.sync(&mut doc);
+            index.sync(&doc);
             assert_eq!(
                 index.get(page),
                 NoteDates {
@@ -269,7 +269,7 @@ mod tests {
                 "new notes must have a real persisted time"
             );
             let mut index = NoteDateIndex::default();
-            index.sync(&mut origin);
+            index.sync(&origin);
             assert_eq!(
                 index.get(page),
                 NoteDates {
@@ -281,12 +281,12 @@ mod tests {
             actions::register(&mut registry);
             tilo_actions::replay(&mut peer, &envelope, &registry).unwrap();
             let mut peer_index = NoteDateIndex::default();
-            peer_index.sync(&mut peer);
+            peer_index.sync(&peer);
             assert_eq!(peer_index.get(page), index.get(page));
             assert_eq!(origin.get_heads(), peer.get_heads());
             let heads = origin.get_heads();
             tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
-            index.sync(&mut origin);
+            index.sync(&origin);
             assert_eq!(
                 origin.get_heads(),
                 heads,
@@ -312,8 +312,8 @@ mod tests {
             let mut second = base.fork();
             let mut first_index = NoteDateIndex::default();
             let mut second_index = NoteDateIndex::default();
-            first_index.sync(&mut first);
-            second_index.sync(&mut second);
+            first_index.sync(&first);
+            second_index.sync(&second);
             apply(
                 &mut first,
                 actions::rename_page_action(&meta, "Renamed"),
@@ -329,14 +329,14 @@ mod tests {
                 ),
                 300,
             );
-            first_index.sync(&mut first);
-            second_index.sync(&mut second);
+            first_index.sync(&first);
+            second_index.sync(&second);
             assert_eq!(first_index.get(page).edited, Some(200));
             assert_eq!(second_index.get(page).edited, Some(300));
             first.merge_incoming(&mut second).unwrap();
             second.merge_incoming(&mut first).unwrap();
-            first_index.sync(&mut first);
-            second_index.sync(&mut second);
+            first_index.sync(&first);
+            second_index.sync(&second);
             assert_eq!(
                 first_index.get(page),
                 NoteDates {
@@ -346,7 +346,7 @@ mod tests {
             );
             assert_eq!(second_index.get(page), first_index.get(page));
             let mut rebuilt = NoteDateIndex::default();
-            rebuilt.sync(&mut first);
+            rebuilt.sync(&first);
             assert_eq!(rebuilt.get(page), first_index.get(page));
         }
 
@@ -368,14 +368,14 @@ mod tests {
             );
             state.record_committed_action(before, None, None);
             let mut index = NoteDateIndex::default();
-            index.sync(&mut state.doc);
+            index.sync(&state.doc);
             assert_eq!(index.get(page).edited, Some(200));
             assert!(state.undo(None, None).is_some());
             assert_eq!(
                 crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
                 "Original"
             );
-            index.sync(&mut state.doc);
+            index.sync(&state.doc);
             let undo_dates = index.get(page);
             assert_eq!(undo_dates.created, Some(100));
             assert!(
@@ -387,7 +387,7 @@ mod tests {
                 crate::doc::NotesDoc::list_pages(&state.doc)[0].title,
                 "Renamed"
             );
-            index.sync(&mut state.doc);
+            index.sync(&state.doc);
             assert_eq!(index.get(page).created, Some(100));
             assert!(index.get(page).edited >= undo_dates.edited);
         }
@@ -405,9 +405,9 @@ mod tests {
             let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
             apply(&mut doc, actions::rename_page_action(&meta, "Renamed"), 200);
             let mut index = NoteDateIndex::default();
-            index.sync(&mut doc);
-            let mut historical = doc.fork_at(&before).unwrap();
-            index.sync(&mut historical);
+            index.sync(&doc);
+            let historical = doc.fork_at(&before).unwrap();
+            index.sync(&historical);
             assert_eq!(
                 index.get(page),
                 NoteDates {
@@ -415,7 +415,7 @@ mod tests {
                     edited: Some(100)
                 }
             );
-            index.sync(&mut AutoCommit::new());
+            index.sync(&AutoCommit::new());
             assert_eq!(
                 index.get(page),
                 NoteDates::default(),

@@ -9,6 +9,8 @@
 //! CRDT so collaboration and undo come for free.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash};
@@ -1245,11 +1247,7 @@ impl PdfApp {
     /// Test-only: one frame's sync, then what it submitted applied to `doc`
     /// as the host applies it, and shown in the same frame.
     #[cfg(test)]
-    pub(crate) fn sync_settled(
-        &mut self,
-        doc: &mut ui::widget::Edits<'_>,
-        root: &automerge::ObjId,
-    ) {
+    pub(crate) fn sync_settled(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
         Widget::sync(self, doc, root);
         let Some(dispatcher) = self.dispatcher.clone() else {
             return;
@@ -1265,7 +1263,7 @@ impl PdfApp {
     /// Submit `action` through the resource's dispatcher to be applied
     /// after this pass, from a pass that only reads the document (a frame's
     /// sync, a worker's answer). A refusal is reported by the dispatcher.
-    pub(crate) fn submit(&mut self, action: &crate::actions::PdfViewerAction) {
+    pub(crate) fn submit(&self, action: &crate::actions::PdfViewerAction) {
         if let Some(dispatcher) = self.dispatcher.as_ref() {
             dispatcher.apply(action);
         }
@@ -6268,13 +6266,13 @@ mod tests {
                 .expect("write corrupt fixture");
             for path in [dir.path().join("missing.pdf"), corrupt] {
                 let mut app = PdfApp::empty();
-                let mut state = AutoCommit::new();
+                let state = AutoCommit::new();
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
                 let deadline = tilo_test_env::hang_deadline();
                 while app.pending_open.is_some() && ui::time::now() < deadline {
                     std::thread::sleep(Duration::from_millis(5));
-                    app.drain_raster_events(&mut state);
+                    app.drain_raster_events(&state);
                 }
                 assert!(app.pending_open.is_none(), "worker failure settles loading");
                 assert!(!app.has_document);
@@ -6289,7 +6287,7 @@ mod tests {
         eprintln!("phase owner_worker_stale_open_result_cannot_replace_the_latest_request");
         {
             let mut app = PdfApp::empty();
-            let mut state = AutoCommit::new();
+            let state = AutoCommit::new();
             let first = std::path::Path::new("/definitely/not/a/tilo-pdf-a.pdf");
             let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
             app.queue_worker_open(first);
@@ -6297,7 +6295,7 @@ mod tests {
             let deadline = ui::time::now() + HANG_BOUND;
             while ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
-                app.drain_raster_events(&mut state);
+                app.drain_raster_events(&state);
                 if app.pending_open.is_none() {
                     break;
                 }
@@ -6452,7 +6450,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "pdf.toggle-sidebar",
                 &Action::Activate,
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &state.root,
             ));
             assert_ne!(app.show_sidebar, sidebar_before);
@@ -6470,7 +6468,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &format!("pdf.page:{target_id}"),
                 &Action::Activate,
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &state.root,
             ));
             assert_eq!(app.current_page, 3, "the addressed page, not ordinal 1");
@@ -6478,7 +6476,7 @@ mod tests {
                 !app.perform_semantic_action(
                     "pdf.page:deleted-page",
                     &Action::Activate,
-                    &mut state.doc,
+                    &mut Edits::lend(&mut state.doc),
                     &state.root,
                 ),
                 "unknown targets fail closed"
@@ -6581,7 +6579,7 @@ mod tests {
 
             let stale_resource = "pdf.page:source-1".to_string();
             let action = crate::actions::delete_page_plan_action("source-1");
-            app.perform_action(&mut state.doc, &action);
+            app.perform_action(&mut Edits::lend(&mut state.doc), &action);
             app.sync_settled(&mut state.doc, &state.root);
             let restarted = searched(&app).search_page("", Some(&stale_cursor), 1, 1);
             assert!(
@@ -6754,7 +6752,7 @@ mod tests {
                 rotation: 0,
             };
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
             );
             app.sync_settled(&mut state.doc, &state.root);
@@ -6775,9 +6773,12 @@ mod tests {
                 created_ms: 0,
                 space: crate::model::GeomSpace::Page,
             };
-            app.perform_action(&mut state.doc, &add_annotation_action(&annotation));
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
+                &add_annotation_action(&annotation),
+            );
+            app.perform_action(
+                &mut Edits::lend(&mut state.doc),
                 &move_page_plan_action("imported-occurrence", Some("source-3")),
             );
             app.sync_settled(&mut state.doc, &state.root);
@@ -6791,7 +6792,7 @@ mod tests {
             );
 
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &PdfViewerAction::DuplicatePagePlan {
                     id: page.id.clone(),
                     new_id: "imported-copy".into(),
@@ -6808,7 +6809,7 @@ mod tests {
                 "duplicate retains content hash and source page"
             );
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &crate::actions::delete_page_plan_action("imported-occurrence"),
             );
             app.sync_settled(&mut state.doc, &state.root);
@@ -6835,7 +6836,7 @@ mod tests {
             let mut app = PdfApp::open(path);
             let mut state = ui::State::new();
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &crate::actions::import_pages_action(
                     Some("source-1"),
                     vec![crate::doc::PagePlanEntry {
@@ -6975,7 +6976,7 @@ mod tests {
                 points: vec![],
             });
             let (reader, st) = Framed::split(&mut app);
-            reader.commit_drag(&mut st.doc);
+            reader.commit_drag(&mut Edits::lend(&mut st.doc));
             assert!(
                 app.annotations.len() > a0,
                 "a highlight drag adds an annotation"
@@ -7197,9 +7198,9 @@ mod tests {
                 points: vec![],
             });
             let (reader, st) = Framed::split(&mut app);
-            reader.commit_drag(&mut st.doc);
+            reader.commit_drag(&mut Edits::lend(&mut st.doc));
             reader.signer_name = "Grace Hopper".into();
-            reader.place_signature(&mut st.doc, 1, (360.0, 520.0));
+            reader.place_signature(&mut Edits::lend(&mut st.doc), 1, (360.0, 520.0));
             app.go_to_page(1);
             let p_anno = shot("real_annotated.png");
             full_frame(&mut app, 1280.0, 800.0, Some(p_anno.as_str()));
@@ -7391,7 +7392,7 @@ mod tests {
             };
             let before = hl(&st);
             // The shared HUD's swatch action highlights the run in that colour.
-            app.apply_hud_action(ui::HudAction::Highlight(1), &mut st.doc);
+            app.apply_hud_action(ui::HudAction::Highlight(1), &mut Edits::lend(&mut st.doc));
             assert!(
                 hl(&st) > before,
                 "highlighting the selection adds a highlight annotation"
@@ -7418,7 +7419,7 @@ mod tests {
                     .count()
             };
             let before = notes(&st);
-            app.apply_hud_action(ui::HudAction::Note, &mut st.doc);
+            app.apply_hud_action(ui::HudAction::Note, &mut Edits::lend(&mut st.doc));
             assert_eq!(
                 notes(&st),
                 before + 1,
@@ -7438,7 +7439,7 @@ mod tests {
                 app.selection_text().is_some(),
                 "the synthetic run yields text"
             );
-            app.apply_hud_action(ui::HudAction::Copy, &mut st.doc);
+            app.apply_hud_action(ui::HudAction::Copy, &mut Edits::lend(&mut st.doc));
             assert!(
                 app.status_note.as_deref().unwrap_or("").contains("Copied"),
                 "the HUD Copy action copies + toasts ({:?})",
@@ -7791,7 +7792,7 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             let a0 = app.annotations.len();
             let c0 = app.comments.len();
-            app.create_note(&mut st.doc, 2, (120.0, 200.0));
+            app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
             assert_eq!(app.annotations.len(), a0 + 1);
             assert_eq!(app.comments.len(), c0 + 1);
             assert_eq!(
@@ -7806,7 +7807,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             // A fresh note at a known page-point.
-            app.create_note(&mut st.doc, 1, (100.0, 100.0));
+            app.create_note(&mut Edits::lend(&mut st.doc), 1, (100.0, 100.0));
             app.reload(&st.doc);
             let id = app.selected_anno.clone().expect("the new note is selected");
             // Its marker is grabbable at its anchor (same target as clicking it).
@@ -7856,7 +7857,7 @@ mod tests {
                 cur: (300.0, 116.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0 + 1,
@@ -7875,7 +7876,7 @@ mod tests {
                 cur: (66.0, 101.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(app.annotations.len(), a0, "sub-threshold drag adds nothing");
         }
 
@@ -7911,7 +7912,7 @@ mod tests {
                 cur: (300.0, 220.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             // Two covered lines -> one highlight with two text-shaped bands (not
             // one free rectangle).
             assert_eq!(app.annotations.len(), a0 + 1, "one highlight");
@@ -7947,7 +7948,7 @@ mod tests {
                 cur: (300.0, 540.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0 + 1,
@@ -7972,7 +7973,7 @@ mod tests {
                     (240.0, 360.0),
                 ],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0 + 1,
@@ -8009,7 +8010,7 @@ mod tests {
                 cur: (80.0, 300.0),
                 points: vec![(80.0, 300.0)],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0,
@@ -8062,7 +8063,7 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             let s0 = app.signatures.len();
             app.signer_name = "Tester".into();
-            app.place_signature(&mut st.doc, 3, (10.0, 10.0)); // near corner
+            app.place_signature(&mut Edits::lend(&mut st.doc), 3, (10.0, 10.0)); // near corner
             assert_eq!(app.signatures.len(), s0 + 1);
             let last = app.signatures.iter().find(|s| s.page == 3).unwrap();
             assert!(last.rect.x >= MARGIN - 0.001);
@@ -8073,7 +8074,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             app.sidebar_tab = SidebarTab::Comments;
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             assert_eq!(app.sidebar_tab as u8, SidebarTab::Signatures as u8);
             assert!(app.show_sidebar);
             assert!(app.selected_sig.is_some(), "new signature is selected");
@@ -8087,7 +8088,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             app.sidebar_tab = SidebarTab::Signatures;
-            app.create_note(&mut st.doc, 2, (200.0, 300.0));
+            app.create_note(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
             assert!(app.show_sidebar);
             assert!(
@@ -8189,7 +8190,7 @@ mod tests {
                 .clone();
             let n = app.annotations.len();
             app.selected_anno = Some(hl.id.clone());
-            assert!(app.delete_selected(&mut st.doc));
+            assert!(app.delete_selected(&mut Edits::lend(&mut st.doc)));
             assert_eq!(app.annotations.len(), n - 1);
             assert!(!app.annotations.iter().any(|a| a.id == hl.id));
             assert!(app.selected_anno.is_none());
@@ -8200,7 +8201,10 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             let sig = app.signatures[0].clone();
             let n = app.signatures.len();
-            app.delete_target(&DeleteTarget::Signature(sig.id.clone()), &mut st.doc);
+            app.delete_target(
+                &DeleteTarget::Signature(sig.id.clone()),
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(app.signatures.len(), n - 1);
             assert!(!app.signatures.iter().any(|s| s.id == sig.id));
         }
@@ -8221,7 +8225,10 @@ mod tests {
                 .find(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
                 .unwrap()
                 .clone();
-            app.delete_target(&DeleteTarget::Comment(comment.id.clone()), &mut st.doc);
+            app.delete_target(
+                &DeleteTarget::Comment(comment.id.clone()),
+                &mut Edits::lend(&mut st.doc),
+            );
             assert!(!app.comments.iter().any(|c| c.id == comment.id));
             assert!(
                 !app.annotations.iter().any(|a| a.id == note.id),
@@ -8252,7 +8259,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             app.signer_name = "Grace Hopper".into();
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             let s = app.signatures.iter().find(|s| s.page == 2).unwrap().clone();
             // The stamp is the live system date, not the frozen demo/seed date.
             assert_eq!(
@@ -8277,7 +8284,7 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             app.sig_mode = SigMode::Type;
             app.signer_name = "Grace Hopper".into();
-            app.place_signature(&mut st.doc, 3, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 3, (200.0, 300.0));
             let placed = app
                 .signatures
                 .iter()
@@ -8308,7 +8315,7 @@ mod tests {
 
             // Empty pad → nothing is placed, and the user is told to draw first.
             let before = app.signatures.len();
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             assert_eq!(
                 app.signatures.len(),
                 before,
@@ -8324,7 +8331,7 @@ mod tests {
 
             // Draw a stroke, then place: the strokes are what land in the document.
             app.sig_strokes = vec![vec![(0.1, 0.5), (0.4, 0.2), (0.7, 0.6), (0.9, 0.4)]];
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             let placed = app
                 .signatures
                 .iter()
@@ -8351,14 +8358,14 @@ mod tests {
             // Type a real name into the signer identity field and commit it.
             app.begin_edit(EditTarget::Signer, &app.signer_name.clone());
             app.editing.as_mut().unwrap().set_text("Grace Hopper");
-            app.commit_edit(&mut st.doc);
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
             assert!(app.editing.is_none(), "committing closes the editor");
             assert_eq!(
                 app.signer_name, "Grace Hopper",
                 "signer name updates from the editor"
             );
             // A subsequent signature signs under the new identity.
-            app.place_signature(&mut st.doc, 4, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 4, (200.0, 300.0));
             assert_eq!(
                 app.signatures.iter().find(|s| s.page == 4).unwrap().signer,
                 "Grace Hopper"
@@ -8366,7 +8373,7 @@ mod tests {
             // Committing an empty name falls back to the app author identity.
             app.begin_edit(EditTarget::Signer, "whatever");
             app.editing.as_mut().unwrap().set_text("   ");
-            app.commit_edit(&mut st.doc);
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.signer_name, app.author,
                 "an empty signer name falls back to the author"
@@ -8381,7 +8388,7 @@ mod tests {
                 Some("me-id"),
                 &[("peer-id", "Bob Builder")],
             ));
-            app.create_note(&mut st.doc, 2, (120.0, 200.0));
+            app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
             let thread = PdfDoc::list_comments(&st.doc)
                 .into_iter()
                 .find(|comment| comment.page == 2)
@@ -8414,7 +8421,7 @@ mod tests {
             app.attach_signature(record.clone());
             app.begin_edit(EditTarget::Signer, "");
             app.editing.as_mut().unwrap().set_text("Ada Lovelace");
-            app.commit_edit(&mut st.doc);
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
             app.sig_strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)]];
             app.keep_strokes();
             assert_eq!(record.get().signer, "Ada Lovelace", "the signer is kept");
@@ -9225,12 +9232,12 @@ mod tests {
                 cur: (360.0, 165.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
-            app.create_note(&mut st.doc, 1, (120.0, 300.0));
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
+            app.create_note(&mut Edits::lend(&mut st.doc), 1, (120.0, 300.0));
             app.editing.as_mut().unwrap().set_text("Check this claim");
-            app.commit_edit(&mut st.doc);
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
             app.signer_name = "Grace Hopper".into();
-            app.place_signature(&mut st.doc, 1, (360.0, 520.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 1, (360.0, 520.0));
             assert!(
                 app.annotations
                     .iter()
@@ -9425,7 +9432,7 @@ mod tests {
                 .expect("write the test PNG");
 
             assert!(
-                app.import_file(&png, &mut st.doc),
+                app.import_file(&png, &st.doc),
                 "import: {:?}",
                 app.status_note
             );
@@ -9445,7 +9452,7 @@ mod tests {
             let n = app.doc.page_count();
             // Import the sample into itself: page count should exactly double.
             assert!(
-                app.import_file(std::path::Path::new(SAMPLE_PDF), &mut st.doc),
+                app.import_file(std::path::Path::new(SAMPLE_PDF), &st.doc),
                 "import: {:?}",
                 app.status_note
             );

@@ -19,6 +19,8 @@
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -5804,9 +5806,9 @@ mod architecture_tests {
     use ui::webview::WebViewEngine;
 
     fn compose(widget: &mut BrowserWidget) {
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
-        widget.sync(&mut doc, &root);
+        widget.sync(&doc, &root);
         let mut tree = TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
@@ -5856,7 +5858,7 @@ mod architecture_tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: ui::widget::Edits::lend(&mut doc),
+                state: Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -5927,7 +5929,7 @@ mod architecture_tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 2.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut AutoCommit::new()),
+                    state: Edits::lend(&mut AutoCommit::new()),
                     path: &automerge::ROOT,
                     handled: &mut false,
                     focus_target: &mut None,
@@ -5997,7 +5999,7 @@ mod architecture_tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: ui::widget::Edits::lend(&mut doc),
+                        state: Edits::lend(&mut doc),
                         path: &automerge::ROOT,
                         handled: &mut false,
                         focus_target: &mut target,
@@ -6731,14 +6733,14 @@ mod architecture_tests {
             assert!(widget.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT
             ));
             assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
             assert!(!widget.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT
             ));
         }
@@ -6772,7 +6774,7 @@ mod architecture_tests {
             assert!(widget.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT
             ));
             assert_eq!(engine.current_uri().as_deref(), Some("https://c.test"));
@@ -6883,7 +6885,7 @@ mod tests {
     fn synced(widget: &mut BrowserWidget) -> (AutoCommit, ObjId) {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
-        widget.sync(&mut state, &root);
+        widget.sync(&state, &root);
         (state, root)
     }
 
@@ -7008,7 +7010,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
                 widget.poll_invocation(invocation)
             else {
@@ -7035,16 +7037,16 @@ mod tests {
                 &serde_json::json!({}),
             )
             .unwrap();
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             assert!(
                 page_requests(&engine).is_empty(),
                 "read before the load settled"
             );
             assert!(widget.poll_invocation(invocation).is_none());
             engine.send(WebViewCommand::Reload);
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             assert_eq!(page_requests(&engine), vec![PageRequest::Outline]);
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             assert!(matches!(
                 widget.poll_invocation(invocation),
                 Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
@@ -7062,7 +7064,7 @@ mod tests {
                 &serde_json::json!({"element": "d3e7", "text": ""}),
             )
             .unwrap();
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             assert!(widget.poll_invocation(fill).is_some());
             let select = start(
                 &mut widget,
@@ -7072,7 +7074,7 @@ mod tests {
                 &serde_json::json!({"element": "d3e8", "values": ["NL", "Belgium"]}),
             )
             .unwrap();
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             assert!(widget.poll_invocation(select).is_some());
             let press = start(
                 &mut widget,
@@ -7082,7 +7084,7 @@ mod tests {
                 &serde_json::json!({"key": "Shift+Tab"}),
             )
             .unwrap();
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             assert!(widget.poll_invocation(press).is_some());
             assert_eq!(
                 page_requests(&engine),
@@ -7154,7 +7156,7 @@ mod tests {
                 ),
             ] {
                 let invocation = start(&mut widget, &mut doc, &root, id, &args).unwrap();
-                widget.sync(&mut doc, &root);
+                widget.sync(&doc, &root);
                 let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
                     widget.poll_invocation(invocation)
                 else {
@@ -7225,7 +7227,7 @@ mod tests {
                 &serde_json::json!({"element": "d1e4"}),
             )
             .unwrap();
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             assert!(
                 widget.poll_invocation(click).is_none(),
                 "a click that started a navigation waits for it"
@@ -7244,7 +7246,7 @@ mod tests {
             engine.send(WebViewCommand::Navigate(
                 "https://shop.test/checkout".into(),
             ));
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
                 widget.poll_invocation(click)
             else {
@@ -7271,7 +7273,7 @@ mod tests {
                 &serde_json::json!({"element": "d1e4"}),
             )
             .unwrap();
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
                 widget.poll_invocation(click)
             else {
@@ -7302,9 +7304,9 @@ mod tests {
         let mut text = TextRenderer::new();
         let mut tree = TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
-        widget.sync(&mut state, &root);
+        widget.sync(&state, &root);
         let child = widget.build_layout(&mut tree, theme, &mut nodes);
-        widget.sync(&mut state, &root);
+        widget.sync(&state, &root);
         let layout_root = tree
             .new_with_children(
                 Style {
@@ -7361,11 +7363,11 @@ mod tests {
             engine.send(WebViewCommand::Navigate("https://b.test".into()));
 
             assert!(
-                w.on_nav_gesture(NavDirection::Back, &mut state, &root),
+                w.on_nav_gesture(NavDirection::Back, &state, &root),
                 "a back gesture is consumed by the embedded WebView",
             );
             assert_eq!(engine.current_uri().as_deref(), Some("https://a.test"));
-            w.on_nav_gesture(NavDirection::Forward, &mut state, &root);
+            w.on_nav_gesture(NavDirection::Forward, &state, &root);
             assert_eq!(engine.current_uri().as_deref(), Some("https://b.test"));
         }
 
@@ -7385,7 +7387,7 @@ mod tests {
             let (mut state, root) = synced(&mut w);
 
             engine.send(WebViewCommand::Navigate("https://example.test".into()));
-            w.sync(&mut state, &root);
+            w.sync(&state, &root);
 
             assert_eq!(w.address.with(Clone::clone), "https://example.test");
             assert_eq!(w.app_title(), "https://example.test — test page");
@@ -7399,7 +7401,7 @@ mod tests {
 
             engine.send(WebViewCommand::Navigate("https://a.test".into()));
             engine.send(WebViewCommand::Navigate("https://b.test".into()));
-            w.sync(&mut state, &root);
+            w.sync(&state, &root);
 
             assert!(w.can_go_back);
             assert!(!w.can_go_forward);
@@ -7451,7 +7453,7 @@ mod tests {
         w.attach_history(record.clone());
         let (mut doc, root) = synced(&mut w);
         engine.send(WebViewCommand::Navigate("https://visited.test/".into()));
-        w.sync(&mut doc, &root);
+        w.sync(&doc, &root);
         assert!(
             record.with(|history| {
                 history
@@ -7473,7 +7475,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::Relaxed);
         let before = record.with(crate::history::History::len);
         engine.send(WebViewCommand::Navigate("https://paused.test/".into()));
-        paused.sync(&mut doc, &root);
+        paused.sync(&doc, &root);
         assert_eq!(record.with(crate::history::History::len), before);
 
         w.settings.clear_on_exit = true;
@@ -7892,7 +7894,7 @@ mod tests {
                 &mut widget,
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             let invocation = ui::widget::controls::take_control_invocation(&mut widget)
@@ -8028,9 +8030,9 @@ mod tests {
             let mut text = TextRenderer::new();
             let mut tree = TaffyTree::<()>::new();
             let mut nodes = std::collections::HashMap::new();
-            widget.sync(&mut state, &root);
+            widget.sync(&state, &root);
             let child = widget.build_layout(&mut tree, &theme, &mut nodes);
-            widget.sync(&mut state, &root);
+            widget.sync(&state, &root);
             let layout_root = tree
                 .new_with_children(
                     Style {
@@ -8091,8 +8093,8 @@ mod tests {
             }
 
             let mut widget = BrowserWidget::new_headless();
-            let mut doc = AutoCommit::new();
-            widget.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            widget.sync(&doc, &automerge::ROOT);
             let mut tree = TaffyTree::<()>::new();
             let mut nodes = std::collections::HashMap::new();
             widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
@@ -8134,9 +8136,9 @@ mod tests {
             let mut text = TextRenderer::new();
             let mut tree = TaffyTree::<()>::new();
             let mut nodes = std::collections::HashMap::new();
-            widget.sync(&mut state, &root);
+            widget.sync(&state, &root);
             let child = widget.build_layout(&mut tree, &theme, &mut nodes);
-            widget.sync(&mut state, &root);
+            widget.sync(&state, &root);
             let layout_root = tree
                 .new_with_children(
                     Style {
@@ -8409,7 +8411,7 @@ mod tests {
             widget.apply_engine_events();
 
             widget.site.open = true;
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             let status_request = capture
                 .commands()
                 .into_iter()
@@ -8456,7 +8458,7 @@ mod tests {
                     .is_some(),
                 "the real protection button must accept the action"
             );
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
             let toggle_request = capture
                 .commands()
                 .into_iter()
@@ -8487,8 +8489,8 @@ mod tests {
                     success: true,
                     message: "Changed".into(),
                 });
-            widget.sync(&mut doc, &root);
-            widget.sync(&mut doc, &root);
+            widget.sync(&doc, &root);
+            widget.sync(&doc, &root);
             let reload_request = capture
                 .commands()
                 .into_iter()
@@ -8707,7 +8709,7 @@ mod tests {
             *w.content_rect.lock().unwrap() = Some([0.0, 0.1, 1.0, 1.0]);
 
             w.begin_pip_probe();
-            w.sync(&mut state, &root); // accepts/sends the asynchronous probe
+            w.sync(&state, &root); // accepts/sends the asynchronous probe
             assert!(
                 engine
                     .commands()
@@ -8790,8 +8792,8 @@ mod tests {
             let (mut state, root) = synced(&mut w);
 
             w.begin_pip_probe();
-            w.sync(&mut state, &root);
-            w.sync(&mut state, &root);
+            w.sync(&state, &root);
+            w.sync(&state, &root);
 
             assert!(w.take_floating_surface_request().is_none());
             assert_eq!(
@@ -8827,7 +8829,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: ui::widget::Edits::lend(&mut state),
+                    state: Edits::lend(&mut state),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -8955,7 +8957,7 @@ mod tests {
                 Some(ui::framework::Effected::Pending)
             );
             assert!(w.poll_invocation(invocation).is_none());
-            w.sync(&mut doc, &root);
+            w.sync(&doc, &root);
             let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
                 w.poll_invocation(invocation)
             else {
@@ -8972,7 +8974,7 @@ mod tests {
                     .unwrap(),
                 Some(ui::framework::Effected::Pending)
             ));
-            unavailable.sync(&mut doc, &root);
+            unavailable.sync(&doc, &root);
             assert!(matches!(
                 unavailable.poll_invocation(invocation),
                 Some(ui::tilo_actions::InvocationUpdate::Failed { .. })
@@ -9219,7 +9221,7 @@ mod tests {
                 engine.current_uri().as_deref(),
                 Some("https://example.test")
             );
-            w.sync(&mut doc, &root);
+            w.sync(&doc, &root);
             assert!(matches!(
                 w.poll_invocation(invocation),
                 Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
@@ -9291,7 +9293,11 @@ mod tests {
                 schema_version: 1,
                 bytes: br#"{"url":"https://example.test/reading"}"#.to_vec(),
             };
-            assert!(widget.restore_continuation_metadata(&metadata, &mut doc, &root));
+            assert!(widget.restore_continuation_metadata(
+                &metadata,
+                &mut Edits::lend(&mut doc),
+                &root
+            ));
             assert_eq!(
                 engine.current_uri().as_deref(),
                 Some("https://example.test/reading")
@@ -9515,7 +9521,7 @@ mod tests {
 
             // The composed tree is not otherwise synchronized in this layout-only
             // regression test; keep the document borrow explicitly live.
-            w.sync(&mut doc, &root);
+            w.sync(&doc, &root);
         }
     }
 
@@ -9672,7 +9678,7 @@ mod tests {
             };
             assert!(!widget.restore_continuation_metadata(
                 &metadata,
-                &mut document,
+                &mut Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
         }
@@ -9772,7 +9778,7 @@ mod tests {
             "Chromium discovery failure must remove the allocated root"
         );
         let mut document = AutoCommit::new();
-        widget.sync(&mut document, &automerge::ROOT);
+        widget.sync(&document, &automerge::ROOT);
         let deadline = tilo_test_env::hang_deadline();
         while !done.exists() && ui::time::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));

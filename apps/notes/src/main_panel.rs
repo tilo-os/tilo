@@ -30,6 +30,8 @@
 //! ```
 
 use std::collections::HashMap;
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -2385,7 +2387,7 @@ mod tests {
             assert!(panel.perform_semantic_action(
                 target,
                 &ui::a11y::Action::SetValue("Launch plan".into()),
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -2407,7 +2409,11 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
+            assert!(p.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut Edits::lend(&mut doc),
+                &ObjId::Root
+            ));
             assert!(p.take_empty_action());
         }
 
@@ -2632,7 +2638,7 @@ mod tests {
                 &mut panel,
                 &format!("notes.tag-chip:{tag}"),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root,
             ));
             assert_eq!(panel.take_tag_open(), Some(tag));
@@ -2661,7 +2667,7 @@ mod tests {
                 &mut panel,
                 &format!("notes.backlink-chip:{source}"),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &ObjId::Root,
             ));
             assert_eq!(panel.take_backlink_open(), Some(source));

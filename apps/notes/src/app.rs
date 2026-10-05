@@ -13,6 +13,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
@@ -1114,7 +1116,7 @@ impl NotesApp {
     /// Test-only: apply what this notebook submitted to `doc`, as the host
     /// applies it after a pass.
     #[cfg(test)]
-    pub(crate) fn land(&self, doc: &mut ui::widget::Edits<'_>) {
+    pub(crate) fn land(&self, doc: &mut AutoCommit) {
         if let Some(dispatcher) = &self.dispatcher {
             ui::framework::testing::resolve(dispatcher, doc).expect("submitted edits apply");
         }
@@ -1123,9 +1125,10 @@ impl NotesApp {
     /// Test-only: one frame as a host runs it — sync, the settle pass and
     /// what it submitted applied to `doc` — shown in the same frame.
     #[cfg(test)]
-    pub(crate) fn frame(&mut self, doc: &mut ui::widget::Edits<'_>, root: &automerge::ObjId) {
+    pub(crate) fn frame(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
+        ui::widget::Widget::settle(self, &mut Edits::lend(doc), root);
         ui::widget::Widget::sync(self, doc, root);
-        ui::widget::Widget::settle(self, doc, root);
+        ui::widget::Widget::settle(self, &mut Edits::lend(doc), root);
         self.land(doc);
         ui::widget::Widget::sync(self, doc, root);
     }
@@ -3402,7 +3405,7 @@ mod tests {
             );
             assert!(app.main.perform_action(
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
 
@@ -3419,7 +3422,7 @@ mod tests {
         {
             let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::CreateChild { parent: Some(root) },
             );
             let children = app.workspace.children_of(Some(root));
@@ -3431,15 +3434,12 @@ mod tests {
         {
             let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::CreateChild { parent: Some(root) },
             );
             let child = app.workspace.selected().unwrap();
             assert!(NotesDoc::page_body(&state.doc, child).is_some());
-            app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
-                OutEvent::Delete(child),
-            );
+            app.dispatch_event_for_test(&mut Edits::lend(&mut state.doc), OutEvent::Delete(child));
             app.frame(&mut state.doc, &state.root);
             assert!(NotesDoc::page_body(&state.doc, child).is_none());
             // Selection falls back to a remaining root page.
@@ -3450,7 +3450,7 @@ mod tests {
         {
             let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::Rename {
                     id: root,
                     new_title: "Index".into(),
@@ -3484,7 +3484,7 @@ mod tests {
             // as the change it recorded names it.
             let before = state.doc.get_heads();
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::Delete(welcome),
             );
             let change = state.doc.get_changes(&before).into_iter().last().unwrap();
@@ -3507,7 +3507,7 @@ mod tests {
             let before = NotesDoc::list_pages(&state.doc).len();
 
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::CreateChild { parent: None },
             );
 
@@ -3620,12 +3620,12 @@ mod tests {
         {
             let (mut app, mut state, _tmp, target) = app_seeded_into_doc();
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::CreateChild { parent: None },
             );
             let source = app.selected_for_test().expect("new source page selected");
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::Rename {
                     id: source,
                     new_title: "Project index".into(),
@@ -3635,7 +3635,7 @@ mod tests {
                 .0
                 .clone();
             app.apply_action(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 &actions::edit_body_action(
                     source,
                     tilo_document::RichTextAction::SpliceText {
@@ -3648,7 +3648,7 @@ mod tests {
                 ),
             );
             app.apply_action(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
             );
             let backlinks = actions::canonical_backlinks(
@@ -3672,7 +3672,7 @@ mod tests {
             // intentionally not a Markdown-parser test: incoming links must be
             // derived from the same canonical mark data collaborators receive.
             app.dispatch_event_for_test(
-                &mut ui::widget::Edits::lend(&mut state.doc),
+                &mut Edits::lend(&mut state.doc),
                 OutEvent::CreateChild { parent: None },
             );
             let target = app
@@ -3686,7 +3686,7 @@ mod tests {
                 0..4,
                 &ui::widget::Mark::Link(target),
             );
-            app.apply_action(&mut ui::widget::Edits::lend(&mut state.doc), &action);
+            app.apply_action(&mut Edits::lend(&mut state.doc), &action);
 
             app.navigate_to(target);
             app.frame(&mut state.doc, &state.root);
@@ -3795,7 +3795,7 @@ mod tests {
                 0..4,
                 &ui::widget::marks::Mark::Underline,
             );
-            app.apply_action(&mut ui::widget::Edits::lend(&mut state.doc), &action);
+            app.apply_action(&mut Edits::lend(&mut state.doc), &action);
 
             // Simulate a remote structural refresh. The widget rebuilds plain
             // text/kinds, then Notes hydrates the native mark state back into the

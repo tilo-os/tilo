@@ -25,6 +25,9 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use tilo_clock::unix_now_i64;
 use ui::time::{Duration, Instant};
+#[cfg(test)]
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::ObjId;
@@ -2714,43 +2717,8 @@ fn frame_image_cover(buf: FrameBuf) -> Image {
     Image::from_rgba(Arc::from(buf.rgba), w, h).with_fit(ImageFit::Cover)
 }
 
-impl Widget for CameraApp {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "sync is the one ordered document/lifecycle boundary"
-    )]
-    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
-        // Another window, or another of the person's devices, changed the
-        // capture preferences.
-        if let Some((person, device)) = &self.preferences {
-            let kept = Settings::from_parts(person.get(), device.get());
-            if kept != self.settings {
-                self.settings = kept;
-                self.dirty = true;
-            }
-        }
-
-        #[cfg(feature = "live-capture")]
-        self.poll_camera();
-
-        // Hermetic path has no frame clock: while recording, synthesize a
-        // procedural frame each tick so a real multi-frame clip accumulates.
-        if self.recording.is_some() && matches!(self.storage, Storage::Sample) {
-            let seed = Self::viewfinder_seed(self.facing).wrapping_add((self.frame_gen as u8) & 3);
-            let fb = frame::viewfinder(seed, 480, 270);
-            let _ = self.push_camera_frame(fb);
-            self.dirty = true;
-        }
-    }
-
-    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
-        self.forget_cancelled();
-        self.poll_document_job();
-        // An empty record already reads as Photo / Back / default settings.
-        // Writing those defaults would be a phantom history entry.
-        self.poll_countdown();
+impl CameraApp {
+    fn poll_photo_results(&mut self, state: &mut ui::widget::Edits<'_>) {
         while let Some(result) = self.worker.try_recv() {
             let terminal = result.invocation.filter(|invocation| {
                 self.pending_capture.is_some_and(|(pending, generation)| {
@@ -2813,6 +2781,9 @@ impl Widget for CameraApp {
                 }
             }
         }
+    }
+
+    fn poll_video_results(&mut self, state: &mut ui::widget::Edits<'_>) {
         while let Some(result) = self.worker.try_recv_video() {
             self.video_finalizing = false;
             let terminal = result.invocation.filter(|invocation| {
@@ -2874,6 +2845,9 @@ impl Widget for CameraApp {
                 }
             }
         }
+    }
+
+    fn poll_thumbnail_results(&mut self) {
         // A pending preview the pipeline no longer knows (dropped from a full
         // queue) simply leaves `thumb_pending`, so the next draw asks again.
         let settled: Vec<(String, Option<thumbnail::ThumbState>)> = self
@@ -2908,6 +2882,9 @@ impl Widget for CameraApp {
             }
             self.dirty = true;
         }
+    }
+
+    fn poll_scan_results(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
         while let Some(result) = self.worker.try_recv_scan() {
             if self.pending_scan.as_ref() != Some(&(result.id.clone(), result.generation)) {
                 continue;
@@ -2955,6 +2932,49 @@ impl Widget for CameraApp {
             }
             self.dirty = true;
         }
+    }
+}
+
+impl Widget for CameraApp {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        // Another window, or another of the person's devices, changed the
+        // capture preferences.
+        if let Some((person, device)) = &self.preferences {
+            let kept = Settings::from_parts(person.get(), device.get());
+            if kept != self.settings {
+                self.settings = kept;
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        #[cfg(feature = "live-capture")]
+        self.poll_camera();
+
+        // Hermetic path has no frame clock: while recording, synthesize a
+        // procedural frame each tick so a real multi-frame clip accumulates.
+        if self.recording.is_some() && matches!(self.storage, Storage::Sample) {
+            let seed = Self::viewfinder_seed(self.facing).wrapping_add((self.frame_gen as u8) & 3);
+            let fb = frame::viewfinder(seed, 480, 270);
+            let _ = self.push_camera_frame(fb);
+            self.dirty = true;
+        }
+        self.dirty
+    }
+
+    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.forget_cancelled();
+        self.poll_document_job();
+        // An empty record already reads as Photo / Back / default settings.
+        // Writing those defaults would be a phantom history entry.
+        self.poll_countdown();
+        self.poll_photo_results(state);
+        self.poll_video_results(state);
+        self.poll_thumbnail_results();
+        self.poll_scan_results(state, path);
         for capture in std::mem::take(&mut self.sample_captures) {
             if let Err(error) = self.try_perform_action(state, &capture) {
                 self.toast = Some(format!("Save failed: {error}"));
@@ -6479,6 +6499,41 @@ mod tests {
     use super::*;
     use ui::headless::{Framed, viewport};
 
+    #[test]
+    fn sample_recording_advances_once_per_update_and_never_during_sync() {
+        let (mut app, mut doc, root) = sample_app();
+        app.apply(
+            Action::SetMode(CaptureMode::Video),
+            &mut Edits::lend(&mut doc),
+            &root,
+        );
+        app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
+        assert!(app.is_recording());
+        let before = app.frame_gen;
+
+        Widget::update(&mut app, &doc, &root);
+        assert_eq!(app.frame_gen, before + 1);
+        for _ in 0..3 {
+            Widget::sync(&mut app, &doc, &root);
+            Widget::settle(&mut app, &mut Edits::lend(&mut doc), &root);
+        }
+        assert_eq!(
+            app.frame_gen,
+            before + 1,
+            "reading and settling a frame cannot feed the recorder twice"
+        );
+        Widget::update(&mut app, &doc, &root);
+        assert_eq!(
+            app.frame_gen,
+            before + 2,
+            "the next update feeds exactly one more frame"
+        );
+
+        app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
+        sync_until(&mut app, &mut doc, &root, |app| !app.video_finalizing);
+        assert!(app.captures.iter().any(Capture::is_video));
+    }
+
     /// Viewfinder washes and HUD ink are chrome on media: they come from the
     /// theme scrim, and the ink clears body-text contrast on it in every
     /// shipped preset (including high contrast).
@@ -6519,7 +6574,10 @@ mod tests {
         /// One frame as the framework runs it: the surface syncs, then is
         /// handed the record its actions left.
         fn sync_record(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+            Widget::update(self, doc, root);
+            Widget::settle(self, &mut Edits::lend(doc), root);
             Widget::sync(self, doc, root);
+            Widget::settle(self, &mut Edits::lend(doc), root);
             present(self, doc);
         }
     }
@@ -6638,7 +6696,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: Edits::lend(doc),
                 path: root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -7000,7 +7058,11 @@ mod tests {
         // Phase `wheel_scrolls_settings`.
         {
             let (mut app, mut doc, root) = sample_app();
-            app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
+            app.apply(
+                Action::Nav(Screen::Settings),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert!(drive(&mut app, &wheel(-2.0), &mut doc, &root));
             assert!(app.settings_scroll > 0.0);
         }
@@ -7073,7 +7135,7 @@ mod tests {
             assert!(camera.perform_semantic_action(
                 "camera.open-photos",
                 &A11yAction::Activate,
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &root,
             ));
             let invocation = ui::widget::controls::take_control_invocation(&mut *app)
@@ -7095,7 +7157,7 @@ mod tests {
             assert!(camera.perform_semantic_action(
                 "camera.shutter",
                 &A11yAction::Activate,
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &root,
             ));
             camera.sync_record(&mut state.doc, &root);
@@ -7134,7 +7196,7 @@ mod tests {
             assert!(camera.perform_semantic_action(
                 "camera.retry-camera",
                 &A11yAction::Activate,
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &root,
             ));
             // Device discovery is deliberately real. The test host may expose a
@@ -7229,7 +7291,7 @@ mod tests {
             let root = automerge::ROOT;
             sync_until(&mut app, &mut doc, &root, |_| true);
             assert!(!app.feed_active());
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             // Nothing saved; the toast tells the truth.
             assert!(app.captures.is_empty());
             assert_eq!(app.toast.as_deref(), Some("Connect a camera to capture"));
@@ -7246,9 +7308,13 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             sync_until(&mut app, &mut doc, &root, |_| true);
-            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            app.apply(
+                Action::SetMode(CaptureMode::Video),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert!(!app.feed_active());
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(!app.is_recording(), "no feed → recording never starts");
             assert_eq!(app.toast.as_deref(), Some("Connect a camera to record"));
             assert!(!dir.exists());
@@ -7264,10 +7330,14 @@ mod tests {
         // Phase `self_timer_is_a_local_cancellable_countdown_before_capture`.
         {
             let (mut app, mut doc, root) = sample_app();
-            app.apply(Action::SetTimer(Timer::S3), &mut doc, &root);
+            app.apply(
+                Action::SetTimer(Timer::S3),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             let before = app.captures.len();
             let before_id = app.captures.first().map(|capture| capture.id.clone());
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(app.is_counting_down());
             assert_eq!(app.captures.len(), before, "timer does not capture early");
             app.countdown.as_mut().expect("armed timer").due = ui::time::now();
@@ -7279,16 +7349,16 @@ mod tests {
                 before_id
             );
 
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(app.is_counting_down());
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(!app.is_counting_down(), "second shutter cancels safely");
         }
         // Phase `sample_shutter_replaces_the_recent_handoff`.
         {
             let (mut app, mut doc, root) = sample_app();
             let before = app.captures[0].id.clone();
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             app.sync_record(&mut doc, &root);
             assert_eq!(app.captures.len(), 1);
             assert_ne!(app.captures[0].id, before);
@@ -7342,7 +7412,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut doc),
+                    state: Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -7408,21 +7478,33 @@ mod tests {
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.mode, CaptureMode::Photo);
-            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            app.apply(
+                Action::SetMode(CaptureMode::Video),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.mode, CaptureMode::Video);
 
             // Shutter in video mode starts recording; mode can't be flipped while
             // a clip is in progress.
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(app.is_recording());
-            app.apply(Action::SetMode(CaptureMode::Photo), &mut doc, &root);
+            app.apply(
+                Action::SetMode(CaptureMode::Photo),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.mode, CaptureMode::Video, "mode locked while recording");
         }
         // Phase `recording_requests_frames_and_reduced_motion_uses_a_wake_deadline`.
         {
             let (mut app, mut doc, root) = sample_app();
-            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(
+                Action::SetMode(CaptureMode::Video),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(Widget::needs_animation_frame(&app));
             app.set_motion_reduced(true);
             assert!(!Widget::needs_animation_frame(&app));
@@ -7431,10 +7513,14 @@ mod tests {
         // Phase `sample_video_record_replaces_the_recent_handoff`.
         {
             let (mut app, mut doc, root) = sample_app();
-            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            app.apply(
+                Action::SetMode(CaptureMode::Video),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
 
             // Start; the hermetic frame-synth runs on each sync tick.
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(app.is_recording());
             for _ in 0..6 {
                 app.sync_record(&mut doc, &root);
@@ -7446,7 +7532,7 @@ mod tests {
 
             // Stop queues finalization; the bounded worker produces a real clip
             // before sync registers its canonical capture resource.
-            app.apply(Action::Shutter, &mut doc, &root);
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root);
             assert!(!app.is_recording());
             sync_until(&mut app, &mut doc, &root, |app| {
                 app.captures
@@ -7467,7 +7553,10 @@ mod tests {
                     .starts_with("Video saved")
             );
         }
-        // Phase `disk_video_recording_writes_a_real_avi`.
+    }
+
+    #[test]
+    fn disk_video_recording_writes_a_real_avi() {
         {
             let dir =
                 std::env::temp_dir().join(format!("camera-vidrec-test-{}", std::process::id()));
@@ -7475,18 +7564,22 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             app.sync_record(&mut doc, &root);
-            app.apply(Action::SetMode(CaptureMode::Video), &mut doc, &root);
+            app.apply(
+                Action::SetMode(CaptureMode::Video),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
 
             // A frame arrives, then record: start seeds with it, further frames are
             // fed straight into the encoder.
             app.push_camera_frame(frame::viewfinder(0, 128, 96));
             assert!(app.feed_active());
-            app.apply(Action::Shutter, &mut doc, &root); // start
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root); // start
             assert!(app.is_recording());
             for i in 1..6u8 {
                 app.push_camera_frame(frame::viewfinder(i % 6, 128, 96));
             }
-            app.apply(Action::Shutter, &mut doc, &root); // stop → write clip
+            app.apply(Action::Shutter, &mut Edits::lend(&mut doc), &root); // stop → write clip
             assert!(!app.is_recording());
 
             sync_until(&mut app, &mut doc, &root, |app| app.captures.len() == 1);
@@ -7682,17 +7775,21 @@ mod tests {
         // Phase `document_route_captures_real_session_pages_in_sample_mode`.
         {
             let (mut app, mut doc, root) = sample_app();
-            app.apply(Action::Nav(Screen::Document), &mut doc, &root);
+            app.apply(
+                Action::Nav(Screen::Document),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.screen, Screen::Document);
             assert!(app.document_scan.pages.is_empty());
 
-            app.apply(Action::CaptureDocument, &mut doc, &root);
+            app.apply(Action::CaptureDocument, &mut Edits::lend(&mut doc), &root);
             assert_eq!(app.document_scan.pages.len(), 1);
             let page = app.document_scan.pages[0].rendered();
             assert_eq!((page.width(), page.height()), (1240, 1754));
             assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
 
-            app.apply(Action::BeginDocumentCrop, &mut doc, &root);
+            app.apply(Action::BeginDocumentCrop, &mut Edits::lend(&mut doc), &root);
             assert!(app.document_crop_editor.is_some());
             app.document_crop_selection.set(CropSelection {
                 left: 0.1,
@@ -7700,19 +7797,23 @@ mod tests {
                 right: 0.9,
                 bottom: 0.9,
             });
-            app.apply(Action::ApplyDocumentCrop, &mut doc, &root);
+            app.apply(Action::ApplyDocumentCrop, &mut Edits::lend(&mut doc), &root);
             assert!(app.document_crop_editor.is_none());
             let page = app.document_scan.pages[0].rendered();
             assert_eq!((page.width(), page.height()), (992, 1404));
 
-            app.apply(Action::RotateDocument, &mut doc, &root);
+            app.apply(Action::RotateDocument, &mut Edits::lend(&mut doc), &root);
             let page = app.document_scan.pages[0].rendered();
             assert_eq!((page.width(), page.height()), (1404, 992));
 
             let (sender, receiver) = mpsc::channel();
             app.document_job = Some(receiver);
             app.document_job_kind = Some(DocumentJobKind::Recognize);
-            app.apply(Action::RemoveDocumentPage, &mut doc, &root);
+            app.apply(
+                Action::RemoveDocumentPage,
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.document_scan.pages.len(), 1, "busy page is stable");
             sender
                 .send(DocumentJobResult::Recognize {
@@ -7735,7 +7836,11 @@ mod tests {
             );
             assert!(app.document_job.is_none());
 
-            app.apply(Action::RemoveDocumentPage, &mut doc, &root);
+            app.apply(
+                Action::RemoveDocumentPage,
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert!(app.document_scan.pages.is_empty());
         }
         // Phase `document_capture_never_falls_back_to_a_different_scanner`.
@@ -7759,7 +7864,7 @@ mod tests {
         // Phase `document_text_status_detects_stale_language_and_copy_uses_real_ocr_text`.
         {
             let (mut app, mut doc, root) = sample_app();
-            app.apply(Action::CaptureDocument, &mut doc, &root);
+            app.apply(Action::CaptureDocument, &mut Edits::lend(&mut doc), &root);
             assert_eq!(app.document_text_status(), "Text not recognized");
             app.document_scan.pages[0].ocr = Some(tilo_ocr::Document {
                 words: vec![tilo_ocr::Word {
@@ -7785,7 +7890,7 @@ mod tests {
                 app.document_text_status(),
                 "1 word recognized · Straightened 1.5°"
             );
-            app.apply(Action::CopyDocumentText, &mut doc, &root);
+            app.apply(Action::CopyDocumentText, &mut Edits::lend(&mut doc), &root);
             assert_eq!(ui::clipboard_paste().as_deref(), Some("Invoice"));
             assert_eq!(app.toast.as_deref(), Some("Recognized text copied"));
 
@@ -7838,7 +7943,11 @@ mod tests {
                 (DocumentChoice::Source, 1),
                 (DocumentChoice::Language, 1),
             ] {
-                app.apply(Action::OpenDocumentChoice(choice), &mut doc, &root);
+                app.apply(
+                    Action::OpenDocumentChoice(choice),
+                    &mut Edits::lend(&mut doc),
+                    &root,
+                );
                 assert!(app.document_popover.is_open());
                 app.document_popover.select(selection);
                 let selected = app.document_popover.take_selection().unwrap();
@@ -7892,7 +8001,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: doc,
+                        state: Edits::lend(doc),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -7969,7 +8078,11 @@ mod tests {
         {
             let (mut app, mut doc, root) = sample_app();
             let before = doc.get_heads();
-            app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
+            app.apply(
+                Action::Nav(Screen::Settings),
+                &mut Edits::lend(&mut doc),
+                &root,
+            );
             assert_eq!(app.screen, Screen::Settings);
             assert_eq!(doc.get_heads(), before);
         }
@@ -7978,7 +8091,7 @@ mod tests {
             let (mut app, mut doc, root) = sample_app();
             let before = doc.get_heads();
             assert_eq!(app.facing, Facing::Back);
-            app.apply(Action::CycleFacing, &mut doc, &root);
+            app.apply(Action::CycleFacing, &mut Edits::lend(&mut doc), &root);
             assert_eq!(app.facing, Facing::Front);
             assert_eq!(doc.get_heads(), before);
         }
@@ -7987,7 +8100,7 @@ mod tests {
             let (mut app, mut doc, root) = sample_app();
             let before = app.settings.grid;
             let heads = doc.get_heads();
-            app.apply(Action::ToggleGrid, &mut doc, &root);
+            app.apply(Action::ToggleGrid, &mut Edits::lend(&mut doc), &root);
             assert_eq!(app.settings.grid, !before);
             assert_eq!(doc.get_heads(), heads);
         }
@@ -7995,7 +8108,7 @@ mod tests {
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.settings.resolution, Resolution::R12MP);
-            app.apply(Action::CycleResolution, &mut doc, &root);
+            app.apply(Action::CycleResolution, &mut Edits::lend(&mut doc), &root);
             assert_eq!(app.settings.resolution, Resolution::R4K);
         }
     }
@@ -8021,7 +8134,7 @@ mod tests {
                 symbology: "QR Code".into(),
                 corners: [(0.0, 0.0); 4],
             });
-            app.apply(Action::Scan(0), &mut doc, &root);
+            app.apply(Action::Scan(0), &mut Edits::lend(&mut doc), &root);
             let scans = doc::read_scans(&doc, &root);
             assert_eq!(scans.len(), 1);
             assert_eq!(scans[0].raw, SCAN_PAYLOAD);
@@ -8058,7 +8171,7 @@ mod tests {
                 symbology: "QR Code".into(),
                 corners: [(0.0, 0.0); 4],
             });
-            app.apply(Action::Scan(0), &mut doc, &root); // "Connect"
+            app.apply(Action::Scan(0), &mut Edits::lend(&mut doc), &root); // "Connect"
             assert_eq!(app.toast.as_deref(), Some("Wi-Fi password copied"));
         }
     }

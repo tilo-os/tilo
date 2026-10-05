@@ -17,6 +17,8 @@
 //! effects, while closing the pane is an explicit view operation.
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+#[cfg(test)]
+use ui::widget::Edits;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -621,9 +623,9 @@ mod tests {
                 homepage: "https://home.example".to_string(),
             };
             let mut pane = SettingsPane::with_settings(&settings);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+            pane.sync(&doc, &root);
             assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
             assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
             let presentation = SettingsPresentation::from_settings(&settings);
@@ -648,8 +650,8 @@ mod tests {
         // Phase `destructive_controls_have_no_document_fallback_paths`.
         {
             let mut pane = SettingsPane::new();
-            let mut doc = AutoCommit::new();
-            pane.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            pane.sync(&doc, &automerge::ROOT);
             assert!(
                 ui::widget::controls::control_action_bindings(&pane)
                     .iter()
@@ -692,7 +694,7 @@ mod tests {
             let mut pane = SettingsPane::new();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+            pane.sync(&doc, &root);
 
             let theme = Theme::dark();
             let mut taffy = TaffyTree::<()>::new();
@@ -709,7 +711,7 @@ mod tests {
                 .unwrap();
             pane.apply_layout(&taffy, node, Point::ZERO);
             // Re-sync so the toggle adopts its retained presentation state.
-            pane.sync(&mut doc, &root);
+            pane.sync(&doc, &root);
 
             let rect = find_toggle_rect(&pane, "settings.adblock")
                 .expect("ad-block toggle is addressable in the tree");
@@ -725,7 +727,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &mods,
-                        state: ui::widget::Edits::lend(&mut doc),
+                        state: Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus,

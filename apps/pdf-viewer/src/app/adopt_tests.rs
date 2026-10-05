@@ -5,6 +5,7 @@
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
+use ui::widget::Edits;
 
 use super::*;
 use crate::doc::PdfDoc;
@@ -231,14 +232,17 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         // Edit: answer the note, rewrite its text, delete the free text; leave
         // the highlight and ink alone.
         app.perform_action(
-            doc,
+            &mut Edits::lend(doc),
             &crate::actions::add_reply_action_with_id(&thread.id, "reply-new", "Cy", "Done"),
         );
         app.perform_action(
-            doc,
+            &mut Edits::lend(doc),
             &crate::actions::set_comment_body_action(&thread.id, "Check this again"),
         );
-        app.perform_action(doc, &crate::actions::delete_annotation_action(&free.id));
+        app.perform_action(
+            &mut Edits::lend(doc),
+            &crate::actions::delete_annotation_action(&free.id),
+        );
         app.reload(doc);
 
         let out = dir.path().join("exported.pdf");
@@ -319,7 +323,7 @@ fn file_markup_and_form_values_are_adopted_once_and_exported_without_duplicates(
         );
 
         app.perform_action(
-            doc,
+            &mut Edits::lend(doc),
             &crate::actions::set_form_value_action("name", &FormEntry::Text("Grace Hopper".into())),
         );
         app.reload(doc);
@@ -398,7 +402,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         };
         let doc = &mut state.doc;
         app.set_tool(Tool::Text);
-        app.create_free_text(doc, 1, (30.0, 120.0));
+        app.create_free_text(&mut Edits::lend(doc), 1, (30.0, 120.0));
         assert!(
             matches!(&app.editing, Some(e) if matches!(e.target, EditTarget::FreeText(_))),
             "a new box opens for typing"
@@ -407,7 +411,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
             .as_mut()
             .unwrap()
             .set_text("Überprüfen — 検討してください");
-        app.commit_edit(doc);
+        app.commit_edit(&mut Edits::lend(doc));
         let stored = PdfDoc::list_annotations(doc);
         let free = stored
             .iter()
@@ -422,7 +426,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         let id = free.id.clone();
         let before = app.note_pos(&id).unwrap();
         app.move_note_local(&id, before.0 + 20.0, before.1 + 10.0);
-        app.persist_free_text_box(doc, &id);
+        app.persist_free_text_box(&mut Edits::lend(doc), &id);
         app.reload(doc);
         let after = app.note_pos(&id).unwrap();
         assert!(
@@ -430,7 +434,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         );
         // A larger size.
         app.selected_anno = Some(id.clone());
-        app.resize_free_text(doc, &id, 4.0);
+        app.resize_free_text(&mut Edits::lend(doc), &id, 4.0);
 
         let out = dir.path().join("with-text.pdf");
         assert!(app.save_annotated_to(&out), "{:?}", app.status_note);
@@ -492,7 +496,7 @@ fn authored_free_text_and_typed_signatures_export_with_embedded_appearances() {
         };
         let user = app.page_map(1).signature_to_user(&signature);
         app.perform_action(
-            doc,
+            &mut Edits::lend(doc),
             &crate::actions::add_signature_on(&user, Some("source-1")),
         );
         app.reload(doc);

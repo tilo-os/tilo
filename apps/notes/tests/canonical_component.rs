@@ -63,10 +63,10 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
             .unwrap();
         let mut a = TileHost::from_component(component(&f, 11, existing(&checkout)));
         let mut b = TileHost::from_component(component(&f, 12, existing(&checkout)));
-        let mut outer = AutoCommit::new();
+        let outer = AutoCommit::new();
         for _ in 0..3 {
-            a.sync(&mut outer, &ROOT);
-            b.sync(&mut outer, &ROOT);
+            a.sync(&outer, &ROOT);
+            b.sync(&outer, &ROOT);
         }
         let mut resources = Vec::new();
         collect(&a, &outer, &mut resources);
@@ -146,7 +146,7 @@ fn canonical_component_starts_empty_projects_existing_records_read_only() {
             .records
             .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
             .unwrap();
-        tile.sync(&mut AutoCommit::new(), &ROOT);
+        tile.sync(&AutoCommit::new(), &ROOT);
         f.records
             .read(&checkout.id, |doc| {
                 assert!(notebook::project(doc, None).unwrap().pages().is_empty());
@@ -183,7 +183,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
             (RecordSaveStatus::Saved, "Saved"),
         ] {
             saved.set(status);
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert_eq!(app.status_bar_for_test().save_text(), label);
             app.refresh_status_for_test();
             assert_eq!(app.status_bar_for_test().save_text(), label);
@@ -202,7 +202,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         let mut app = notes::NotesApp::from_document(&doc, &f.author).unwrap();
         assert_eq!(app.selected_for_test(), Some(f.root));
         app.navigate_to(f.child);
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         let expected = NotesDoc::page_block_marks(&doc, f.child)
             .into_iter()
             .map(|(id, mut marks)| {
@@ -224,7 +224,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
             .editor_mut()
             .focus_block(0, ui::widget::CursorPlacement::Byte(2));
         for _ in 0..3 {
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
         }
         assert_eq!(app.main_panel_mut().editor().blocks()[0].id, first);
         assert_eq!(
@@ -260,7 +260,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         }
         doc.commit();
         let cleared = (doc.base_heads(), doc.pending_ops());
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         assert!(
             app.main_panel_mut()
                 .inline_marks()
@@ -271,7 +271,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         tilo_actions::Action::apply(&notes::actions::delete_page_action(f.root), &mut doc).unwrap();
         doc.commit();
         let deleted = (doc.base_heads(), doc.pending_ops());
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         assert_eq!(app.selected_for_test(), Some(f.empty));
         assert_eq!((doc.base_heads(), doc.pending_ops()), deleted);
         tilo_actions::Action::apply(&notes::actions::delete_page_action(f.empty), &mut doc)
@@ -279,7 +279,7 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         NotesDoc::delete_tag(&mut doc, f.tag);
         doc.commit();
         let emptied = (doc.base_heads(), doc.pending_ops());
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
         assert_eq!(app.selected_for_test(), None);
         assert!(app.main_panel_mut().children().is_empty());
         assert!(notebook::project(&doc, None).unwrap().tags().is_empty());

@@ -17,6 +17,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{
     AppKind, AppWidget, Continuable, FloatingSurfaceProvider, FullscreenProvider, IconDescriptor,
     TaffyTreeExt, Widget, WindowCloseAdmission,
@@ -898,7 +900,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::from(modifiers),
-                state: ui::widget::Edits::lend(&mut AutoCommit::new()),
+                state: Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -916,7 +918,11 @@ mod tests {
             .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
             .expect("exit choice button");
         assert!(unsafe {
-            (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
+            (&mut *button).perform_action(
+                &ui::a11y::Action::Activate,
+                &mut Edits::lend(doc),
+                &automerge::ROOT,
+            )
         });
         let invocation = ui::widget::controls::take_control_invocation(window)
             .expect("exit choice must reach the root action broker");
@@ -962,7 +968,7 @@ mod tests {
                 ("https://front.test/".to_owned(), false),
                 ("https://behind.test/".to_owned(), true),
             ]);
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 ui::shell_tabs::take_requests(),
                 vec![
@@ -988,7 +994,7 @@ mod tests {
             let _ = ui::shell_tabs::take_requests();
             let (mut window, engine) = window();
             engine.emit(WebViewEvent::TabClosed);
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 ui::shell_tabs::take_requests(),
                 vec![ui::shell_tabs::TabRequest::CloseThis]
@@ -1029,7 +1035,7 @@ mod tests {
         {
             let (mut window, engine) = window();
             engine.emit(WebViewEvent::FullscreenChanged(true));
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(window.fullscreen_intent(), Some(true));
 
             window.on_fullscreen_changed(true);
@@ -1072,7 +1078,7 @@ mod tests {
             window.on_fullscreen_changed(true);
             let (tree, root, _nodes) = layout(&mut window);
             engine.emit(WebViewEvent::FullscreenChanged(true));
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(window.fullscreen_hint.is_some());
             assert!(dispatch(
                 &mut window,
@@ -1163,7 +1169,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             engine.emit(WebViewEvent::FullscreenChanged(true));
             engine.emit(runtime(1, 0, true));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             window.on_fullscreen_changed(true);
             let _immersive = layout(&mut window);
             assert_eq!(window.fullscreen_intent(), Some(true));
@@ -1180,7 +1186,7 @@ mod tests {
             }
             assert_eq!(engine.sent(&WebViewCommand::CancelAllDownloads), 0);
             invoke_exit_choice(&mut window, "browser.download-exit.keep", &mut doc);
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert!(window.exit_panel.is_none());
             assert!(!ui::component_lifecycle::take_window_close_intent(
                 &mut window
@@ -1194,13 +1200,13 @@ mod tests {
             let mut doc = AutoCommit::new();
             engine.emit(running);
             engine.emit(runtime(1, 0, true));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 ui::component_lifecycle::on_window_close_requested(&mut window),
                 WindowCloseAdmission::Defer
             );
             invoke_exit_choice(&mut window, "browser.download-exit.cancel", &mut doc);
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert_eq!(engine.sent(&WebViewCommand::CancelAllDownloads), 1);
             assert!(!ui::component_lifecycle::take_window_close_intent(
                 &mut window
@@ -1222,13 +1228,13 @@ mod tests {
                 error: String::new(),
             });
             engine.emit(runtime(0, 1, false));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert!(
                 !ui::component_lifecycle::take_window_close_intent(&mut window),
                 "the physical owner is still closing"
             );
             engine.emit(runtime(0, 0, false));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert!(ui::component_lifecycle::take_window_close_intent(
                 &mut window
             ));

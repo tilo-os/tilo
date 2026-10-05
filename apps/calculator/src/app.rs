@@ -5,6 +5,8 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::ModelPath;
 
 #[cfg(test)]
@@ -2267,7 +2269,7 @@ mod tests {
             app.on_key_with_paste(
                 &WKey::Character("v".into()),
                 primary.into(),
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 || Some("2^2".into()),
             );
             assert_eq!(app.model.expr, "2^2");
@@ -2405,7 +2407,7 @@ mod tests {
                 app.perform_semantic_action(
                     "calculator.mode:1",
                     &Action::Activate,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "topbar: mode activate handled"
@@ -2415,7 +2417,7 @@ mod tests {
                 app.perform_semantic_action(
                     "calculator.angle:degrees",
                     &Action::ToggleCheck,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "topbar: angle toggle handled"
@@ -2455,7 +2457,7 @@ mod tests {
                 app.perform_semantic_action(
                     seven.action_target.as_deref().unwrap_or_default(),
                     &Action::Activate,
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "keypad: key 7 handled"
@@ -2465,7 +2467,7 @@ mod tests {
                 app.perform_semantic_action(
                     expression.action_target.as_deref().unwrap_or_default(),
                     &Action::SetValue("sqrt(9)".into()),
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "keypad: expression SetValue handled"
@@ -2494,7 +2496,7 @@ mod tests {
                 app.perform_semantic_action(
                     formula.action_target.as_deref().unwrap_or_default(),
                     &Action::SetValue("2*x".into()),
-                    &mut doc,
+                    &mut Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "graph: formula SetValue handled"
@@ -2638,7 +2640,11 @@ mod tests {
             let mut app = CalculatorApp::new();
             let mut st = ui::State::new();
             let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-            app.on_key(&WKey::Character("3".into()), ctrl, &mut st.doc);
+            app.on_key(
+                &WKey::Character("3".into()),
+                ctrl,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(app.model.mode, Mode::Graph3d, "ctrl+3 switches to Graph 3D");
             assert_eq!(app.model.surfaces.len(), 1, "with its starter surface");
         }
@@ -2650,11 +2656,15 @@ mod tests {
             let escape = WKey::Named(NamedKey::Escape);
             app.calc.snap_sidebar(true);
             assert!(!app.escape_is_idle(&escape), "Escape dismisses the drawer");
-            app.on_key(&escape, none, &mut st.doc);
+            app.on_key(&escape, none, &mut Edits::lend(&mut st.doc));
             assert!(!app.calc.sidebar_open());
-            app.on_key(&WKey::Character("7".into()), none, &mut st.doc);
+            app.on_key(
+                &WKey::Character("7".into()),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert!(!app.escape_is_idle(&escape), "Escape clears the expression");
-            app.on_key(&escape, none, &mut st.doc);
+            app.on_key(&escape, none, &mut Edits::lend(&mut st.doc));
             assert!(app.model.expr.is_empty());
             assert!(app.escape_is_idle(&escape), "nothing left for Escape to do");
             assert!(!app.escape_is_idle(&WKey::Named(NamedKey::Backspace)));
@@ -2672,7 +2682,11 @@ mod tests {
             }];
             app.model.active_fn = 0;
             for ch in ["2", "*", "x"] {
-                app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+                app.on_key(
+                    &WKey::Character(ch.into()),
+                    none,
+                    &mut Edits::lend(&mut st.doc),
+                );
             }
             assert_eq!(app.model.funcs[0].expr, "2*x", "typing into 2D field");
         }
@@ -2688,7 +2702,11 @@ mod tests {
             }];
             app.model.active_surface = 0;
             // on_key_g3 resyncs the active field to the surface before editing.
-            app.on_key(&WKey::Named(NamedKey::Backspace), none, &mut st.doc);
+            app.on_key(
+                &WKey::Named(NamedKey::Backspace),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(app.model.surfaces[0].expr, "x+", "backspace in 3D field");
         }
 
@@ -2705,10 +2723,18 @@ mod tests {
             }];
             app.model.active_fn = 0;
             for ch in ["s", "i", "n", "(", "x", ")"] {
-                app.on_key(&WKey::Character(ch.into()), none, &mut st.doc);
+                app.on_key(
+                    &WKey::Character(ch.into()),
+                    none,
+                    &mut Edits::lend(&mut st.doc),
+                );
             }
             assert_eq!(app.model.funcs[0].expr, "sin(x)", "enter 2D: typed row");
-            app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
+            app.on_key(
+                &WKey::Named(NamedKey::Enter),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(
                 app.model.funcs.len(),
                 2,
@@ -2729,10 +2755,14 @@ mod tests {
         {
             let mut app = CalculatorApp::new();
             let mut st = ui::State::new();
-            app.switch_mode(Mode::Graph3d, &mut st.doc); // adds one starter surface
+            app.switch_mode(Mode::Graph3d, &mut Edits::lend(&mut st.doc)); // adds one starter surface
             let start = app.model.surfaces.len();
             assert_eq!(start, 1);
-            app.on_key(&WKey::Named(NamedKey::Enter), none, &mut st.doc);
+            app.on_key(
+                &WKey::Named(NamedKey::Enter),
+                none,
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(
                 app.model.surfaces.len(),
                 start + 1,
@@ -2830,7 +2860,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: ui::widget::Edits::lend(&mut st.doc),
+                state: Edits::lend(&mut st.doc),
                 path: &st.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3116,7 +3146,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut st.doc),
+                    state: Edits::lend(&mut st.doc),
                     path: &st.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -3133,7 +3163,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: ui::widget::Edits::lend(&mut st.doc),
+                    state: Edits::lend(&mut st.doc),
                     path: &st.root,
                     handled: &mut handled,
                     focus_target: &mut focus,

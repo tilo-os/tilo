@@ -1,6 +1,7 @@
 use ui::a11y::{AccessNode, Action};
 use ui::headless::Framed;
 use ui::theme::Theme;
+use ui::widget::Edits;
 use ui::widget::Widget;
 use ui::widget::block_editor::{Block, BlockEditor};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
@@ -50,7 +51,12 @@ impl Fixture {
     )]
     fn action(&mut self, target: &str, action: Action) -> bool {
         let (editor, state) = Framed::split(&mut self.editor);
-        editor.perform_semantic_action(target, &action, &mut state.doc, &state.root)
+        editor.perform_semantic_action(
+            target,
+            &action,
+            &mut Edits::lend(&mut state.doc),
+            &state.root,
+        )
     }
 
     fn value(&self, block: usize, row: usize, column: usize) -> String {
