@@ -1272,6 +1272,9 @@ impl App {
 
     fn vm(&mut self, command: VmCommand) -> Result<Outcome, CliError> {
         match command {
+            VmCommand::Actions { name, command } => {
+                self.vm_device_actions(name.as_deref(), command)
+            }
             VmCommand::List => self.vm_list(),
             VmCommand::Use { name, global } => self.vm_use(&name, global),
             VmCommand::Ssh {

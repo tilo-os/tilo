@@ -12,6 +12,7 @@ pub mod cicache;
 pub mod cli;
 pub mod config;
 pub mod context;
+pub mod device_actions;
 pub mod disk;
 pub mod doctor;
 pub mod error;
