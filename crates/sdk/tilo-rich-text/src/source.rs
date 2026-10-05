@@ -30,7 +30,7 @@ pub trait RichTextSource {
     fn read_only(&self) -> bool;
 
     /// Bring the state up to date with `doc`, every paragraph read.
-    fn sync(&mut self, doc: &mut Doc);
+    fn sync(&mut self, doc: &Doc);
 
     /// Increases whenever the state changes; `None` before there is one.
     fn revision(&self) -> Option<u64>;
@@ -78,7 +78,7 @@ impl RichTextSource for Hosted {
         self.dispatch.as_ref().is_none_or(Dispatcher::read_only)
     }
 
-    fn sync(&mut self, doc: &mut Doc) {
+    fn sync(&mut self, doc: &Doc) {
         let Some(live) = &self.live else {
             return;
         };
@@ -136,11 +136,9 @@ pub(crate) struct FieldState {
 impl FieldState {
     /// The rich text under `root`, every paragraph read, with changes
     /// tracked from here.
-    pub(crate) fn read(doc: &mut Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
+    pub(crate) fn read(doc: &Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
         let mut field = Self::read_only(doc, root, revision)?;
-        let mut tracker = Tracker::new();
-        tracker.start(doc);
-        field.tracker = Some(tracker);
+        field.tracker = Some(Tracker::at(doc.committed_heads()));
         Ok(field)
     }
 
@@ -167,12 +165,12 @@ impl FieldState {
     /// # Errors
     /// Returns [`ModelError`] when the change cannot be placed; a fresh
     /// [`read`](Self::read) is then the way back.
-    pub(crate) fn refresh(&mut self, doc: &mut Doc) -> Result<bool, ModelError> {
+    pub(crate) fn refresh(&mut self, doc: &Doc) -> Result<bool, ModelError> {
         let state = &self.state;
         let Some(tracker) = self.tracker.as_mut() else {
             return Err(ModelError::invalid("nothing tracked yet"));
         };
-        let delta = tracker.delta_located(doc, &|obj| RichText::locate(state, obj));
+        let delta = tracker.committed_delta_located(doc, &|obj| RichText::locate(state, obj));
         if delta.is_empty() {
             return Ok(false);
         }
@@ -246,7 +244,7 @@ impl RichTextField {
         self
     }
 
-    fn reread(&mut self, doc: &mut Doc, root: ObjId) {
+    fn reread(&mut self, doc: &Doc, root: ObjId) {
         let revision = self
             .field
             .as_ref()
@@ -266,7 +264,7 @@ impl RichTextSource for RichTextField {
         self.dispatch.as_ref().is_none_or(Dispatcher::read_only)
     }
 
-    fn sync(&mut self, doc: &mut Doc) {
+    fn sync(&mut self, doc: &Doc) {
         let Some(root) = (self.locate)(doc) else {
             self.field = None;
             return;
@@ -336,7 +334,7 @@ impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
         self.borrow().read_only()
     }
 
-    fn sync(&mut self, doc: &mut Doc) {
+    fn sync(&mut self, doc: &Doc) {
         self.borrow_mut().sync(doc);
     }
 
@@ -396,7 +394,7 @@ impl DirectField {
         self.read_only = read_only;
     }
 
-    fn reread(&mut self, doc: &mut Doc, root: ObjId) {
+    fn reread(&mut self, doc: &Doc, root: ObjId) {
         let revision = self
             .field
             .as_ref()
@@ -416,7 +414,7 @@ impl RichTextSource for DirectField {
         self.read_only
     }
 
-    fn sync(&mut self, doc: &mut Doc) {
+    fn sync(&mut self, doc: &Doc) {
         let Some(root) = (self.locate)(doc) else {
             self.field = None;
             return;

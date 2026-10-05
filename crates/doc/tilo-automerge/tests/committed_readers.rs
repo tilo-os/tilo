@@ -6,7 +6,7 @@
 )]
 
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ROOT};
+use automerge::{AutoCommit, ROOT, ReadDoc};
 
 #[test]
 fn committed_readers_see_what_get_heads_and_diff_see_once_committed() {
@@ -22,6 +22,11 @@ fn committed_readers_see_what_get_heads_and_diff_see_once_committed() {
     assert_eq!(
         shared.committed_diff(&first, &second),
         doc.clone().diff(&first, &second)
+    );
+    let past = shared.committed_fork_at(&first).unwrap();
+    assert_eq!(
+        past.get(ROOT, "count").unwrap().unwrap().0.as_i64(),
+        Some(1)
     );
 
     // A transaction still open is not part of the committed document.

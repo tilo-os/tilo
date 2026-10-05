@@ -1270,12 +1270,10 @@ mod save_status_fixture {
     thread_local! {
         static STORE: RefCell<Option<RecordStore>> = const { RefCell::new(None) };
         static DELIVERED: RefCell<Vec<RecordSaveStatus>> = const { RefCell::new(Vec::new()) };
-        static TYPE_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     struct StatusRoot {
         records: RecordStore,
         checkout: RecordCheckout,
-        edits: u64,
     }
     impl Widget for StatusRoot {
         fn build_layout(
@@ -1308,16 +1306,11 @@ mod save_status_fixture {
         fn get_rect(&self) -> vello::kurbo::Rect {
             vello::kurbo::Rect::ZERO
         }
-        fn sync(&mut self, doc: &tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
-            let (doc, _) = tilo_ui::doc::document_ref(doc, path);
+        fn sync(&mut self, _: &tilo_ui::widget::AppModel, _: &tilo_ui::widget::ModelPath) {
             assert!(matches!(
                 self.records.save_status(&self.checkout.id),
                 Err(RecordOpenError::Busy)
             ));
-            if TYPE_PENDING.replace(false) {
-                self.edits = self.edits.checked_add(1).unwrap();
-                doc.put(ROOT, "pending", self.edits).unwrap();
-            }
         }
     }
     impl AppWidget for StatusRoot {
@@ -1351,7 +1344,6 @@ mod save_status_fixture {
         let root = StatusRoot {
             records: STORE.with(|store| store.borrow().as_ref().unwrap().clone()),
             checkout: context.record().clone(),
-            edits: 0,
         };
         Ok(tilo_ui::application::AppComponent::new(
             context,
@@ -1364,7 +1356,6 @@ mod save_status_fixture {
         fn drop(&mut self) {
             STORE.with(|store| *store.borrow_mut() = None);
             DELIVERED.with(|seen| seen.borrow_mut().clear());
-            TYPE_PENDING.set(false);
         }
     }
     struct Obstruction {
@@ -1393,8 +1384,20 @@ mod save_status_fixture {
         checkout: RecordCheckout,
         _clear: ClearStatusFixture,
         host: ProbeHost,
+        edits: u64,
     }
     impl Fixture {
+        /// An edit the record's owner made and has not committed yet.
+        fn type_pending(&mut self) {
+            self.edits = self.edits.checked_add(1).unwrap();
+            let edits = self.edits;
+            self.host
+                .records
+                .with(&self.checkout.id, |doc| {
+                    doc.put(ROOT, "pending", edits).unwrap();
+                })
+                .unwrap();
+        }
         pub(super) fn new() -> Self {
             let host = ProbeHost::new();
             let clear = ClearStatusFixture;
@@ -1420,6 +1423,7 @@ mod save_status_fixture {
                 checkout,
                 _clear: clear,
                 host,
+                edits: 0,
             }
         }
         fn path(&self) -> std::path::PathBuf {
@@ -1433,7 +1437,7 @@ mod save_status_fixture {
             .join(app_state::DOCUMENT_FILE)
         }
         pub(super) fn pending_and_visible_checkpoint(&mut self) {
-            TYPE_PENDING.set(true);
+            self.type_pending();
             self.tile.sync(&mut self.outer, &ROOT);
             let before = self
                 .host
@@ -1468,7 +1472,7 @@ mod save_status_fixture {
                 .records
                 .read(&self.checkout.id, Transactable::base_heads)
                 .unwrap();
-            TYPE_PENDING.set(true);
+            self.type_pending();
             self.tile.sync(&mut self.outer, &ROOT);
             let pending = self
                 .host
@@ -1527,7 +1531,7 @@ mod save_status_fixture {
                 active: true,
             };
             std::fs::create_dir(&obstruction.path).unwrap();
-            TYPE_PENDING.set(true);
+            self.type_pending();
             self.tile.sync(&mut self.outer, &ROOT);
             assert!(self.host.records.try_flush().is_err());
             for _ in 0..3 {

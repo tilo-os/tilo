@@ -907,9 +907,6 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         self.source.sync(state);
-        // An edit made outside an input event (an accessibility action).
-        self.commit(state);
-        self.drain_find_replace(state);
         if self.source.revision() != self.revision {
             self.present_state(None);
         }
@@ -1029,8 +1026,14 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             let (state, _) = ui::doc::document(state, path);
             return self.duplicate_blocks(state, Some(id));
         }
-        self.editor
-            .perform_semantic_action(target, action, state, path)
+        let performed = self
+            .editor
+            .perform_semantic_action(target, action, state, path);
+        // What the action edited is written now, as an input event's is.
+        let (state, _) = ui::doc::document(state, path);
+        self.commit(state);
+        self.drain_find_replace(state);
+        performed
     }
 
     // Every edit is an action bounded into undo steps by its source or the
@@ -1058,7 +1061,13 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 self.set_text(state, text);
                 true
             }
-            _ => self.editor.perform_action(action, state, path),
+            _ => {
+                let performed = self.editor.perform_action(action, state, path);
+                // What the action edited is written now, as an input event's is.
+                self.commit(state);
+                self.drain_find_replace(state);
+                performed
+            }
         }
     }
 }

@@ -47,9 +47,9 @@ impl VersionPreview {
     }
 
     /// The artwork at `version`, a change id or a checkpoint name.
-    fn read(doc: &mut AutoCommit, version: &str) -> Option<Artwork> {
+    fn read(doc: &AutoCommit, version: &str) -> Option<Artwork> {
         let heads = ui::history_source::steps::resolve(doc, version).ok()?;
-        let past = doc.fork_at(&heads).ok()?;
+        let past = doc.committed_fork_at(&heads).ok()?;
         Some(crate::doc::read(&past))
     }
 

@@ -6037,7 +6037,7 @@ impl Widget for VideoEditorApp {
         }
         // The project arrives through `present`; the document's heads say
         // whether it has changed since it was saved.
-        self.track_saved_heads(state.get_heads());
+        self.track_saved_heads(state.committed_heads());
         // While a clip-editing drag is in flight, the live preview lives only
         // in the in-memory project — the document isn't written until the
         // drag commits — so a project presented meanwhile waits, and lands

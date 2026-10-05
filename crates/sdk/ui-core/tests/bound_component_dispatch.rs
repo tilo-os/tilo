@@ -488,13 +488,17 @@ impl Leaf {
         });
         TASKS.with_borrow_mut(|tasks| tasks.push(tilo_ui::LatestTask::new(0)));
     }
-    fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
+    /// Check `doc` is this leaf's record and note the callback `label`.
+    fn observe(&self, doc: &AutoCommit, label: &'static str) {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
-        doc.put(ROOT, "last_callback", label).unwrap();
         self.capture(label);
+    }
+    fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
+        self.observe(doc, label);
+        doc.put(ROOT, "last_callback", label).unwrap();
     }
 }
 impl Widget for Leaf {
@@ -502,11 +506,11 @@ impl Widget for Leaf {
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = tilo_ui::doc::document_ref(doc, path);
-        self.edit(doc, "sync");
+        self.observe(doc, "sync");
     }
     fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let (doc, _) = tilo_ui::doc::document_ref(doc, path);
-        self.edit(doc, "update");
+        self.observe(doc, "update");
         false
     }
     fn build_layout(
