@@ -2007,7 +2007,7 @@ mod tests {
         surface.set_history_source(Box::new(RetainedHistory {
             log: Rc::clone(&log),
         }));
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         for view in [
             navigation::ActivityView::CatchUp,
             navigation::ActivityView::Explore,
@@ -2097,7 +2097,7 @@ mod tests {
                 app_id: "so.tilo.clocks".into(),
                 label: "Clocks".into(),
             });
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         surface.update(&state, &ui::automerge::ROOT);
         assert!(handle.focus_app("so.tilo.clocks"));
         assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
@@ -2124,7 +2124,7 @@ mod tests {
                 "g",
             )
             .unwrap();
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         surface.update(&state, &ui::automerge::ROOT);
         let snapshot = handle.snapshot("g", vec![]);
         assert_eq!(
@@ -2157,7 +2157,7 @@ mod tests {
     }
 
     fn focused(surface: &mut DesktopSurface, handle: &DesktopHandle) -> usize {
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         surface.update(&state, &ui::automerge::ROOT);
         handle.read(|tree| {
             let active = navigation::active_route(tree).unwrap();

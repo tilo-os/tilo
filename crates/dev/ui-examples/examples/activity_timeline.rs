@@ -194,7 +194,7 @@ pub fn run(args: &[String]) {
 )]
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
-    let mut state = State::new();
+    let state = State::new();
     let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))

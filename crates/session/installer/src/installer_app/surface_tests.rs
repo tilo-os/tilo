@@ -89,8 +89,8 @@ fn app(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
     (app, doc)
 }
 
-fn console(app: &mut InstallerApp, doc: &mut AutoCommit, request: &Value) -> Value {
-    serde_json::from_str(&app.answer_console(&request.to_string(), doc, &automerge::ROOT)).unwrap()
+fn console(app: &mut InstallerApp, _doc: &mut AutoCommit, request: &Value) -> Value {
+    serde_json::from_str(&app.answer_console(&request.to_string())).unwrap()
 }
 
 fn invoke(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, args: &Value) -> Value {
@@ -219,8 +219,7 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
             app.step = Step::Disk;
             app.erase_confirmation.set("stale".into());
         }
-        let _ = row_doc.put(&automerge::ROOT, disk_path(1).as_str(), true);
-        by_row.sync(&mut row_doc, &automerge::ROOT);
+        tests::activate(&mut by_row, &mut row_doc, "/dev/nvme0n1");
         let _ = invoke(
             &mut by_action,
             &mut action_doc,
@@ -240,7 +239,8 @@ fn every_door_reaches_the_same_handler_and_refuses_stale_or_private_input() {
         by_row.step = Step::Install;
         by_row.install_state = InstallState::Done;
         by_row.recovery_key = Some(KEY.into());
-        let _ = row_doc.put(&automerge::ROOT, REBOOT_PATH, true);
+        // A queued press is checked against the current published availability.
+        by_row.control(op::POWER, "reboot", Value::Null).fire();
         by_row.sync(&mut row_doc, &automerge::ROOT);
         let reason = by_row
             .publish()

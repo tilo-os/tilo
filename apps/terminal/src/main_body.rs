@@ -9,7 +9,6 @@ use ui::{
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
 // click gesture detection, or clipboard access.
-use automerge::AutoCommit;
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
@@ -2135,11 +2134,13 @@ impl TerminalWidget {
         if !self.emulating {
             return;
         }
-        let edits = crate::screen::edits(self.synced.as_ref(), &self.screen);
-        if edits.is_empty() {
+        let screen_edits = crate::screen::edits(self.synced.as_ref(), &self.screen);
+        if screen_edits.is_empty() {
             return;
         }
-        let output = crate::resource::TerminalAction::Output { edits };
+        let output = crate::resource::TerminalAction::Output {
+            edits: screen_edits,
+        };
         // A refused write leaves the record's screen unknown: the next one
         // replaces it whole.
         self.synced = dispatch
@@ -2329,7 +2330,7 @@ impl Widget for TerminalWidget {
         self.pump()
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _root: &ObjId) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _root: &ModelPath) {
         self.record(edits);
     }
 

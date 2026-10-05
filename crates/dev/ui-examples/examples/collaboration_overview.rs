@@ -145,7 +145,7 @@ pub fn run(args: &[String]) {
 
 fn render(mut widget: Box<dyn Widget>, out: &Path) {
     let (w, h) = (420, 760);
-    let mut state = State::new();
+    let state = State::new();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
