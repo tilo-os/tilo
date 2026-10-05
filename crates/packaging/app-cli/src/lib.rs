@@ -33,6 +33,9 @@
     )
 )]
 
+/// Release selection shared by catalogue clients and the verified installer.
+pub use tilo_app_package::version::{ReleaseChannel, compare as compare_versions};
+
 pub mod client;
 pub mod config;
 pub mod dev_env;
@@ -148,7 +151,7 @@ pub fn entry_to_app_for_channel(
 }
 
 /// The versions of `entry` this machine can run on `channel`.
-fn installable_versions(
+pub fn installable_versions(
     entry: &registry_types::RegistryEntry,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> impl Iterator<Item = &registry_types::RegistryVersion> {

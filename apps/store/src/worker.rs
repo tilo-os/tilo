@@ -22,7 +22,7 @@ use crate::model::{ActionKind, StoreSource};
 use crate::search::StoreDirectory;
 use crate::sources::{
     flathub_record_to_item, installed_flatpak_to_item, installed_tilo_to_store_item, merge,
-    tilo_to_store_item,
+    tilo_to_store_item_on_channel,
 };
 use crate::{FlatpakRef, StoreItem};
 
@@ -598,6 +598,7 @@ fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
             None,
         );
     }
+    let mut operation_error = None;
     let items = if let Some(cached) = state.searches.get(&query).cloned() {
         cached
     } else {
@@ -612,20 +613,37 @@ fn search(query: &str, state: &mut State, snapshots: &Snapshots) -> bool {
             .zip(ranks)
             .filter_map(|(item, rank)| rank.map(|_| item.clone()))
             .collect();
-        let flatpak = crate::flathub_client::search(&query)
-            .unwrap_or_default()
+        let records = match crate::flathub_client::search(&query) {
+            Ok(records) => records,
+            Err(error) => {
+                operation_error = Some(format!("Could not search Flathub: {error}"));
+                Vec::new()
+            }
+        };
+        let flatpak = records
             .iter()
             .map(|record| flathub_record_to_item(record, &state.installed))
             .collect();
         let items = merge(tilo, flatpak);
-        state.searches.put(query.clone(), items.clone());
+        if operation_error.is_none() {
+            state.searches.put(query.clone(), items.clone());
+        }
         items
     };
     let label = format!("{} results for “{}”.", items.len(), query);
-    send(snapshots, state, items, &label, Some(query), None)
+    send_tracked(
+        snapshots,
+        state,
+        items,
+        &label,
+        Some(query),
+        None,
+        operation_error,
+    )
 }
 
 fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
+    let mut operation_error = None;
     let loaded = if let Some(cached) = state.details.get(id).cloned() {
         Some(cached)
     } else if let Some(item) = state
@@ -637,11 +655,16 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         state.details.put(id.to_string(), item.clone());
         Some(item)
     } else {
-        let loaded = crate::flathub_client::fetch_appstream(id)
-            .ok()
-            .map(|record| flathub_record_to_item(&record, &state.installed))
-            .or_else(|| state.base_items.iter().find(|item| item.id == id).cloned());
-        if let Some(item) = loaded.as_ref() {
+        let loaded = match crate::flathub_client::fetch_appstream(id) {
+            Ok(record) => Some(flathub_record_to_item(&record, &state.installed)),
+            Err(error) => {
+                operation_error = Some(format!("Could not load app details: {error}"));
+                state.base_items.iter().find(|item| item.id == id).cloned()
+            }
+        };
+        if let Some(item) = loaded.as_ref()
+            && operation_error.is_none()
+        {
             state.details.put(id.to_string(), item.clone());
         }
         loaded
@@ -650,13 +673,14 @@ fn detail(id: &str, state: &mut State, snapshots: &Snapshots) -> bool {
         || format!("Could not load details for {id}."),
         |item| format!("Loaded details for {}.", item.name),
     );
-    send(
+    send_tracked(
         snapshots,
         state,
         state.base_items.clone(),
         &label,
         None,
         loaded,
+        operation_error,
     )
 }
 
@@ -885,11 +909,14 @@ fn collect_items(
     let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
         match crate::registry_client::fetch_entries(registry) {
-            Ok(entries) => tilo_items.extend(
-                entries
-                    .iter()
-                    .map(|entry| tilo_to_store_item(entry, &registry.name, &installed_tilo)),
-            ),
+            Ok(entries) => tilo_items.extend(entries.iter().map(|entry| {
+                tilo_to_store_item_on_channel(
+                    entry,
+                    &registry.name,
+                    &installed_tilo,
+                    registry.channel,
+                )
+            })),
             Err(error) => errors.push(format!("Could not load {}: {error}", registry.name)),
         }
     }

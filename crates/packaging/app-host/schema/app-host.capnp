@@ -90,4 +90,9 @@ interface AppHost {
     repositories @12 () -> (json :Text);
     # Fixed read-only host probes. The confined Store never executes host tools.
     flatpakStatus @13 () -> (available :Bool, installed :Text, remotes :Text);
+    # Resolve the chosen identity against this device's signed catalogue, then
+    # use the shared installer, including thin payload and exact runtime setup.
+    installOffer @14 (registry :Text, appId :Text, version :Text,
+                      expectedRoot :Data, expectedPublisher :Data,
+                      expectedSizeBytes :UInt64) -> (id :Data);
 }

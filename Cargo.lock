@@ -538,6 +538,7 @@ dependencies = [
 name = "app-host"
 version = "0.1.0"
 dependencies = [
+ "app-cli",
  "anyhow",
  "app-registry",
  "bounded-command",
