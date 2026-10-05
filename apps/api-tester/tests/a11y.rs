@@ -552,7 +552,8 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
         .find(|node| node.action_target.as_deref() == Some("api.response-view:segment:2"))
         .expect("the response switch publishes its Headers segment")
         .bounds
-        .expect("the real Headers segment publishes its pointer bounds");
+        .expect("the real Headers segment publishes its pointer bounds")
+        .to_rect();
     d.click_at(headers.center().x, headers.center().y);
     assert!(
         semantic_nodes(d).iter().any(|node| {
