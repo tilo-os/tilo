@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
@@ -1984,7 +1986,11 @@ impl WordProcessorWidget {
     /// the single CRDT-mutation path shared with the Ctrl+K palette — through the
     /// Tilo action executor. Document heads before the event's first action are
     /// stashed so the host records **one** undo boundary bracketing the whole event.
-    fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::RichTextAction) {
+    fn perform_action(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        action: &crate::actions::RichTextAction,
+    ) {
         let _ = self.try_perform_action(state, action);
     }
 
@@ -2000,10 +2006,10 @@ impl WordProcessorWidget {
     /// caller can leave the document and caret as they were.
     fn try_perform_action(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         action: &crate::actions::RichTextAction,
     ) -> bool {
-        self.try_perform_edits(&mut ui::widget::Edits::lend(state), action)
+        self.try_perform_edits(state, action)
     }
 
     fn try_perform_edits(
@@ -2042,7 +2048,7 @@ impl WordProcessorWidget {
     /// actions. This avoids replaying a stale whole-sheet snapshot over a
     /// collaborator's unrelated style edit and gives custom-style deletion an
     /// explicit tombstone plus absolute instance fallback set.
-    fn persist_stylesheet_via_actions(&mut self, state: &mut AutoCommit) {
+    fn persist_stylesheet_via_actions(&mut self, state: &mut ui::widget::Edits<'_>) {
         let before = self.inner.stylesheet(state);
         let after = self.sheet.clone();
         for (style, properties) in &after.styles {
@@ -2095,7 +2101,7 @@ impl WordProcessorWidget {
     /// use this rather than opening a second CRDT write path in the widget.
     fn splice_via_action(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         region: crate::actions::RegionKind,
         block: &str,
         start: usize,
@@ -2138,13 +2144,13 @@ impl WordProcessorWidget {
     /// it is for the direct path.
     fn edit_via_primitive(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         primitive: impl FnOnce(
             &crate::actions::participant::ParticipantView,
             &AutoCommit,
         ) -> crate::actions::editing::EditResult,
     ) -> bool {
-        self.edit_with(&mut ui::widget::Edits::lend(state), primitive)
+        self.edit_with(state, primitive)
     }
 
     fn edit_with(
@@ -2274,7 +2280,7 @@ impl WordProcessorWidget {
     }
 
     /// Select the whole active region (Ctrl+A, context menu).
-    fn select_all_via_primitive(&mut self, state: &mut AutoCommit) {
+    fn select_all_via_primitive(&mut self, state: &mut ui::widget::Edits<'_>) {
         if !self.edit_via_primitive(state, crate::actions::editing::select_all) {
             self.inner.select_all(state);
         }
@@ -2284,8 +2290,8 @@ impl WordProcessorWidget {
     /// to agents and Ctrl+K.  A multi-block selection is a structural merge,
     /// represented by its own single envelope rather than a hidden UI-only
     /// sequence of splice/delete writes.
-    fn insert_text_via_action(&mut self, state: &mut AutoCommit, text: &str) {
-        self.insert_text_edits(&mut ui::widget::Edits::lend(state), text);
+    fn insert_text_via_action(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
+        self.insert_text_edits(state, text);
     }
 
     fn insert_text_edits(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
@@ -2333,7 +2339,7 @@ impl WordProcessorWidget {
     /// the same typed action stream as typing and formatting. The newly-created
     /// stable id is discovered from the synchronous before/after set solely to
     /// update the local caret; it is minted by the action's pinned actor.
-    fn enter_via_action(&mut self, state: &mut AutoCommit) {
+    fn enter_via_action(&mut self, state: &mut ui::widget::Edits<'_>) {
         // The paragraph that follows the caret is read off the kept order.
         self.sync_source(state);
         let body = self.kept_body();
@@ -2428,7 +2434,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn page_break_via_action(&mut self, state: &mut AutoCommit) {
+    fn page_break_via_action(&mut self, state: &mut ui::widget::Edits<'_>) {
         if self.inner.has_selection() {
             self.insert_text_via_action(state, "");
         }
@@ -2454,7 +2460,7 @@ impl WordProcessorWidget {
         self.inner.clear_anchor();
     }
 
-    fn replace_body_via_action(&mut self, state: &mut AutoCommit, markdown: &str) {
+    fn replace_body_via_action(&mut self, state: &mut ui::widget::Edits<'_>, markdown: &str) {
         self.perform_action(state, &crate::actions::replace_body_action(markdown));
         if let Some(first) = self.inner.ordered_blocks(state).into_iter().next() {
             self.inner.set_caret(Caret {
@@ -2465,7 +2471,7 @@ impl WordProcessorWidget {
         self.inner.clear_anchor();
     }
 
-    fn insert_page_number_via_action(&mut self, state: &mut AutoCommit) {
+    fn insert_page_number_via_action(&mut self, state: &mut ui::widget::Edits<'_>) {
         if self.inner.has_selection() {
             self.insert_text_via_action(state, "");
         }
@@ -2487,7 +2493,7 @@ impl WordProcessorWidget {
 
     fn paste_fragment_via_action(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         blocks: Vec<crate::word_processor::ClipBlock>,
     ) {
         let caret = self.inner.caret().clone();
@@ -2550,7 +2556,7 @@ impl WordProcessorWidget {
             .map_or(0, |entry| entry.text.chars().count())
     }
 
-    fn delete_via_action(&mut self, state: &mut AutoCommit, backward: bool) {
+    fn delete_via_action(&mut self, state: &mut ui::widget::Edits<'_>, backward: bool) {
         let direction = if backward {
             crate::actions::editing::DeleteDirection::Backward
         } else {
@@ -2824,7 +2830,7 @@ impl WordProcessorWidget {
     pub fn apply_participant_edit(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         outcome: crate::actions::editing::EditOutcome,
     ) -> Result<(), String> {
         let Some(participant) = invoker.participant.clone() else {
@@ -2837,7 +2843,7 @@ impl WordProcessorWidget {
         for action in &envelopes {
             dispatch
                 .apply_now_with(
-                    &mut ui::widget::Edits::lend(state),
+                    state,
                     action,
                     tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action)
                         .with_invoker(invoker.clone()),
@@ -2876,7 +2882,7 @@ impl WordProcessorWidget {
 
     /// Toggle an inline mark (bold/italic/underline/strike) over the selection,
     /// as one replayable action. A toggle with no selection is a no-op.
-    fn dispatch_toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
+    fn dispatch_toggle_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
         if let Some(mark) = inline_mark(name)
             && self.edit_via_primitive(state, |view, doc| {
                 crate::actions::editing::toggle_mark(view, doc, mark)
@@ -2899,7 +2905,12 @@ impl WordProcessorWidget {
 
     /// Toggle a mutually-exclusive mark (super/sub) over the selection / caret
     /// block, clearing its sibling, as one replayable action.
-    fn dispatch_exclusive_mark(&mut self, state: &mut AutoCommit, name: &str, sibling: &str) {
+    fn dispatch_exclusive_mark(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        name: &str,
+        sibling: &str,
+    ) {
         if let Some(mark) = inline_mark(name)
             && self.edit_via_primitive(state, |view, doc| {
                 crate::actions::editing::toggle_mark(view, doc, mark)
@@ -2932,7 +2943,7 @@ impl WordProcessorWidget {
     /// or caret block, as one replayable action (replacing any prior value).
     fn dispatch_set_mark_value(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         name: &str,
         value: crate::actions::MarkVal,
     ) {
@@ -2953,7 +2964,7 @@ impl WordProcessorWidget {
     }
 
     /// Clear a valued inline mark over the selection or caret block.
-    fn dispatch_clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
+    fn dispatch_clear_mark(&mut self, state: &mut ui::widget::Edits<'_>, name: &str) {
         if self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::clear_mark(view, doc, name)
         }) {
@@ -2971,7 +2982,7 @@ impl WordProcessorWidget {
     /// Set the paragraph kind/level over the selection, as one replayable action.
     fn dispatch_paragraph_style(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         kind: &str,
         level: Option<i64>,
         ordered: Option<bool>,
@@ -3003,7 +3014,7 @@ impl WordProcessorWidget {
     /// Apply a named paragraph style (a style-picker pick) over the current
     /// paragraph targets as one replayable action: the style attr plus, for a
     /// built-in, the structural kind / level / ordered.
-    fn dispatch_apply_named_style(&mut self, state: &mut AutoCommit, id: &str) {
+    fn dispatch_apply_named_style(&mut self, state: &mut ui::widget::Edits<'_>, id: &str) {
         if self.edit_via_primitive(state, |view, doc| {
             crate::actions::editing::apply_named_style(view, doc, id)
         }) {
@@ -3032,7 +3043,7 @@ impl WordProcessorWidget {
     /// target blocks, as one replayable action.
     fn dispatch_block_attr(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         key: &str,
         value: crate::actions::AttrVal,
     ) {
@@ -3049,7 +3060,12 @@ impl WordProcessorWidget {
     /// then re-seat the caret into the new table's first cell (presentation) —
     /// the cell ids are minted inside `apply`, so they're discovered from the
     /// document afterwards rather than known up front.
-    fn insert_table_via_action(&mut self, state: &mut AutoCommit, rows: usize, cols: usize) {
+    fn insert_table_via_action(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        rows: usize,
+        cols: usize,
+    ) {
         let after = self.inner.caret().block.clone();
         let before: std::collections::HashSet<String> = self.body_cell_ids(state);
         self.perform_action(
@@ -3115,7 +3131,11 @@ impl WordProcessorWidget {
         Some((table, row, column, rows, columns))
     }
 
-    fn edit_table_via_action(&mut self, state: &mut AutoCommit, edit: crate::actions::TableEdit) {
+    fn edit_table_via_action(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        edit: crate::actions::TableEdit,
+    ) {
         let Some((table, row, column, rows, columns)) = self.caret_table_target() else {
             return;
         };
@@ -3485,8 +3505,12 @@ impl WordProcessorWidget {
     /// (false if the file couldn't be read or kept). The bytes go in the app's
     /// content store and the document references them; the renderer/exporter
     /// decode them on demand.
-    fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
-        self.insert_image_edits(&mut ui::widget::Edits::lend(state), path)
+    fn insert_image_from_path(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        path: &std::path::Path,
+    ) -> bool {
+        self.insert_image_edits(state, path)
     }
 
     fn insert_image_edits(
@@ -3599,7 +3623,7 @@ impl WordProcessorWidget {
     /// the chosen path comes back over a channel drained each frame in
     /// [`Self::drain_portal`], which inserts the image at the caret. A second
     /// request while one is already in flight is ignored.
-    fn request_image_insert(&mut self, _state: &mut AutoCommit) {
+    fn request_image_insert(&mut self, _state: &mut ui::widget::Edits<'_>) {
         if self.portal_rx.is_some() {
             return;
         }
@@ -3799,7 +3823,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn apply_find_effect_mut(&mut self, state: &mut AutoCommit, effect: FindEffect) {
+    fn apply_find_effect_mut(&mut self, state: &mut ui::widget::Edits<'_>, effect: FindEffect) {
         match effect {
             FindEffect::None => {}
             FindEffect::SelectActive => self.select_current_match(state),
@@ -3846,7 +3870,7 @@ impl WordProcessorWidget {
     }
 
     #[cfg(test)]
-    fn replace_all(&mut self, state: &mut AutoCommit) {
+    fn replace_all(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.apply_find_effect_mut(state, FindEffect::ReplaceAll);
     }
 
@@ -4189,7 +4213,7 @@ struct RunningBand<'a> {
 struct EditorEventCtx<'a> {
     scale_factor: f64,
     modifiers: Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     path: &'a ObjId,
     handled: &'a mut bool,
 }
@@ -4244,7 +4268,7 @@ impl WordProcessorWidget {
 
     /// Persist the current page margins into the document (page setup lives in the
     /// document so it survives save/reopen). Called on margin-guide drag release.
-    fn persist_margins(&mut self, state: &mut AutoCommit) {
+    fn persist_margins(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.perform_action(
             state,
             &crate::actions::set_page_margins_action([
@@ -4703,7 +4727,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn ruler_press(&mut self, state: &mut AutoCommit) {
+    fn ruler_press(&mut self, state: &mut ui::widget::Edits<'_>) {
         let model = self.current_ruler_model();
         if let Some(RulerEffect::AddTab(value)) = self.ruler.press(self.pointer, &model) {
             let block = self.inner.caret.block.clone();
@@ -4737,7 +4761,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn ruler_drag_release(&mut self, state: &mut AutoCommit) {
+    fn ruler_drag_release(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(effect) = self.ruler.release() else {
             return;
         };
@@ -5962,7 +5986,7 @@ impl WordProcessorWidget {
     /// Page numbers are read from the last frame's laid geometry (`Laid::page`);
     /// a heading not yet laid out falls back to page 1. Delegates the block
     /// mutation to the model so the insert/replace logic stays testable.
-    fn generate_toc(&mut self, state: &mut AutoCommit) {
+    fn generate_toc(&mut self, state: &mut ui::widget::Edits<'_>) {
         // Map heading block id → 1-based page from the last laid-out frame.
         let page_of: HashMap<&str, usize> = self
             .laid
@@ -9035,7 +9059,7 @@ impl WordProcessorWidget {
     /// chrome falls back to the existing caret.
     fn handle_dropped_file(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &std::path::Path,
         handled: &mut bool,
     ) {
@@ -9213,7 +9237,7 @@ impl WordProcessorWidget {
     /// then the text-selection gesture.
     fn handle_left_press(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         tb_h: f64,
         shift: bool,
         ctrl: bool,
@@ -9245,7 +9269,7 @@ impl WordProcessorWidget {
     /// reaches the page beneath. Returns whether a menu claimed the press.
     fn handle_left_press_menu_routing(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         // While the context menu is open, route the left press to it: a
@@ -9287,7 +9311,11 @@ impl WordProcessorWidget {
     /// A pending numeric-field commit, the styles panel, and the outline
     /// pane — in that priority order. Returns whether one of them claimed
     /// the press.
-    fn handle_left_press_panels(&mut self, state: &mut AutoCommit, handled: &mut bool) -> bool {
+    fn handle_left_press_panels(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) -> bool {
         // A press anywhere commits a pending typed numeric edit.
         if self.editing_field.is_some() {
             self.commit_num_edit(state);
@@ -9333,7 +9361,7 @@ impl WordProcessorWidget {
     /// whether one of them claimed the press.
     fn handle_left_press_find_ruler_toolbar(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         tb_h: f64,
         handled: &mut bool,
     ) -> bool {
@@ -9404,7 +9432,7 @@ impl WordProcessorWidget {
     /// edit-context switch, and finally the text-selection gesture.
     fn handle_left_press_body(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         shift: bool,
         ctrl: bool,
         handled: &mut bool,
@@ -9531,7 +9559,7 @@ impl WordProcessorWidget {
     /// Left release: persist whichever live drag was active (style-field
     /// scrub, ruler marker, or layout guide) into the document, or — with no
     /// drag active — end a text-selection drag.
-    fn handle_left_release(&mut self, state: &mut AutoCommit, handled: &mut bool) {
+    fn handle_left_release(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         if let Some(sc) = self.scrub.take() {
             if sc.moved {
                 // A scrub persists the style edit (every instance follows).
@@ -9596,7 +9624,7 @@ impl WordProcessorWidget {
     /// other printable text is inserted.
     fn autocorrect_before_boundary(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> Option<DocumentAutocorrection> {
         if !ui::text_assistance::preferences().auto_correct || self.inner.has_selection() {
             return None;
@@ -9639,7 +9667,7 @@ impl WordProcessorWidget {
     /// Apply markdown-style paragraph prefixes through typed absolute actions.
     /// The two field-granular envelopes share the current input event's undo
     /// boundary; caret movement remains presentation-local.
-    fn autoformat_on_space_via_actions(&mut self, state: &mut AutoCommit) -> bool {
+    fn autoformat_on_space_via_actions(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let block = self.inner.caret.block.clone();
         let offset = self.inner.caret.offset;
         let Some(view) = self.blocks.iter().find(|entry| entry.id == block) else {
@@ -9673,7 +9701,7 @@ impl WordProcessorWidget {
         true
     }
 
-    fn undo_document_autocorrection(&mut self, state: &mut AutoCommit) -> bool {
+    fn undo_document_autocorrection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let Some(mut correction) = self.last_autocorrection.clone() else {
             return false;
         };
@@ -9717,7 +9745,7 @@ impl WordProcessorWidget {
 
     fn handle_key_press(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         logical_key: &Key,
         text: Option<&str>,
         shift: bool,
@@ -9772,7 +9800,7 @@ impl WordProcessorWidget {
 
     fn handle_named_edit_key(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         key: NamedKey,
         shift: bool,
     ) -> Option<KeyPressEffect> {
@@ -9809,7 +9837,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn handle_tab_key(&mut self, state: &mut AutoCommit, shift: bool) -> KeyPressEffect {
+    fn handle_tab_key(&mut self, state: &mut ui::widget::Edits<'_>, shift: bool) -> KeyPressEffect {
         // Inside a table, Tab/Shift-Tab walk cells (and Tab in the last cell
         // appends a row). Paragraph tab stops insert a tab; otherwise use the
         // conventional four-space fallback.
@@ -9875,7 +9903,11 @@ impl WordProcessorWidget {
         true
     }
 
-    fn insert_key_text(&mut self, state: &mut AutoCommit, text: Option<&str>) -> KeyPressEffect {
+    fn insert_key_text(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        text: Option<&str>,
+    ) -> KeyPressEffect {
         let typed: String = text
             .map(|text| {
                 text.chars()
@@ -9978,7 +10010,7 @@ impl WordProcessorWidget {
     /// handled the event (the caller should stop dispatching further).
     fn handle_key_press_guards(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         logical_key: &Key,
         text: Option<&str>,
         ctrl: bool,
@@ -10072,7 +10104,7 @@ impl WordProcessorWidget {
     /// unrecognized Ctrl+<char> doesn't fall through to plain typing).
     fn handle_ctrl_shortcut(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         s: &str,
         shift: bool,
         handled: &mut bool,
@@ -10696,7 +10728,7 @@ impl Widget for WordProcessorWidget {
     // are built from.
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.route_event(event, ctx);
-        self.resolve_bound_edits(ctx.state);
+        self.resolve_bound_edits(ctx.state.doc());
     }
 
     /// Top-layer pass: paint the right-click context menu (when open) so it
@@ -10786,7 +10818,7 @@ impl Widget for WordProcessorWidget {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -11501,7 +11533,7 @@ impl WordProcessorWidget {
         (kind, level)
     }
 
-    fn apply_tool(&mut self, state: &mut AutoCommit, action: ToolAction) {
+    fn apply_tool(&mut self, state: &mut ui::widget::Edits<'_>, action: ToolAction) {
         match action {
             // Every document-mutating format dispatches its matching
             // `RichTextAction` through the shared action path (the same
@@ -11576,7 +11608,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn apply_table_tool(&mut self, state: &mut AutoCommit, action: ToolAction) {
+    fn apply_table_tool(&mut self, state: &mut ui::widget::Edits<'_>, action: ToolAction) {
         let Some((_, row, column, _, _)) = self.caret_table_target() else {
             if action == ToolAction::TableDelete {
                 self.edit_table_via_action(state, crate::actions::TableEdit::Delete);
@@ -11659,7 +11691,7 @@ impl WordProcessorWidget {
     /// instance preview), then optionally persist it to the document.
     fn edit_focused_style(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         persist: bool,
         f: impl FnOnce(&mut crate::styles::StyleProps),
     ) {
@@ -11701,7 +11733,7 @@ impl WordProcessorWidget {
     }
 
     /// Commit the typed numeric edit to the document and blur the field.
-    fn commit_num_edit(&mut self, state: &mut AutoCommit) {
+    fn commit_num_edit(&mut self, state: &mut ui::widget::Edits<'_>) {
         if self.editing_field.is_none() {
             return;
         }
@@ -11713,7 +11745,7 @@ impl WordProcessorWidget {
     }
 
     /// Dispatch a click on a styles-panel target.
-    fn apply_panel_hit(&mut self, state: &mut AutoCommit, hit: PanelHit) {
+    fn apply_panel_hit(&mut self, state: &mut ui::widget::Edits<'_>, hit: PanelHit) {
         match hit {
             PanelHit::Close => {
                 self.view.styles_panel_visible = false;
@@ -11810,7 +11842,7 @@ impl WordProcessorWidget {
     }
 
     /// `PanelHit::NewStyle`: duplicate the focused style under a fresh id.
-    fn apply_panel_hit_new_style(&mut self, state: &mut AutoCommit) {
+    fn apply_panel_hit_new_style(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(key) = self.focused_style_key() else {
             return;
         };
@@ -11828,7 +11860,7 @@ impl WordProcessorWidget {
     /// `PanelHit::ImageScale`: scale the *current on-screen* size (aspect
     /// locked) so repeated presses compound predictably, seeding from the
     /// live doc size when set, else the laid display size.
-    fn apply_panel_hit_image_scale(&mut self, state: &mut AutoCommit, factor: f64) {
+    fn apply_panel_hit_image_scale(&mut self, state: &mut ui::widget::Edits<'_>, factor: f64) {
         let Some(id) = self.selected_image_id() else {
             return;
         };
@@ -11852,7 +11884,7 @@ impl WordProcessorWidget {
 
     /// `PanelHit::ImageFlipH`/`ImageFlipV`: mirror the selected image about
     /// its horizontal (`horizontal`) or vertical axis.
-    fn apply_panel_hit_image_flip(&mut self, state: &mut AutoCommit, horizontal: bool) {
+    fn apply_panel_hit_image_flip(&mut self, state: &mut ui::widget::Edits<'_>, horizontal: bool) {
         let Some(id) = self.selected_image_id() else {
             return;
         };
@@ -11877,7 +11909,7 @@ impl WordProcessorWidget {
 
     /// Crop or reset the selected image through one atomic action. The panel and
     /// Ctrl+K image resource intentionally calculate exactly the same 5% inset.
-    fn apply_panel_hit_image_crop(&mut self, state: &mut AutoCommit, inset: bool) {
+    fn apply_panel_hit_image_crop(&mut self, state: &mut ui::widget::Edits<'_>, inset: bool) {
         let Some(id) = self.selected_image_id() else {
             return;
         };
@@ -11923,7 +11955,7 @@ impl WordProcessorWidget {
     /// wrap modes preserve paragraph-relative flow.
     fn apply_panel_hit_image_placement(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         anchor: &str,
         wrap: &str,
     ) {
@@ -11958,7 +11990,7 @@ impl WordProcessorWidget {
         event: &WindowEvent,
         scale: f64,
         mods: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -11968,7 +12000,7 @@ impl WordProcessorWidget {
                 event,
                 scale,
                 modifiers: mods,
-                state,
+                state: state.reborrow(),
                 root,
                 host: self.rect,
                 panel: self.panel_rect,
@@ -12049,7 +12081,7 @@ impl WordProcessorWidget {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         handled: &mut bool,
     ) -> bool {
@@ -12074,7 +12106,7 @@ impl WordProcessorWidget {
     /// actions as its pointer, keyboard, and assistive-technology callers.
     fn apply_compact_palette_choice(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         kind: PaletteKind,
         choice: PaletteChoice,
     ) {
@@ -12164,7 +12196,7 @@ impl WordProcessorWidget {
 
     /// Paste with formatting when the system clipboard still holds our last rich
     /// copy; otherwise paste the clipboard's plain text (e.g. from another app).
-    fn clipboard_paste(&mut self, state: &mut AutoCommit) {
+    fn clipboard_paste(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(sys) = clipboard_paste() else {
             return;
         };
@@ -12179,7 +12211,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn paste_plain_text_via_action(&mut self, state: &mut AutoCommit, text: &str) {
+    fn paste_plain_text_via_action(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
         // The published `paste` primitive; a paste beyond its per-call text
         // bound (an agent limit, not a person's) keeps the direct fragment.
         let content = crate::actions::editing::PasteContent::Text(text.to_string());
@@ -12208,7 +12240,7 @@ impl WordProcessorWidget {
     }
 
     /// Paste plain text only (Ctrl+Shift+V), stripping all formatting.
-    fn clipboard_paste_plain(&mut self, state: &mut AutoCommit) {
+    fn clipboard_paste_plain(&mut self, state: &mut ui::widget::Edits<'_>) {
         if let Some(t) = clipboard_paste() {
             self.paste_plain_text_via_action(state, &t);
         }
@@ -12448,7 +12480,7 @@ impl WordProcessorWidget {
     /// Dispatch the context-menu row at `idx` against the widget, then close the
     /// menu. Separator / out-of-range rows are ignored. Returns `true` when a
     /// row ran.
-    fn dispatch_context_action(&mut self, idx: usize, state: &mut AutoCommit) -> bool {
+    fn dispatch_context_action(&mut self, idx: usize, state: &mut ui::widget::Edits<'_>) -> bool {
         let Some(Some(action)) = self.context_actions.get(idx).cloned() else {
             return false;
         };
@@ -12521,7 +12553,7 @@ impl WordProcessorWidget {
 
     /// Apply a typed style-menu outcome. The component owns presentation and
     /// hit-testing; document mutation remains editor policy.
-    fn dispatch_style_menu(&mut self, action: StyleMenuAction, state: &mut AutoCommit) {
+    fn dispatch_style_menu(&mut self, action: StyleMenuAction, state: &mut ui::widget::Edits<'_>) {
         match action {
             StyleMenuAction::Delete(id) => {
                 if self.sheet.remove(&id) {
@@ -12548,7 +12580,7 @@ impl WordProcessorWidget {
 
     // ---- new-from-template picker -----------------------------------------
 
-    fn request_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
+    fn request_template(&mut self, state: &mut ui::widget::Edits<'_>, template: crate::Template) {
         self.apply_template(state, template);
     }
 
@@ -12570,7 +12602,7 @@ impl WordProcessorWidget {
 
     /// Replace the open document's content with `template`'s Markdown, in
     /// place, as one undoable action, leaving the document untitled.
-    fn apply_template(&mut self, state: &mut AutoCommit, template: crate::Template) {
+    fn apply_template(&mut self, state: &mut ui::widget::Edits<'_>, template: crate::Template) {
         self.replace_body_via_action(state, template.content());
         self.path = None;
         self.format = Some(WpFormat::Markdown);
@@ -12617,7 +12649,7 @@ impl WordProcessorWidget {
         }
     }
 
-    fn submit_comment_reply(&mut self, state: &mut AutoCommit) {
+    fn submit_comment_reply(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(comment) = self.thread_comment.clone() else {
             return;
         };
@@ -12661,7 +12693,7 @@ impl WordProcessorWidget {
             }
         ) {
             if self.thread_submit.contains(self.pointer) {
-                self.submit_comment_reply(ctx.state);
+                self.submit_comment_reply(&mut ctx.state);
                 *ctx.handled = true;
                 return true;
             }
@@ -12681,7 +12713,7 @@ impl WordProcessorWidget {
         }
         self.route_thread_reply(event, ctx);
         match self.thread_reply.widget_mut().take_outcome() {
-            Some(FieldOutcome::Submit) => self.submit_comment_reply(ctx.state),
+            Some(FieldOutcome::Submit) => self.submit_comment_reply(&mut ctx.state),
             Some(FieldOutcome::Cancel) => self.close_comment_thread(),
             None => {}
         }
@@ -12696,11 +12728,11 @@ impl WordProcessorWidget {
             event,
             ctx.scale_factor,
             &ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.path,
             &mut handled,
         );
-        self.thread_reply.sync(ctx.state, ctx.path);
+        self.thread_reply.sync(ctx.state.doc(), ctx.path);
         self.lifecycle.dirty = true;
     }
 
@@ -12708,7 +12740,7 @@ impl WordProcessorWidget {
     /// button or a context-menu row): accept/reject a change, accept/reject all,
     /// or resolve (delete) a comment. Refreshes the materialized blocks +
     /// comments/changes so the acted-on item disappears, and flags an undo point.
-    fn dispatch_review_action(&mut self, action: ReviewAction, state: &mut AutoCommit) {
+    fn dispatch_review_action(&mut self, action: ReviewAction, state: &mut ui::widget::Edits<'_>) {
         let typed = match action {
             ReviewAction::AcceptChange(id) => {
                 crate::actions::RichTextAction::AcceptChanges { id: Some(id) }
@@ -13337,13 +13369,13 @@ impl WordProcessorWidget {
             };
             menu.handle_event(event, ctx);
             if let Some(template) = self.template_picker.take_selection() {
-                self.request_template(ctx.state, template);
+                self.request_template(&mut ctx.state, template);
             }
             if let Some(action) = self.style_menu.take_selection() {
-                self.dispatch_style_menu(action, ctx.state);
+                self.dispatch_style_menu(action, &mut ctx.state);
             }
             if let Some(index) = self.context_menu.take_selection() {
-                self.dispatch_context_action(index, ctx.state);
+                self.dispatch_context_action(index, &mut ctx.state);
             }
             if matches!(
                 event,
@@ -13363,7 +13395,7 @@ impl WordProcessorWidget {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.path,
             ctx.handled,
         ) {
@@ -13377,7 +13409,7 @@ impl WordProcessorWidget {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.handled,
             )
@@ -13392,7 +13424,7 @@ impl WordProcessorWidget {
             &mut EditorEventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: ctx.handled,
             },
@@ -13418,7 +13450,7 @@ impl WordProcessorWidget {
                 },
                 &self.blocks,
             );
-            self.apply_find_effect_mut(ctx.state, effect);
+            self.apply_find_effect_mut(&mut ctx.state, effect);
             if find_handled {
                 self.lifecycle.dirty = true;
                 *ctx.handled = true;
@@ -13433,7 +13465,7 @@ impl WordProcessorWidget {
             // Drag-and-drop a file onto the window inserts it as an image at the
             // drop point (see `handle_dropped_file`).
             WindowEvent::DroppedFile(path) => {
-                self.handle_dropped_file(ctx.state, path, ctx.handled);
+                self.handle_dropped_file(&mut ctx.state, path, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // Window groups offer unclaimed events to visible apps in
@@ -13487,7 +13519,7 @@ impl WordProcessorWidget {
                 ..
             } => {
                 let was_handled = *ctx.handled;
-                self.handle_right_press(ctx.state, tb_h, ctx.handled);
+                self.handle_right_press(ctx.state.doc(), tb_h, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
@@ -13498,7 +13530,7 @@ impl WordProcessorWidget {
                 ..
             } => {
                 let was_handled = *ctx.handled;
-                self.handle_left_press(ctx.state, tb_h, shift, ctrl, ctx.handled);
+                self.handle_left_press(&mut ctx.state, tb_h, shift, ctrl, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
@@ -13507,11 +13539,11 @@ impl WordProcessorWidget {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_release(ctx.state, ctx.handled),
+            } => self.handle_left_release(&mut ctx.state, ctx.handled),
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.inner.clear_preedit();
                 self.handle_key_press(
-                    ctx.state,
+                    &mut ctx.state,
                     &Key::Character(text.as_str().into()),
                     Some(text),
                     false,
@@ -13542,11 +13574,11 @@ impl WordProcessorWidget {
                     },
                 ..
             } => {
-                if self.handle_modified_navigation(ctx.state, logical_key, *ctx.modifiers) {
+                if self.handle_modified_navigation(ctx.state.doc(), logical_key, *ctx.modifiers) {
                     *ctx.handled = true;
                 } else {
                     self.handle_key_press(
-                        ctx.state,
+                        &mut ctx.state,
                         logical_key,
                         text.as_deref(),
                         shift,
@@ -13582,8 +13614,8 @@ mod canonical_scroll_tests {
         for _ in 0..40 {
             widget
                 .model_mut()
-                .insert_str(&mut state.doc, "A retained paragraph.");
-            widget.model_mut().enter(&mut state.doc);
+                .insert_str(&mut Edits::lend(&mut state.doc), "A retained paragraph.");
+            widget.model_mut().enter(&mut Edits::lend(&mut state.doc));
         }
         let mut framed_widget = tests::mount(state, widget, 1000, 400);
         let (widget, state) = Framed::split(&mut framed_widget);

@@ -128,7 +128,7 @@ impl Retained {
 
     fn sync(&mut self) -> u64 {
         let started = Instant::now();
-        self.widget.sync(&mut self.doc, &ROOT);
+        self.widget.sync(&self.doc, &ROOT);
         micros(started)
     }
 
@@ -210,7 +210,7 @@ impl Retained {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &Modifiers::default(),
-                    state: &mut self.doc,
+                    state: ui::widget::Edits::lend(&mut self.doc),
                     path: &ROOT,
                     handled: &mut handled,
                     focus_target: &mut None,
@@ -251,7 +251,7 @@ fn block_editor(paragraphs: usize) -> Retained {
 }
 
 fn rich_text(paragraphs: usize) -> Result<Retained, String> {
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
     // A draft holds its own text: what the editor costs, without an app's
     // action host around it.
     let mut draft = Draft::new();
@@ -266,7 +266,7 @@ fn rich_text(paragraphs: usize) -> Result<Retained, String> {
     let mut surface =
         RichTextSurface::over(draft).with_editor(BlockEditor::new().with_wrap_lines(true));
     // The first sync reads the document and shows it.
-    Widget::sync(&mut surface, &mut doc, &ROOT);
+    Widget::sync(&mut surface, &doc, &ROOT);
     surface.set_focus(true);
     surface.editor_mut().focus_block(0, CursorPlacement::Start);
     Ok(Retained::new(Box::new(surface), doc))
