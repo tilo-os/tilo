@@ -129,7 +129,11 @@ impl RichTextSource for Draft {
         self.field.as_ref().map(|field| read(&field.state))
     }
 
-    fn apply(&mut self, _doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
+    fn apply(
+        &mut self,
+        _edits: &mut ui::widget::Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
         edit.apply(&mut self.doc)?;
         self.doc.commit();
         Ok(())
@@ -266,11 +270,15 @@ mod tests {
     fn a_mention_and_an_emoji_go_through_the_field_as_edits() {
         let mut field = Field::new(SubmitKey::Enter);
         field.type_text("hi ");
+        field.host.widget_mut().insert_mention(
+            &mut ui::widget::Edits::lend(&mut field.doc),
+            "u-ada",
+            "@Ada",
+        );
         field
             .host
             .widget_mut()
-            .insert_mention(&mut field.doc, "u-ada", "@Ada");
-        field.host.widget_mut().insert_text(&mut field.doc, "🎉");
+            .insert_text(&mut ui::widget::Edits::lend(&mut field.doc), "🎉");
         let draft = field.host.widget().source();
         assert_eq!(draft.plain_text(), "hi @Ada 🎉");
         let blocks = draft.blocks();

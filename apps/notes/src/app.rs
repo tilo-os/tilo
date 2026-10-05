@@ -1111,6 +1111,25 @@ impl NotesApp {
             .map_err(|error| error.to_string())
     }
 
+    /// Test-only: apply what this notebook submitted to `doc`, as the host
+    /// applies it after a pass.
+    #[cfg(test)]
+    pub(crate) fn land(&self, doc: &mut AutoCommit) {
+        if let Some(dispatcher) = &self.dispatcher {
+            ui::framework::testing::resolve(dispatcher, doc).expect("submitted edits apply");
+        }
+    }
+
+    /// Test-only: one frame as a host runs it — sync, the settle pass and
+    /// what it submitted applied to `doc` — shown in the same frame.
+    #[cfg(test)]
+    pub(crate) fn frame(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
+        ui::widget::Widget::sync(self, doc, root);
+        ui::widget::Widget::settle(self, &mut ui::widget::Edits::lend(doc), root);
+        self.land(doc);
+        ui::widget::Widget::sync(self, doc, root);
+    }
+
     /// [`Self::dispatch`] for an affordance that has nothing to show for a
     /// refusal but the unchanged notebook.
     fn apply_action(&self, edits: &mut ui::widget::Edits<'_>, action: &NotesAction) {
@@ -2103,6 +2122,20 @@ impl Widget for NotesApp {
             self.refresh_status();
         }
         self.refresh_canonical_assets(state);
+        // Moving to another note writes nothing, so it is taken up here, in
+        // the frame that asked; edits wait for the settle pass.
+        let mut pending = std::mem::take(&mut self.pending_events);
+        pending.retain(|event| match event {
+            OutEvent::Select(id) => {
+                if self.workspace.get(*id).is_some() {
+                    self.workspace.set_selected(Some(*id));
+                    self.record_current_route();
+                }
+                false
+            }
+            _ => true,
+        });
+        self.pending_events = pending;
         // Project the workspace only when its inputs moved: committed
         // heads, an open transaction (a settle pass may have written),
         // the selected page or the tag filter. Re-projecting every frame
@@ -3387,7 +3420,7 @@ mod tests {
                 &automerge::ROOT,
             ));
 
-            app.sync(&mut doc, &automerge::ROOT);
+            app.frame(&mut doc, &automerge::ROOT);
             assert_eq!(app.workspace.pages().len(), 1);
             assert!(app.workspace.selected().is_some());
         }
@@ -3421,7 +3454,7 @@ mod tests {
                 &mut ui::widget::Edits::lend(&mut state.doc),
                 OutEvent::Delete(child),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
             assert!(NotesDoc::page_body(&state.doc, child).is_none());
             // Selection falls back to a remaining root page.
             assert_eq!(app.workspace.selected(), Some(root));
@@ -3589,7 +3622,7 @@ mod tests {
         }
         state.doc.commit();
         let mut app = hosted(&state.doc);
-        app.sync(&mut state.doc, &state.root);
+        app.frame(&mut state.doc, &state.root);
         assert_eq!(app.selected_for_test(), Some(welcome));
         (app, state, tmp, welcome)
     }
@@ -3670,7 +3703,7 @@ mod tests {
             app.apply_action(&mut ui::widget::Edits::lend(&mut state.doc), &action);
 
             app.navigate_to(target);
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
             assert_eq!(
                 app.selected_backlink_chips(),
                 vec![BacklinkChip {
@@ -3683,7 +3716,7 @@ mod tests {
 
             app.open_note(source)
                 .expect("a backlink opens its source note");
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
             assert_eq!(app.selected_for_test(), Some(source));
         }
     }
@@ -3741,7 +3774,7 @@ mod tests {
             );
             app.open_block(&shown, welcome, Some(block_id))
                 .expect("the block's note opens");
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
 
             assert_eq!(app.selected_for_test(), Some(welcome));
             assert_eq!(
@@ -3782,7 +3815,7 @@ mod tests {
             // text/kinds, then Notes hydrates the native mark state back into the
             // live rich line rather than dropping formatting on rebind.
             app.bound_page = None;
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
             let restored = app
                 .main
                 .editor()
@@ -3812,7 +3845,7 @@ mod tests {
                 .editor_mut()
                 .focus_block(index, ui::widget::CursorPlacement::End);
             app.bound_page = None;
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
             let editor = app.main.editor();
             let focused = editor
                 .focused_index()
@@ -3840,7 +3873,7 @@ mod tests {
             // Formatting changes no plain text; the editor still writes it as
             // the page's own edit.
             let before = state.doc.get_heads();
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
             let changes = state.doc.get_changes(&before);
             assert!(
                 changes.iter().any(|change| change
@@ -3898,7 +3931,7 @@ mod tests {
             )
             .apply(&mut state.doc)
             .unwrap();
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
 
             let resolved = published(&state.doc, &old_address.resource);
             assert_eq!(resolved.id.0, old_address.resource);
@@ -3907,7 +3940,7 @@ mod tests {
                     .unwrap();
             app.open_block(&shown, welcome, Some(block))
                 .expect("durable block identity still resolves");
-            app.sync(&mut state.doc, &state.root);
+            app.frame(&mut state.doc, &state.root);
             assert_eq!(
                 app.main.editor().focused_index(),
                 Some(2),
