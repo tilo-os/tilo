@@ -106,7 +106,9 @@ containerfile="$repo/os/Containerfile"
 # The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
 # publisher.hex), which the launcher trusts for runtimes the Store installs,
 # is a deliberate addition.
-expected_contract=80604367f4d5fa2fd7574b814fb83dab7c01e80cea6138dcc6daeed4b8b5232a
+# /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
+# deliberate removals: those apps ship only as packages in the app store.
+expected_contract=da5bf1843cbf27b03e017323160cf622d07482d0168c0a747330722fa699b5c1
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
