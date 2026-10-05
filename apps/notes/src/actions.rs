@@ -3478,6 +3478,73 @@ mod tests {
     }
 
     #[test]
+    fn new_note_appends_at_apply_while_daily_note_keeps_its_published_fractional_key() {
+        let mut doc = notebook_seed();
+        let resources = notebook_resources(&doc);
+        let root = &resources[0];
+        let new_spec = root
+            .actions
+            .iter()
+            .find(|spec| spec.id == "new-page")
+            .unwrap();
+        let new_action: NotesAction =
+            serde_json::from_slice(&prompted_encode(new_spec, "Later note").payload).unwrap();
+        let NotesAction::AppendPage { id, parent, .. } = &new_action else {
+            panic!("a new note resolves its sibling position when it applies");
+        };
+        assert!(parent.is_empty());
+        let new_id = id.parse().unwrap();
+        let daily_spec = root
+            .actions
+            .iter()
+            .find(|spec| spec.id == "daily-note")
+            .unwrap();
+        let daily_action: NotesAction =
+            serde_json::from_slice(&daily_spec.build_args(Vec::new()).unwrap().payload).unwrap();
+        let NotesAction::UpsertPage(daily) = &daily_action else {
+            panic!("today's note carries the position published with its action");
+        };
+        assert!(ui::tilo_resource::order::is_key(&daily.order));
+        let daily_id = daily.id.parse().unwrap();
+        let published_order = daily.order.clone();
+
+        let intervening = Uuid::new_v4();
+        dispatch(
+            &mut doc,
+            &append_page_action(intervening, None, "Arrived meanwhile"),
+        );
+        let intervening_order = page_meta(&doc, intervening).order;
+        assert!(intervening_order.as_str() > "b");
+        dispatch(&mut doc, &new_action);
+        assert!(
+            page_meta(&doc, new_id).order > intervening_order,
+            "a stale new-note action still appends after the live siblings"
+        );
+        dispatch(&mut doc, &daily_action);
+        assert_eq!(
+            page_meta(&doc, daily_id).order,
+            published_order,
+            "today's action retains its published fractional position"
+        );
+        assert_eq!(page_meta(&doc, PROJECTS).order, "a");
+        assert_eq!(page_meta(&doc, INBOX).order, "b");
+        assert_eq!(page_meta(&doc, LAUNCH).order, "a");
+        assert_eq!(page_meta(&doc, NOTES).order, "b");
+        crate::notebook::validate(&doc).unwrap();
+
+        let resources = notebook_resources(&doc);
+        let daily_spec = resources[0]
+            .actions
+            .iter()
+            .find(|spec| spec.id == "daily-note")
+            .unwrap();
+        assert!(
+            matches!(effect_of(daily_spec), NotesEffect::Open { page, .. } if page == daily_id),
+            "once today's note exists its public action opens that note"
+        );
+    }
+
+    #[test]
     fn tag_actions_replay_identically_and_publish_browseable_resources() {
         eprintln!("phase tag_actions_replay_byte_identically_and_delete_tombstones_edges");
         {
