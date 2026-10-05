@@ -118,6 +118,7 @@ mod action_locus;
 pub mod table_model;
 pub use action_locus::ActionUiRoute;
 pub mod action_palette;
+pub mod agent_identity;
 pub mod animation;
 #[cfg(test)]
 extern crate self as tilo_ui;

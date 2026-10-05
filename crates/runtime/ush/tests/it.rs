@@ -11,3 +11,6 @@ pub mod network;
 pub mod serve_handoff;
 #[path = "socket_activation.rs"]
 pub mod socket_activation;
+
+#[path = "helper_runtime.rs"]
+pub mod helper_runtime;

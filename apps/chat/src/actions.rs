@@ -1466,6 +1466,8 @@ fn set_work_spec(channel: &str, message: &str) -> ActionSpec {
                 "The operation, as its app labels it (doing, done)",
             ),
             ActionParam::optional("about", ParamType::Text, "What it is about (doing)"),
+            ActionParam::optional("route", ParamType::Text, "How the operation was chosen")
+                .with_choices(["model", "floor"]),
             ActionParam::optional("why", ParamType::Text, "How the agent decided"),
             ActionParam::optional(
                 "steps",
@@ -1499,14 +1501,19 @@ fn agent_work_from_args(
     use crate::model::{
         AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
     };
-    let did = || args.text("did").unwrap_or_default().to_owned();
+    let did = || {
+        args.text("did")
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| "doing and done work name the operation".to_string())
+    };
     let state = match args.text("state").unwrap_or_default() {
         "taken" => AgentWorkState::Taken,
         "doing" => AgentWorkState::Doing {
-            did: did(),
+            did: did()?,
             about: args.text("about").unwrap_or_default().to_owned(),
         },
-        "done" => AgentWorkState::Done { did: did() },
+        "done" => AgentWorkState::Done { did: did()? },
         "refused" => AgentWorkState::Refused,
         other => return Err(format!("unknown agent work state `{other}`")),
     };
@@ -1514,8 +1521,14 @@ fn agent_work_from_args(
     for (index, step) in args.array("steps").unwrap_or_default().iter().enumerate() {
         let text = |field: &str| step.get(field).and_then(serde_json::Value::as_str);
         let resource = text("resource").ok_or("a step names its resource")?;
+        if resource.trim().is_empty() {
+            return Err("a step names a non-empty resource".into());
+        }
         let label = text("label").ok_or("a step names its operation's label")?;
-        let outcome = match text("outcome").unwrap_or("applied") {
+        if label.trim().is_empty() {
+            return Err("a step names a non-empty operation label".into());
+        }
+        let outcome = match text("outcome").ok_or("a step names its outcome")? {
             "asked" => AgentStepOutcome::Asked,
             "applied" => AgentStepOutcome::Applied,
             "no_change" => AgentStepOutcome::NoChange,
@@ -1527,10 +1540,19 @@ fn agent_work_from_args(
         trace.push(AgentStep::authored(resource, label, outcome, index as u64));
     }
     let mut work = AgentWork::new(state, unix_now_i64()).with_trace(trace);
-    if let Some(why) = args.text("why") {
+    let route = match args.text("route") {
+        Some("model") => Some(AgentRoute::Model),
+        Some("floor") => Some(AgentRoute::Floor),
+        Some(other) => return Err(format!("unknown agent reasoning route `{other}`")),
+        None if args.text("why").is_some() => {
+            return Err("agent reasoning names whether the model or floor chose it".into());
+        }
+        None => None,
+    };
+    if let Some(route) = route {
         work = work.because(AgentReasoning {
-            route: AgentRoute::Model,
-            why: why.to_owned(),
+            route,
+            why: args.text("why").unwrap_or_default().to_owned(),
         });
     }
     Ok(work)
@@ -1602,6 +1624,85 @@ mod tests {
     /// dispatcher applies it.
     fn dispatch(doc: &mut AutoCommit, action: &ChatAction) {
         apply_as(doc, model::ME, action).unwrap();
+    }
+
+    #[test]
+    fn public_set_work_arguments_preserve_route_and_refuse_unverifiable_claims() {
+        let spec = set_work_spec("c_crit", "m_agent_reply");
+        let build = |value: serde_json::Value| {
+            let serde_json::Value::Object(arguments) = value else {
+                panic!("fixture arguments are an object")
+            };
+            spec.build_json(&arguments)
+        };
+        for (route, expected) in [
+            ("model", crate::model::AgentRoute::Model),
+            ("floor", crate::model::AgentRoute::Floor),
+        ] {
+            let encoded = build(serde_json::json!({
+                "state": "done",
+                "did": "Add function",
+                "route": route,
+                "why": "The exported action matched the request.",
+                "steps": [{
+                    "resource": "calculator.workspace",
+                    "label": "Add function",
+                    "outcome": "applied"
+                }]
+            }))
+            .expect("valid public arguments bind");
+            assert_eq!(encoded.type_id, CHAT_ACTION_TYPE);
+            let decoded: ChatAction = serde_json::from_slice(&encoded.payload).unwrap();
+            let ChatAction::SetAgentWork { work, .. } = decoded else {
+                panic!("set-work encodes SetAgentWork")
+            };
+            assert_eq!(work.reasoning.unwrap().route, expected);
+            assert!(matches!(
+                work.trace.as_slice(),
+                [crate::model::AgentStep {
+                    outcome: crate::model::AgentStepOutcome::Applied,
+                    ..
+                }]
+            ));
+        }
+
+        for invalid in [
+            serde_json::json!({"state": "doing"}),
+            serde_json::json!({"state": "done", "did": "  "}),
+            serde_json::json!({
+                "state": "taken",
+                "why": "A claim without provenance is not enough."
+            }),
+            serde_json::json!({
+                "state": "taken",
+                "steps": [{"resource": " ", "label": "Add function", "outcome": "asked"}]
+            }),
+            serde_json::json!({
+                "state": "taken",
+                "steps": [{"resource": "calculator.workspace", "label": " ", "outcome": "asked"}]
+            }),
+            serde_json::json!({
+                "state": "taken",
+                "steps": [{"resource": "calculator.workspace", "label": "Add function"}]
+            }),
+        ] {
+            let encoded = build(invalid).expect("declared argument types still bind");
+            assert_eq!(
+                encoded.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+            );
+            assert!(
+                !encoded.payload.is_empty(),
+                "the refusal explains what is invalid"
+            );
+        }
+
+        let error = build(serde_json::json!({
+            "state": "taken",
+            "route": "guess"
+        }))
+        .expect_err("route is a constrained public argument");
+        assert!(error.to_string().contains("route"), "{error}");
     }
 
     fn seeded() -> AutoCommit {

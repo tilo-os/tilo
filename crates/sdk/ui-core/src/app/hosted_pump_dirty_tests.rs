@@ -31,6 +31,22 @@ impl Widget for HostedPumpProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _: &mut crate::widget::Edits<'_>,
+        _: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        assert_eq!(request.kind, OperationKind::View);
+        assert_eq!(request.type_id, COUNTER_TYPE);
+        *self.pending_label.borrow_mut() = Some("After".into());
+        Ok(Some(crate::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
 }
 
 impl crate::resources::PublishesResources for HostedPumpProbe {
@@ -183,6 +199,35 @@ fn hosted_pump_idle_keeps_resource_cache_and_published_surface() {
         fixture.assert_idle();
     }
     assert!(fixture.app.actions.resource_cache.borrow().is_some());
+}
+
+#[test]
+fn completed_view_syncs_its_local_projection_before_returning_to_idle() {
+    let mut fixture = HostedPumpFixture::new(1);
+    fixture.assert_idle();
+    let before = fixture.app.state.doc.save();
+    let address = tilo_actions::ActionAddress::new("probe:0", "inspect:0");
+    let actor = fixture.app.collaboration.local_author.0.clone();
+    let started = fixture
+        .app
+        .invoke_resource_action(ResourceInvocation::new(&address, &actor))
+        .unwrap();
+    assert!(matches!(
+        started,
+        crate::widget::ResourceOperationStart::Completed(_)
+    ));
+    assert_eq!(
+        fixture.app.state.doc.save(),
+        before,
+        "navigation writes no document state"
+    );
+    fixture.pump();
+    assert_eq!(
+        fixture.labels(),
+        ["After 0"],
+        "the native worker applies the completed view's queued local projection without another input"
+    );
+    fixture.assert_idle();
 }
 
 #[test]

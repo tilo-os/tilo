@@ -19,7 +19,10 @@ use ui::widget::{Avatar, Button, ButtonFace};
 
 use crate::app::{AVATAR, ChatApp, Hit, MenuTarget};
 use crate::geometry::{SidebarHeaderSpec, centered_band, line_top, sidebar_header_layout};
-use crate::model::{self, Attachment, ChannelKind, Message, Presence};
+use crate::model::{
+    self, AgentRoute, AgentStepOutcome, AgentWork, AgentWorkState, Attachment, ChannelKind,
+    Message, Presence,
+};
 use crate::paint::{
     band_at_least, blend_toward, fill_circle, fill_rect, fill_round, hline, label, legible_on,
     palette_color, push_clip, stroke_round, text, truncate_to,
@@ -226,6 +229,23 @@ pub(crate) fn mention_colors(
 }
 
 impl ChatApp {
+    pub(crate) fn draw_conversation(
+        &mut self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        self.draw_header(scene, tf, tr, theme, hits);
+        let area = self.messages_rect(tr);
+        push_clip(scene, tf, area);
+        self.draw_messages(PaintCtx::new(scene, tf, tr, theme), presence, area, hits);
+        scene.pop_layer();
+        self.draw_composer(scene, tf, tr, theme, presence, hits);
+    }
+
     /// The colours mentions are painted in on `theme`, for every participant
     /// (a mention of you filled, anyone else's in their colour), and a
     /// fingerprint of what they were built from.
@@ -2063,6 +2083,10 @@ impl ChatApp {
         let att_h = m.attachment.as_ref().map_or(0.0, |attachment| {
             attachment_flow_height(attachment, f64::from(text_w), scale)
         });
+        let work_h = m
+            .work
+            .as_ref()
+            .map_or(0.0, |work| measure_agent_work(tr, theme, work, text_w));
         // The header, reaction and thread bands are measured through the same
         // helpers the draw pass uses, so the reserved height is the painted
         // height at every text scale.
@@ -2094,6 +2118,7 @@ impl ChatApp {
             show_header,
             header_h,
             body_h,
+            work_h,
             att_h,
             react_h,
             edited_h,
@@ -2274,6 +2299,14 @@ impl ChatApp {
             self.draw_body(m, BODY_SIZE, &mut PaintCtx::new(scene, tf, tr, theme));
             *y += rm.body_h + 2.0;
         }
+        if let Some(work) = &m.work {
+            Self::draw_agent_work(
+                PaintCtx::new(scene, tf, tr, theme),
+                work,
+                Rect::new(text_x, *y, text_x + f64::from(text_w), *y + rm.work_h),
+            );
+            *y += rm.work_h;
+        }
         // Right-click your own message (header + body) opens the edit menu.
         // Recorded now, before the reaction / thread hits so those still
         // win in their own sub-regions.
@@ -2282,6 +2315,48 @@ impl ChatApp {
                 hits,
                 Rect::new(area.x0, content_top, area.x1, *y),
                 Hit::MessageMenu { msg: m.id.clone() },
+            );
+        }
+    }
+
+    /// Paint the durable account an agent attached to its own reply.
+    ///
+    /// The card deliberately avoids a spinner or a claim that the agent is
+    /// live. `AgentWork` records what has happened; current availability is
+    /// still communicated by presence. The rationale is the agent's public
+    /// explanation, never hidden chain-of-thought, and trace rows exist only
+    /// for operations the dispatch path actually attempted.
+    fn draw_agent_work(mut paint: PaintCtx<'_>, work: &AgentWork, card: Rect) {
+        let theme = paint.theme;
+        let colors = &theme.tokens.colors;
+        let spacing = &theme.tokens.spacing;
+        ui::surface::card(
+            paint.scene,
+            paint.transform,
+            card,
+            ui::chrome::ChromeRole::Control.radius(theme, card.height()),
+            colors.lift(0.35),
+        );
+
+        let presentation = AgentWorkPresentation::from(work);
+        let inset = f64::from(spacing.s3);
+        let width = ui::num::f32_of_f64((card.width() - 2.0 * inset).max(0.0));
+        let mut y = card.y0 + inset;
+        y += draw_agent_work_line(
+            &mut paint,
+            &presentation.summary,
+            AgentWorkLineStyle::Summary,
+            Point::new(card.x0 + inset, y),
+            width,
+        );
+        for line in presentation.details {
+            y += f64::from(spacing.s2);
+            y += draw_agent_work_line(
+                &mut paint,
+                &line.text,
+                line.style,
+                Point::new(card.x0 + inset, y),
+                width,
             );
         }
     }
@@ -3301,8 +3376,13 @@ impl ChatApp {
         let head = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 52.0 * scale);
         let narrow_detail = self.right_mode == crate::responsive::FlapMode::Overlay;
         let labelled_back = narrow_detail && self.layout_text_scale <= 1.25;
+        let back_label = crate::i18n::t("chat-thread-back");
+        let back_width = f64::from(tr.measure(&back_label, 13.0, None).0)
+            + 2.0 * f64::from(theme.tokens.spacing.s3)
+            + f64::from(theme.tokens.spacing.s2)
+            + 16.0;
         let title_x = if labelled_back {
-            panel.x0 + 92.0
+            panel.x0 + 12.0 + back_width + f64::from(theme.tokens.spacing.s3)
         } else {
             panel.x0 + 16.0 * scale.min(1.2)
         };
@@ -3310,7 +3390,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Thread",
+            &crate::i18n::t("chat-thread-title"),
             15.0,
             c.text_primary,
             title_x,
@@ -3334,7 +3414,7 @@ impl ChatApp {
             Rect::new(
                 panel.x0 + 12.0,
                 panel.y0 + 10.0,
-                panel.x0 + 78.0,
+                panel.x0 + 12.0 + back_width,
                 panel.y0 + 42.0,
             )
         } else {
@@ -3346,14 +3426,23 @@ impl ChatApp {
                 panel.y0 + 8.0 * scale + side,
             )
         };
-        let close_label = if narrow_detail { "← Back" } else { "✕" };
+        let close_label = if labelled_back {
+            back_label
+        } else {
+            String::new()
+        };
         // The shared Neutral button face (HIG §8).
         Button::paint(
             scene,
             tf,
             tr,
             theme,
-            &ButtonFace::new(close, close_label)
+            &ButtonFace::new(close, &close_label)
+                .icon(if narrow_detail {
+                    ui::icons::Icon::ArrowLeft
+                } else {
+                    ui::icons::Icon::X
+                })
                 .text_size(13.0)
                 .weight(TextWeight::Regular)
                 .radius(8.0),
@@ -3375,7 +3464,7 @@ impl ChatApp {
     /// The thread body: the parent message, a "N replies" divider, then
     /// every reply in order — clipped to `body`, the scrollable region
     /// between the header and the thread composer.
-    fn draw_thread_body(&self, paint: PaintCtx<'_>, body: Rect, parent_id: &str) {
+    fn draw_thread_body(&mut self, paint: PaintCtx<'_>, body: Rect, parent_id: &str) {
         let PaintCtx {
             scene,
             transform: tf,
@@ -3387,10 +3476,30 @@ impl ChatApp {
         push_clip(scene, tf, body);
         let tx = body.x0 + (16.0 + 32.0 + 10.0) * scale.min(1.2);
         let tw = (body.x1 - tx - 14.0 * scale.min(1.2)).max(60.0) as f32;
-        let mut y = body.y0 + 12.0 * scale;
+        let parent = self.message(parent_id).cloned();
+        let replies: Vec<Message> = self
+            .messages
+            .iter()
+            .filter(|message| message.parent.as_deref() == Some(parent_id))
+            .cloned()
+            .collect();
+        let mut content = 24.0 * scale;
+        for message in parent.iter().chain(replies.iter()) {
+            content += self.measure_thread_message(message, tw, theme, tr);
+        }
+        if parent.is_some() {
+            content += 30.0 * scale;
+        }
+        self.thread_body = body;
+        self.thread_scroll.set_viewport_rect(body);
+        self.thread_scroll.set_content_size(
+            ui::num::f32_of_f64(body.width()),
+            ui::num::f32_of_f64(content),
+        );
+        let mut y = body.y0 + 12.0 * scale - f64::from(self.thread_scroll.offset_y());
 
         // parent message
-        if let Some(parent) = self.message(parent_id).cloned() {
+        if let Some(parent) = parent {
             y = self.draw_thread_message(
                 PaintCtx::new(scene, tf, tr, theme),
                 &parent,
@@ -3401,7 +3510,7 @@ impl ChatApp {
             );
             // replies divider
             let n = model::reply_count(&self.messages, parent_id);
-            let s = format!("{n} {}", if n == 1 { "reply" } else { "replies" });
+            let s = crate::i18n::t_args("chat-thread-replies", &[("count", n.into())]);
             let (sw, _) = tr.measure(&s, 11.5, None);
             let dcy = y + 14.0;
             let rule = ui::surface::edge_on(c.surfaces.raised);
@@ -3433,12 +3542,6 @@ impl ChatApp {
             );
             y += 30.0 * scale;
         }
-        let replies: Vec<Message> = self
-            .messages
-            .iter()
-            .filter(|m| m.parent.as_deref() == Some(parent_id))
-            .cloned()
-            .collect();
         for r in &replies {
             y = self.draw_thread_message(
                 PaintCtx::new(scene, tf, tr, theme),
@@ -3450,6 +3553,33 @@ impl ChatApp {
             );
         }
         scene.pop_layer();
+        self.thread_scroll.draw_bar_overlay(scene, tf, theme);
+    }
+
+    /// Uses the same flow heights as the thread painter, including wrapped
+    /// durable evidence, so the shared scroll service can reach every reply.
+    fn measure_thread_message(
+        &self,
+        message: &Message,
+        width: f32,
+        theme: &Theme,
+        tr: &mut TextRenderer,
+    ) -> f64 {
+        let scale = f64::from(self.layout_text_scale);
+        let mut height = 29.0 * scale;
+        if !message.text.is_empty() {
+            height += self.layout_body(message, 14.0, Point::ZERO, width, theme, tr) + 4.0 * scale;
+        }
+        if let Some(work) = &message.work {
+            height += measure_agent_work(tr, theme, work, width);
+        }
+        if let Some(attachment) = &message.attachment {
+            height += attachment_flow_height(attachment, f64::from(width), scale);
+        }
+        if !message.reactions.is_empty() {
+            height += 28.0 * scale;
+        }
+        height
     }
 
     fn draw_thread_message(
@@ -3503,6 +3633,15 @@ impl ChatApp {
             let h = self.layout_body(m, 14.0, Point::new(tx, yy), tw, theme, tr);
             self.draw_body(m, 14.0, &mut PaintCtx::new(scene, tf, tr, theme));
             yy += h + 4.0 * scale;
+        }
+        if let Some(work) = &m.work {
+            let height = measure_agent_work(tr, theme, work, tw);
+            Self::draw_agent_work(
+                PaintCtx::new(scene, tf, tr, theme),
+                work,
+                Rect::new(tx, yy, tx + f64::from(tw), yy + height),
+            );
+            yy += height;
         }
         if let Some(att) = &m.attachment {
             self.draw_attachment(
@@ -4146,6 +4285,169 @@ fn thread_bar_h(tr: &mut TextRenderer, theme: &Theme) -> f64 {
     (f64::from(lh) + 2.0 * f64::from(theme.tokens.spacing.s2)).max(THREAD_BAR_MIN_H)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentWorkLineStyle {
+    Summary,
+    Rationale,
+    Step,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentWorkLine {
+    text: String,
+    style: AgentWorkLineStyle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AgentWorkPresentation {
+    summary: String,
+    details: Vec<AgentWorkLine>,
+}
+
+/// The same recorded evidence read aloud in the conversation tree.
+pub(crate) fn agent_work_accessible_description(work: &AgentWork) -> String {
+    let presentation = AgentWorkPresentation::from(work);
+    std::iter::once(presentation.summary)
+        .chain(presentation.details.into_iter().map(|line| line.text))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+impl From<&AgentWork> for AgentWorkPresentation {
+    fn from(work: &AgentWork) -> Self {
+        use crate::i18n::{t, t_args};
+        let summary = match &work.state {
+            AgentWorkState::Taken => t("chat-agent-work-taken"),
+            AgentWorkState::Waiting { app } => {
+                t_args("chat-agent-work-waiting", &[("app", app.into())])
+            }
+            AgentWorkState::Doing { did, about } if about.trim().is_empty() => {
+                t_args("chat-agent-work-intent", &[("action", did.into())])
+            }
+            AgentWorkState::Doing { did, about } => t_args(
+                "chat-agent-work-intent-about",
+                &[("action", did.into()), ("about", about.into())],
+            ),
+            AgentWorkState::Done { did } => {
+                t_args("chat-agent-work-done", &[("action", did.into())])
+            }
+            AgentWorkState::Refused => t("chat-agent-work-refused"),
+        };
+        let mut details = Vec::new();
+        if let Some(reasoning) = &work.reasoning {
+            let route = match reasoning.route {
+                AgentRoute::Model => t("chat-agent-work-model-rationale"),
+                AgentRoute::Floor => t("chat-agent-work-rule-match"),
+            };
+            let text = if reasoning.why.trim().is_empty() {
+                match reasoning.route {
+                    AgentRoute::Model => t("chat-agent-work-model-choice"),
+                    AgentRoute::Floor => t("chat-agent-work-rule-choice"),
+                }
+            } else {
+                t_args(
+                    "chat-agent-work-rationale",
+                    &[("route", route.into()), ("why", (&reasoning.why).into())],
+                )
+            };
+            details.push(AgentWorkLine {
+                text,
+                style: AgentWorkLineStyle::Rationale,
+            });
+        }
+        for step in &work.trace {
+            // The dispatch record retains the exact resource address for the
+            // action reader. The conversation uses the app's readable label.
+            let target = step.label.clone();
+            let text = match &step.outcome {
+                AgentStepOutcome::Asked => t_args(
+                    "chat-agent-work-step-requested",
+                    &[("target", target.into())],
+                ),
+                AgentStepOutcome::Applied => {
+                    t_args("chat-agent-work-step-applied", &[("target", target.into())])
+                }
+                AgentStepOutcome::NoChange => t_args(
+                    "chat-agent-work-step-no-change",
+                    &[("target", target.into())],
+                ),
+                AgentStepOutcome::Refused { why } if why.trim().is_empty() => {
+                    t_args("chat-agent-work-step-refused", &[("target", target.into())])
+                }
+                AgentStepOutcome::Refused { why } => t_args(
+                    "chat-agent-work-step-refused-why",
+                    &[("target", target.into()), ("why", why.into())],
+                ),
+            };
+            details.push(AgentWorkLine {
+                text,
+                style: AgentWorkLineStyle::Step,
+            });
+        }
+        Self { summary, details }
+    }
+}
+
+fn agent_work_text_style(style: AgentWorkLineStyle, theme: &Theme) -> TextStyle {
+    match style {
+        AgentWorkLineStyle::Summary => {
+            TextStyle::new(theme.tokens.typography.scale.base).with_weight(TextWeight::Semibold)
+        }
+        AgentWorkLineStyle::Rationale | AgentWorkLineStyle::Step => {
+            TextStyle::new(theme.tokens.typography.scale.sm)
+        }
+    }
+}
+
+fn measure_agent_work(tr: &mut TextRenderer, theme: &Theme, work: &AgentWork, width: f32) -> f64 {
+    let presentation = AgentWorkPresentation::from(work);
+    let inset = f64::from(theme.tokens.spacing.s3);
+    let gap = f64::from(theme.tokens.spacing.s2);
+    let text_width = (width - ui::num::f32_of_f64(2.0 * inset)).max(0.0);
+    let mut height = 2.0 * inset;
+    height += f64::from(
+        tr.measure_style(
+            &presentation.summary,
+            Some(text_width),
+            &agent_work_text_style(AgentWorkLineStyle::Summary, theme),
+        )
+        .1,
+    );
+    for line in presentation.details {
+        height += gap;
+        height += f64::from(
+            tr.measure_style(
+                &line.text,
+                Some(text_width),
+                &agent_work_text_style(line.style, theme),
+            )
+            .1,
+        );
+    }
+    height + gap
+}
+
+fn draw_agent_work_line(
+    paint: &mut PaintCtx<'_>,
+    value: &str,
+    style: AgentWorkLineStyle,
+    at: Point,
+    width: f32,
+) -> f64 {
+    let text_style = agent_work_text_style(style, paint.theme);
+    let color = match style {
+        AgentWorkLineStyle::Summary => paint.theme.tokens.colors.text_primary,
+        AgentWorkLineStyle::Rationale => legible_on(
+            paint.theme.tokens.colors.accent[6],
+            paint.theme.tokens.colors.lift(0.35),
+            4.5,
+            paint.theme.tokens.colors.text_primary,
+        ),
+        AgentWorkLineStyle::Step => paint.theme.tokens.colors.text_dim,
+    };
+    f64::from(text(paint, value, &text_style, color, at, Some(width)).1)
+}
+
 /// Per-row measured heights for the timeline layout.
 struct RowM {
     idx_id: String,
@@ -4153,6 +4455,7 @@ struct RowM {
     /// Measured header row (author + timestamp); zero on continuation rows.
     header_h: f64,
     body_h: f64,
+    work_h: f64,
     att_h: f64,
     react_h: f64,
     edited_h: f64,
@@ -4173,7 +4476,15 @@ impl RowM {
         } else {
             0.0
         };
-        top_gap + header + body + self.edited_h + self.att_h + self.react_h + self.thread_h + 4.0
+        top_gap
+            + header
+            + body
+            + self.work_h
+            + self.edited_h
+            + self.att_h
+            + self.react_h
+            + self.thread_h
+            + 4.0
     }
 }
 
@@ -4254,8 +4565,14 @@ const RAIL_W_CENTER: f64 = crate::app::RAIL_W / 2.0;
 
 #[cfg(test)]
 mod tests {
-    use super::{attachment_card_size, attachment_flow_height, file_chip_meta};
-    use crate::model::Attachment;
+    use super::{
+        AgentWorkLineStyle, AgentWorkPresentation, RowM, attachment_card_size,
+        attachment_flow_height, file_chip_meta,
+    };
+    use crate::model::{
+        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+        Attachment,
+    };
 
     fn close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < f64::EPSILON);
@@ -4338,5 +4655,137 @@ mod tests {
             close(video_h, 180.0);
             close(attachment_flow_height(&unknown_video, 320.0, 1.0), 204.0);
         }
+    }
+
+    #[test]
+    fn agent_work_projection_names_only_recorded_state_rationale_and_dispatches() {
+        let cases = [
+            (AgentWorkState::Taken, "Request accepted"),
+            (
+                AgentWorkState::Waiting {
+                    app: "Calculator".into(),
+                },
+                "Last reported: waiting for app state: Calculator",
+            ),
+            (
+                AgentWorkState::Doing {
+                    did: "Add function".into(),
+                    about: "the revenue curve".into(),
+                },
+                "Latest intent: Add function: the revenue curve",
+            ),
+            (
+                AgentWorkState::Done {
+                    did: "Add function".into(),
+                },
+                "Completed: Add function",
+            ),
+            (AgentWorkState::Refused, "Could not complete this request"),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(
+                AgentWorkPresentation::from(&AgentWork::new(state, 42)).summary,
+                expected
+            );
+        }
+
+        let work = AgentWork::new(
+            AgentWorkState::Doing {
+                did: "Add function".into(),
+                about: String::new(),
+            },
+            42,
+        )
+        .because(AgentReasoning {
+            route: AgentRoute::Floor,
+            why: "The request matched the app's exported action.".into(),
+        })
+        .with_trace(vec![
+            AgentStep::authored(
+                "calculator.workspace",
+                "Add function",
+                AgentStepOutcome::Asked,
+                0,
+            ),
+            AgentStep::authored(
+                "calculator.workspace",
+                "Add function",
+                AgentStepOutcome::NoChange,
+                1,
+            ),
+            AgentStep::authored(
+                "calculator.graph",
+                "Set bounds",
+                AgentStepOutcome::Refused {
+                    why: "Outside the granted range".into(),
+                },
+                2,
+            ),
+        ]);
+        let presentation = AgentWorkPresentation::from(&work);
+        assert_eq!(presentation.summary, "Latest intent: Add function");
+        assert_eq!(
+            presentation.details[0].text,
+            "Rule match: The request matched the app's exported action."
+        );
+        assert_eq!(presentation.details[0].style, AgentWorkLineStyle::Rationale);
+        assert_eq!(presentation.details[1].text, "Requested: Add function");
+        assert_eq!(presentation.details[2].text, "No change: Add function");
+        assert_eq!(
+            presentation.details[3].text,
+            "Refused: Set bounds: Outside the granted range"
+        );
+        assert!(
+            presentation
+                .details
+                .iter()
+                .all(|line| !line.text.to_ascii_lowercase().contains("chain of thought"))
+        );
+    }
+
+    #[test]
+    fn agent_work_projection_keeps_every_recorded_step_and_row_reserves_the_card() {
+        let steps = (0..7)
+            .map(|index| {
+                AgentStep::authored(
+                    format!("resource-{index}"),
+                    format!("Action {index}"),
+                    AgentStepOutcome::Applied,
+                    index,
+                )
+            })
+            .collect();
+        let work = AgentWork::new(
+            AgentWorkState::Done {
+                did: "Finish".into(),
+            },
+            42,
+        )
+        .with_trace(steps);
+        let presentation = AgentWorkPresentation::from(&work);
+        assert_eq!(presentation.details.len(), 7);
+        for (index, line) in presentation.details.iter().enumerate() {
+            assert_eq!(line.text, format!("Applied: Action {index}"));
+            assert_eq!(line.style, AgentWorkLineStyle::Step);
+        }
+
+        let row = RowM {
+            idx_id: "reply".into(),
+            show_header: false,
+            header_h: 0.0,
+            body_h: 0.0,
+            work_h: 96.0,
+            att_h: 0.0,
+            react_h: 0.0,
+            edited_h: 0.0,
+            thread_h: 0.0,
+            editing: false,
+            edit_ctrl_h: 0.0,
+        };
+        assert_eq!(
+            row.height(),
+            103.0,
+            "an empty agent reply reserves its work card"
+        );
     }
 }
