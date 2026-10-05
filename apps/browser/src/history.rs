@@ -3,8 +3,9 @@
 //! The store is a flat list of [`HistoryEntry`] rows keyed by URL. Every
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
-//! list stays one-row-per-page. It persists as a JSON array under
-//! `tilo_paths::data_dir()/tilo-browser/history.json`.
+//! list stays one-row-per-page. It is the person's own record
+//! ([`BrowsingHistory`]): it follows them to their other devices and never
+//! reaches a collaborator, whatever room the browser is open in.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title
@@ -24,13 +25,7 @@
 //! and ranks the whole history by recency + frequency alone — the
 //! "most-recent / most-visited" default the overlay shows the moment the
 //! address bar is focused.
-//!
-//! Persistence uses `serde_json::Value` directly rather than a derived
-//! `Serialize`/`Deserialize`: `serde`'s derive macro is not a dependency
-//! of this crate, and the hand-rolled shape is trivial and forgiving of
-//! partial rows.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
@@ -39,10 +34,6 @@ use ui::search::{FieldWeight, ListIndex, MAX_FIELD_RANK};
 /// address-bar query, resource snapshot, or persisted JSON write into an
 /// unbounded operation.
 pub const MAX_HISTORY_ENTRIES: usize = 10_000;
-/// A profile is user-controlled input.  Refuse a corrupt or hostile history
-/// file before handing it to JSON parsing, which otherwise has to allocate a
-/// complete value tree first.
-pub const MAX_HISTORY_FILE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_HISTORY_URL_BYTES: usize = 8 * 1024;
 pub const MAX_HISTORY_TITLE_BYTES: usize = 4 * 1024;
 
@@ -233,105 +224,8 @@ impl History {
             .collect()
     }
 
-    // --- Persistence ----------------------------------------------------
-
-    /// Load history from the on-disk JSON file, or an empty history when
-    /// the file is missing or unreadable/corrupt (never fails — a broken
-    /// history file must not stop the browser from starting).
-    pub fn load() -> History {
-        let Some(path) = history_path() else {
-            return History::new();
-        };
-        match std::fs::metadata(&path) {
-            Ok(metadata) if metadata.len() > MAX_HISTORY_FILE_BYTES as u64 => History::new(),
-            Err(_) => History::new(),
-            Ok(_) => match std::fs::read_to_string(&path) {
-                Ok(text) => History::from_json_str(&text),
-                Err(_) => History::new(),
-            },
-        }
-    }
-
-    /// Persist history to the JSON file, creating the parent directory if
-    /// needed. Returns an error only on genuine IO failure.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the platform exposes no data directory, if the
-    /// parent directory can't be created, or if the write itself fails.
-    pub fn save(&self) -> std::io::Result<()> {
-        let path = history_path().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "no data directory available for browser history",
-            )
-        })?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, self.to_json_string())
-    }
-
-    /// Serialise the history to a pretty JSON array string. Pure — no IO,
-    /// so the round-trip is unit-testable.
-    pub fn to_json_string(&self) -> String {
-        let arr: Vec<serde_json::Value> = self
-            .entries
-            .iter()
-            .map(|e| {
-                serde_json::json!({
-                    "url": e.url,
-                    "title": e.title,
-                    "last_visit": e.last_visit,
-                    "visit_count": e.visit_count,
-                })
-            })
-            .collect();
-        serde_json::to_string_pretty(&serde_json::Value::Array(arr))
-            .unwrap_or_else(|_| "[]".to_string())
-    }
-
-    /// Parse a history from a JSON array string. Unknown/partial rows are
-    /// tolerated (missing fields default; rows without a URL are skipped)
-    /// and any parse failure yields an empty history.
-    pub fn from_json_str(text: &str) -> History {
-        let mut entries = Vec::new();
-        if text.len() > MAX_HISTORY_FILE_BYTES {
-            return History::new();
-        }
-        if let Ok(serde_json::Value::Array(items)) = serde_json::from_str::<serde_json::Value>(text)
-        {
-            for item in items {
-                let url = item
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim();
-                if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
-                    continue;
-                }
-                let title = item
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .map_or_else(String::new, |title| {
-                        bounded_text(title, MAX_HISTORY_TITLE_BYTES)
-                    });
-                let last_visit = item
-                    .get("last_visit")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0);
-                let visit_count = item
-                    .get("visit_count")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(0) as u32;
-                entries.push(HistoryEntry {
-                    url: url.to_string(),
-                    title,
-                    last_visit,
-                    visit_count,
-                });
-            }
-        }
+    /// The history of `entries`, as the person's record holds them.
+    pub(crate) fn from_entries(entries: Vec<HistoryEntry>) -> History {
         let mut history = History {
             entries,
             ..History::new()
@@ -370,14 +264,6 @@ fn bounded_text(value: &str, limit: usize) -> String {
     value.get(..end).unwrap_or_default().to_string()
 }
 
-/// Absolute path to the history file:
-/// `tilo_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
-/// exposes no data directory. The legacy directory remains the canonical
-/// default until storage migration is explicit and crash-safe.
-pub fn history_path() -> Option<PathBuf> {
-    crate::storage::data_dir().map(|d| d.join("history.json"))
-}
-
 /// Recency weight in `[0, 1]`: `1.0` for a page visited *now*, halving
 /// every [`RECENCY_HALF_LIFE_SECS`]. `now` before `last_visit` (clock
 /// skew) clamps to `1.0`.
@@ -392,6 +278,190 @@ fn recency_score(last_visit: u64, now: u64) -> f64 {
 fn frequency_score(visit_count: u32) -> f64 {
     let n = f64::from(visit_count.max(1));
     1.0 - 1.0 / (1.0 + n)
+}
+
+/// The visits the address suggestions show in a screenshot.
+pub(crate) fn sample_entries() -> Vec<HistoryEntry> {
+    vec![
+        HistoryEntry {
+            url: "https://github.com/tilo/tilo".into(),
+            title: "Tilo on code.tilo.so".into(),
+            last_visit: 3,
+            visit_count: 12,
+        },
+        HistoryEntry {
+            url: "https://en.wikipedia.org/wiki/Web_browser".into(),
+            title: "Web browser - Wikipedia".into(),
+            last_visit: 2,
+            visit_count: 5,
+        },
+        HistoryEntry {
+            url: "https://duckduckgo.com/?q=rust".into(),
+            title: "rust at DuckDuckGo".into(),
+            last_visit: 1,
+            visit_count: 3,
+        },
+    ]
+}
+
+/// The person's browsing history as a resource of their own room: each
+/// visited page, keyed by URL, with its title, last visit and visit count.
+pub struct BrowsingHistory;
+
+/// The edits of [`BrowsingHistory`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum HistoryAction {
+    /// A page finished loading at `at` (Unix seconds).
+    Visit { url: String, title: String, at: u64 },
+    /// Forget one page.
+    Forget { url: String },
+    /// Forget every page.
+    Clear,
+}
+
+/// The map of visits at the record's root, keyed by URL.
+const VISITS: &str = "visits";
+const VISIT_TITLE: &str = "title";
+const VISIT_LAST: &str = "last";
+const VISIT_COUNT: &str = "count";
+
+fn visits(doc: &tilo_actions::Doc) -> Option<automerge::ObjId> {
+    use automerge::ReadDoc;
+    match doc.get(&automerge::ROOT, VISITS).ok().flatten() {
+        Some((automerge::Value::Object(automerge::ObjType::Map), id)) => Some(id),
+        _ => None,
+    }
+}
+
+fn read_visit(
+    doc: &tilo_actions::Doc,
+    visits: &automerge::ObjId,
+    url: &str,
+) -> Option<HistoryEntry> {
+    use automerge::ReadDoc;
+    let Some((automerge::Value::Object(automerge::ObjType::Map), visit)) =
+        doc.get(visits, url).ok().flatten()
+    else {
+        return None;
+    };
+    let scalar = |key: &str| {
+        doc.get(&visit, key)
+            .ok()
+            .flatten()
+            .and_then(|(value, _)| value.into_scalar().ok())
+    };
+    Some(HistoryEntry {
+        url: url.to_owned(),
+        title: scalar(VISIT_TITLE)
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .unwrap_or_default(),
+        last_visit: scalar(VISIT_LAST)
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+        visit_count: scalar(VISIT_COUNT)
+            .and_then(|value| value.as_u64())
+            .map_or(0, |count| u32::try_from(count).unwrap_or(u32::MAX)),
+    })
+}
+
+fn read_visits(doc: &tilo_actions::Doc) -> Vec<HistoryEntry> {
+    use automerge::ReadDoc;
+    let Some(visits) = visits(doc) else {
+        return Vec::new();
+    };
+    doc.keys(&visits)
+        .filter_map(|url| read_visit(doc, &visits, &url))
+        .collect()
+}
+
+impl tilo_actions::Action for HistoryAction {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        use automerge::transaction::Transactable;
+        match self {
+            Self::Visit { url, title, at } => {
+                let url = url.trim();
+                if url.is_empty() || url.len() > MAX_HISTORY_URL_BYTES {
+                    return Err(tilo_actions::ActionError::Refused(
+                        "a visit names one page's URL".into(),
+                    ));
+                }
+                let visits = match visits(doc) {
+                    Some(visits) => visits,
+                    None => doc.put_object(automerge::ROOT, VISITS, automerge::ObjType::Map)?,
+                };
+                let previous = read_visit(doc, &visits, url);
+                let title = bounded_text(title, MAX_HISTORY_TITLE_BYTES);
+                let visit = match &previous {
+                    Some(_) => match automerge::ReadDoc::get(doc, &visits, url)? {
+                        Some((_, visit)) => visit,
+                        None => doc.put_object(&visits, url, automerge::ObjType::Map)?,
+                    },
+                    None => doc.put_object(&visits, url, automerge::ObjType::Map)?,
+                };
+                if previous.is_none() || !title.trim().is_empty() {
+                    doc.put(&visit, VISIT_TITLE, title)?;
+                }
+                let last = previous.as_ref().map_or(0, |entry| entry.last_visit);
+                doc.put(&visit, VISIT_LAST, (*at).max(last))?;
+                let count = previous.as_ref().map_or(0, |entry| entry.visit_count);
+                doc.put(&visit, VISIT_COUNT, u64::from(count.saturating_add(1)))?;
+                // Keep the most useful pages; the rest fall off.
+                let kept = History::from_entries(read_visits(doc));
+                if kept.len() < automerge::ReadDoc::length(doc, &visits) {
+                    let keep: std::collections::BTreeSet<&str> = kept
+                        .entries()
+                        .iter()
+                        .map(|entry| entry.url.as_str())
+                        .collect();
+                    let drop: Vec<String> = automerge::ReadDoc::keys(doc, &visits)
+                        .filter(|url| !keep.contains(url.as_str()))
+                        .collect();
+                    for url in drop {
+                        doc.delete(&visits, url)?;
+                    }
+                }
+            }
+            Self::Forget { url } => {
+                if let Some(visits) = visits(doc)
+                    && automerge::ReadDoc::get(doc, &visits, url.as_str())?.is_some()
+                {
+                    doc.delete(&visits, url.as_str())?;
+                }
+            }
+            Self::Clear => {
+                if visits(doc).is_some() {
+                    doc.delete(automerge::ROOT, VISITS)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn locus(&self) -> tilo_actions::ExecutionLocus {
+        tilo_actions::ExecutionLocus::ClientLocal
+    }
+
+    /// Recording a visit is the browser keeping its history, not an edit of
+    /// the person's to take back; forgetting is theirs.
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            Self::Visit { .. } => tilo_actions::ChangeKind::Housekeeping,
+            Self::Forget { .. } | Self::Clear => tilo_actions::ChangeKind::Content,
+        }
+    }
+}
+
+impl ui::tilo_resource::Resource for BrowsingHistory {
+    const KIND: &'static str = "browser.browsing-history";
+    const LABEL: &'static str = "Browsing history";
+    const ACTION_TYPE: &'static str = "browser.history.action";
+
+    type State = History;
+    type Action = HistoryAction;
+
+    fn read(doc: &ui::tilo_resource::Doc) -> Result<History, ui::tilo_resource::ModelError> {
+        Ok(History::from_entries(read_visits(doc)))
+    }
 }
 
 #[cfg(test)]
@@ -598,70 +668,82 @@ mod tests {
         assert_eq!(out.len(), 3, "the result is capped at the limit");
     }
 
-    /// JSON persistence, garbage tolerance, bounds and data root.
+    /// The person's record keeps one row per page, merges devices by page
+    /// and refuses what a visit cannot name.
     #[test]
-    fn history_persistence_round_trips_and_bounds_hostile_rows() {
-        // Phase `json_round_trips`.
-        {
-            let mut h = History::new();
-            h.record_at("https://a.test", "Alpha", 111);
-            h.record_at("https://b.test", "Beta", 222);
-            h.record_at("https://a.test", "Alpha", 333); // count=2
-            let text = h.to_json_string();
-            let back = History::from_json_str(&text);
-            assert_eq!(back, h, "history survives a JSON round-trip intact");
-        }
+    fn browsing_history_record_counts_visits_and_merges_devices() {
+        use ui::tilo_resource::Replica;
+        let visit = |url: &str, title: &str, at: u64| HistoryAction::Visit {
+            url: url.into(),
+            title: title.into(),
+            at,
+        };
+        let mut laptop = Replica::<BrowsingHistory>::new();
+        laptop
+            .apply_action(&visit("https://a.test", "Alpha", 111), "Visit")
+            .unwrap();
+        laptop
+            .apply_action(&visit("https://b.test", "Beta", 222), "Visit")
+            .unwrap();
+        laptop
+            .apply_action(&visit("https://a.test", "", 333), "Visit")
+            .unwrap();
+        let history = laptop.state().unwrap();
+        assert_eq!(history.len(), 2);
+        let alpha = history
+            .entries()
+            .iter()
+            .find(|entry| entry.url == "https://a.test")
+            .unwrap();
+        assert_eq!((alpha.visit_count, alpha.last_visit), (2, 333));
+        assert_eq!(alpha.title, "Alpha", "a blank title keeps the known one");
 
-        // Phase `from_json_skips_rows_without_url_and_tolerates_garbage`.
-        {
-            let json = r#"[
-                {"url":"https://ok.test","title":"OK","last_visit":5,"visit_count":2},
-                {"title":"no url"},
-                {"url":"https://partial.test"}
-            ]"#;
-            let h = History::from_json_str(json);
-            assert_eq!(h.len(), 2, "the URL-less row is skipped, partials default");
-            let partial = h
+        let long_title = "t".repeat(MAX_HISTORY_TITLE_BYTES + 64);
+        laptop
+            .apply_action(&visit("https://kept.test", &long_title, 1), "Visit")
+            .unwrap();
+        let too_long_url = format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
+        assert!(
+            laptop
+                .apply_action(&visit(&too_long_url, "ignored", 1), "Visit")
+                .is_err()
+        );
+        let history = laptop.state().unwrap();
+        assert_eq!(
+            history
                 .entries()
                 .iter()
-                .find(|e| e.url == "https://partial.test")
-                .unwrap();
-            assert_eq!(
-                partial.visit_count, 0,
-                "missing numeric fields default to 0"
-            );
-            assert_eq!(partial.title, "", "missing title defaults to empty");
-        }
+                .find(|entry| entry.url == "https://kept.test")
+                .unwrap()
+                .title
+                .len(),
+            MAX_HISTORY_TITLE_BYTES
+        );
 
-        // Phase `from_json_garbage_is_empty`.
-        {
-            assert!(History::from_json_str("not json at all").is_empty());
-            assert!(History::from_json_str("{\"not\":\"an array\"}").is_empty());
-        }
+        let mut phone = Replica::<BrowsingHistory>::from_doc(laptop.doc().clone().fork());
+        phone
+            .apply_action(&visit("https://c.test", "Gamma", 444), "Visit")
+            .unwrap();
+        laptop
+            .apply_action(
+                &HistoryAction::Forget {
+                    url: "https://b.test".into(),
+                },
+                "Forget",
+            )
+            .unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(laptop.doc_mut(), phone.doc_mut()).unwrap();
+        let urls: Vec<String> = laptop
+            .state()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| entry.url.clone())
+            .collect();
+        assert!(urls.contains(&"https://c.test".to_string()));
+        assert!(!urls.contains(&"https://b.test".to_string()));
 
-        // Phase `hostile_history_rows_are_bounded_before_search_can_materialize_them`.
-        {
-            let too_long_url =
-                format!("https://example.test/{}", "x".repeat(MAX_HISTORY_URL_BYTES));
-            let json = serde_json::json!([
-                { "url": too_long_url, "title": "ignored" },
-                {
-                    "url": "https://kept.example.test",
-                    "title": "t".repeat(MAX_HISTORY_TITLE_BYTES + 64),
-                }
-            ]);
-            let history = History::from_json_str(&json.to_string());
-            assert_eq!(history.len(), 1);
-            assert_eq!(history.entries()[0].title.len(), MAX_HISTORY_TITLE_BYTES);
-            assert!(History::from_json_str(&" ".repeat(MAX_HISTORY_FILE_BYTES + 1)).is_empty());
-        }
-
-        // Phase `history_path_preserves_the_existing_browser_data_root`.
-        {
-            // Only assert the tail so the test is host-agnostic.
-            if let Some(p) = history_path() {
-                assert!(p.ends_with("tilo-browser/history.json"), "path was {p:?}");
-            }
-        }
+        laptop.apply_action(&HistoryAction::Clear, "Clear").unwrap();
+        assert!(laptop.state().unwrap().is_empty());
     }
 }

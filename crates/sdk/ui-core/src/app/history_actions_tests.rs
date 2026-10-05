@@ -12,7 +12,7 @@ use super::history_actions::{CLOSE, COMPARE, LIST, OPEN, RESOURCE, RESTORE, VIEW
 fn document(values: &[&str]) -> App {
     let mut app = App::new_with_controlled_inputs(
         crate::State::new(),
-        Box::new(crate::widget::Button::new("document", "Document", None)),
+        Box::new(crate::widget::Button::new("document", "Document")),
     );
     for value in values {
         commit_title(&mut app, value);

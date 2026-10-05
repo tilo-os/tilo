@@ -1217,7 +1217,10 @@ impl AppHandler {
                 }
                 crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
-                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop => {}
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
+                | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
+                    ..
+                } => {}
             }
         }
         changed
@@ -1447,7 +1450,7 @@ impl AppHandler {
             &mut crate::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &app.input.modifiers,
-                state: &mut app.state.doc,
+                state: crate::widget::Edits::lend(&mut app.state.doc),
                 path: &app.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1661,7 +1664,7 @@ impl AppHandler {
         // record, sync against that record's document, not the
         // outgoing one's.
         mark_first_frame("first-frame-record-start");
-        let record_changed = app.record_tick();
+        let record_changed = app.swap_requested_component() | app.record_tick();
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
         // A different record is a different document under the same tree.
@@ -1821,38 +1824,18 @@ impl AppHandler {
             })
             .unwrap_or_default()
         };
-        let native_targets = visible_interactions
-            .iter()
-            .filter_map(|interaction| {
-                crate::action_locus::interaction_bounds(app.semantic_tree(), &bindings, interaction)
-                    .map(|bounds| (interaction.clone(), bounds))
-            })
-            .collect::<Vec<_>>();
-        for (interaction, rect) in native_targets {
-            let user = crate::permissions::UserId(interaction.actor.id);
-            let label = app.presence_ctx.display_name(&user);
-            app.presence_ctx.draw_peer_outline_labeled(
-                &mut crate::paint::PaintCtx::new(
-                    &mut scene,
-                    transform,
-                    &mut app.text_renderer,
-                    &app.theme,
-                ),
-                &user,
-                &label,
-                rect,
-                f64::from(app.theme.tokens.radii.sm),
-            );
-        }
-        // Action/resource callers have no synthetic pointer. Their truthful
-        // semantic lifecycle is painted as an app-level activity rail until a
-        // domain widget projects the stable anchor into native geometry.
-        app.presence_ctx.draw_interactions(
-            &mut scene,
-            transform,
+        crate::action_locus::draw_action_presence(
+            &mut crate::paint::PaintCtx::new(
+                &mut scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+            ),
+            &mut app.presence_ctx,
+            &app.accessibility.semantic_tree,
+            &bindings,
             window_rect,
-            &mut app.text_renderer,
-            &app.theme,
+            app.window.app_id.as_deref().unwrap_or("native-primary"),
             interaction_now,
         );
 
@@ -2093,555 +2076,11 @@ impl AppHandler {
         }
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "input routing shares mutable state and must retain fixed precedence"
-    )]
     /// Whether something consumed the event.
     fn handle_other_window_event(&mut self, window: &Arc<Window>, other: WindowEvent) -> bool {
-        let _entry = self.app.enter_wake_scope();
-        let event = other;
-        if self.app.close_handle_event(&event, window.scale_factor()) {
-            window.request_redraw();
-            return true;
-        }
-        let app = &mut self.app;
-        let history_input = app.history_controls_event(&event, window.scale_factor());
-        let _history_frame = crate::history_mode::frame::FrameworkInputFrame::new(
-            &app.framework_input,
-            history_input,
-        );
-        let detected_interaction = if self.dispatching_touch_pointer {
-            None
-        } else {
-            match &event {
-                WindowEvent::Touch(_) => Some(app.input.interaction.with_touch_modality()),
-                WindowEvent::CursorMoved { .. }
-                | WindowEvent::MouseInput { .. }
-                | WindowEvent::MouseWheel { .. } => {
-                    Some(app.input.interaction.with_pointer_modality())
-                }
-                WindowEvent::KeyboardInput {
-                    event:
-                        winit::event::KeyEvent {
-                            state: ElementState::Pressed,
-                            ..
-                        },
-                    ..
-                } => Some(app.input.interaction.with_keyboard_modality()),
-                _ => None,
-            }
-        };
-        if let Some(environment) = detected_interaction {
-            app.set_interaction_environment(environment);
-        }
-        if history_input {
-            app.dispatch_framework_history_event(&event, window.scale_factor());
-            window.request_redraw();
-            return true;
-        }
-        let __prof_input = app.profiler.as_ref().map(|_| crate::time::now());
-        // RUST_LOG=tilo_ui::app=debug: pointer-move spam is intentionally
-        // not throttled here — when the bug is "no clicks work", you
-        // want to see whether moves arrive at all.
-        match &event {
-            WindowEvent::MouseInput { state, button, .. } => {
-                tracing::debug!(?state, ?button, "App::window_event MouseInput");
-            }
-            WindowEvent::CursorMoved { position, .. } => {
-                tracing::trace!(
-                    x = position.x,
-                    y = position.y,
-                    "App::window_event CursorMoved"
-                );
-            }
-            WindowEvent::KeyboardInput { event: ke, .. } => {
-                tracing::debug!(key = ?ke.logical_key, state = ?ke.state, "App::window_event KeyboardInput");
-            }
-            _ => {}
-        }
-        // `CursorMoved` is measured in this window's own content,
-        // never the desktop — see the `pointer_space` field.
-        if app.presence.broadcast_scope.is_some() {
-            match &event {
-                WindowEvent::CursorMoved { position, .. } => {
-                    let now = crate::time::now();
-                    if pointer_broadcast_allowed(
-                        app.presence.last_pointer_broadcast,
-                        now,
-                        Duration::from_millis(POINTER_BROADCAST_MIN_GAP_MS),
-                    ) {
-                        app.presence.last_pointer_broadcast = Some(now);
-                        let where_it_is = app.local_pointer_key();
-                        #[allow(
-                            clippy::cast_possible_truncation,
-                            reason = "presence coordinates are intentionally narrowed to f32 on the wire; identical to today's output"
-                        )]
-                        app.broadcast_presence(
-                            where_it_is,
-                            PresencePayload::Pointer {
-                                x: position.x as f32,
-                                y: position.y as f32,
-                            },
-                        );
-                    }
-                }
-                WindowEvent::CursorLeft { .. } => {
-                    let where_it_was = app.local_pointer_key();
-                    app.broadcast_presence(where_it_was, PresencePayload::Left);
-                    app.presence.last_pointer_broadcast = None;
-                }
-                _ => {}
-            }
-        }
-
-        let mut handled = false;
-        let mut history_handled = matches!(event, WindowEvent::KeyboardInput { .. })
-            && app
-                .focused_node
-                .is_some_and(|node| app.is_history_node(node));
-        let mut focus_target = None;
-        // A synthesized hover-clear may be handled by a control, but it is
-        // presentation state and must not create an empty undo boundary.
-        let mut is_undo_redo =
-            self.dispatching_touch_pointer && matches!(event, WindowEvent::CursorMoved { .. });
-        let mut floating_pointer_needs_redraw = false;
-
-        // The palette owns the keyboard while open; Ctrl+K itself is
-        // handled below, so let it through.
-        if app.actions.action_palette.is_some() {
-            let is_ctrl_k = matches!(
-                &event,
-                WindowEvent::KeyboardInput {
-                    event: winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Character(c),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                    ..
-                } if app
-                    .input
-                    .platform
-                    .command_modifier_down(app.input.modifiers.state())
-                    && crate::platform::HostShortcut::resolve(
-                        app.input.platform,
-                        c,
-                        app.input.modifiers.state().shift_key(),
-                    ) == Some(crate::platform::HostShortcut::Search)
-            );
-            if !is_ctrl_k
-                && matches!(
-                    event,
-                    WindowEvent::KeyboardInput { .. }
-                        | WindowEvent::Ime(_)
-                        | WindowEvent::CursorMoved { .. }
-                        | WindowEvent::CursorLeft { .. }
-                        | WindowEvent::MouseInput { .. }
-                        | WindowEvent::MouseWheel { .. }
-                )
-                && app.action_palette_handle_event(&event, window.scale_factor())
-            {
-                handled = true;
-            }
-        }
-
-        // Runs FIRST so it wins over Tab/arrow handling.
-        if app.handle_screen_reader_key(&event) {
-            handled = true;
-            is_undo_redo = true; // suppress an undo commit for a read cmd
-        }
-
-        let state_pre = if matches!(
-            event,
-            WindowEvent::KeyboardInput { .. }
-                | WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                }
-        ) {
-            app.focused_state_snapshot()
-        } else {
-            None
-        };
-
-        let review_pre = if matches!(event, WindowEvent::KeyboardInput { .. }) {
-            app.text_review_snapshot()
-        } else {
-            None
-        };
-
-        // Governs pointer click-through only; keyboard focus
-        // containment is the separate `traps_focus()` concern (see
-        // `keyboard_nav_allowed`).
-        let modal_rect = app.root_widget.modal_capture();
-
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            app.debug_mode = !app.debug_mode;
-            handled = true;
-        }
-
-        if !handled
-            && app
-                .input
-                .platform
-                .command_modifier_down(app.input.modifiers.state())
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Character(ref c),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let shift = app.input.modifiers.state().shift_key();
-            match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
-                Some(crate::platform::HostShortcut::Undo) => {
-                    app.perform_undo_request(crate::undo::UndoRequest::Undo);
-                    is_undo_redo = true;
-                    handled = true;
-                }
-                Some(crate::platform::HostShortcut::Redo) => {
-                    app.perform_undo_request(crate::undo::UndoRequest::Redo);
-                    is_undo_redo = true;
-                    handled = true;
-                }
-                // A second press closes the palette.
-                Some(crate::platform::HostShortcut::Search) => {
-                    if app.actions.action_palette.is_some() {
-                        app.close_action_palette();
-                    } else {
-                        app.open_action_palette();
-                    }
-                    handled = true;
-                }
-                Some(crate::platform::HostShortcut::History) => {
-                    handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
-                }
-                None => {}
-            }
-            if handled {
-                window.request_redraw();
-            }
-        }
-
-        if !handled && app.handle_tab_navigation(&event, modal_rect) {
-            handled = true;
-        }
-
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(logical_key),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            let dir = match logical_key {
-                winit::keyboard::NamedKey::ArrowUp => Some(Direction::Up),
-                winit::keyboard::NamedKey::ArrowDown => Some(Direction::Down),
-                winit::keyboard::NamedKey::ArrowLeft => Some(Direction::Left),
-                winit::keyboard::NamedKey::ArrowRight => Some(Direction::Right),
-                _ => None,
-            };
-            if let (Some(d), true, true) = (
-                dir,
-                app.input.modifiers.state().alt_key(),
-                app.keyboard_nav_allowed(modal_rect),
-            ) {
-                app.navigate_focus(d);
-                handled = true;
-            }
-        }
-
-        // Two-finger swipe, edge pull or mouse side button; delivered via
-        // `on_nav_gesture`.
-        if !handled && !self.dispatching_touch_pointer {
-            use crate::gesture::GesturePhase;
-            let map_phase = |p: winit::event::TouchPhase| match p {
-                winit::event::TouchPhase::Started => GesturePhase::Begin,
-                winit::event::TouchPhase::Moved => GesturePhase::Update,
-                winit::event::TouchPhase::Ended => GesturePhase::End,
-                winit::event::TouchPhase::Cancelled => GesturePhase::Cancel,
-            };
-            let nav = match &event {
-                WindowEvent::MouseWheel { delta, phase, .. } => {
-                    let (dx, dy, precise) = match delta {
-                        winit::event::MouseScrollDelta::PixelDelta(p) => (p.x, p.y, true),
-                        winit::event::MouseScrollDelta::LineDelta(x, y) => {
-                            (f64::from(*x), f64::from(*y), false)
-                        }
-                    };
-                    app.input
-                        .nav_gestures
-                        .on_scroll(dx, dy, map_phase(*phase), precise)
-                }
-                WindowEvent::PanGesture { delta, phase, .. } => app.input.nav_gestures.on_scroll(
-                    f64::from(delta.x),
-                    f64::from(delta.y),
-                    map_phase(*phase),
-                    true,
-                ),
-                WindowEvent::MouseInput { .. } => crate::interaction::mouse_nav_direction(&event),
-                WindowEvent::Touch(t) => {
-                    let width = f64::from(window.inner_size().width);
-                    app.input.nav_gestures.on_touch(
-                        t.id,
-                        t.location.x,
-                        t.location.y,
-                        map_phase(t.phase),
-                        width,
-                    )
-                }
-                _ => None,
-            };
-            if let Some(dir) = nav {
-                let consumed =
-                    app.root_widget
-                        .on_nav_gesture(dir, &mut app.state.doc, &app.state.root);
-                if consumed {
-                    app.needs_sync = true;
-                    window.request_redraw();
-                    handled = true;
-                }
-            }
-        }
-
-        if !handled && app.layout.root_node.is_some() {
-            app.refresh_control_action_availability();
-            let scale_factor = window.scale_factor();
-            let presentation_was_floating =
-                !app.root_widget.floating_surface_presentations().is_empty();
-            let floating_pointer_event = app.primary_floating_pointer_event(&event, scale_factor);
-            let used_desktop_pointer_space = floating_pointer_event.is_some();
-            let event_for_root = floating_pointer_event.as_ref().unwrap_or(&event);
-            let was_mouse_click = matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: winit::event::ElementState::Pressed,
-                    ..
-                }
-            );
-            history_handled |= app.presentation_handle_event(
-                event_for_root,
-                scale_factor,
-                &mut handled,
-                &mut focus_target,
-            );
-            // Even a document-free interaction may switch which resources a
-            // widget presents. Invalidate once at the mutable tree boundary;
-            // all later consumers in this event/frame share the rebuilt cache.
-            app.invalidate_widget_resource_cache();
-            let presentation_is_floating =
-                !app.root_widget.floating_surface_presentations().is_empty();
-            floating_pointer_needs_redraw = matches!(event, WindowEvent::CursorMoved { .. })
-                && (used_desktop_pointer_space
-                    || presentation_was_floating != presentation_is_floating);
-            if was_mouse_click {
-                tracing::debug!(
-                    handled,
-                    needs_redraw = app.root_widget.needs_redraw(),
-                    is_layout_dirty = app.root_widget.is_layout_dirty(),
-                    "root_widget.handle_event(MouseInput Pressed) returned"
-                );
-            }
-            // A press the modal didn't consume (the dimmed backdrop)
-            // is still marked handled so it can't reach widgets
-            // behind the scrim.
-            if modal_rect.is_some()
-                && matches!(
-                    event,
-                    WindowEvent::MouseInput {
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    } | WindowEvent::MouseInput {
-                        state: winit::event::ElementState::Released,
-                        ..
-                    }
-                )
-            {
-                handled = true;
-            }
-        }
-
-        // Alt+Arrow remains host directional navigation when the focused
-        // widget leaves it unhandled. Running this after widget dispatch lets
-        // editors consume platform word/selection shortcuts first, while
-        // keeping Alt navigation ahead of the plain range-control fallback.
-        app.handle_unconsumed_directional_key(&event, modal_rect, true, &mut handled);
-
-        // If no widget consumed Enter/Space (text inputs do), activate
-        // the focused control the same way a mouse click would.
-        app.handle_unconsumed_activation_key(&event, &mut handled);
-
-        // Ctrl+T / Ctrl+W / Ctrl+Shift+T nobody consumed are the desktop's
-        // tab chords.
-        app.handle_unconsumed_tab_chord(&event, &mut handled);
-
-        // A focused range control consumes Left/Right; Up/Down and Tab
-        // still move focus. Modifiers scale the step:
-        //   plain  → one step       Shift → four steps (coarse)
-        //   Ctrl   → jump to min/max (Left = min, Right = max)
-        // Other widgets ignore the action, falling through to
-        // directional navigation below.
-        if !handled
-            && let WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        logical_key: winit::keyboard::Key::Named(named),
-                        state: winit::event::ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } = event
-        {
-            use crate::a11y::Action;
-            let ctrl = app
-                .input
-                .platform
-                .command_modifier_down(app.input.modifiers.state());
-            let shift = app.input.modifiers.state().shift_key();
-            // (action to repeat, how many times)
-            let (action, times) = match named {
-                winit::keyboard::NamedKey::ArrowLeft if ctrl => {
-                    (Some(Action::SetValue("0".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowRight if ctrl => {
-                    (Some(Action::SetValue("100".into())), 1)
-                }
-                winit::keyboard::NamedKey::ArrowLeft => {
-                    (Some(Action::Decrement), if shift { 4 } else { 1 })
-                }
-                winit::keyboard::NamedKey::ArrowRight => {
-                    (Some(Action::Increment), if shift { 4 } else { 1 })
-                }
-                _ => (None, 0),
-            };
-            if let (Some(act), Some(fid)) = (action, app.focused_node) {
-                let mut any = false;
-                for _ in 0..times {
-                    any |= app
-                        .dispatch_node(fid, |widget, doc, root| {
-                            widget.perform_action(&act, doc, root)
-                        })
-                        .unwrap_or(false);
-                }
-                if any {
-                    handled = true;
-                    app.needs_sync = true;
-                    app.layout.layout_dirty = true;
-                }
-            }
-        }
-
-        app.handle_unconsumed_directional_key(&event, modal_rect, false, &mut handled);
-
-        if app.dispatch_control_invocations() != 0 {
-            handled = true;
-            app.needs_sync = true;
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-
-        if let Some(address) = app.root_widget.take_action_palette_request()
-            && app.open_action_palette_at(&address)
-        {
-            app.layout.layout_dirty = true;
-            window.request_redraw();
-        }
-
-        app.broadcast_focus_presence();
-        app.broadcast_location_presence();
-        app.broadcast_view_presence();
-        app.publish_action_surface();
-        app.publish_continuation_metadata();
-        app.publish_playback_handoff();
-
-        if let Some(id) = focus_target {
-            app.set_focused_node(Some(id));
-            handled = true;
-        }
-
-        app.announce_state_change(state_pre);
-        app.announce_text_review(review_pre);
-
-        if handled {
-            app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
-            app.needs_sync = true;
-            // Gating every handled event on `needs_redraw()` is
-            // wrong: container widgets can mutate their own
-            // active-index state without setting a descendant leaf's
-            // `dirty` flag, so recursive `needs_redraw` misses it.
-            // Only pointer MOVES (the hot 60+ Hz stream) skip a
-            // redraw when nothing's dirty.
-            let is_pointer_move = matches!(&event, WindowEvent::CursorMoved { .. });
-            if !is_pointer_move || app.root_widget.is_layout_dirty() {
-                app.layout.layout_dirty = true;
-            }
-            if !is_pointer_move
-                || floating_pointer_needs_redraw
-                || app.root_widget.needs_redraw()
-                || app.history_needs_redraw()
-            {
-                window.request_redraw();
-            }
-        }
-
-        // Resolved on every `CursorMoved`, not just handled ones, so
-        // the shape stays correct crossing into a widget that
-        // doesn't flip its own hover.
-        if let WindowEvent::CursorMoved { position, .. } = &event {
-            let scale = window.scale_factor();
-            let logical = Point::new(position.x / scale, position.y / scale);
-            let desired = app.resolve_cursor(logical).unwrap_or(CursorIcon::Default);
-            if app.input.current_cursor != desired {
-                app.input.current_cursor = desired;
-                window.set_cursor(desired);
-            }
-            // `on_pointer` keeps the dwell running over the same
-            // region and restarts it on a new one.
-            let target = app.tooltip_target_at(logical);
-            if app
-                .input
-                .tooltip_host
-                .on_pointer(target, crate::time::now())
-            {
-                window.request_redraw();
-            }
-        }
-
-        if matches!(
-            &event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } | WindowEvent::MouseWheel { .. }
-                | WindowEvent::KeyboardInput { .. }
-                | WindowEvent::Touch(_)
-                | WindowEvent::CursorLeft { .. }
-        ) && app.input.tooltip_host.dismiss()
-        {
-            window.request_redraw();
-        }
-
-        if let (Some(start), Some(p)) = (__prof_input, app.profiler.as_mut()) {
-            p.record(crate::profiling::Pass::HandleEvent, start.elapsed());
-        }
-        handled
+        let synthesized_touch = self.dispatching_touch_pointer;
+        self.app
+            .surface_input(window.as_ref(), other, synthesized_touch)
     }
 }
 
@@ -2953,8 +2392,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             UserEvent::External(payload) => {
                 let app = &mut self.app;
-                app.root_widget
-                    .on_external_event(&payload, &mut app.state.doc, &app.state.root);
+                app.root_widget.on_external_event(
+                    &payload,
+                    &mut crate::widget::Edits::lend(&mut app.state.doc),
+                    &app.state.root,
+                );
                 app.needs_sync = true;
                 window.request_redraw();
             }
@@ -3386,6 +2828,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
         }
 
+        if self.app.open_requested_palette() {
+            request_primary_redraw();
+        }
         if self.app.pump_floating_surface_service() {
             self.app.invalidate_widget_resource_cache();
             self.app.layout.layout_dirty = true;
@@ -3450,6 +2895,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         if app.pump_collab_presence() {
             request_primary_redraw();
         }
+        if app.presence_ctx.prune_interactions(crate::time::now()) {
+            request_primary_redraw();
+        }
         if app.poll_model_invocations() {
             request_primary_redraw();
         }
@@ -3467,18 +2915,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let idle_model = app.service_idle_model();
         if idle_model.changed {
             request_primary_redraw();
-        }
-
-        if idle_model.local_commit {
-            if let Some(origin) = self.native_input_origin {
-                crate::native_scenario::log::emit_json(
-                    "tilo-native-commit-redraw",
-                    serde_json::json!({
-                        "after_cpu_frame": app.profiler.as_ref().and_then(|p| p.history().back()).map(|s| s.frame),
-                        "at_us": origin.elapsed().as_micros(),
-                    }),
-                );
-            }
         }
 
         if app.reconcile_fullscreen(&window) {
@@ -3522,9 +2958,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         app.broadcast_doc_delta();
 
-        // Flag drained by the draw handler, not here — just pump a redraw.
-        if app.root_widget.take_structure_dirty() {
-            app.layout.structure_dirty = true;
+        // Polling a view's topology can itself replace its widgets (Switch
+        // reconciles here). Retire the old node pointers before another
+        // input event can query a cursor or tooltip, even before drawing.
+        if app.forget_replaced_widgets() {
             request_primary_redraw();
         }
 
@@ -3533,6 +2970,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -3546,10 +2987,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             // `needs_sync` forced a full redraw.
             let updated = app.update_model();
             let _ = app.sync_model(true);
-            let structure = app.root_widget.take_structure_dirty();
-            if structure {
-                app.layout.structure_dirty = true;
-            }
+            let structure = app.forget_replaced_widgets();
             if present_after_deadline_sync(
                 updated || structure || app.layout.layout_dirty,
                 app.root_widget.needs_animation_frame(),
@@ -3565,6 +3003,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .next_wake_deadline()
                 .into_iter()
                 .chain(self.touch_pointer.long_press_deadline())
+                .chain(
+                    app.presence_ctx
+                        .interaction_next_wake_deadline(crate::time::now()),
+                )
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -3581,16 +3023,20 @@ impl ApplicationHandler<UserEvent> for AppHandler {
 
         // Reduced motion lets the loop go idle since animated widgets
         // already paint their resting state.
-        let needs_frame = app.root_widget.needs_animation_frame();
+        let widget_animation = app.root_widget.needs_animation_frame();
+        let needs_frame = widget_animation
+            || app
+                .presence_ctx
+                .interaction_animation_demand(crate::time::now(), &app.theme);
         let (animation_due, animation_deadline) = self.animation_schedule.poll(
             crate::time::now(),
             any_render_available && animation_pump_needed(needs_frame, app.theme.reduce_motion),
         );
         if animation_due {
-            app.needs_sync = true;
+            app.needs_sync |= widget_animation;
             // Forces `apply_layout` since an animation tick (e.g. momentum
             // fling) can reposition content without an input event.
-            app.layout.layout_dirty = true;
+            app.layout.layout_dirty |= widget_animation;
             request_primary_redraw();
             for surface in &self.floating_windows {
                 if auxiliary_redraw_allowed(surface.render.as_ref()) {
@@ -3686,7 +3132,7 @@ impl AppHandler {
             other => {
                 let handled = self.app.root_widget.handle_audience_presentation_event(
                     &other,
-                    &mut self.app.state.doc,
+                    &mut crate::widget::Edits::lend(&mut self.app.state.doc),
                     &self.app.state.root,
                 );
                 if handled {
@@ -3822,7 +3268,7 @@ impl AppHandler {
         let app = &mut self.app;
         if app.root_widget.on_nav_gesture(
             crate::gesture::NavDirection::Back,
-            &mut app.state.doc,
+            &app.state.doc,
             &app.state.root,
         ) {
             app.needs_sync = true;

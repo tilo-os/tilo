@@ -26,6 +26,19 @@ extend what is on the other side of it.
 A relay itself only runs the first two. A legacy launch on a relay is a request
 to a compute worker that advertises KVM.
 
+## The guest helper
+
+The supervisor mounts its own helper and its exact native loader dependency
+closure as individual read-only files under `/run/ush/bin` and `/run/ush/lib`.
+The host glibc loader resolves that closure before startup; missing libraries
+produce an error before a guest starts. No host library directory or tool is
+mounted, and the environment's `/usr` remains the signed image stack.
+
+The first process enters this private loader and helper directly to install
+Landlock, then executes the environment's shell. Command shims preserve their
+own names for broker dispatch and use a library path scoped to that helper
+exec. The shell and its tools receive no global `LD_LIBRARY_PATH` override.
+
 ## Images
 
 An image is a **tapp package** — signed, BLAKE3-addressed, distributed by the

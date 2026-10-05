@@ -19,6 +19,14 @@ pub enum FlatpakAction {
     Remove,
 }
 
+/// Host Flatpak availability and machine-readable installation/remote rows.
+#[derive(Clone, Debug, Default)]
+pub struct FlatpakStatus {
+    pub available: bool,
+    pub installed: String,
+    pub remotes: String,
+}
+
 pub struct BlockingClient {
     runtime: tokio::runtime::Runtime,
     local: tokio::task::LocalSet,
@@ -85,6 +93,35 @@ impl BlockingClient {
             .get_id()
             .map_err(|e| e.to_string())?;
         parse_id(bytes)
+    }
+
+    /// Install the exact signed catalogue offer through the shared installer.
+    ///
+    /// # Errors
+    /// Returns why the selected offer, runtime or installation was refused.
+    pub fn install_offer(
+        &self,
+        registry: &str,
+        expected: &InstallExpectation,
+    ) -> Result<PackageId, String> {
+        let mut request = self.client.install_offer_request();
+        {
+            let mut params = request.get();
+            params.set_registry(registry);
+            params.set_app_id(&expected.app_id);
+            params.set_version(&expected.version);
+            params.set_expected_root(expected.package_root.as_bytes());
+            params.set_expected_publisher(&expected.publisher);
+            params.set_expected_size_bytes(expected.size_bytes);
+        }
+        let response = self.wait(request.send().promise)?;
+        parse_id(
+            response
+                .get()
+                .map_err(|error| error.to_string())?
+                .get_id()
+                .map_err(|error| error.to_string())?,
+        )
     }
 
     /// List the packages the host service can launch: the user's, and the
@@ -240,6 +277,20 @@ impl BlockingClient {
                 .map_err(|e| e.to_string())?
                 .get_json(),
         )
+    }
+
+    /// Read the host's Flatpak state without executing tools in the app sandbox.
+    ///
+    /// # Errors
+    /// Returns an error if the service cannot observe its host installation.
+    pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
+        let response = self.wait(self.client.flatpak_status_request().send().promise)?;
+        let result = response.get().map_err(|e| e.to_string())?;
+        Ok(FlatpakStatus {
+            available: result.get_available(),
+            installed: text_result(result.get_installed())?,
+            remotes: text_result(result.get_remotes())?,
+        })
     }
 
     /// Add or remove a user Flatpak remote through the host service.

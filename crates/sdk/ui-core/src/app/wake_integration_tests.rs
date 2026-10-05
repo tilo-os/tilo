@@ -41,7 +41,7 @@ impl Drop for CaptureRoot {
 impl Widget for CaptureRoot {
     crate::provides!(dyn crate::view::capability::ViewState);
 
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         self.capture("sync");
     }
 

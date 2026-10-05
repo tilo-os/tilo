@@ -85,6 +85,7 @@ fn invoke_request(
 ) -> Result<InvokeRequest> {
     let field = |name: &'static str| request.get(name).ok_or_else(|| format!("missing {name}"));
     Ok(InvokeRequest {
+        on_behalf_of: None,
         invocation,
         target: RemoteActionTarget {
             provider: field("peer")?.as_u64().ok_or("missing peer")?.to_string(),

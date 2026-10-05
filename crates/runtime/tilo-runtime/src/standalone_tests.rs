@@ -82,6 +82,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
     let other = owner.clone().in_new_execution();
     let id = tilo_actions::InvocationId::new();
     let request = InvokeRequest {
+        on_behalf_of: None,
         invocation: id,
         target: RemoteActionTarget {
             provider: "7".into(),

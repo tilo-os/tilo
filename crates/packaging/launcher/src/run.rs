@@ -767,6 +767,34 @@ fn resolve_app_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<Path
     })
 }
 
+/// Resolve/create the directory the person's own records of this app are
+/// kept in: one for every room it is launched into.
+fn resolve_person_dir(manifest: &MinimalManifest, opts: &RunOptions) -> Result<PathBuf, RunError> {
+    let data_home = opts
+        .data_home
+        .clone()
+        .or_else(crate::appdir::host_data_home)
+        .ok_or_else(|| RunError::NoDataHome(manifest.package_id.clone()))?;
+    crate::appdir::prepare_host_person_dir(&data_home, &manifest.package_id).map_err(|source| {
+        RunError::AppDir {
+            package: manifest.package_id.clone(),
+            path: crate::appdir::host_person_dir(&data_home, &manifest.package_id),
+            source,
+        }
+    })
+}
+
+/// The room's app directory and the person directory a launch binds.
+fn resolve_launch_dirs(
+    manifest: &MinimalManifest,
+    opts: &RunOptions,
+) -> Result<(PathBuf, PathBuf), RunError> {
+    Ok((
+        resolve_app_dir(manifest, opts)?,
+        resolve_person_dir(manifest, opts)?,
+    ))
+}
+
 /// The identity store whose records a launch requires in provisioned form,
 /// if any: the named store, or
 /// the user's store for [`IdentitySource::UserStore`] and
@@ -1630,10 +1658,12 @@ fn splice_tool_context(argv: &mut Vec<String>) -> Result<(), RunError> {
 fn splice_app_dir(
     argv: &mut Vec<String>,
     app_dir: &Path,
+    person_dir: &Path,
     capabilities: &CapabilityPlan,
 ) -> Result<(), RunError> {
     let entry = pop_entry(argv)?;
     crate::appdir::push_app_dir(argv, app_dir);
+    crate::appdir::push_person_dir(argv, person_dir);
     // After `push_app_dir` (which repoints `HOME`): this says where the
     // *user's* home is, only when a grant actually bound it.
     if let Some(user_home) = crate::sandbox::push_user_home(argv, capabilities) {
@@ -1882,6 +1912,9 @@ fn splice_sandbox_shim(
     // isn't reachable from inside, so a rule on it would match nothing.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_APP_DIR.to_string());
+    // And the person's records of it, bound the same way.
+    argv.push("--rw".to_string());
+    argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
     // The GPU device nodes the profile bound — same O_RDWR reasoning
     // as above.
     for path in crate::profile::landlock_rw_device_paths() {
@@ -2050,7 +2083,10 @@ fn spawn_and_wait(
     // Landlock plan: derived here so we can log it from the parent.
     let landlock_plan = crate::landlock::plan_from_paths(
         &crate::profile::landlock_ro_paths(egress.shares_host_network()),
-        &[PathBuf::from(crate::appdir::SANDBOX_APP_DIR)],
+        &[
+            PathBuf::from(crate::appdir::SANDBOX_APP_DIR),
+            PathBuf::from(crate::appdir::SANDBOX_PERSON_DIR),
+        ],
     );
     let net_restricted = matches!(egress, crate::netgate::EgressDecision::Blocked);
     // The shim enforces Landlock via opts.landlock_enforce (argv splice
@@ -2457,14 +2493,17 @@ fn run_with_context(
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
-    let app_dir = if let Some((services, _)) = enrolled.as_ref() {
-        crate::appdir::prepare_host_app_dir(
-            services.data_home(),
-            Some(&services.binding().room),
-            &services.binding().app,
-        )?
+    let (app_dir, person_dir) = if let Some((services, _)) = enrolled.as_ref() {
+        (
+            crate::appdir::prepare_host_app_dir(
+                services.data_home(),
+                Some(&services.binding().room),
+                &services.binding().app,
+            )?,
+            crate::appdir::prepare_host_person_dir(services.data_home(), &services.binding().app)?,
+        )
     } else {
-        resolve_app_dir(manifest, opts)?
+        resolve_launch_dirs(manifest, opts)?
     };
 
     // The user's capability decision. Empty unless the compositor wrote a
@@ -2525,7 +2564,7 @@ fn run_with_context(
     if enrolled.is_none() {
         splice_tool_context(&mut argv)?;
     }
-    splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    splice_app_dir(&mut argv, &app_dir, &person_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
@@ -3117,8 +3156,8 @@ fn run_with_capture_spawn<T>(
     splice_tool_context(&mut argv)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
     splice_workspace_id_bind(&mut argv, opts)?;
-    let app_dir = resolve_app_dir(manifest, opts)?;
-    splice_app_dir(&mut argv, &app_dir, &capabilities)?;
+    let (app_dir, person_dir) = resolve_launch_dirs(manifest, opts)?;
+    splice_app_dir(&mut argv, &app_dir, &person_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
     let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
@@ -3855,6 +3894,23 @@ mod app_dir_tests {
                     "{dir:?} is outside the rooms tree"
                 );
             }
+        }
+        // Phase `the_persons_records_are_one_directory_for_every_room`.
+        // The person's own records are the same records whichever room the
+        // app is opened in, and in none of the rooms' directories.
+        {
+            let data = tempfile::tempdir().expect("tempdir");
+            let m = manifest("so.tilo.fixture");
+            let a = resolve_person_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room a");
+            let personal = resolve_person_dir(&m, &opts_at(data.path(), None)).expect("personal");
+            assert!(a.is_dir());
+            assert_eq!(a, personal);
+            assert!(a.starts_with(data.path().join("tilo-person")));
+            let room = resolve_app_dir(&m, &opts_at(data.path(), Some("room-a"))).expect("room");
+            assert!(!a.starts_with(&room) && !room.starts_with(&a));
+            let other = resolve_person_dir(&manifest("so.tilo.other"), &opts_at(data.path(), None))
+                .expect("another app");
+            assert_ne!(a, other, "an app keeps only its own records of the person");
         }
         // Phase `a_declared_write_path_is_never_created`.
         // A package cannot make the launcher create a directory it named: the

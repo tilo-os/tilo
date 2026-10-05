@@ -38,12 +38,12 @@ impl Widget for Page {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![self.0.as_mut()]
     }
-    fn sync(&mut self, state: &mut tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
         self.0.sync(state, path);
     }
     fn update(
         &mut self,
-        state: &mut tilo_ui::widget::AppModel,
+        state: &tilo_ui::widget::AppModel,
         path: &tilo_ui::widget::ModelPath,
     ) -> bool {
         self.0.update(state, path)
@@ -136,17 +136,9 @@ fn create(
     target: LaunchTarget,
     _: RestoreInput,
 ) -> Result<AppComponent, LaunchError> {
-    use automerge::transaction::Transactable as _;
     if matches!(target, LaunchTarget::New) {
         context
-            .initialize_new_record(|doc| {
-                let title = doc
-                    .put_object(automerge::ROOT, "title", automerge::ObjType::Text)
-                    .map_err(|e| e.to_string())?;
-                doc.splice_text(&title, 0, 0, "Hello")
-                    .map_err(|e| e.to_string())?;
-                Ok(())
-            })
+            .initialize_new_record(|_| Ok(()))
             .map_err(LaunchError::Record)?;
     }
     let root = UiDocument::new(UiNode::Column {
@@ -166,7 +158,7 @@ fn create(
                 accessible_name: String::new(),
                 placeholder: "Untitled".into(),
                 value_path: Some("title".into()),
-                initial_value: String::new(),
+                initial_value: "Hello".into(),
                 multiline: false,
                 disabled: false,
             },
@@ -237,21 +229,9 @@ fn a_pointer_press_focuses_a_components_text_input_and_ime_commits_edit_it() {
     frame.send_host_event(&WindowEvent::Ime(Ime::Enabled));
     frame.send_host_event(&WindowEvent::Ime(Ime::Commit(" world".into())));
     assert!(title(&frame).contains("Hello world"), "{}", title(&frame));
-    let (key, payload) = frame
-        .focus_presence()
-        .expect("the focused input publishes its caret");
-    assert_eq!(
-        key,
-        tilo_ui::presence::PresenceKey::Widget {
-            path: vec![tilo_ui::presence::PathSegment::Field("title".into())]
-        }
-    );
-    assert_eq!(
-        payload,
-        tilo_ui::collaboration::PresencePayload::Caret {
-            pos: "Hello world".len()
-        }
-    );
+    // What a graph input types is this window's own view state, not a
+    // shared field: there is no peer to show its caret to.
+    assert!(frame.focus_presence().is_none());
 }
 
 #[test]
@@ -299,7 +279,7 @@ fn locus_component_with_scroll(
             .initialize_new_record(|_| Ok(()))
             .map_err(LaunchError::Record)?;
     }
-    let mut resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit", false);
+    let mut resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");
     resource.actions[0].contract.permission = tilo_actions::PermissionRequirement::None;
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
     let mut column = Column::new();
@@ -312,8 +292,7 @@ fn locus_component_with_scroll(
     }
     for index in 0..count {
         column = column.push(Box::new(
-            Button::new(&format!("locus-button-{index}"), "Exact locus", None)
-                .on_action(binding.clone()),
+            Button::new(&format!("locus-button-{index}"), "Exact locus").on_action(binding.clone()),
         ));
     }
     let scroll_root: tilo_ui::widget::Element = if scroll_gap.is_some() {
@@ -484,7 +463,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
         .unwrap();
     assert!(matches!(
         invoked,
-        tilo_ui::widget::ResourceOperationStart::Completed(_)
+        tilo_ui::host_operation::ResourceOperationStart::Completed(_)
     ));
     frame.resize((320, 240)).unwrap();
     assert_eq!(
@@ -612,14 +591,16 @@ impl Widget for WithdrawableResource {
     }
     fn start_operation(
         &mut self,
-        _: &tilo_ui::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
+        _: &tilo_ui::host_operation::ResourceOperation<'_>,
+        _: &mut tilo_ui::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<tilo_ui::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(Some(tilo_ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 
@@ -649,8 +630,7 @@ fn component_publication_invocation_cannot_cross_same_instance_owners() {
         context.initialize_new_record(|_| Ok(())).unwrap();
         let published = Arc::new(AtomicBool::new(true));
         let calls = Arc::new(AtomicUsize::new(0));
-        let mut resource =
-            resource_actions::resource("locus", "Exact locus", "edit", "Edit", false);
+        let mut resource = resource_actions::resource("locus", "Exact locus", "edit", "Edit");
         resource.actions[0].contract.permission = tilo_actions::PermissionRequirement::None;
         let component = AppComponent::new(
             context,

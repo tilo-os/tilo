@@ -2419,7 +2419,7 @@ impl FullscreenProvider for VideoPlayer {
 impl Widget for VideoPlayer {
     crate::provides!(dyn crate::widget::FullscreenProvider);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.pump_engine();
     }
 
@@ -2645,7 +2645,7 @@ impl Widget for VideoPlayer {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         self.activate_semantic_target(target, action)
@@ -3298,7 +3298,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -3325,9 +3325,9 @@ mod tests {
                 url: "https://x/v.mp4".into(),
             });
             let mut vp = VideoPlayer::new().with_engine(engine);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            vp.sync(&mut doc, &root);
+            vp.sync(&doc, &root);
             assert!(
                 vp.latest_frame().is_some(),
                 "engine frame pulled into the surface"
@@ -4057,7 +4057,7 @@ mod tests {
                 &mut vp,
                 "transport.play-pause",
                 &Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(vp.is_playing());
@@ -4065,7 +4065,7 @@ mod tests {
                 &mut vp,
                 "audio.volume",
                 &Action::SetValue("25%".into()),
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!((vp.volume() - 0.25).abs() < 1e-6);

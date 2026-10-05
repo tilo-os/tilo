@@ -2,14 +2,6 @@
 
 pub(super) struct IdleModelProgress {
     pub(super) changed: bool,
-    #[cfg_attr(
-        not(feature = "native"),
-        expect(
-            dead_code,
-            reason = "only the native window runner reacts to a local commit"
-        )
-    )]
-    pub(super) local_commit: bool,
 }
 
 /// `TILO_HOST_PERF_BASELINE=1` restores the previous always-refresh hosted
@@ -70,6 +62,19 @@ impl super::App {
     /// same phases as the window runner, without adding caller attribution.
     pub(crate) fn pump_hosted_model(&mut self) {
         self.pump_hosted_model_as(host_perf_baseline());
+    }
+
+    /// Advance the ordinary dirty-tracked native worker without a window.
+    /// This never forces synchronization or layout to mask a missing wake.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn controlled_hosted_model_for_test(&mut self) -> bool {
+        self.pump_hosted_model_as(false).synced
+    }
+
+    /// Read the same state observer used around scheduled native inputs.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_native_input_snapshot_for_test(&self) -> Option<serde_json::Value> {
+        self.native_input_snapshot()
     }
 
     /// `always_refresh` is the previous behaviour: synchronize, invalidate and
@@ -214,10 +219,7 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
-        if !self
-            .root_widget
-            .update(&mut self.state.doc, &self.state.root)
-        {
+        if !self.root_widget.update(&self.state.doc, &self.state.root) {
             return false;
         }
         self.invalidate_widget_resource_cache();
@@ -230,7 +232,25 @@ impl super::App {
         if !force && !self.needs_sync {
             return false;
         }
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        // What the widgets took up since the last frame (an edit a child
+        // made on its own) is written before the document is read again.
+        self.root_widget.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        self.root_widget.sync(&self.state.doc, &self.state.root);
+        // A sync reads the document only. What it took up is written now,
+        // through actions, and shown in this same frame.
+        let before = crate::widget::settle_mark(&self.state.doc);
+        self.root_widget.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        let submitted = self.dispatch_control_invocations() != 0;
+        if settled || submitted {
+            self.root_widget.sync(&self.state.doc, &self.state.root);
+        }
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();
@@ -263,24 +283,14 @@ impl super::App {
     }
 
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
-        let mut changed = self.service_local_control_history();
-        let local_commit = crate::undo::needs_commit(self.root_widget.as_ref());
-        if local_commit {
-            self.commit_action();
-            crate::undo::on_commit(self.root_widget.as_mut());
-            self.needs_sync = true;
-            changed = true;
-        }
+        let changed = self.service_local_control_history();
         // This is local writer progress, never a durable owner receipt. The
         // existing scoped publication barrier still gates terminal success.
         #[cfg(feature = "native")]
         if let Err(error) = self.autosave_tick() {
             crate::diag!("[app] component autosave tick refused: {error:?}");
         }
-        IdleModelProgress {
-            changed,
-            local_commit,
-        }
+        IdleModelProgress { changed }
     }
 }
 

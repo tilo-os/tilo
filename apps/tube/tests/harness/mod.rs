@@ -23,6 +23,7 @@
 )]
 
 use std::collections::HashMap;
+use ui::framework::HostDelivery as _;
 
 use taffy::prelude::*;
 use ui::permissions::PermissionContext;
@@ -140,7 +141,7 @@ impl<W: Widget> Harness<W> {
     pub fn frame(&mut self) {
         self.taffy = TaffyTree::new();
         self.node_map.clear();
-        self.app.sync(&mut self.state.doc, &self.state.root);
+        self.app.sync(&self.state.doc, &self.state.root);
         let child = self
             .app
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
@@ -213,7 +214,7 @@ impl<W: Widget> Harness<W> {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &self.modifiers,
-                state: &mut self.state.doc,
+                state: ui::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -246,13 +247,10 @@ impl<W: Widget> Harness<W> {
                 tilo_actions::door::encode_json(&resources, &intent.address, &intent.arguments)
                     .expect("bound control arguments must satisfy their contract");
             self.app
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        tilo_actions::InvocationId::new(),
-                        spec.kind,
-                        &encoded.type_id,
-                        &encoded.payload,
-                    ),
+                .start_encoded(
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload,
                     &mut self.state.doc,
                     &self.state.root,
                 )
@@ -393,7 +391,7 @@ impl<W: Widget> Harness<W> {
         // the tree doesn't exist yet). In the live app the tree persists so a
         // later `sync` folds the image in; mirror that here by syncing the tree
         // that `frame` just built before we draw it.
-        self.app.sync(&mut self.state.doc, &self.state.root);
+        self.app.sync(&self.state.doc, &self.state.root);
         let (w, h) = self.viewport;
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
@@ -431,7 +429,6 @@ impl<W: Widget> Harness<W> {
 // Keyboard injection note: winit 0.30's `KeyEvent` has a `pub(crate)`
 // `platform_specific` field, so a `KeyEvent` cannot be constructed outside the
 // crate — headless tests can't synthesise key presses through `handle_event`.
-// The keyboard-triggered *toggle* (Ctrl+K / Esc) is therefore exercised via
-// `TubeApp`'s test hook, while every *pointer* interaction (tab clicks, palette
-// result activation, scrim dismissal) goes through the real `handle_event` +
-// computed-rect path here — which is the load-bearing interaction to prove.
+// Every *pointer* interaction (tab clicks, card activation, the compact search
+// button) goes through the real `handle_event` + computed-rect path here —
+// which is the load-bearing interaction to prove.

@@ -684,6 +684,7 @@ mod owner_commit_tests {
         f.state.pending_invocations.lock().unwrap().insert(
             1,
             PendingInvocation {
+                caller: None,
                 activity: None,
                 owner: key.owner.clone(),
                 network_evidence: None,
@@ -905,7 +906,7 @@ mod owner_commit_tests {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
             fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
-            fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
+            fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
         }
         let root = canonical_tempdir();
         let mut owner =
@@ -1671,6 +1672,7 @@ mod owner_commit_tests {
                 let invocation = tilo_actions::InvocationId::new();
                 let (tx, _rx) = std::sync::mpsc::channel();
                 let pending = PendingInvocation {
+                    caller: None,
                     activity: None,
                     owner: InvocationOwner::Certified {
                         root: f.owner.peer().authority().user_public_key,

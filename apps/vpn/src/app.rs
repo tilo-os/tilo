@@ -13,6 +13,7 @@ use ui::WakeHandle;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2848,7 +2849,7 @@ impl VpnApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
@@ -3114,7 +3115,7 @@ fn synth_logs(
 }
 
 impl Widget for VpnApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if self.mode.is_live() {
             self.probe_device();
             self.apply_pending_tool_intent();
@@ -3250,7 +3251,7 @@ impl Widget for VpnApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
             return;
@@ -3432,7 +3433,7 @@ impl Widget for VpnApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(
@@ -4374,7 +4375,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

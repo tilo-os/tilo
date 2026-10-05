@@ -335,7 +335,7 @@ impl<C: Widget> PopoverWidget<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverWidget<C> {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Pass through even when closed — otherwise re-opening reveals a stale frame.
         self.content.sync(state, path);
     }
@@ -703,7 +703,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -722,7 +722,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus_target,

@@ -29,7 +29,7 @@ use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -367,7 +367,7 @@ impl HexView {
     /// undo step per run of typing; an input that edited nothing ends the
     /// run, so the next one is a step of its own. A refused edit shows the
     /// resource's bytes again.
-    fn commit_edits(&mut self, doc: &mut AutoCommit) {
+    fn commit_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let edits = self.model.take_edits();
         self.dirty = true;
         let Some(dispatch) = &self.dispatch else {
@@ -384,7 +384,7 @@ impl HexView {
             {
                 if let Some(live) = &self.live {
                     let state = live.get();
-                    self.model.show_bytes(state.bytes.clone(), &self.saved);
+                    self.model.show_bytes(&state.bytes, &self.saved);
                 }
                 return;
             }
@@ -1723,7 +1723,7 @@ impl HexView {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         layout: OverlayLayoutCtx<'_>,
     ) -> bool {
@@ -1775,7 +1775,7 @@ impl HexView {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state: doc,
+                        state: doc.reborrow(),
                         path,
                         handled: &mut field_handled,
                         focus_target: layout.focus_target,
@@ -1791,7 +1791,7 @@ impl HexView {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state: doc,
+                        state: doc.reborrow(),
                         path,
                         handled: &mut field_handled,
                         focus_target: layout.focus_target,
@@ -1820,34 +1820,7 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::HEX_EDITOR_VIEW_TYPE]
-    }
-
-    /// The editor's views — the search bar, the go-to prompt — opened by
-    /// the palette, an agent or a script.
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        _doc: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        let Some(panel) = crate::actions::decode_view(request.type_id, request.payload)? else {
-            return Ok(None);
-        };
-        if !self.has_file {
-            return Err("open a file first".into());
-        }
-        self.open_panel(panel);
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            ui::tilo_actions::ActionOutput::default(),
-        )))
-    }
-
-    fn sync(&mut self, _doc: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
         // Drain a closed file chooser first, so a freshly opened buffer is
         // submitted before this frame lays out.
         self.drain_chooser();
@@ -1975,7 +1948,7 @@ impl Widget for HexView {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 OverlayLayoutCtx {
                     focus_target: ctx.focus_target,
@@ -2020,7 +1993,7 @@ impl Widget for HexView {
                     },
                 ..
             } => {
-                self.handle_key_event(ke, ctrl, shift, ctx.state, ctx.handled);
+                self.handle_key_event(ke, ctrl, shift, &mut ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -2130,7 +2103,7 @@ impl Widget for HexView {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate) && target == "hex.open" {
@@ -2172,7 +2145,7 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
             self.matches_truncated = false;
             self.match_idx = None;
         } else {
-            self.model.show_bytes(state.bytes.clone(), &self.saved);
+            self.model.show_bytes(&state.bytes, &self.saved);
             if self.search_needle.is_some() {
                 self.recompute_matches();
             }
@@ -2206,10 +2179,23 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
     }
 
     fn effect(&mut self, effect: HexEffect, cx: &mut EffectCx<HexEditor, Self>) -> EffectAnswer {
+        let panel = match effect {
+            HexEffect::Search => Some(HexPanel::Search),
+            HexEffect::GotoOffset => Some(HexPanel::GotoOffset),
+            _ => None,
+        };
+        if let Some(panel) = panel {
+            if !self.has_file {
+                return Err("open a file first".into());
+            }
+            self.open_panel(panel);
+            return Ok(Effected::done());
+        }
         if self.io.is_some() {
             return Err("another file operation is already running".into());
         }
         match effect {
+            HexEffect::Search | HexEffect::GotoOffset => Ok(Effected::done()),
             HexEffect::Open { path: Some(path) } => {
                 self.open_path(PathBuf::from(path))?;
                 Ok(Effected::done())
@@ -2244,6 +2230,8 @@ impl ResourceSurface<HexEditor, HexEffect> for HexView {
             vec![
                 EffectStatus::unavailable(HexEffect::SAVE, "no_file", "Open a file first"),
                 EffectStatus::unavailable(HexEffect::SAVE_AS, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::SEARCH, "no_file", "Open a file first"),
+                EffectStatus::unavailable(HexEffect::GOTO_OFFSET, "no_file", "Open a file first"),
             ]
         }
     }
@@ -2293,7 +2281,7 @@ impl HexView {
         ke: &winit::event::KeyEvent,
         ctrl: bool,
         shift: bool,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let key = &ke.logical_key;

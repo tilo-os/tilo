@@ -9,7 +9,7 @@
 //! toggles wrote an ephemeral CRDT key that nothing read and nothing
 //! persisted — the control looked live but its value evaporated when the
 //! window closed. This store gives them a real home on disk, exactly the
-//! way [`crate::region::RegionSettings`] persists the locale.
+//! way the locale is a section of the same document.
 //!
 //! # The file (a format contract, not a crate dependency)
 //!
@@ -54,8 +54,6 @@
 //! clobbers another pane's — or the region store's — section.
 
 use serde::{Deserialize, Serialize};
-
-use crate::region::RegionSettings;
 
 /// Remembered default audio devices, persistent transforms and which system
 /// events make a sound.
@@ -241,6 +239,12 @@ impl Default for InputPrefs {
     }
 }
 
+/// The person's pointer and keyboard choices, and this device's touchpad
+/// and tablets, read by the compositor's input layer.
+impl ui::storage::SettingsSchema for InputPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("input");
+}
+
 impl InputPrefs {
     /// Decode the input object while preserving the pre-split global scrolling
     /// preference. A missing document receives the independent touchpad and
@@ -414,6 +418,12 @@ pub struct PowerPrefs {
     pub critical_action: PowerActionPref,
 }
 
+/// This device's idle and button preferences, read by the compositor's
+/// idle layer.
+impl ui::storage::SettingsSchema for PowerPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("power");
+}
+
 impl Default for PowerPrefs {
     fn default() -> Self {
         Self {
@@ -442,6 +452,11 @@ pub struct UpdatePrefs {
     pub channel: String,
     /// Human-readable timestamp of the last successful check, or `"Never"`.
     pub last_checked: String,
+}
+
+/// This device's update preferences.
+impl ui::storage::SettingsSchema for UpdatePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("updates");
 }
 
 impl Default for UpdatePrefs {
@@ -568,6 +583,11 @@ impl Default for AppearancePrefs {
             forced_colors: false,
         }
     }
+}
+
+/// The person's look, read by the compositor and every app's toolkit.
+impl ui::storage::SettingsSchema for AppearancePrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("appearance");
 }
 
 impl AppearancePrefs {
@@ -714,6 +734,12 @@ pub struct NotificationPrefs {
 
 fn default_true() -> bool {
     true
+}
+
+/// The person's notification policy, read by the compositor's notification
+/// layer.
+impl ui::storage::SettingsSchema for NotificationPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("notifications");
 }
 
 impl Default for NotificationPrefs {
@@ -1011,6 +1037,12 @@ impl Default for AccessibilityPrefs {
     }
 }
 
+/// The person's assists, read by the compositor's input and accessibility
+/// layer.
+impl ui::storage::SettingsSchema for AccessibilityPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("accessibility");
+}
+
 impl AccessibilityPrefs {
     /// The offered bounce-keys windows as `(display label, milliseconds)`.
     pub const BOUNCE_DELAYS: &'static [(&'static str, u32)] = &[
@@ -1180,7 +1212,7 @@ impl SystemPrefs {
     /// Load from the shared settings path. Returns section defaults when the
     /// file is absent or unreadable.
     pub fn load() -> Self {
-        let Some(path) = RegionSettings::store_path() else {
+        let Some(path) = settings_store::settings_path() else {
             return Self::default();
         };
         match std::fs::read_to_string(&path) {
@@ -1198,8 +1230,8 @@ impl SystemPrefs {
     /// `XDG_CONFIG_HOME`), if the `tilo` config directory cannot be created,
     /// or if the settings file cannot be written.
     pub fn save(&self) -> std::io::Result<std::path::PathBuf> {
-        let path =
-            RegionSettings::store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
+        let path = settings_store::settings_path()
+            .ok_or_else(|| std::io::Error::other("no config dir"))?;
         settings_store::update_document_at(&path, |doc| {
             let existing = serde_json::Value::Object(std::mem::take(doc)).to_string();
             *doc = settings_store::parse(&self.to_json_merged(&existing));
@@ -1220,8 +1252,6 @@ impl SystemPrefs {
 /// so the text stack keeps its font cache instead of rebuilding it per test.
 #[cfg(test)]
 pub(crate) mod test_env {
-    use std::path::PathBuf;
-
     use crate::settings_app::SettingsApp;
 
     /// Holds the redirected environment for a test's duration.
@@ -1229,7 +1259,7 @@ pub(crate) mod test_env {
         // Field order is drop order: restore the environment before the
         // directory it points at disappears.
         _env: tilo_test_env::ScopedEnv,
-        dir: tempfile::TempDir,
+        _dir: tempfile::TempDir,
     }
 
     impl ConfigGuard {
@@ -1240,17 +1270,10 @@ pub(crate) mod test_env {
                 .expect("create test config dir");
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("XDG_CONFIG_HOME", dir.path());
-            Self { _env: env, dir }
-        }
-
-        /// The Tilo config root inside the redirected `XDG_CONFIG_HOME`.
-        pub(crate) fn config_root(&self) -> PathBuf {
-            self.dir.path().join("tilo")
-        }
-
-        /// The app over this guard's config root.
-        pub(crate) fn app(&self) -> SettingsApp {
-            SettingsApp::with_config_root(self.config_root())
+            Self {
+                _env: env,
+                _dir: dir,
+            }
         }
     }
 
@@ -1287,7 +1310,11 @@ mod tests {
     /// Every default is sensible and every owned leaf has a continuity policy.
     #[test]
     fn prefs_defaults_are_sensible_and_classified() {
-        let region = RegionSettings::default().to_json_merged("");
+        let region = serde_json::json!({
+            "locale": crate::region::Locale::default(),
+            "default_apps": crate::panes::personal_apps::DefaultApps::default(),
+        })
+        .to_string();
         let document = SystemPrefs::default().to_json_merged(&region);
         let parsed = settings_store::parse(&document);
         let missing = settings_store::continuity::unclassified_leaves(&parsed);

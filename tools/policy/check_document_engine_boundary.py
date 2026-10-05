@@ -36,6 +36,7 @@ BASELINE = Path(__file__).with_name("document_engine_baseline.toml")
 
 # Crates that own a CRDT engine or the document layer itself.
 ENGINE_OWNERS = (
+    "crates/doc/tilo-automerge/src/lib.rs",
     "crates/doc/tilo-doc/",
     "crates/doc/tilo-doc-codecs/",
     # The rich-text resource: tilo-doc's rich text as a tilo-resource resource,

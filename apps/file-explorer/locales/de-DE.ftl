@@ -452,7 +452,6 @@ files-menu-restore = Wiederherstellen
 files-menu-delete-permanently = Endgültig löschen
 files-menu-empty-trash = Papierkorb leeren
 files-menu-rename = Umbenennen
-files-action-rename-prompt = Neuer Name
 files-menu-cut = Ausschneiden
 files-menu-copy = Kopieren
 files-menu-properties = Eigenschaften…

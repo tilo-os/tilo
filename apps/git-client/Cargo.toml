@@ -23,8 +23,9 @@ hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: the client's durable view preferences (diff layout,
-# syntax highlight, whitespace, wrap) are its only shared-document state, and it
-# exports them as replayable actions the shell's Ctrl+K palette dispatches.
+# syntax highlight, whitespace, wrap), the repository the record opens and the
+# shared repository projection are document state, changed by replayable
+# actions the shell's Ctrl+K palette dispatches too.
 tilo-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
