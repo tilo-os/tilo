@@ -1,8 +1,7 @@
-//! Backups — standard Tilo application entry point.
+//! Backups — the app's entry point: the live window and the standard
+//! `--shots`, `--headless-drive` and `--native-audit` modes.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-pub fn main() {
-    ui::framework::run::<backups::BackupsShell>();
-}
+ui::main!(backups::BackupsShell);

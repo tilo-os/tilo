@@ -211,7 +211,7 @@ fn navigation_selection_loading_and_terminal_commands() {
     single_click_selects_single_entry();
     error_state_shows_message_and_retry_button();
     loading_state_shown_during_navigation();
-    open_terminal_button_spawns_quick_terminal_subprocess();
+    open_terminal_asks_the_shell_for_terminal_in_this_directory();
 }
 
 fn back_button_moves_to_parent_and_noops_at_root() {
@@ -352,38 +352,22 @@ fn sort_order_toggle_reverses_non_dir_group_but_keeps_dirs_first() {
     assert_eq!(desc_names, vec!["dir_z", "dir_a", "zeta.txt", "alpha.txt"]);
 }
 
-fn open_terminal_button_spawns_quick_terminal_subprocess() {
-    use file_explorer::files_app::CommandRunner;
-
-    #[derive(Default)]
-    struct MockRunner {
-        calls: Vec<(String, std::path::PathBuf)>,
-    }
-    impl CommandRunner for MockRunner {
-        fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), cwd.to_path_buf()));
-            Ok(())
+fn open_terminal_asks_the_shell_for_terminal_in_this_directory() {
+    let mut w = FileExplorerWidget::new();
+    let dir = std::path::PathBuf::from("/var/workspace/Projects");
+    w.navigate(dir.clone());
+    assert_eq!(
+        w.terminal_intent(),
+        runtime_portal::tools::ToolIntent::Terminal {
+            directory: Some(dir.to_string_lossy().into_owned())
         }
-        fn spawn_arg(
-            &mut self,
-            program: &str,
-            _arg: &std::path::Path,
-            cwd: &std::path::Path,
-        ) -> std::io::Result<()> {
-            self.calls.push((program.to_string(), cwd.to_path_buf()));
-            Ok(())
-        }
-        fn open_default(&mut self, _path: &std::path::Path) -> ui::portal::LaunchChannel {
-            std::sync::mpsc::channel().1
-        }
-    }
-
-    let w = FileExplorerWidget::new();
-    let mut runner = MockRunner::default();
-    w.open_terminal(&mut runner).unwrap();
-    assert_eq!(runner.calls.len(), 1);
-    assert_eq!(runner.calls[0].0, "terminal");
-    assert_eq!(runner.calls[0].1, w.current_path());
+    );
+    // A path the request cannot carry still opens Terminal, just not there.
+    w.navigate(std::path::PathBuf::from("/tmp/line\nbreak"));
+    assert_eq!(
+        w.terminal_intent(),
+        runtime_portal::tools::ToolIntent::Terminal { directory: None }
+    );
 }
 
 #[test]

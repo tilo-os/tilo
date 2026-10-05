@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use taffy::{NodeId, TaffyTree};
 use ui::framework::Dispatcher;
 use ui::icons::Icon;
@@ -744,47 +744,6 @@ impl Core {
         }
     }
 
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            actions::SnippetsOperation::OpenSnippet { id } => {
-                if self.library.get(id).is_none() {
-                    return Err("snippet no longer exists".into());
-                }
-                // Reveal it in a place that holds it.
-                if !self.visible.contains(&id) {
-                    self.select(Selection::default());
-                }
-                self.open_snippet(id);
-            }
-            actions::SnippetsOperation::RevealTag { tag } => {
-                if !self.library.tags().iter().any(|(known, _)| known == &tag) {
-                    return Err("tag no longer exists".into());
-                }
-                self.select(Selection::Tag(tag));
-                self.show_pane = Some(NavPane::Overview);
-            }
-            actions::SnippetsOperation::RevealFolder { folder } => {
-                if !self.library.folders().contains(&folder) {
-                    return Err("folder no longer exists".into());
-                }
-                self.select(Selection::Folder(folder));
-                self.show_pane = Some(NavPane::Overview);
-            }
-        }
-        Ok(true)
-    }
-
     fn update_toast(&mut self) {
         if self.toast.as_ref().is_some_and(|toast| {
             ui::clock::now().saturating_duration_since(toast.shown_at)
@@ -914,6 +873,7 @@ pub struct SnippetsApp {
     core: Shared,
     requests: Requests,
     shell: NavShell,
+    search: ui::search::SearchOpener,
     /// The column titles last handed to the shell.
     titles: (String, String),
     /// What the content column was last built for.
@@ -968,6 +928,7 @@ impl SnippetsApp {
             core,
             requests,
             shell,
+            search: ui::search::SearchOpener::new(),
             titles,
             detail,
             overview_shown: !library_empty,
@@ -1188,6 +1149,8 @@ impl ui::widget::Decorator for SnippetsApp {
     fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn ui::undo::UndoPoints>() {
             request.provide::<dyn ui::undo::UndoPoints>(self);
+        } else if request.wants::<dyn ui::widget::controls::ActionControls>() {
+            request.provide::<dyn ui::widget::controls::ActionControls>(self);
         } else {
             Widget::provide(&self.shell, request);
         }
@@ -1196,36 +1159,11 @@ impl ui::widget::Decorator for SnippetsApp {
     fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn ui::undo::UndoPoints>() {
             request.provide::<dyn ui::undo::UndoPoints>(self);
+        } else if request.wants::<dyn ui::widget::controls::ActionControls>() {
+            request.provide::<dyn ui::widget::controls::ActionControls>(self);
         } else {
             Widget::provide_mut(&mut self.shell, request);
         }
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::SNIPPETS_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        let answered = self.core.borrow_mut().answer_resource_operation(
-            request.kind,
-            request.type_id,
-            request.payload,
-        )?;
-        self.settle();
-        Ok(answered.then(|| {
-            ui::widget::ResourceOperationStart::Completed(ui::tilo_actions::ActionOutput::default())
-        }))
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -1608,3 +1546,55 @@ impl ui::undo::UndoPoints for SnippetsApp {
 
 #[cfg(test)]
 mod tests;
+
+impl SnippetsApp {
+    pub(crate) fn show(&mut self, view: actions::SnippetsView) -> ui::framework::EffectAnswer {
+        if matches!(view, actions::SnippetsView::Search) {
+            self.search.open(ui::search::SearchRequest::this_app());
+            return Ok(ui::framework::Effected::done());
+        }
+        {
+            let mut core = self.core.borrow_mut();
+            match view {
+                actions::SnippetsView::Open { snippet } => {
+                    if core.library.get(snippet).is_none() {
+                        return Err("snippet no longer exists".into());
+                    }
+                    if !core.visible.contains(&snippet) {
+                        core.select(Selection::default());
+                    }
+                    core.open_snippet(snippet);
+                }
+                actions::SnippetsView::Reveal { tag } => {
+                    if !core.library.tags().iter().any(|(known, _)| known == &tag) {
+                        return Err("tag no longer exists".into());
+                    }
+                    core.select(Selection::Tag(tag));
+                    core.show_pane = Some(NavPane::Overview);
+                }
+                actions::SnippetsView::RevealFolder { folder } => {
+                    if !core.library.folders().contains(&folder) {
+                        return Err("folder no longer exists".into());
+                    }
+                    core.select(Selection::Folder(folder));
+                    core.show_pane = Some(NavPane::Overview);
+                }
+                actions::SnippetsView::Search => {}
+            }
+        }
+        self.settle();
+        Ok(ui::framework::Effected::done())
+    }
+}
+
+impl ui::widget::controls::ActionControls for SnippetsApp {
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.search
+            .take()
+            .or_else(|| ui::widget::controls::take_control_invocation(&mut self.shell))
+    }
+    fn has_pending_control_invocation(&self) -> bool {
+        self.search.is_pending()
+            || ui::widget::controls::has_pending_control_invocation(&self.shell)
+    }
+}

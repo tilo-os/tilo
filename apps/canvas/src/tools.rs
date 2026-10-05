@@ -158,6 +158,13 @@ pub struct Tools {
     /// A change of view asked for from outside the canvas (the zoom
     /// buttons), carried out by the canvas on its next frame.
     pub view: LocalState<Option<ViewRequest>>,
+    /// Keys pressed while a button or another control that does not type
+    /// had the focus, and that it left alone: the canvas's own (Escape,
+    /// Delete, the arrows, Enter), carried out by the canvas on its next
+    /// frame as if it had had the focus.
+    pub keys: LocalState<Vec<CanvasKey>>,
+    /// Whether the sidebar of inspector, layers and history is shown.
+    pub sidebar: LocalState<bool>,
     /// The canvas's width in logical pixels, in steps of [`ROOM_STEP`], as
     /// it was last laid out: what the strip over it has room for.
     pub room: LocalState<u32>,
@@ -172,13 +179,11 @@ pub struct Tools {
     /// Whether the chosen layer's adjustments are shown, with nothing
     /// selected.
     pub layer_adjust: LocalState<bool>,
-    /// The format a person asked to export the artwork in (`png`, `jpeg`,
-    /// `webp`), until the canvas renders it; empty when none was asked.
-    pub export: LocalState<String>,
-    /// An export being saved where the person chooses, until it is.
-    pub saving: Rc<RefCell<Option<ui::portal::SaveChannel>>>,
     /// A picture being chosen to add, until the chooser answers.
     pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
+    /// A subject to find or an edge to refine, asked from a button: the
+    /// canvas draws what it needs and the rest runs off the window's thread.
+    pub finding: Rc<RefCell<Finding>>,
     /// The preset the brush lays strokes with on a plain layer.
     pub preset: LocalState<Preset>,
     /// The brush's opacity, `0..=1`.
@@ -191,13 +196,73 @@ pub struct Tools {
     pub taper: LocalState<f64>,
     /// What the eraser takes: whole strokes, or the paint under it.
     pub erasing: LocalState<Erasing>,
+    /// What the magic wand finds colour in: every layer as shown, or the
+    /// chosen layer alone.
+    pub sampling: LocalState<Sampling>,
+    /// What the bucket finds the area to fill in: the chosen layer, as
+    /// painters expect a fill to stay on the layer it lands on, or every
+    /// layer as shown.
+    pub fill_sampling: LocalState<Sampling>,
+    /// The artwork's longest side in units: how large a brush can be.
+    pub extent: LocalState<f64>,
     /// How crisp the eraser's edge is, `0..=1`.
     pub eraser_hardness: LocalState<f64>,
     /// How much paint the eraser takes off, `0..=1`.
     pub eraser_strength: LocalState<f64>,
+    /// How unlike a colour the magic wand and the bucket still take in,
+    /// `0..=1`.
+    pub tolerance: LocalState<f64>,
     /// Draws the artwork and keeps painted layers' simulations, shared by
     /// the canvas and the layer thumbnails so each layer is simulated once.
     pub renderer: Rc<RefCell<Renderer>>,
+    /// The dialog open over the window, if any.
+    pub sheet: LocalState<Option<Sheet>>,
+    /// What the person asked of Files, carried out by the file desk.
+    pub files: LocalState<Option<FileRequest>>,
+    /// The file this window's artwork was last opened from or saved to.
+    pub file: LocalState<Option<String>>,
+    /// What the last file request came to, said beside the title.
+    pub notice: LocalState<Option<String>>,
+    /// The artworks opened or saved lately, newest first.
+    pub recents: LocalState<Vec<crate::document::Recent>>,
+    /// The welcome over a blank artwork was put away.
+    pub welcomed: LocalState<bool>,
+    /// What was chosen from the artwork's menu, until it is carried out.
+    pub menu: LocalState<String>,
+    /// What the export dialog is set to.
+    pub export: crate::panels::export::Choices,
+    /// What the new-artwork dialog is set to.
+    pub new: crate::panels::start::Choices,
+    /// The part of the artwork the canvas shows, in artwork units.
+    pub visible: LocalState<Option<ui::vello::kurbo::Rect>>,
+}
+
+/// A dialog over the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sheet {
+    /// A size, a ground and a medium to start a new artwork on.
+    NewArtwork,
+    /// Exporting the artwork as a picture.
+    Export,
+    /// The keyboard shortcuts.
+    Shortcuts,
+}
+
+/// Something asked of Files.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FileRequest {
+    /// Choose an artwork or SVG to open in place of this one.
+    Open,
+    /// Open the artwork at this path.
+    OpenRecent(String),
+    /// Save to the file the artwork came from, or choose one.
+    Save,
+    /// Choose a file to save the artwork to, and keep working on it there.
+    SaveAs,
+    /// Save a copy to a file of its own and keep working on this one.
+    Duplicate,
+    /// Export a picture as set in the export dialog.
+    Export(crate::panels::export::Settings),
 }
 
 /// A control whose value the canvas shows while it is dragged.
@@ -205,8 +270,8 @@ pub struct Tools {
 pub struct Live {
     /// The control's value, as it moves.
     pub state: LocalState<f64>,
-    /// Its value when it was built: what the artwork already shows.
-    pub committed: f64,
+    /// The value the artwork has, followed as it changes.
+    pub committed: LocalState<f64>,
     /// The value onto the artwork as shown.
     pub apply: Onto,
 }
@@ -218,7 +283,8 @@ impl Live {
     /// The value while it differs from what the artwork has.
     pub fn moved(&self) -> Option<f64> {
         let value = self.state.with(|value| *value);
-        ((value - self.committed).abs() > 1e-9).then_some(value)
+        let committed = self.committed.with(|value| *value);
+        ((value - committed).abs() > 1e-9).then_some(value)
     }
 }
 
@@ -252,6 +318,14 @@ impl Loaded {
     }
 }
 
+/// A key for the canvas pressed while something else had the focus.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CanvasKey {
+    pub key: ui::winit::keyboard::Key,
+    pub text: Option<String>,
+    pub modifiers: ui::winit::keyboard::ModifiersState,
+}
+
 /// A change of view the canvas makes when asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ViewRequest {
@@ -261,6 +335,16 @@ pub enum ViewRequest {
     Fit,
     /// One artwork unit to a screen pixel.
     Actual,
+}
+
+/// Where the magic wand and the bucket look for colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sampling {
+    /// Every layer, as the artwork shows.
+    #[default]
+    All,
+    /// The chosen layer alone.
+    Layer,
 }
 
 /// What the eraser takes off.
@@ -289,13 +373,14 @@ impl Default for Tools {
             preview: LocalState::new(None),
             zoom: LocalState::new(1.0),
             view: LocalState::new(None),
+            keys: LocalState::new(Vec::new()),
+            sidebar: LocalState::new(true),
             room: LocalState::new(0),
             stop: LocalState::new(0),
             crop: LocalState::new(false),
             live: Rc::default(),
             picking: Rc::default(),
-            export: LocalState::new(String::new()),
-            saving: Rc::default(),
+            finding: Rc::default(),
             layer_adjust: LocalState::new(false),
             preset: LocalState::new(Preset::Round),
             opacity: LocalState::new(1.0),
@@ -304,9 +389,25 @@ impl Default for Tools {
             smoothing: LocalState::new(round.smoothing),
             taper: LocalState::new(round.taper),
             erasing: LocalState::new(Erasing::Paint),
+            sampling: LocalState::new(Sampling::All),
+            fill_sampling: LocalState::new(Sampling::Layer),
+            extent: LocalState::new(1200.0),
             eraser_hardness: LocalState::new(1.0),
             eraser_strength: LocalState::new(1.0),
-            renderer: Rc::default(),
+            tolerance: LocalState::new(crate::author::TOLERANCE),
+            // The canvas and the thumbnails never wait for a picture to
+            // decode; a look or export asks the renderer to.
+            renderer: Rc::new(RefCell::new(Renderer::impatient())),
+            sheet: LocalState::new(None),
+            files: LocalState::new(None),
+            file: LocalState::new(None),
+            notice: LocalState::new(None),
+            recents: LocalState::new(Vec::new()),
+            welcomed: LocalState::new(false),
+            menu: LocalState::new(String::new()),
+            export: crate::panels::export::Choices::default(),
+            new: crate::panels::start::Choices::default(),
+            visible: LocalState::new(None),
         }
     }
 }
@@ -319,14 +420,42 @@ pub const ROOM_STEP: u32 = 24; // a granularity of a measured width, not spacing
 /// chrome, so it does not follow the theme.
 const INK: &str = "#2b3f8f";
 
-/// The smallest and largest brush, in artwork units.
-const BRUSH_RANGE: (f64, f64) = (1.0, 120.0);
+/// The smallest brush, in artwork units.
+const BRUSH_SMALLEST: u8 = 1; // a brush width in artwork units, not on-screen spacing
+/// The largest brush on any artwork, in units: a small artwork still gets
+/// a broad one.
+const BRUSH_LARGEST_LEAST: u8 = 120; // a brush width in artwork units, not on-screen spacing
+/// The largest brush as a share of the artwork's longest side: a quarter,
+/// enough to lay in a sky in a few strokes on any size of artwork.
+const BRUSH_LARGEST_SHARE: f64 = 0.25;
 
 impl Tools {
-    /// The brush width in artwork units.
+    /// A smaller (`[`) or larger (`]`) brush and eraser: a step of the
+    /// size slider's travel, as painters' hands expect. Whether `key` was
+    /// one of them.
+    pub fn size_key(&self, key: &str) -> bool {
+        let step = match key {
+            "]" => 0.05,
+            "[" => -0.05,
+            _ => return false,
+        };
+        let travel = self.size.with(|size| *size);
+        self.size.set((travel + step).clamp(0.0, 1.0));
+        true
+    }
+
+    /// The brush width in artwork units: the slider's travel, finer at the
+    /// small end, up to a quarter of the artwork's longest side.
     pub fn brush_size(&self) -> f64 {
         let travel = self.size.with(|size| size.clamp(0.0, 1.0));
-        BRUSH_RANGE.0 + travel * travel * (BRUSH_RANGE.1 - BRUSH_RANGE.0)
+        let smallest = f64::from(BRUSH_SMALLEST);
+        smallest + travel * travel * (self.largest_brush() - smallest)
+    }
+
+    /// The largest brush on this artwork, in units.
+    pub fn largest_brush(&self) -> f64 {
+        let extent = self.extent.with(|extent| *extent);
+        (extent * BRUSH_LARGEST_SHARE).max(f64::from(BRUSH_LARGEST_LEAST))
     }
 
     /// The paint on the brush as a mark names it: `pigment:<name>` or
@@ -503,4 +632,13 @@ mod tests {
             .set(Some(("burnt-sienna".into(), "#8a3c1e".into())));
         assert_eq!(tools.paint(), "pigment:burnt-sienna");
     }
+}
+
+/// Finding an area off the window's thread.
+#[derive(Default)]
+pub struct Finding {
+    /// Asked for and not started: the select it resolves.
+    pub wanted: Option<crate::selection::Select>,
+    /// Under way: the area, as the select to apply, or why not.
+    pub pending: Option<std::sync::mpsc::Receiver<Result<crate::selection::Select, String>>>,
 }

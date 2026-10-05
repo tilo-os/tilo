@@ -312,32 +312,46 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
             .unwrap();
         assert!(
             NoteDates::default().labels_at(now).is_empty(),
-            "a note with no known date shows no placeholder"
+            "a note with no known date shows no header placeholder"
         );
+        assert_eq!(
+            NoteDates::default().display_labels(false).len(),
+            1,
+            "the detailed resource display retains its unavailable-date label"
+        );
+        let created = Local
+            .with_ymd_and_hms(2023, 11, 14, 10, 42, 0)
+            .single()
+            .unwrap();
+        let edited = Local
+            .with_ymd_and_hms(2023, 11, 17, 11, 40, 0)
+            .single()
+            .unwrap();
         let edited_only = NoteDates {
             created: None,
-            edited: Some(1_700_003_600),
+            edited: Some(edited.timestamp()),
         };
         let lines = edited_only.labels_at(now);
-        assert_eq!(lines.len(), 1);
-        assert!(lines[0].starts_with("Edited "), "{lines:?}");
-        assert!(
-            lines[0].contains("2023"),
-            "an earlier year is named: {lines:?}"
-        );
+        assert_eq!(lines, vec!["Edited 17 Nov 2023".to_string()]);
         let both = NoteDates {
-            created: Some(1_700_000_000),
-            edited: Some(1_700_003_600 + 3 * 86_400),
+            created: Some(created.timestamp()),
+            edited: edited_only.edited,
         };
+        let detailed = both.display_labels(false);
+        assert_eq!(detailed.len(), 2);
+        assert!(detailed.iter().all(|label| label.contains("Nov 2023, ")));
         let lines = both.labels_at(now);
-        assert_eq!(lines.len(), 1, "created and edited share one line");
-        assert!(
-            lines[0].starts_with("Created ") && lines[0].contains(", edited "),
-            "{lines:?}"
+        assert_eq!(
+            lines,
+            vec!["Created 14 Nov 2023, edited 17 Nov 2023".to_string()],
+            "created and edited share one header line in the reader's local time"
         );
         assert!(
-            lines.iter().all(|line| !line.contains("UTC")),
-            "dates are the reader's local time, never labelled UTC: {lines:?}"
+            lines
+                .iter()
+                .chain(detailed.iter())
+                .all(|line| !line.contains("UTC")),
+            "dates are the reader's local time, never labelled UTC: {lines:?}, {detailed:?}"
         );
         let today = NoteDates {
             created: Some(now.timestamp()),

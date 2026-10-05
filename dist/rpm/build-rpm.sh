@@ -43,6 +43,11 @@ if (( run_cargo )); then
         -p launcher -p tilo-unlock-helper -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p ush -p local-model-service -p tilo-model-gateway )
     ( cd "$repo_root" && cargo build --release --locked -p imager --bin imager )
+    # What the ush supervisor runs: a relay environment's pty bridge, the
+    # relay picker's asker, and the legacy VM service its app shims reach.
+    ( cd "$repo_root" && cargo build --release --locked \
+        -p tilo-relay --bin tilo-relay-environment --bin tilo-relay-offers \
+        -p legacy-vm --bin tilo-legacy )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -58,7 +63,8 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in shell imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
-           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway; do
+           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway \
+           tilo-relay-environment tilo-relay-offers tilo-legacy; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 (( run_cargo )) || check_rpmbuild
@@ -118,6 +124,9 @@ install -pm 0755 "$rel/tilo-model-gateway" "$app_stage/bin/tilo-model-gateway"
 install -pm 0755 "$rel/tilo-cli-shim" "$app_stage/libexec/tilo-cli-shim"
 install -pm 0755 "$rel/tilo-app-host" "$app_stage/libexec/tilo-app-host"
 install -pm 0755 "$rel/tilo-ush" "$app_stage/libexec/tilo-ush"
+install -pm 0755 "$rel/tilo-relay-environment" "$app_stage/libexec/tilo-relay-environment"
+install -pm 0755 "$rel/tilo-relay-offers" "$app_stage/libexec/tilo-relay-offers"
+install -pm 0755 "$rel/tilo-legacy" "$app_stage/bin/tilo-legacy"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-app-host.service" \
     "$app_stage/systemd-user/tilo-app-host.service"
 install -pm 0644 "$repo_root/os/usr/lib/systemd/user/tilo-models.service" \

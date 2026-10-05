@@ -32,9 +32,11 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
-use crate::i18n::t;
+use crate::i18n::{t, t_args};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
-use crate::widgets::{El, caption, card, choice_row, rows, setting_row_described, value_row};
+use crate::widgets::{
+    El, caption, card, choice_row, error_row, rows, setting_row_described, value_row,
+};
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
 pub const BANNERS_KEY: &str = "notifications.show_banners";
@@ -442,7 +444,7 @@ impl NotificationsPane {
         let mut cards = vec![
             self.build_focus_card(),
             Self::build_banners_card(),
-            self.build_delivery_card(),
+            Self::build_delivery_card(),
         ];
         cards.extend(Self::build_apps_card(app_cards.is_empty()));
         cards.extend(app_cards);
@@ -468,11 +470,21 @@ impl NotificationsPane {
         )
     }
 
-    fn build_delivery_card(&self) -> Box<dyn Widget> {
-        let sounds_desc = if self.sounds_available {
-            t("notif-play-sounds-desc")
-        } else {
-            t("notif-sounds-missing")
+    fn build_delivery_card() -> Box<dyn Widget> {
+        let sounds_row = match (
+            media::event_sound::sound_backend(),
+            super::installed_programs_unreadable(),
+        ) {
+            (media::event_sound::SoundBackend::PipeWire, _) => {
+                value_row(&t("notif-sounds"), &t("notif-sounds-pipewire"))
+            }
+            (media::event_sound::SoundBackend::Unavailable, Some(error)) => error_row(
+                &t("notif-sounds"),
+                &t_args("settings-programs-error", &[("error", error.into())]),
+            ),
+            (media::event_sound::SoundBackend::Unavailable, None) => {
+                value_row(&t("notif-sounds"), &t("notif-sounds-missing"))
+            }
         };
         card(
             &t("notif-delivery-title"),
@@ -482,9 +494,10 @@ impl NotificationsPane {
                     &t("notif-lock-screen-desc"),
                     Self::toggle("notifications.lock_screen", LOCK_SCREEN_KEY),
                 ),
+                sounds_row,
                 setting_row_described(
                     &t("notif-play-sounds"),
-                    &sounds_desc,
+                    &t("notif-play-sounds-desc"),
                     Self::toggle("notifications.sounds", SOUNDS_KEY),
                 ),
                 setting_row_described(

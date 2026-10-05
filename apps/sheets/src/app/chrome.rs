@@ -544,7 +544,7 @@ impl SheetsApp {
     /// (reference-tinted while editing or selected), selection highlight and
     /// caret. Rebuilds `self.formula_char_x` for click/caret mapping every
     /// frame, since it must track exactly what's drawn.
-    fn draw_formula_field(
+    pub(super) fn draw_formula_field(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -556,14 +556,15 @@ impl SheetsApp {
         let field = self.formula_field_rect;
         Self::paint_field(scene, transform, theme, field, editing);
 
-        let content = self.grid.active_display_raw();
+        let bar = self.grid.formula_bar();
+        let content = bar.text.as_str();
         let style = theme.text(TextRole::Body);
         let text_x0 = field.x0 + self.metrics.s3;
         // Rebuild the per-character x boundaries for click/caret mapping. This
         // is derived from exactly the text being drawn, so a click maps to the
         // same glyph the user sees (whether it's the live edit buffer or the
         // active cell's stored input).
-        self.formula_char_x = char_boundaries(tr, &content, &style, text_x0);
+        self.formula_char_x = char_boundaries(tr, content, &style, text_x0);
         let (_, line_h) = tr.measure_style("Ag", None, &style);
         let line_h = f64::from(line_h);
         let top = ChromeMetrics::centred_top(field, line_h);
@@ -582,21 +583,24 @@ impl SheetsApp {
             theme,
             &style,
             &crate::grid::EditLine {
-                text: &content,
+                text: content,
                 origin: Point::new(text_x0, top),
                 line_h,
-                selection: if editing {
-                    self.grid.edit_selection()
-                } else {
-                    None
-                },
-                caret: if editing {
-                    self.grid.edit_caret()
-                } else {
-                    None
-                },
+                selection: bar.selection,
+                caret: bar.caret,
             },
         );
+        if let Some((start, end)) = bar.preedit {
+            let x0 = self.formula_char_x.get(start).copied().unwrap_or(text_x0);
+            let x1 = self.formula_char_x.get(end).copied().unwrap_or(x0);
+            scene.stroke(
+                &ui::vello::kurbo::Stroke::new(theme.caret_width / 2.0),
+                transform,
+                theme.tokens.colors.text_primary,
+                None,
+                &ui::vello::kurbo::Line::new((x0, top + line_h), (x1, top + line_h)),
+            );
+        }
         scene.pop_layer();
     }
 

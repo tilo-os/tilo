@@ -350,6 +350,7 @@ fn the_lock_screen_is_never_captured() {
         notification_count: 3,
         verifying: false,
         now_playing: None,
+        keyboard: None,
     };
     let lock = lock_screen::draw_lock_scene_at_time(
         &outputs,
@@ -565,6 +566,43 @@ fn the_shells_secret_prompts_are_never_captured() {
     }
 }
 
+/// A shortcut step that asks for a secret is withheld; one that asks for
+/// plain text is captured as it is.
+#[test]
+fn a_shortcut_steps_secret_answer_is_never_captured() {
+    use shell::shell::portal_dialog::{PortalDialogQueue, ShortcutStepField, ShortcutStepRequest};
+
+    for masked in [true, false] {
+        let mut fb = FrameBuilder::new((W, H));
+        let queue = PortalDialogQueue::default();
+        fb.host_mut().set_portal_dialog_queue(queue.clone());
+        queue
+            .enqueue_shortcut_step(
+                ShortcutStepRequest {
+                    handle: "shortcut-step:capture-protection".into(),
+                    shortcut: "Publish".into(),
+                    title: "Publishing token".into(),
+                    detail: String::new(),
+                    confirm_label: "Continue".into(),
+                    choices: Vec::new(),
+                    field: Some(ShortcutStepField { masked }),
+                },
+                |_| {},
+            )
+            .expect("the sheet is queued");
+        fb.host_mut().pump_portal_dialogs();
+        if masked {
+            assert_secret_prompts_withheld(&mut fb, "a shortcut step's secret answer");
+        } else {
+            let _ = frame(&mut fb);
+            assert!(
+                fb.host().secret_prompt_rects().is_empty(),
+                "a plain shortcut answer is no secret"
+            );
+        }
+    }
+}
+
 #[test]
 #[expect(
     clippy::significant_drop_tightening,
@@ -590,7 +628,7 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     h.state.osk_surface = Some(KEYBOARD);
     let mut fb = FrameBuilder::new((W, H));
     store().publish_rgba(KEYBOARD, &solid(960, 360, CLIENT), 960, 360);
-    fb.set_osk_surface(Some(KEYBOARD), None, true);
+    fb.set_osk_surface(Some(KEYBOARD), None, None, true);
     // Paint until the keyboard's frame is presented and any opening
     // cross-fade is over, so samples measure the keyboard itself.
     let settled = std::time::Instant::now()
@@ -653,4 +691,29 @@ fn the_on_screen_keyboard_is_withheld_while_a_password_field_has_focus() {
     assert!(count_near(&cast, CLIENT) >= 12);
 
     store().forget(KEYBOARD);
+}
+
+#[test]
+fn disconnect_retains_the_displayed_secret_until_its_surface_is_destroyed() {
+    const SURFACE: u64 = 0xCA97_0010;
+    const CONNECTION: u64 = 0xCA97_0C10;
+    const APP: &str = "org.example.capture-protection.disconnected";
+    store().forget(SURFACE);
+    store().release_capture_protection(CONNECTION);
+    let mut fb = adopt(SURFACE, APP);
+    show_client(&mut fb, SURFACE);
+    let rect = tile_rect(&mut fb, SURFACE);
+    store().request_app_capture_protection(CONNECTION, APP, true);
+    store().retain_surface_capture_protection(SURFACE, APP);
+    store().release_capture_protection(CONNECTION);
+    let scene = frame(&mut fb);
+    let (shot, width, _) = CaptureExecutor::render_screenshot(&mut fb, &scene, &whole_screen())
+        .expect("disconnected screenshot");
+    assert_eq!(count_near(&interior_samples(&shot, width, rect), CLIENT), 0);
+    drop(fb);
+    store().forget(SURFACE);
+    assert!(
+        !store().is_capture_protected(SURFACE, APP),
+        "destroying the surface clears its protection latch"
+    );
 }

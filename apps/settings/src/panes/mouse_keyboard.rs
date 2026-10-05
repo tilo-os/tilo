@@ -47,8 +47,8 @@ use crate::i18n::{t, t_args};
 use crate::input_sources::{CatalogEntry, installed_catalog};
 use crate::prefs::{InputPrefs, SystemPrefs};
 use crate::widgets::{
-    El, caption, card, choice_row, choice_row_described, rows, setting_row_described, slider_row,
-    slider_row_described,
+    El, caption, card, choice_row, choice_row_described, error_caption, rows,
+    setting_row_described, slider_row, slider_row_described,
 };
 
 fn bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
@@ -756,6 +756,9 @@ pub struct MouseKeyboardPane {
     initial_auto_correct: bool,
     auto_correct: bool,
     catalog: Vec<CatalogEntry>,
+    /// Why the device's layout list could not be read; `catalog` is then a
+    /// short built-in list and says so.
+    catalog_error: Option<String>,
     pending_add_id: Option<String>,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     /// Which sections the attached devices call for.
@@ -835,6 +838,7 @@ impl MouseKeyboardPane {
             initial_auto_correct: auto_correct,
             auto_correct,
             catalog: installed_catalog(),
+            catalog_error: crate::input_sources::layout_catalog_error(),
             pending_add_id: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             sections: InputSections::for_devices(None),
@@ -880,6 +884,7 @@ impl MouseKeyboardPane {
             initial_auto_correct: true,
             auto_correct: true,
             catalog,
+            catalog_error: None,
             pending_add_id: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             sections: InputSections::for_devices(None),
@@ -907,6 +912,7 @@ impl MouseKeyboardPane {
             initial_auto_correct: true,
             auto_correct: true,
             catalog,
+            catalog_error: None,
             pending_add_id: None,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             sections: InputSections::for_devices(None),
@@ -944,10 +950,12 @@ impl MouseKeyboardPane {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
+        // The keyboard layout comes first: it is what most people open this
+        // pane to change.
         let mut cards = vec![
+            self.input_sources_card(),
             self.keyboard_card(),
             self.spell_checker_card(),
-            self.input_sources_card(),
         ];
         if self.sections.touchpad {
             cards.push(self.touchpad_card());
@@ -1363,6 +1371,12 @@ impl MouseKeyboardPane {
                 &[],
                 vec![up_button, down_button, remove_button],
             ));
+        }
+        if let Some(error) = &self.catalog_error {
+            source_rows.push(error_caption(&t_args(
+                "input-catalog-error",
+                &[("error", error.as_str().into())],
+            )));
         }
         let available: Vec<String> = self
             .catalog

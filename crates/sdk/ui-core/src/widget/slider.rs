@@ -69,6 +69,10 @@ pub struct Slider {
     settles: bool,
     /// The value when the current drag began.
     drag_from: Option<f64>,
+    /// Where the pointer and the value were when Shift was pressed during
+    /// a drag: from there the value moves a tenth as fast, to place it
+    /// finely.
+    fine_from: Option<(f64, f64)>,
     action: Option<ActionEmitter<f64>>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
@@ -97,6 +101,10 @@ pub struct Slider {
 }
 
 impl Slider {
+    /// How fast the value follows the pointer while Shift is held during a
+    /// drag, as a share of the usual pace.
+    const FINE_DRAG: f64 = 0.1;
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
@@ -115,6 +123,7 @@ impl Slider {
             on_change: None,
             settles: false,
             drag_from: None,
+            fine_from: None,
             action: None,
             presence_path: Vec::new(),
             permission_scope: None,
@@ -740,7 +749,14 @@ impl Widget for Slider {
                 }
 
                 if self.is_dragging {
-                    let new_value = self.value_from_cursor_x(p.x);
+                    let new_value = if ctx.modifiers.state().shift_key() {
+                        let (x, value) = *self.fine_from.get_or_insert((p.x, self.value));
+                        let track = (self.rect.width() - TRACK_PADDING * 2.0).max(1.0);
+                        (value + (p.x - x) / track * Self::FINE_DRAG).clamp(0.0, 1.0)
+                    } else {
+                        self.fine_from = None;
+                        self.value_from_cursor_x(p.x)
+                    };
                     if self.commit_value(new_value, ctx.state, ctx.path) {
                         *ctx.handled = true;
                     }
@@ -771,6 +787,7 @@ impl Widget for Slider {
                     self.commit_value(new_value, ctx.state, ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
+                    self.fine_from = None;
                     *ctx.handled = true;
                     let moved = self
                         .drag_from
@@ -1111,6 +1128,10 @@ mod tests {
 
     /// Drive an event through the slider with default scaffolding.
     fn dispatch(s: &mut Slider, event: &WindowEvent) {
+        dispatch_with(s, event, winit::event::Modifiers::default());
+    }
+
+    fn dispatch_with(s: &mut Slider, event: &WindowEvent, modifiers: winit::event::Modifiers) {
         let mut tree = TaffyTree::<()>::new();
         let node = tree.leaf_node(Style::default());
         let mut handled = false;
@@ -1121,7 +1142,7 @@ mod tests {
             event,
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
-                modifiers: &winit::event::Modifiers::default(),
+                modifiers: &modifiers,
                 state: &mut doc,
                 path: &root,
                 handled: &mut handled,
@@ -1411,6 +1432,27 @@ mod tests {
             let value = invoked.arguments["value"].as_f64().unwrap();
             assert!((value - slider.value).abs() < 1e-9);
             assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+        }
+
+        // Case `shift_drags_the_value_a_tenth_as_fast`.
+        {
+            let mut slider = slider_at(0.0, 0.0, 210.0, 30.0);
+            let shift = winit::event::Modifiers::from(winit::keyboard::ModifiersState::SHIFT);
+            dispatch(&mut slider, &cursor_moved(105.0, 15.0));
+            dispatch(&mut slider, &mouse_press());
+            let start = slider.value;
+            dispatch_with(&mut slider, &cursor_moved(105.0, 15.0), shift);
+            dispatch_with(&mut slider, &cursor_moved(205.0, 15.0), shift);
+            assert!(
+                (slider.value - start - 0.05).abs() < 1e-6,
+                "{start} -> {}",
+                slider.value
+            );
+            dispatch(&mut slider, &cursor_moved(205.0, 15.0));
+            assert!(
+                (slider.value - 1.0).abs() < 1e-6,
+                "without Shift it follows again"
+            );
         }
 
         // Case `a_settling_slider_shows_its_drag_in_its_local_state`.

@@ -343,10 +343,18 @@ impl StoreApp {
         let section = |title: &str, cards: Vec<Element>| -> Option<Element> {
             (!cards.is_empty()).then(|| {
                 let count = cards.len();
-                Box::new(
-                    Section::new(vec![Box::new(CardGrid::new(cards))])
-                        .with_header(SectionHeader::heading(title).count(count)),
-                ) as Element
+                let mut header = SectionHeader::heading(title).count(count);
+                if title == "Updates" {
+                    let mut update = Button::new("store.update-all", "Update all", None)
+                        .with_icon(Icon::Refresh)
+                        .with_enabled(self.active_operation.is_none());
+                    if let Some(binding) = bindings::effect(&StoreEffect::UpdateAll) {
+                        update = update.on_action(binding);
+                    }
+                    header = header.action(update);
+                }
+                Box::new(Section::new(vec![Box::new(CardGrid::new(cards))]).with_header(header))
+                    as Element
             })
         };
         children.extend(section("Updates", updates));

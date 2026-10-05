@@ -9,8 +9,8 @@
 //! keeps tests and hermetic offline builds deterministic. Decoding uses the
 //! `image` crate; cloning a returned `ImageData` only bumps an `Arc`.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
@@ -32,7 +32,7 @@ pub type Fetcher = Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
 /// Cache state for one URL.
 enum Slot {
     /// A fetch/decode is in flight.
-    Loading,
+    Loading(Arc<RequestIdentity>),
     /// Decoded and ready to paint.
     Ready(PenikoImage),
     /// Fetch or decode failed; won't retry.
@@ -96,7 +96,7 @@ fn slot_bytes(slot: &Slot) -> u64 {
         Slot::Ready(image) => u64::from(image.width)
             .saturating_mul(u64::from(image.height))
             .saturating_mul(4),
-        Slot::Loading | Slot::Failed => 0,
+        Slot::Loading(_) | Slot::Failed => 0,
     }
 }
 
@@ -112,7 +112,7 @@ fn evict_one_settled(cache: &mut CacheState) -> bool {
     let victim = cache
         .slots
         .iter()
-        .filter(|(_, entry)| !matches!(entry.slot, Slot::Loading))
+        .filter(|(_, entry)| !matches!(entry.slot, Slot::Loading(_)))
         .min_by_key(|(_, entry)| entry.last_used)
         .map(|(url, _)| url.clone());
     victim.is_some_and(|url| cache.slots.remove(&url).is_some())
@@ -158,11 +158,17 @@ impl Pending {
     }
 }
 
+#[derive(Default)]
+struct RequestIdentity {
+    reserved: AtomicBool,
+}
+
 struct Shared {
     slots: Mutex<CacheState>,
     /// Count of in-flight (queued or decoding) loads, for `is_idle` /
     /// `block_until_idle` and to know when to keep animation frames flowing.
     pending: Pending,
+    wake: WakeHandle,
 }
 
 impl Shared {
@@ -170,7 +176,35 @@ impl Shared {
         Arc::new(Self {
             slots: Mutex::new(CacheState::default()),
             pending: Pending(AtomicUsize::new(0)),
+            wake: WakeHandle::new(),
         })
+    }
+
+    /// Exact request identity, rather than its URL, owns pending custody.
+    fn settle(&self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {
+        let mut cache = self
+            .slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !cache.slots.get(url).is_some_and(
+            |entry| matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, request)),
+        ) {
+            return false;
+        }
+        // Authorization belongs at this commit boundary, after fetch/decode and
+        // validation. Cleanup of a closed owner removes custody without publishing.
+        let authorized = self.wake.authorize_publication();
+        if authorized {
+            insert_settled(&mut cache, url.to_owned(), slot);
+        } else {
+            cache.slots.remove(url);
+        }
+        self.pending.sub(1);
+        drop(cache);
+        if authorized {
+            self.wake.wake();
+        }
+        authorized
     }
 }
 
@@ -197,13 +231,91 @@ pub struct ImageStore {
 /// store. Dropping the loader settles every unfinished request as failed.
 pub struct HostImageLoader {
     shared: Arc<Shared>,
-    requests: Receiver<String>,
-    in_flight: HashSet<String>,
-    wake: WakeHandle,
+    requests: Option<Receiver<String>>,
+    in_flight: HashMap<String, Arc<RequestIdentity>>,
     max_dimension: u32,
 }
 
+/// Opaque custody for one admitted asynchronous image decode.
+///
+/// A ticket identifies this loader's shared cache and this request generation;
+/// it grants no publication permission. It is deliberately not cloneable.
+/// Dropping it cancels unfinished work, including on a worker thread.
+pub struct ImageCompletionTicket {
+    shared: Arc<Shared>,
+    request: Arc<RequestIdentity>,
+    url: String,
+    max_dimension: u32,
+}
+
+impl ImageCompletionTicket {
+    /// The output dimension bound captured for this request.
+    pub fn max_dimension(&self) -> u32 {
+        self.max_dimension
+    }
+}
+
+impl Drop for ImageCompletionTicket {
+    fn drop(&mut self) {
+        self.shared.settle(&self.url, &self.request, Slot::Failed);
+    }
+}
+
 impl HostImageLoader {
+    /// Reserve a request already handed out by this loader for off-thread decode.
+    /// Unknown, settled, closed-owner or already reserved requests are rejected.
+    pub fn reserve(&mut self, url: &str) -> Option<ImageCompletionTicket> {
+        let request = self.in_flight.get(url)?.clone();
+        let cache = self.shared.slots.lock().ok()?;
+        if !cache.slots.get(url).is_some_and(
+            |entry| matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request)),
+        ) {
+            return None;
+        }
+        drop(cache);
+        if !self.shared.wake.authorize_publication() {
+            self.settle(url, &request, Slot::Failed);
+            return None;
+        }
+        if request.reserved.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        Some(ImageCompletionTicket {
+            shared: self.shared.clone(),
+            request,
+            url: url.to_owned(),
+            max_dimension: self.max_dimension,
+        })
+    }
+
+    /// Settle an exact reservation with decoded pixels, or `None` on failure.
+    /// Validation enforces this ticket's output bound and exact RGBA length.
+    /// Foreign, canceled, duplicate and old-generation replies are inert.
+    /// A borrowed ticket leaves foreign-loader attempts unable to cancel its owner.
+    pub fn complete_decoded(
+        &mut self,
+        ticket: &ImageCompletionTicket,
+        decoded: Option<tilo_image_codec::DecodedImage>,
+    ) -> bool {
+        if !Arc::ptr_eq(&self.shared, &ticket.shared) {
+            return false;
+        }
+        self.settle(
+            &ticket.url,
+            &ticket.request,
+            validated_slot(decoded, ticket.max_dimension),
+        )
+    }
+
+    /// Cancel one exact reservation. A late result or later ticket drop is inert.
+    /// Closed-owner cleanup releases custody but returns `false` without publication.
+    pub fn cancel(&mut self, ticket: &ImageCompletionTicket) -> bool {
+        if !Arc::ptr_eq(&self.shared, &ticket.shared) {
+            return false;
+        }
+        self.settle(&ticket.url, &ticket.request, Slot::Failed)
+    }
+
     /// Every URL requested since the last call. Each must eventually be
     /// passed to [`complete`](Self::complete).
     pub fn take_requests(&mut self) -> Vec<String> {
@@ -212,32 +324,43 @@ impl HostImageLoader {
 
     /// The next requested URL, if any.
     pub fn next_request(&mut self) -> Option<String> {
-        let url = self.requests.try_recv().ok()?;
-        self.in_flight.insert(url.clone());
-        Some(url)
+        loop {
+            let url = self.requests.as_ref()?.try_recv().ok()?;
+            let slots = self.shared.slots.lock().ok()?;
+            let Some(SlotEntry {
+                slot: Slot::Loading(request),
+                ..
+            }) = slots.slots.get(&url)
+            else {
+                continue;
+            };
+            self.in_flight.retain(|url, request| {
+                slots.slots.get(url).is_some_and(|entry| {
+                    matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, request))
+                })
+            });
+            self.in_flight.insert(url.clone(), request.clone());
+            return Some(url);
+        }
     }
 
-    /// Settle a request taken from this loader with its fetched bytes, or
-    /// `None` when the fetch failed. Decoding runs on the calling thread.
-    /// Returns `false` for a URL this loader has not handed out or has
-    /// already settled.
+    /// Settle a request taken from this loader with fetched bytes, or `None`
+    /// on failure. Decoding runs on the calling thread. Reserved asynchronous
+    /// requests must instead use [`complete_decoded`](Self::complete_decoded).
     pub fn complete(&mut self, url: &str, bytes: Option<&[u8]>) -> bool {
-        if !self.in_flight.contains(url) {
+        let Some(request) = self.in_flight.get(url).cloned() else {
             return false;
-        }
-        // A closed component must not receive a late publication.
-        if !self.wake.authorize_publication() {
-            self.in_flight.remove(url);
-            self.shared.pending.sub(1);
+        };
+        if request.reserved.load(Ordering::Acquire) {
             return false;
         }
         let slot = decoded_slot(bytes, self.max_dimension);
-        self.settle(url, slot)
+        self.settle(url, &request, slot)
     }
 
     /// Reopen only a previously admitted failed slot; arbitrary URLs cannot enter here.
     pub fn retry(&mut self, url: &str) -> bool {
-        if !self.wake.authorize_publication() || self.in_flight.contains(url) {
+        if !self.shared.wake.authorize_publication() {
             return false;
         }
         let Ok(mut slots) = self.shared.slots.lock() else {
@@ -249,8 +372,9 @@ impl HostImageLoader {
         if !matches!(entry.slot, Slot::Failed) {
             return false;
         }
-        entry.slot = Slot::Loading;
-        self.in_flight.insert(url.into());
+        let request = Arc::new(RequestIdentity::default());
+        entry.slot = Slot::Loading(request.clone());
+        self.in_flight.insert(url.into(), request);
         self.shared.pending.add(1);
         true
     }
@@ -265,35 +389,45 @@ impl HostImageLoader {
         })
     }
 
-    fn settle(&mut self, url: &str, slot: Slot) -> bool {
-        if !self.in_flight.remove(url) {
-            return false;
+    fn settle(&mut self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {
+        let published = self.shared.settle(url, request, slot);
+        if self
+            .in_flight
+            .get(url)
+            .is_some_and(|current| Arc::ptr_eq(current, request))
+        {
+            self.in_flight.remove(url);
         }
-        if let Ok(mut slots) = self.shared.slots.lock() {
-            // Replace this request's Loading marker, then reclaim settled
-            // entries until both the count and decoded-pixel ceilings fit.
-            insert_settled(&mut slots, url.to_owned(), slot);
-        }
-        self.shared.pending.sub(1);
-        self.wake.wake();
-        true
+        published
     }
 }
 
 impl Drop for HostImageLoader {
     fn drop(&mut self) {
-        let mut unfinished = std::mem::take(&mut self.in_flight);
-        unfinished.extend(self.requests.try_iter());
-        if unfinished.is_empty() {
-            return;
+        // Disconnect first: concurrent admission either belongs to the cache
+        // sweep below, or observes disconnection and settles its own identity.
+        self.requests.take();
+        let unfinished: Vec<_> = {
+            let slots = self
+                .shared
+                .slots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slots
+                .slots
+                .iter()
+                .filter_map(|(url, entry)| {
+                    if let Slot::Loading(request) = &entry.slot {
+                        Some((url.clone(), request.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for (url, request) in unfinished {
+            self.shared.settle(&url, &request, Slot::Failed);
         }
-        if let Ok(mut slots) = self.shared.slots.lock() {
-            for url in &unfinished {
-                insert_settled(&mut slots, url.clone(), Slot::Failed);
-            }
-        }
-        self.shared.pending.sub(unfinished.len());
-        self.wake.wake();
     }
 }
 
@@ -321,7 +455,7 @@ impl NativeLoader {
     /// Start a job for each queued request while a worker slot is free.
     fn start_queued(self: &Arc<Self>) {
         loop {
-            let (url, max_dimension) = {
+            let ticket = {
                 let mut state = self.state();
                 if state.running >= self.workers {
                     return;
@@ -329,16 +463,26 @@ impl NativeLoader {
                 let Some(url) = state.loader.next_request() else {
                     return;
                 };
+                let Some(ticket) = state.loader.reserve(&url) else {
+                    continue;
+                };
                 state.running = state.running.saturating_add(1);
-                (url, state.loader.max_dimension)
+                ticket
             };
             let this = Arc::clone(self);
-            let job_url = url.clone();
+            let job_url = ticket.url.clone();
             let spawned = self.background.spawn("ui-image", move || {
-                let slot = decoded_slot((this.fetch)(&job_url).as_deref(), max_dimension);
+                let decoded = (this.fetch)(&job_url).as_deref().and_then(|encoded| {
+                    tilo_image_codec::DecodeImage {
+                        encoded,
+                        max_dimension: ticket.max_dimension(),
+                    }
+                    .decode_native()
+                    .ok()
+                });
                 {
                     let mut state = this.state();
-                    state.loader.settle(&job_url, slot);
+                    state.loader.complete_decoded(&ticket, decoded);
                     state.running = state.running.saturating_sub(1);
                 }
                 this.start_queued();
@@ -347,7 +491,7 @@ impl NativeLoader {
                 // This host runs no background work: settle instead of
                 // leaving the request loading forever.
                 let mut state = self.state();
-                state.loader.settle(&url, Slot::Failed);
+                // Rejected jobs drop their ticket, which settles exact custody.
                 state.running = state.running.saturating_sub(1);
             }
         }
@@ -356,22 +500,6 @@ impl NativeLoader {
 
 thread_local! {
     static HOST_FACTORY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn(u32) -> ImageStore>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// An [`ImageStore`] image as chrome artwork: see [`ImageStore::app_image`].
-struct StoreImage {
-    store: ImageStore,
-    url: String,
-}
-
-impl crate::icons::AppImageSource for StoreImage {
-    fn key(&self) -> &str {
-        &self.url
-    }
-
-    fn pixels(&self, _device_px: u32) -> Option<PenikoImage> {
-        self.store.get(&self.url)
-    }
 }
 
 impl ImageStore {
@@ -442,9 +570,8 @@ impl ImageStore {
         let shared = Shared::new();
         let loader = HostImageLoader {
             shared: Arc::clone(&shared),
-            requests,
-            in_flight: HashSet::new(),
-            wake: WakeHandle::new(),
+            requests: Some(requests),
+            in_flight: HashMap::new(),
             max_dimension: max_dimension.clamp(1, IMAGE_MAX_DIMENSION),
         };
         let store = Self {
@@ -467,22 +594,11 @@ impl ImageStore {
         store
     }
 
-    /// The image at `url` as artwork chrome paints (a search row's
-    /// thumbnail, a menu item's art): it loads in the background like
-    /// [`Self::get`], and chrome shows its placeholder until it lands.
-    #[must_use]
-    pub fn app_image(&self, url: &str) -> crate::icons::AppImage {
-        crate::icons::AppImage::new(StoreImage {
-            store: self.clone(),
-            url: url.to_owned(),
-        })
-    }
-
     /// Decoded image for `url`, kicking off an async load the first time a URL
     /// is seen. Returns `None` while loading or after a failure — the caller
     /// paints a placeholder until a later frame returns `Some`.
     pub fn get(&self, url: &str) -> Option<PenikoImage> {
-        if url.is_empty() {
+        if url.is_empty() || !self.shared.wake.authorize_publication() {
             return None;
         }
         // A poisoned lock means some other thread already panicked while
@@ -504,15 +620,16 @@ impl ImageStore {
             // later frame can retry after one of those requests settles.
             return None;
         }
+        let request = Arc::new(RequestIdentity::default());
         slots.slots.insert(
             url.to_string(),
             SlotEntry {
-                slot: Slot::Loading,
+                slot: Slot::Loading(request.clone()),
                 last_used,
             },
         );
-        drop(slots);
         self.shared.pending.add(1);
+        drop(slots);
         // Never block the UI thread behind image I/O. A full queue removes the
         // provisional Loading slot so a later frame can retry; a loader that
         // is gone will never answer, so the request settles as failed.
@@ -522,18 +639,21 @@ impl ImageStore {
                     native.start_queued();
                 }
             }
-            Err(error) => {
-                if let Ok(mut slots) = self.shared.slots.lock() {
-                    match error {
-                        TrySendError::Full(url) => {
-                            slots.slots.remove(&url);
-                        }
-                        TrySendError::Disconnected(url) => {
-                            insert_settled(&mut slots, url, Slot::Failed);
-                        }
-                    }
+            Err(TrySendError::Full(_)) => {
+                let mut cache = self
+                    .shared
+                    .slots
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if cache.slots.get(url).is_some_and(|entry| {
+                    matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request))
+                }) {
+                    cache.slots.remove(url);
+                    self.shared.pending.sub(1);
                 }
-                self.shared.pending.sub(1);
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.shared.settle(url, &request, Slot::Failed);
             }
         }
         None
@@ -580,39 +700,53 @@ impl ImageStore {
     }
 }
 
-fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
-    match bytes.and_then(|bytes| decode_rgba(bytes, max_dimension)) {
-        Some((rgba, width, height)) => Slot::Ready(PenikoImage {
-            data: Blob::new(Arc::new(rgba)),
-            format: Format::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width,
-            height,
-        }),
-        None => Slot::Failed,
+fn validated_slot(decoded: Option<tilo_image_codec::DecodedImage>, max_dimension: u32) -> Slot {
+    let Some(decoded) = decoded else {
+        return Slot::Failed;
+    };
+    let limits = tilo_image_codec::AdmissionLimits {
+        max_dimension,
+        max_rgba_bytes: IMAGE_CACHE_BYTE_LIMIT,
+        ..tilo_image_codec::AdmissionLimits::default()
+    };
+    if limits.validate(&decoded).is_err() {
+        return Slot::Failed;
     }
+    Slot::Ready(PenikoImage {
+        data: Blob::new(Arc::new(decoded.rgba)),
+        format: Format::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: decoded.width,
+        height: decoded.height,
+    })
+}
+
+fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
+    validated_slot(
+        bytes.and_then(|encoded| {
+            tilo_image_codec::DecodeImage {
+                encoded,
+                max_dimension,
+            }
+            .decode_native()
+            .ok()
+        }),
+        max_dimension,
+    )
 }
 
 /// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions.
-/// Oversized sources are downscaled to the store's bounded decode size.
+/// Oversized sources are downscaled after native decoding to the store's output
+/// dimension limit; resizing does not bound source decoder allocations.
+#[cfg(test)]
 fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> {
-    let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
-    let img = image::load_from_memory(bytes).ok()?;
-    let img = if img.width().max(img.height()) > max_dimension {
-        img.resize(
-            max_dimension,
-            max_dimension,
-            image::imageops::FilterType::Triangle,
-        )
-    } else {
-        img
-    };
-    let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-    if w == 0 || h == 0 {
-        return None;
+    let decoded = tilo_image_codec::DecodeImage {
+        encoded: bytes,
+        max_dimension,
     }
-    Some((rgba.into_raw(), w, h))
+    .decode_native()
+    .ok()?;
+    Some((decoded.rgba, decoded.width, decoded.height))
 }
 
 /// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect,
@@ -969,3 +1103,6 @@ mod tests {
         assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
     }
 }
+
+#[cfg(test)]
+mod decoded_completion_tests;

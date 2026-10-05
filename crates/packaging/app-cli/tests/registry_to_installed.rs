@@ -178,6 +178,7 @@ fn signed_entry_version(
                 architecture: native_target().0.into(),
                 isa: native_target().2.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }],
         updated_at_unix: 2,

@@ -1514,12 +1514,25 @@ mod save_status_fixture {
                     .unwrap(),
                 pending
             );
+            // While the record is being written nothing else wakes the window,
+            // so the component asks to sync again on its own.
+            let _ = self.tile.take_structure_dirty();
+            assert!(
+                self.tile.next_wake_deadline().is_some(),
+                "a component showing Saving… must resample its durability"
+            );
             self.host.records.try_flush().unwrap();
             self.tile.sync(&mut self.outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
             );
+            // The change is presented, and the resampling stops once saved.
+            assert!(
+                self.tile.take_structure_dirty(),
+                "the window must present the record becoming durable"
+            );
+            assert!(self.tile.next_wake_deadline().is_none());
         }
         pub(super) fn sticky_failure_and_recovery(&mut self) {
             let path = self.path();

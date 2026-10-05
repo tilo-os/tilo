@@ -394,7 +394,7 @@ mod tests {
     /// A demo app with its first `sync` run so `root["source"]` is seeded and the
     /// editor is bound — the same state the live app reaches on its first frame.
     fn synced() -> (TypstApp, AutoCommit) {
-        let mut app = TypstApp::with_demo_documents();
+        let mut app = TypstApp::with_demo_document();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         (app, doc)
@@ -472,37 +472,19 @@ mod tests {
                 "the peer sees the same source text"
             );
         }
-        // Case `switching_documents_is_a_native_text_diff`:
-        // Switching documents (Ctrl+]) is a bulk edit of the *same* `root["source"]`
-        // Text — a native text diff — not a structural mutation. The source content
-        // changes, but the document still holds only the one `source` key and still
-        // the same `Text` object, so there is no structural operation to encode.
+        // Case `there_is_no_document_switcher`: Ctrl+] is not a document
+        // switch — a window edits one document — and leaves the source alone.
         {
             let (mut app, mut doc) = synced();
             let src_before = source_id(&doc);
             let text_before = doc.text(&src_before).unwrap();
 
             let ctrl = Modifiers::from(ModifiersState::CONTROL);
-            assert!(
-                send(&mut app, &mut doc, &char_event("]"), ctrl),
-                "Ctrl+] consumed"
-            );
-
-            let keys: Vec<String> = doc.keys(&ROOT).collect();
+            send(&mut app, &mut doc, &char_event("]"), ctrl);
             assert_eq!(
-                keys,
-                vec!["source".to_string()],
-                "still only the source key: {keys:?}"
-            );
-            let src_after = source_id(&doc);
-            assert_eq!(
-                src_before, src_after,
-                "same Text object, spliced in place — not replaced"
-            );
-            assert_ne!(
-                doc.text(&src_after).unwrap(),
+                doc.text(source_id(&doc)).unwrap(),
                 text_before,
-                "the switch swapped the source content"
+                "no other document to switch to"
             );
         }
     }

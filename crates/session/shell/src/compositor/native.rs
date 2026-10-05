@@ -172,6 +172,9 @@ fn desired_legacy_shares(
                 }
             }
             if !peers.is_empty() {
+                // Hosts bridge the window to web members, which draw pages
+                // themselves; any other viewer decodes video.
+                let paint = peers.iter().all(|peer| viewer_hosts.contains(peer));
                 desired.insert(
                     *surface_id,
                     (
@@ -180,6 +183,7 @@ fn desired_legacy_shares(
                             tab: tab.id,
                             viewers: peers,
                             decode_limits,
+                            paint,
                         },
                         workspace.room,
                     ),
@@ -349,6 +353,32 @@ impl NativeRedrawReasons {
     }
 }
 
+/// An animation's resting frame is owed after its demand clears. The last
+/// tick that saw it moving may not have painted (the presenter was full, or
+/// the tick fell between display intervals), and the tick after it sees
+/// nothing moving: without this latch a popover stays frozen part-way
+/// through its fade, translucent over whatever is behind it.
+#[derive(Clone, Copy, Debug, Default)]
+struct AnimationSettle {
+    owed: bool,
+}
+
+impl AnimationSettle {
+    /// Whether this tick must still produce an animated frame.
+    const fn due(self, animating: bool) -> bool {
+        animating || self.owed
+    }
+
+    /// Record the tick: motion owes a frame painted after it ends.
+    fn after_tick(&mut self, animating: bool, painted: bool) {
+        if animating {
+            self.owed = true;
+        } else if painted {
+            self.owed = false;
+        }
+    }
+}
+
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
@@ -394,6 +424,73 @@ fn client_followup_needed(clients_dispatched: bool, pump_visible: bool) -> bool 
 
 fn client_followup_deadline(pump_needed: bool, now: Instant) -> Option<Instant> {
     pump_needed.then_some(now)
+}
+
+/// Where the client phase of one loop iteration spent its time, for the
+/// `SLOW-ITER` line: a stall there names its step instead of the whole phase.
+struct ClientSteps {
+    last: Instant,
+    steps: [(&'static str, Duration); 8],
+    len: usize,
+}
+
+impl ClientSteps {
+    fn start() -> Self {
+        Self {
+            last: Instant::now(),
+            steps: [("", Duration::ZERO); 8],
+            len: 0,
+        }
+    }
+
+    fn mark(&mut self, step: &'static str) {
+        let now = Instant::now();
+        if let Some(slot) = self.steps.get_mut(self.len) {
+            *slot = (step, now.saturating_duration_since(self.last));
+            self.len = self.len.saturating_add(1);
+        }
+        self.last = now;
+    }
+}
+
+impl std::fmt::Display for ClientSteps {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, (step, elapsed)) in self.steps.iter().take(self.len).enumerate() {
+            if index > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{step}={elapsed:?}")?;
+        }
+        Ok(())
+    }
+}
+
+/// A key event's handling, step by step; reported as `SLOW-KEY` when the
+/// whole of it took long enough to delay the frame that answers it.
+struct KeySteps {
+    started: Instant,
+    steps: ClientSteps,
+}
+
+const SLOW_KEY: Duration = Duration::from_millis(8);
+
+impl KeySteps {
+    fn start() -> Self {
+        Self {
+            started: Instant::now(),
+            steps: ClientSteps::start(),
+        }
+    }
+}
+
+impl Drop for KeySteps {
+    fn drop(&mut self) {
+        let total = self.started.elapsed();
+        if total >= SLOW_KEY {
+            self.steps.mark("rest");
+            eprintln!("SLOW-KEY total={total:?} ({})", self.steps);
+        }
+    }
 }
 
 fn dispatch_wayland_clients_fairly(
@@ -540,8 +637,10 @@ impl LockClock {
         lock: &'a LockController,
         notification_count: usize,
         now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
+        keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
     ) -> LockView<'a> {
         LockView {
+            keyboard,
             password_len: lock.buffer_len(),
             error: lock.error(),
             clock: &self.clock,
@@ -751,7 +850,7 @@ fn lock_clock_refresh_due(session_locked: bool, now: Instant, last_refresh: &mut
     }
 }
 
-fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
+pub(crate) fn wayland_peer_credentials(stream: &UnixStream) -> Option<libc::ucred> {
     let mut credentials = libc::ucred {
         pid: 0,
         uid: 0,
@@ -786,7 +885,7 @@ fn peer_executable(stream: &UnixStream) -> Option<String> {
         .ok()
 }
 
-fn peer_shares_host_security_namespaces(pid: u32) -> bool {
+pub(crate) fn peer_shares_host_security_namespaces(pid: u32) -> bool {
     ["user", "mnt"].into_iter().all(|namespace| {
         let host = std::fs::metadata(format!("/proc/self/ns/{namespace}"));
         let peer = std::fs::metadata(format!("/proc/{pid}/ns/{namespace}"));
@@ -1094,6 +1193,25 @@ fn pump_chooser_opens(
     }
 }
 
+/// Answer an app's request about its own tab. The app id is the one the
+/// launcher vouched for on this connection.
+fn apply_app_tab_request(
+    frame_builder: &mut FrameBuilder,
+    app_id: &str,
+    instance: Option<u64>,
+    request: crate::shell::app_tabs::AppTabRequest,
+) -> bool {
+    let mut outcome = Ok(());
+    frame_builder.with_chrome(|st| {
+        outcome = crate::shell::app_tabs::apply_request(st, app_id, instance, request);
+        st.bump();
+    });
+    if let Err(error) = outcome {
+        tracing::info!(%app_id, %error, "app tab request refused");
+    }
+    true
+}
+
 // This is the ordered protocol event pump; its branches share authentication
 // and handoff state that is clearer when kept in a single state-machine tick.
 #[allow(
@@ -1389,14 +1507,57 @@ fn pump_floating_surface_service(
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::SetCaptureProtection {
                     protected,
+                    generation,
                 } => {
                     // The app id is the one the launcher vouched for, so a
                     // request can only ever withhold the asking app's own
                     // windows. It narrows what leaves the display, never
                     // widens it, so any app may ask.
                     foreign::store().request_app_capture_protection(connection, &app_id, protected);
+                    if let Some(generation) = generation {
+                        service.send(connection, &ui::floating_surface::FloatingSurfaceHostMessage::CaptureProtectionApplied { generation, protected });
+                    }
                     tracing::debug!(connection, %app_id, protected, "capture protection requested");
                     changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::OpenTabBeside {
+                    target,
+                    background,
+                    instance,
+                } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::OpenBeside { target, background },
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::CloseTab { instance } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::Close,
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::ReopenClosedTab => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        None,
+                        crate::shell::app_tabs::AppTabRequest::ReopenClosed,
+                    );
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PlaceNextWindowBeside {
+                    background,
+                    instance,
+                } => {
+                    changed |= apply_app_tab_request(
+                        frame_builder,
+                        &app_id,
+                        instance,
+                        crate::shell::app_tabs::AppTabRequest::PlaceNextWindowBeside { background },
+                    );
                 }
                 ui::floating_surface::FloatingSurfaceClientMessage::Dismiss { id } => {
                     let internal = external_floating_id(connection, &id);
@@ -1410,18 +1571,67 @@ fn pump_floating_surface_service(
                         &ui::floating_surface::FloatingSurfaceHostMessage::Closed { id },
                     );
                 }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintCapable => {
+                    // The app id is the launcher's, so an app can only ever
+                    // offer its own windows' pages.
+                    state.note_paint_app(&app_id, connection);
+                    changed = true;
+                }
+                ui::floating_surface::FloatingSurfaceClientMessage::PaintStream {
+                    payload,
+                    page,
+                    scale,
+                } => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(payload.as_bytes()) {
+                        Ok(payload) => state.receive_paint_frame(
+                            &app_id,
+                            crate::compositor::state::PaintFrame {
+                                payload,
+                                page,
+                                scale,
+                            },
+                        ),
+                        Err(error) => {
+                            tracing::debug!(connection, %app_id, %error, "malformed paint stream frame");
+                        }
+                    }
+                }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
                 appearance.disconnected(connection);
+                // Closing the control socket does not destroy the last Wayland
+                // buffer. Preserve its protection until the toplevel dies.
+                for tab in foreign::foreign_tabs_anywhere(&state.workspace_tree.read()) {
+                    if tab.app_id == app_id {
+                        foreign::store().retain_surface_capture_protection(tab.surface_id, &app_id);
+                    }
+                }
+                for surface in &state.floating_toplevels {
+                    if surface.connection == connection {
+                        foreign::store()
+                            .retain_surface_capture_protection(surface.surface_id, &app_id);
+                    }
+                }
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }
                 state.dismiss_floating_connection(connection);
+                state.drop_paint_connection(connection);
                 foreign::store().release_capture_protection(connection);
                 tracing::debug!(connection, %app_id, "shell-ui client disconnected");
                 changed = true;
             }
         }
+    }
+    // Apps whose pages someone started or stopped watching.
+    for (connection, watched) in state.paint_watch_changes() {
+        let message = if watched {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+        } else {
+            ui::floating_surface::FloatingSurfaceHostMessage::PaintStop
+        };
+        service.send(connection, &message);
     }
     changed
 }
@@ -1615,6 +1825,10 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
+/// Set to `keep` by a dev image's login wrapper, which gives a person's own
+/// login the control socket: that session is not a harness's and keeps first
+/// use.
+const TEST_CONTROL_FIRST_USE_ENV: &str = "TILO_TEST_CONTROL_FIRST_USE";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -2005,11 +2219,17 @@ struct TestControlConn {
     /// Accepted on the agent-control socket: only
     /// [`test_control::Command::agent_permitted`] commands are served.
     agent: bool,
+    /// Accepted on the device admin's control socket: only
+    /// [`test_control::Command::admin_permitted`] commands are served, for
+    /// the session's own person and never on behalf of a seated agent.
+    admin: bool,
     /// Wakes the compositor loop when request bytes arrive on this stream;
     /// removed from the loop together with the connection.
     wake: Option<calloop::RegistrationToken>,
     closed: bool,
     pending_invocation: Option<PendingTestControlInvocation>,
+    /// A `snapshot` answered once its file is complete.
+    pending_snapshot: Option<(SnapshotOutcome, test_control::Response)>,
     output: Vec<u8>,
     output_offset: usize,
 }
@@ -2040,6 +2260,14 @@ impl PendingTestControlInvocation {
 }
 
 impl TestControlConn {
+    /// A connection on the device admin's control socket, already authorised
+    /// by [`crate::compositor::admin_control::authorize`].
+    fn admin(stream: UnixStream) -> Option<Self> {
+        let mut conn = Self::new(stream, false)?;
+        conn.admin = true;
+        Some(conn)
+    }
+
     fn new(stream: UnixStream, agent: bool) -> Option<Self> {
         if let Err(e) = stream.set_nonblocking(true) {
             eprintln!("tilo compositor: test_control conn set_nonblocking: {e}");
@@ -2048,9 +2276,11 @@ impl TestControlConn {
         Some(Self {
             reader: BufReader::new(stream),
             agent,
+            admin: false,
             wake: None,
             closed: false,
             pending_invocation: None,
+            pending_snapshot: None,
             output: Vec::new(),
             output_offset: 0,
         })
@@ -2584,6 +2814,16 @@ impl ControlState for FrameBuilderControlState<'_> {
             // The input hardware and last-used modality the chrome adapts
             // to, and the language the desktop help overlay is written in.
             "input": input_environment_json(self.fb.host().interaction_environment(), self.fb.host().shortcut_help_modality()),
+            // The on-screen keyboard: whether its service has a surface,
+            // and where it is painted while it serves the focused field.
+            "on_screen_keyboard": {
+                "connected": self.fb.osk_connected(),
+                "commits": self.fb.osk_commits(),
+                "serves_shell_field": self.fb.osk_serves_shell(),
+                "shown": self.fb.osk_surface_rect().map(|(_, rect)| serde_json::json!({
+                    "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
+                })),
+            },
             "search_scope": format!("{:?}", chrome.search_scope),
             "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
@@ -2645,6 +2885,14 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "verifying": self.lock.is_some_and(LockController::is_verifying),
                 "password_len": self.lock.map_or(0, LockController::buffer_len),
                 "error": self.lock.and_then(LockController::error),
+                // The keyboard drawn on the lock screen, while it shows:
+                // where each key sits, never what was typed.
+                "keyboard": self.fb.lock_keyboard_keys().iter().map(|(name, rect)| {
+                    serde_json::json!({
+                        "key": name,
+                        "x": rect.x0, "y": rect.y0, "w": rect.width(), "h": rect.height(),
+                    })
+                }).collect::<Vec<_>>(),
             },
             // Who this session is, and whether they may administer the room they're
             // in — read straight off the production helpers, not guessed from `owner`.
@@ -2758,7 +3006,14 @@ struct PendingClientSnapshot {
     path: std::path::PathBuf,
     crop: Option<vello::kurbo::Rect>,
     settle: crate::compositor::client_settle::Settle,
+    /// Filled once the file is written, or failed to be.
+    outcome: SnapshotOutcome,
 }
+
+/// How a screenshot's write went, shared between the deferred write and the
+/// request that asked for it: the request is answered only once the file at
+/// its path is complete, so a caller never reads a PNG still being written.
+type SnapshotOutcome = std::rc::Rc<std::cell::RefCell<Option<Result<(), String>>>>;
 
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
@@ -2772,6 +3027,9 @@ struct TestControlCtx {
     /// precisely the ownership handoff DRM uses before emitting real
     /// `wl_touch` traffic to its Wayland clients.
     direct_touch: DirectTouchOwnership,
+    /// Touch the chrome or a touch-less client receives as pointer input;
+    /// shared by physical and injected touch.
+    touch_pointer: crate::compositor::touch_pointer::TouchPointer,
     /// Synthetic touchpad gestures go through the tracker the DRM runtime
     /// feeds from libinput, so they mean exactly what the fingers would.
     gestures: crate::compositor::backend::drm::gestures::GestureTracker,
@@ -2795,6 +3053,9 @@ struct TestControlCtx {
     /// Screenshot not written yet: the clients in it are still answering
     /// the preceding input.
     pending_snapshot: Option<PendingClientSnapshot>,
+    /// Set by a `snapshot` command whose write was deferred; the connection
+    /// that sent it holds its answer until the outcome is in.
+    deferred_snapshot_reply: Option<SnapshotOutcome>,
 }
 
 impl TestControlCtx {
@@ -2806,6 +3067,7 @@ impl TestControlCtx {
             focus: None,
             cursor: PhysicalPosition::new(0.0, 0.0),
             direct_touch: DirectTouchOwnership::default(),
+            touch_pointer: crate::compositor::touch_pointer::TouchPointer::default(),
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
             watch_request: None,
@@ -2814,6 +3076,7 @@ impl TestControlCtx {
             snapshot_window: None,
             input_since_snapshot: false,
             pending_snapshot: None,
+            deferred_snapshot_reply: None,
         }
     }
 
@@ -3183,27 +3446,6 @@ fn dispatch_synth_event(
     );
 }
 
-/// The pointer click a confirmed one-finger tap at `(x, y)` stands for, for
-/// taps that did not already reach a client over `wl_touch`.
-fn touch_tap_pointer_events(x: f64, y: f64) -> [WindowEvent; 3] {
-    [
-        WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
-            position: PhysicalPosition::new(x, y),
-        },
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Pressed,
-            button: MouseButton::Left,
-        },
-        WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
-            state: ElementState::Released,
-            button: MouseButton::Left,
-        },
-    ]
-}
-
 /// Wire name of an input modality in `state-dump`.
 fn input_modality_name(modality: ui::InputModality) -> &'static str {
     match modality {
@@ -3234,6 +3476,64 @@ fn input_environment_json(
         "available": available,
         "help_modality": input_modality_name(help_modality),
     })
+}
+
+/// The pointer input one raw contact update stands for, if any (see
+/// [`crate::compositor::touch_pointer`]). A contact is translated when it
+/// begins outside every touch-capable client and on no chrome widget that
+/// handles raw touch itself; a shell gesture claiming the stream later
+/// withdraws whatever the translation still had pending.
+fn touch_pointer_events(
+    touch_pointer: &mut crate::compositor::touch_pointer::TouchPointer,
+    touch: &winit::event::Touch,
+    chrome_handled: bool,
+    state: &State,
+    fb: &FrameBuilder,
+) -> Vec<WindowEvent> {
+    if chrome_handled
+        && touch.phase == winit::event::TouchPhase::Moved
+        && touch_pointer.is_emulated(touch.id)
+    {
+        return touch_pointer.cancel(touch);
+    }
+    touch_pointer.events(touch, || {
+        touch_route(
+            chrome_handled || state.touch_down_reached_client(),
+            fb,
+            touch.location.x,
+            touch.location.y,
+        )
+    })
+}
+
+/// How a contact that begins at `(x, y)` is handled: raw by whoever already
+/// took it, else by what the chrome there does with a pointer.
+fn touch_route(
+    taken: bool,
+    fb: &FrameBuilder,
+    x: f64,
+    y: f64,
+) -> crate::compositor::touch_pointer::TouchRoute {
+    use crate::compositor::touch_pointer::TouchRoute;
+    let point = vello::kurbo::Point::new(x, y);
+    if taken || fb.claims_raw_touch_at(point) {
+        TouchRoute::Raw
+    } else {
+        TouchRoute::for_cursor(fb.chrome_cursor_at(point))
+    }
+}
+
+/// The state dump's name for a key of the lock screen's keyboard.
+fn passcode_key_name(key: ui::passcode_keyboard::PasscodeKey) -> String {
+    use ui::passcode_keyboard::PasscodeKey;
+    match key {
+        PasscodeKey::Char(c) => c.to_string(),
+        PasscodeKey::Shift => "shift".into(),
+        PasscodeKey::Symbols => "symbols".into(),
+        PasscodeKey::Space => "space".into(),
+        PasscodeKey::Backspace => "backspace".into(),
+        PasscodeKey::Enter => "enter".into(),
+    }
 }
 
 /// Build the shell-side raw touch event for the test-control adapter. The
@@ -3292,17 +3592,42 @@ fn dispatch_test_control_touch(
     use winit::event::TouchPhase;
 
     let key = DirectTouchOwnership::key(device, slot);
-    let raw = |id, raw_x, raw_y, raw_phase, fb: &mut FrameBuilder, ctx: &mut TestControlCtx| {
+    let raw = |id,
+               raw_x,
+               raw_y,
+               raw_phase,
+               fb: &mut FrameBuilder,
+               ctx: &mut TestControlCtx,
+               state: &mut Option<&mut State>| {
         let event = test_touch_input_event(id, raw_x, raw_y, raw_phase);
         // Direct touch belongs to the shell gesture arena. Unlike pointer
         // input it must not first be routed as a client pointer event.
-        fb.dispatch_event(
+        let handled = fb.dispatch_event(
             &event,
             &ctx.modifiers,
             &mut ctx.doc,
             &ctx.root_obj,
             &mut ctx.focus,
         );
+        let WindowEvent::Touch(touch) = &event else {
+            return;
+        };
+        let reached_client = state
+            .as_deref()
+            .is_some_and(State::touch_down_reached_client);
+        let pointer_events = if handled
+            && touch.phase == TouchPhase::Moved
+            && ctx.touch_pointer.is_emulated(touch.id)
+        {
+            ctx.touch_pointer.cancel(touch)
+        } else {
+            ctx.touch_pointer.events(touch, || {
+                touch_route(handled || reached_client, fb, raw_x, raw_y)
+            })
+        };
+        for pointer_event in pointer_events {
+            dispatch_synth_event(&pointer_event, fb, ctx, state);
+        }
     };
     let frame = |ownership: &mut DirectTouchOwnership,
                  state: &mut Option<&mut State>,
@@ -3315,19 +3640,29 @@ fn dispatch_test_control_touch(
     match phase {
         TouchPhaseKind::Down => match ctx.direct_touch.down(key, (x, y)) {
             DirectTouchDown::ForwardToClient(id) => {
-                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                // The client half first, as on DRM: the raw half then knows
+                // whether a touch-capable client took the contact.
                 forward_test_control_touch(state, fb, BackendTouchEvent::Down { slot: id, x, y });
+                raw(id, x, y, TouchPhase::Started, fb, ctx, state);
             }
             DirectTouchDown::CancelClientForShell(id) => {
-                raw(id, x, y, TouchPhase::Started, fb, ctx);
+                if let Some(state) = state.as_deref_mut() {
+                    state.note_touch_down_withheld_from_clients();
+                }
+                raw(id, x, y, TouchPhase::Started, fb, ctx, state);
                 forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
                 frame(&mut ctx.direct_touch, state, fb);
             }
-            DirectTouchDown::ShellOwned(id) => raw(id, x, y, TouchPhase::Started, fb, ctx),
+            DirectTouchDown::ShellOwned(id) => {
+                if let Some(state) = state.as_deref_mut() {
+                    state.note_touch_down_withheld_from_clients();
+                }
+                raw(id, x, y, TouchPhase::Started, fb, ctx, state);
+            }
         },
         TouchPhaseKind::Motion => {
             if let Some((id, to_client)) = ctx.direct_touch.motion(&key, (x, y)) {
-                raw(id, x, y, TouchPhase::Moved, fb, ctx);
+                raw(id, x, y, TouchPhase::Moved, fb, ctx, state);
                 if to_client {
                     forward_test_control_touch(
                         state,
@@ -3338,28 +3673,17 @@ fn dispatch_test_control_touch(
             }
         }
         TouchPhaseKind::Up => {
-            if let Some(((last_x, last_y), id, to_client, emulate_pointer)) =
-                ctx.direct_touch.up(&key)
-            {
-                raw(id, last_x, last_y, TouchPhase::Ended, fb, ctx);
+            if let Some(((last_x, last_y), id, to_client)) = ctx.direct_touch.up(&key) {
+                raw(id, last_x, last_y, TouchPhase::Ended, fb, ctx, state);
                 if to_client {
                     forward_test_control_touch(state, fb, BackendTouchEvent::Up { slot: id });
-                }
-                if emulate_pointer
-                    && state
-                        .as_deref()
-                        .is_none_or(State::touch_tap_needs_pointer_click)
-                {
-                    for event in touch_tap_pointer_events(last_x, last_y) {
-                        dispatch_synth_event(&event, fb, ctx, state);
-                    }
                 }
             }
         }
         TouchPhaseKind::Cancel => {
             let forward_cancel = ctx.direct_touch.client_stream_active();
             for (id, (last_x, last_y)) in ctx.direct_touch.cancel() {
-                raw(id, last_x, last_y, TouchPhase::Cancelled, fb, ctx);
+                raw(id, last_x, last_y, TouchPhase::Cancelled, fb, ctx, state);
             }
             if forward_cancel {
                 forward_test_control_touch(state, fb, BackendTouchEvent::Cancel);
@@ -3591,9 +3915,16 @@ fn execute_planned_action(
             // returned `Ok`, and crashing on a stray bad path defeats the point of a
             // test surface. A snapshot must show a drag's carried item too, drawn by
             // the live present loop on top of the scene.
-            if !defer_client_snapshot(ctx, fb, path, state.as_deref_mut()) {
+            if let Some(outcome) = defer_client_snapshot(ctx, fb, path, state.as_deref_mut()) {
+                ctx.deferred_snapshot_reply = Some(outcome);
+            } else {
                 let drag = snapshot_drag(state.as_deref());
-                write_snapshot_png(fb, path, drag, ctx.snapshot_crop);
+                if let Err(message) = write_snapshot_png(fb, path, drag, ctx.snapshot_crop) {
+                    return Some(Err(InvokeFailure {
+                        code: "snapshot_failed".into(),
+                        message,
+                    }));
+                }
             }
         }
         PlannedAction::InvokeAction {
@@ -3676,7 +4007,7 @@ fn execute_locked_action(
     lock: &mut LockController,
     state: &mut State,
     ctx: &mut TestControlCtx,
-) {
+) -> Option<InvokeFailure> {
     match action {
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
@@ -3686,11 +4017,21 @@ fn execute_locked_action(
             }
             client_input::consume_keyboard_while_captured(state, &event);
             lock.handle_key(winit_event_to_lock_key(&event));
+            None
         }
-        // Pointer, modifiers, snapshots and action invocations are all swallowed
-        // while locked. `InvokeAction` matters most here: the action API reaches
-        // chrome side-effects with no visible surface, so letting it through would
-        // make the lock screen bypassable by a socket client that renders nothing.
+        // Action invocations and snapshots are refused while locked, and say
+        // so. `InvokeAction` matters most here: the action API reaches chrome
+        // side-effects with no visible surface, so letting it through would
+        // make the lock screen bypassable by a socket client that renders
+        // nothing; answering `ok` for an action that never ran would leave a
+        // caller who cannot see the screen believing it did.
+        PlannedAction::Snapshot { .. } | PlannedAction::InvokeAction { .. } => {
+            Some(InvokeFailure {
+                code: "session_locked".into(),
+                message: test_control::SESSION_LOCKED.into(),
+            })
+        }
+        // Pointer and modifier input is swallowed while locked.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::MousePointerButton { .. }
@@ -3699,10 +4040,8 @@ fn execute_locked_action(
         | PlannedAction::Touchpad(_)
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
-        | PlannedAction::Snapshot { .. }
         | PlannedAction::SetGroupWidth { .. }
-        | PlannedAction::SeedFilesDrag { .. }
-        | PlannedAction::InvokeAction { .. } => {}
+        | PlannedAction::SeedFilesDrag { .. } => None,
     }
 }
 
@@ -3753,24 +4092,24 @@ fn snapshot_drag(
 }
 
 /// Hold `path` until the clients in it answered the input injected since
-/// the last screenshot. Returns whether the write was deferred; with no
-/// input since, or no client to wait for, the call site writes at once.
+/// the last screenshot. Returns where the deferred write reports its
+/// outcome; `None` when there was no input since, or no client to wait for,
+/// and the call site writes at once.
 fn defer_client_snapshot(
     ctx: &mut TestControlCtx,
     fb: &mut FrameBuilder,
     path: &std::path::Path,
     state: Option<&mut State>,
-) -> bool {
-    let Some(state) = state else {
-        return false;
-    };
+) -> Option<SnapshotOutcome> {
+    let state = state?;
     if !std::mem::take(&mut ctx.input_since_snapshot) {
-        return false;
+        return None;
     }
     // A shot still waiting is the older one: it goes out now, as it is.
     if let Some(pending) = ctx.pending_snapshot.take() {
         let drag = snapshot_drag(Some(state));
-        write_snapshot_png(fb, &pending.path, drag, pending.crop);
+        let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
+        *pending.outcome.borrow_mut() = Some(written);
     }
     let surfaces = match ctx.snapshot_window {
         Some(window) => foreign::toplevel_surface(state, window)
@@ -3779,14 +4118,16 @@ fn defer_client_snapshot(
         None => foreign::shown_toplevel_surfaces(state),
     };
     if surfaces.is_empty() {
-        return false;
+        return None;
     }
+    let outcome = SnapshotOutcome::default();
     ctx.pending_snapshot = Some(PendingClientSnapshot {
         path: path.to_path_buf(),
         crop: ctx.snapshot_crop,
         settle: crate::compositor::client_settle::Settle::begin(state, &surfaces, Instant::now()),
+        outcome: std::rc::Rc::clone(&outcome),
     });
-    true
+    Some(outcome)
 }
 
 /// Write a deferred screenshot once its clients have answered, or the wait
@@ -3810,13 +4151,14 @@ fn publish_settled_snapshot(ctx: &mut TestControlCtx, fb: &mut FrameBuilder, sta
         return;
     };
     let drag = snapshot_drag(Some(state));
-    write_snapshot_png(fb, &pending.path, drag, pending.crop);
+    let written = write_snapshot_png(fb, &pending.path, drag, pending.crop);
+    *pending.outcome.borrow_mut() = Some(written);
 }
 
 /// Re-paint the current scene into a cached `OffscreenRenderer` and encode
-/// it as a PNG at `path`. Best-effort: bad viewport / missing adapter / I/O
-/// or encoder failures log to stderr and return rather than take the
-/// calloop pump down. Split out of `execute_planned_action` so unit tests
+/// it as a PNG at `path`. A bad viewport, missing adapter, or I/O or
+/// encoder failure is returned to the request that asked for the shot
+/// rather than taking the calloop pump down. Split out of `execute_planned_action` so unit tests
 /// can exercise it against a hand-built `FrameBuilder` directly.
 fn write_snapshot_png(
     fb: &mut FrameBuilder,
@@ -3826,7 +4168,7 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
     crop: Option<vello::kurbo::Rect>,
-) {
+) -> Result<(), String> {
     let (w, h) = fb.scene_size();
     // Scene dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
@@ -3841,8 +4183,7 @@ fn write_snapshot_png(
         h.round().clamp(0.0, f64::from(u32::MAX)) as u32,
     );
     if w == 0 || h == 0 {
-        eprintln!("tilo compositor: test_control snapshot: viewport is {w}x{h}, nothing to write");
-        return;
+        return Err(format!("the viewport is {w}x{h}, nothing to write"));
     }
     // A test-control snapshot may be the first paint after an input event.
     // Retained overlays retarget their interruptible transitions during
@@ -3873,8 +4214,9 @@ fn write_snapshot_png(
     // measured at 1920x1080, ~450ms/frame vs ~70ms actual render+encode.
     // See [`SNAPSHOT_RENDERER`] for why the cache is a `static`, not `thread_local!`.
 
-    // `try_new`, not `new` inside `catch_unwind`: the release profile sets
-    // `panic = "abort"`, so a caught panic can't happen — the `Result` is what
+    // `try_new`, not `new` inside `catch_unwind`: in a release build a panic
+    // outside a `tilo_rt::panic_boundary` aborts, so a caught panic can't
+    // happen — the `Result` is what
     // keeps the compositor alive with no wgpu adapter (CI without llvmpipe).
     // Failure isn't cached: the slot stays empty so a later snapshot retries.
     let cache = SNAPSHOT_RENDERER.get_or_init(|| std::sync::Mutex::new(None));
@@ -3899,14 +4241,13 @@ fn write_snapshot_png(
                     *slot = Some(renderer);
                 }
                 Err(e) => {
-                    eprintln!("tilo compositor: test_control snapshot: no offscreen renderer: {e}");
                     *slot = None;
-                    return;
+                    return Err(format!("no offscreen renderer: {e}"));
                 }
             }
         }
         let Some(rgba) = slot.as_mut().map(|renderer| renderer.render_rgba(&scene)) else {
-            return;
+            return Err("no offscreen renderer".to_string());
         };
         // `rgba` is now an owned buffer with no tie to the renderer, so the
         // mutex guard can go before the encode/write work below.
@@ -3918,15 +4259,31 @@ fn write_snapshot_png(
         None => (w, h, rgba),
     };
     if w == 0 || h == 0 {
-        eprintln!("tilo compositor: test_control snapshot: the crop is empty, nothing to write");
-        return;
+        return Err("the crop is empty, nothing to write".to_string());
     }
-    if let Err(e) = ui::png::write_rgba8(path, w, h, &rgba) {
-        eprintln!(
-            "tilo compositor: test_control snapshot: write {}: {e}",
-            path.display()
-        );
+    let png = ui::png::encode_rgba8(w, h, &rgba).map_err(|e| format!("encode: {e}"))?;
+    write_whole(path, &png).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Write `bytes` to a sibling file and rename it over `path`, so a reader
+/// that opens `path` sees the previous file or the whole new one, never a
+/// PNG cut off mid-write.
+fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} names no file", path.display()),
+        )
+    })?;
+    let mut staging_name = std::ffi::OsString::from(".");
+    staging_name.push(name);
+    staging_name.push(format!(".{}.partial", std::process::id()));
+    let staging = path.with_file_name(staging_name);
+    let written = std::fs::write(&staging, bytes).and_then(|()| std::fs::rename(&staging, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&staging);
     }
+    written
 }
 
 /// The part of a `size` RGBA8 frame inside `crop`, clamped to the frame.
@@ -4034,6 +4391,23 @@ fn pump_pending_test_control_conn(conn: &mut TestControlConn) -> PendingConnecti
     match flush_test_control_output(conn) {
         PendingConnectionProgress::Idle => {}
         progress => return progress,
+    }
+    if let Some((outcome, response)) = conn.pending_snapshot.take() {
+        let written = outcome.borrow_mut().take();
+        return match written {
+            None => {
+                conn.pending_snapshot = Some((outcome, response));
+                PendingConnectionProgress::Waiting
+            }
+            Some(Ok(())) => queue_test_control_response(conn, &response),
+            Some(Err(message)) => queue_test_control_response(
+                conn,
+                &test_control::Response::Err {
+                    code: "snapshot_failed".into(),
+                    message,
+                },
+            ),
+        };
     }
     let Some(pending) = conn.pending_invocation.take() else {
         return PendingConnectionProgress::Idle;
@@ -4578,6 +4952,20 @@ fn pump_test_control_conn(
             Ok(Some(())) => {
                 let mut scope: Option<AgentScope> = None;
                 let (resp, actions) = match parse_request(&line) {
+                    Ok(request)
+                        if conn.admin
+                            && (request.agent.is_some()
+                                || request.window.is_some()
+                                || !request.command.admin_permitted()) =>
+                    {
+                        (
+                            test_control::Response::Err {
+                                code: "not_permitted".to_string(),
+                                message: test_control::ADMIN_CONTROL_NOT_PERMITTED.to_string(),
+                            },
+                            Vec::new(),
+                        )
+                    }
                     Ok(request) if conn.agent && !request.command.agent_permitted() => (
                         test_control::Response::Err {
                             code: "not_permitted".to_string(),
@@ -4668,7 +5056,9 @@ fn pump_test_control_conn(
                     if session.is_locked() {
                         // While locked the socket is captured by the lock surface like live input
                         // — actions go to the password field; `poll_verification` delivers unlock.
-                        execute_locked_action(action, lock, state, ctx);
+                        if let Some(failure) = execute_locked_action(action, lock, state, ctx) {
+                            failed.get_or_insert(failure);
+                        }
                     } else if let Some(outcome) =
                         execute_planned_action(action, frame_builder, ctx, Some(state))
                     {
@@ -4705,6 +5095,13 @@ fn pump_test_control_conn(
                     test_control::Response::Answer(action) => action.clone(),
                     _ => serde_json::Value::Null,
                 };
+                let deferred_snapshot = ctx.deferred_snapshot_reply.take();
+                if let Some(outcome) = deferred_snapshot
+                    && failed.is_none()
+                {
+                    conn.pending_snapshot = Some((outcome, resp));
+                    return injected_input;
+                }
                 if let Some(ticket) = pending
                     && failed.is_none()
                 {
@@ -5769,6 +6166,9 @@ fn install_device_fabric_bridge(
             }
             match action {
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
+                DeviceFabricUiAction::WakeDevice { device } => {
+                    crate::shell::device_wake::request_wake(&fabric_net, &device)?;
+                }
                 DeviceFabricUiAction::HandoffMedia { session_id, target } => {
                     let _ = crate::shell::device_fabric_runtime::request_media_handoff(
                         &fabric_net,
@@ -5979,6 +6379,21 @@ fn install_device_fabric_bridge(
                         request_id,
                     )?;
                 }
+                DeviceFabricUiAction::AuthorizeDeviceUnlock {
+                    request_digest,
+                    approved,
+                } => {
+                    crate::shell::device_unlock_runtime::decide_device_unlock(
+                        request_digest,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::RemoveDevice { device } => {
+                    let mut key = [0_u8; 32];
+                    hex::decode_to_slice(device.as_str(), &mut key)
+                        .map_err(|error| error.to_string())?;
+                    crate::shell::device_unlock_runtime::remove_device(key)?;
+                }
                 DeviceFabricUiAction::Place { device, edge } => {
                     crate::shell::device_fabric_runtime::place_device(&fabric_net, &device, edge)?;
                 }
@@ -6153,6 +6568,7 @@ fn install_session_peer_sync(
     let net = Arc::new(handle);
     net.join_at_boot();
     net.follow_host_rooms();
+    net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
@@ -7197,7 +7613,7 @@ pub fn run() {
         (0, 0) => (1600, 900),
         size => size,
     };
-    let peer_sync_requested = crate::compositor::peer_sync_enabled_from_env_or_marker();
+    let peer_sync_requested = crate::compositor::parse_peer_sync_from_args();
     let identity_store = match crate::shell::identity_provisioning::DiskIdentityStore::from_env() {
         Ok(store) => store,
         Err(error) => {
@@ -7215,11 +7631,14 @@ pub fn run() {
     // Release builds ignore TILO_TEST_CONTROL entirely via DEV_ENV_OVERRIDES.
     // A hosted machine an agent drives has no person at first login either;
     // its identity is provisioned without the ceremony.
+    // A dev image's login wrapper hands a person's own login the socket too,
+    // and says so: that login keeps first use.
     let test_control_session = test_control_path(
         crate::compositor::dev_env::DEV_ENV_OVERRIDES,
         std::env::var_os(TEST_CONTROL_ENV),
     )
     .is_some()
+        && std::env::var_os(TEST_CONTROL_FIRST_USE_ENV).is_none_or(|value| value != "keep")
         || agent_control_path(
             cfg!(feature = "agent-control"),
             backend_kind == BackendKind::Headless,
@@ -7239,6 +7658,11 @@ pub fn run() {
             .is_some_and(|value| value == "1");
     let identity_missing =
         crate::shell::identity_provisioning::needs_first_run_flow(&identity_store);
+    // The device admin's control socket is the real seat's: a nested or
+    // headless compositor is a development session with its own sockets.
+    let mut admin_control_due = (backend_kind == BackendKind::Drm)
+        .then(|| identity_store.path().parent().map(Path::to_path_buf))
+        .flatten();
     let onboarding_identity_dir = if should_activate_first_use(
         identity_missing,
         progress_pending,
@@ -7598,6 +8022,12 @@ pub fn run() {
     let mut input_methods =
         crate::compositor::input_method_service::InputMethodServices::start(&event_loop.handle());
     input_methods.reload(&mut state);
+    // The shell's own fields' stand-in for the input method, connected the
+    // first time one takes text.
+    let mut shell_text_input: Option<crate::compositor::shell_text_input::ShellTextInput> = None;
+    // Touch contacts that landed on the on-screen keyboard: they are the
+    // keyboard's alone, even over chrome that otherwise captures input.
+    let mut osk_touch_slots: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     // A second Wayland socket for clients the session trusts with
     // authority-bearing protocols — clipboard-manager access and session
@@ -7656,6 +8086,12 @@ pub fn run() {
             Some((l, g)) => (Some(l), Some(g)),
             None => (None, None),
         };
+    // Bound by the loop once first login is complete; see `admin_control`.
+    let mut admin_control: Option<(
+        UnixListener,
+        UnlinkOnDrop,
+        Option<calloop::RegistrationToken>,
+    )> = None;
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
     // A control client is itself an event source. Each accepted stream gets
     // its own wake (see `TestControlConn::watch`), because a connection is
@@ -8063,9 +8499,14 @@ pub fn run() {
     let mut last_lock_clock_refresh = Instant::now();
     let mut lock_player: Option<crate::shell::now_playing::PlayerSnapshot> = None;
     let mut lock_pointer: Option<vello::kurbo::Point> = None;
+    // The keyboard the lock screen draws for unlocking by touch: shown from
+    // the first touch, gone at the next physical key. No input method runs
+    // while locked; the passcode never leaves the lock screen.
+    let mut lock_keyboard = lock_screen::LockTouchKeyboard::default();
     let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
+    let mut animation_settle = AnimationSettle::default();
     // `output_presentation_frame_changed` observes live foreign-frame
     // sequences, but removal leaves no live entry to report. Keep a local
     // repaint edge until its full-frame boundary is actually submitted.
@@ -8090,6 +8531,9 @@ pub fn run() {
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
     // verbose aggregate line for development runs.
     let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // A developer override: every painted frame takes as long as on a slow
+    // machine, so per-frame layout steps see real long frame times.
+    let mut frame_stall = super::frame_stall::FrameStall::from_process_env();
     let mut pump_checkpoint = Instant::now();
     let mut pump_slowest = ("start", Duration::ZERO);
     macro_rules! pump_checkpoint {
@@ -8195,6 +8639,10 @@ pub fn run() {
             .and_then(present::PresentPipe::latest_retirement)
         {
             metrics.note_retirement(serial, retired_at);
+            let keys = crate::compositor::key_latency::tracker().frames_retired(serial, retired_at);
+            for sample in keys {
+                eprintln!("{sample}");
+            }
             if serial > frame_clock_retired_serial {
                 // A virtual present can retire several intervals after the
                 // frame was admitted. The grid point after that late time
@@ -8384,6 +8832,15 @@ pub fn run() {
             frame_builder.with_chrome(|st| st.set_pad_map(pad_map));
         }
         input_steps.step("tablet");
+        // A finger held still on chrome long enough is a secondary click;
+        // no touch event marks that moment, the clock does.
+        pending_events.extend(
+            test_control_ctx
+                .touch_pointer
+                .poll(Instant::now())
+                .into_iter()
+                .map(BackendEvent::Input),
+        );
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
@@ -8505,6 +8962,8 @@ pub fn run() {
                         .translate(&wev, Instant::now())
                         .map(|(action, pressed)| switch_action_event(action, pressed));
                     let wev = translated_switch.as_ref().unwrap_or(&wev);
+                    let mut key_steps =
+                        matches!(wev, WindowEvent::KeyboardInput { .. }).then(KeySteps::start);
                     // Pointer motion changes the compositor-owned cursor even
                     // when the focused Wayland client consumes the event.  It
                     // therefore needs a frame independently of whether chrome
@@ -8524,6 +8983,9 @@ pub fn run() {
                             &mut screen_dimmer,
                         );
                     }
+                    if let Some(steps) = key_steps.as_mut() {
+                        steps.steps.mark("activity");
+                    }
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
@@ -8537,12 +8999,18 @@ pub fn run() {
                     }
 
                     let locked = session.is_locked();
+                    // Whether the chrome handled this event itself; for raw
+                    // touch that means a shell gesture or a touch-aware widget.
+                    let mut chrome_handled = false;
                     let route = priority_route(
                         wev,
                         test_control_ctx.modifiers,
                         locked,
                         frame_builder.host().shortcut_config(),
                     );
+                    if let Some(steps) = key_steps.as_mut() {
+                        steps.steps.mark("route");
+                    }
                     if locked {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
@@ -8563,10 +9031,21 @@ pub fn run() {
                     if route == PriorityRoute::LockScreen {
                         // Locked: every input is captured by the lock surface, into the password
                         // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
+                        let mut key = winit_event_to_lock_key(wev);
                         match wev {
                             WindowEvent::CursorMoved { position, .. } => {
                                 lock_pointer =
                                     Some(vello::kurbo::Point::new(position.x, position.y));
+                            }
+                            WindowEvent::Touch(touch)
+                                if touch.phase == winit::event::TouchPhase::Started =>
+                            {
+                                lock_keyboard.touch_started();
+                            }
+                            WindowEvent::KeyboardInput { event, .. }
+                                if event.state == ElementState::Pressed =>
+                            {
+                                lock_keyboard.physical_key();
                             }
                             WindowEvent::MouseInput {
                                 state: ElementState::Pressed,
@@ -8574,12 +9053,23 @@ pub fn run() {
                                 ..
                             } => {
                                 let outputs =
-                                    lock_outputs(backend.outputs(), frame_builder.viewport());
+                                    lock_outputs(backend.outputs(), frame_builder.scene_size());
                                 let view = LockView {
                                     now_playing: lock_player.as_ref(),
+                                    keyboard: lock_keyboard.shown(),
                                     ..LockView::default()
                                 };
-                                if let Some(transport) = lock_pointer.and_then(|point| {
+                                let pressed = lock_pointer.and_then(|point| {
+                                    lock_screen::keyboard_key_at(
+                                        &outputs,
+                                        frame_builder.theme(),
+                                        &view,
+                                        point,
+                                    )
+                                });
+                                if let Some(pressed) = pressed {
+                                    key = lock_keyboard.press(pressed);
+                                } else if let Some(transport) = lock_pointer.and_then(|point| {
                                     lock_screen::transport_at(
                                         &outputs,
                                         frame_builder.theme(),
@@ -8592,7 +9082,6 @@ pub fn run() {
                             }
                             _ => {}
                         }
-                        let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
@@ -8769,20 +9258,35 @@ pub fn run() {
                                 wev,
                                 &test_control_ctx.modifiers,
                             );
-                        if !to_client {
+                        if let Some(steps) = key_steps.as_mut() {
+                            steps.steps.mark("client");
+                        }
+                        // A finger on the on-screen keyboard types; the chrome
+                        // under the keyboard never sees it.
+                        let keyboard_contact = matches!(
+                            wev,
+                            WindowEvent::Touch(touch)
+                                if u32::try_from(touch.id)
+                                    .is_ok_and(|slot| osk_touch_slots.contains(&slot))
+                        );
+                        if !to_client && !keyboard_contact {
                             session_changed |= client_input::finish_chrome_drag_into_shell(
                                 &mut state,
                                 &mut frame_builder,
                                 wev,
                             );
                             // Dispatch real input through the same wire the headless `execute_planned_action` path uses.
-                            session_changed |= frame_builder.dispatch_event(
+                            chrome_handled = frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,
                                 &mut test_control_ctx.doc,
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
+                            session_changed |= chrome_handled;
+                            if let Some(steps) = key_steps.as_mut() {
+                                steps.steps.mark("chrome");
+                            }
                             // Chrome input can change the active tab/group/workspace. The
                             // backend may have already queued the next physical key in this
                             // same batch, so move the Wayland seat now rather than only after
@@ -8790,6 +9294,23 @@ pub fn run() {
                             // the tab that was active before the click.
                             frame_builder.host_mut().flush_active_tab_writeback();
                             client_input::sync_keyboard_focus(&mut state, &frame_builder);
+                        }
+                    }
+                    // Touch nobody took raw becomes pointer input, processed
+                    // right now through the physical pointer path: the chrome,
+                    // the lock screen and touch-less clients all understand it.
+                    if let WindowEvent::Touch(touch) = wev {
+                        for event in touch_pointer_events(
+                            &mut test_control_ctx.touch_pointer,
+                            touch,
+                            chrome_handled,
+                            &state,
+                            &frame_builder,
+                        )
+                        .into_iter()
+                        .rev()
+                        {
+                            pending_events.push_front(BackendEvent::Input(event));
                         }
                     }
                 }
@@ -8888,11 +9409,26 @@ pub fn run() {
                     // client. Its mandatory `wl_touch.cancel` must still get
                     // through even if that gesture also opened chrome which
                     // now captures ordinary input.
-                    if matches!(
-                        touch,
-                        crate::compositor::backend::TouchEvent::Cancel
-                            | crate::compositor::backend::TouchEvent::Frame
-                    ) || (!session.is_locked() && client_input_allowed(&frame_builder))
+                    use crate::compositor::backend::TouchEvent as Contact;
+                    let on_keyboard = match touch {
+                        Contact::Down { slot, x, y } => {
+                            let hit = frame_builder.osk_surface_hit((x, y)).is_some();
+                            if hit {
+                                osk_touch_slots.insert(slot);
+                            }
+                            hit
+                        }
+                        Contact::Motion { slot, .. } => osk_touch_slots.contains(&slot),
+                        Contact::Up { slot } => osk_touch_slots.remove(&slot),
+                        Contact::Cancel => {
+                            osk_touch_slots.clear();
+                            false
+                        }
+                        Contact::Frame => false,
+                    };
+                    if matches!(touch, Contact::Cancel | Contact::Frame)
+                        || on_keyboard
+                        || (!session.is_locked() && client_input_allowed(&frame_builder))
                     {
                         let target = client_input::touch_target(&state, &frame_builder, &touch);
                         if let Some((surface_id, _)) = target
@@ -8907,16 +9443,6 @@ pub fn run() {
                         state.forward_client_touch(touch, target);
                     } else if matches!(touch, crate::compositor::backend::TouchEvent::Down { .. }) {
                         state.note_touch_down_withheld_from_clients();
-                    }
-                }
-                BackendEvent::TouchTap { x, y } => {
-                    // A tap whose touch sequence reached a client is that
-                    // client's alone. Otherwise it becomes one ordinary click,
-                    // processed right now through the physical pointer path.
-                    if state.touch_tap_needs_pointer_click() {
-                        for event in touch_tap_pointer_events(x, y).into_iter().rev() {
-                            pending_events.push_front(BackendEvent::Input(event));
-                        }
                     }
                 }
                 BackendEvent::InputDeviceAdded { id, capabilities } => {
@@ -9463,6 +9989,9 @@ pub fn run() {
             // The field/status changed (unlocked, or error shown) — repaint.
             session_changed = true;
             if outcome == UnlockOutcome::Unlocked {
+                // The next lock starts without the keyboard and its layer.
+                lock_keyboard = lock_screen::LockTouchKeyboard::default();
+                frame_builder.set_lock_keyboard_keys(Vec::new());
                 for t in session.request_unlock(Instant::now()) {
                     apply_session_transition(
                         t,
@@ -9649,11 +10178,43 @@ pub fn run() {
         let awake_holders =
             inhibit_registry.active_reasons_for(tilo_power_mgmt::inhibit::INHIBIT_IDLE);
         frame_builder.with_chrome(|chrome| chrome.set_awake_holders(awake_holders));
+        // A chrome field with the focus, while no client holds the keyboard,
+        // is served to the seat's input method like an application field.
+        let shell_field = (!session.is_locked() && state.client_input.keyboard_focus().is_none())
+            .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
+            .flatten();
+        if shell_field.is_some() && shell_text_input.is_none() {
+            match crate::compositor::shell_text_input::ShellTextInput::connect(&mut state) {
+                Ok(proxy) => shell_text_input = Some(proxy),
+                Err(error) => {
+                    tracing::warn!(target: "tilo::input_method", %error, "the shell's fields cannot reach the input method");
+                }
+            }
+        }
+        if let Some(proxy) = shell_text_input.as_mut() {
+            let mut typed = proxy.sync(&mut state, shell_field);
+            state.shell_field_active = proxy.holds_focus(&state);
+            typed.append(&mut state.shell_field_keys);
+            for event in &typed {
+                frame_builder.dispatch_event(
+                    event,
+                    &test_control_ctx.modifiers,
+                    &mut test_control_ctx.doc,
+                    &test_control_ctx.root_obj,
+                    &mut test_control_ctx.focus,
+                );
+            }
+            if !typed.is_empty() {
+                injected_redraw_pending = true;
+            }
+        }
         frame_builder.set_osk_surface(
             state.osk_surface,
             state.client_input.keyboard_focus(),
-            state.text_input_active(),
+            state.shell_field_active.then_some(shell_field).flatten(),
+            state.text_input_active() && input_methods.osk_shown(),
         );
+        frame_builder.set_osk_commits(state.osk_commits);
         pump_checkpoint!("session-focus-and-surfaces");
         let floating_surfaces = state
             .floating_toplevels
@@ -9701,9 +10262,12 @@ pub fn run() {
         // Hand the remote-input firewall this frame's screen: foreign tile
         // positions, keyboard holder, chrome-drawn-over, locked — refreshed before remote events drain.
         client_input::publish_remote_input_view(&mut state, &frame_builder, session.is_locked());
-        if let Some(image) =
-            client_input::sync_pointer_image(&state, &mut frame_builder, session.is_locked())
-        {
+        if let Some(image) = client_input::sync_pointer_image(
+            &state,
+            &mut frame_builder,
+            session.is_locked(),
+            test_control_ctx.input.last_used() == Some(ui::InputModality::Touch),
+        ) {
             backend.set_pointer_image(image);
             // A software cursor is drawn into the frame, so it needs one.
             injected_redraw_pending = true;
@@ -10213,6 +10777,19 @@ pub fn run() {
         if take_deferred_peer_sync_activation(&mut deferred_local_broker, onboarding_active) {
             local_broker_due = true;
         }
+        // First login has to finish before the device has an owner to serve.
+        if !onboarding_active && let Some(identity_dir) = admin_control_due.take() {
+            match crate::compositor::admin_control::bind(&identity_dir) {
+                Ok((listener, path)) => {
+                    tracing::info!(path = %path.display(), "admin control: listening");
+                    let wake = control_listener_wake(&listener, &event_loop.handle());
+                    admin_control = Some((listener, UnlinkOnDrop(path), wake));
+                }
+                Err(reason) => {
+                    tracing::info!(%reason, "admin control: not served in this session");
+                }
+            }
+        }
         let started = if std::mem::take(&mut local_broker_due) {
             Some(None)
         } else {
@@ -10317,7 +10894,8 @@ pub fn run() {
         // Host demand clears when the crossfade settles (e2e). Keep
         // painting until this many compositor frames have actually run (W16).
         let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
-        let animating = animation_demand.any() || transition_run;
+        let still_moving = animation_demand.any() || transition_run;
+        let animating = animation_settle.due(still_moving);
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -10442,6 +11020,7 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
@@ -10563,6 +11142,7 @@ pub fn run() {
                     &lock,
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_keyboard.shown(),
                 );
                 publish_accessibility_tree(
                     &mut native_accessibility,
@@ -10602,6 +11182,13 @@ pub fn run() {
                     // Count-only summary on the lock screen — no bodies leak.
                     frame_builder.chrome().notification_count(),
                     lock_player.as_ref(),
+                    lock_keyboard.shown(),
+                );
+                frame_builder.set_lock_keyboard_keys(
+                    lock_screen::keyboard_keys(&lock_outputs, &theme, &view)
+                        .into_iter()
+                        .map(|(key, rect)| (passcode_key_name(key), rect))
+                        .collect(),
                 );
                 let wallpaper = {
                     let chrome = frame_builder.chrome();
@@ -10991,6 +11578,20 @@ pub fn run() {
                 submit_done,
                 submitted_serial,
             );
+            if let Some(serial) = submitted_serial {
+                let presented = {
+                    let mut keys = crate::compositor::key_latency::tracker();
+                    keys.frame_submitted(serial, submit_done);
+                    if async_present {
+                        Vec::new()
+                    } else {
+                        keys.frames_retired(serial, submit_done)
+                    }
+                };
+                for sample in presented {
+                    eprintln!("{sample}");
+                }
+            }
             // An asynchronous presenter advances the cadence only when its
             // physical retirement is observed at the top of a later loop
             // iteration. Advancing here at scene handoff used to run the
@@ -11021,6 +11622,9 @@ pub fn run() {
             state.client_cursor.send_frame_callbacks(
                 u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
             );
+            if let Some(stall) = frame_stall.as_mut() {
+                stall.stall();
+            }
         } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
@@ -11042,6 +11646,7 @@ pub fn run() {
                         &lock,
                         frame_builder.chrome().notification_count(),
                         lock_player.as_ref(),
+                        lock_keyboard.shown(),
                     )
                 });
                 publish_accessibility_tree(
@@ -11086,6 +11691,31 @@ pub fn run() {
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) => {
                         eprintln!("tilo compositor: control accept: {e}");
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some((listener, _, _)) = admin_control.as_ref() {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        match crate::compositor::admin_control::authorize(&stream) {
+                            Ok(()) => {
+                                if let Some(mut conn) = TestControlConn::admin(stream) {
+                                    conn.watch(&event_loop.handle());
+                                    test_control_conns.push(conn);
+                                }
+                            }
+                            Err(refusal) => {
+                                tracing::warn!(?refusal, "admin control: connection refused");
+                                crate::compositor::admin_control::refuse(stream, &refusal);
+                            }
+                        }
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => {
+                        eprintln!("tilo compositor: admin control accept: {e}");
                         break;
                     }
                 }
@@ -11141,10 +11771,12 @@ pub fn run() {
 
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.
+        let mut client_steps = ClientSteps::start();
         if let Some(portal) = portal_backend.as_ref() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        client_steps.mark("selection");
         let pump_epoch = foreign::client_pump_epoch();
         let dispatch_started = Instant::now();
         let clients_dispatched = match dispatch_wayland_clients_fairly(&mut display, &mut state) {
@@ -11170,18 +11802,29 @@ pub fn run() {
         // released transactions here as well as at tick start; otherwise a
         // continuously chatty client can keep its first buffer stranded until
         // the next outer-loop iteration even though capture already finished.
+        client_steps.mark("dispatch");
         let capture_ready = state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         if capture_ready {
             injected_redraw_pending = true;
         }
+        client_steps.mark("capture_barriers");
         // A screenshot after input waits for the clients in it to answer
         // the input; their answers were just dispatched, and the pings it
         // sends go out with this flush.
         publish_settled_snapshot(&mut test_control_ctx, &mut frame_builder, &mut state);
+        // Answer the request whose screenshot just went out, without
+        // waiting for an unrelated wake.
+        for conn in &mut test_control_conns {
+            if conn.pending_snapshot.is_some() {
+                let _ = pump_pending_test_control_conn(conn);
+            }
+        }
+        client_steps.mark("snapshot");
         if let Err(err) = display.flush_clients() {
             eprintln!("tilo compositor: flush_clients error: {err}");
             break;
         }
+        client_steps.mark("flush");
         // A newly dispatched xdg_toplevel request can arrive after this
         // tick's paint decision. Its tab may already have a placement from
         // the retained chrome tree, but waiting for a *future painted frame*
@@ -11197,6 +11840,7 @@ pub fn run() {
             }
             injected_redraw_pending = true;
         }
+        client_steps.mark("configures");
         let client_changed = foreign::client_pump_epoch() != pump_epoch;
         // A frame callback that arrived without a new buffer, title, or
         // configure is not a present and not another pump. Release it here,
@@ -11221,8 +11865,9 @@ pub fn run() {
         if (loop_timing || t_work_done > Duration::from_millis(100))
             && t_work_done > Duration::from_millis(100)
         {
+            client_steps.mark("idle_callbacks");
             eprintln!(
-                "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
+                "SLOW-ITER total_work={:?} | input={:?} pump=+{:?} post_pump_paint=+{:?} testctl=+{:?} dispatch_clients=+{:?} ({})",
                 t_work_done,
                 t_input_done,
                 pump_total,
@@ -11231,6 +11876,7 @@ pub fn run() {
                     .unwrap_or_default(),
                 t_testctl_done.checked_sub(t_paint_done).unwrap_or_default(),
                 t_work_done.checked_sub(t_testctl_done).unwrap_or_default(),
+                client_steps,
             );
         }
 
@@ -11287,6 +11933,7 @@ pub fn run() {
                     wayland_client_service_deadline(wayland_client_wake, park_now),
                 ),
                 ("text-commit", state.text_commit_deadline()),
+                ("touch-hold", test_control_ctx.touch_pointer.deadline()),
                 ("legacy-stream", state.legacy_stream_deadline()),
                 (
                     "client-followup",
@@ -11671,6 +12318,28 @@ mod tests {
             "",
             "each report covers its own window"
         );
+    }
+
+    #[test]
+    fn an_animation_ends_on_a_painted_resting_frame() {
+        let mut settle = AnimationSettle::default();
+        assert!(!settle.due(false), "nothing moving owes nothing");
+        // The last moving tick finds the presenter full and cannot paint.
+        settle.after_tick(true, false);
+        assert!(
+            settle.due(false),
+            "the tick after motion ends still owes the resting frame"
+        );
+        // Off-cadence: still not painted, still owed.
+        settle.after_tick(false, false);
+        assert!(settle.due(false));
+        // Painted at rest: settled.
+        settle.after_tick(false, true);
+        assert!(!settle.due(false));
+        // A frame painted while still moving samples mid-motion; the
+        // resting frame remains owed.
+        settle.after_tick(true, true);
+        assert!(settle.due(false));
     }
 
     #[test]
@@ -12646,18 +13315,20 @@ mod tests {
         workspace.shared_surfaces.share(7, 9);
         let none = std::collections::HashSet::new();
         let nobody = std::collections::BTreeMap::new();
-        let share =
-            |app_id: &str, tab: u64, viewers: &[u64]| crate::compositor::state::LegacyShare {
+        let share = |app_id: &str, tab: u64, viewers: &[u64], paint: bool| {
+            crate::compositor::state::LegacyShare {
                 app_id: app_id.to_string(),
                 tab,
                 viewers: viewers.iter().copied().collect(),
                 decode_limits: HashMap::new(),
-            };
+                paint,
+            }
+        };
 
         let watched = desired_legacy_shares(&tree, true, &none, &nobody);
         assert_eq!(
             watched.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9]))
+            Some(&share("org.gimp.GIMP", 12, &[9], false))
         );
         assert!(
             !watched.contains_key(&8),
@@ -12667,11 +13338,11 @@ mod tests {
         let through_host = desired_legacy_shares(&tree, true, &hosts, &nobody);
         assert_eq!(
             through_host.get(&7).map(|(share, _)| share),
-            Some(&share("org.gimp.GIMP", 12, &[9, 42]))
+            Some(&share("org.gimp.GIMP", 12, &[9, 42], false))
         );
         assert_eq!(
             through_host.get(&8).map(|(share, _)| share),
-            Some(&share("org.chromium.Chromium", 14, &[42])),
+            Some(&share("org.chromium.Chromium", 14, &[42], true)),
             "a viewer host receives every legacy window of the active workspace"
         );
         assert!(
@@ -13486,6 +14157,145 @@ mod tests {
                 "backpressure must not truncate or duplicate JSON bytes"
             );
         }
+    }
+
+    /// The device admin's socket answers the action model and read-only
+    /// state, and refuses synthetic input, fixtures and agent seats with an
+    /// error that names the route that serves them.
+    #[test]
+    fn the_admin_socket_serves_the_action_model_and_refuses_the_rest() {
+        use std::io::Write as _;
+
+        let mut frame_builder = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        let mut writer = client.try_clone().expect("client writer");
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::admin(server).expect("admin connection");
+        let mut ask = |line: &str| {
+            writer
+                .write_all(format!("{line}\n").as_bytes())
+                .expect("write request");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            socket_response(&mut reader)
+        };
+
+        let listed = ask(r#"{"op":"actions_enumerate","query":"settings"}"#);
+        let test_control::Response::Answer(rows) = listed else {
+            panic!("enumeration is served: {listed:?}");
+        };
+        assert!(
+            rows["count"].as_u64().is_some_and(|count| count > 0),
+            "{rows}"
+        );
+        assert!(matches!(
+            ask(r#"{"op":"state_dump"}"#),
+            test_control::Response::State { .. }
+        ));
+        for refused in [
+            r#"{"op":"click_at","x":10,"y":10}"#,
+            r#"{"op":"type","text":"hello"}"#,
+            r#"{"op":"snapshot","path":"admin.png"}"#,
+            r#"{"op":"grant","subject":"agent:x","scope":"workspace","verb":"admin"}"#,
+            r#"{"op":"provision_test_identity"}"#,
+            r#"{"op":"actions_enumerate","query":"","agent":"bot"}"#,
+            r#"{"op":"state_dump","window":"so.tilo.notes"}"#,
+        ] {
+            let test_control::Response::Err { code, message } = ask(refused) else {
+                panic!("{refused} must be refused on the admin socket");
+            };
+            assert_eq!(code, "not_permitted", "{refused}");
+            assert!(message.contains("TILO_TEST_CONTROL"), "{message}");
+        }
+    }
+
+    /// A full-size high-density screenshot lands whole, and the staging file
+    /// that made it atomic is gone.
+    #[test]
+    fn a_written_screenshot_is_complete_and_leaves_no_staging_file() {
+        let dir = tempfile::tempdir().expect("scratch directory");
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, b"stale").expect("an older file to replace");
+        let (width, height) = (2944_u32, 1840_u32);
+        let rgba = vec![0x7f; usize::try_from(width * height * 4).expect("fits")];
+        let png = ui::png::encode_rgba8(width, height, &rgba).expect("encode");
+        write_whole(&path, &png).expect("write");
+        let decoded =
+            ui::png::decode_rgba8(&std::fs::read(&path).expect("read back")).expect("complete PNG");
+        assert_eq!((decoded.width, decoded.height), (width, height));
+        let names: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("list")
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("shot.png")]);
+    }
+
+    /// A request that could not do what it asked says so: a screenshot that
+    /// was not written, and an action or screenshot while the session is
+    /// locked, answer an error instead of `ok`.
+    #[test]
+    fn unwritten_snapshots_and_locked_actions_answer_errors() {
+        use std::io::Write as _;
+
+        let mut frame_builder = FrameBuilder::with_handle(directory_test_tree(), false, (800, 600));
+        let mut ctx = TestControlCtx::new();
+        let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+        let mut lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        let mut writer = client.try_clone().expect("client writer");
+        let mut reader = BufReader::new(client);
+        let mut conn = TestControlConn::new(server, false).expect("connection");
+        let missing = tempfile::tempdir()
+            .expect("scratch")
+            .path()
+            .join("gone")
+            .join("shot.png");
+        let snapshot = serde_json::json!({"op": "snapshot", "path": missing}).to_string();
+        let invoke = r#"{"op":"actions_invoke","provider":"session","id":"lock"}"#;
+
+        for (line, locked, code) in [
+            (snapshot.as_str(), false, "snapshot_failed"),
+            (snapshot.as_str(), true, "session_locked"),
+            (invoke, true, "session_locked"),
+        ] {
+            if locked && !session.is_locked() {
+                let _ = session.request_lock(Instant::now());
+                assert!(session.is_locked(), "the fixture session locks");
+            }
+            writer
+                .write_all(format!("{line}\n").as_bytes())
+                .expect("write request");
+            pump_test_control_conn(
+                &mut conn,
+                &mut frame_builder,
+                &mut ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            let test_control::Response::Err { code: answered, .. } = socket_response(&mut reader)
+            else {
+                panic!("{line} (locked: {locked}) must answer an error");
+            };
+            assert_eq!(answered, code, "{line} (locked: {locked})");
+        }
+        assert!(!missing.exists());
     }
 
     /// A driver's request often lands after its connection was accepted and

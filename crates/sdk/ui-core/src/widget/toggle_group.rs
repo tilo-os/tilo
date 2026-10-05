@@ -36,6 +36,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use crate::chrome::{SelectionState, selection_tier_on};
+use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -76,6 +77,9 @@ pub struct Segment {
     /// The segment's keyboard shortcut, named after the label in its
     /// tooltip.
     pub hint: Option<String>,
+    /// Shown dimmed and never chosen: a choice that does not apply now
+    /// (exporting the selection with nothing selected).
+    pub disabled: bool,
 }
 
 impl Segment {
@@ -85,6 +89,7 @@ impl Segment {
             short: None,
             icon: None,
             hint: None,
+            disabled: false,
         }
     }
 
@@ -96,11 +101,19 @@ impl Segment {
             short: None,
             icon: Some(icon),
             hint: None,
+            disabled: false,
         }
     }
 
-    /// Show `icon` instead of the label, which stays the tooltip and the
-    /// accessible name.
+    /// Whether the segment can be chosen now; a disabled one shows dimmed
+    /// and the pointer and keys pass over it.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.disabled = !enabled;
+        self
+    }
+
+    /// Show `icon` instead of the label.
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
         self.icon = Some(icon);
@@ -514,6 +527,9 @@ impl ToggleGroup {
     }
 
     fn request_selection(&mut self, index: usize) {
+        if self.segments.get(index).is_some_and(|s| s.disabled) {
+            return;
+        }
         if self.chosen.is_some() {
             self.toggle_chosen(index);
             return;
@@ -1078,6 +1094,7 @@ pub fn segment_colors(
 /// What one segment of a face shows.
 #[derive(Clone, Copy, Debug)]
 struct FaceItem<'a> {
+    disabled: bool,
     label: &'a str,
     short: Option<&'a str>,
     icon: Option<Icon>,
@@ -1108,6 +1125,7 @@ impl<'a> SegmentedFace<'a> {
             items: labels
                 .iter()
                 .map(|label| FaceItem {
+                    disabled: false,
                     label,
                     short: None,
                     icon: None,
@@ -1130,6 +1148,7 @@ impl<'a> SegmentedFace<'a> {
         face.items = items
             .iter()
             .map(|segment| FaceItem {
+                disabled: segment.disabled,
                 label: &segment.label,
                 short: segment.short.as_deref(),
                 icon: segment.icon,
@@ -1363,7 +1382,9 @@ impl ToggleGroup {
                 &outer,
             );
         }
-        let hovered = face.hovered.filter(|_| !face.disabled);
+        let hovered = face.hovered.filter(|index| {
+            !face.disabled && face.items.get(*index).is_some_and(|item| !item.disabled)
+        });
         let is_on = |i: usize| match face.chosen {
             Some(chosen) => chosen.get(i).copied().unwrap_or(false),
             None => i == face.selected,
@@ -1419,6 +1440,11 @@ impl ToggleGroup {
             };
             let selected = is_on(i);
             let (_, ink) = segment_colors(theme, face.style, selected, hovered == Some(i));
+            let ink = if item.disabled {
+                ink.with_alpha_factor(crate::widget::DISABLED_ALPHA)
+            } else {
+                ink
+            };
             if let Some(icon) = item.icon {
                 let edge = metrics.icon.min(seg.height());
                 crate::icons::draw_icon(
@@ -1503,12 +1529,14 @@ impl ToggleGroup {
                     short: None,
                     icon: segment.icon,
                     hint: segment.hint.clone(),
+                    disabled: segment.disabled,
                 },
                 _ => Segment {
                     label: segment.label.clone(),
                     short: None,
                     icon: segment.icon,
                     hint: segment.hint.clone(),
+                    disabled: segment.disabled,
                 },
             })
             .collect()
@@ -1541,23 +1569,37 @@ impl ToggleGroup {
             self.selected
         };
         let none = current >= len;
-        let moved = match key.logical_key {
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => Some(if none {
-                len.saturating_sub(1)
-            } else {
-                current
-                    .checked_sub(1)
-                    .unwrap_or_else(|| len.saturating_sub(1))
-            }),
-            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => {
-                Some(if none || current == len.saturating_sub(1) {
-                    0
+        let step = |forward: bool| {
+            let mut at = if none { len.saturating_sub(1) } else { current };
+            for _ in 0..len {
+                at = if forward {
+                    if at.saturating_add(1) >= len {
+                        0
+                    } else {
+                        at.saturating_add(1)
+                    }
                 } else {
-                    current.saturating_add(1)
-                })
+                    at.checked_sub(1).unwrap_or_else(|| len.saturating_sub(1))
+                };
+                if self
+                    .segments
+                    .get(at)
+                    .is_some_and(|segment| !segment.disabled)
+                {
+                    return Some(at);
+                }
             }
-            Key::Named(NamedKey::Home) if len > 0 => Some(0),
-            Key::Named(NamedKey::End) if len > 0 => Some(len.saturating_sub(1)),
+            None
+        };
+        let moved = match key.logical_key {
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) if len > 0 => step(false),
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) if len > 0 => step(true),
+            Key::Named(NamedKey::Home) => {
+                self.segments.iter().position(|segment| !segment.disabled)
+            }
+            Key::Named(NamedKey::End) => {
+                self.segments.iter().rposition(|segment| !segment.disabled)
+            }
             _ => None,
         };
         if self.chosen.is_some() {
@@ -2116,6 +2158,15 @@ impl Widget for ToggleGroup {
         }
     }
 
+    fn tooltip_side(&self) -> crate::widget::tooltip::TooltipSide {
+        // A vertical group is a rail: its neighbours are above and below.
+        if self.orientation == Orientation::Vertical {
+            crate::widget::tooltip::TooltipSide::Beside
+        } else {
+            crate::widget::tooltip::TooltipSide::Below
+        }
+    }
+
     fn is_focusable(&self) -> bool {
         self.is_enabled()
     }
@@ -2187,7 +2238,7 @@ impl Widget for ToggleGroup {
                     .with_name(s.label.clone())
                     .with_state(AccessState {
                         checked: Some(on),
-                        disabled: !self.is_enabled(),
+                        disabled: !self.is_enabled() || s.disabled,
                         ..Default::default()
                     })
                     .with_position(i.saturating_add(1), count);
@@ -2697,6 +2748,33 @@ mod tests {
                 "the strip is filled exactly"
             );
         }
+    }
+
+    #[test]
+    fn a_disabled_segment_is_never_chosen_and_the_keys_step_over_it() {
+        let mut g = group_at(
+            vec![
+                Segment::new("Whole"),
+                Segment::new("Selection").with_enabled(false),
+                Segment::new("View"),
+            ],
+            0,
+            Rect::new(0.0, 0.0, 300.0, 36.0),
+        );
+        dispatch(&mut g, &cursor_moved(150.0, 18.0));
+        dispatch(&mut g, &mouse_press());
+        assert_eq!(g.selected(), 0, "a click on it chooses nothing");
+        g.set_focus(true);
+        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowRight)));
+        assert_eq!(g.selected(), 2, "the arrow steps over it");
+        assert!(dispatch_handled(&mut g, &key_press(NamedKey::ArrowLeft)));
+        assert_eq!(g.selected(), 0);
+        let node = g.accessibility().expect("a group node");
+        assert!(
+            node.children
+                .get(1)
+                .is_some_and(|segment| segment.state.disabled)
+        );
     }
 
     #[test]

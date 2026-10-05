@@ -572,6 +572,9 @@ pub enum LocalPaneCommand {
     Printer(PrinterOperation),
     User(UserOperation),
     AgentModel(AgentModelOperation),
+    /// Show one in-process model's card, as a `settings://models/<id>` link
+    /// asks. Presentation only: it installs nothing.
+    RevealAgentModel(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -5041,6 +5044,50 @@ fn agent_models_section() -> Resource {
         } else {
             section = section.with_child(resource);
         }
+    }
+    // In-process models run inside the apps that use them on any CPU, so
+    // neither the vLLM hardware fit nor accelerator setup gates them.
+    for model in snapshot.in_process.into_iter().take(MAX_DYNAMIC_RESOURCES) {
+        let mut resource = Resource::new(
+            format!("settings.agent-model:{}", model.package.id),
+            "settings.agent-model-in-process",
+            model.package.name.clone(),
+        );
+        if model.installable()
+            && let Some(action) = local_operation_spec(
+                "install",
+                "Accept license and install on this device",
+                OperationKind::Effect,
+                AGENT_MODEL_OPERATION_TYPE,
+                &AgentModelOperation::Install {
+                    id: model.package.id.clone(),
+                    revision: model.package.revision.clone(),
+                },
+                &[
+                    "device-local",
+                    "agent-models",
+                    "signed-package",
+                    "in-process",
+                ],
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        if model.removable()
+            && let Some(action) = local_operation_spec(
+                "remove",
+                "Remove local model",
+                OperationKind::Effect,
+                AGENT_MODEL_OPERATION_TYPE,
+                &AgentModelOperation::Remove {
+                    id: model.package.id,
+                },
+                &["device-local", "agent-models", "in-process", "destructive"],
+            )
+        {
+            resource = resource.with_action(action.destructive());
+        }
+        section = section.with_child(resource);
     }
     for model in snapshot.models.into_iter().take(MAX_DYNAMIC_RESOURCES) {
         let mut resource = Resource::new(

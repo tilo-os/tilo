@@ -19,7 +19,7 @@ qualified targets, including Windows apps still awaiting release qualification.
 OS publication happens through tags, explicit dispatches, and one nightly run
 on `main`; it never happens per push.
 
-Kernel, base-image, RPM and WPE buildroot snapshots remain input-promotion
+Kernel, base-image, RPM and kernel buildroot snapshots remain input-promotion
 workflows. They run only when their pinned input set changes; an OS release
 consumes their immutable digests.
 
@@ -43,8 +43,8 @@ Pull requests use the cheapest lane that proves the affected boundary:
   headers remain part of each cache key.
 - Full OS builds run nightly, on tags, or by explicit dispatch, not on PRs or
   ordinary `main` pushes. The nightly run builds nothing when `main` is
-  already published. WPE has its own signed snapshot gate; tagged OS
-  releases require and include it.
+  already published. Every OS image carries the Browser's Chromium engine
+  runtime, built from the pinned CEF distribution in the image build.
 - Ordinary imager changes use the affected-package checks. Native imager
   packaging runs only on tags or manual dispatches. Manual runs default to
   Linux x86_64; tags or `full_native` add Linux ARM64 and Windows on both
@@ -125,10 +125,10 @@ Collections live in `dist/apps/app-collections.toml`. `default`, `desktop`, and
 new app joins the normal fleet automatically. Small scenario-specific sets can
 extend another collection and exclude entries, or list apps directly.
 
-The browser is the explicit exception: it links the digest-pinned WPE engine,
-so the default collection excludes it and the OS build packages that one app
-against its promoted WPE buildroot. An OS update using a collection therefore
-reuses the independent app fleet and rebuilds only this native integration app.
+The Browser is an ordinary member of the fleet. Its engine is not: the
+Chromium engine runtime is a signed runtime bundle the OS image builds from the
+pinned CEF distribution and installs at `/usr/lib/tilo-runtime/<version>`, and
+the Browser's manifest names it under `[package].optional-runtimes`.
 
 Examples:
 
@@ -170,10 +170,7 @@ lanes, KMS signing preflight, reproducibility, installed-VM and AT-SPI gates,
 SBOM, provenance and freshness attestations, and the shared
 `tilo-os-image-series-2` generation lock. It also receives the same protected
 PCR-prediction and EFI signing inputs, and ships the full image including the
-browser, like a default manual publication, once `os/wpe-buildroot-snapshot.env`
-pins a promoted WPE buildroot for both architectures. Until then the nightly
-image omits the browser, with a warning, instead of failing every night; `v*`
-tags still require the browser.
+Browser and its engine runtime, like a default manual publication.
 
 Windows apps on ARM follow the repository variables `TILO_FEX_PAYLOAD_REF` and
 `TILO_WINDOWS_GUEST_REF` on every event, tags included. Until both are set, the

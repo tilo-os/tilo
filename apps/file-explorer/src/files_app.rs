@@ -3423,7 +3423,11 @@ impl FileExplorerWidget {
                 true
             }
             FileCommand::OpenTerminal => {
-                let _ = self.open_terminal(&mut SystemRunner);
+                if let Err(error) = self.open_terminal() {
+                    self.status =
+                        Some(t_args("files-open-terminal-failed", &[arg("error", error)]));
+                    return true;
+                }
                 false
             }
             FileCommand::NewFolder => self.apply_new_folder(),
@@ -5098,29 +5102,10 @@ fn layout_menu_widget(menu: &mut ContextMenu) {
     menu.apply_layout(&taffy, node, Point::ZERO);
 }
 
-/// Thin mockable wrapper around process launch + the desktop "open with
-/// default app" handler. Mocked in tests so the open/launch paths are
-/// verifiable without actually spawning anything.
+/// Thin mockable wrapper around the desktop "open with default app"
+/// handler. Mocked in tests so the open paths are verifiable without
+/// asking a real desktop.
 pub trait CommandRunner {
-    /// Spawn `program` in `cwd`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the OS error if the process cannot be spawned — `program`
-    /// is not on `PATH`, or the current user lacks permission to run it.
-    fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()>;
-    /// Spawn `program` in `cwd` with `arg` as its sole argument.
-    ///
-    /// # Errors
-    ///
-    /// Returns the OS error if the process cannot be spawned — `program`
-    /// is not on `PATH`, or the current user lacks permission to run it.
-    fn spawn_arg(
-        &mut self,
-        program: &str,
-        arg: &std::path::Path,
-        cwd: &std::path::Path,
-    ) -> std::io::Result<()>;
     /// Open `path` with the system default handler. This is the fallback for
     /// every file type Tilo has no registered app for (images, PDFs, video,
     /// audio, plain text, …) so double-click/Enter/Open never silently do
@@ -5135,28 +5120,6 @@ pub trait CommandRunner {
 pub struct SystemRunner;
 
 impl CommandRunner for SystemRunner {
-    fn spawn(&mut self, program: &str, cwd: &std::path::Path) -> std::io::Result<()> {
-        #[cfg(test)]
-        crate::model::fixture_io_guard::ambient_io("SystemRunner process");
-        std::process::Command::new(program)
-            .current_dir(cwd)
-            .spawn()
-            .map(|_c| ())
-    }
-    fn spawn_arg(
-        &mut self,
-        program: &str,
-        arg: &std::path::Path,
-        cwd: &std::path::Path,
-    ) -> std::io::Result<()> {
-        #[cfg(test)]
-        crate::model::fixture_io_guard::ambient_io("SystemRunner process");
-        std::process::Command::new(program)
-            .arg(arg)
-            .current_dir(cwd)
-            .spawn()
-            .map(|_c| ())
-    }
     fn open_default(&mut self, path: &std::path::Path) -> ui::portal::LaunchChannel {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("SystemRunner::open_default");
@@ -5243,13 +5206,34 @@ fn ask_host_to_open(path: &std::path::Path) -> Option<Result<(), String>> {
 }
 
 impl FileExplorerWidget {
-    /// Launch a terminal rooted at the current directory.
+    /// What "Open Terminal Here" asks the shell for: Terminal, started in
+    /// the current directory when that is a path the request can carry.
+    pub fn terminal_intent(&self) -> runtime_portal::tools::ToolIntent {
+        use runtime_portal::tools::ToolIntent;
+        let directory = self
+            .current_path
+            .to_str()
+            .map(str::to_owned)
+            .filter(|directory| {
+                ToolIntent::Terminal {
+                    directory: Some(directory.clone()),
+                }
+                .validate()
+                .is_ok()
+            });
+        ToolIntent::Terminal { directory }
+    }
+
+    /// Ask the shell to open Terminal in the current directory.
     ///
     /// # Errors
     ///
-    /// Returns the OS error if the terminal process cannot be spawned.
-    pub fn open_terminal<R: CommandRunner>(&self, runner: &mut R) -> std::io::Result<()> {
-        runner.spawn("terminal", &self.current_path)
+    /// Returns the shell's reason when Terminal could not be opened, or that
+    /// there is no Tilo session to ask.
+    pub fn open_terminal(&self) -> Result<(), String> {
+        #[cfg(test)]
+        crate::model::fixture_io_guard::ambient_io("open_terminal");
+        runtime_portal::tools::open_tool(self.terminal_intent())
     }
 
     /// Activate entry `idx` (by displayed index): navigate into a directory
@@ -9289,7 +9273,7 @@ impl FileExplorerWidget {
                         self.apply_undo_last_trash();
                     }
                     "terminal" => self
-                        .open_terminal(&mut SystemRunner)
+                        .open_terminal()
                         .map_err(|e| format!("could not open terminal: {e}"))?,
                     _ => return Ok(false),
                 }

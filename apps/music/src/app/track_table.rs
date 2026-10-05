@@ -273,18 +273,7 @@ impl TrackTableHost {
             return false;
         };
         let at = Point::new(row.x0 + row.width() * 0.3, row.center().y);
-        let mut handled = false;
-        self.host.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: winit::dpi::PhysicalPosition::new(at.x, at.y),
-            },
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut automerge::AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-        );
+        self.host.widget_mut().set_pointer_position(at);
         true
     }
 
@@ -653,7 +642,7 @@ fn action_buttons(
         let sink = Rc::clone(events);
         Button::icon_only(&format!("music.track.{index}.{name}"), icon, label)
             .control_size(ControlSize::Small)
-            .on_click(move || sink.borrow_mut().push(event))
+            .on_effect(move || sink.borrow_mut().push(event))
     };
     let mut cluster = Row::new().no_wrap().with_gap(0.0);
     if let Actions::Reorder { playlist } = actions {

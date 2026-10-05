@@ -44,7 +44,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::i18n::{t, t_args};
 use crate::region::{RegionSettings, TimeStyle};
-use crate::widgets::{caption, card, choice_row, rows, setting_row, value_row};
+use crate::widgets::{caption, card, choice_row, error_row, rows, setting_row, value_row};
 use ui::i18n::ArgValue;
 
 fn time_bool_action(id: &str) -> tilo_actions::ActionBinding<bool> {
@@ -150,25 +150,6 @@ fn timezone_map_from_tab(zones: &[String], table: &str) -> Vec<TimeZonePoint> {
     // independent of the table's packaging order.
     points.sort_by_key(|point| (point.longitude_e6, -point.latitude_e6, point.id.clone()));
     points
-}
-
-/// How a zone id reads in the selector: "Berlin, Europe" for
-/// `Europe/Berlin`, the way the map's caption names it. An id without a
-/// region (`UTC`) reads as itself.
-fn zone_label(id: &str) -> String {
-    match id.split_once('/') {
-        Some((region, city)) => t_args(
-            "time-map-place",
-            &[
-                (
-                    "city",
-                    ArgValue::from(city.replace('_', " ").replace('/', ", ").as_str()),
-                ),
-                ("region", ArgValue::from(region.replace('_', " ").as_str())),
-            ],
-        ),
-        None => id.replace('_', " "),
-    }
 }
 
 /// Parse the compact ISO 6709 latitude+longitude form used by tzdata:
@@ -734,18 +715,18 @@ fn persist_time_format(h24: bool) {
     }
 }
 
-/// Read the configured time zone from `/etc/timezone`, falling back to a
-/// sample so the pane is never blank.
 /// Starting zone for [`TimeDatePane::with_ntp`]. Any real zone works so
 /// long as it is fixed; tests pick a different one to observe a change.
 const TEST_TIMEZONE: &str = "Europe/Amsterdam";
 
-fn timezone() -> String {
+/// Read the configured time zone from `/etc/timezone` or the
+/// `/etc/localtime` link; `None` when neither names one.
+fn timezone() -> Option<String> {
     for p in ["/etc/timezone"] {
         if let Ok(s) = fs::read_to_string(Path::new(p)) {
             let t = s.trim();
             if !t.is_empty() {
-                return t.to_string();
+                return Some(t.to_string());
             }
         }
     }
@@ -756,10 +737,10 @@ fn timezone() -> String {
         if let Some(idx) = target.find("zoneinfo/")
             && let Some(zone) = target.get(idx + "zoneinfo/".len()..)
         {
-            return zone.to_string();
+            return Some(zone.to_string());
         }
     }
-    "Europe/Amsterdam".to_string()
+    None
 }
 
 /// Time & Date pane. Stateful so it can drive `set-ntp` on toggle and
@@ -783,6 +764,14 @@ pub struct TimeDatePane {
     timezones: Vec<String>,
     timezone_points: Vec<TimeZonePoint>,
     sync_status: os_actions::TimeSyncStatus,
+    /// Why timedated could not be asked for its state.
+    status_error: Option<String>,
+    /// Why the zone list could not be read; there is then nothing to choose.
+    timezones_error: Option<String>,
+    /// The configured zone could not be found anywhere.
+    timezone_unknown: bool,
+    /// Why the automatic-time switch's position is unknown.
+    auto_error: Option<String>,
     h24: bool,
     initial_auto: bool,
     last_auto: bool,
@@ -804,19 +793,46 @@ impl Default for TimeDatePane {
 
 impl TimeDatePane {
     pub fn new() -> Self {
-        let sync_status = os_actions::get_time_sync_status();
-        let initial_auto = sync_status
-            .ntp_enabled
-            .or_else(|| os_actions::get_ntp().ok())
-            .unwrap_or(true);
+        Self::from_host(
+            os_actions::get_time_sync_status(),
+            os_actions::list_timezones(),
+            os_actions::get_ntp,
+            timezone(),
+        )
+    }
+
+    /// The pane over what the host answered. Every part that could not be
+    /// read is kept as its failure and shown as one, never as a default.
+    fn from_host(
+        status: Result<os_actions::TimeSyncStatus, String>,
+        zones: Result<Vec<String>, String>,
+        ntp: impl FnOnce() -> Result<bool, String>,
+        zone_file: Option<String>,
+    ) -> Self {
+        let (sync_status, status_error) = match status {
+            Ok(status) => (status, None),
+            Err(error) => (os_actions::TimeSyncStatus::default(), Some(error)),
+        };
+        let (initial_auto, auto_error) = match sync_status.ntp_enabled {
+            Some(enabled) => (enabled, None),
+            None => match ntp() {
+                Ok(enabled) => (enabled, None),
+                Err(error) => (false, Some(error)),
+            },
+        };
         // The clock format is the same system-wide preference Region & Formats
         // owns (`locale.time_format`), so the two panes agree and the choice
         // survives a restart. Reading it here — rather than defaulting to 24h —
         // makes the toggle rest on the user's actual setting.
         let h24 = matches!(RegionSettings::load().locale.time_format, TimeStyle::H24);
-        let timezone = sync_status.timezone.clone().unwrap_or_else(timezone);
-        let mut timezones = os_actions::list_timezones().unwrap_or_default();
-        if !timezones.iter().any(|candidate| candidate == &timezone) {
+        let zone = sync_status.timezone.clone().or(zone_file);
+        let timezone_unknown = zone.is_none();
+        let timezone = zone.unwrap_or_default();
+        let (mut timezones, timezones_error) = match zones {
+            Ok(zones) => (zones, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        if !timezone_unknown && !timezones.iter().any(|candidate| candidate == &timezone) {
             timezones.push(timezone.clone());
             timezones.sort();
         }
@@ -828,6 +844,10 @@ impl TimeDatePane {
             timezones,
             timezone_points,
             sync_status,
+            status_error,
+            timezones_error,
+            timezone_unknown,
+            auto_error,
             h24,
             initial_auto,
             last_auto: initial_auto,
@@ -864,6 +884,10 @@ impl TimeDatePane {
                 synchronized: None,
                 source: None,
             },
+            status_error: None,
+            timezones_error: None,
+            timezone_unknown: false,
+            auto_error: None,
             h24: true,
             initial_auto,
             last_auto: initial_auto,
@@ -878,13 +902,62 @@ impl TimeDatePane {
         }
     }
 
+    /// The automatic-time switch, or why its position is unknown.
+    fn auto_row(&self) -> Box<dyn Widget> {
+        match &self.auto_error {
+            Some(error) => error_row(
+                &t("time-auto"),
+                &t_args("time-status-error", &[("error", error.as_str().into())]),
+            ),
+            None => setting_row(
+                &t("time-auto"),
+                Box::new(
+                    Toggle::from_state(&ui::LocalState::new(self.last_auto))
+                        .on_action(time_bool_action("automatic-time"))
+                        .with_id("time.auto"),
+                ),
+            ),
+        }
+    }
+
+    /// The zone chooser, or why there is nothing to choose from.
+    fn zone_row(&self) -> Box<dyn Widget> {
+        match &self.timezones_error {
+            Some(error) => error_row(
+                &t("time-timezone"),
+                &t_args("time-zones-error", &[("error", error.as_str().into())]),
+            ),
+            None => choice_row(
+                &t("time-timezone"),
+                Box::new(
+                    Dropdown::from_state(
+                        self.timezones.clone(),
+                        &ui::LocalState::new(self.last_timezone.clone()),
+                    )
+                    .on_action(time_text_action("timezone"))
+                    .with_id("time.timezone")
+                    .with_placeholder(&if self.timezone_unknown {
+                        t("time-zone-unread")
+                    } else {
+                        self.timezone.clone()
+                    }),
+                ),
+            ),
+        }
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
-        // Read through the toolkit clock so a capture shows its pinned time.
-        let local = ui::clock::local_now();
-        let now = local
-            .format(if self.h24 { "%H:%M" } else { "%I:%M %p" })
-            .to_string();
-        let today = local.format("%A, %-d %B %Y").to_string();
+        let clock_row = |label: &str, read: Result<String, String>| match read {
+            Ok(value) => value_row(label, &value),
+            Err(error) => error_row(
+                label,
+                &t_args("time-clock-error", &[("error", error.into())]),
+            ),
+        };
+        let now = clock_row(&t("time-current-time"), os_actions::now_clock(self.h24));
+        let today = clock_row(&t("time-current-date"), os_actions::now_date());
+        let auto_row = self.auto_row();
+        let zone_row = self.zone_row();
 
         let sync = match self.sync_status.synchronized {
             Some(true) => t("time-sync-ok"),
@@ -900,14 +973,7 @@ impl TimeDatePane {
         let clock = card(
             &t("time-clock-title"),
             rows(vec![
-                setting_row(
-                    &t("time-auto"),
-                    Box::new(
-                        Toggle::from_state(&ui::LocalState::new(self.last_auto))
-                            .on_action(time_bool_action("automatic-time"))
-                            .with_id("time.auto"),
-                    ),
-                ),
+                auto_row,
                 setting_row(
                     &t("time-24h"),
                     Box::new(
@@ -916,27 +982,9 @@ impl TimeDatePane {
                             .with_id("time.h24"),
                     ),
                 ),
-                choice_row(
-                    &t("time-timezone"),
-                    Box::new({
-                        let mut zones = Dropdown::from_state(
-                            self.timezones.clone(),
-                            &ui::LocalState::new(self.last_timezone.clone()),
-                        )
-                        .on_action(time_text_action("timezone"))
-                        .with_id("time.timezone")
-                        .with_placeholder(&zone_label(&self.timezone));
-                        zones.set_value_options(
-                            self.timezones
-                                .iter()
-                                .map(|id| (id.clone(), zone_label(id)))
-                                .collect(),
-                        );
-                        zones
-                    }),
-                ),
-                value_row(&t("time-current-time"), &now),
-                value_row(&t("time-current-date"), &today),
+                zone_row,
+                now,
+                today,
             ]),
         );
 
@@ -954,10 +1002,20 @@ impl TimeDatePane {
 
         let source = card(
             &t("time-source-title"),
-            rows(vec![
-                value_row(&t("time-sync"), &sync),
-                value_row(&t("time-source"), &source_name),
-            ]),
+            rows(match &self.status_error {
+                Some(error) => vec![
+                    error_row(
+                        &t("time-sync"),
+                        &t_args("time-status-error", &[("error", error.as_str().into())]),
+                    ),
+                    caption(&t("time-source-caption")),
+                ],
+                None => vec![
+                    value_row(&t("time-sync"), &sync),
+                    value_row(&t("time-source"), &source_name),
+                    caption(&t("time-source-caption")),
+                ],
+            }),
         );
 
         let mut cards = vec![clock];
@@ -1302,11 +1360,37 @@ mod tests {
                 &root,
             ));
         }
+    }
 
-        // Case `timezone_is_never_empty`.
-        {
-            assert!(!timezone().is_empty());
-        }
+    /// A host whose timedated cannot be asked (no `timedatectl`, no system
+    /// bus) shows each unread value as that failure: the automatic-time
+    /// switch is not offered at a guessed position, the zone is not a sample
+    /// zone and synchronisation is not "unknown".
+    #[test]
+    fn unreadable_time_settings_are_shown_as_errors() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let pane = TimeDatePane::from_host(
+            Err("timedatectl not installed".into()),
+            Err("timedatectl not installed".into()),
+            || Err("timedatectl not installed".into()),
+            None,
+        );
+        assert!(pane.timezone_unknown);
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        let says = |needle: &str| text.iter().any(|line| line == needle);
+        assert!(
+            says("Can't read time settings: timedatectl not installed"),
+            "{text:#?}"
+        );
+        assert!(
+            says("Can't list time zones: timedatectl not installed"),
+            "{text:#?}"
+        );
+        assert!(!says(&t("time-sync-unknown")), "{text:#?}");
+        assert!(
+            !text.iter().any(|line| line.contains(TEST_TIMEZONE)),
+            "{text:#?}"
+        );
     }
 
     /// Document timezone, NTP and 24h edits stay local; the pane lays out.

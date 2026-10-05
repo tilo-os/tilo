@@ -115,6 +115,9 @@ pub(super) struct ActionRuntime {
     pub(super) bound_record_sync: Option<super::bound_record_sync::BoundRecordSync>,
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
     pub(super) last_published_bound_route: Option<crate::collaboration::PrimaryRouteWitness>,
+    /// Publication refusals already logged, so a surface refused on every
+    /// frame logs each distinct reason once rather than at frame rate.
+    pub(super) refusals_logged: RefusalLog,
     #[cfg(test)]
     pub(super) bound_broker_route_for_test: Option<crate::collaboration::PrimaryRouteWitness>,
     pub(super) action_directory_stamp: Option<(
@@ -180,6 +183,7 @@ impl ActionRuntime {
             bound_record_sync: None,
             bound_publication: crate::bound_dispatch::BoundPublication::default(),
             last_published_bound_route: None,
+            refusals_logged: RefusalLog::default(),
             #[cfg(test)]
             bound_broker_route_for_test: None,
             action_directory_stamp: None,
@@ -397,6 +401,50 @@ impl WindowRuntime {
             fullscreen_active: false,
             title: None,
             app_id: None,
+        }
+    }
+}
+
+/// The distinct publication refusals already reported. A refused surface is
+/// re-checked every frame; its reason is news only the first time.
+#[derive(Default)]
+pub(crate) struct RefusalLog {
+    seen: std::collections::HashSet<u64>,
+}
+
+impl RefusalLog {
+    /// Bounded: an app that keeps producing new reasons still logs them,
+    /// and memory stays flat.
+    const LIMIT: usize = 256;
+
+    /// Whether `refusal` has not been reported yet; records it as reported.
+    pub(crate) fn first(&mut self, refusal: &impl std::hash::Hash) -> bool {
+        use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+        let key = BuildHasherDefault::<DefaultHasher>::default().hash_one(refusal);
+        if self.seen.contains(&key) {
+            return false;
+        }
+        if self.seen.len() >= Self::LIMIT {
+            self.seen.clear();
+        }
+        self.seen.insert(key)
+    }
+}
+
+#[cfg(test)]
+mod refusal_log_tests {
+    use super::RefusalLog;
+
+    #[test]
+    fn a_refusal_repeated_every_frame_is_reported_once() {
+        let mut log = RefusalLog::default();
+        assert!(log.first(&("contract", "notes.page:1/open: missing handler")));
+        for _ in 0..60 {
+            assert!(!log.first(&("contract", "notes.page:1/open: missing handler")));
+        }
+        assert!(log.first(&("contract", "notes.page:2/open: missing handler")));
+        for index in 0..(RefusalLog::LIMIT * 2) {
+            assert!(log.first(&index), "new reasons keep being reported");
         }
     }
 }

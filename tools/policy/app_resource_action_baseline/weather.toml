@@ -1,0 +1,10 @@
+# Audited ceilings of apps/weather (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/weather/src/resource.rs" = 2
+
+[ratchets.standalone_launch]
+
+[ratchets.widget_owned_document]
+"apps/weather/src/framework_history.rs" = 1

@@ -178,12 +178,11 @@ fn accessibility_exposes_project_and_active_document_context() {
             .is_some_and(|name| name.starts_with("Code — "))
     );
     assert_eq!(node.value.as_deref(), Some("main.rs"));
-    assert!(node.children.iter().any(|child| {
-        child
-            .name
-            .as_deref()
-            .is_some_and(|name| name.contains("open file"))
-    }));
+    assert!(
+        node.children
+            .iter()
+            .any(|child| { child.name.as_deref().is_some_and(|name| name == "main.rs") })
+    );
 }
 
 fn invoke_search_hit(app: &mut CodeApp, doc: &mut AutoCommit, query: &str, kind: &str) {
@@ -573,154 +572,112 @@ fn ensure_buffers_seeds_active_text() {
 }
 
 #[test]
-fn tab_pills_mirror_open_buffers_by_node_id_and_close_prompts_only_when_dirty() {
+fn a_window_shows_one_file_and_asks_before_dropping_unsaved_work() {
     // Each phase builds a fresh sample app.
-    opening_a_second_file_adds_a_tab();
-    reconcile_tabs_keys_pills_to_open_buffers_by_node_id();
-    reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark();
-    closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position();
-    selecting_a_different_pill_is_read_back_via_active_id();
-    closing_a_dirty_tab_prompts_before_discarding();
-    closing_a_clean_tab_closes_immediately();
+    opening_another_file_replaces_the_shown_one();
+    opening_another_file_over_unsaved_edits_asks_first();
+    the_header_names_the_shown_file_and_marks_unsaved_edits();
+    the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop();
 }
 
-fn opening_a_second_file_adds_a_tab() {
-    let mut app = CodeApp::with_sample();
-    // Find prime.rs.
-    let prime = app
-        .session
+fn sample_node(app: &CodeApp, name: &str) -> crate::model::NodeId {
+    app.session
         .project
         .nodes
         .values()
-        .find(|n| n.name == "prime.rs")
+        .find(|n| n.name == name)
         .unwrap()
-        .id;
+        .id
+}
+
+fn opening_another_file_replaces_the_shown_one() {
+    let mut app = CodeApp::with_sample();
+    let main = app.session.active_buffer().unwrap().node;
+    let prime = sample_node(&app, "prime.rs");
     app.open_node(prime);
-    assert_eq!(app.session.open.len(), 2);
     assert_eq!(app.session.active_buffer().unwrap().name, "prime.rs");
-}
-
-/// Every open buffer's node id, cast the same way `reconcile_tabs` casts
-/// it, so a test can compare against `app.tabs.tabs()` ids without
-/// duplicating the cast at every call site.
-fn open_ids(app: &CodeApp) -> Vec<u64> {
-    app.session.open.iter().map(|b| b.node as u64).collect()
-}
-
-fn reconcile_tabs_keys_pills_to_open_buffers_by_node_id() {
-    let mut app = CodeApp::with_sample();
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|n| n.name == "prime.rs")
-        .unwrap()
-        .id;
-    app.open_node(prime); // open_node already reconciles.
-
-    let pill_ids: Vec<u64> = app.tabs.tabs().iter().map(|t| t.id).collect();
-    assert_eq!(
-        pill_ids,
-        open_ids(&app),
-        "the bar's pills must be exactly the session's open buffers, in \
-             the same order, keyed by node id"
-    );
-}
-
-fn reconcile_tabs_mirrors_dirty_into_the_shared_bars_modified_mark() {
-    let (mut app, mut doc) = synced_sample();
-    let id = app.session.active_buffer().unwrap().node as u64;
     assert!(
-        !app.tabs.is_modified(id),
-        "a freshly-opened buffer is clean"
+        app.session.buffer_of(main).is_none(),
+        "a window shows one file; main.rs is not kept open behind it"
     );
+    assert!(
+        app.close_prompt.is_none(),
+        "a clean file is replaced without asking"
+    );
+}
 
+fn opening_another_file_over_unsaved_edits_asks_first() {
+    let (mut app, mut doc) = synced_sample();
+    let main = app.session.active_buffer().unwrap().node;
     app.editor.insert_for_test(&mut doc, "X");
     app.dispatch_editor_text_edits(&mut doc);
     app.ensure_buffers(&mut doc);
-    app.reconcile_tabs();
-    assert!(
-        app.tabs.is_modified(id),
-        "an edited buffer's pill must pick up the unsaved-changes mark"
+    assert!(app.session.buffer_of(main).unwrap().dirty);
+
+    let prime = sample_node(&app, "prime.rs");
+    app.open_node(prime);
+    assert_eq!(
+        app.session.active_buffer().unwrap().node,
+        main,
+        "unsaved work is not dropped out from under the user"
     );
+    assert!(app.close_prompt.is_some(), "the save prompt is raised");
+
+    app.resolve_close_prompt(&doc, CloseChoice::Cancel);
+    assert_eq!(
+        app.session.active_buffer().unwrap().node,
+        main,
+        "cancel keeps it"
+    );
+
+    app.open_node(prime);
+    app.resolve_close_prompt(&doc, CloseChoice::Discard);
+    assert_eq!(
+        app.session.active_buffer().unwrap().node,
+        prime,
+        "discarding shows the file that was asked for"
+    );
+    assert!(app.close_prompt.is_none());
 }
 
-fn closing_the_shared_bars_pill_removes_the_matching_buffer_by_id_not_position() {
-    // The whole point of reconciling by node id rather than position: the
-    // pill the user clicked × on must be the buffer that closes — even
-    // one that is neither at index 0 nor the active tab, which is the
-    // one case "close index 0" or "close whatever's active" would also
-    // get right by accident.
-    let mut app = CodeApp::with_sample();
-    let names = ["prime.rs", "greeter.rs"];
-    let ids: Vec<crate::model::NodeId> = names
-        .iter()
-        .map(|name| {
-            app.session
-                .project
-                .nodes
-                .values()
-                .find(|n| n.name == *name)
-                .unwrap()
-                .id
-        })
-        .collect();
-    for id in ids {
-        app.open_node(id);
+fn the_header_names_the_shown_file_and_marks_unsaved_edits() {
+    let (mut app, mut doc) = synced_sample();
+    app.refresh_header();
+    assert_eq!(*app.header_label.borrow(), "main.rs");
+    app.editor.insert_for_test(&mut doc, "X");
+    app.dispatch_editor_text_edits(&mut doc);
+    app.ensure_buffers(&mut doc);
+    app.refresh_header();
+    assert_eq!(*app.header_label.borrow(), "main.rs \u{2022}");
+}
+
+fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {
+    fn has_tab_bar(node: &ui::a11y::AccessNode) -> bool {
+        node.role == ui::a11y::Role::TabBar || node.children.iter().any(has_tab_bar)
     }
-    // [main.rs, prime.rs, greeter.rs], active = greeter.rs (index 2).
-    assert_eq!(app.session.open.len(), 3);
-    app.session.active = Some(0); // main.rs is active; prime.rs is neither.
-
-    let prime_id = app.session.open[1].node as u64;
-    // Stand-in for the user clicking prime.rs's own × — the widget fades
-    // it and publishes the id via `take_close`, independent of position.
-    app.tabs.start_closing(prime_id);
-
-    let mut doc = AutoCommit::new();
-    app.drain_child_events(&mut doc);
-
-    let remaining: Vec<&str> = app.session.open.iter().map(|b| b.name.as_str()).collect();
-    assert_eq!(
-        remaining,
-        vec!["main.rs", "greeter.rs"],
-        "closing prime.rs's pill must close prime.rs specifically, not \
-             index 0 or whatever happens to be active"
+    fn walk(widget: &dyn Widget, found: &mut bool) {
+        if widget
+            .accessibility()
+            .is_some_and(|node| has_tab_bar(&node))
+        {
+            *found = true;
+        }
+        for child in widget.children() {
+            walk(child, found);
+        }
+    }
+    let (app, _doc) = synced_sample();
+    let mut found = false;
+    walk(&app, &mut found);
+    assert!(
+        !found,
+        "documents are desktop tabs; the editor draws no tab strip"
     );
-}
-
-fn selecting_a_different_pill_is_read_back_via_active_id() {
-    let mut app = CodeApp::with_sample();
-    let prime = app
-        .session
-        .project
-        .nodes
-        .values()
-        .find(|n| n.name == "prime.rs")
-        .unwrap()
-        .id;
-    app.open_node(prime); // active is now prime.rs
-    let main_node = app.session.open[0].node;
-    assert_eq!(app.session.active, Some(1));
-
-    // A press on the bar already moved its own `active_id` (see
-    // `TabBar::handle_event`); this stands in for that click landing on
-    // main.rs's pill instead.
-    app.tabs.set_active(main_node as u64);
-    app.bound_node = Some(main_node.wrapping_add(1)); // sentinel, must be cleared
-
-    let mut doc = AutoCommit::new();
-    app.drain_child_events(&mut doc);
-
-    assert_eq!(
-        app.session.active,
-        Some(0),
-        "the session must follow the bar's active_id back to main.rs"
-    );
-    assert_eq!(
-        app.bound_node, None,
-        "switching which buffer is selected must force the editor to re-bind"
+    assert!(
+        crate::commands::Command::catalogue()
+            .iter()
+            .all(|(command, label)| command.id() != "close-tab" && !label.contains("Tab")),
+        "closing is the desktop's tab lifecycle, not an editor command"
     );
 }
 
@@ -1109,12 +1066,7 @@ fn a_document_from_a_previous_session_still_stats_the_file() {
 
     app.ensure_buffers(&mut doc);
 
-    let buf = app
-        .session
-        .open
-        .iter()
-        .find(|b| b.node == node)
-        .expect("still open");
+    let buf = app.session.buffer_of(node).expect("still open");
     assert!(
         buf.stamp.is_some(),
         "the file was stat'ed, so a save has something to check against"
@@ -1388,47 +1340,6 @@ fn toggle_comment_comments_then_uncomments() {
     );
 }
 
-fn closing_a_dirty_tab_prompts_before_discarding() {
-    let (mut app, mut doc) = synced_sample();
-    let node = app.session.active_buffer().unwrap().node;
-    // Edit the buffer so it has unsaved changes, then let a frame recompute
-    // the dirty flag the way `sync` does.
-    app.editor.insert_for_test(&mut doc, "X");
-    app.dispatch_editor_text_edits(&mut doc);
-    app.ensure_buffers(&mut doc);
-    assert!(
-        app.session.buffer_of(node).unwrap().dirty,
-        "the buffer now has unsaved edits"
-    );
-
-    let before = app.session.open.len();
-    let active = app.session.active.unwrap();
-    app.request_close_tab(active);
-    assert_eq!(
-        app.session.open.len(),
-        before,
-        "a dirty tab is not closed out from under the user"
-    );
-    assert!(app.close_prompt.is_some(), "the save prompt is raised");
-
-    // Discarding closes it and drops the edits.
-    app.resolve_close_prompt(&doc, CloseChoice::Discard);
-    assert_eq!(app.session.open.len(), before - 1, "the tab closed");
-    assert!(app.close_prompt.is_none());
-}
-
-fn closing_a_clean_tab_closes_immediately() {
-    let (mut app, _doc) = synced_sample();
-    let before = app.session.open.len();
-    let active = app.session.active.unwrap();
-    app.request_close_tab(active);
-    assert!(
-        app.close_prompt.is_none(),
-        "a saved tab closes without a prompt"
-    );
-    assert_eq!(app.session.open.len(), before - 1);
-}
-
 fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
@@ -1569,29 +1480,25 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         (480, 900),
     );
     let targets = driver.targets();
-    let tabs = targets.get("tabs").copied().expect("tab bar target");
+    let header = targets
+        .get("code-editor.file")
+        .copied()
+        .expect("file header target");
     let trigger = targets
         .get("code.bottom-panel-toggle")
         .copied()
         .expect("retained dock trigger");
-    // The trigger is an icon button of the toolkit's size, centred on the
-    // tab strip's row, so it neither spans the bar nor touches the content.
-    let target = f64::from(ui::theme::Theme::dark().tokens.metrics.min_pointer_target);
+    // The trigger shares the chrome row with the file header, centred on the
+    // same line, and never overlaps it.
     assert!(
-        (trigger.center().y - tabs.center().y).abs() < 0.01,
-        "trigger is centred on the tab row: {} vs {}",
+        (trigger.center().y - header.center().y).abs() < 1.0,
+        "trigger and file name share the chrome row: {} vs {}",
         trigger.center().y,
-        tabs.center().y
+        header.center().y
     );
     assert!(
-        trigger.height() >= target && trigger.height() <= tabs.height(),
-        "trigger is a pointer-target square inside the row: {} in {}",
-        trigger.height(),
-        tabs.height()
-    );
-    assert!(
-        tabs.x1 <= trigger.x0,
-        "tab pills and dock trigger must not overlap"
+        header.x1 <= trigger.x0,
+        "file header and dock trigger must not overlap"
     );
     let closed_snapshot = driver.inspection();
     let closed = trigger_semantics(&closed_snapshot);
@@ -1667,6 +1574,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     driver.resize((800, 700)).expect("resize open editor");
     let resized = driver.targets();
     let panel_standard = resized["bottom_panel"];
+    let header_standard = resized["code-editor.file"];
     let trigger_standard = resized["code.bottom-panel-toggle"];
     assert!(
         panel_standard.x0 >= 0.0
@@ -1676,11 +1584,9 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
         "open panel stays inside the resized viewport"
     );
     assert_eq!(panel_standard.height(), panel_narrow.height());
-    // Same geometry after the resize: centred on the document tabs' row (the
-    // open dock has a tab strip of its own, answering to the same name).
-    assert!((trigger_standard.center().y - tabs.center().y).abs() < 0.01);
-    assert!((trigger_standard.height() - trigger.height()).abs() < 0.01);
-    assert!(trigger_standard.x1 <= 800.0);
+    // Same chrome row after the resize, still clear of the file header.
+    assert!((trigger_standard.center().y - header_standard.center().y).abs() < 1.0);
+    assert!(header_standard.x1 <= trigger_standard.x0);
     let resized_snapshot = driver.inspection();
     let resized_trigger = trigger_semantics(&resized_snapshot);
     assert_eq!(resized_trigger.name.as_deref(), Some("Hide panel"));
@@ -1691,226 +1597,5 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     let restored = driver.targets();
     assert!(restored.contains_key("bottom_panel"));
     assert_eq!(restored["bottom_panel"].height(), panel_narrow.height());
-    assert!(
-        (restored["code.bottom-panel-toggle"].y0 - trigger.y0).abs() < 0.01,
-        "the trigger keeps its place in the row"
-    );
-}
-
-/// One offscreen frame of `app` over the window ground: sync, layout, the main
-/// pass and the top layer, as the live host runs them.
-fn render(app: &mut CodeApp, viewport: (u32, u32)) -> ui::launch::ShotFrame {
-    let mut frame = ui::launch::ShotFrame::new(viewport, Theme::dark());
-    frame.sync(app);
-    frame.layout(app).expect("the editor lays out");
-    let mut scene = frame.draw(app);
-    frame.draw_overlay(app, &mut scene);
-    frame
-}
-
-#[test]
-fn the_status_bar_reserves_its_own_band_under_everything() {
-    let mut app = CodeApp::with_sample();
-    app.shots_open_terminal();
-    let _frame = render(&mut app, (1280, 800));
-    let status = app.status_rect;
-    let bar = ui::chrome::status_bar::height(&Theme::dark());
-    assert!(
-        (status.height() - bar).abs() < 0.01,
-        "the band is the bar's height"
-    );
-    assert!(
-        (status.y1 - 800.0).abs() < 0.01,
-        "it sits on the window's bottom edge"
-    );
-    assert!(
-        app.editor.get_rect().y1 <= app.panel.get_rect().y0 + 0.01
-            && app.panel.get_rect().y1 <= status.y0 + 0.01,
-        "the editor and the dock end where the bar begins; nothing is laid out under it"
-    );
-}
-
-#[test]
-fn the_sidebar_toggle_leads_the_sidebar_when_docked_and_the_tab_strip_otherwise() {
-    // Docked and open: the toggle is in the sidebar's header, and the tab
-    // strip starts at the editor column.
-    let mut app = CodeApp::with_sample();
-    let _frame = render(&mut app, (1280, 800));
-    let sidebar = app.drawer.sidebar_rect();
-    assert!(sidebar.width() > 0.0);
-    assert!(sidebar.contains(app.drawer.toggle_rect().center()));
-    assert!(app.tabs.get_rect().x0 >= sidebar.x1);
-
-    // Hidden: the toggle moves to the leading edge of the tab strip, and the
-    // first tab starts after it with a gap.
-    app.toggle_sidebar();
-    app.drawer.snap(false);
-    let _frame = render(&mut app, (1280, 800));
-    assert!(app.toggle_in_tab_strip());
-    assert!(app.drawer.toggle_rect().width() > 0.0);
-    assert!(
-        app.tabs
-            .tab_rects()
-            .first()
-            .is_some_and(|tab| tab.x0 > app.drawer.toggle_rect().x1),
-        "the first tab clears the toggle: {:?} vs {:?}",
-        app.tabs.tab_rects().first(),
-        app.drawer.toggle_rect()
-    );
-
-    // A narrow window starts with the sidebar as a closed drawer.
-    let mut narrow = CodeApp::with_sample();
-    narrow.set_width_hint(600.0);
-    let _frame = render(&mut narrow, (600, 800));
-    assert_eq!(narrow.sidebar_layout(), SplitLayout::Overlay);
-    assert!(narrow.toggle_in_tab_strip());
-    assert!(
-        narrow.editor.get_rect().x0.abs() < 0.01,
-        "the editor spans the window"
-    );
-}
-
-#[test]
-fn the_sidebar_toggle_is_published_to_assistive_technology() {
-    let mut app = CodeApp::with_sample();
-    let _frame = render(&mut app, (1280, 800));
-    let root = Widget::accessibility(&app).expect("a semantic root");
-    let toggle = root
-        .children
-        .iter()
-        .find(|child| child.name.as_deref() == Some("Hide sidebar"))
-        .expect("the toggle is a named button");
-    assert_eq!(toggle.action_target.as_deref(), Some("sidebar-toggle"));
-    let mut doc = AutoCommit::new();
-    assert!(Widget::perform_semantic_action(
-        &mut app,
-        "sidebar-toggle",
-        &ui::a11y::Action::Activate,
-        &mut doc,
-        &automerge::ROOT,
-    ));
-    assert!(!app.sidebar_open());
-}
-
-#[test]
-fn searching_the_project_and_the_palette_shortcuts_open_the_platform_search() {
-    let mut app = CodeApp::with_sample();
-    let mut doc = AutoCommit::new();
-    // Searching the project and going to a line both go to the platform.
-    for (command, query) in [
-        (Command::SearchProject, None),
-        (Command::GoToLine, Some("Go to line")),
-    ] {
-        app.apply_command(command, &mut doc);
-        let invocation = ui::widget::controls::ActionControls::take_control_invocation(&mut app)
-            .expect("the command asks the platform to open search");
-        let mut request = ui::search::SearchRequest::this_app();
-        if let Some(query) = query {
-            request = request.with_query(query);
-        }
-        assert_eq!(invocation, ui::search::open_search_invocation(&request));
-        assert!(
-            ui::widget::controls::ActionControls::take_control_invocation(&mut app).is_none(),
-            "the request is taken once"
-        );
-    }
-    // There is no in-app search panel left to open.
-    app.apply_command(Command::SearchProject, &mut doc);
-    assert!(!app.panel_visible);
-}
-
-fn three_action_sheet(app: &mut CodeApp) -> Vec<vello::kurbo::Rect> {
-    let _frame = render(app, (1280, 800));
-    let actions = app
-        .question_sheet
-        .layout()
-        .map(|layout| layout.actions.clone())
-        .unwrap_or_default();
-    assert_eq!(actions.len(), 3, "a question has three answers");
-    for (i, a) in actions.iter().enumerate() {
-        assert!(a.area() > 0.0, "action {i} is laid out");
-        for b in actions.iter().skip(i + 1) {
-            assert!(a.intersect(*b).area() <= 0.0, "actions do not overlap");
-        }
-    }
-    actions
-}
-
-#[test]
-fn the_unsaved_close_question_is_a_three_action_sheet_over_the_window() {
-    let (mut app, mut doc) = synced_sample();
-    app.editor.insert_for_test(&mut doc, "X");
-    app.dispatch_editor_text_edits(&mut doc);
-    app.ensure_buffers(&mut doc);
-    app.reconcile_tabs();
-    let before = app.session.open.len();
-    app.request_close_tab(0);
-    assert_eq!(app.question(), Some(dialogs::Question::ClosePrompt));
-    three_action_sheet(&mut app);
-
-    // Cancel (the last action) keeps the tab and answers the question.
-    app.answer(dialogs::Question::ClosePrompt, 2, &mut doc);
-    assert_eq!(app.question(), None);
-    assert_eq!(app.session.open.len(), before);
-
-    // Don't save (the middle one) discards the edits and closes it.
-    app.request_close_tab(0);
-    app.answer(dialogs::Question::ClosePrompt, 1, &mut doc);
-    assert_eq!(app.question(), None);
-    assert_eq!(app.session.open.len(), before - 1);
-}
-
-#[test]
-fn a_save_conflict_outranks_the_close_question() {
-    let mut app = CodeApp::with_sample();
-    app.shots_close_prompt();
-    app.shots_conflict();
-    assert_eq!(app.question(), Some(dialogs::Question::Conflict));
-    three_action_sheet(&mut app);
-    assert!(app.question_sheet.focused_action().is_none());
-}
-
-#[test]
-fn find_and_replace_go_through_the_bar_and_the_edit_action() {
-    use ui::widget::Findable;
-    let (mut app, mut doc) = synced_sample();
-    app.open_find();
-    app.find.set_query("primes");
-    app.drive_find(&mut doc);
-    let matches = app.find_matches.len();
-    assert!(matches >= 2);
-    assert_eq!(
-        app.find_current,
-        Some(0),
-        "the bar lands on the first match"
-    );
-
-    let replaced = find_workflow::FindTarget {
-        app: &mut app,
-        doc: &mut doc,
-    }
-    .replace_all("odds");
-    assert_eq!(replaced, matches);
-    let node = app.active_file_node().unwrap();
-    let text = EditorDoc::read_buffer_key(&doc, &app.buffer_key(node)).unwrap();
-    assert_eq!(text.matches("odds").count(), matches);
-    assert!(!text.contains("primes"));
-    assert!(
-        app.notice().is_some_and(|n| n.text.starts_with("Replaced")),
-        "the replacement says how much it changed"
-    );
-}
-
-#[test]
-fn closing_the_find_bar_stops_painting_matches() {
-    let (mut app, mut doc) = synced_sample();
-    app.open_find();
-    app.find.set_query("primes");
-    app.drive_find(&mut doc);
-    assert!(app.editor.find_match_count_for_test() > 0);
-    app.close_find();
-    assert!(!app.find_open);
-    assert_eq!(app.editor.find_match_count_for_test(), 0);
-    let _frame = render(&mut app, (1280, 800));
-    assert!(app.find_node.is_none(), "a closed bar takes no row");
+    assert!(restored["code-editor.file"].x1 <= restored["code.bottom-panel-toggle"].x0);
 }

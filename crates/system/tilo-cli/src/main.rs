@@ -42,6 +42,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+mod health;
+
 use clap::{CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 
@@ -158,13 +160,29 @@ enum SystemCmd {
     },
     /// Explain how to enter the isolated recovery environment.
     Repair,
+    /// Check that this session renders on the machine's GPU.
+    #[command(
+        after_help = "Examples:\n  tilo system health --gpu\n  tilo system health --gpu --json\n\nExits 1 when a GPU is present but the session or an app is not using it."
+    )]
+    Health {
+        /// Check GPU rendering (the only health area so far).
+        #[arg(long)]
+        gpu: bool,
+        /// Print the verdict as JSON.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
     let args: Vec<OsString> = std::env::args_os().collect();
     let result = if invoked_as(&args, "system") {
         let cli = SystemCli::parse_from(args);
-        require_system_provider().and_then(|()| run_system(cli.cmd))
+        if matches!(cli.cmd, SystemCmd::Health { .. }) {
+            run_system(cli.cmd)
+        } else {
+            require_system_provider().and_then(|()| run_system(cli.cmd))
+        }
     } else {
         run(Cli::parse_from(args))
     };
@@ -199,7 +217,11 @@ fn run(cli: Cli) -> Result<ExitCode> {
             Ok(ExitCode::SUCCESS)
         }
         Cmd::System { cmd } => {
-            require_system_provider()?;
+            // Health reads the running session, not the image, so it answers
+            // wherever a Tilo session runs.
+            if !matches!(cmd, SystemCmd::Health { .. }) {
+                require_system_provider()?;
+            }
             run_system(cmd)
         }
         Cmd::App { args } => run_app(&args, "tilo app"),
@@ -346,6 +368,7 @@ fn run_system(cmd: SystemCmd) -> Result<ExitCode> {
             print_repair_help();
             Ok(ExitCode::SUCCESS)
         }
+        SystemCmd::Health { gpu: _, json } => health::run_gpu(json),
     }
 }
 

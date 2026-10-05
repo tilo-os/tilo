@@ -1,6 +1,117 @@
 use super::*;
 
 #[test]
+fn retained_block_batches_include_empty_rows_and_refuse_interleaved_peers() {
+    let rows = vec![
+        BlockContent::paragraph("a", "First"),
+        BlockContent::paragraph("empty", ""),
+        BlockContent::paragraph("c", "After"),
+    ];
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&rows);
+    editor.retain_block_selection(vec!["a".into(), "empty".into()], false);
+    assert_eq!(editor.selected_block_move(false), Some((0..2, 3)));
+    editor.present_blocks(&[rows[2].clone(), rows[0].clone(), rows[1].clone()]);
+    assert_eq!(editor.selected_block_range(), Some(1..3));
+    assert_eq!(editor.selected_block_move(true), Some((1..3, 0)));
+    let tree = editor.accessibility().unwrap();
+    assert!(
+        tree.children
+            .iter()
+            .find(|row| row.semantic_key.as_deref() == Some("notes.block:empty"))
+            .unwrap()
+            .state
+            .selected
+    );
+    editor.present_blocks(&[
+        rows[0].clone(),
+        BlockContent::paragraph("peer", "Peer"),
+        rows[1].clone(),
+        rows[2].clone(),
+    ]);
+    assert_eq!(editor.selected_block_move(false), None);
+    assert_eq!(editor.document_selection(), None);
+    assert!(
+        editor
+            .blocks()
+            .iter()
+            .all(|block| block.line.selection_range().is_none())
+    );
+    editor.present_blocks(&rows);
+    assert_eq!(
+        editor.selected_block_range(),
+        None,
+        "peer removal cannot revive an invisible batch"
+    );
+    assert_eq!(editor.document_selection(), None);
+    editor.select_document_range(
+        DocumentPosition { block: 0, byte: 0 },
+        DocumentPosition { block: 1, byte: 0 },
+    );
+    assert_eq!(editor.selected_block_range(), Some(0..1));
+    editor.focus_block(2, CursorPlacement::End);
+    editor.clear_document_selection();
+    assert_eq!(editor.selected_block_range(), Some(2..3));
+}
+
+#[test]
+fn peer_added_descendant_invalidates_retained_batches_for_every_command() {
+    let rows = vec![
+        BlockContent::paragraph("a", "A"),
+        BlockContent::paragraph("b", "B"),
+        BlockContent::paragraph("c", "C"),
+    ];
+    let mut editor = BlockEditor::new();
+    editor.present_blocks(&rows);
+    editor.retain_block_selection(vec!["a".into(), "b".into()], false);
+    let mut child = BlockContent::paragraph("peer", "Peer child");
+    child.nesting = 1;
+    editor.present_blocks(&[rows[0].clone(), rows[1].clone(), child, rows[2].clone()]);
+    assert_eq!(
+        editor.selected_block_range(),
+        None,
+        "duplication has no partial batch"
+    );
+    assert!(!editor.try_indent_selection(1));
+    assert_eq!(editor.selected_block_move(false), None);
+    assert_eq!(
+        editor.document_selection(),
+        None,
+        "typing cannot replace peer content"
+    );
+}
+
+#[test]
+fn selected_movement_refuses_mixed_parents_and_keeps_complete_fences() {
+    let mut editor = BlockEditor::from_markdown("- Parent\n  - child\n- Next\n");
+    editor.select_document_range(
+        DocumentPosition { block: 1, byte: 0 },
+        DocumentPosition { block: 2, byte: 2 },
+    );
+    assert_eq!(editor.selected_block_move(true), None);
+    editor.clear_document_selection();
+    editor.focus_block(1, CursorPlacement::Start);
+    assert_eq!(editor.selected_block_move(true), None);
+    assert_eq!(editor.selected_block_move(false), None);
+    let mut first = Block::code_block(Some("rust".into()), "first");
+    let mut second = Block::code_block(Some("rust".into()), "second");
+    first.code_group = Some("fence".into());
+    second.code_group = Some("fence".into());
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![
+        Block::paragraph("Before"),
+        first,
+        second,
+        Block::paragraph("After"),
+    ]);
+    editor.select_document_range(
+        DocumentPosition { block: 0, byte: 0 },
+        DocumentPosition { block: 2, byte: 2 },
+    );
+    assert_eq!(editor.selected_block_move(false), Some((0..3, 4)));
+}
+
+#[test]
 fn document_accessibility_exposes_role_focus_tables_and_images() {
     fn accessibility_reports_multiline_document_role() {
         use crate::a11y::Role;
@@ -2409,4 +2520,66 @@ fn a_mention_replaces_its_typed_query_as_one_marked_run() {
     );
     e.set_read_only(true);
     assert!(!e.insert_text("x"), "a read-only editor takes nothing");
+}
+
+#[test]
+fn visual_formula_cut_waits_for_clipboard_acceptance() {
+    use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    #[derive(Default)]
+    struct Clipboard {
+        accept: AtomicBool,
+        stored: InProcessClipboard,
+    }
+    impl ClipboardBackend for Clipboard {
+        fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
+            self.accept.load(Ordering::Relaxed) && self.stored.set_text(target, text)
+        }
+        fn text(&self, target: ClipboardTarget) -> Option<String> {
+            self.stored.text(target)
+        }
+        fn name(&self) -> &'static str {
+            "formula-test-clipboard"
+        }
+    }
+    let clipboard = Arc::new(Clipboard::default());
+    let services = crate::host::HostServices::null().with_clipboard(clipboard.clone());
+    let _host = crate::host::enter(&services);
+    let mut editor = crate::math::edit::Editor::from_linear("x + y");
+    editor.select_all();
+    let before = editor.to_linear();
+    let selected = editor.selected_linear();
+    assert!(selected.is_some());
+    let key = Key::Character("x".into());
+    let modifiers = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    assert!(!handle_visual_formula_key(&mut editor, &key, modifiers));
+    assert_eq!(editor.to_linear(), before);
+    assert_eq!(editor.selected_linear(), selected);
+    clipboard.accept.store(true, Ordering::Relaxed);
+    assert!(handle_visual_formula_key(&mut editor, &key, modifiers));
+    assert_eq!(clipboard.text(ClipboardTarget::Clipboard), selected);
+    assert!(editor.to_linear().is_empty());
+}
+
+#[test]
+fn a_block_fields_suggestion_timer_wakes_the_editor() {
+    let mut editor = BlockEditor::new();
+    editor.set_blocks(vec![Block::paragraph("so beautifull")]);
+    assert_eq!(Widget::next_wake_deadline(&editor), None);
+
+    // Far enough ahead that a slow test run never sees the deadline pass.
+    let now = crate::time::now() + crate::time::Duration::from_secs(3600);
+    let field = editor.blocks[0].line.inner_mut();
+    Widget::set_focus(field, true);
+    field.set_cursor_pos("so beautifull".len());
+    field.refresh_suggestion_at(now);
+
+    // Block lines are not widget children; their timers still reach the host.
+    assert_eq!(
+        Widget::next_wake_deadline(&editor),
+        Some(now + crate::text_edit::SUGGESTION_SETTLE)
+    );
 }

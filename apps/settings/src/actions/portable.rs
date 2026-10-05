@@ -710,7 +710,7 @@ pub const PORTABLE_PREFERENCES: &[PortablePreference] = &[
             options: crate::prefs::OnScreenKeyboard::OPTIONS,
             default: on_screen_keyboard_default,
         },
-        available: Some(panes::accessibility::osk_service_available),
+        available: None,
     },
     PortablePreference {
         section: Category::Accessibility,

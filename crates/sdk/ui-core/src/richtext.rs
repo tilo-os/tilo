@@ -928,6 +928,25 @@ impl RichTextLayout {
             byte: position.byte.min(self.text_len),
             affinity: position.affinity,
         };
+        self.resolved_caret_geometry(position, false)
+            .unwrap_or((0.0, 0.0, self.line_height))
+    }
+
+    /// Observer caret geometry with the same per-run work limits as
+    /// [`Self::selection_rects_bounded`]. Missing stops and invalid positions
+    /// are unavailable, never the ordinary editor's origin fallback.
+    pub fn caret_geometry_bounded(&self, byte: usize) -> Option<(f32, f32, f32)> {
+        if byte > self.text_len {
+            return None;
+        }
+        self.resolved_caret_geometry(TextPosition::new(byte), true)
+    }
+
+    fn resolved_caret_geometry(
+        &self,
+        position: TextPosition,
+        bounded: bool,
+    ) -> Option<(f32, f32, f32)> {
         let mut byte_fallback = None;
         for run in self.buffer.layout_runs() {
             // A missing affinity may require a byte-only fallback. Do not
@@ -945,17 +964,20 @@ impl RichTextLayout {
             if !contains_byte {
                 continue;
             }
+            if bounded && !geometry_run_within_budget(&run) {
+                return None;
+            }
             for (x, stop) in self.caret_stops(&run) {
                 let geometry = (x, run.line_top, run.line_height);
                 if stop == position {
-                    return geometry;
+                    return Some(geometry);
                 }
                 if stop.byte == position.byte && byte_fallback.is_none() {
                     byte_fallback = Some(geometry);
                 }
             }
         }
-        byte_fallback.unwrap_or((0.0, 0.0, self.line_height))
+        byte_fallback
     }
 
     /// Caret geometry for a conventional byte-only position.
@@ -1243,6 +1265,52 @@ impl RichTextLayout {
         rects
     }
 
+    /// Selection rectangles in a vertical layout band, refusing overflow
+    /// instead of returning a partial selection. Caller byte validation is
+    /// unchanged. This bounded observer path also refuses a visible run with
+    /// more than 65,536 glyphs or summed glyph-source bytes: the shaper's
+    /// `highlight` iterator internally collects its per-run spans first.
+    /// Ordinary editing continues to use the unrestricted APIs below/above.
+    pub fn selection_rects_bounded(
+        &self,
+        range: std::ops::Range<usize>,
+        band: std::ops::Range<f32>,
+        maximum: usize,
+    ) -> Option<Vec<(f32, f32, f32, f32)>> {
+        if range.start > range.end
+            || band.start.is_nan()
+            || band.end.is_nan()
+            || band.start > band.end
+        {
+            return None;
+        }
+        let mut rects = Vec::new();
+        if range.is_empty() {
+            return Some(rects);
+        }
+        let start = self.cursor_at(range.start);
+        let end = self.cursor_at(range.end);
+        for run in self.buffer.layout_runs() {
+            if run.line_i < start.line
+                || run.line_i > end.line
+                || run.line_top + run.line_height < band.start
+                || run.line_top > band.end
+            {
+                continue;
+            }
+            if !geometry_run_within_budget(&run) {
+                return None;
+            }
+            for (x, width) in run.highlight(start, end) {
+                if rects.len() == maximum {
+                    return None;
+                }
+                rects.push((x, run.line_top, x + width, run.line_top + run.line_height));
+            }
+        }
+        Some(rects)
+    }
+
     /// [`Self::selection_rects`] for several byte ranges in one pass over the
     /// layout runs, in input order. A long paragraph is one logical line with
     /// many visual runs; the per-range form walks every run and every glyph
@@ -1447,6 +1515,28 @@ const WRAP_INDENT_PASSES: usize = 3;
 #[cfg(test)]
 #[path = "richtext/retained_layout_tests.rs"]
 mod retained_layout_tests;
+
+fn geometry_run_within_budget(run: &cosmic_text::LayoutRun<'_>) -> bool {
+    const MAX_RUN_WORK: usize = 65_536;
+    if run.glyphs.len() > MAX_RUN_WORK {
+        return false;
+    }
+    let mut bytes = 0usize;
+    for glyph in run.glyphs {
+        let Some(total) = glyph
+            .end
+            .checked_sub(glyph.start)
+            .and_then(|len| bytes.checked_add(len))
+        else {
+            return false;
+        };
+        bytes = total;
+        if bytes > MAX_RUN_WORK {
+            return false;
+        }
+    }
+    true
+}
 
 #[cfg(test)]
 mod tests {
@@ -2019,6 +2109,91 @@ mod tests {
             vec![],
             vec![],
         )
+    }
+
+    #[test]
+    fn bounded_selection_geometry_refuses_overflow_without_partial_rectangles() {
+        let text = "first line\nsecond line\nthird line";
+        let shaped = layout(text, 400.0);
+        let expected = shaped.selection_rects(0, text.len());
+        assert_eq!(expected.len(), 3, "fixture has three real shaped lines");
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), f32::NEG_INFINITY..f32::INFINITY, 3),
+            Some(expected.clone())
+        );
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), f32::NEG_INFINITY..f32::INFINITY, 2)
+                .is_none()
+        );
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), f32::NEG_INFINITY..f32::INFINITY, 0)
+                .is_none()
+        );
+        let middle = expected[1];
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), (middle.1 + 0.1)..(middle.3 - 0.1), 1),
+            Some(vec![middle])
+        );
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), -100.0..-1.0, 0),
+            Some(vec![])
+        );
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), f32::NAN..1.0, 3)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn bounded_caret_geometry_matches_real_stops_without_origin_fallback() {
+        let shaped = layout("a😀éZ", 400.0);
+        for byte in [0, 1, 5, 7, 8] {
+            assert_eq!(
+                shaped.caret_geometry_bounded(byte),
+                Some(shaped.caret_geometry(byte))
+            );
+        }
+        assert!(shaped.caret_geometry_bounded(9).is_none());
+        assert!(
+            shaped.caret_geometry_bounded(2).is_none(),
+            "a byte inside the emoji is not an observed caret stop"
+        );
+        let empty = layout("", 400.0);
+        assert_eq!(
+            empty.caret_geometry_bounded(0),
+            Some(empty.caret_geometry(0))
+        );
+    }
+
+    #[test]
+    fn bounded_geometry_refuses_oversized_shaped_runs_before_caret_allocation() {
+        let text = "a".repeat(65_537);
+        let mut fs = crate::font_catalog::fixture_font_system();
+        let shaped = RichTextLayout::shape_plain(
+            &mut fs,
+            &text,
+            &crate::text_render::TextStyle::new(18.0),
+            None,
+        );
+        let runs: Vec<_> = shaped.buffer.layout_runs().collect();
+        assert_eq!(runs.len(), 1, "fixture is one actual unwrapped run");
+        assert_eq!(runs[0].glyphs.len(), text.len());
+        CARET_STOP_RUNS.with(|count| count.set(0));
+        assert!(shaped.caret_geometry_bounded(0).is_none());
+        assert_eq!(CARET_STOP_RUNS.with(std::cell::Cell::get), 0);
+        assert!(
+            shaped
+                .selection_rects_bounded(0..text.len(), 0.0..100.0, 4096)
+                .is_none()
+        );
+        assert_eq!(
+            shaped.selection_rects_bounded(0..text.len(), -100.0..-1.0, 0),
+            Some(vec![]),
+            "offscreen runs do not allocate highlight geometry"
+        );
     }
 
     #[test]

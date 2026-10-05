@@ -72,6 +72,35 @@ pub enum CallerPrincipal {
     App(String),
 }
 
+/// Host-owned execution lifetime. Clones share closure, never authority.
+/// Equality and hashing use the immutable minted identity, not liveness.
+#[derive(Clone, Debug)]
+pub struct ExecutionLease {
+    id: uuid::Uuid,
+    live: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+impl PartialEq for ExecutionLease {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+impl Eq for ExecutionLease {}
+impl std::hash::Hash for ExecutionLease {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+impl ExecutionLease {
+    #[must_use]
+    pub fn is_live(&self) -> bool {
+        self.live.load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Retire observation of this run. This does not cancel any app operation.
+    pub fn close(&self) {
+        self.live.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 /// The authenticated principal behind a request.
 ///
 /// Built only by the transport that authenticated the connection — from the
@@ -87,7 +116,7 @@ pub struct Caller {
     foreign: bool,
     // Transport-issued execution scope, never accepted from request context.
     // It narrows invocation ownership without changing the policy principal.
-    execution: Option<uuid::Uuid>,
+    execution: Option<ExecutionLease>,
 }
 
 impl Caller {
@@ -172,14 +201,34 @@ impl Caller {
     /// This changes invocation ownership, never the caller's permissions.
     #[must_use]
     pub fn in_new_execution(mut self) -> Self {
-        self.execution = Some(uuid::Uuid::new_v4());
+        self.execution = Some(ExecutionLease {
+            id: uuid::Uuid::new_v4(),
+            live: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        });
         self
     }
 
     /// Host-issued execution identity. An identifier alone conveys no authority.
     #[must_use]
-    pub const fn execution_id(&self) -> Option<uuid::Uuid> {
-        self.execution
+    pub fn execution_id(&self) -> Option<uuid::Uuid> {
+        self.execution.as_ref().map(|lease| lease.id)
+    }
+
+    #[must_use]
+    pub fn execution_lease(&self) -> Option<ExecutionLease> {
+        self.execution.clone()
+    }
+
+    #[must_use]
+    pub fn execution_is_live(&self) -> bool {
+        self.execution.as_ref().is_some_and(ExecutionLease::is_live)
+    }
+
+    /// A transport ends its own run; retained caller clones cannot reopen it.
+    pub fn retire_execution(&self) {
+        if let Some(lease) = &self.execution {
+            lease.close();
+        }
     }
 
     /// Mark whether the caller acts from a foreign device: a Tilo runtime on
@@ -351,6 +400,38 @@ pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
     }
 }
 
+/// Prefix of the provider token naming an application in a workspace
+/// whether or not it is running; see [`application_action_target`].
+pub const APPLICATION_PROVIDER: &str = "application";
+
+/// The target of the action `app_id` offers on `resource` in workspace
+/// `room`. The host delivers it to the running app, or launches the app into
+/// the workspace first and delivers it once the app offers the action; the
+/// app's own published contract admits it either way.
+#[must_use]
+pub fn application_action_target(
+    room: &str,
+    app_id: &str,
+    resource: impl Into<String>,
+    action: impl Into<String>,
+) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: format!("{APPLICATION_PROVIDER}:{room}:{app_id}"),
+        address: ActionAddress::new(resource, action),
+    }
+}
+
+/// The room and application an [`application_action_target`] provider
+/// token names, or `None` for any other provider.
+#[must_use]
+pub fn application_provider(provider: &str) -> Option<(&str, &str)> {
+    let (room, app_id) = provider
+        .strip_prefix(APPLICATION_PROVIDER)?
+        .strip_prefix(':')?
+        .split_once(':')?;
+    (!room.is_empty() && !app_id.is_empty() && !app_id.contains(':')).then_some((room, app_id))
+}
+
 /// Where an invocation stands, as reported to its caller.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ReceiptStatus {
@@ -491,6 +572,11 @@ impl ActionHostError {
 /// with [`ActionHostError::InvocationConflict`]. [`InvocationLedger`]
 /// implements that rule.
 pub trait ActionHost {
+    /// End this admitted transport run without cancelling its app jobs.
+    fn retire_execution(&self, caller: &Caller) {
+        caller.retire_execution();
+    }
+
     /// One page of what `caller` is offered. An action the caller may not
     /// invoke is absent, not flagged.
     fn query(
@@ -1011,12 +1097,53 @@ mod tests {
     use super::*;
     use crate::{ActionContract, ActionDescriptor, ExecutionLocus, InputSpec, OperationKind};
 
+    #[test]
+    fn execution_lifetime_is_shared_without_changing_caller_identity() {
+        let first = Caller::local_person("person:owner").in_new_execution();
+        let retained = first.clone();
+        let second = first.clone().in_new_execution();
+        let hash = |caller: &Caller| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(caller, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        };
+        let before = hash(&first);
+        first.retire_execution();
+        assert!(!retained.execution_is_live());
+        assert!(second.execution_is_live());
+        assert_eq!(first, retained);
+        assert_eq!(hash(&first), before);
+        let reconnected = retained.in_new_execution();
+        assert!(reconnected.execution_is_live());
+        assert_ne!(reconnected.execution_id(), first.execution_id());
+    }
+
     fn alice() -> Caller {
         Caller::authenticated([1; 32], [2; 32])
     }
 
     fn mallory() -> Caller {
         Caller::authenticated([9; 32], [8; 32])
+    }
+
+    #[test]
+    fn an_application_action_target_names_its_room_and_app() {
+        let target = application_action_target("room-1", "so.tilo.chat", "chat.workspace", "call");
+        assert_eq!(
+            application_provider(&target.provider),
+            Some(("room-1", "so.tilo.chat"))
+        );
+        assert_eq!(target.address, ActionAddress::new("chat.workspace", "call"));
+        for other in [
+            "7",
+            "workspace:room-1",
+            "application:room-1",
+            "application::so.tilo.chat",
+            "application:room-1:",
+            "application:room-1:a:b",
+        ] {
+            assert_eq!(application_provider(other), None, "{other}");
+        }
     }
 
     fn descriptor(resource: &str, action: &str) -> ActionDescriptor {

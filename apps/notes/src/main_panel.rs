@@ -317,6 +317,7 @@ pub struct MainPanel {
     /// significant ownership churn for what amounts to "clip + shift".
     scroll_y: f64,
     scroll_content_height: f64,
+    bottom_inset: f64,
     scroll_track: Rect,
     scrollbar: Scrollbar,
     scroll_focused: bool,
@@ -374,6 +375,7 @@ impl MainPanel {
             dirty: true,
             scroll_y: 0.0,
             scroll_content_height: 0.0,
+            bottom_inset: 0.0,
             scroll_track: Rect::ZERO,
             scrollbar: Scrollbar::vertical(),
             scroll_focused: false,
@@ -496,15 +498,33 @@ impl MainPanel {
         if crate::doc::NotesDoc::page_body(doc, page).is_none() {
             return Err("the page has no body".into());
         }
+        // Binding the page already open again (its record re-read, a reveal)
+        // keeps the caret where the person left it: a rebind that put it back
+        // at the start would make the next keystroke land before the last.
+        let caret = (self.page_id == Some(page))
+            .then(|| {
+                let editor = self.editor.editor();
+                let block = editor.blocks().get(editor.focused_index()?)?;
+                Some((block.id.clone(), block.line.cursor_pos()))
+            })
+            .flatten();
         let mut editor = self.fresh_editor(Some(page));
         editor
             .editor_mut()
             .set_local_author(self.local_author.clone());
         editor.present_from(doc);
         editor.set_focus(true);
-        editor
-            .editor_mut()
-            .focus_block(0, ui::widget::CursorPlacement::Start);
+        let (index, placement) = caret
+            .and_then(|(id, byte)| {
+                let index = editor
+                    .editor()
+                    .blocks()
+                    .iter()
+                    .position(|block| block.id == id)?;
+                Some((index, ui::widget::CursorPlacement::Byte(byte)))
+            })
+            .unwrap_or((0, ui::widget::CursorPlacement::Start));
+        editor.editor_mut().focus_block(index, placement);
         self.editor = editor;
         self.page_id = Some(page);
         self.dates = self.date_index.get(page);
@@ -708,6 +728,23 @@ impl MainPanel {
 
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.editor.editor_mut().take_external_link_open()
+    }
+
+    /// Images pasted into the open note since the last call.
+    pub fn take_pasted_images(&mut self) -> Vec<ui::widget::block_editor::ImagePasteRequest> {
+        self.editor.editor_mut().take_image_paste_requests()
+    }
+
+    pub fn set_bottom_inset(&mut self, inset: f64) {
+        let inset = inset.max(0.0);
+        if (self.bottom_inset - inset).abs() > f64::EPSILON {
+            self.bottom_inset = inset;
+            self.dirty = true;
+        }
+    }
+
+    fn body_bottom_inset(&self) -> f64 {
+        self.metrics.gutter.max(self.bottom_inset)
     }
 
     fn scroll_metrics(&self) -> ScrollMetrics {
@@ -1372,7 +1409,7 @@ impl Widget for MainPanel {
             let viewport_h = (self.rect.height() - self.scroll_top_inset()).max(0.0);
             // The last block ends one gutter above the window's bottom edge.
             self.scroll_content_height =
-                self.metadata_height + editor_content_h + self.metrics.gutter;
+                self.metadata_height + editor_content_h + self.body_bottom_inset();
             let track_top = self.rect.y0 + self.scroll_top_inset();
             self.scroll_track = Rect::new(
                 self.rect.x1 - self.metrics.scroll_inset - self.metrics.scroll_width,
@@ -1725,6 +1762,24 @@ impl Widget for MainPanel {
 
     fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
         use ui::i18n::I18nManager;
+        // Header controls keep their toolkit hit geometry and hints. The
+        // panel supplies the exact persisted times behind its compact caption.
+        fn header_hint(
+            widget: &dyn Widget,
+            point: Point,
+            date_id: &str,
+            dates: crate::metadata::NoteDates,
+        ) -> Option<(Rect, String)> {
+            if widget.test_id() == Some(date_id) && widget.get_rect().contains(point) {
+                return Some((widget.get_rect(), dates.display_labels(false).join("\n")));
+            }
+            widget.tooltip_target_at(point).or_else(|| {
+                widget
+                    .children()
+                    .into_iter()
+                    .find_map(|child| header_hint(child, point, date_id, dates))
+            })
+        }
         self.page_id?;
         if self.tooltips_suppressed || !self.rect.contains(point) {
             return None;
@@ -1735,7 +1790,13 @@ impl Widget for MainPanel {
                 I18nManager::lookup("notes-surface-rename", None),
             ));
         }
-        None
+        let date_id = format!(
+            "notes.caption:{}",
+            usize::from(!self.parent_path.is_empty())
+        );
+        self.header
+            .built()
+            .and_then(|header| header_hint(header, point, &date_id, self.dates))
     }
 
     fn get_rect(&self) -> Rect {
@@ -1998,6 +2059,109 @@ mod tests {
             let mut doc = AutoCommit::new();
             assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
             assert!(p.take_empty_action());
+        }
+
+        eprintln!("phase surface_hints_follow_hit_targets_and_reveal_exact_compact_dates");
+        {
+            use ui::headless::Framed;
+            use ui::tilo_actions::Action;
+            crate::metadata::register_messages();
+            let page = fresh_page_id();
+            let tag = fresh_page_id();
+            let backlink = fresh_page_id();
+            let mut doc = AutoCommit::new();
+            crate::actions::new_page_action(page, None, "launch".into(), "Launch")
+                .apply(&mut doc)
+                .unwrap();
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default().with_time(1_700_000_000),
+            );
+            crate::actions::edit_body_action(
+                page,
+                tilo_document::RichTextAction::AppendParagraph {
+                    text: "Body".into(),
+                },
+            )
+            .apply(&mut doc)
+            .unwrap();
+            doc.commit_with(
+                automerge::transaction::CommitOptions::default().with_time(1_700_003_600),
+            );
+            let mut panel = MainPanel::new();
+            panel.load_page(page, "Launch", "Body");
+            panel.set_tags(vec![TagChip {
+                id: tag,
+                name: "Research".into(),
+            }]);
+            panel.set_backlinks(vec![BacklinkChip {
+                page: backlink,
+                title: "A long source note title".into(),
+                references: 1,
+            }]);
+            let mut panel = Framed::new(ui::State::from_doc(doc), panel, (300, 600), Theme::dark());
+            let targets = Framed::harness(&panel).targets();
+            let tag_rect = targets[&format!("notes.tag-chip:{tag}")];
+            let backlink_rect = targets[&format!("notes.backlink-chip:{backlink}")];
+            let date_rect = targets["notes.caption:0"];
+            for rect in [panel.title_rect, tag_rect, backlink_rect, date_rect] {
+                assert!(
+                    !rect.is_zero_area(),
+                    "the retained target is laid out: {rect:?}"
+                );
+                assert!(
+                    panel.rect.contains(rect.origin())
+                        && panel
+                            .rect
+                            .contains(Point::new(rect.x1 - 0.1, rect.y1 - 0.1)),
+                    "header target fits the panel: {rect:?}"
+                );
+            }
+            assert_eq!(
+                panel.cursor_shape(panel.title_rect.center()),
+                Some(winit::window::CursorIcon::Text)
+            );
+            assert!(panel.tooltip_target_at(panel.title_rect.center()).is_some());
+            assert!(
+                panel
+                    .tooltip_target_at(tag_rect.center())
+                    .unwrap()
+                    .1
+                    .contains("Research")
+            );
+            assert!(
+                panel
+                    .tooltip_target_at(backlink_rect.center())
+                    .unwrap()
+                    .1
+                    .contains("A long source note title")
+            );
+            let (target, label) = panel.tooltip_target_at(date_rect.center()).unwrap();
+            assert_eq!(target, date_rect);
+            assert_eq!(label, panel.dates.display_labels(false).join("\n"));
+            assert_eq!(
+                label.lines().count(),
+                2,
+                "both persisted dates are revealed"
+            );
+            assert!(
+                label.lines().all(|line| line.contains(':')),
+                "compact metadata exposes each exact time"
+            );
+            assert!(panel.tooltip_target_at(Point::new(400.0, 400.0)).is_none());
+            assert!(panel.tooltip_target_at(Point::new(100.0, 500.0)).is_none());
+            panel.suppress_tooltips(true);
+            for rect in [panel.title_rect, tag_rect, backlink_rect, date_rect] {
+                assert!(panel.tooltip_target_at(rect.center()).is_none());
+            }
+            panel.suppress_tooltips(false);
+            for rect in [panel.title_rect, tag_rect, backlink_rect, date_rect] {
+                assert!(panel.tooltip_target_at(rect.center()).is_some());
+            }
+            panel.begin_title_edit();
+            assert!(
+                panel.tooltip_target_at(panel.title_rect.center()).is_none(),
+                "rename hint must not cover an active title edit"
+            );
         }
     }
 

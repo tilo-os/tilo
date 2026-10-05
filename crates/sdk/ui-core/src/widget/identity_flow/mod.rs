@@ -49,14 +49,10 @@ pub mod add_device_host;
 pub mod create_identity;
 pub mod invite_accept;
 pub mod invite_mint;
-mod line_edit_compat;
 pub mod pair_device;
 pub mod recovery_share;
 pub mod recovery_verify;
 mod sheet;
-
-#[allow(deprecated, reason = "stable SDK compatibility re-export")]
-pub use line_edit_compat::LineEditState;
 
 /// Disk-format record for a persisted identity.
 ///

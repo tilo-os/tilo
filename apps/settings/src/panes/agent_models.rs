@@ -127,6 +127,10 @@ pub struct HardwareRecommendation {
     pub reason: String,
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag mirrors an independent signed declaration of the release"
+)]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalModelPackage {
     pub id: String,
@@ -146,6 +150,24 @@ pub struct LocalModelPackage {
     /// general image-analysis model must not gain this capability implicitly.
     #[serde(default)]
     pub face_recognition: bool,
+    /// The model runs inside the apps that use it: it is installed, never
+    /// started, and is not a chat model for the local provider profile.
+    #[serde(default)]
+    pub in_process: bool,
+    /// Signed salient-object segmentation capability ("Select subject").
+    #[serde(default)]
+    pub segmentation: bool,
+}
+
+impl LocalModelPackage {
+    /// The card title naming what an in-process model does for the person.
+    fn capability_title(&self) -> String {
+        if self.segmentation {
+            t("agent-inprocess-segmentation-title")
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -199,6 +221,30 @@ pub struct InstalledLocalModel {
     pub phase: LocalModelPhase,
 }
 
+/// A signed model that runs in-process, offered whether or not it is
+/// installed. `phase` is absent until it is set up.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InProcessLocalModel {
+    pub package: LocalModelPackage,
+    #[serde(default)]
+    pub phase: Option<LocalModelPhase>,
+}
+
+impl InProcessLocalModel {
+    /// Whether setting it up (again) is what the card offers.
+    pub(crate) fn installable(&self) -> bool {
+        matches!(self.phase, None | Some(LocalModelPhase::Error { .. }))
+    }
+
+    /// Whether there are local bytes or a failed record to remove.
+    pub(crate) fn removable(&self) -> bool {
+        matches!(
+            self.phase,
+            Some(LocalModelPhase::Ready { .. } | LocalModelPhase::Error { .. })
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AcceleratorSetupState {
@@ -232,8 +278,17 @@ pub struct LocalModelSnapshot {
     pub recommendation: Option<LocalModelPackage>,
     #[serde(default)]
     pub models: Vec<InstalledLocalModel>,
+    /// Every signed in-process model, installed or not.
+    #[serde(default)]
+    pub in_process: Vec<InProcessLocalModel>,
     #[serde(default)]
     pub accelerator_setup: Option<AcceleratorSetup>,
+}
+
+impl LocalModelSnapshot {
+    pub(crate) fn in_process_model(&self, id: &str) -> Option<&InProcessLocalModel> {
+        self.in_process.iter().find(|model| model.package.id == id)
+    }
 }
 
 /// Boundary implemented by Tilo' model service. The production adapter is a
@@ -358,6 +413,7 @@ fn fallback_snapshot() -> LocalModelSnapshot {
         },
         recommendation: None,
         models: Vec::new(),
+        in_process: Vec::new(),
         accelerator_setup: None,
     }
 }
@@ -415,8 +471,46 @@ pub(crate) fn model_key(id: &str, action: ModelAction) -> String {
     format!("agent_models.local.{token}.{}", action_slug(action))
 }
 
+/// The setup, confirm, cancel and remove controls of one in-process model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InProcessControl {
+    Setup,
+    Confirm,
+    Cancel,
+    Remove,
+}
+
+impl InProcessControl {
+    const ALL: [Self; 4] = [Self::Setup, Self::Confirm, Self::Cancel, Self::Remove];
+}
+
+pub(crate) fn in_process_key(id: &str, control: InProcessControl) -> String {
+    let token = id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let verb = match control {
+        InProcessControl::Setup => "setup",
+        InProcessControl::Confirm => "confirm",
+        InProcessControl::Cancel => "cancel",
+        InProcessControl::Remove => "remove",
+    };
+    format!("agent_models.in_process.{token}.{verb}")
+}
+
 fn byte_size(bytes: u64) -> String {
-    format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    // In-process models are a few hundred megabytes; "0.2 GiB" says little.
+    if bytes < 1_073_741_824 {
+        format!("{:.0} MB", bytes as f64 / 1_000_000.0)
+    } else {
+        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    }
 }
 
 fn phase_progress(phase: &LocalModelPhase) -> Option<f32> {
@@ -472,7 +566,9 @@ fn synced_local_profile(
 ) -> Option<ProviderProfile> {
     let ready = models
         .iter()
-        .filter(|model| matches!(model.phase, LocalModelPhase::Ready { .. }))
+        .filter(|model| {
+            !model.package.in_process && matches!(model.phase, LocalModelPhase::Ready { .. })
+        })
         .collect::<Vec<_>>();
     if ready.is_empty() {
         return None;
@@ -533,6 +629,8 @@ pub struct AgentModelsPane {
     sync_provider_profile: bool,
     confirmation: Option<String>,
     remove_confirmation: Option<String>,
+    /// The in-process model a deep link asked to show; its card comes first.
+    revealed: Option<String>,
     notice: Option<String>,
     last_poll: Instant,
     needs_seed: bool,
@@ -596,6 +694,7 @@ impl AgentModelsPane {
             sync_provider_profile: false,
             confirmation: None,
             remove_confirmation: None,
+            revealed: None,
             notice,
             last_poll: ui::time::now(),
             needs_seed: true,
@@ -671,6 +770,12 @@ impl AgentModelsPane {
             .models
             .iter()
             .any(|model| model.phase.is_transient())
+            || self.snapshot.in_process.iter().any(|model| {
+                model
+                    .phase
+                    .as_ref()
+                    .is_some_and(LocalModelPhase::is_transient)
+            })
             || self
                 .snapshot
                 .accelerator_setup
@@ -734,6 +839,23 @@ impl AgentModelsPane {
     }
 
     fn push_recommendation_confirm(body: &mut Vec<El>, package: &LocalModelPackage) {
+        Self::push_confirm(
+            body,
+            package,
+            ("agent-models-confirm-install", CONFIRM_KEY),
+            ("agent-models-cancel-install", CANCEL_KEY),
+        );
+    }
+
+    /// The download, storage, source, revision and licence a person accepts,
+    /// with the accept and cancel controls named by `confirm` and `cancel`
+    /// (widget id, document key).
+    fn push_confirm(
+        body: &mut Vec<El>,
+        package: &LocalModelPackage,
+        confirm: (&str, &str),
+        cancel: (&str, &str),
+    ) {
         let download = t("agent-download");
         let download_size = byte_size(package.download_bytes);
         let after = t("agent-storage-after");
@@ -746,7 +868,7 @@ impl AgentModelsPane {
             &[("url", package.license_url.as_str().into())],
         );
         let accept_btn = t("agent-accept-download");
-        let cancel = t("agent-cancel");
+        let cancel_label = t("agent-cancel");
         body.extend([
             value_row(&download, &download_size),
             value_row(&after, &after_size),
@@ -757,14 +879,14 @@ impl AgentModelsPane {
             Box::new(
                 Row::new()
                     .push(Box::new(Button::new(
-                        "agent-models-confirm-install",
+                        confirm.0,
                         &accept_btn,
-                        Some(CONFIRM_KEY),
+                        Some(confirm.1),
                     )))
                     .push(Box::new(Button::new(
-                        "agent-models-cancel-install",
-                        &cancel,
-                        Some(CANCEL_KEY),
+                        cancel.0,
+                        &cancel_label,
+                        Some(cancel.1),
                     )))
                     .push(Box::new(Spacer::new())),
             ),
@@ -840,6 +962,127 @@ impl AgentModelsPane {
         card_with_action(
             &t("agent-rec-title"),
             semantic_status_pill(&fit_label, fit_tone(hardware.fit)),
+            rows(body),
+        )
+    }
+
+    /// One in-process model: what it does, then setup with the same licence
+    /// confirmation as the recommendation, progress, or ready with Remove.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "every install phase of the card stays beside its controls"
+    )]
+    fn in_process_card(&self, model: &InProcessLocalModel) -> El {
+        let package = &model.package;
+        let widget_token = in_process_key(&package.id, InProcessControl::Setup);
+        let mut body = vec![
+            value_row(&t("agent-inprocess-model"), &package.name),
+            caption(&package.description),
+            caption(&t("agent-inprocess-caption")),
+        ];
+        let confirming = self.confirmation.as_deref() == Some(package.id.as_str());
+        if confirming && model.installable() {
+            let confirm_id = format!("agent-models-inprocess-confirm-{widget_token}");
+            let cancel_id = format!("agent-models-inprocess-cancel-{widget_token}");
+            Self::push_confirm(
+                &mut body,
+                package,
+                (
+                    &confirm_id,
+                    &in_process_key(&package.id, InProcessControl::Confirm),
+                ),
+                (
+                    &cancel_id,
+                    &in_process_key(&package.id, InProcessControl::Cancel),
+                ),
+            );
+        } else {
+            match &model.phase {
+                None => {
+                    body.push(value_row(
+                        &t("agent-download"),
+                        &byte_size(package.download_bytes),
+                    ));
+                }
+                Some(
+                    phase @ LocalModelPhase::Downloading {
+                        downloaded_bytes,
+                        total_bytes,
+                    },
+                ) => {
+                    let progress = t_args(
+                        "agent-progress-downloading",
+                        &[("name", package.name.as_str().into())],
+                    );
+                    body.push(Box::new(
+                        ProgressBar::new(phase_progress(phase).unwrap_or(0.0)).with_label(progress),
+                    ));
+                    let done = byte_size(*downloaded_bytes);
+                    let total = byte_size(*total_bytes);
+                    body.push(caption(&t_args(
+                        "agent-download-progress",
+                        &[("done", done.as_str().into()), ("total", total.into())],
+                    )));
+                }
+                Some(LocalModelPhase::Installing { message, .. }) => {
+                    let progress = t_args(
+                        "agent-progress-installing",
+                        &[("name", package.name.as_str().into())],
+                    );
+                    body.push(Box::new(ProgressBar::indeterminate().with_label(progress)));
+                    body.push(caption(message));
+                }
+                Some(LocalModelPhase::Ready { .. }) => {
+                    body.push(value_row(
+                        &t("agent-model-storage"),
+                        &byte_size(package.installed_bytes),
+                    ));
+                    body.push(value_row(&t("agent-license"), &package.license));
+                    body.push(caption(&t("agent-inprocess-ready-caption")));
+                }
+                Some(LocalModelPhase::Error { message }) => {
+                    body.push(caption(message));
+                    body.push(caption(&t("agent-inprocess-error-caption")));
+                }
+            }
+            let mut row = Row::new();
+            let mut any = false;
+            if model.installable() {
+                row = row.push(Box::new(
+                    Button::new(
+                        &format!("agent-models-inprocess-setup-{widget_token}"),
+                        &t("agent-setup-device"),
+                        Some(&in_process_key(&package.id, InProcessControl::Setup)),
+                    )
+                    .with_enabled(self.manager_available),
+                ));
+                any = true;
+            }
+            if model.removable() {
+                let label = if self.remove_confirmation.as_deref() == Some(package.id.as_str()) {
+                    t("agent-action-confirm-remove")
+                } else {
+                    action_label(ModelAction::Remove)
+                };
+                row = row.push(Box::new(Button::new(
+                    &format!("agent-models-inprocess-remove-{widget_token}"),
+                    &label,
+                    Some(&in_process_key(&package.id, InProcessControl::Remove)),
+                )));
+                any = true;
+            }
+            if any {
+                body.push(Box::new(row.push(Box::new(Spacer::new()))));
+            }
+        }
+        let (status, tone) = match &model.phase {
+            None => (t("agent-status-not-installed"), StatusTone::Neutral),
+            Some(LocalModelPhase::Ready { .. }) => (t("agent-status-ready"), StatusTone::Success),
+            Some(phase) => (phase.status(), phase_tone(phase)),
+        };
+        card_with_action(
+            &package.capability_title(),
+            semantic_status_pill(&status, tone),
             rows(body),
         )
     }
@@ -1119,7 +1362,17 @@ impl AgentModelsPane {
             let set_notice = self.provider_notice.clone();
             let remove_id = profile_id.clone();
             let remove_notice = self.provider_notice.clone();
-            let configured = tilo_model_gateway::secret_configured(&profile_id).unwrap_or(false);
+            let (configured, configured_error) =
+                match tilo_model_gateway::secret_configured(&profile_id) {
+                    Ok(configured) => (configured, None),
+                    Err(error) => (false, Some(error.to_string())),
+                };
+            if let Some(error) = configured_error {
+                body.push(crate::widgets::error_caption(&t_args(
+                    "agent-key-read-error",
+                    &[("error", error.into())],
+                )));
+            }
             body.push(Box::new(
                 Row::new()
                     .push(Box::new(
@@ -1231,7 +1484,21 @@ impl AgentModelsPane {
         if let Some(accelerator) = self.accelerator_card() {
             cards.push(accelerator);
         }
+        // A deep link to one in-process model puts its card first, where the
+        // person who followed it can see it without hunting.
+        let revealed = self
+            .revealed
+            .as_deref()
+            .and_then(|id| self.snapshot.in_process_model(id));
+        if let Some(model) = revealed {
+            cards.push(self.in_process_card(model));
+        }
         cards.push(self.recommendation_card());
+        for model in &self.snapshot.in_process {
+            if revealed.is_none_or(|shown| shown.package.id != model.package.id) {
+                cards.push(self.in_process_card(model));
+            }
+        }
         if self.snapshot.models.is_empty() {
             cards.push(card(
                 &t("agent-models-empty-title"),
@@ -1256,6 +1523,11 @@ impl AgentModelsPane {
         for model in &self.snapshot.models {
             for action in available_actions(&model.phase) {
                 let _ = state.put(root, model_key(&model.package.id, action), false);
+            }
+        }
+        for model in &self.snapshot.in_process {
+            for control in InProcessControl::ALL {
+                let _ = state.put(root, in_process_key(&model.package.id, control), false);
             }
         }
         self.needs_seed = false;
@@ -1398,6 +1670,147 @@ impl AgentModelsPane {
                 }
             }
         }
+        let in_process = self.snapshot.in_process.clone();
+        for model in &in_process {
+            let id = &model.package.id;
+            if take_bool(state, root, &in_process_key(id, InProcessControl::Setup))
+                && model.installable()
+            {
+                self.confirmation = Some(id.clone());
+                self.structure_dirty = true;
+            }
+            if take_bool(state, root, &in_process_key(id, InProcessControl::Cancel)) {
+                self.confirmation = None;
+                self.structure_dirty = true;
+            }
+            if take_bool(state, root, &in_process_key(id, InProcessControl::Confirm))
+                && self.confirmation.as_deref() == Some(id.as_str())
+            {
+                self.install_in_process(model);
+            }
+            if take_bool(state, root, &in_process_key(id, InProcessControl::Remove))
+                && model.removable()
+            {
+                self.remove_in_process(model, false);
+            }
+        }
+    }
+
+    /// Install an in-process model the person accepted, on its card or
+    /// through the typed install action (whose label is the acceptance).
+    fn install_in_process(&mut self, model: &InProcessLocalModel) {
+        self.confirmation = None;
+        let operation = crate::actions::AgentModelOperation::Install {
+            id: model.package.id.clone(),
+            revision: model.package.revision.clone(),
+        };
+        match self.control.install(&model.package) {
+            Ok(()) => {
+                self.refresh();
+                self.operation_finished(&operation, Ok(t("agent-notice-install-ok")));
+            }
+            Err(error) => {
+                let failed = t_args("agent-notice-install-err", &[("error", error.into())]);
+                self.operation_finished(&operation, Err(failed.clone()));
+                self.notice = Some(failed);
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    /// Remove an in-process model after the second press on its card; the
+    /// typed destructive action (`confirmed`) is its own confirmation.
+    fn remove_in_process(&mut self, model: &InProcessLocalModel, confirmed: bool) {
+        let id = &model.package.id;
+        if !confirmed && self.remove_confirmation.as_deref() != Some(id.as_str()) {
+            self.remove_confirmation = Some(id.clone());
+            self.notice = Some(t_args(
+                "agent-notice-remove",
+                &[
+                    ("name", model.package.name.as_str().into()),
+                    ("size", byte_size(model.package.installed_bytes).into()),
+                ],
+            ));
+            self.structure_dirty = true;
+            return;
+        }
+        self.remove_confirmation = None;
+        let operation = crate::actions::AgentModelOperation::Remove { id: id.clone() };
+        let label = action_label(ModelAction::Remove);
+        match self.control.remove(id) {
+            Ok(()) => {
+                self.refresh();
+                self.operation_finished(
+                    &operation,
+                    Ok(t_args(
+                        "agent-notice-action-ok",
+                        &[("action", label.into())],
+                    )),
+                );
+            }
+            Err(error) => {
+                let failed = t_args(
+                    "agent-notice-action-failed",
+                    &[("action", label.into()), ("error", error.into())],
+                );
+                self.operation_finished(&operation, Err(failed.clone()));
+                self.notice = Some(failed);
+                self.structure_dirty = true;
+            }
+        }
+    }
+
+    /// Show one in-process model's card first, opened at its licence
+    /// confirmation when it is not installed yet. Nothing is downloaded
+    /// until the person accepts there.
+    fn reveal(&mut self, id: &str) {
+        let Some(model) = self.snapshot.in_process_model(id) else {
+            self.notice = Some(t_args(
+                "agent-notice-unknown-model",
+                &[("id", id.to_owned().into())],
+            ));
+            self.structure_dirty = true;
+            return;
+        };
+        if model.installable() {
+            self.confirmation = Some(model.package.id.clone());
+        }
+        self.revealed = Some(model.package.id.clone());
+        self.structure_dirty = true;
+    }
+
+    /// Run a typed install or remove of an in-process model directly; the
+    /// action itself is the person's confirmation. Returns whether `operation`
+    /// named one.
+    fn run_in_process_operation(
+        &mut self,
+        operation: &crate::actions::AgentModelOperation,
+    ) -> bool {
+        match operation {
+            crate::actions::AgentModelOperation::Install { id, revision } => {
+                let Some(model) = self.snapshot.in_process_model(id).cloned() else {
+                    return false;
+                };
+                if &model.package.revision == revision && model.installable() {
+                    self.install_in_process(&model);
+                } else {
+                    self.operation_finished(operation, Err(t("agent-notice-inprocess-changed")));
+                }
+                true
+            }
+            crate::actions::AgentModelOperation::Remove { id } => {
+                let Some(model) = self.snapshot.in_process_model(id).cloned() else {
+                    return false;
+                };
+                if model.removable() {
+                    self.remove_in_process(&model, true);
+                } else {
+                    self.operation_finished(operation, Err(t("agent-notice-inprocess-changed")));
+                }
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -1439,6 +1852,18 @@ impl Widget for AgentModelsPane {
             self.structure_dirty = true;
         }
         self.seed(&mut state, &root);
+        if let Some(crate::actions::LocalPaneCommand::RevealAgentModel(id)) =
+            self.command_state.get()
+        {
+            self.command_state.set(None);
+            self.reveal(&id);
+        }
+        if let Some(crate::actions::LocalPaneCommand::AgentModel(operation)) =
+            self.command_state.get()
+            && self.run_in_process_operation(&operation)
+        {
+            self.command_state.set(None);
+        }
         if let Some(crate::actions::LocalPaneCommand::AgentModel(operation)) =
             self.command_state.get()
         {
@@ -1622,6 +2047,8 @@ mod capture {
             installed_bytes: bytes,
             vision: false,
             face_recognition: false,
+            in_process: false,
+            segmentation: false,
         }
     }
 
@@ -1657,6 +2084,7 @@ mod capture {
                     },
                 }],
                 accelerator_setup: None,
+                in_process: Vec::new(),
             })
         }
         fn install(&self, _model: &LocalModelPackage) -> Result<(), String> {
@@ -1702,6 +2130,26 @@ mod tests {
             installed_bytes: 10_737_418_240,
             vision: false,
             face_recognition: false,
+            in_process: false,
+            segmentation: false,
+        }
+    }
+
+    fn subject_package() -> LocalModelPackage {
+        LocalModelPackage {
+            id: "u2net-subject".into(),
+            name: "Subject selection (U²-Net)".into(),
+            description: "Finds the main subject of a photo".into(),
+            source: "https://artifacts.example.test/u2net.onnx".into(),
+            revision: "8d10f".into(),
+            license: "Apache-2.0".into(),
+            license_url: "https://artifacts.example.test/LICENSE".into(),
+            download_bytes: 175_997_641,
+            installed_bytes: 175_997_641,
+            vision: false,
+            face_recognition: false,
+            in_process: true,
+            segmentation: true,
         }
     }
 
@@ -1720,7 +2168,157 @@ mod tests {
             models: phase
                 .map(|phase| vec![InstalledLocalModel { package, phase }])
                 .unwrap_or_default(),
+            in_process: Vec::new(),
             accelerator_setup: None,
+        }
+    }
+
+    fn with_subject(phase: Option<LocalModelPhase>) -> LocalModelSnapshot {
+        LocalModelSnapshot {
+            in_process: vec![InProcessLocalModel {
+                package: subject_package(),
+                phase,
+            }],
+            ..snapshot(None)
+        }
+    }
+
+    fn rendered_names(pane: &AgentModelsPane) -> Vec<String> {
+        let composition = pane.build_composition();
+        let mut nodes = Vec::new();
+        collect_accessibility(composition.as_ref(), &mut nodes);
+        nodes.into_iter().filter_map(|node| node.name).collect()
+    }
+
+    /// An in-process model has its own card with the recommendation's
+    /// licence confirmation, a link opens it at that confirmation without
+    /// downloading anything, and the typed install is itself the acceptance.
+    #[test]
+    fn in_process_models_are_set_up_with_the_same_confirmation() {
+        // Case `setup_confirms_before_install`.
+        {
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(with_subject(None)),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut pane = AgentModelsPane::with_control(control.clone());
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // The recommendation's and the subject model's own.
+            assert_eq!(
+                rendered_names(&pane)
+                    .iter()
+                    .filter(|name| *name == "Set up on this device")
+                    .count(),
+                2
+            );
+            let _ = doc.put(
+                &root,
+                in_process_key("u2net-subject", InProcessControl::Setup),
+                true,
+            );
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.confirmation.as_deref(), Some("u2net-subject"));
+            assert!(control.calls.lock().unwrap().is_empty());
+            let names = rendered_names(&pane);
+            assert!(names.iter().any(|name| name == "Accept license & download"));
+            let _ = doc.put(
+                &root,
+                in_process_key("u2net-subject", InProcessControl::Confirm),
+                true,
+            );
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["install:u2net-subject@8d10f"]
+            );
+        }
+
+        // Case `a_link_reveals_the_card_at_its_confirmation`.
+        {
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(with_subject(None)),
+                calls: Mutex::new(Vec::new()),
+            });
+            let commands = ui::LocalState::new(Some(
+                crate::actions::LocalPaneCommand::RevealAgentModel("u2net-subject".into()),
+            ));
+            let mut pane =
+                AgentModelsPane::with_control(control.clone()).with_command_state(&commands);
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(pane.confirmation.as_deref(), Some("u2net-subject"));
+            assert_eq!(pane.revealed.as_deref(), Some("u2net-subject"));
+            assert!(control.calls.lock().unwrap().is_empty());
+        }
+
+        // Case `the_typed_install_is_the_acceptance`.
+        {
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(with_subject(None)),
+                calls: Mutex::new(Vec::new()),
+            });
+            let commands = ui::LocalState::new(Some(crate::actions::LocalPaneCommand::AgentModel(
+                crate::actions::AgentModelOperation::Install {
+                    id: "u2net-subject".into(),
+                    revision: "8d10f".into(),
+                },
+            )));
+            let mut pane =
+                AgentModelsPane::with_control(control.clone()).with_command_state(&commands);
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["install:u2net-subject@8d10f"]
+            );
+        }
+    }
+
+    /// A ready in-process model offers only Remove, confirmed twice on the
+    /// card, and never joins the local chat profile.
+    #[test]
+    fn ready_in_process_models_offer_only_a_confirmed_remove() {
+        {
+            let ready = LocalModelPhase::Ready {
+                running: false,
+                endpoint: None,
+            };
+            let control = Arc::new(MockControl {
+                snapshot: Mutex::new(with_subject(Some(ready.clone()))),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut pane = AgentModelsPane::with_control(control.clone());
+            let names = rendered_names(&pane);
+            assert!(!names.iter().any(|name| name == "Start"));
+            assert_eq!(
+                names
+                    .iter()
+                    .filter(|name| *name == "Set up on this device")
+                    .count(),
+                1,
+                "only the recommendation still offers setup"
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let key = in_process_key("u2net-subject", InProcessControl::Remove);
+            let _ = doc.put(&root, &key, true);
+            pane.sync(&mut doc, &root);
+            assert!(control.calls.lock().unwrap().is_empty());
+            let _ = doc.put(&root, &key, true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(
+                control.calls.lock().unwrap().as_slice(),
+                ["remove:u2net-subject"]
+            );
+
+            let installed = vec![InstalledLocalModel {
+                package: subject_package(),
+                phase: ready,
+            }];
+            assert!(synced_local_profile(None, &installed).is_none());
         }
     }
 

@@ -1,12 +1,13 @@
 //! Document marks transformed into renderable rich-text runs and annotations.
 
-use super::char_to_byte;
+use super::{byte_to_char, char_to_byte};
 use crate::num;
 use crate::review_overlay::{DELETION_RGB, INSERTION_RGB};
 use std::collections::HashMap;
-use tilo_doc::document::MarkSpan;
+use tilo_doc::document::{MarkSpan, MarkValue};
 use tilo_doc::snapshot::{BlockView, NoteView};
 use ui::richtext::{BaselineShift, FontFamily, RichSpan};
+use ui::text_edit::EditCore;
 
 pub(super) type BlockRuns = (Vec<RichSpan>, Vec<(usize, usize)>, Vec<(usize, usize)>);
 type ChangeDecoRanges = (Vec<(usize, usize)>, Vec<(usize, usize)>);
@@ -325,6 +326,42 @@ pub(super) fn running_head_runs(block: &BlockView, page: usize) -> Vec<RichSpan>
 }
 pub(super) fn running_head_runs_editing(block: &BlockView) -> Vec<RichSpan> {
     running_head_runs_with(block, FieldDisplay::Placeholder)
+}
+
+/// `block` as it shows while the input method composes in it: the
+/// composition laid into the text at the caret and underlined, every mark
+/// moved with the text after it. A mark that runs up to the caret covers the
+/// composition too, so it reads in the style it will be typed in.
+pub(super) fn composed_block(block: &BlockView, core: &EditCore) -> BlockView {
+    let Some(preedit) = core.preedit_display_range(&block.text) else {
+        return block.clone();
+    };
+    let text = core.display_text(&block.text).into_owned();
+    let at = byte_to_char(&text, preedit.start);
+    let len = text
+        .get(preedit)
+        .map_or(0, |composed| composed.chars().count());
+    let shift = |offset: usize| if offset < at { offset } else { offset + len };
+    let mut marks: Vec<MarkSpan> = block
+        .marks
+        .iter()
+        .map(|mark| MarkSpan {
+            start: shift(mark.start),
+            end: shift(mark.end),
+            ..mark.clone()
+        })
+        .collect();
+    marks.push(MarkSpan {
+        start: at,
+        end: at + len,
+        name: "underline".to_owned(),
+        value: MarkValue::Bool(true),
+    });
+    BlockView {
+        text,
+        marks,
+        ..block.clone()
+    }
 }
 
 pub(super) fn block_note_refs(block: &BlockView) -> Vec<(usize, String)> {

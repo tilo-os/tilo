@@ -31,7 +31,7 @@ When that is not possible, the transcript prints a GAP.
 
 Runs against target/demo/shell:
 
-    cargo build --profile demo -p shell --bin shell --bin tilo-control
+    cargo build --profile demo -p shell -p tilo-control --bin shell --bin tilo-control
 
 Build it optimised. `snapshot` re-renders the scene and PNG-encodes it
 on the compositor's event loop; an unoptimised build spends ~1.4 s per
@@ -4806,7 +4806,7 @@ def main() -> int:
     # a substitute.
     if not os.path.exists(args.shell):
         print(f"no compositor at {args.shell}\nbuild it first:  "
-              f"cargo build --profile demo -p shell --bin shell --bin tilo-control",
+              f"cargo build --profile demo -p shell -p tilo-control --bin shell --bin tilo-control",
               file=sys.stderr)
         return 2
 
@@ -4881,7 +4881,7 @@ def main() -> int:
                 print(f"    {f}")
             if len(newer) > 8:
                 print(f"    ... and {len(newer) - 8} more")
-            print("\n  cargo build --profile demo -p shell --bin shell "
+            print("\n  cargo build --profile demo -p shell -p tilo-control --bin shell "
                   "--bin tilo-control")
             print("  (or --allow-stale-shell to film it anyway)")
             return 2

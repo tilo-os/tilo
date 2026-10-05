@@ -5131,19 +5131,31 @@ fn confinement_routes_are_mandatory_for_hosted_terminals() {
             decide_route(&SessionTarget::Host, false, true, Some(bin.clone())),
             ConfineRoute::Host
         );
-        // Relays and legacy VMs are not this device's supervisor's to serve.
-        for elsewhere in [
-            SessionTarget::Environment {
-                record: None,
-                location: Location::Relay { id: "home".into() },
+        // A relay's environment is carried there by the supervisor, and only
+        // by it; legacy VMs are not its to serve.
+        let on_relay = SessionTarget::Environment {
+            record: None,
+            location: Location::Relay {
+                relay: "ab".repeat(32),
             },
-            SessionTarget::Legacy { vm: "linux".into() },
-        ] {
-            assert!(matches!(
-                decide_route(&elsewhere, true, true, Some(bin.clone())),
-                ConfineRoute::Unavailable(_)
-            ));
-        }
+        };
+        assert_eq!(
+            decide_route(&on_relay, true, false, None),
+            ConfineRoute::Service
+        );
+        assert!(matches!(
+            decide_route(&on_relay, false, true, Some(bin.clone())),
+            ConfineRoute::Unavailable(_)
+        ));
+        assert!(matches!(
+            decide_route(
+                &SessionTarget::Legacy { vm: "linux".into() },
+                true,
+                true,
+                Some(bin)
+            ),
+            ConfineRoute::Unavailable(_)
+        ));
     }
 
     // Case `hosted_terminal_requires_ush_before_construction`.

@@ -1,10 +1,9 @@
 //! The editor's window chrome: the controls above the panes.
 //!
 //! Every control is a library widget hosted by the painted [`TypstApp`]
-//! (`crate::app::TypstApp`): a [`Toolbar`] for the commands (it folds what
-//! does not fit into its own More menu), a [`Dropdown`] listing the open
-//! documents with previous and next buttons beside it, and in a narrow window
-//! a [`ToggleGroup`] that picks which pane shows. The app places them with
+//! (`crate::app::TypstApp`): a [`Toolbar`] for the commands, a semantic
+//! file-name heading, and a [`ToggleGroup`] for Edit/Preview at narrow widths.
+//! The desktop owns document tabs. The app places the controls with
 //! [`Chrome::place`] and reads what the person chose from [`Chrome::take`].
 
 use std::cell::RefCell;
@@ -13,7 +12,6 @@ use std::rc::Rc;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use ui::LocalState;
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -21,15 +19,11 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::{Segment, SegmentedFace, ToggleGroup};
 use ui::widget::toolbar::{Orientation, Toolbar};
-use ui::widget::{Button, ControlSize, Dropdown, Widget};
+use ui::widget::{Button, ControlSize, Text, Widget};
 
 /// What a control asked the editor to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
-    PrevDoc,
-    NextDoc,
-    /// Open the document at this index of the list.
-    SelectDoc(usize),
     Compile,
     Save,
     Open,
@@ -61,11 +55,8 @@ pub struct Chrome {
     queue: Queue,
     toolbar: Toolbar,
     toolbar_for: ToolbarFor,
-    previous: Button,
-    next: Button,
-    picker: Dropdown,
-    /// The documents the picker lists, and the one chosen.
-    picker_for: (Vec<String>, usize),
+    document: Text,
+    document_name: Rc<RefCell<String>>,
     view: ToggleGroup,
     close_problems: Button,
     /// The window's History control, at the bar's trailing edge: the bar is
@@ -80,7 +71,6 @@ pub struct Chrome {
 /// Which of the optional controls show in the current layout.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 struct Visible {
-    arrows: bool,
     view: bool,
     close: bool,
 }
@@ -130,16 +120,12 @@ impl Default for Chrome {
 impl Chrome {
     pub fn new() -> Self {
         let queue: Queue = Rc::default();
-        let picker_state = LocalState::new(String::new());
-        let picker_queue = Rc::clone(&queue);
-        let picker = Dropdown::from_state(Vec::new(), &picker_state)
+        let document_name = Rc::new(RefCell::new(String::new()));
+        let source = Rc::clone(&document_name);
+        let document = Text::dynamic(move || source.borrow().clone())
             .with_id("typst.document")
-            .with_accessible_name("Document")
-            .on_change(move |value| {
-                if let Ok(index) = value.parse::<usize>() {
-                    picker_queue.borrow_mut().push(Command::SelectDoc(index));
-                }
-            });
+            .with_role(TextRole::Heading)
+            .with_kind(ui::TextKind::Identifier);
         let view_queue = Rc::clone(&queue);
         let view = ToggleGroup::new(vec![Segment::new("Edit"), Segment::new("Preview")], 0)
             .with_id("typst.view")
@@ -158,16 +144,8 @@ impl Chrome {
         Self {
             toolbar: build_toolbar(&queue, 0, false),
             toolbar_for,
-            previous: Button::icon_only(
-                "typst.previous-document",
-                Icon::ChevronLeft,
-                "Previous document",
-            )
-            .on_click(command(&queue, Command::PrevDoc)),
-            next: Button::icon_only("typst.next-document", Icon::ChevronRight, "Next document")
-                .on_click(command(&queue, Command::NextDoc)),
-            picker,
-            picker_for: (Vec::new(), 0),
+            document,
+            document_name,
             view,
             close_problems: Button::icon_only("typst.close-problems", Icon::X, "Close problems")
                 .on_click(command(&queue, Command::ToggleProblems)),
@@ -196,26 +174,8 @@ impl Chrome {
         problems_shown: bool,
         preview_shown: bool,
     ) {
-        if !self
-            .picker_for
-            .0
-            .iter()
-            .map(String::as_str)
-            .eq(names.iter().copied())
-        {
-            self.picker.set_value_options(
-                names
-                    .iter()
-                    .enumerate()
-                    .map(|(index, name)| (index.to_string(), (*name).to_string()))
-                    .collect(),
-            );
-            self.picker_for.0 = names.iter().map(|name| (*name).to_string()).collect();
-        }
-        if self.picker_for.1 != current || self.picker.selected().parse() != Ok(current) {
-            self.picker.set_selected(current.to_string());
-            self.picker_for.1 = current;
-        }
+        let name = names.get(current).copied().unwrap_or_default();
+        *self.document_name.borrow_mut() = name.to_string();
         let wanted = ToolbarFor {
             problems,
             shown: problems_shown,
@@ -258,26 +218,21 @@ impl Chrome {
         &mut self,
         bar: Rect,
         compact: bool,
-        documents: usize,
+        _documents: usize,
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
         let spacing = &theme.tokens.spacing;
-        let (pad, gap, tight) = (
-            f64::from(spacing.s3),
-            f64::from(spacing.s3),
-            f64::from(spacing.s1),
-        );
+        let (pad, gap) = (f64::from(spacing.s3), f64::from(spacing.s3));
         let control = Self::control_height(tr, theme);
         let y0 = bar.y0 + (bar.height() - control) / 2.0;
         let row = |x0: f64, x1: f64| Rect::new(x0, y0, x1.max(x0), y0 + control);
 
         self.show(Visible {
-            arrows: !compact && documents > 1,
             view: compact,
             close: self.visible.close,
         });
-        let natural = self.natural_picker_width(tr, theme);
+        let natural = self.natural_document_width(tr, theme);
         let mut x = bar.x0 + pad;
 
         let mut right = bar.x1 - pad;
@@ -293,8 +248,7 @@ impl Chrome {
             button.apply_layout_external(self.history_rect);
         }
 
-        let hidden = Rect::ZERO;
-        let (mut prev_rect, mut next_rect, mut view_rect) = (hidden, hidden, hidden);
+        let mut view_rect = Rect::ZERO;
         let picker_rect;
         let toolbar_rect;
         if compact {
@@ -314,24 +268,12 @@ impl Chrome {
             x += view_w + gap;
             toolbar_rect = row(x, right);
         } else {
-            if self.visible.arrows {
-                prev_rect = row(x, x + control);
-                x += control + tight;
-            }
-            picker_rect = row(x, x + natural);
-            x += natural;
-            if self.visible.arrows {
-                x += tight;
-                next_rect = row(x, x + control);
-                x += control;
-            }
-            x += gap;
+            picker_rect = row(x, x + natural.min((right - x - control - gap).max(0.0)));
+            x = picker_rect.x1 + gap;
             toolbar_rect = row(x, right);
         }
 
-        self.previous.apply_layout_external(prev_rect);
-        self.next.apply_layout_external(next_rect);
-        self.picker.apply_layout_external(picker_rect);
+        self.document.apply_layout_external(picker_rect);
         self.view.apply_layout_external(view_rect);
         self.toolbar_rect = toolbar_rect;
         self.toolbar.lay_out_in(toolbar_rect, tr, theme);
@@ -359,21 +301,16 @@ impl Chrome {
 
     /// The picker's natural width: its longest document name, its chevron
     /// and its insets, never wider than a list column.
-    fn natural_picker_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        let style = theme.text(TextRole::Label);
-        let widest = self
-            .picker_for
-            .0
-            .iter()
-            .map(|name| f64::from(tr.measure_style(name, None, &style).0))
-            .fold(0.0, f64::max);
-        let spacing = &theme.tokens.spacing;
-        let chrome = 2.0 * f64::from(spacing.s3)
-            + f64::from(theme.tokens.metrics.icon_md)
-            + f64::from(theme.tokens.metrics.icon_label_gap);
-        let floor = f64::from(theme.tokens.metrics.min_pointer_target) * 3.0;
-        let cap = f64::from(theme.tokens.metrics.panel_width_list);
-        (widest + chrome).clamp(floor, cap)
+    fn natural_document_width(&self, tr: &mut TextRenderer, theme: &Theme) -> f64 {
+        let width = f64::from(
+            tr.measure_style(
+                &self.document_name.borrow(),
+                None,
+                &theme.text(TextRole::Heading),
+            )
+            .0,
+        );
+        width.min(f64::from(theme.tokens.metrics.panel_width_list))
     }
 
     /// Whether a control holds an open list (the picker, the toolbar's More
@@ -390,7 +327,7 @@ impl Chrome {
 
     /// Open the picker's list: a screenshot scenario showing it.
     pub fn open_picker(&mut self) {
-        self.picker.open_menu();
+        self.toolbar.open_overflow();
     }
 
     pub fn toolbar_has_overflow(&self) -> bool {
@@ -401,13 +338,7 @@ impl Chrome {
     /// accessibility all follow it.
     pub fn children(&self) -> Vec<&dyn Widget> {
         let mut children: Vec<&dyn Widget> = Vec::with_capacity(7);
-        if self.visible.arrows {
-            children.push(&self.previous);
-        }
-        children.push(&self.picker);
-        if self.visible.arrows {
-            children.push(&self.next);
-        }
+        children.push(&self.document);
         if self.visible.view {
             children.push(&self.view);
         }
@@ -423,13 +354,7 @@ impl Chrome {
 
     pub fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(7);
-        if self.visible.arrows {
-            children.push(&mut self.previous);
-        }
-        children.push(&mut self.picker);
-        if self.visible.arrows {
-            children.push(&mut self.next);
-        }
+        children.push(&mut self.document);
         if self.visible.view {
             children.push(&mut self.view);
         }

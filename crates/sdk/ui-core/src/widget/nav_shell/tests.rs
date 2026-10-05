@@ -1,6 +1,7 @@
 use super::*;
 use crate::headless::FrameHarness;
 use crate::state::State;
+use crate::widget::Text;
 use std::rc::Rc as SharedRc;
 
 mod capabilities;
@@ -8,6 +9,7 @@ mod capabilities;
 /// A pane that fills what it is given and counts the input it receives.
 struct Probe {
     id: &'static str,
+    deadline: Option<Instant>,
     rect: Rect,
     events: SharedRc<Cell<usize>>,
 }
@@ -18,6 +20,7 @@ impl Probe {
         (
             Box::new(Self {
                 id,
+                deadline: None,
                 rect: Rect::ZERO,
                 events: SharedRc::clone(&events),
             }),
@@ -67,6 +70,10 @@ impl Widget for Probe {
 
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
         self.events.set(self.events.get().saturating_add(1));
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 
     fn name(&self) -> &'static str {
@@ -701,4 +708,246 @@ fn pressing_the_toggle_hides_and_shows_the_sidebar() {
     press(&mut h);
     settle(&mut h, 1280, 800);
     assert!(h.root::<NavShell>().is_sidebar_open());
+}
+
+#[test]
+fn an_unbuilt_shell_reports_structure_changes_once() {
+    let mut shell = notes_shell();
+    shell.take_structure_dirty();
+    for frame in 0..3 {
+        assert!(
+            !shell.take_structure_dirty(),
+            "unbuilt frame {frame} must settle"
+        );
+    }
+    shell.set_content(Probe::boxed("replacement").0);
+    assert!(shell.take_structure_dirty());
+    assert!(!shell.take_structure_dirty());
+}
+
+#[test]
+fn the_modal_drawer_keeps_the_backdrops_wake_deadline() {
+    let deadline = crate::time::now() + crate::time::Duration::from_millis(900);
+    let (mut content, _) = Probe::boxed("content");
+    content
+        .as_any_mut()
+        .unwrap()
+        .downcast_mut::<Probe>()
+        .unwrap()
+        .deadline = Some(deadline);
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(content);
+    let mut h = harness(shell, 560, 800, Theme::dark());
+    settle(&mut h, 560, 800);
+    h.root_mut::<NavShell>().open_sidebar();
+    settle(&mut h, 560, 800);
+    assert!(geometry(&h).sidebar_modal());
+    assert_eq!(h.root::<NavShell>().next_wake_deadline(), Some(deadline));
+}
+
+#[test]
+fn modal_control_inventory_hides_backdrop_action_emitters() {
+    let resource = tilo_actions::Resource::new("test-pane", "test", "Test").with_action(
+        tilo_actions::ActionSpec::operation(
+            "go",
+            "Go",
+            tilo_actions::OperationKind::View,
+            "test.go",
+            &(),
+        )
+        .unwrap(),
+    );
+    let button = Button::new("go", "Go", None)
+        .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Box::new(button));
+    let mut h = harness(shell, 560, 800, Theme::dark());
+    for open in [false, true, false] {
+        if open {
+            h.root_mut::<NavShell>().open_sidebar();
+        } else {
+            h.root_mut::<NavShell>().close_sidebar();
+        }
+        settle(&mut h, 560, 800);
+        let inventory = crate::widget::controls::control_action_bindings(h.root::<NavShell>())
+            .iter()
+            .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)));
+        assert_eq!(
+            crate::widget::controls::has_action_control_bindings(h.root::<NavShell>()),
+            inventory
+        );
+        assert_eq!(
+            inventory, !open,
+            "modal drawer hides the backdrop action emitter"
+        );
+    }
+}
+
+#[test]
+fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
+    for clicked in [false, true] {
+        let mut h = harness(mail_shell(), 1600, 800, Theme::dark());
+        settle(&mut h, 1600, 800);
+        assert!(geometry(&h).overview_column.width() > 0.0);
+        if clicked {
+            let point = geometry(&h).overview_column.center();
+            h.dispatch_to_root(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            });
+            h.dispatch_to_root(&WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            });
+        } else {
+            h.root_mut::<NavShell>().show(NavPane::Overview);
+        }
+        settle(&mut h, 560, 800);
+        assert_eq!(
+            h.root::<NavShell>().front_pane(),
+            NavPane::Overview,
+            "clicked: {clicked}"
+        );
+        assert!(geometry(&h).overview_column.width() > 0.0);
+    }
+}
+
+#[test]
+fn scrolling_reuses_measured_panes_without_reloading_fonts() {
+    let content = crate::widget::Scrollable::new_vertical().with_child(Box::new(Text::new(
+        &"file row with a measured label\n".repeat(100),
+    )));
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Box::new(content));
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    let before = h
+        .root_mut::<NavShell>()
+        .content_mut::<crate::widget::Scrollable>()
+        .unwrap()
+        .children()[0]
+        .get_rect();
+    crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+    for _ in 0..4 {
+        h.root_mut::<NavShell>()
+            .content_mut::<crate::widget::Scrollable>()
+            .unwrap()
+            .scroll_by(0.0, 20.0);
+        assert!(h.root::<NavShell>().is_layout_dirty());
+        assert!(
+            !h.root::<NavShell>().layout_needs_measure(),
+            "scroll preserves intrinsic sizes"
+        );
+        h.relayout_at((1280, 800)).expect("scroll repositioned");
+    }
+    let after = h
+        .root_mut::<NavShell>()
+        .content_mut::<crate::widget::Scrollable>()
+        .unwrap()
+        .children()[0]
+        .get_rect();
+    assert_eq!(after.x0, before.x0);
+    assert_eq!(after.y0, before.y0 - 80.0);
+    assert_eq!(
+        crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(Cell::get),
+        0,
+        "translation-only layout must not reload system fonts"
+    );
+}
+
+#[test]
+fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() {
+    use automerge::transaction::Transactable;
+    fn make(theme: Theme, viewport: (u32, u32), label: &str) -> FrameHarness {
+        let mut state = State::new();
+        state.doc.put(automerge::ROOT, "label", label).unwrap();
+        let content = crate::widget::Scrollable::new_vertical()
+            .with_child(Box::new(Text::from_document_string("label")));
+        FrameHarness::for_root(
+            state,
+            NavShell::new()
+                .sidebar(Probe::boxed("sidebar").0)
+                .content(Box::new(content)),
+            viewport,
+            theme,
+        )
+    }
+    fn text_rect(h: &mut FrameHarness) -> Rect {
+        h.root_mut::<NavShell>()
+            .content_mut::<crate::widget::Scrollable>()
+            .unwrap()
+            .children()[0]
+            .get_rect()
+    }
+    let mut h = make(Theme::dark(), (1280, 800), "first line");
+    settle(&mut h, 1280, 800);
+    let original = text_rect(&mut h);
+    let scaled = Theme::light().with_text_scale(1.5);
+    crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+    h.relayout_themed((1400, 900), scaled.clone())
+        .expect("theme and resize measured");
+    assert!(text_rect(&mut h).height() > original.height());
+    assert_eq!(
+        crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(Cell::get),
+        0,
+        "panes reuse the host renderer rather than constructing font systems"
+    );
+    let mut fresh = make(scaled.clone(), (1400, 900), "first line");
+    settle(&mut fresh, 1400, 900);
+    assert_eq!(text_rect(&mut h), text_rect(&mut fresh));
+
+    h.relayout_at((560, 800)).expect("narrow");
+    h.root_mut::<NavShell>().open_sidebar();
+    settle(&mut h, 560, 800);
+    assert!(geometry(&h).sidebar_modal());
+    let before = text_rect(&mut h);
+    h.state_mut()
+        .doc
+        .put(
+            automerge::ROOT,
+            "label",
+            "first line\nsecond line\nthird line",
+        )
+        .unwrap();
+    h.relayout_at((560, 800))
+        .expect("modal backdrop edit measured");
+    let changed = text_rect(&mut h);
+    assert!(
+        changed.height() > before.height(),
+        "the live backdrop gets changed text geometry"
+    );
+    h.recompose().expect("authoritative full measurement");
+    assert_eq!(text_rect(&mut h), changed);
+
+    // A replacement already clean at the same scale still invalidates the
+    // retained composition, even though its own intrinsic sizes are known.
+    let mut replacement = make(
+        scaled,
+        (560, 800),
+        "replacement\nsecond line\nthird line\nfourth line",
+    );
+    settle(&mut replacement, 560, 800);
+    replacement.root_mut::<NavShell>().set_content(Box::new(
+        crate::widget::Scrollable::new_vertical().with_child(Box::new(Text::new(
+            "replacement\nsecond line\nthird line\nfourth line",
+        ))),
+    ));
+    settle(&mut replacement, 560, 800);
+    replacement.root_mut::<NavShell>().mark_drawn();
+    let content = std::mem::replace(
+        &mut replacement.root_mut::<NavShell>().content,
+        Probe::boxed("placeholder").0,
+    );
+    assert!(
+        !content.layout_needs_measure(),
+        "fixture: replacement is already measured and clean"
+    );
+    h.root_mut::<NavShell>().set_content(content);
+    h.relayout_at((560, 800))
+        .expect("clean replacement measured");
+    assert!(text_rect(&mut h).height() > changed.height());
 }

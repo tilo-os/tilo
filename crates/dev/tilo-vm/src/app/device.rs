@@ -167,15 +167,18 @@ pub fn device_checks(
             ),
         ),
         // An older image: register anyway, so vm upgrade can move it on.
-        (true, Some(Err(error @ CliError::ProtocolMismatch { client, daemon, .. })))
-            if daemon < client =>
-        {
-            Check::warn(
-                "tilo-vmd",
-                error.to_string(),
-                "slots and swaps wait for a newer image: tilo-vm vm upgrade <name> (it needs only SSH and bootc)",
-            )
-        }
+        (
+            true,
+            Some(Err(error @ CliError::ProtocolMismatch {
+                vm, client, daemon, ..
+            })),
+        ) if daemon < client => Check::warn(
+            "tilo-vmd",
+            error.to_string(),
+            format!(
+                "slots and swaps wait for a newer image: tilo-vm vm upgrade {vm} (it needs only SSH and bootc)"
+            ),
+        ),
         (true, Some(Err(error))) => Check::fail("tilo-vmd", error.to_string(), error.hint()),
     });
     if let Some(Ok(hello)) = hello {
@@ -228,6 +231,10 @@ pub fn usable(checks: &[Check]) -> bool {
 
 impl App {
     /// `vm add` for a device reached as `endpoint.user`, not root.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one registration sequence: probe, checks, net facts, record"
+    )]
     pub(super) fn vm_add_account(
         &mut self,
         args: &AddArgs,
@@ -287,13 +294,16 @@ impl App {
             Some(Ok(hello)) => Some(hello.arch.clone()),
             _ => probe.arch.clone(),
         };
-        let entry = VmEntry {
+        let mut entry = VmEntry {
             hypervisor: DEVICE.into(),
             ssh: Some(endpoint.ssh_spec()),
             key,
             arch: arch.clone(),
             ..VmEntry::default()
         };
+        if ok {
+            self.add_net_facts(&endpoint, &mut entry, &mut text);
+        }
         let data = json!({
             "vm": args.name,
             "ssh": endpoint.ssh_spec(),
@@ -301,6 +311,9 @@ impl App {
             "arch": arch,
             "registered": ok,
             "checks": checks,
+            "hostname": entry.hostname,
+            "mac": entry.mac,
+            "wake": entry.wake,
         });
         if !ok {
             text.push_str("\nnot registered: fix the failed checks above, then rerun this command");
@@ -335,6 +348,18 @@ impl App {
 }
 
 impl App {
+    /// Its name, MAC and wake setting, so the device is found again when
+    /// its address changes and can be woken (tilo-vm vm wake).
+    fn add_net_facts(&mut self, endpoint: &SshEndpoint, entry: &mut VmEntry, text: &mut String) {
+        let Some(facts) = self.net_facts(endpoint, entry.key.as_deref()) else {
+            return;
+        };
+        super::reach::apply_net(entry, &facts);
+        if let Some(wake) = &entry.wake {
+            let _ = write!(text, "\n  wake: {}", wake.describe());
+        }
+    }
+
     /// `--grant-sudo`: write the sudoers drop-in over an interactive SSH
     /// session, where sudo asks for the user's password.
     fn grant_sudo(&mut self, endpoint: &SshEndpoint, key: Option<&str>) -> Result<(), CliError> {
@@ -488,7 +513,13 @@ mod tests {
         assert!(usable(&checks));
         let daemon = checks.iter().find(|c| c.check == "tilo-vmd").unwrap();
         assert_eq!(daemon.state, "warn");
-        assert!(daemon.fix.as_deref().unwrap().contains("vm upgrade"));
+        assert!(
+            daemon
+                .fix
+                .as_deref()
+                .unwrap()
+                .contains("tilo-vm vm upgrade yoga ")
+        );
         let newer = Err(CliError::ProtocolMismatch {
             vm: "yoga".into(),
             client: 5,

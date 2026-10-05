@@ -94,6 +94,36 @@ fn red((rgba, width): &(Vec<u8>, usize), x: usize, y: usize) -> u8 {
     rgba[(y * width + x) * 4]
 }
 
+/// Inverting and growing in one step grows what ends up selected: the
+/// subject a wand's background leaves, shrunk clear of that background's
+/// edge, rather than the background grown before it is turned inside out.
+#[test]
+fn invert_comes_before_grow() {
+    let mut art = Replica::<ArtworkResource>::new();
+    select(
+        &mut art,
+        Select {
+            rect: Some([100.0, 100.0, 200.0, 100.0]),
+            ..Select::default()
+        },
+    );
+    select(
+        &mut art,
+        Select {
+            invert: Some(true),
+            grow: Some(-10.0),
+            ..Select::default()
+        },
+    );
+    let area = selected(&art.state().unwrap());
+    assert!(
+        !area.contains(Point::new(95.0, 150.0)),
+        "within 10 of the old edge"
+    );
+    assert!(area.contains(Point::new(80.0, 150.0)));
+    assert!(!area.contains(Point::new(150.0, 150.0)));
+}
+
 /// Shapes, lassos and marks select; add, subtract and intersect change the
 /// selection; grow, feather and invert refine it; none clears it. Each is
 /// one step, undone like any other.
@@ -407,6 +437,7 @@ fn a_mask_shows_and_hides_its_layer() {
                 colour: "#000000".into(),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap();
@@ -478,6 +509,7 @@ fn paint_kept_inside_the_selection_carries_its_area() {
                 clip: Some("selection".into()),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap();
@@ -562,6 +594,7 @@ fn keeping_inside_no_selection_is_refused() {
                 clip: Some("selection".into()),
                 ..NewStroke::default()
             }],
+            group: None,
         }),
     )
     .unwrap_err();

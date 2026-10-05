@@ -4,11 +4,12 @@
 //! Document mutations (`new-snippet`, per-folder create, per-snippet rename /
 //! language / tags / star / delete, the body as editable text) live on this
 //! resource via [`Resource::declarations`] / [`Resource::children`]. Opening a
-//! snippet and revealing a tag are View operations the surface answers.
+//! snippet, revealing a tag and focusing search are [`SnippetsView`]s the
+//! surface answers; the first two ride the snippet or tag they show.
 
 use std::rc::Rc;
 
-use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::framework::{EffectAnswer, EffectCx, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::i18n::EmbeddedCatalog;
 use ui::tilo_actions::{ActionParam, ParamType, Resource as PublishedResource};
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
@@ -16,8 +17,8 @@ use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, open_snippet_address,
-    publish_children, register, reveal_tag_address, titled_snippet,
+    SNIPPETS_ACTION_TYPE, SnippetsAction, SnippetsView, create_snippet_action,
+    open_snippet_address, publish_children, register, reveal_tag_address, titled_snippet,
 };
 use crate::app::SnippetsApp;
 use crate::doc::SnippetsDoc;
@@ -28,6 +29,9 @@ pub const LOCALES: &[(&str, &str)] = &[
     ("en-US", include_str!("../locales/en-US.ftl")),
     ("de-DE", include_str!("../locales/de-DE.ftl")),
 ];
+
+static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", LOCALES, "snippets-body-placeholder").with_system_locale();
 
 /// The snippets library resource.
 pub struct Snippets;
@@ -52,17 +56,13 @@ impl Resource for Snippets {
         vec![
             ActionDecl::new(
                 "new-snippet",
-                crate::tr("snippets-new-snippet"),
+                "New snippet",
                 vec![
-                    ActionParam::required_owned(
-                        "title",
-                        ParamType::Text,
-                        crate::tr("snippets-action-title"),
-                    ),
-                    ActionParam::optional_owned(
+                    ActionParam::required("title", ParamType::Text, "Title"),
+                    ActionParam::optional(
                         "folder",
                         ParamType::Text,
-                        crate::tr("snippets-action-folder-hint"),
+                        "Folder to file it under (blank = All Snippets)",
                     ),
                 ],
                 |args, _| {
@@ -89,12 +89,12 @@ impl Resource for Snippets {
         }
         let snippets = state.iter().map(|snippet| {
             let title = if snippet.title.trim().is_empty() {
-                crate::tr("snippets-untitled")
+                "Untitled snippet".to_owned()
             } else {
                 snippet.title.clone()
             };
             let text = [
-                snippet.language.name().as_str(),
+                snippet.language.label(),
                 &snippet.folder,
                 &snippet.tags.join(" "),
                 &snippet.description,
@@ -104,8 +104,11 @@ impl Resource for Snippets {
             SearchEntry::new(title, text).invoking(open_snippet_address(snippet.id))
         });
         let tags = tags.into_iter().map(|(tag, count)| {
-            SearchEntry::new(tag, crate::tr_count("snippets-count", count))
-                .invoking(reveal_tag_address(tag))
+            SearchEntry::new(
+                format!("#{tag}"),
+                format!("{count} snippet{}", if count == 1 { "" } else { "s" }),
+            )
+            .invoking(reveal_tag_address(tag))
         });
         snippets.chain(tags).collect()
     }
@@ -125,23 +128,20 @@ impl ResourceApp for SnippetsShell {
     }
 
     fn catalog() -> Option<&'static EmbeddedCatalog> {
-        Some(&crate::CATALOG)
+        Some(&CATALOG)
     }
 
-    /// * `narrow` — the sidebar drawer open over a narrow window.
-    /// * `detail` — a very narrow window showing the open snippet pushed in
-    ///   front of the list.
-    /// * `empty` — a fresh install with no snippets.
-    /// * `expand` — the fill-in-variables dialog over the open snippet.
-    /// * `language`, `more` — the language picker or the overflow menu.
+    /// `narrow` shows the sidebar as an open overlay flap over the content;
+    /// `detail` the single-pane push stack on the opened snippet with its
+    /// Back affordance; `empty` the zero state of a fresh install.
     fn scenarios() -> &'static [&'static str] {
-        &["narrow", "detail", "empty", "expand", "language", "more"]
+        &["narrow", "detail", "empty"]
     }
 
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
-            Some("narrow") => (800, 600),
-            Some("detail") => (520, 800),
+            Some("narrow") => (720, 720),
+            Some("detail") => (420, 760),
             _ => (1100, 720),
         }
     }
@@ -163,7 +163,7 @@ impl ResourceApp for SnippetsShell {
     }
 }
 
-impl ResourceSurface<Snippets> for SnippetsApp {
+impl ResourceSurface<Snippets, SnippetsView> for SnippetsApp {
     fn present(&mut self, state: &Rc<Vec<Snippet>>) {
         self.show_library(state);
     }
@@ -172,10 +172,12 @@ impl ResourceSurface<Snippets> for SnippetsApp {
         self.attach_dispatcher(cx.dispatcher());
     }
 
-    /// A capture's view state, staged once its library is presented and the
-    /// window has its size.
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(&mut self, view: SnippetsView, _: &mut EffectCx<Snippets, Self>) -> EffectAnswer {
+        self.show(view)
     }
 }
 
@@ -206,30 +208,18 @@ mod tests {
         assert!(has_control(&mut empty, "New snippet"));
 
         let mut detail = TestApp::<SnippetsShell>::capture(Some("detail")).unwrap();
-        assert_eq!(detail.harness().inspection().viewport, [520, 800]);
+        assert_eq!(detail.harness().inspection().viewport, [420, 760]);
         assert!(detail.state().len() >= 10);
-        assert!(has_control(&mut detail, "Back"), "the detail is pushed in");
-
-        let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
-        assert_eq!(narrow.harness().inspection().viewport, [800, 600]);
         assert!(
-            has_control(&mut narrow, "Hide sidebar"),
-            "the overlay sidebar is open"
+            has_control(&mut detail, "Back to snippet list"),
+            "the detail is pushed in"
         );
 
-        for (scenario, label) in [("expand", "Fill in variables"), ("more", "Duplicate")] {
-            let mut staged = TestApp::<SnippetsShell>::capture(Some(scenario)).unwrap();
-            assert!(has_control(&mut staged, label), "{scenario} shows {label}");
-        }
-        let mut language = TestApp::<SnippetsShell>::capture(Some("language")).unwrap();
+        let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
+        assert_eq!(narrow.harness().inspection().viewport, [720, 720]);
         assert!(
-            language
-                .harness()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.label() == Some("Language")
-                    && node.is_expanded() == Some(true)),
-            "the language picker is open"
+            has_control(&mut narrow, "Close folders and tags"),
+            "the overlay sidebar is open"
         );
     }
 
@@ -297,6 +287,11 @@ mod tests {
             .unwrap();
         app.call_on(&tag_resource_id("k8s"), "reveal", serde_json::json!({}))
             .unwrap();
+        app.call("search", serde_json::json!({})).unwrap();
+        assert!(
+            !surface.contains("\"snippet\""),
+            "opening is offered on each snippet, never with an id to type"
+        );
         assert!(
             app.call_on(
                 &snippet_resource_id(Uuid::nil()),
@@ -322,11 +317,11 @@ mod tests {
         snippet.body = "kubectl rollout".into();
         let entries = Snippets::search(&vec![snippet.clone()]);
         let hit = entries.iter().find(|e| e.title == "Deploy").unwrap();
-        for field in ["Ops", "k8s", "kubectl rollout", "Plain text"] {
+        for field in ["Ops", "k8s", "kubectl rollout", "Plain Text"] {
             assert!(hit.text.contains(field), "{field} in {:?}", hit.text);
         }
         assert_eq!(hit.action, Some(open_snippet_address(snippet.id)));
-        let tag = entries.iter().find(|e| e.title == "k8s").unwrap();
+        let tag = entries.iter().find(|e| e.title == "#k8s").unwrap();
         assert_eq!(tag.action, Some(reveal_tag_address("k8s")));
     }
 }

@@ -112,10 +112,11 @@ fn write_approver_fixture(
             FILE_WORKSPACE,
             tilo_relay::personal_continuity_workspace_id(&user),
         ],
+        environments: tilo_relay_protocol::RelayEnvironments::default(),
     };
-    std::fs::write(
-        root_dir.join("home-peers.json"),
-        serde_json::to_vec_pretty(&vec![registration.clone()]).unwrap(),
+    tilo_files::native::atomic::write_creating_parent(
+        &tilo_relay::home_peer_registry_path(root_dir),
+        &serde_json::to_vec_pretty(&vec![registration.clone()]).unwrap(),
     )
     .unwrap();
     registration
@@ -273,9 +274,10 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         }
     }
 
-    let transferred: Vec<HomePeerRegistration> =
-        serde_json::from_slice(&std::fs::read(recipient_root.join("home-peers.json")).unwrap())
-            .unwrap();
+    let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
+        &std::fs::read(tilo_relay::home_peer_registry_path(&recipient_root)).unwrap(),
+    )
+    .unwrap();
     assert_eq!(transferred, vec![source_registration.clone()]);
     assert!(transferred[0].relay_workspace_ids.contains(&FILE_WORKSPACE));
     assert!(transferred[0].relay_workspace_ids.contains(
@@ -558,7 +560,8 @@ done
 requester_start=$(/proc/self/fd/6 '{print $22}' "/proc/$requester/stat")
 "$TILO_HELPER" approve-device --identity-root "$TILO_APPROVER_ROOT" --identity-dir "$TILO_APPROVER_IDENTITIES" --expected-device "$TILO_RECIPIENT_ID" --expected-service "$TILO_RECIPIENT_SERVICE" &
 approval=$!
-"$TILO_HELPER" pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
+# The joining device runs as the person, never through the broker.
+/proc/self/fd/8 --reuid=42424 --regid=42424 --clear-groups /usr/bin/tilo-enroll pair-device --identity-root "$TILO_RECIPIENT_ROOT" --identity-dir "$TILO_RECIPIENT_IDENTITIES" --label "New laptop" --status-file "$TILO_RECIPIENT_IDENTITIES/pairing-status.json" --requester-pid "$requester" --requester-start-time "$requester_start"
 wait "$approval"
 "#;
         let output = Command::new("unshare")
@@ -602,9 +605,10 @@ wait "$approval"
             tilo_user_identity::persist::read_device_cert(&recipient_paths.device_cert).unwrap();
         assert_eq!(cert.capabilities, DeviceCapabilities::member());
         assert!(!recipient_paths.user_privkey.exists());
-        let transferred: Vec<HomePeerRegistration> =
-            serde_json::from_slice(&std::fs::read(recipient_root.join("home-peers.json")).unwrap())
-                .unwrap();
+        let transferred: Vec<HomePeerRegistration> = serde_json::from_slice(
+            &std::fs::read(tilo_relay::home_peer_registry_path(&recipient_root)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(transferred, vec![registration]);
         for path in [
             recipient_paths.user_pubkey.parent().unwrap().to_path_buf(),
@@ -622,7 +626,7 @@ wait "$approval"
             recipient_paths.device_privkey.clone(),
             recipient_paths.device_cert.clone(),
             recipient_paths.device_cert_for_user(&root.verifying_key().to_bytes()),
-            recipient_root.join("home-peers.json"),
+            tilo_relay::home_peer_registry_path(&recipient_root),
             recipient_identities.join("pairing-status.json"),
             recipient_identities.join("registry.json"),
             recipient_identities.join("fleets").join(format!(

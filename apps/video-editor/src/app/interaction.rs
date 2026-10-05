@@ -60,6 +60,13 @@ impl VideoEditorApp {
                 Key::Named(NamedKey::Escape) => {
                     self.goto_entry = None;
                 }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(field) = self.goto_entry.as_mut() {
+                        let mut value = field.value().to_string();
+                        ui::text_edit::delete_last_grapheme(&mut value);
+                        field.set_text(&value);
+                    }
+                }
                 Key::Named(NamedKey::Enter) => {
                     let typed = field.value().to_string();
                     match crate::timecode::parse(&typed, self.project.fps) {

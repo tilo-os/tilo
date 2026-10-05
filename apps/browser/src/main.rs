@@ -50,7 +50,7 @@ mod live_probe;
 extern crate runtime_dylib;
 
 use browser::browsing_mode::BrowsingMode;
-use browser::{BrowserTabStrip, BrowserTabs, BrowserWidget};
+use browser::{BrowserWidget, BrowserWindow};
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::widget::Widget;
 
@@ -63,26 +63,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 720);
 /// Returns an error if a `--shots*` render mode fails to produce its PNG
 /// (missing/unreadable target path, offscreen render failure).
 pub fn main() {
-    // The SHM engine path reads WebKit's frames back on the CPU, yet with a
-    // real display WebKit still tries hardware GL for its compositor. On a
-    // machine whose GPU EGL is unreliable (e.g. a nested NVIDIA node
-    // reporting `driver (null)`) that context can wedge mid-render under
-    // load — the page freezes and never recovers while the chrome stays
-    // live. Pin WebKit's GL to software so the SHM path is reliable; the
-    // zero-copy dmabuf path (opt-in) keeps hardware. Overridable by setting
-    // the var yourself. wgpu (the chrome) uses Vulkan, so it's unaffected.
-    #[cfg(feature = "wpe")]
-    if std::env::var_os("TILO_WEBVIEW_DMABUF").is_none()
-        && std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none()
-    {
-        // Safe: called at the very top of `main`, before any thread (or the
-        // WebKit WebProcess) that could read the environment concurrently.
-        unsafe { std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1") };
-    }
-
-    // The live handler installs the WebKit frame waker, and the dmabuf
-    // compositor when that path is on. The framework shell never wakes the
-    // window, so a page would sit until some other event.
+    // The live handler installs the engine's frame waker. The framework
+    // shell never wakes the window, so a page would sit until some other
+    // event.
     ui::launch::run_or_exit(&launch_spec());
 }
 
@@ -94,6 +77,17 @@ fn launch_spec() -> LaunchSpec {
         .open_state_with_args(open_browser_state)
         .allowed_live_options(&[
             "--shots-live",
+            "--shots-suggestions",
+            "--shots-overlay",
+            "--shots-pip-empty",
+            "--shots-settings",
+            "--shots-history-paused",
+            "--shots-loading",
+            "--shots-error",
+            "--shots-library",
+            "--library-section",
+            "--library-filter",
+            "--download-state",
             "--audit-state",
             "--url",
             "--size",
@@ -111,12 +105,8 @@ fn launch_spec() -> LaunchSpec {
     reason = "signature is fixed by LaunchSpec's argument-aware root factory"
 )]
 fn browser_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
-    Ok(Box::new(browser_workspace(args)?))
+    Ok(Box::new(browser_window(args)?))
 }
-
-static LAUNCH_SESSION: std::sync::OnceLock<
-    std::sync::Mutex<Result<Option<browser::session::SessionStore>, String>>,
-> = std::sync::OnceLock::new();
 
 #[derive(Clone, Debug)]
 struct LaunchPolicy {
@@ -176,45 +166,20 @@ fn prepare_launch(args: &LaunchArgs) -> Result<&'static LaunchPolicy, String> {
         .map_err(Clone::clone)
 }
 
-fn prepare_session(args: &LaunchArgs) -> Result<(), String> {
-    let policy = prepare_launch(args)?;
-    if !policy.mode.allows_session_recovery() {
-        return Ok(());
-    }
-    let session = LAUNCH_SESSION.get_or_init(|| {
-        std::sync::Mutex::new((|| {
-            let root = browser::storage::data_dir().ok_or("Cannot locate browser app root")?;
-            browser::session::SessionStore::open(&root, browser::session::SessionMode::Normal)
-        })())
-    });
-    match &*session.lock().map_err(|e| e.to_string())? {
-        Ok(_) => Ok(()),
-        Err(error) => Err(error.clone()),
-    }
-}
-
-fn browser_workspace(args: &LaunchArgs) -> Result<BrowserTabs, LaunchError> {
+/// One window, one page. A launch without a page to show starts in the
+/// address field.
+fn browser_window(args: &LaunchArgs) -> Result<BrowserWindow, LaunchError> {
     let policy = prepare_launch(args).map_err(LaunchError::Operation)?;
     if let Some(root) = policy.root.as_deref()
         && policy.mode.is_private()
     {
         tracing::info!(private_root = %root.display(), "Private browser root allocated");
     }
-    prepare_session(args).map_err(LaunchError::Operation)?;
-    let tabs = BrowserTabs::new(browser_widget(args, policy.mode));
-    if policy.mode.is_private() {
-        return Ok(tabs);
-    }
-    let store = LAUNCH_SESSION
-        .get()
-        .and_then(|session| {
-            session
-                .lock()
-                .ok()
-                .and_then(|mut slot| slot.as_mut().ok().and_then(Option::take))
-        })
-        .ok_or_else(|| LaunchError::Operation("Browser recovery store already attached".into()))?;
-    tabs.with_session(store).map_err(LaunchError::Operation)
+    let focus_address = launch_target(args.positionals()).is_none();
+    Ok(BrowserWindow::new(
+        browser_widget(args, policy.mode),
+        focus_address,
+    ))
 }
 
 fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::persist::DocWriter) {
@@ -227,9 +192,6 @@ fn open_browser_state(id: &'static str, args: &LaunchArgs) -> (ui::State, ui::pe
             ui::State::new(),
             ui::persist::DocWriter::disabled("Private window state is memory-only"),
         );
-    }
-    if let Err(error) = prepare_session(args) {
-        return (ui::State::new(), ui::persist::DocWriter::disabled(error));
     }
     if let Some(root) = browser::storage::explicit_root() {
         let opened = ui::persist::DocStore::open_canonical_at(id, &root.join("document"));
@@ -281,21 +243,8 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
     let mode = prepare_launch(args).map_err(LaunchError::Operation)?.mode;
     let mut engine = None;
     let mut make_root = || -> Result<Box<dyn Widget>, LaunchError> {
-        let widget = browser_workspace(args)?;
-        let actual_engine = widget.engine_handle();
-        // Zero-copy GPU compositing: when the WebView engine exports dmabuf
-        // frames (TILO_WEBVIEW_DMABUF=1), install a render-thread hook that
-        // blits the imported texture over the content rect. A no-op otherwise.
-        #[cfg(feature = "wpe")]
-        if std::env::var_os("TILO_WEBVIEW_DMABUF").is_some() {
-            ui::render_thread::set_frame_post_processor(Box::new(
-                browser::compositor::WebViewCompositor::new(
-                    actual_engine.clone(),
-                    widget.content_rect_handle(),
-                ),
-            ));
-        }
-        engine = Some(actual_engine);
+        let widget = browser_window(args)?;
+        engine = Some(widget.engine_handle());
         Ok(Box::new(widget))
     };
     let mut app = if mode.is_private() {
@@ -322,74 +271,124 @@ fn run_live(args: &LaunchArgs) -> Result<(), LaunchError> {
             let _ = proxy.send_event(ui::app::UserEvent::External("webview-wake".into()));
         }));
     });
+    // Every Browser tab of this profile browses through one Chromium host.
+    // When it is this process's, the window closing must not take the
+    // other tabs' pages down with it.
+    ui::webview::chromium::serve_shared_until_idle();
     Ok(())
 }
 
 fn command(args: &LaunchArgs) -> Result<bool, LaunchError> {
-    let Some(out) = args.value("--shots-live") else {
-        return Ok(false);
-    };
-    let url = args.value("--url").unwrap_or("https://example.org");
-    let size = args
-        .value("--size")
-        .and_then(parse_size)
-        .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-    render_live_shot_to_png(
-        url,
-        size,
-        std::path::Path::new(out),
-        args.has("--probe-pip"),
-        args,
-    )
-    .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    Ok(true)
-}
-
-/// The tab strip with a working set of tabs: pinned ones, one loading, one
-/// playing sound and one muted.
-fn tab_strip_fixture(width: u32) -> BrowserTabStrip {
-    const TITLES: [&str; 11] = [
-        "Inbox",
-        "Calendar",
-        "Rust documentation",
-        "Tilo design language",
-        "tilo/tilo: Tilo source code",
-        "Pull requests",
-        "Summer playlist",
-        "Learn Rust",
-        "MDN Web Docs",
-        "Flight to Lisbon",
-        "Reading list",
-    ];
-    let descriptors = (1_u64..)
-        .zip(TITLES)
-        .map(|(id, title)| ui::widget::TabDescriptor::new(id, title))
-        .collect();
-    let mut tabs = BrowserTabStrip::new(descriptors, 11);
-    tabs.set_pinned(1, true);
-    tabs.set_pinned(2, true);
-    tabs.set_active(4);
-    tabs.set_viewport_width(f64::from(width));
-    tabs.set_motion_reduced(true);
-    let favicon = vello::peniko::ImageData {
-        data: vello::peniko::Blob::new(std::sync::Arc::new(vec![
-            20, 110, 230, 255, 255, 190, 20, 255, 255, 80, 80, 255, 30, 190, 100, 255,
-        ])),
-        format: vello::peniko::ImageFormat::Rgba8,
-        alpha_type: vello::peniko::ImageAlphaType::Alpha,
-        width: 2,
-        height: 2,
-    };
-    tabs.set_fixture_visual(1, Some(favicon), false, false, false);
-    tabs.set_fixture_visual(6, None, true, false, false);
-    tabs.set_fixture_visual(7, None, false, true, false);
-    tabs.set_fixture_visual(10, None, false, true, true);
-    tabs
+    if let Some(out) = args.value("--shots-live") {
+        let url = args.value("--url").unwrap_or("https://example.org");
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        render_live_shot_to_png(
+            url,
+            size,
+            std::path::Path::new(out),
+            args.has("--probe-pip"),
+            args,
+        )
+        .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-suggestions") {
+        render_suggestions_shot(std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-overlay") {
+        render_overlay_shot(std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-pip-empty") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_empty_pip_feedback();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((1000, 650));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-settings") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_settings();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 700));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-history-paused") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_history_paused();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 700));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-loading") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_loading();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 620));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-library") {
+        let mut widget = BrowserWidget::new_headless();
+        let section = args.value("--library-section").unwrap_or("history");
+        widget.debug_show_library(section);
+        if let Some(query) = args.value("--library-filter") {
+            widget.debug_set_library_filter(query);
+        }
+        if section == "downloads" {
+            widget.debug_show_downloads(args.value("--download-state").unwrap_or("progress"));
+        }
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((1000, 700));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    if let Some(out) = args.value("--shots-error") {
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_show_load_error();
+        let size = args
+            .value("--size")
+            .and_then(parse_size)
+            .unwrap_or((900, 620));
+        widget.debug_set_viewport_width(size.0);
+        render_shot_to_png(Box::new(widget), size, std::path::Path::new(out), args)
+            .map_err(|error| LaunchError::Operation(error.to_string()))?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 /// The states `--shots --scenario` can stage.
 const SCENARIOS: &[&str] = &[
-    "tabs",
     "overlay",
     "settings",
     "history",
@@ -428,9 +427,6 @@ enum Staged {
 /// The widget a `--shots` capture renders for `--scenario`. Without one it is
 /// the browser on its default page.
 fn scenario_widget(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Staged, LaunchError> {
-    if scenario == Some("tabs") {
-        return Ok(Staged::Widget(Box::new(tab_strip_fixture(viewport.0))));
-    }
     let mut widget = BrowserWidget::new_capture(
         if scenario.is_some_and(|name| name.starts_with("private")) {
             BrowsingMode::Private
@@ -564,6 +560,12 @@ fn render_live_shot_to_png(
 
     let real_engine: SharedEngine = ui::webview::chromium::ChromiumEngine::new()
         .map_err(|e| format!("Chromium engine failed to boot: {e}"))?;
+    // The same page drawn from the paint stream, as a web client sees it.
+    let real_engine: SharedEngine = if std::env::var("TILO_BROWSER_PAINT").as_deref() == Ok("1") {
+        ui::webview::paint::PaintEngine::new(real_engine)
+    } else {
+        real_engine
+    };
     let probe = live_probe::LiveProbe::new(real_engine);
     let engine: SharedEngine = probe.clone();
     // Keep capture chrome/session data isolated while using real maintained
@@ -641,6 +643,29 @@ fn render_live_shot_to_png(
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+/// The suggestion overlay in its real Browser window, using the same fixture
+/// and draw/overlay passes as the scenario gallery.
+fn render_suggestions_shot(
+    out: &std::path::Path,
+    args: &LaunchArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    render_overlay_shot(out, args)
+}
+
+fn render_overlay_shot(
+    out: &std::path::Path,
+    args: &LaunchArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let viewport = args
+        .value("--size")
+        .and_then(parse_size)
+        .unwrap_or((1000, 650));
+    let Staged::Widget(widget) = scenario_widget(Some("overlay"), viewport)? else {
+        return Err("the suggestion scenario did not produce a Browser window".into());
+    };
+    render_shot_to_png(widget, viewport, out, args)
 }
 
 /// Render one offscreen frame against `widget` at `viewport` and write

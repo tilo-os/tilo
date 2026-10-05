@@ -29,19 +29,8 @@ use crate::model::{Message, MessageId};
 use crate::state::{Intent, MailState, Shared};
 use crate::util::{format_absolute, gravatar_url, local_minutes};
 
-/// The web engine backing HTML-mail rendering. Under the `html-webview`
-/// feature this is the real WPE `WebKit` engine (the same one the browser
-/// uses), falling back to the hermetic test engine if it can't start;
-/// otherwise it is the deterministic test engine, which still exercises the
-/// full sandbox and remote-block plumbing in the default build.
+/// The deterministic HTML-mail engine, matching the native mail runtime.
 fn new_html_engine() -> (SharedEngine, bool) {
-    #[cfg(feature = "html-webview")]
-    {
-        match ui::webview::wpe::WpeEngine::new() {
-            Ok(e) => return (e, true),
-            Err(err) => tracing::warn!(%err, "mail: WPE engine unavailable; using test engine"),
-        }
-    }
     let e: SharedEngine = ui::webview::test_engine::TestEngine::new();
     (e, false)
 }

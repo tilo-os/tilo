@@ -1224,6 +1224,7 @@ impl StoreApp {
         }
         match effect {
             StoreEffect::Refresh => return Ok(Job::admitted(Request::Refresh, Finish::Status)),
+            StoreEffect::UpdateAll => return self.admit_update_all(),
             StoreEffect::SetSearch { query } => {
                 if query.chars().count() > 512 {
                     return Err("search query is too long".into());
@@ -1810,6 +1811,40 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
     })
 }
 
+impl StoreApp {
+    fn admit_update_all(&mut self) -> Result<Admitted, String> {
+        if self.active_operation.is_some() {
+            return Err("a package operation is already in progress".into());
+        }
+        let updatable = self.updatable();
+        let Some(&(first, action)) = updatable.first() else {
+            return Err("every installed app is up to date".into());
+        };
+        let first = first.id.clone();
+        let items: Vec<StoreItem> = updatable.iter().map(|(item, _)| (*item).clone()).collect();
+        self.status_line = format!(
+            "Updating {} app{}…",
+            items.len(),
+            if items.len() == 1 { "" } else { "s" }
+        );
+        self.active_operation = Some((first, action));
+        self.operation_error = None;
+        self.structure_dirty = true;
+        Ok(Job::admitted(Request::UpdateAll(items), Finish::Package))
+    }
+    pub fn updatable(&self) -> Vec<(&StoreItem, ActionKind)> {
+        self.items
+            .iter()
+            .filter(|item| item.installed.update_available())
+            .filter_map(|item| {
+                let action = item.action_kind(self.flatpak_available);
+                matches!(action, ActionKind::Update | ActionKind::FlatpakUpdate)
+                    .then_some((item, action))
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1880,6 +1915,60 @@ mod tests {
             item("Chess", StoreSource::Flathub, "Games", InstalledState::Not),
         ]);
         app
+    }
+
+    #[test]
+    fn update_all_queues_every_app_with_an_update() {
+        let mut app = seeded_app();
+        let installed = |version: &str, available: &str, user_managed| InstalledState::Installed {
+            version: version.into(),
+            available: available.into(),
+            pinned: false,
+            user_managed,
+        };
+        for (id, state) in [
+            // The image's copy, which the user store has not shadowed yet.
+            ("id.terminal", installed("0.1.0", "0.1.62530+gabc", false)),
+            ("id.notes", installed("1.0.0", "1.2.0", true)),
+        ] {
+            app.items
+                .iter_mut()
+                .find(|item| item.id == id)
+                .unwrap()
+                .installed = state;
+        }
+        app.set_active_filter(SourceFilter::Updates);
+        assert_eq!(app.visible_items().len(), 2);
+        assert_eq!(
+            accessible_name_count(&*app.build_list(&Theme::default()), "Update all"),
+            1
+        );
+
+        let Admitted::Job(job) = app.admit(StoreEffect::UpdateAll).unwrap() else {
+            panic!("update all is a job");
+        };
+        let Request::UpdateAll(items) = job.request else {
+            panic!("update all asks the worker to update");
+        };
+        let mut ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["id.notes", "id.terminal"]);
+        assert_eq!(job.finish, Finish::Package);
+        assert_eq!(app.status_line(), "Updating 2 apps…");
+        assert!(
+            app.admit(StoreEffect::UpdateAll).is_err(),
+            "a second update-all waits for the first"
+        );
+
+        let mut current = seeded_app();
+        assert_eq!(
+            accessible_name_count(&*current.build_list(&Theme::default()), "Update all"),
+            0
+        );
+        assert!(
+            current.admit(StoreEffect::UpdateAll).is_err(),
+            "nothing to update"
+        );
     }
 
     /// Source, installed and category filters, search ranking and the category list.

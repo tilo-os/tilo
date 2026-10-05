@@ -12,6 +12,7 @@
 
 pub mod access_keys;
 pub mod devices;
+mod direct_retry;
 pub mod gestures;
 pub mod hotplug;
 pub mod input_config;
@@ -193,6 +194,72 @@ const PHASE_WINDOW_INTERVAL: Duration = Duration::from_secs(2);
 /// A page-flip event should arrive within one refresh interval. Give even a
 /// 24 Hz panel several intervals, while still failing boundedly if KMS wedges.
 const DIRECT_RETIREMENT_TIMEOUT: Duration = Duration::from_millis(250);
+/// The GPU budget for one direct frame. Missing it hands the output to the
+/// readback presenter until the retry the failure earns.
+const DIRECT_FRAME_DEADLINE: Duration = Duration::from_secs(1);
+
+/// Hand an output back to the readback presenter after direct scanout
+/// failed in `stage`, until the back-off the failure earns has passed.
+///
+/// The readback presenter copies every frame through the CPU, so this is a
+/// degradation the session log states at error level, every time.
+fn demote_direct(entry: &mut ScanoutEntry, hdr: bool, stage: &str, reason: &str) {
+    if entry.direct_targets.is_some() {
+        // KMS may still scan out a target: the dumb front takes the CRTC
+        // back before the targets are released.
+        entry.scanout.restore_legacy_front();
+        entry.direct_targets = None;
+    }
+    let degradation = if hdr {
+        &mut entry.hdr_direct_degradation
+    } else {
+        &mut entry.direct_degradation
+    };
+    let detail = format!("{stage}: {reason}");
+    let retry_in = degradation.record_failure(detail.clone(), Instant::now());
+    let failures = degradation.failures();
+    tracing::error!(
+        output = entry.id.0,
+        hdr,
+        stage,
+        %reason,
+        failures,
+        retry_in_ms = retry_in.as_millis(),
+        "DRM direct scanout failed; presenting by readback until the retry"
+    );
+    eprintln!(
+        "direct_scanout_status=degraded direct_scanout_reason={detail:?} output={} hdr={hdr} failures={failures} retry_in_ms={} DRM direct scanout degraded to readback",
+        entry.id.0,
+        retry_in.as_millis(),
+    );
+}
+
+/// Direct-scanout failures since the outputs last ran direct stably.
+fn direct_failures(scanouts: &[ScanoutEntry]) -> u32 {
+    scanouts
+        .iter()
+        .map(|entry| {
+            entry
+                .direct_degradation
+                .failures()
+                .max(entry.hdr_direct_degradation.failures())
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Why an output is not on direct scanout, if one is not.
+fn direct_reason(scanouts: &[ScanoutEntry]) -> &str {
+    scanouts
+        .iter()
+        .find_map(|entry| {
+            entry
+                .direct_ineligible
+                .or_else(|| entry.direct_degradation.reason())
+                .or_else(|| entry.hdr_direct_degradation.reason())
+        })
+        .unwrap_or("not-initialized")
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(
@@ -208,22 +275,6 @@ struct DirectEligibility<'a> {
     renderer_pci: &'a str,
     renderer_drm_matches: bool,
     drm_bus_id: Option<&'a str>,
-}
-
-/// Sparse Vello damage describes the delta from `previous_revision`, but a
-/// direct-scanout swapchain owns multiple independent destination images. A
-/// partial copy is valid only when the selected image contains that exact
-/// predecessor; otherwise both rendering and the destination copy must cross
-/// a dense boundary.
-fn damage_for_direct_target(
-    target_revision: Option<u64>,
-    mut damage: SceneDamage<'_>,
-) -> SceneDamage<'_> {
-    if target_revision != damage.previous_revision {
-        damage.previous_revision = None;
-        damage.regions = None;
-    }
-    damage
 }
 
 fn direct_scanout_rejection(input: DirectEligibility<'_>) -> Option<&'static str> {
@@ -264,6 +315,12 @@ struct PhaseWindow {
     settle_us: u128,
     cpu_swizzle_us: u128,
     backdrop_us: u128,
+    /// Render-thread time from a direct frame's start to its completed GPU
+    /// work, summed and at most, over the window's direct frames.
+    direct_us: u128,
+    max_direct_us: u128,
+    /// Direct frames the renderer repaired sparsely rather than in full.
+    direct_sparse_frames: u64,
     readback_bytes: u64,
     output_bytes: u64,
     /// Wall time around the complete renderer bridge call. This remains
@@ -296,6 +353,9 @@ impl Default for PhaseWindow {
             output_bytes: 0,
             bridge_us: 0,
             scanout_us: 0,
+            direct_us: 0,
+            max_direct_us: 0,
+            direct_sparse_frames: 0,
             unprofiled_frames: 0,
         }
     }
@@ -348,9 +408,14 @@ impl PhaseWindow {
         }
     }
 
-    fn record_direct_submit(&mut self) {
+    fn record_direct_submit(&mut self, render_us: u128, sparse: bool) {
         self.frames = self.frames.saturating_add(1);
         self.direct_frames = self.direct_frames.saturating_add(1);
+        self.direct_us = self.direct_us.saturating_add(render_us);
+        self.max_direct_us = self.max_direct_us.max(render_us);
+        if sparse {
+            self.direct_sparse_frames = self.direct_sparse_frames.saturating_add(1);
+        }
     }
 
     fn record_direct_drop(&mut self) {
@@ -461,12 +526,16 @@ mod phase_window_tests {
         // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
         {
             let mut window = PhaseWindow::default();
-            window.record_direct_submit();
+            window.record_direct_submit(7_000, false);
+            window.record_direct_submit(3_000, true);
             window.record_direct_drop();
             window.record_flip_completions(2);
 
-            assert_eq!(window.frames, 1);
-            assert_eq!(window.direct_frames, 1);
+            assert_eq!(window.frames, 2);
+            assert_eq!(window.direct_frames, 2);
+            assert_eq!(window.direct_us, 10_000);
+            assert_eq!(window.max_direct_us, 7_000);
+            assert_eq!(window.direct_sparse_frames, 1);
             assert_eq!(window.direct_dropped, 1);
             assert_eq!(window.flip_completions, 2);
             assert_eq!(window.readback_bytes, 0);
@@ -635,55 +704,6 @@ mod direct_eligibility_tests {
     }
 }
 
-#[cfg(test)]
-mod direct_damage_history_tests {
-    use super::*;
-
-    const REGION: [vello::FineDamageRect; 1] = [vello::FineDamageRect {
-        x: 1,
-        y: 2,
-        width: 2,
-        height: 2,
-    }];
-
-    fn sparse(previous_revision: Option<u64>) -> SceneDamage<'static> {
-        SceneDamage {
-            revision: 9,
-            previous_revision,
-            regions: Some(&REGION),
-        }
-    }
-
-    #[test]
-    fn direct_damage_history_keeps_sparse_damage_only_when_it_matches() {
-        // Phase `matching_scanout_history_preserves_sparse_damage`.
-        {
-            let damage = damage_for_direct_target(Some(8), sparse(Some(8)));
-            assert_eq!(damage.previous_revision, Some(8));
-            assert_eq!(damage.regions, Some(REGION.as_slice()));
-        }
-        // Phase `stale_or_missing_scanout_history_forces_a_dense_boundary`.
-        for target_revision in [None, Some(7), Some(9)] {
-            let damage = damage_for_direct_target(target_revision, sparse(Some(8)));
-            assert_eq!(damage.previous_revision, None);
-            assert_eq!(damage.regions, None);
-        }
-        // Phase `an_already_dense_frame_remains_dense`.
-        {
-            let damage = damage_for_direct_target(
-                Some(8),
-                SceneDamage {
-                    revision: 9,
-                    previous_revision: None,
-                    regions: None,
-                },
-            );
-            assert_eq!(damage.previous_revision, None);
-            assert_eq!(damage.regions, None);
-        }
-    }
-}
-
 impl DrmPresenter {
     /// Frame-production body, identical to the pre-split `submit_frame`.
     fn render(&mut self, scene: &Scene) {
@@ -780,13 +800,19 @@ impl DrmPresenter {
             }
         }
         if retirement == scanout::DirectRetirement::TimedOut {
-            tracing::error!(
-                timeout_ms = DIRECT_RETIREMENT_TIMEOUT.as_millis(),
-                "DRM direct page flip did not retire; disabling direct scanout"
+            let hdr = entry
+                .direct_targets
+                .as_ref()
+                .is_some_and(|targets| targets.format().is_hdr());
+            demote_direct(
+                entry,
+                hdr,
+                "retire",
+                &format!(
+                    "page flip did not retire within {} ms",
+                    DIRECT_RETIREMENT_TIMEOUT.as_millis()
+                ),
             );
-            entry.scanout.restore_legacy_front();
-            entry.direct_targets = None;
-            entry.direct_unavailable = Some("page-flip retirement timed out".to_owned());
         }
     }
 
@@ -816,6 +842,8 @@ impl DrmPresenter {
                  unprofiled_frames={} window_us={} avg_submit_us={} \
                  avg_gpu_readback_map_us={} avg_settle_us={} avg_cpu_swizzle_us={} \
                  avg_backdrop_us={} readback_bytes={} output_bytes={} bridge_us={} scanout_us={} \
+                 avg_direct_us={} max_direct_us={} direct_sparse_frames={} \
+                 direct_failures={} \
                  direct_scanout_status={} direct_scanout_reason={:?} \
                  DRM render phase summary",
                 summary.frames,
@@ -848,6 +876,13 @@ impl DrmPresenter {
                 summary.output_bytes,
                 summary.bridge_us,
                 summary.scanout_us,
+                self.phase_window
+                    .direct_us
+                    .checked_div(u128::from(summary.direct_frames))
+                    .unwrap_or(0),
+                self.phase_window.max_direct_us,
+                self.phase_window.direct_sparse_frames,
+                direct_failures(&self.scanouts),
                 if self
                     .scanouts
                     .iter()
@@ -857,10 +892,7 @@ impl DrmPresenter {
                 } else {
                     "unavailable"
                 },
-                self.scanouts
-                    .iter()
-                    .find_map(|entry| entry.direct_unavailable.as_deref())
-                    .unwrap_or("not-initialized"),
+                direct_reason(&self.scanouts),
             );
             self.phase_window.reset(now);
         }
@@ -989,6 +1021,11 @@ fn apply_scanout_command(
         ScanoutCommand::SetCursorSize(size) => {
             for entry in scanouts.iter_mut() {
                 entry.scanout.set_cursor_size(size);
+            }
+        }
+        ScanoutCommand::SetCursorScale { output, scale } => {
+            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
+                entry.scanout.set_cursor_scale(scale);
             }
         }
         ScanoutCommand::SetPointerImage(image) => {
@@ -1403,7 +1440,7 @@ fn paint_scanouts(
                 },
             );
             if let Some(reason) = direct_scanout_rejection(eligibility) {
-                if entry.direct_unavailable.is_none() {
+                if entry.direct_ineligible != Some(reason) {
                     // Keep this line machine-parseable and durable.  The
                     // session flight recorder may start receiving output a
                     // moment after the render thread, so repeat the stable
@@ -1416,9 +1453,18 @@ fn paint_scanouts(
                         eligibility.hardware_cursor,
                         eligibility.event_pageflips,
                     );
-                    entry.direct_unavailable = Some(reason.to_owned());
+                    entry.direct_ineligible = Some(reason);
+                }
+                if entry.direct_targets.is_some() {
+                    // The output changed shape under live targets: the dumb
+                    // front takes the CRTC back before they are released.
+                    entry.scanout.restore_legacy_front();
+                    entry.direct_targets = None;
                 }
             } else {
+                // Eligibility is a fact about the output's current shape, so
+                // a cursor plane or a single output regained re-enables it.
+                entry.direct_ineligible = None;
                 // HDR renders into 10-bit (or half-float) targets; targets in
                 // the other format go first, CRTC back on the dumb front.
                 let want_hdr = entry.hdr_wanted();
@@ -1430,16 +1476,17 @@ fn paint_scanouts(
                     entry.scanout.restore_legacy_front();
                     entry.direct_targets = None;
                 }
-                let direct_blocked = if want_hdr {
-                    entry.hdr_direct_unavailable.is_some()
+                let degradation = if want_hdr {
+                    &entry.hdr_direct_degradation
                 } else {
-                    entry.direct_unavailable.is_some()
+                    &entry.direct_degradation
                 };
-                if entry.direct_targets.is_none() && !direct_blocked {
+                if entry.direct_targets.is_none() && !degradation.blocked(Instant::now()) {
+                    let earlier_failures = degradation.failures();
                     match create_direct_targets(&entry.scanout, bridge, want_hdr) {
                         Ok(targets) => {
                             eprintln!(
-                                "direct_scanout_status=enabled format={:?} renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} DRM direct scanout enabled",
+                                "direct_scanout_status=enabled format={:?} renderer_pci={} renderer_drm={renderer_drm:?} renderer_drm_matches={} drm_bus_id={:?} earlier_failures={earlier_failures} DRM direct scanout enabled",
                                 targets.format(),
                                 adapter.pci_bus_id,
                                 eligibility.renderer_drm_matches,
@@ -1450,18 +1497,17 @@ fn paint_scanouts(
                                 renderer_drm = %renderer_drm,
                                 renderer_drm_matches = eligibility.renderer_drm_matches,
                                 drm_bus_id = drm_bus_id.as_deref().unwrap_or("unavailable"),
+                                earlier_failures,
                                 "DRM direct scanout enabled"
                             );
+                            if want_hdr {
+                                entry.hdr_direct_degradation.record_enabled(Instant::now());
+                            } else {
+                                entry.direct_degradation.record_enabled(Instant::now());
+                            }
                             entry.direct_targets = Some(targets);
                         }
-                        Err(error) if want_hdr => {
-                            tracing::warn!(%error, "DRM HDR direct scanout unavailable; using the readback path");
-                            entry.hdr_direct_unavailable = Some(error);
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "DRM direct scanout unavailable; retaining readback fallback");
-                            entry.direct_unavailable = Some(error);
-                        }
+                        Err(error) => demote_direct(entry, want_hdr, "create targets", &error),
                     }
                 }
                 if let Some(targets) = entry.direct_targets.as_mut() {
@@ -1476,17 +1522,19 @@ fn paint_scanouts(
                     }
                     if let Some((index, target)) = targets.render_slot() {
                         let revision = damage.map_or(1, |damage| damage.revision.max(1));
-                        let direct_damage = damage_for_direct_target(
-                            targets.previous_revision_for(index),
-                            damage.unwrap_or(SceneDamage {
-                                revision,
-                                previous_revision: None,
-                                regions: None,
-                            }),
-                        );
-                        let deadline = Instant::now()
-                            .checked_add(Duration::from_secs(1))
-                            .unwrap_or_else(Instant::now);
+                        // The renderer's own retained target holds the
+                        // previous revision whichever slot comes up, and the
+                        // slot receives a whole copy of it: scene damage
+                        // stays sparse across the swapchain.
+                        let direct_damage = damage.unwrap_or(SceneDamage {
+                            revision,
+                            previous_revision: None,
+                            regions: None,
+                        });
+                        let render_started = Instant::now();
+                        let deadline = render_started
+                            .checked_add(DIRECT_FRAME_DEADLINE)
+                            .unwrap_or(render_started);
                         let sdr_white = entry.scanout.hdr_request().map_or(
                             crate::shell::color_pipeline::SDR_REFERENCE_WHITE_NITS,
                             |request| request.sdr_white_nits,
@@ -1500,32 +1548,38 @@ fn paint_scanouts(
                             hdr_layers,
                         ) {
                             Ok(stats) => {
-                                targets.mark_rendered(index, revision);
+                                let render_us = render_started.elapsed().as_micros();
                                 match entry.scanout.submit_direct_target(targets, index) {
-                                    scanout::DirectSubmit::Queued => {
+                                    submitted @ (scanout::DirectSubmit::Queued
+                                    | scanout::DirectSubmit::Presented) => {
                                         if let Some(window) = phase_window.as_deref_mut() {
-                                            window.record_direct_submit();
+                                            window.record_direct_submit(
+                                                render_us,
+                                                stats.sparse_attempts > 0
+                                                    && stats.full_attempts == 0,
+                                            );
                                         }
+                                        let degradation = if want_hdr {
+                                            &mut entry.hdr_direct_degradation
+                                        } else {
+                                            &mut entry.direct_degradation
+                                        };
+                                        degradation.record_presented(Instant::now());
                                         tracing::trace!(
                                             revision = stats.revision,
                                             render_attempts = stats.render_attempts,
-                                            framebuffer_copy_bytes = stats.framebuffer_copy_bytes,
-                                            framebuffer_staging_bytes =
-                                                stats.framebuffer_staging_bytes,
+                                            render_us,
                                             "DRM direct frame submitted"
                                         );
-                                        return PaintScanoutSample {
-                                            direct_queued: true,
-                                            ..PaintScanoutSample::default()
-                                        };
-                                    }
-                                    scanout::DirectSubmit::Presented => {
                                         // The first HDR frame went up by modeset:
                                         // no flip event to wait for.
-                                        if let Some(window) = phase_window.as_deref_mut() {
-                                            window.record_direct_submit();
-                                        }
-                                        return PaintScanoutSample::default();
+                                        return PaintScanoutSample {
+                                            direct_queued: matches!(
+                                                submitted,
+                                                scanout::DirectSubmit::Queued
+                                            ),
+                                            ..PaintScanoutSample::default()
+                                        };
                                     }
                                     scanout::DirectSubmit::Busy => {
                                         if let Some(window) = phase_window.as_deref_mut() {
@@ -1534,14 +1588,7 @@ fn paint_scanouts(
                                         return PaintScanoutSample::default();
                                     }
                                     scanout::DirectSubmit::Failed(error) => {
-                                        tracing::warn!(%error, "DRM direct submit failed; disabling direct targets");
-                                        entry.scanout.restore_legacy_front();
-                                        entry.direct_targets = None;
-                                        if want_hdr {
-                                            entry.hdr_direct_unavailable = Some(error);
-                                        } else {
-                                            entry.direct_unavailable = Some(error);
-                                        }
+                                        demote_direct(entry, want_hdr, "submit", &error);
                                     }
                                     scanout::DirectSubmit::HdrFailed(reason, detail) => {
                                         // The CRTC is still (or again) on the
@@ -1552,14 +1599,7 @@ fn paint_scanouts(
                                 }
                             }
                             Err(error) => {
-                                tracing::warn!(%error, "DRM direct frame failed; disabling direct targets");
-                                entry.scanout.restore_legacy_front();
-                                entry.direct_targets = None;
-                                if want_hdr {
-                                    entry.hdr_direct_unavailable = Some(error.to_string());
-                                } else {
-                                    entry.direct_unavailable = Some(error.to_string());
-                                }
+                                demote_direct(entry, want_hdr, "render", &error.to_string());
                             }
                         }
                     } else {

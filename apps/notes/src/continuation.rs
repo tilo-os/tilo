@@ -12,7 +12,6 @@ pub(crate) enum BuilderDomain {
     RenamePage(PageMeta),
     CreatePage {
         parent: Option<PageId>,
-        order: u32,
     },
     ReplaceBlock {
         page: PageId,
@@ -32,7 +31,6 @@ pub(crate) enum BuilderDomain {
     },
     DailyCreate {
         title: String,
-        order: u32,
     },
     /// Generic published doors (`apply` / `group` / rich-text catalogue
     /// builders) that mint from arguments and therefore need a Draft domain.
@@ -64,12 +62,12 @@ impl BuilderDomain {
                     page.id.as_bytes().to_vec(),
                     page.title.as_bytes().to_vec(),
                     optional_page(page.parent),
-                    page.order.to_be_bytes().to_vec(),
+                    page.order.as_bytes().to_vec(),
                 ],
             ),
-            Self::CreatePage { parent, order } => (
-                "create-page-v4-uuid-trim-default/v1",
-                vec![optional_page(*parent), order.to_be_bytes().to_vec()],
+            Self::CreatePage { parent } => (
+                "append-page-v4-uuid-trim-default/v1",
+                vec![optional_page(*parent)],
             ),
             Self::ReplaceBlock {
                 page,
@@ -105,10 +103,9 @@ impl BuilderDomain {
                 }
                 ("duplicate-exact-source-map-fresh-ids/v2", parts)
             }
-            Self::DailyCreate { title, order } => (
-                "daily-create-v4-uuid/v1",
-                vec![title.as_bytes().to_vec(), order.to_be_bytes().to_vec()],
-            ),
+            Self::DailyCreate { title } => {
+                ("daily-append-v4-uuid/v1", vec![title.as_bytes().to_vec()])
+            }
             Self::PublishedDoor { action, scope } => (
                 "published-dynamic-door/v1",
                 vec![scope.clone(), action.as_bytes().to_vec()],
@@ -220,12 +217,12 @@ mod tests {
             id: page,
             title: "Same label".into(),
             parent: None,
-            order: 0,
+            order: "a".into(),
         };
         let mut reparented = meta.clone();
         reparented.parent = Some(other);
         let mut reordered = meta.clone();
-        reordered.order = 1;
+        reordered.order = "b".into();
         for changed in [reparented, reordered] {
             assert_ne!(
                 draft(BuilderDomain::RenamePage(meta.clone())),
@@ -233,24 +230,8 @@ mod tests {
             );
         }
         assert_ne!(
-            draft(BuilderDomain::CreatePage {
-                parent: None,
-                order: 0
-            }),
-            draft(BuilderDomain::CreatePage {
-                parent: Some(page),
-                order: 0
-            })
-        );
-        assert_ne!(
-            draft(BuilderDomain::CreatePage {
-                parent: Some(page),
-                order: 0
-            }),
-            draft(BuilderDomain::CreatePage {
-                parent: Some(page),
-                order: 1
-            })
+            draft(BuilderDomain::CreatePage { parent: None }),
+            draft(BuilderDomain::CreatePage { parent: Some(page) })
         );
         assert_ne!(
             draft(BuilderDomain::ReplaceBlock {
@@ -291,11 +272,9 @@ mod tests {
         assert_ne!(
             draft(BuilderDomain::DailyCreate {
                 title: "2026-09-22".into(),
-                order: 0
             }),
             draft(BuilderDomain::DailyCreate {
                 title: "2026-09-23".into(),
-                order: 0
             })
         );
     }
@@ -307,10 +286,7 @@ mod tests {
             BuilderDomain::File(None),
             BuilderDomain::File(Some(page)),
             BuilderDomain::ImportContent,
-            BuilderDomain::CreatePage {
-                parent: Some(page),
-                order: 1,
-            },
+            BuilderDomain::CreatePage { parent: Some(page) },
             BuilderDomain::CreateTag,
             BuilderDomain::CreateAssignedTag(page),
             BuilderDomain::Duplicate {
@@ -319,7 +295,6 @@ mod tests {
             },
             BuilderDomain::DailyCreate {
                 title: "2026-09-22".into(),
-                order: 0,
             },
         ] {
             let resolver = builder(domain);

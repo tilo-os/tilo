@@ -68,12 +68,50 @@ pub fn capture_device_scale() -> u32 {
 /// `Mutex` because `RenderContext::device(...)` takes `&mut self`.
 static SHARED_RENDER_CONTEXT: OnceLock<Arc<Mutex<RenderContext>>> = OnceLock::new();
 
-/// A complex first frame can make Vello grow its bump reservation more than
-/// once before it produces pixels. Two growths plus two clean submissions
-/// covers the observed atlas warm-up path. Keeping this bounded at four is
-/// important on software Vulkan: a full-size screenshot is otherwise able to
-/// monopolize a CPU core for minutes before it can publish anything.
+/// Submissions a one-shot render may spend without growing Vello's bump
+/// reservation: two clean ones to confirm the atlas warm-up, and room for a
+/// transparent or overflowed one that taught nothing. Keeping this bounded
+/// is important on software Vulkan: a full-size screenshot is otherwise able
+/// to monopolize a CPU core for minutes before it can publish anything.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
+
+/// Growths of the bump reservation a one-shot render may wait through on top
+/// of [`RESILIENT_RENDER_ATTEMPTS`]. Vello's stages skip their work once an
+/// earlier one has overflowed, so a cold renderer learns one stage's demand
+/// per submission: lines, then tiles and binning, then segment counts, then
+/// the command list, blend spill and segments. A dense scene (a feathered
+/// mask traced from a photograph) needs most of them in turn. Every growth
+/// at least doubles a buffer towards a finite ceiling, so each one is
+/// progress, and a reservation that has stopped growing falls back to the
+/// attempt limit above.
+const RESILIENT_RENDER_GROWTHS: usize = 8;
+
+/// The submissions a one-shot render has spent, and whether it may make
+/// another.
+#[derive(Debug, Default)]
+struct ResilientAttempts {
+    /// Submissions that did not grow the reservation.
+    stalled: usize,
+    /// Submissions that grew it.
+    growths: usize,
+}
+
+impl ResilientAttempts {
+    /// Count a submission that `grew` the bump reservation (or did not) and
+    /// answer whether another one may follow.
+    const fn another(&mut self, grew: bool) -> bool {
+        if grew && self.growths < RESILIENT_RENDER_GROWTHS {
+            self.growths += 1;
+        } else {
+            self.stalled += 1;
+        }
+        self.stalled < RESILIENT_RENDER_ATTEMPTS
+    }
+
+    const fn submissions(&self) -> usize {
+        self.stalled + self.growths
+    }
+}
 
 /// Decide whether a screenshot submission is safe to return. A non-empty
 /// scene must fit twice in succession: the first clean submission may still
@@ -1524,10 +1562,12 @@ impl OffscreenRenderer {
             (handle.device.clone(), handle.queue.clone())
         };
 
-        let mut overflowed = true;
+        let mut overflowed;
         let mut attempts = 0u64;
-        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+        let mut budget = ResilientAttempts::default();
+        loop {
             attempts = attempts.saturating_add(1);
+            let reserved = self.renderer.memory_stats().bump_budget_bytes;
             if timing.is_some() {
                 let start = crate::time::now();
                 self.renderer
@@ -1588,13 +1628,14 @@ impl OffscreenRenderer {
             } else {
                 overflowed = self.renderer.settle_bump_budget(&device);
             }
-            if !overflowed {
+            let grew = self.renderer.memory_stats().bump_budget_bytes > reserved;
+            if !overflowed || !budget.another(grew) {
                 break;
             }
         }
         assert!(
             !overflowed,
-            "Vello still overflowed after {RESILIENT_RENDER_ATTEMPTS} full render attempts"
+            "Vello still overflowed after {attempts} full render attempts"
         );
         self.target_valid = true;
         if self
@@ -2116,8 +2157,11 @@ impl OffscreenRenderer {
     /// bounded retry count.
     pub fn try_render_resilient(&mut self, scene: &Scene, bg: Color) -> Result<Vec<u8>, String> {
         let mut confirmed = false;
-        for _ in 0..RESILIENT_RENDER_ATTEMPTS {
+        let mut attempts = ResilientAttempts::default();
+        loop {
+            let reserved = self.renderer.memory_stats().bump_budget_bytes;
             let (pixels, overflowed) = self.render_with_overflow(scene, bg);
+            let grew = self.renderer.memory_stats().bump_budget_bytes > reserved;
             let unexpectedly_transparent = bg == Color::TRANSPARENT
                 && !scene.encoding().is_empty()
                 && pixels
@@ -2129,19 +2173,22 @@ impl OffscreenRenderer {
                 // plausible while still omitting the earliest paths, so do
                 // not let it count as the confirmation frame.
                 confirmed = false;
-                continue;
-            }
-            if resilient_submission_accepted(scene.encoding().is_empty(), confirmed) {
+            } else if resilient_submission_accepted(scene.encoding().is_empty(), confirmed) {
                 return Ok(pixels);
+            } else {
+                // A scene that just fit is still not sufficient: Vello can use
+                // that submission to populate its glyph/image atlas. Require a
+                // second consecutive clean frame before writing a screenshot.
+                confirmed = true;
             }
-            // A scene that just fit is still not sufficient: Vello can use
-            // that submission to populate its glyph/image atlas. Require a
-            // second consecutive clean frame before writing a screenshot.
-            confirmed = true;
+            if !attempts.another(grew) {
+                return Err(format!(
+                    "Vello did not produce two consecutive overflow-free screenshot renders after {} attempts ({} of them growing its buffers)",
+                    attempts.submissions(),
+                    attempts.growths,
+                ));
+            }
         }
-        Err(format!(
-            "Vello did not produce two consecutive overflow-free screenshot renders after {RESILIENT_RENDER_ATTEMPTS} attempts"
-        ))
     }
 
     /// Render a one-shot scene without accepting Vello's transparent
@@ -2236,6 +2283,7 @@ mod tests {
     use super::{
         AreaPpt8AttemptAccounting, CanonicalSegmentOrderAttemptAccounting,
         ClipSingleGroupAttemptAccounting, OffscreenRenderTiming, OffscreenRenderer,
+        RESILIENT_RENDER_ATTEMPTS, RESILIENT_RENDER_GROWTHS, ResilientAttempts,
         SparseSubmissionAccounting, damage_texture_extent,
         damage_texture_geometric_needs_replacement, damage_texture_geometric_width_extent,
         damage_texture_height_extent, damage_texture_needs_replacement, env_enabled_by_default,
@@ -2243,7 +2291,9 @@ mod tests {
     };
     use vello::Scene;
     use vello::kurbo::{Affine, BezPath, Rect};
-    use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    use vello::peniko::{
+        BlendMode, Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
+    };
 
     #[test]
     fn offscreen_publication_is_send_resilient_and_decodable() {
@@ -2267,6 +2317,38 @@ mod tests {
             assert!(resilient_submission_accepted(true, false));
         }
 
+        // Case `resilient_render_waits_through_every_stage_growing_in_turn`.
+        {
+            // Vello's later stages skip their work once an earlier one has
+            // overflowed, so a cold renderer grows one stage per submission.
+            // Five growths in a row then two clean frames must be allowed:
+            // a flat four-attempt limit refused a feathered photo mask.
+            let mut attempts = ResilientAttempts::default();
+            for _ in 0..5 {
+                assert!(attempts.another(true), "a growth is progress");
+            }
+            assert!(attempts.another(false), "the first clean frame");
+            assert_eq!(attempts.submissions(), 6);
+
+            // A reservation that cannot grow any more still gives up after
+            // the bounded attempts, however many growths came before.
+            let mut stuck = ResilientAttempts::default();
+            let mut submissions = 0;
+            while stuck.another(true) {
+                submissions += 1;
+                assert!(submissions < 64, "growth alone must not retry forever");
+            }
+            assert_eq!(
+                stuck.submissions(),
+                RESILIENT_RENDER_GROWTHS + RESILIENT_RENDER_ATTEMPTS
+            );
+            let mut stalled = ResilientAttempts::default();
+            let allowed = (0..RESILIENT_RENDER_ATTEMPTS)
+                .filter(|_| stalled.another(false))
+                .count();
+            assert_eq!(allowed, RESILIENT_RENDER_ATTEMPTS - 1);
+        }
+
         // Case `png_publication_is_complete_and_decodable`.
         {
             let dir = tempfile::tempdir().expect("temporary screenshot directory");
@@ -2282,6 +2364,61 @@ mod tests {
             assert_eq!((decoded.width, decoded.height), (1, 1));
             assert_eq!(decoded.rgba, rgba);
         }
+    }
+
+    /// A cold renderer learns one Vello stage's demand per overflowing
+    /// submission, because every later stage skips its work once an earlier
+    /// one has overflowed: here the flattened lines, then the segment counts,
+    /// then the nested layers' blend spill. A one-shot render must wait
+    /// through every growth. A flat four-attempt limit refused Canvas's
+    /// measure of a photograph behind a feathered mask.
+    #[test]
+    fn resilient_render_grows_through_cascading_stage_overflows() {
+        let Ok(mut renderer) = OffscreenRenderer::try_new(320, 320) else {
+            eprintln!("skipping cascading overflow test: no GPU");
+            return;
+        };
+        let side = 320.0;
+        let full = Rect::new(0.0, 0.0, side, side);
+        let mut scene = Scene::new();
+        // Deeper than Vello's on-chip blend stack on every tile.
+        for _ in 0..8 {
+            scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                0.95,
+                Affine::IDENTITY,
+                &full,
+            );
+        }
+        // Thousands of loops across the whole target: far more flattened
+        // lines, and line/tile crossings, than a fresh renderer reserves.
+        let mut loops = BezPath::new();
+        for i in 0..20_000_u32 {
+            let y = f64::from(i % 320);
+            loops.move_to((0.0, y));
+            loops.curve_to((side * 1.5, side - y), (-side * 0.5, side - y), (side, y));
+            loops.close_path();
+        }
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgba8(200, 60, 40, 255),
+            None,
+            &loops,
+        );
+        for _ in 0..8 {
+            scene.pop_layer();
+        }
+        let pixels = renderer
+            .try_render_resilient(&scene, Color::TRANSPARENT)
+            .expect("growing through every stage's overflow, then two clean renders");
+        assert!(
+            pixels
+                .chunks_exact(4)
+                .any(|pixel| pixel.get(3).copied().unwrap_or(0) != 0),
+            "the loops are drawn"
+        );
     }
 
     #[test]

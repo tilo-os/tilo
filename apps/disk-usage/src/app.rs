@@ -1,22 +1,15 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
-use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
-use ui::automerge::{AutoCommit, ObjId};
-use ui::framework::Actions;
+use crate::resource::{DiskUsage, DiskUsageAction, DiskUsageEffect, analyze, folder_row};
+use ui::framework::{Dispatcher, EffectCx, Effected, LiveRow};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionBinding, ActionContract, ActionOutput, ActionSpec, DiscoveryScope, OperationKind,
-    Resource,
-};
-use ui::tilo_resource::ActionRef;
+
 use ui::tokens::TextRole;
 use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
@@ -26,36 +19,11 @@ use ui::widget::{
 };
 
 use crate::doc::DiskUsageDoc;
-use crate::scan::{Entry, ScanCancellation, ScanResult, UNREADABLE_FOLDER};
+use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{bytes_si, count};
-
-pub(crate) const OPERATION_TYPE: &str = "disk-usage.operation";
 
 /// How many folders the chart names before it groups the rest.
 const NAMED_SLICES: usize = 8;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum DiskUsageOperation {
-    Analyze { path: PathBuf },
-    Choose,
-    Back,
-    Home,
-}
-
-pub(crate) fn operation_action(
-    id: &str,
-    label: &str,
-    operation: &DiskUsageOperation,
-) -> Option<ActionSpec> {
-    let mut action =
-        ActionSpec::operation(id, label, OperationKind::Effect, OPERATION_TYPE, operation).ok()?;
-    action.contract = ActionContract {
-        discovery: DiscoveryScope::Launchable,
-        ..ActionContract::default()
-    };
-    Some(action)
-}
 
 #[derive(Clone)]
 struct Place {
@@ -72,7 +40,7 @@ enum View {
 
 /// The navigation operations the resource publishes, which the view's
 /// buttons invoke.
-const CHOOSE: ActionRef<crate::resource::DiskUsage, ()> = ActionRef::new("choose", &[]);
+const CHOOSE: DiskUsageEffect = DiskUsageEffect::Choose;
 
 /// What a control in the current view asks for. Controls run inside the
 /// widget tree; the app applies their requests on its next update.
@@ -291,17 +259,12 @@ pub struct DiskUsageApp {
     structure_dirty: bool,
     inspected: Option<String>,
     history: Vec<PathBuf>,
-    recent: Vec<PathBuf>,
+    pub(crate) recent: Vec<PathBuf>,
     places: Vec<Place>,
     inbox: Inbox,
-    scan_rx: Option<Receiver<ScanResult>>,
     scan_cancellation: Option<ScanCancellation>,
-    picker_rx: Option<ui::portal::PortalChannel>,
-    pub(crate) actions: crate::resource::ActionSink,
-    /// The hosted resource's published actions, which the view's buttons
-    /// invoke. Standalone, they invoke the root this app publishes itself.
-    published: Option<Actions<crate::resource::DiskUsage>>,
-    hosted: bool,
+    pub(crate) immediate: bool,
+    pub(crate) dispatcher: Option<Dispatcher<DiskUsage>>,
 }
 
 impl DiskUsageApp {
@@ -345,95 +308,107 @@ impl DiskUsageApp {
             recent: Vec::new(),
             places,
             inbox,
-            scan_rx: None,
             scan_cancellation: None,
-            picker_rx: None,
-            actions: crate::resource::ActionSink::default(),
-            published: None,
-            hosted: false,
+            immediate: false,
+            dispatcher: None,
         };
         app.rebuild();
         app
     }
 
     pub(crate) fn set_result(&mut self, result: ScanResult) {
-        if self.recent.first() != Some(&result.path) {
-            self.recent.retain(|p| p != &result.path);
-            self.recent.insert(0, result.path.clone());
-            self.recent.truncate(5);
-        }
         self.show(View::Analysis(result));
     }
-
     fn show(&mut self, view: View) {
         self.view = view;
         self.rebuild();
     }
-
-    fn start_scan(&mut self, path: PathBuf, push_history: bool) {
-        if let Some(cancellation) = self.scan_cancellation.take() {
-            cancellation.cancel();
+    fn apply(&self, request: Request) {
+        let effect = match request {
+            Request::Analyze(path) => analyze(&path),
+            Request::Back => DiskUsageEffect::Back,
+        };
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(&effect);
         }
+    }
+    pub(crate) fn scan(
+        &mut self,
+        path: PathBuf,
+        push_history: bool,
+        cx: &mut EffectCx<DiskUsage, Self>,
+    ) -> Effected {
+        self.cancel_scan();
         if push_history && let View::Analysis(current) = &self.view {
             self.history.push(current.path.clone());
         }
-        let (tx, rx) = mpsc::channel();
-        let worker_path = path.clone();
         let cancellation = ScanCancellation::default();
-        let worker_cancellation = cancellation.clone();
-        thread::spawn(move || {
-            let result = crate::scan::scan_with_cancellation(worker_path, &worker_cancellation);
-            if !worker_cancellation.is_cancelled() {
-                let _ = tx.send(result);
-            }
-        });
-        self.scan_rx = Some(rx);
-        self.scan_cancellation = Some(cancellation);
-        self.show(View::Loading(path));
+        self.scan_cancellation = Some(cancellation.clone());
+        self.show(View::Loading(path.clone()));
+        let worker = cancellation.clone();
+        cx.thread(
+            move |_| crate::scan::scan_with_cancellation(path, &worker),
+            move |app: &mut Self, result: ScanResult, cx| {
+                if cancellation.is_cancelled() {
+                    return Err("The scan was stopped".into());
+                }
+                app.scan_cancellation = None;
+                if let Some(message) = result.error.clone() {
+                    app.show(View::Error(result.path, message.clone()));
+                    return Err(message);
+                }
+                cx.apply(&DiskUsageAction::Remember {
+                    path: result.path.to_string_lossy().into_owned(),
+                });
+                let answer = serde_json::json!({
+                    "path": result.path,
+                    "bytes": result.total,
+                    "entries": result.entries.len(),
+                });
+                app.set_result(result);
+                Ok(Effected::value(answer))
+            },
+        )
     }
-
-    fn choose_folder(&mut self) {
-        if self.picker_rx.is_none() {
-            self.picker_rx = Some(
-                ui::portal::PickRequest::directory("Choose a folder to analyze", "Analyze")
-                    .thread_name("disk-usage-folder-picker")
-                    .send(),
-            );
-        }
+    pub(crate) fn choose_folder(cx: &mut EffectCx<DiskUsage, Self>) -> Effected {
+        let picker = ui::portal::PickRequest::directory("Choose a folder to analyze", "Analyze")
+            .thread_name("disk-usage-folder-picker")
+            .send();
+        cx.thread(
+            move |_| {
+                picker.recv().unwrap_or_else(|_| {
+                    ui::portal::PortalOutcome::Failed("The folder picker stopped responding".into())
+                })
+            },
+            |app: &mut Self, outcome, cx| match outcome {
+                ui::portal::PortalOutcome::Opened(path) => Ok(app.scan(path, false, cx)),
+                ui::portal::PortalOutcome::Cancelled => Ok(Effected::done()),
+                ui::portal::PortalOutcome::Failed(message) => {
+                    app.show(View::Error(PathBuf::new(), message.clone()));
+                    Err(message)
+                }
+            },
+        )
     }
-
     fn cancel_scan(&mut self) {
         if let Some(cancellation) = self.scan_cancellation.take() {
             cancellation.cancel();
         }
-        self.scan_rx = None;
     }
-
-    fn go_home(&mut self) {
+    pub(crate) fn go_home(&mut self) {
         self.cancel_scan();
         self.history.clear();
         self.show(View::Home);
     }
-
-    fn go_back(&mut self) {
+    pub(crate) fn go_back(&mut self, cx: &mut EffectCx<DiskUsage, Self>) -> Effected {
         self.cancel_scan();
         if let Some(path) = self.history.pop() {
-            self.start_scan(path, false);
+            self.scan(path, false, cx)
         } else {
             self.show(View::Home);
+            Effected::done()
         }
     }
-
-    fn apply(&mut self, request: Request) {
-        match request {
-            Request::Analyze(path) => {
-                let push = matches!(self.view, View::Analysis(_));
-                self.start_scan(path, push);
-            }
-            Request::Back => self.go_back(),
-        }
-    }
-
     /// The places and the recent folders the home view offers. A recent
     /// folder that is also a place is listed once, as the place.
     fn locations(&self) -> (Vec<Place>, Vec<Place>) {
@@ -469,34 +444,17 @@ impl DiskUsageApp {
         self.structure_dirty = true;
     }
 
-    /// Invoke the published navigation operations through `actions`, the
-    /// resource the framework hosts.
-    pub(crate) fn host_actions(&mut self, actions: Actions<crate::resource::DiskUsage>) {
-        self.published = Some(actions);
-        self.rebuild();
+    fn bind(&self, button: Button, effect: &DiskUsageEffect) -> Button {
+        let dispatcher = self.dispatcher.clone();
+        let effect = effect.clone();
+        button
+            .with_enabled(dispatcher.is_some())
+            .on_effect(move || {
+                if let Some(dispatcher) = &dispatcher {
+                    dispatcher.effect(&effect);
+                }
+            })
     }
-
-    /// The binding of the published `action`, or `None` when nothing
-    /// publishes it.
-    fn binding(
-        &self,
-        action: &ActionRef<crate::resource::DiskUsage, ()>,
-    ) -> Option<ActionBinding<()>> {
-        match &self.published {
-            Some(actions) => actions.invocation(action.invoke()),
-            None => ActionBinding::unit_for(&standalone_root(), action.invoke().id).ok(),
-        }
-    }
-
-    /// `button`, bound to the published `action`; disabled when nothing
-    /// publishes it.
-    fn bind(&self, button: Button, action: &ActionRef<crate::resource::DiskUsage, ()>) -> Button {
-        match self.binding(action) {
-            Some(binding) => button.on_action(binding),
-            None => button.with_enabled(false),
-        }
-    }
-
     fn place_row(&self, place: &Place) -> Element {
         let inbox = Rc::clone(&self.inbox);
         let path = place.path.clone();
@@ -553,8 +511,8 @@ impl DiskUsageApp {
             .with_icon(Icon::FolderOpen)
             .with_action("Choose another folder")
             .with_action_id("disk-usage.error.choose");
-        if let Some(binding) = self.binding(&CHOOSE) {
-            recover = recover.on_action(binding);
+        if let Some(dispatcher) = self.dispatcher.clone() {
+            recover = recover.on_effect(move || dispatcher.effect(&DiskUsageEffect::Choose));
         }
         Box::new(recover)
     }
@@ -623,32 +581,6 @@ impl Drop for DiskUsageApp {
     }
 }
 
-impl DiskUsageApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: DiskUsageOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match operation {
-            DiskUsageOperation::Analyze { path } => {
-                self.start_scan(path, matches!(self.view, View::Analysis(_)));
-            }
-            DiskUsageOperation::Choose => self.choose_folder(),
-            DiskUsageOperation::Back => self.go_back(),
-            DiskUsageOperation::Home => self.go_home(),
-        }
-        Ok(Some(ActionOutput::default()))
-    }
-}
-
 impl ui::widget::Decorator for DiskUsageApp {
     type Inner = NavShell;
 
@@ -659,12 +591,6 @@ impl ui::widget::Decorator for DiskUsageApp {
     fn inner_mut(&mut self) -> &mut NavShell {
         &mut self.content
     }
-
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources;
-        inner = content
-    );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let recent = {
@@ -687,61 +613,11 @@ impl ui::widget::Decorator for DiskUsageApp {
             self.apply(request);
             changed = true;
         }
-        if let Some(outcome) = self
-            .picker_rx
-            .as_ref()
-            .and_then(|receiver| receiver.try_recv().ok())
-        {
-            self.picker_rx = None;
-            match outcome {
-                ui::portal::PortalOutcome::Opened(path) => self.start_scan(path, false),
-                ui::portal::PortalOutcome::Cancelled => {}
-                ui::portal::PortalOutcome::Failed(message) => {
-                    self.show(View::Error(PathBuf::new(), message));
-                }
-            }
-            return true;
-        }
-        if let Some(rx) = &self.scan_rx
-            && let Ok(result) = rx.try_recv()
-        {
-            self.scan_rx = None;
-            self.scan_cancellation = None;
-            if let Some(message) = result.error.clone() {
-                self.show(View::Error(result.path, message));
-            } else {
-                let (doc, _) = ui::doc::document(state, path);
-                self.remember_scanned(doc, &result.path);
-                self.set_result(result);
-            }
-            return true;
-        }
         changed
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty) | self.content.take_structure_dirty()
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = self.content.start_operation(op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {
@@ -751,351 +627,40 @@ impl ui::widget::Decorator for DiskUsageApp {
     fn needs_animation_frame(&self) -> bool {
         matches!(self.view, View::Loading(_)) || self.content.needs_animation_frame()
     }
-
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        (self.scan_rx.is_some() || self.picker_rx.is_some())
-            .then_some(())
-            .map(|()| ui::time::now() + Duration::from_millis(80))
-    }
-}
-
-impl ui::undo::CommittedActions for DiskUsageApp {
-    fn take_committed_action(&mut self) -> Option<Vec<ui::automerge::ChangeHash>> {
-        // Hosted remembers are applied by the framework dispatcher, which
-        // records its own undo bracket. Standalone stays on the local host.
-        if self.actions.is_hosted() {
-            return None;
-        }
-        self.actions.take_committed()
-    }
 }
 
 impl DiskUsageApp {
-    pub(crate) fn mark_framework_hosted(&mut self) {
-        self.hosted = true;
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    /// Show the chart's details for one slice, as hovering it does.
     pub(crate) fn inspect(&mut self, id: &str) {
         self.inspected = Some(id.into());
         if matches!(self.view, View::Analysis(_)) {
             self.rebuild();
         }
     }
-
-    /// Offer a made-up home folder instead of this machine's: what a
-    /// screenshot shows.
-    pub(crate) fn use_made_up_places(&mut self) {
-        self.places = vec![
-            Place {
-                label: "Home".into(),
-                path: PathBuf::from("/home/you"),
-            },
-            Place {
-                label: "Workspace".into(),
-                path: PathBuf::from(tilo_paths::WORKSPACE_MOUNT),
-            },
-            Place {
-                label: "File system".into(),
-                path: PathBuf::from("/"),
-            },
-        ];
-        self.rebuild();
-    }
-
-    /// A scan of the made-up home folder that has not finished.
-    pub(crate) fn show_unfinished_scan(&mut self) {
-        self.show(View::Loading(PathBuf::from("/home/you")));
-    }
-
-    /// A folder the app could not read.
-    pub(crate) fn show_unreadable_folder(&mut self) {
-        self.show(View::Error(
-            PathBuf::from("/root"),
-            UNREADABLE_FOLDER.into(),
-        ));
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
-        self.actions.mark_hosted_for_test();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn sink_is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Submit the shared recent-directory projection through the framework
-    /// dispatcher; unit tests of the bare widget use the local action host.
-    pub(crate) fn remember_scanned(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
-        let action = crate::resource::DiskUsageAction::Remember {
-            path: path.to_string_lossy().into_owned(),
-        };
-        let context = ui::tilo_actions::ActionContext::for_action(
-            <crate::resource::DiskUsageShell as ui::framework::ResourceApp>::ID,
-            <crate::resource::DiskUsage as ui::tilo_resource::Resource>::LABEL,
-            &action,
-        );
-        self.actions.dispatch_with_context(
-            doc,
-            <crate::resource::DiskUsage as ui::tilo_resource::Resource>::ACTION_TYPE,
-            &action,
-            context,
-        );
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&ui::tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
-
-    #[allow(dead_code, reason = "framework migration test helper")]
     pub(crate) fn in_analysis(&self) -> bool {
         matches!(self.view, View::Analysis(_))
     }
-
-    /// Places and the open scan. Not a second `disk-usage` root; choose / home
-    /// / back already ride `local_operations`.
-    fn live_analyze_extras(&self) -> Vec<Resource> {
-        let mut extras = Vec::new();
-        for place in &self.places {
-            if let Some(resource) = analyze_resource(&place.label, &place.path) {
-                extras.push(resource);
-            }
-        }
+    pub(crate) fn folder_rows(&self) -> Vec<LiveRow> {
+        let mut rows: Vec<LiveRow> = self
+            .places
+            .iter()
+            .map(|place| folder_row(&place.label, &place.path))
+            .collect();
         if let View::Analysis(result) = &self.view {
-            for entry in &result.entries {
-                if entry.path.file_name().is_some_and(|name| name != ".")
-                    && let Some(resource) = analyze_resource(&entry.name, &entry.path)
-                {
-                    extras.push(resource);
-                }
-            }
+            rows.extend(
+                result
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.path.file_name().is_some_and(|name| name != "."))
+                    .map(|entry| folder_row(&entry.name, &entry.path)),
+            );
         }
-        extras
+        rows
     }
-}
-
-fn analyze_resource(label: &str, path: &std::path::Path) -> Option<Resource> {
-    let mut resource = Resource::new(
-        format!("disk-usage.folder:{}", path.display()),
-        "disk-usage.folder",
-        label,
-    );
-    resource.actions.push(operation_action(
-        &format!("analyze:{}", path.display()),
-        &format!("Analyze {label}"),
-        &DiskUsageOperation::Analyze {
-            path: path.to_path_buf(),
-        },
-    )?);
-    Some(resource)
-}
-
-fn find_resource_tree(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource_tree(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-/// The id of the root a standalone app publishes itself.
-const STANDALONE_ROOT: &str = "disk-usage:root";
-
-/// The root a standalone app publishes, for binding its controls. The
-/// navigation operations it carries do not depend on the document.
-fn standalone_root() -> Resource {
-    ui::tilo_resource::publish::<crate::resource::DiskUsage>(
-        STANDALONE_ROOT,
-        "Disk Usage Analyzer",
-        &crate::resource::DiskUsageState::default(),
-    )
-}
-
-impl ui::resources::PublishesResources for DiskUsageApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        if self.hosted {
-            return self.live_analyze_extras();
-        }
-        let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
-            STANDALONE_ROOT,
-            "Disk Usage Analyzer",
-            &state,
-        );
-        root.children.extend(self.live_analyze_extras());
-        vec![root]
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
-            .unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
-            STANDALONE_ROOT,
-            "Disk Usage Analyzer",
-            &state,
-        );
-        root.children.extend(self.live_analyze_extras());
-        if self.hosted && id == STANDALONE_ROOT {
-            return None;
-        }
-        find_resource_tree(&[root], id)
-    }
-}
-
-/// The analyzer showing a finished scan, as after a real one.
-#[cfg(test)]
-pub(crate) fn analysed() -> DiskUsageApp {
-    let mut app = DiskUsageApp::new();
-    app.set_result(ScanResult::sample());
-    app
-}
-
-/// The home view of the made-up home folder after a few analyses.
-#[cfg(test)]
-pub(crate) fn at_home() -> DiskUsageApp {
-    let mut app = DiskUsageApp::new();
-    app.use_made_up_places();
-    app.recent = vec![
-        PathBuf::from("/home/you/Projects/tilo"),
-        PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-    ];
-    app.rebuild();
-    app
 }
 
 #[cfg(test)]
-mod tests {
+mod view_tests {
     use super::*;
-
-    // Disk Usage publishes only effect operations (scans and navigation), so
-    // the registry decodes nothing; the sweep checks the published surface.
-    ui::action_contract_tests! {
-        seed: AutoCommit::new(),
-        registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| ui::resources::resources(&analysed(), doc),
-        palette: ["Analyze Projects", "Choose folder", "Go back"],
-    }
-
-    /// Common locations are exposed as resources, and the analyze action, clicks and a portal-picked folder all enter the same scan pipeline.
-    #[test]
-    fn folder_scans_enter_through_resources_clicks_and_portal() {
-        // --- phase: resource_surface_exposes_common_locations ---
-        {
-            let app = DiskUsageApp::new();
-            let resources = ui::resources::resources(&app, &AutoCommit::new());
-            assert_eq!(resources.len(), 1);
-            assert!(resources[0].actions.len() >= 3);
-            assert_eq!(app.local_resource_operation_handlers(), &[OPERATION_TYPE]);
-        }
-
-        // --- phase: analyze_operation_uses_the_same_navigation_path_as_clicks ---
-        {
-            let mut app = DiskUsageApp::new();
-            let path = PathBuf::from("/definitely-not-a-real-disk-usage-test-path");
-            let payload = serde_json::to_vec(&DiskUsageOperation::Analyze { path: path.clone() })
-                .unwrap_or_default();
-            let handled = app
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        OPERATION_TYPE,
-                        &payload,
-                    ),
-                    &mut AutoCommit::new(),
-                    &ObjId::Root,
-                )
-                .map(|started| started.and_then(ui::widget::ResourceOperationStart::completed))
-                .unwrap_or_default();
-            assert!(handled.is_some());
-            assert!(matches!(app.view, View::Loading(ref loading) if loading == &path));
-            assert!(app.next_wake_deadline().is_some());
-            app.go_home();
-            assert!(matches!(app.view, View::Home));
-            assert!(app.next_wake_deadline().is_none());
-        }
-
-        // --- phase: portal_selected_folder_enters_the_scan_pipeline ---
-        {
-            let mut app = DiskUsageApp::new();
-            let selected = PathBuf::from("/portal-selected-folder");
-            let (services, recorder) = ui::host::HostServices::recording();
-            recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(selected.clone()));
-            let payload = serde_json::to_vec(&DiskUsageOperation::Choose).unwrap_or_default();
-            let handled = ui::host::scoped(&services, || {
-                app.start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        OperationKind::Effect,
-                        OPERATION_TYPE,
-                        &payload,
-                    ),
-                    &mut AutoCommit::new(),
-                    &ObjId::Root,
-                )
-                .map(|started| started.and_then(ui::widget::ResourceOperationStart::completed))
-                .unwrap_or_default()
-            });
-            assert!(handled.is_some());
-            let picks = recorder.pick_requests();
-            assert_eq!(picks.len(), 1);
-            assert!(picks[0].is_directory());
-            let mut document = AutoCommit::new();
-            assert!(app.update(&mut document, &ObjId::Root));
-            assert!(matches!(app.view, View::Loading(ref path) if path == &selected));
-            app.cancel_scan();
-        }
-    }
-
-    /// The idle analyzer schedules no frames and the narrow home view keeps common places visible.
-    #[test]
-    fn home_view_idles_and_keeps_common_places_visible() {
-        // --- phase: idle_analyzer_does_not_schedule_frames ---
-        {
-            assert!(DiskUsageApp::new().next_wake_deadline().is_none());
-        }
-
-        // --- phase: home_lists_every_place_and_the_five_latest_recent_folders ---
-        {
-            let mut app = DiskUsageApp::new();
-            app.recent.extend([
-                PathBuf::from("/home/you/Projects/tilo"),
-                PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
-                PathBuf::from("/one"),
-                PathBuf::from("/two"),
-                PathBuf::from("/three"),
-                PathBuf::from("/four"),
-            ]);
-            let (places, recent) = app.locations();
-            assert!(places.iter().any(|place| place.label == "File system"));
-            assert_eq!(recent.len(), 5);
-            assert_eq!(recent[0].label, "tilo");
-        }
-
-        // --- phase: a_recent_place_is_listed_once ---
-        {
-            let mut app = at_home();
-            app.recent.insert(0, PathBuf::from("/"));
-            let (_, recent) = app.locations();
-            assert!(recent.iter().all(|place| place.path.as_os_str() != "/"));
-        }
-    }
-
     /// Counts read with thousands separators and the chart names at most a
     /// handful of folders.
     #[test]
@@ -1124,73 +689,47 @@ mod tests {
             (NAMED_SLICES as u64..12).map(|i| 1_000 - i).sum::<u64>()
         );
     }
+}
 
-    /// The controls a person reaches in each view drive the same navigation
-    /// as the published operations: a place opens a scan, Back returns.
-    #[test]
-    fn places_and_back_drive_navigation() {
-        use ui::headless::FrameHarness;
-
-        let activate = |harness: &mut FrameHarness, name: &str| {
-            let node = harness
-                .a11y_node_named(name)
-                .unwrap_or_else(|| panic!("missing control {name:?}"));
-            harness
-                .perform_a11y_action(node, &ui::a11y::Action::Activate)
-                .expect("activation");
-            let _ = harness.poll_frame();
-        };
-
-        // --- phase: a_place_starts_a_scan ---
-        let mut harness = FrameHarness::for_root(
-            ui::state::State::new(),
-            at_home(),
-            (1280, 800),
-            ui::Theme::dark(),
-        );
-        activate(&mut harness, "Home");
-        let app = harness.root::<DiskUsageApp>();
-        // The fixture's home folder does not exist here, so the scan may
-        // already have reported it unreadable.
-        assert!(
-            matches!(
-                app.view,
-                View::Loading(ref path) | View::Error(ref path, _) if path == &PathBuf::from("/home/you")
-            ),
-            "choosing a place scans it"
-        );
-        harness.root_mut::<DiskUsageApp>().cancel_scan();
-
-        // --- phase: back_leaves_an_analysis ---
-        let mut harness = FrameHarness::for_root(
-            ui::state::State::new(),
-            analysed(),
-            (1280, 800),
-            ui::Theme::dark(),
-        );
-        assert!(harness.root::<DiskUsageApp>().in_analysis());
-        activate(&mut harness, "Back");
-        assert!(matches!(harness.root::<DiskUsageApp>().view, View::Home));
+impl DiskUsageApp {
+    pub(crate) fn refresh_home(&mut self) {
+        if matches!(self.view, View::Home) {
+            self.rebuild();
+        }
     }
+}
 
+#[cfg(test)]
+mod navigation_tests {
+    use super::*;
     #[test]
-    fn hosted_recent_folder_is_the_published_row() {
-        let mut doc = AutoCommit::new();
-        let path = PathBuf::from("/tmp/notes");
-        DiskUsageDoc::remember(&mut doc, &path);
-        doc.commit();
+    fn home_view_idles_and_keeps_common_places_visible() {
+        assert!(DiskUsageApp::new().next_wake_deadline().is_none());
         let mut app = DiskUsageApp::new();
-        app.mark_hosted_for_test();
-        assert!(ui::resources::resource(&app, &doc, "disk-usage:root").is_none());
-        let row =
-            ui::resources::resource(&app, &doc, &format!("disk-usage.recent:{}", path.display()))
-                .expect("hosted recent folder");
-        assert_eq!(row.kind, "disk-usage.recent");
-        assert!(
-            row.actions
-                .iter()
-                .any(|action| action.id.starts_with("analyze:")),
-            "a hosted recent folder stays the published row"
-        );
+        app.recent.extend([
+            PathBuf::from("/home/you/Projects/tilo"),
+            PathBuf::from(tilo_paths::WORKSPACE_MOUNT).join("design-system"),
+            PathBuf::from("/one"),
+            PathBuf::from("/two"),
+            PathBuf::from("/three"),
+            PathBuf::from("/four"),
+        ]);
+        let (places, recent) = app.locations();
+        assert!(places.iter().any(|place| place.label == "File system"));
+        assert_eq!(recent.len(), 5);
+        assert_eq!(recent[0].label, "tilo");
+        app.recent.insert(0, PathBuf::from("/"));
+        let (_, recent) = app.locations();
+        assert!(recent.iter().all(|place| place.path.as_os_str() != "/"));
+    }
+    #[test]
+    fn narrow_home_keeps_common_places_visible() {
+        let mut app =
+            ui::prelude::TestApp::<crate::resource::DiskUsageShell>::capture(Some("home-narrow"))
+                .unwrap();
+        let frame = app.harness().inspection_json().unwrap();
+        for name in ["Home", "Workspace", "File system", "Choose folder"] {
+            assert!(frame.contains(name), "missing {name}: {frame}");
+        }
     }
 }

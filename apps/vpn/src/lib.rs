@@ -1,14 +1,13 @@
 //! VPN — Tilo native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A `WireGuard` / `OpenVPN` client. The whole saved fleet lives in the
-//! shared Automerge document ([`doc`]); the window ([`app::VpnApp`]) is a
-//! navigation shell with the connections as its overview and the selected
-//! connection's status, configuration and activity as its content
-//! ([`view`]), plus the import and confirmation sheets.
+//! shared Automerge document ([`doc`]); [`app::VpnApp`] hosts the retained
+//! connection list and live detail views in the shared navigation shell.
+//! Import and confirmation use the shared modal dialog.
 //!
-//! `app_root()` is the live integration point (starts empty — only the
-//! user's real, persisted tunnels); `app_root_demo()` is the sample-seeded
-//! build captures use so the screenshot is populated.
+//! [`VpnShell`] is the framework app: the shared fleet is the [`Vpn`]
+//! resource, and what a profile does on this device is a
+//! [`effects::VpnEffect`].
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -41,12 +40,15 @@
 pub mod actions;
 pub mod app;
 pub mod config;
+pub mod device;
 pub mod doc;
-pub mod local;
+pub mod effects;
+pub mod import;
 pub mod model;
 pub mod net;
+pub mod probe;
 pub mod resource;
-pub mod view;
+mod view;
 
 pub use app::VpnApp;
 pub use model::{ConnKind, ConnStatus, Connection, Vault};
@@ -54,18 +56,4 @@ pub use model::{ConnKind, ConnStatus, Connection, Vault};
 /// Re-export so sibling modules can name the toolkit `Theme` succinctly.
 pub use ui::theme::Theme;
 
-use ui::widget::Widget;
-
-/// Build the live app: it starts empty and shows only the user's real saved
-/// tunnels. It never fabricates a fleet.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(VpnApp::new())
-}
-
-/// Build the sample-seeded app for the hermetic `--shots` / demo path. This
-/// is the ONLY entry point that fabricates tunnels.
-pub fn app_root_demo() -> Box<dyn Widget> {
-    Box::new(VpnApp::new_demo())
-}
-
-pub use resource::{Vpn, VpnShell, launch_spec};
+pub use resource::{Vpn, VpnShell};

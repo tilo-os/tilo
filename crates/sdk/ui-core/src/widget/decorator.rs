@@ -347,6 +347,10 @@ pub trait Decorator {
         self.inner().tooltip()
     }
 
+    fn tooltip_side(&self) -> super::tooltip::TooltipSide {
+        self.inner().tooltip_side()
+    }
+
     fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
@@ -476,6 +480,10 @@ pub trait Decorator {
 
     fn take_focus_reset(&mut self) -> bool {
         self.inner_mut().take_focus_reset()
+    }
+
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        self.inner_mut().take_accessibility_request()
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
@@ -914,6 +922,10 @@ impl<T: Decorator> Widget for T {
         Decorator::tooltip(self)
     }
 
+    fn tooltip_side(&self) -> super::tooltip::TooltipSide {
+        Decorator::tooltip_side(self)
+    }
+
     fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
@@ -1041,6 +1053,10 @@ impl<T: Decorator> Widget for T {
 
     fn take_focus_reset(&mut self) -> bool {
         Decorator::take_focus_reset(self)
+    }
+
+    fn take_accessibility_request(&mut self) -> Option<crate::a11y::AccessibilityRequest> {
+        Decorator::take_accessibility_request(self)
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {

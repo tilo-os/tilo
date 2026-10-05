@@ -2486,7 +2486,12 @@ pub struct DeviceRequest {
     pub arch: Option<PackageArch>,
 }
 
-fn build_for_device(start: &Path, adb: &Adb, request: &DeviceRequest) -> Result<AndroidBuild> {
+fn build_for_device(
+    start: &Path,
+    adb: &Adb,
+    request: &DeviceRequest,
+    profile: &str,
+) -> Result<AndroidBuild> {
     let arch = match request.arch {
         Some(arch) => arch,
         None => adb.arch()?,
@@ -2495,7 +2500,7 @@ fn build_for_device(start: &Path, adb: &Adb, request: &DeviceRequest) -> Result<
         start,
         &BuildRequest {
             arch,
-            profile: "dev".to_owned(),
+            profile: profile.to_owned(),
             signing: Signing::Debug,
             bundle: false,
             features: Vec::new(),
@@ -2527,7 +2532,7 @@ pub fn run_on_device(start: &Path, request: &DeviceRequest) -> Result<AndroidBui
     let tools = Toolchain::discover();
     let adb = Adb::connect(&tools, request.device.as_deref())?;
     let mut logcat = adb.logcat()?;
-    let result = build_for_device(start, &adb, request);
+    let result = build_for_device(start, &adb, request, "dev");
     let build = match result {
         Ok(build) => build,
         Err(error) => {
@@ -2588,7 +2593,7 @@ pub fn dev_on_device(start: &Path, dev: &crate::DevRequest, request: &DeviceRequ
     while !super::DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
         if rebuild {
             rebuild = false;
-            match build_for_device(&app_dir, &adb, request) {
+            match build_for_device(&app_dir, &adb, request, dev.profile().unwrap_or("dev")) {
                 Ok(build) => application_id = Some(build.metadata.application_id),
                 Err(error) => eprintln!("[tilo-app] {error:#}\n[tilo-app] waiting for a change"),
             }

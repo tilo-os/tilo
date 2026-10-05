@@ -3006,7 +3006,7 @@ impl ChatApp {
         kind: tilo_actions::OperationKind,
         type_id: &str,
         payload: &[u8],
-        doc: &AutoCommit,
+        doc: &mut AutoCommit,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
@@ -3018,6 +3018,11 @@ impl ChatApp {
                     || request.intent != 0
                 {
                     return Err("Call controls require a valid local Effect".into());
+                }
+            }
+            crate::actions::ChatOperation::StartCall { .. } => {
+                if kind != tilo_actions::OperationKind::Effect {
+                    return Err("starting a call requires an Effect operation".into());
                 }
             }
             crate::actions::ChatOperation::ImportAttachment { .. } => {
@@ -3035,6 +3040,7 @@ impl ChatApp {
             crate::actions::ChatOperation::NativeVoice { channel, request } => {
                 self.native_voice_command(&channel, request.command)?;
             }
+            crate::actions::ChatOperation::StartCall { video } => self.start_call(video, doc)?,
             crate::actions::ChatOperation::OpenWorkspace { workspace } => {
                 self.reveal_workspace_resource(workspace)?;
             }

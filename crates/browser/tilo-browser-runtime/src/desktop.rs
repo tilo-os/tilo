@@ -103,34 +103,53 @@ pub(crate) struct Shared {
     dismissed_peer_windows: Rc<RefCell<std::collections::HashSet<String>>>,
     /// Of those, the ones not reported yet.
     newly_dismissed: Rc<RefCell<Vec<String>>>,
-    /// The legacy applications the node beside the host runs, which the
-    /// person can open there and see here as legacy windows.
+    /// The applications the node beside the host runs that this desktop
+    /// does not (legacy ones, Tilo apps that need a host), which the person
+    /// can open there and see here as legacy windows.
     node_apps: Rc<RefCell<Vec<NodeApp>>>,
     /// Node applications the person asked to open, by id, for the page to
     /// ask the node.
     node_app_requests: Rc<RefCell<Vec<String>>>,
+    /// Pages a host streams as display lists (`tilo-paint`), by window key:
+    /// drawn here by the toolkit instead of decoded as video.
+    paint_pages: Rc<RefCell<HashMap<String, Arc<tilo_browser_peer::remote_page::RemotePage>>>>,
 }
 
-/// Launch name of a legacy application the node runs.
+/// Launch name of an application the node runs.
 pub(crate) const NODE_APP_LAUNCH: &str = "tilo.node-app:";
 
-/// A legacy application on the node: its launch id there and its name.
+/// What search says of an application the node runs.
+const NODE_APP_DESCRIPTION: &str = "Runs on the node";
+
+/// An application on the node: its launch id there, its name, and for a
+/// Tilo application its package id.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct NodeApp {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 /// Launch name of the window showing the legacy window `key`.
 pub(crate) const PEER_WINDOW_LAUNCH: &str = "tilo.peer-window:";
 
 /// Another member's legacy window, as the page streams it: its key (the
-/// page's name for the stream), app id and title.
+/// page's name for the stream), app id, title and codec.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct PeerWindow {
     pub key: String,
     pub app: String,
     pub title: String,
+    #[serde(default)]
+    pub codec: String,
+}
+
+impl PeerWindow {
+    /// A page this desktop draws itself rather than a video it is shown.
+    fn is_paint(&self) -> bool {
+        self.codec == tilo_relay_protocol::legacy_window::PAINT
+    }
 }
 
 impl Shared {
@@ -166,12 +185,42 @@ impl Shared {
         )
     }
 
+    /// The page behind a painted window, created on first use.
+    pub fn paint_page(&self, key: &str) -> Arc<tilo_browser_peer::remote_page::RemotePage> {
+        Arc::clone(
+            self.paint_pages
+                .borrow_mut()
+                .entry(key.to_owned())
+                .or_insert_with(tilo_browser_peer::remote_page::RemotePage::new),
+        )
+    }
+
+    /// Input on painted windows since the last call, by window key.
+    pub fn take_paint_input(
+        &self,
+    ) -> Vec<(String, Vec<tilo_relay_protocol::legacy_window::InputEvent>)> {
+        self.paint_pages
+            .borrow()
+            .iter()
+            .map(|(key, page)| (key.clone(), page.take_input()))
+            .filter(|(_, events)| !events.is_empty())
+            .collect()
+    }
+
     /// The legacy window `tab` shows, if it shows one.
     pub fn peer_window_of(&self, tab: TabId) -> Option<String> {
         self.peer_windows
             .borrow()
             .get(&tab)
             .map(|window| window.key.clone())
+    }
+
+    /// The tab showing the legacy window `key`, if one does.
+    pub fn peer_window_tab(&self, key: &str) -> Option<TabId> {
+        self.peer_windows
+            .borrow()
+            .iter()
+            .find_map(|(tab, window)| (window.key == key).then_some(*tab))
     }
 
     /// Reconcile the windows showing legacy windows with `wanted`: the
@@ -199,6 +248,12 @@ impl Shared {
             .filter(|window| !dismissed.contains(&window.key))
             .collect();
         drop(dismissed);
+        // A page no longer shared stops being kept.
+        self.paint_pages.borrow_mut().retain(|key, _| {
+            wanted
+                .iter()
+                .any(|window| window.key == *key && window.is_paint())
+        });
         let mut close = Vec::new();
         for tab in tree
             .workspaces
@@ -228,9 +283,44 @@ impl Shared {
         (launch, close)
     }
 
-    /// The legacy applications the node runs, as the page listed them.
-    pub fn set_node_apps(&self, apps: Vec<NodeApp>) {
+    /// The applications the node runs, as the page listed them, but for
+    /// the Tilo applications this desktop opens itself.
+    pub fn set_node_apps(&self, mut apps: Vec<NodeApp>) {
+        apps.retain(|node| {
+            node.app
+                .as_deref()
+                .is_none_or(|package| application(package).is_none())
+        });
         *self.node_apps.borrow_mut() = apps;
+    }
+
+    /// The search entries of the applications the node runs, then of the
+    /// catalog's apps this desktop cannot open, the node's left out.
+    fn node_search_entries(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        let node_apps = self.node_apps.borrow();
+        let hosted: Vec<&str> = node_apps
+            .iter()
+            .filter_map(|node| node.app.as_deref())
+            .collect();
+        node_apps
+            .iter()
+            .map(|node| tilo_desktop_search::providers::AppEntry {
+                id: format!("{NODE_APP_LAUNCH}{}", node.id),
+                title: node.title.clone(),
+                category: node.app.as_deref().and_then(|package| {
+                    tilo_desktop_search::availability::catalog()
+                        .iter()
+                        .find(|app| app.id == package && !app.category.is_empty())
+                        .map(|app| app.category.into())
+                }),
+                description: Some(NODE_APP_DESCRIPTION.into()),
+                unavailable: None,
+            })
+            .chain(tilo_desktop_search::availability::unavailable_on(
+                &["web"],
+                &hosted,
+            ))
+            .collect()
     }
 
     /// The node applications the person asked to open since the last call.
@@ -461,6 +551,20 @@ impl TileSource for Tiles {
         if let Some(notice) = crate::crash::quarantined(tab.id, &tab.title) {
             return TileHost::new(notice);
         }
+        // A painted page is a window this desktop draws, like its own apps.
+        let painted = self
+            .shared
+            .peer_windows
+            .borrow()
+            .get(&tab.id)
+            .filter(|window| window.is_paint())
+            .map(|window| window.key.clone());
+        if let Some(key) = painted {
+            let view = ui::widget::WebView::new(self.shared.paint_page(&key))
+                .with_test_id("peer-page")
+                .with_accessible_name(tab.title.clone());
+            return TileHost::new(ui::widget::TileContent::App(Box::new(view)));
+        }
         match self.component(tab) {
             Ok(component) => {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
@@ -529,21 +633,7 @@ impl TileSource for Tiles {
                 description: None,
                 unavailable: None,
             })
-            .chain(
-                self.shared
-                    .node_apps
-                    .borrow()
-                    .iter()
-                    .map(|app| tilo_desktop_search::providers::AppEntry {
-                        id: format!("{NODE_APP_LAUNCH}{}", app.id),
-                        title: app.title.clone(),
-                        category: None,
-                        description: None,
-                        unavailable: None,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .chain(tilo_desktop_search::availability::unavailable_on(&["web"]))
+            .chain(self.shared.node_search_entries())
             .collect()
     }
 }

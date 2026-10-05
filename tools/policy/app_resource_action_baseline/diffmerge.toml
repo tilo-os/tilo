@@ -1,0 +1,10 @@
+# Audited ceilings of apps/diffmerge (tools/policy/check_app_resource_action_contract.py).
+# Each count may only go down; the target is an empty file.
+
+[ratchets.app_action_host]
+"apps/diffmerge/src/resource.rs" = 2
+
+[ratchets.standalone_launch]
+
+[ratchets.widget_owned_document]
+"apps/diffmerge/src/framework_history.rs" = 1

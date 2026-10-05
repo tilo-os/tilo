@@ -49,15 +49,15 @@ pub mod storage;
 pub use allowlist::{AllowlistError, PublisherAllowlist, PublisherRow};
 pub use bundle_review::{
     BundleReviewError, InspectedVersion, InspectionPolicy, fetch_entry_bytes, fetch_version_bytes,
-    inspect_bytes, inspect_entry, review_entry_bytes, review_version_bytes,
+    inspect_bytes, inspect_entry, inspect_stored_bytes, review_entry_bytes, review_version_bytes,
 };
 pub use moderation::{ModerationError, ModerationService};
 pub use moderation_api::{ModerationApiError, ModerationApiService};
 pub use serve::{AppState, handle};
 pub use storage::{
-    HistoryCompaction, HistoryCompactionReport, PendingSubmission, PromotionJournal, PruneReport,
-    ReviewDecision, ReviewRecord, ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion,
-    Storage, StorageError,
+    DroppedVersion, HistoryCompaction, HistoryCompactionReport, PendingSubmission,
+    PromotionJournal, PrunePreview, PruneReport, RetentionPreview, ReviewDecision, ReviewRecord,
+    ReviewSubject, ServerIdentity, StagedArtifact, StagedPromotion, Storage, StorageError,
 };
 
 /// Bind the server to `addr` and run until the listener errors or

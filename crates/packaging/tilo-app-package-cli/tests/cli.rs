@@ -662,3 +662,106 @@ fn cli_packs_a_macos_build_and_emits_its_registry_request() {
     assert!(!entry("macos", "x86_64").status.success());
     assert!(!entry("tilo-os", "aarch64").status.success());
 }
+
+#[test]
+fn cli_splits_a_runtime_and_describes_its_thin_form_with_the_objects() {
+    let workdir = tempfile::tempdir().unwrap();
+    let path = |name: &str| workdir.path().join(name).to_str().unwrap().to_string();
+    run(&["keygen", "--out", &path("publisher.json")]);
+    std::fs::write(
+        path("manifest.toml"),
+        format!(
+            r#"
+[package]
+id = "so.tilo.runtime"
+version = "2026.7.0"
+kind = "runtime"
+provides = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity = "ed25519:{}"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#,
+            "00".repeat(32)
+        ),
+    )
+    .unwrap();
+    let chunk = usize::try_from(tilo_app_package::chunks::CHUNK_BYTES).unwrap();
+    std::fs::create_dir_all(workdir.path().join("payload/lib")).unwrap();
+    let library: Vec<u8> = (0..chunk + 4096)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    std::fs::write(workdir.path().join("payload/lib/libruntime.so"), &library).unwrap();
+    std::fs::write(workdir.path().join("payload/bundle.toml"), b"abi = 1\n").unwrap();
+    run(&[
+        "pack",
+        "--manifest",
+        &path("manifest.toml"),
+        "--payload",
+        &path("payload"),
+        "--identity",
+        &path("publisher.json"),
+        "-o",
+        &path("runtime.tapp"),
+    ]);
+    run(&["split", &path("runtime.tapp"), "--out", &path("release")]);
+    let hash = tilo_app_package::BlobHash::of(&library);
+    let objects = workdir.path().join("release");
+    assert!(objects.join(format!("{hash}.chunks")).exists());
+    assert!(!objects.join(format!("{hash}.blob")).exists());
+    let thin = std::fs::read(objects.join("runtime.tapp")).unwrap();
+    assert!(thin.len() < 64 * 1024, "thin form is {} bytes", thin.len());
+
+    let entry_args = |with_objects: bool| {
+        let mut args = vec![
+            "entry".to_string(),
+            "--url".into(),
+            "https://apps.tilo.so/artifacts/tilo/generic/tilo-app-runtime/2026.7.0/runtime.tapp"
+                .into(),
+            "--identity".into(),
+            path("publisher.json"),
+            "--arch".into(),
+            "x86_64".into(),
+        ];
+        if with_objects {
+            args.extend(["--objects".into(), path("release")]);
+        }
+        args.push(path("release/runtime.tapp"));
+        Command::new(bin_path()).args(&args).output().unwrap()
+    };
+    let emitted = entry_args(true);
+    assert!(emitted.status.success(), "entry: {emitted:?}");
+    let entry: registry_types::RegistryEntry = serde_json::from_slice(&emitted.stdout).unwrap();
+    let version = &entry.versions[0];
+    assert_eq!(version.tapp_size_bytes, thin.len() as u64);
+    assert_eq!(
+        version.target.runtime.as_deref(),
+        Some("tilo-runtime/2026.07")
+    );
+
+    assert!(
+        !entry_args(false).status.success(),
+        "a thin tapp needs its objects"
+    );
+    let list: tilo_app_package::chunks::ChunkList =
+        serde_json::from_slice(&std::fs::read(objects.join(format!("{hash}.chunks"))).unwrap())
+            .unwrap();
+    std::fs::write(
+        objects.join(format!("{}.blob", list.chunks[1].hash)),
+        b"tampered",
+    )
+    .unwrap();
+    let refused = entry_args(true);
+    assert!(!refused.status.success(), "a tampered chunk must fail");
+}

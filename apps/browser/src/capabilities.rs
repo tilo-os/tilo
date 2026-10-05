@@ -79,9 +79,6 @@ struct Download {
     error: String,
 }
 impl Capabilities {
-    pub fn share_downloads(&mut self, other: &Self) {
-        self.downloads = other.downloads.clone();
-    }
     pub fn downloads_changed(&mut self) -> bool {
         let version = self.downloads.borrow().version;
         let changed = version != self.observed_download_version;
@@ -351,7 +348,16 @@ impl Capabilities {
             engine.send(WebViewCommand::DownloadDecision { id, allow: false });
         }
     }
+    #[cfg(test)]
     pub fn downloads(&self, engine: &SharedEngine, theme: &ui::theme::Theme) -> Box<dyn Widget> {
+        self.downloads_filtered(engine, theme, "")
+    }
+    pub fn downloads_filtered(
+        &self,
+        engine: &SharedEngine,
+        theme: &ui::theme::Theme,
+        query: &str,
+    ) -> Box<dyn Widget> {
         let downloads = self.downloads.borrow();
         let mut column = Column::new().with_no_padding().with_intrinsic_height();
         column = column.push(Box::new(
@@ -374,7 +380,12 @@ impl Capabilities {
             )));
         }
         let mut rows: Vec<Box<dyn Widget>> = Vec::new();
-        for (&id, d) in downloads.records.iter().rev() {
+        for (&id, d) in downloads.records.iter().rev().filter(|(_, item)| {
+            super::browser_widget::library_filter_matches(
+                query,
+                &[&item.name, &item.url, &item.path, &item.state],
+            )
+        }) {
             let status = match d.state.as_str() {
                 "progress" if d.total > 0 => format!(
                     "{} of {}",
@@ -458,6 +469,11 @@ impl Capabilities {
             });
         }
         drop(downloads);
+        if rows.is_empty() {
+            return Box::new(column.push(Box::new(
+                EmptyState::new("No matching items").with_icon(Icon::Search),
+            )));
+        }
         Box::new(column.push(crate::rows::separated(rows, theme)))
     }
 }
@@ -475,22 +491,18 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn download_records_outlive_origin_and_offer_host_actions_when_complete() {
-        // Phase `download_records_survive_origin_close_and_permissions_stay_local`.
+        // Phase `download_records_offer_cancel_then_open_and_stay_bounded`.
         {
-            let first_engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
-            let second_capture = ui::webview::test_engine::TestEngine::new();
-            let second_engine: SharedEngine = second_capture.clone();
-            let mut first = Capabilities::default();
-            let mut second = Capabilities::default();
-            second.share_downloads(&first);
-            first.apply(WebViewEvent::PermissionRequested {
+            let capture = ui::webview::test_engine::TestEngine::new();
+            let engine: SharedEngine = capture.clone();
+            let mut capabilities = Capabilities::default();
+            capabilities.apply(WebViewEvent::PermissionRequested {
                 id: 1,
                 origin: "https://site.test".into(),
                 permissions: "camera".into(),
             });
-            assert!(first.prompt(&first_engine).is_some());
-            assert!(second.prompt(&second_engine).is_none());
-            first.apply(WebViewEvent::DownloadUpdated {
+            assert!(capabilities.prompt(&engine).is_some());
+            capabilities.apply(WebViewEvent::DownloadUpdated {
                 id: 7,
                 state: "progress".into(),
                 path: "/tmp/file".into(),
@@ -501,8 +513,8 @@ mod tests {
                 total: 20,
                 error: String::new(),
             });
-            assert!(second.downloads_changed());
-            let mut rows = second.downloads(&second_engine, &ui::theme::Theme::dark());
+            assert!(capabilities.downloads_changed());
+            let mut rows = capabilities.downloads(&engine, &ui::theme::Theme::dark());
             assert!(contains(rows.as_ref(), "browser.download.cancel.7"));
             let result = rows
                 .start_operation(
@@ -518,12 +530,11 @@ mod tests {
                 .unwrap();
             assert!(result.is_some());
             assert!(
-                second_capture
+                capture
                     .commands()
                     .contains(&WebViewCommand::CancelNativeDownload { id: 7 })
             );
-            drop(first);
-            second.apply(WebViewEvent::DownloadUpdated {
+            capabilities.apply(WebViewEvent::DownloadUpdated {
                 id: 7,
                 state: "complete".into(),
                 path: "/tmp/file".into(),
@@ -535,13 +546,13 @@ mod tests {
                 error: String::new(),
             });
             assert!(contains(
-                second
-                    .downloads(&second_engine, &ui::theme::Theme::dark())
+                capabilities
+                    .downloads(&engine, &ui::theme::Theme::dark())
                     .as_ref(),
                 "browser.download.open.7"
             ));
             for id in 8..150 {
-                second.apply(WebViewEvent::DownloadUpdated {
+                capabilities.apply(WebViewEvent::DownloadUpdated {
                     id,
                     state: "complete".into(),
                     path: "/tmp/file".into(),
@@ -553,7 +564,7 @@ mod tests {
                     error: String::new(),
                 });
             }
-            assert_eq!(second.downloads.borrow().records.len(), 100);
+            assert_eq!(capabilities.downloads.borrow().records.len(), 100);
         }
 
         // Phase `open_and_reveal_go_to_the_host_for_an_existing_download`.

@@ -13,9 +13,9 @@ use ui::tokens::{Spacing, SpacingStep, TextRole};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Badge, Banner, BarGauge, Button, ButtonRole, Card, CardGrid, CardWidth, ChipStyle,
-    Column, Container, Divider, Dropdown, Field, Form, FormSection, GaugeThresholds, Image,
-    ImageCropEditor, ListRow, NumberInput, ProgressBar, Property, PropertyList, Row, Scrollable,
-    Section, SectionHeader, Spacer, Text, Toggle, ToggleGroup, Tone,
+    Column, Container, ControlSize, Divider, Dropdown, Field, Form, FormSection, GaugeThresholds,
+    Image, ImageCropEditor, ListRow, NumberInput, ProgressBar, Property, PropertyList, Row,
+    Scrollable, Section, SectionHeader, Spacer, Text, Toggle, ToggleGroup, Tone,
 };
 
 use super::{
@@ -51,9 +51,11 @@ fn command_button(
     command: UiCommand,
 ) -> Button {
     let tx = tx.clone();
-    Button::new(id, label, None).on_effect(move || {
-        let _ = tx.send(command.clone());
-    })
+    Button::new(id, label, None)
+        .control_size(ControlSize::Large)
+        .on_effect(move || {
+            let _ = tx.send(command.clone());
+        })
 }
 
 fn primary(button: Button) -> Button {
@@ -480,6 +482,16 @@ pub(super) fn live_view(
     }
 
     let mut tools: Vec<El> = Vec::new();
+    if let Some(scanner) = scanners.first() {
+        tools.push(tool_row(
+            "print-centre.scan.open",
+            Icon::Camera,
+            "Scan a document",
+            &format!("{} is ready", scanner.description),
+            tx,
+            UiCommand::ScanSetup,
+        ));
+    }
     if snapshot.jobs.is_ok() {
         let history = if jobs
             .iter()
@@ -498,16 +510,6 @@ pub(super) fn live_view(
             UiCommand::History,
         ));
     }
-    if let Some(scanner) = scanners.first() {
-        tools.push(tool_row(
-            "print-centre.scan.open",
-            Icon::Camera,
-            "Scan a document",
-            &format!("{} is ready", scanner.description),
-            tx,
-            UiCommand::ScanSetup,
-        ));
-    }
     tools.push(tool_row(
         "print-centre.diagnostics.open",
         Icon::Info,
@@ -516,7 +518,13 @@ pub(super) fn live_view(
         tx,
         UiCommand::Diagnostics,
     ));
-    items.push(titled_section("Tools", tools));
+    items.push(Box::new(Section::titled(
+        "Tools",
+        vec![Box::new(tools.into_iter().fold(
+            bare_column().with_rhythm(ui::tokens::Rhythm::Section),
+            Column::push,
+        ))],
+    )));
     page(groups(items))
 }
 
@@ -1031,7 +1039,9 @@ fn print_settings(
     picker: Dropdown,
     copies: &ui::LocalState<f64>,
     two_sided: &ui::LocalState<bool>,
+    tx: &mpsc::Sender<UiCommand>,
 ) -> Form {
+    let defaults = tx.clone();
     Form::new()
         .section(
             FormSection::new("Printer").field(
@@ -1053,8 +1063,13 @@ fn print_settings(
                     .with_trailing_control(),
                 )
                 .field(
-                    Field::new("Print on both sides", Toggle::from_state(two_sided))
-                        .with_trailing_control(),
+                    Field::new(
+                        "Print on both sides",
+                        Toggle::from_state(two_sided).on_change(move |value| {
+                            let _ = defaults.send(UiCommand::SetTwoSided(value));
+                        }),
+                    )
+                    .with_trailing_control(),
                 ),
         )
 }
@@ -1072,7 +1087,12 @@ pub(super) fn print_setup_view(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("Selected document");
-    let settings = print_settings(printer_picker(snapshot, selected, tx), copies, two_sided);
+    let settings = print_settings(
+        printer_picker(snapshot, selected, tx),
+        copies,
+        two_sided,
+        tx,
+    );
     let layout = Row::new()
         .align_start()
         .push(Box::new(
@@ -1379,7 +1399,7 @@ fn scanner_choices(
     devices
 }
 
-fn scan_settings(scan: &ScanState) -> Vec<El> {
+fn scan_settings(scan: &ScanState, tx: &mpsc::Sender<UiCommand>) -> Vec<El> {
     vec![
         setting(
             "Quality",
@@ -1387,7 +1407,13 @@ fn scan_settings(scan: &ScanState) -> Vec<El> {
                 "print-centre.scan.resolution",
                 &["150 dpi", "300 dpi", "600 dpi"],
                 &scan.resolution,
-            ),
+            )
+            .on_change({
+                let tx = tx.clone();
+                move |index| {
+                    let _ = tx.send(UiCommand::SetScanResolution(index));
+                }
+            }),
         ),
         setting(
             "Appearance",
@@ -1395,7 +1421,13 @@ fn scan_settings(scan: &ScanState) -> Vec<El> {
                 "print-centre.scan.color",
                 &["Color", "Grayscale", "Text"],
                 &scan.color,
-            ),
+            )
+            .on_change({
+                let tx = tx.clone();
+                move |index| {
+                    let _ = tx.send(UiCommand::SetScanColor(index));
+                }
+            }),
         ),
         setting(
             "Paper source",
@@ -1403,7 +1435,13 @@ fn scan_settings(scan: &ScanState) -> Vec<El> {
                 "print-centre.scan.source",
                 &["Flatbed", "Feeder", "Two-sided"],
                 &scan.source,
-            ),
+            )
+            .on_change({
+                let tx = tx.clone();
+                move |index| {
+                    let _ = tx.send(UiCommand::SetScanSource(index));
+                }
+            }),
         ),
         setting(
             "Text language",
@@ -1411,7 +1449,13 @@ fn scan_settings(scan: &ScanState) -> Vec<El> {
                 "print-centre.scan.language",
                 &["English", "German", "French", "Spanish"],
                 &scan.language,
-            ),
+            )
+            .on_change({
+                let tx = tx.clone();
+                move |index| {
+                    let _ = tx.send(UiCommand::SetOcrLanguage(index));
+                }
+            }),
         ),
     ]
 }
@@ -1441,7 +1485,7 @@ pub(super) fn scan_setup_view(
         "Scanner",
         scanner_choices(snapshot, selected, tx),
     ));
-    items.push(titled_section("Page settings", scan_settings(scan)));
+    items.push(titled_section("Page settings", scan_settings(scan, tx)));
     let body = subpage("Scan a document", tx, items);
 
     let mut buttons = vec![command_button(

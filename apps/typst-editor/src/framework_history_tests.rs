@@ -29,7 +29,7 @@ fn verify_restored(doc: &AutoCommit) {
 /// which the window draws only when the app has no History button of its own;
 /// the app's toolbar button is exercised separately below.
 fn test_root() -> Box<dyn ui::widget::Widget> {
-    Box::new(crate::app::TypstApp::from_library(None))
+    Box::new(crate::app::TypstApp::new())
 }
 
 #[test]
@@ -287,7 +287,6 @@ fn production_library_persisted_restore_and_fresh_reopen() {
                 "--nocapture",
             ])
             .env("TILO_SLICE5_TYPST_STAGE", stage)
-            .env("TILO_TYPST_LIBRARY_DIR", &dir)
             .env("XDG_DATA_HOME", &dir)
             .output()
             .unwrap();

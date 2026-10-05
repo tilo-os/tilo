@@ -60,6 +60,7 @@ fn paint(art: &mut Replica<ArtworkResource>, layer: Option<&str>, strokes: Vec<N
         CanvasAction::Paint(Paint {
             layer: layer.map(Into::into),
             strokes,
+            group: None,
         }),
     )
     .unwrap();
@@ -242,6 +243,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 colour: String::new(),
                 ..line("blank", [0.0, 0.0], [10.0, 0.0], 1.0)
             }],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -254,6 +256,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 line("crayon", [0.0, 0.0], [10.0, 0.0], 1.0),
                 "crayon",
             )],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -269,6 +272,7 @@ fn an_eraser_clears_what_is_under_it_on_its_layer() {
                 params: Some(BTreeMap::from([("load".to_owned(), 0.3)])),
                 ..line("loaded", [0.0, 0.0], [10.0, 0.0], 1.0)
             }],
+            group: None,
         }),
     )
     .unwrap_err();
@@ -475,4 +479,58 @@ fn strokes_are_rebrushed_and_reshaped_after_the_fact() {
     )
     .unwrap_err();
     assert!(refused.contains("end of the stroke"), "{refused}");
+}
+
+/// A live view never waits for a painted layer: it shows what is finished
+/// while the stroke just laid is simulated in the background. A `look`
+/// through the same renderer waits, and sees exactly what a renderer
+/// that always waits sees.
+#[test]
+fn a_live_view_does_not_wait_for_paint_and_a_look_does() {
+    let mut art = sheet(300.0, 200.0);
+    apply(
+        &mut art,
+        CanvasAction::AddLayer(AddLayer {
+            id: Some("oil".into()),
+            name: "Oil".into(),
+            medium: Some("oil".into()),
+            ..AddLayer::default()
+        }),
+    )
+    .unwrap();
+    paint(
+        &mut art,
+        Some("oil"),
+        vec![NewStroke {
+            colour: "pigment:ultramarine".into(),
+            size: 24.0,
+            ..line("paint", [20.0, 100.0], [280.0, 100.0], 1.0)
+        }],
+    );
+    let state = art.state().unwrap();
+    let mut live = Renderer::impatient();
+    let mut text = ui::TextRenderer::new();
+    let options = canvas::render::Options {
+        live: true,
+        ..canvas::render::Options::default()
+    };
+    let mut scene = ui::vello::Scene::new();
+    live.draw(
+        &state,
+        &mut scene,
+        ui::vello::kurbo::Affine::IDENTITY,
+        &mut text,
+        &options,
+    );
+    assert!(live.settling(), "the stroke is simulated in the background");
+
+    let look = Look {
+        format: Some("png".into()),
+        size: Some(300),
+        ..Look::default()
+    };
+    let (seen, _) = view_ops::look(&mut live, &mut text, &state, &look).unwrap();
+    assert!(!live.settling(), "the look waited for the layer");
+    let (waited, _) = view_ops::look(&mut Renderer::default(), &mut text, &state, &look).unwrap();
+    assert_eq!(seen.bytes, waited.bytes);
 }

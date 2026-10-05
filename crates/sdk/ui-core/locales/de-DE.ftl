@@ -82,6 +82,7 @@ history-mode-unavailable = Verlauf nicht verfügbar
 history-mode-content-unavailable = Früherer Inhalt nicht verfügbar
 history-mode-back-to-activity = Zurück zur Aktivität
 history-mode-back-to-live = Zurück zur aktuellen Version
+history-mode-earlier = Frühere Änderungen anzeigen
 history-mode-before = Vorher
 history-mode-after = Nachher
 history-mode-showing-before = Frühere Version: Vorher
@@ -251,6 +252,8 @@ terminal-target-host = Dieses Gerät (ohne Sandbox)
 terminal-target-default = Standardumgebung
 terminal-target-legacy = Legacy-VM
 terminal-target-manage = Umgebungen verwalten…
+terminal-run-on = Ausführen auf:
+terminal-run-on-this-device = Diesem Gerät
 terminal-host-awaiting-allow = Warte darauf, dass du die eigene Shell dieses Geräts erlaubst
 terminal-host-denied = Die eigene Shell dieses Geräts wurde nicht erlaubt
 terminal-env-title = Umgebungen
@@ -305,9 +308,6 @@ text-input-show-password = Passwort anzeigen
 text-input-hide-password = Passwort verbergen
 
 # Authentication surfaces share the system theme and catalog.
-greeter-welcome-back = Willkommen zurück bei Tilo
-greeter-sign-in = Zum Fortfahren anmelden
-greeter-passcode-intro = Gib deinen Code ein, um deinen Desktop zu öffnen.
 lock-welcome-back = Willkommen zurück
 
 # Now playing: Quick Settings and the lock screen.
@@ -439,3 +439,15 @@ find-bar-replace = Ersetzen
 find-bar-replace-all = Alle ersetzen
 find-bar-position = { $current } von { $total }
 find-bar-no-matches = Keine Treffer
+widget-block-duplicate = Block mit Unterelementen duplizieren
+
+widget-block-duplicate-selection = Ausgewählte oder fokussierte Blöcke duplizieren
+
+widget-block-move-selection-up = Ausgewählte Blöcke nach oben verschieben
+widget-block-move-selection-down = Ausgewählte Blöcke nach unten verschieben
+
+block-editor-replace-placeholder = Ersetzen durch
+block-editor-replace = Ersetzen
+
+block-editor-replace-all = Alle ersetzen
+block-editor-replace-all-help = Alle ersetzen — Umschalt+Enter im Ersetzungsfeld

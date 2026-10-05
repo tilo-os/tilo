@@ -265,3 +265,20 @@ These rules are the ones that keep generated filler out.
 - Search belongs to the platform. Apps do not draw search fields; they expose
   search scopes (see `docs/ui-migration.md`). Only genuine in-content filtering
   and find-in-page remain, through the framework's controls.
+
+## Secret fields and capture
+
+Secret inputs suppress their values from accessibility, review, presence,
+primary selection and input-method surrounding text. Revealed input-method
+preedit is secret content even before the committed field contains text.
+A native host waits for the compositor's correlated capture-protection
+acknowledgement before submitting a frame containing revealed secrets.
+
+Capture protection is currently conservative: after a secret frame is
+submitted, protection remains until native app teardown. This also covers
+secret content in auxiliary windows and can withhold capture of other app
+windows after the auxiliary window closes. A renderer's presentation result
+does not prove that the compositor has displayed a clean replacement; early
+release requires a compositor presentation barrier and settlement of pending
+captures. Disconnecting the control transport keeps protection on displayed
+surfaces until their destruction.

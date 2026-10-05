@@ -5419,10 +5419,24 @@ impl PhotosApp {
                         .with_children(cards)
                 } else {
                     if !self.album_editor && !self.metadata_editor {
-                        cards.push(self.timeline_index.accessibility(
-                            self.timeline_index_metrics,
-                            &self.timeline_index_markers,
-                        ));
+                        if self.library_items.is_empty() {
+                            // An empty library paints only its empty state:
+                            // read that out, and publish no timeline index
+                            // that is not on screen.
+                            let (title, body) = Self::library_empty_state_text();
+                            cards.push(
+                                AccessNode::new(Role::StaticText)
+                                    .with_name(title)
+                                    .with_description(body)
+                                    .with_bounds(self.canvas_rect)
+                                    .with_hashed_key("photos:library-empty"),
+                            );
+                        } else {
+                            cards.push(self.timeline_index.accessibility(
+                                self.timeline_index_metrics,
+                                &self.timeline_index_markers,
+                            ));
+                        }
                     }
                     AccessNode::new(Role::List)
                         .with_name(tr("photos-library"))
@@ -6747,6 +6761,15 @@ impl PhotosApp {
                 (tr("photos-empty-title"), tr("photos-empty-body"))
             }
         }
+    }
+
+    /// What the library shows when it has no photographs to lay out: still
+    /// searching, nothing imported yet, or no match for the query.
+    fn library_empty_state_text() -> (String, String) {
+        (
+            tr("photos-library-empty-title"),
+            tr("photos-library-empty-body"),
+        )
     }
 
     /// Nothing to show in the content column: the shared empty state, with
@@ -8360,27 +8383,7 @@ impl PhotosApp {
         self.places_hits.clear();
         self.collection_page_hits.clear();
         if self.library_items.is_empty() {
-            let (title, body) = if self.timeline_unfiltered() {
-                (
-                    tr("photos-library-empty-title"),
-                    tr("photos-library-empty-body"),
-                )
-            } else if self.active_album.is_some() {
-                (
-                    tr("photos-album-empty-title"),
-                    tr("photos-album-empty-body"),
-                )
-            } else if self.active_favorites {
-                (
-                    tr("photos-favorites-empty-title"),
-                    tr("photos-favorites-empty-body"),
-                )
-            } else {
-                (
-                    tr("photos-filter-empty-title"),
-                    tr("photos-filter-empty-body"),
-                )
-            };
+            let (title, body) = Self::library_empty_state_text();
             self.draw_empty_state(scene, transform, text_renderer, theme, &title, &body);
             return;
         }
