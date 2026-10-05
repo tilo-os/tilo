@@ -197,6 +197,20 @@ impl<S: RichTextSource + 'static> Composer<S> {
         self.host.draw(scene, transform, text, theme, presence);
     }
 
+    /// The editor's floating parts (its menus, a link's popover), in the
+    /// window's top layer.
+    pub fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.host
+            .draw_overlay(scene, transform, text, theme, presence);
+    }
+
     /// Where the editor was last laid out.
     pub fn rect(&self) -> Rect {
         self.host.rect()

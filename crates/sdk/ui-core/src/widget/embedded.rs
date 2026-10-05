@@ -197,6 +197,23 @@ impl<W: Widget + 'static> Embedded<W> {
         self.widget.mark_drawn();
     }
 
+    /// Paint what the widget floats over everything (its menus, a link's
+    /// popover). Call from the owner's own `draw_overlay`, so it lands in the
+    /// window's top layer, above the rest of the owner's paint.
+    pub fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let recoloured = self.recoloured(theme);
+        let theme = recoloured.as_ref().unwrap_or(theme);
+        self.widget
+            .draw_overlay(scene, transform * self.transform, text, theme, presence);
+    }
+
     /// Route one window event to the widget.
     pub fn handle_event(
         &mut self,
