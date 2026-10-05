@@ -31,6 +31,9 @@
 #   * sshd (enabled), rsync, systemd-sysext, and tilo-vmd's session unit
 #     template, udev seat rules and vkms modprobe option, shipped from
 #     crates/dev/tilo-vmd/data. vkms and uinput load at boot.
+#   * tilo-device-admin.service (enabled): tilo-vmd's requests over the peer
+#     network for the owner's administrators, so `tilo-vm` reaches the machine
+#     beyond the LAN, at the greeter too.
 #   * The image is UNSEALED. A layer on the sealed image breaks the composefs
 #     digest its UKI pins, and dev layers have to merge into /usr. So the UKI
 #     is removed and the kernel is restored to /usr/lib/modules/<kver>/. Then
@@ -329,8 +332,9 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
       --cargo-lock /run/tilo-dev/Cargo.lock \
     && systemctl unmask systemd-sysext.service \
     && systemctl enable sshd.service systemd-sysext.service tilo-vm-restore.service \
+       tilo-device-admin.service \
     && test -x /usr/bin/tilo-control && test -x /usr/libexec/tilo-vmd \
-    && /usr/bin/tilo-vmd --version \
+    && /usr/bin/tilo-vmd --version && /usr/bin/tilo-device-admin --version \
     && grep -aq 'dev-overrides build: developer environment overrides' /usr/bin/shell \
     && systemd-sysext --version >/dev/null \
     && ssh-keygen -q -t ed25519 -N '' -f /run/tilo-dev-hostkey \

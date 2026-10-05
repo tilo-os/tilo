@@ -81,6 +81,7 @@ impl AgentHostLink for RelayAgentLink {
                 can_act_as_host: false,
                 can_read_all_workspaces: false,
                 foreign: false,
+                can_administer_devices: false,
             },
             nonce,
             issued_at_ns: now,
