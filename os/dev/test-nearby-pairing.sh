@@ -179,7 +179,9 @@ note "VM A holds identity $identity"
 # --- the image owns the enrollment layout --------------------------------------
 layout="$(vm_b ssh 'stat -c "%n %a %U %G" /var/lib/tilo/enrollment-staging /var/lib/tilo/enrollment-commits /var/lib/tilo/peers')"
 printf '%s\n' "$layout" > "$out/b-enrollment-layout.txt"
-for dir in enrollment-staging enrollment-commits peers; do
+grep -qx "/var/lib/tilo/enrollment-staging 3730 root tilo-identity" <<<"$layout" \
+  || die "/var/lib/tilo/enrollment-staging is not 3730 root:tilo-identity on a fresh install: $layout"
+for dir in enrollment-commits peers; do
   grep -qx "/var/lib/tilo/$dir 3770 root tilo-identity" <<<"$layout" \
     || die "/var/lib/tilo/$dir is not 3770 root:tilo-identity on a fresh install: $layout"
 done

@@ -743,6 +743,25 @@ pub mod local {
         Ok(fd)
     }
 
+    /// Open the directory at `path` only to reach entries by name in it,
+    /// without following a final link and without needing to list it: a
+    /// directory the group may search and write but not read.
+    pub fn open_search_dir(path: &Path) -> io::Result<OwnedFd> {
+        let c = c_path(path)?;
+        // SAFETY: `c` is NUL-terminated.
+        let fd = from_raw(unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        })?;
+        let stat = fstat(&fd)?;
+        if stat.st_mode & libc::S_IFMT != libc::S_IFDIR {
+            return Err(invalid(format!("{} is not a directory", path.display())));
+        }
+        Ok(fd)
+    }
+
     /// Open `name` inside `dir` as a directory without following a link; it
     /// must belong to `owner`. When it does not exist it is created with
     /// `create`'s mode, or `None` is returned without one.
@@ -772,6 +791,38 @@ pub mod local {
                 Err(error) => return Err(error),
             }
         }
+    }
+
+    /// Create `name` inside `dir` as a new file of this account holding
+    /// `bytes`, with exactly `mode`. `false` when anything already holds the
+    /// name: an existing entry is never taken over or followed.
+    pub fn create_fresh_file(
+        dir: &OwnedFd,
+        name: &str,
+        owner: libc::uid_t,
+        bytes: &[u8],
+        mode: libc::mode_t,
+    ) -> io::Result<bool> {
+        let c = c_name(name)?;
+        let flags =
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: `dir` is open and `c` is NUL-terminated.
+        let fd = match from_raw(unsafe {
+            libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, libc::c_uint::from(mode))
+        }) {
+            Ok(fd) => fd,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        let fd = checked(fd, libc::S_IFREG, owner, name)?;
+        // SAFETY: `fd` is open.
+        if unsafe { libc::fchmod(fd.as_raw_fd(), mode) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut file = std::fs::File::from(fd);
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        Ok(true)
     }
 
     /// Create `name` inside `dir` as a new directory of this account with

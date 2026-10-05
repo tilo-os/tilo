@@ -973,7 +973,7 @@ fn open_stage_dir(
     if create {
         std::fs::create_dir_all(&staging)?;
     }
-    let staging = person_home::local::open_dir(&staging)
+    let staging = person_home::local::open_search_dir(&staging)
         .with_context(|| format!("open {}", enrollment_stage_dir(identity_root).display()))?;
     let stage = person_home::local::open_owned_subdir(
         &staging,
@@ -987,12 +987,15 @@ fn open_stage_dir(
 
 /// Create a new private staging directory for one enrollment under a name
 /// from the system's random source, owned by this process's account and
-/// `0700`. A name anything already holds is never used, nor is the name of
-/// an existing commit marker; another is drawn instead.
+/// `0700`, and claim its commit marker, holding `marker_for(name)`, under the
+/// same name. The staging area cannot be listed by the group, so nobody
+/// learns the name before the marker claims it. A name anything already
+/// holds, in staging or as a marker, is never used; another is drawn.
 fn create_stage_dir(
     identity_root: &std::path::Path,
+    marker_for: impl Fn(&str) -> anyhow::Result<Vec<u8>>,
 ) -> anyhow::Result<(String, std::os::fd::OwnedFd)> {
-    create_stage_dir_drawing(identity_root, || {
+    create_stage_dir_drawing(identity_root, marker_for, || {
         let mut token = [0_u8; 16];
         UnwrapErr(SysRng).fill_bytes(&mut token);
         Ok(token)
@@ -1001,31 +1004,41 @@ fn create_stage_dir(
 
 fn create_stage_dir_drawing(
     identity_root: &std::path::Path,
+    marker_for: impl Fn(&str) -> anyhow::Result<Vec<u8>>,
     mut draw: impl FnMut() -> anyhow::Result<[u8; 16]>,
 ) -> anyhow::Result<(String, std::os::fd::OwnedFd)> {
-    let staging = enrollment_stage_dir(identity_root);
-    std::fs::create_dir_all(&staging)?;
-    std::fs::create_dir_all(enrollment_commit_dir(identity_root))?;
-    let staging = person_home::local::open_dir(&staging)
-        .with_context(|| format!("open {}", staging.display()))?;
+    use std::os::fd::AsRawFd as _;
+    let staging_path = enrollment_stage_dir(identity_root);
+    let commits_path = enrollment_commit_dir(identity_root);
+    std::fs::create_dir_all(&staging_path)?;
+    std::fs::create_dir_all(&commits_path)?;
+    let staging = person_home::local::open_search_dir(&staging_path)
+        .with_context(|| format!("open {}", staging_path.display()))?;
+    let commits = person_home::local::open_dir(&commits_path)
+        .with_context(|| format!("open {}", commits_path.display()))?;
+    let me = person_home::local::own_uid();
     for _ in 0..16 {
         let name = format!("personal-{}", hex::encode(draw()?));
-        if std::fs::symlink_metadata(personal_marker_path(identity_root, &name)).is_ok() {
+        let Some(stage) = person_home::local::create_fresh_subdir(&staging, &name, me, 0o700)?
+        else {
             continue;
-        }
-        if let Some(stage) = person_home::local::create_fresh_subdir(
-            &staging,
-            &name,
-            person_home::local::own_uid(),
-            0o700,
+        };
+        if person_home::local::create_fresh_file(
+            &commits,
+            &format!("{name}.json"),
+            me,
+            &marker_for(&name)?,
+            0o600,
         )? {
             return Ok((name, stage));
         }
+        // The marker's name is taken: give the directory back and draw again.
+        if let Ok(c) = std::ffi::CString::new(name.as_str()) {
+            // SAFETY: `staging` is open and `c` is NUL-terminated.
+            unsafe { libc::unlinkat(staging.as_raw_fd(), c.as_ptr(), libc::AT_REMOVEDIR) };
+        }
     }
-    bail!(
-        "no free staging name in {}",
-        enrollment_stage_dir(identity_root).display()
-    )
+    bail!("no free staging name in {}", staging_path.display())
 }
 
 /// Every file an enrollment stages.
@@ -1120,41 +1133,62 @@ fn stage_personal_enrollment(
     } = *stage;
     let projection =
         checked_personal_projection(identity_root, identity_dir, home, payload, approver_device)?;
-    let (stage_name, stage_dir) = create_stage_dir(identity_root)?;
-    let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
-    write_staged(&stage_dir, "record.json", &projection.identity, 0o600)?;
-    write_staged(&stage_dir, "registry.json", &projection.registry, 0o600)?;
-    write_staged(&stage_dir, "fleet.json", &projection.fleet, 0o600)?;
-    write_staged(&stage_dir, "home-peers.json", &projection.peers, 0o600)?;
-    write_staged(
-        &stage_dir,
-        "direct-peers.json",
-        &projection.direct_peers,
-        0o600,
-    )?;
-    write_staged(&stage_dir, "rooms.json", &projection.rooms, 0o600)?;
-    write_staged(
-        &stage_dir,
-        "user-pubkey.bin",
-        &payload.cert.user_public_key,
-        0o600,
-    )?;
-    write_staged(&stage_dir, "per-user-cert.bin", &cert, 0o600)?;
-    write_staged(&stage_dir, "default-cert.bin", &cert, 0o600)?;
-    let marker = PersonalEnrollmentMarker {
+    let marker_named = |stage_name: &str| PersonalEnrollmentMarker {
         schema_version: PERSONAL_ENROLLMENT_SCHEMA,
         person_uid: enrolled_uid(home),
         identity_dir: identity_dir.to_path_buf(),
-        stage_name,
+        stage_name: stage_name.to_owned(),
         user_public_key: payload.cert.user_public_key,
         device_public_key: payload.cert.device_public_key,
         requester_lease,
         commit_ready: false,
     };
-    let marker_path = personal_marker_path(identity_root, &marker.stage_name);
-    write_marker(&marker_path, &marker)?;
+    let (stage_name, stage_dir) = create_stage_dir(identity_root, |name| {
+        Ok(serde_json::to_vec_pretty(&marker_named(name))?)
+    })?;
+    let marker_path = personal_marker_path(identity_root, &stage_name);
+    let staged = write_stage_files(&stage_dir, &projection, &payload.cert);
+    if let Err(error) = staged {
+        // Nothing of a half-staged enrollment stays behind.
+        if let Ok(staging) =
+            person_home::local::open_search_dir(&enrollment_stage_dir(identity_root))
+        {
+            remove_stage(&staging, &stage_dir, &stage_name);
+        }
+        let _ = std::fs::remove_file(&marker_path);
+        return Err(error);
+    }
     let _ = paths; // binds staging to the active device layout at the call site.
-    Ok((marker_path, marker))
+    Ok((marker_path, marker_named(&stage_name)))
+}
+
+/// Write every file of one staged enrollment.
+fn write_stage_files(
+    stage_dir: &std::os::fd::OwnedFd,
+    projection: &CheckedPersonalProjection,
+    certificate: &DeviceCert,
+) -> anyhow::Result<()> {
+    let cert = tilo_user_identity::canonical::canonical_bytes(certificate)?;
+    write_staged(stage_dir, "record.json", &projection.identity, 0o600)?;
+    write_staged(stage_dir, "registry.json", &projection.registry, 0o600)?;
+    write_staged(stage_dir, "fleet.json", &projection.fleet, 0o600)?;
+    write_staged(stage_dir, "home-peers.json", &projection.peers, 0o600)?;
+    write_staged(
+        stage_dir,
+        "direct-peers.json",
+        &projection.direct_peers,
+        0o600,
+    )?;
+    write_staged(stage_dir, "rooms.json", &projection.rooms, 0o600)?;
+    write_staged(
+        stage_dir,
+        "user-pubkey.bin",
+        &certificate.user_public_key,
+        0o600,
+    )?;
+    write_staged(stage_dir, "per-user-cert.bin", &cert, 0o600)?;
+    write_staged(stage_dir, "default-cert.bin", &cert, 0o600)?;
+    Ok(())
 }
 
 fn authorize_personal_commit(
@@ -3516,9 +3550,21 @@ mod tests {
         )
         .unwrap();
         let mut draws = [[1_u8; 16], [2; 16], [3; 16]].into_iter();
+        let marker = |_: &str| Ok(b"{}".to_vec());
         let (name, stage) =
-            create_stage_dir_drawing(&identity_root, || Ok(draws.next().unwrap())).unwrap();
+            create_stage_dir_drawing(&identity_root, marker, || Ok(draws.next().unwrap())).unwrap();
         assert_eq!(name, format!("personal-{}", hex::encode([3_u8; 16])));
+        // The directory drawn for the taken marker name was given back, and
+        // the marker of the one used is this account's.
+        assert!(
+            !staging
+                .join(format!("personal-{}", hex::encode([2_u8; 16])))
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read(personal_marker_path(&identity_root, &name)).unwrap(),
+            b"{}"
+        );
         assert!(valid_stage_name(&name));
         assert_eq!(
             std::fs::read(planted.join("record.json")).unwrap(),
@@ -3537,7 +3583,7 @@ mod tests {
             person_home::local::own_uid()
         );
         // Nothing free at all: refused, never reused.
-        assert!(create_stage_dir_drawing(&identity_root, || Ok([1; 16])).is_err());
+        assert!(create_stage_dir_drawing(&identity_root, marker, || Ok([1; 16])).is_err());
     }
 
     #[test]
@@ -3571,6 +3617,27 @@ mod tests {
             assert!(!paths.device_cert.exists(), "recovery skips it too");
             assert!(marker_path.exists());
         }
+        // Root recovering for one person never finishes an enrollment
+        // staged for another: it is skipped before anything runs as anyone.
+        let scope = tempfile::tempdir().unwrap();
+        let identity_root = scope.path().join("root");
+        let identity_dir = scope.path().join("identities");
+        std::fs::create_dir(&identity_dir).unwrap();
+        let (paths, marker_path, mut marker) =
+            staged_ready(&identity_root, &identity_dir, [52; 16]);
+        marker.person_uid = 4002;
+        write_marker(&marker_path, &marker).unwrap();
+        let for_a = PersonHome::Delegated {
+            program: PathBuf::from("/nonexistent/tilo-enroll"),
+            person: person_home::Person {
+                uid: 4001,
+                gid: 4001,
+            },
+        };
+        recover_personal_enrollments(&identity_root, &identity_dir, &paths, &for_a, |_| Ok(()))
+            .unwrap();
+        assert!(!paths.device_cert.exists());
+        assert!(marker_path.exists());
     }
 
     /// Hand everything below `path` to `uid`, except `keep` (left as it is).
