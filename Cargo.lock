@@ -2479,6 +2479,7 @@ dependencies = [
  "blake3",
  "bounded-command",
  "runtime-dylib",
+ "runtime-portal",
  "serde",
  "serde_json",
  "taffy",
@@ -2487,7 +2488,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-vello",
  "tilo-winit",
- "tilo-xdg-paths",
  "workspace-hack",
 ]
 
@@ -9836,6 +9836,7 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
  "rand_core 0.10.0",
+ "runtime-portal",
  "rustix 1.1.4",
  "serde",
  "serde_json",
@@ -12215,6 +12216,8 @@ dependencies = [
  "capnp-rpc",
  "libc",
  "rustix 1.1.4",
+ "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tilo-test-env",
  "tokio",
