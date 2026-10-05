@@ -2549,7 +2549,7 @@ mod tests {
         registry.register(Rc::new(LiveAppActionsProvider::new(broker)));
         let mut doc = AutoCommit::new();
         for (id, visible) in [(17, true), (18, false), (19, false)] {
-            let resource = ResourceRef::new(PROVIDER_ID, &super::job_status_id(id));
+            let resource = ResourceRef::new(PROVIDER_ID, super::job_status_id(id));
             let catalog = ActionCatalog::build_for_resource(
                 &registry,
                 &resource,
