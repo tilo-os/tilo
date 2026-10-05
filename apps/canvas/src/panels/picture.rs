@@ -238,8 +238,26 @@ impl Target {
 /// built again at each edit, so a drag begun as an edit lands is kept.
 pub fn panel(cx: &ViewCx<ArtworkResource>, ids: &[String], tools: &Tools) -> Element {
     tools.live.borrow_mut().clear();
+    let first = ids.first().cloned().unwrap_or_default();
+    let pixelated =
+        cx.value(move |art: &Artwork| art.mark(&first).is_some_and(|mark| mark.style.pixelated));
+    let sampling = cx.actions().bind(
+        Toggle::from_state(&pixelated)
+            .with_id("canvas-picture-pixelated")
+            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
+                "canvas-picture-pixelated",
+            )),
+        ArtworkResource::SET_PIXELATED.map({
+            let ids = ids.to_vec();
+            move |on: bool| (ids.clone(), on)
+        }),
+    );
     section(vec![
         heading("canvas-picture"),
+        labelled(
+            &ui::i18n::I18nManager::lookup_plain("canvas-picture-pixelated"),
+            Box::new(sampling),
+        ),
         framing(cx, ids, tools),
         straighten(cx, ids, tools),
         adjustments(cx, &Target::Marks(ids.to_vec()), tools),

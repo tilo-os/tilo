@@ -155,6 +155,8 @@ pub struct RemoveLayer {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewMark {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
     /// An id to address the mark by later (`sun`, `hill-2`); one is made when
     /// absent.
     pub id: Option<String>,
@@ -214,6 +216,7 @@ impl NewMark {
     /// `shape` with nothing else given.
     pub fn new(shape: Shape) -> Self {
         Self {
+            pixelated: None,
             id: None,
             name: None,
             shape,
@@ -270,7 +273,8 @@ pub struct NewStroke {
     /// `airbrush` (soft spray that builds up), `charcoal` (picks up the
     /// ground's tooth), `calligraphy` (broad nib at `angle`, default 45).
     /// Any layer: `eraser` clears paint beneath it on its layer. A round
-    /// ink brush when absent.
+    /// ink brush when absent. Plain layers: `pixel` and `pixel-eraser`
+    /// paint or clear whole square cells, ignoring pressure and taper.
     pub brush: Option<String>,
     pub opacity: Option<f64>,
     /// Paint into what is still wet: blends in oil, bleeds in watercolour.
@@ -322,6 +326,8 @@ pub struct Paint {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EditMarks {
+    /// Images: preserve hard pixel edges when enlarged.
+    pub pixelated: Option<bool>,
     /// Marks, or groups (all their members).
     pub ids: Vec<String>,
     pub name: Option<String>,
@@ -937,6 +943,7 @@ impl Draw {
                     .clone()
                     .unwrap_or_else(|| derived_id("m", mark, index));
                 let style = Style {
+                    pixelated: mark.pixelated.unwrap_or(false),
                     fill: mark.fill.clone(),
                     gradient: mark.gradient.clone(),
                     stroke: mark.stroke.clone(),
@@ -1118,6 +1125,14 @@ fn check_brush(art: &Artwork, layer: &str, mark: &Mark) -> Result<(), ActionErro
         return Err(refuse(
             "an eraser does not fork; give it dabs to clear broken patches, or erase along plain strokes",
         ));
+    }
+    if crate::brushes::Preset::of(&mark.style).pixel() {
+        let bounds = mark.bounds();
+        if bounds.width().max(bounds.height()) > 16384.0 {
+            return Err(refuse(
+                "a pixel stroke may travel at most 16384 artwork units",
+            ));
+        }
     }
     let plain = art.layer(layer).is_none_or(|layer| layer.medium.is_empty());
     match crate::brushes::problem(mark.style.brush.as_deref(), &mark.style.params, plain) {
@@ -1444,6 +1459,9 @@ impl EditMarks {
             }
             if let Some(opacity) = self.opacity {
                 mark.style.opacity = Some(opacity);
+            }
+            if let Some(pixelated) = self.pixelated {
+                mark.style.pixelated = pixelated;
             }
             if let Some(brush) = &self.brush {
                 mark.style.brush = crate::brushes::stored(brush);

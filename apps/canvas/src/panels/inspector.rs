@@ -165,7 +165,7 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     // Picking lays no paint: nothing to set.
                     Tool::Select => return Box::new(Spacer::fixed(0.0)) as Element,
                     Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand => {
-                        area_tool(&tools, tool)
+                        area_tool(cx, &tools, tool)
                     }
                     // Where the fill comes from first: it decides what
                     // the bucket fills.
@@ -469,23 +469,21 @@ fn sampling(choice: &LocalState<Sampling>, heading_id: &str) -> Element {
 
 /// A selecting tool: how it adds to and takes from the selection, and for
 /// the magic wand how alike the colours it takes in are.
-fn area_tool(tools: &Tools, tool: Tool) -> Element {
+fn area_tool(cx: &ViewCx<ArtworkResource>, tools: &Tools, tool: Tool) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut parts: Vec<Element> = vec![heading(tool.label())];
     // The photo's subject in one click, found on this device: off the
     // window's thread, so the window keeps drawing; the canvas says it is
     // under way and applies the area as one step.
-    let finding = std::rc::Rc::clone(&tools.finding);
+    let button = Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
+        .with_icon(Icon::Sparkles)
+        .tooltip(lookup("canvas-select-subject-hint"));
+    let effect = crate::resource::ViewOp::FindArea(crate::resource::FindArea {
+        subject: Some(true),
+        ..Default::default()
+    });
     parts.push(Box::new(
-        Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
-            .with_icon(Icon::Sparkles)
-            .tooltip(lookup("canvas-select-subject-hint"))
-            .on_view(move || {
-                finding.borrow_mut().wanted = Some(crate::selection::Select {
-                    subject: Some(true),
-                    ..crate::selection::Select::default()
-                });
-            }),
+        cx.actions().bind_effect_invocation(button, &effect),
     ));
     if tool == Tool::Wand {
         parts.push(tolerance(tools));
@@ -1018,7 +1016,7 @@ fn stroke_brush(cx: &ViewCx<ArtworkResource>, ids: &[String], mark: &Mark, plain
     };
     let mut rows: Vec<Element> = Vec::new();
     let preset = Preset::of(&mark.style);
-    if plain && preset != Preset::Eraser {
+    if plain && !preset.erases() {
         let dispatch = cx.dispatcher();
         let targets = ids.to_vec();
         let ink = mark.style.stroke.clone().unwrap_or_default();
