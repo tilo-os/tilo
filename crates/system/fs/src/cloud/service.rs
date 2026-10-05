@@ -387,22 +387,13 @@ impl CloudService {
     /// Serve until the process is stopped: reconcile now and whenever the
     /// account store changes.
     pub fn run(mut self) -> io::Result<()> {
-        use notify::Watcher as _;
         let accounts_dir = match &self.config.config_root {
             Some(root) => root.join("accounts"),
             None => accounts::config_root()
                 .ok_or_else(|| io::Error::other("no user config directory"))?
                 .join("accounts"),
         };
-        fs::create_dir_all(&accounts_dir)?;
-        let signals = self.signals.clone();
-        let mut watcher = notify::recommended_watcher(move |_event| {
-            let _ = signals.send(Signal::Accounts);
-        })
-        .map_err(io::Error::other)?;
-        watcher
-            .watch(&accounts_dir, notify::RecursiveMode::NonRecursive)
-            .map_err(io::Error::other)?;
+        let _watcher = watch_accounts(&accounts_dir, self.signals.clone())?;
         self.reconcile();
         loop {
             let signal = if self.retry.is_empty() {
@@ -427,6 +418,124 @@ impl CloudService {
         for id in ids {
             self.unmount(&id, false);
         }
+    }
+}
+
+/// Subscribe to mutations of the account store on the normal service channel.
+fn watch_accounts(
+    directory: &Path,
+    signals: Sender<Signal>,
+) -> io::Result<notify::RecommendedWatcher> {
+    use notify::Watcher as _;
+    fs::create_dir_all(directory)?;
+    let store = directory.join("store.json");
+    let mut watcher = notify::recommended_watcher(move |event| {
+        if account_store_changed(event, &store) {
+            let _ = signals.send(Signal::Accounts);
+        }
+    })
+    .map_err(io::Error::other)?;
+    watcher
+        .watch(directory, notify::RecursiveMode::NonRecursive)
+        .map_err(io::Error::other)?;
+    Ok(watcher)
+}
+
+fn account_store_changed(event: notify::Result<notify::Event>, store: &Path) -> bool {
+    let Ok(event) = event else {
+        // Queue failure can hide a mutation, so reload conservatively.
+        return true;
+    };
+    if event.need_rescan() {
+        return true;
+    }
+    if matches!(event.kind, notify::EventKind::Access(_)) {
+        // Loading this file is not a configuration change. Inotify reports
+        // the service's own open/read/close and would otherwise feed itself.
+        return false;
+    }
+    if matches!(
+        event.kind,
+        notify::EventKind::Any | notify::EventKind::Other
+    ) {
+        return true;
+    }
+    event
+        .paths
+        .iter()
+        .any(|path| path == store || Some(path.as_path()) == store.parent())
+}
+
+#[cfg(test)]
+mod watcher_tests {
+    use super::*;
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn account_store_reads_do_not_retrigger_the_service_watcher() {
+        let root = tempfile::tempdir().unwrap();
+        AccountStore::new().save_in(root.path()).unwrap();
+        let directory = root.path().join("accounts");
+        let (signals, inbox) = mpsc::channel();
+        let _watcher = watch_accounts(&directory, signals).unwrap();
+        let store = AccountStore::load_in(root.path());
+        assert!(store.all().is_empty());
+        assert!(
+            matches!(
+                inbox.recv_timeout(Duration::from_millis(300)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "reloading accounts must not queue another reload"
+        );
+    }
+
+    #[test]
+    fn watcher_tracks_atomic_store_changes_but_not_its_status_reports() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("accounts");
+        let (signals, inbox) = mpsc::channel();
+        let _watcher = watch_accounts(&directory, signals).unwrap();
+        AccountSyncReporter::in_root("fixture", root.path())
+            .offline()
+            .unwrap();
+        assert!(
+            matches!(
+                inbox.recv_timeout(Duration::from_millis(300)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "mount health reports must not trigger account reconciliation"
+        );
+        AccountStore::new().save_in(root.path()).unwrap();
+        assert!(matches!(
+            inbox.recv_timeout(tilo_test_env::hang_bound()),
+            Ok(Signal::Accounts)
+        ));
+        while inbox.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        // The writer replaces the inode. Subsequent replacement and deletion
+        // must still be observed through the containing-directory watch.
+        AccountStore::new().save_in(root.path()).unwrap();
+        assert!(matches!(
+            inbox.recv_timeout(tilo_test_env::hang_bound()),
+            Ok(Signal::Accounts)
+        ));
+        while inbox.recv_timeout(Duration::from_millis(100)).is_ok() {}
+        fs::remove_file(accounts::store_path_in(root.path())).unwrap();
+        assert!(matches!(
+            inbox.recv_timeout(tilo_test_env::hang_bound()),
+            Ok(Signal::Accounts)
+        ));
+    }
+
+    #[test]
+    fn watcher_errors_and_rescan_still_invalidate_accounts() {
+        use notify::{Event, EventKind, event::Flag};
+        let store = Path::new("fixture/accounts/store.json");
+        assert!(account_store_changed(
+            Err(notify::Error::generic("fixture")),
+            store
+        ));
+        let rescan = Event::new(EventKind::Other).set_flag(Flag::Rescan);
+        assert!(account_store_changed(Ok(rescan), store));
     }
 }
 

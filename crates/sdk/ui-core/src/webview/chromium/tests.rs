@@ -2091,7 +2091,7 @@ fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
     // Closing the command queue hangs up helper stdin. Keep stdout owned by
     // the supervised helper until cancellation fails it; otherwise an unrelated
     // EOF can win the first-error latch before the refusal under test.
-    let (_fixture, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 3600");
+    let (_fixture, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
     // This route joins the supervisor on drop, so a fast test process cannot
     // exit before its deliberately live helper has been killed and reaped.
     let root = private_root();
