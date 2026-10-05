@@ -322,7 +322,7 @@ impl Widget for QueryEditorChild {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.text.perform_action(action, state, path)
@@ -542,7 +542,7 @@ impl Widget for QueryDivider {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         self.pending = match action {
@@ -655,7 +655,7 @@ impl Widget for QueryResizeMenu {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate)
@@ -672,7 +672,7 @@ impl Widget for QueryResizeMenu {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -1361,6 +1361,11 @@ impl DbClientApp {
         rows
     }
 
+    /// Every row of the open connection's catalog as a search entry.
+    pub(crate) fn catalog_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.search_index.entries()
+    }
+
     /// The live entity `id`, at any depth of the open connection's catalog.
     pub(crate) fn live_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         self.search_index.resource(id).map(live_row)
@@ -1949,13 +1954,10 @@ fn csv_field(value: &str) -> String {
 }
 
 impl Widget for DbClientApp {
-    ui::provides!(
-        dyn ui::search::capability::SearchSource,
-        dyn ui::undo::UndoPoints
-    );
+    ui::provides!(dyn ui::undo::UndoPoints);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document_ref(state, path);
         self.drain_query_resize_actions();
         // Accessibility activation is delivered directly to the focused child;
         // drain its semantic action here and enter the same modal flow as a
@@ -2196,7 +2198,7 @@ impl Widget for DbClientApp {
             }
             return;
         }
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
 
         // The first-run action is a real child widget. Give it first refusal
         // while it is visible, then translate its drained semantic action into
@@ -2209,7 +2211,7 @@ impl Widget for DbClientApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -2246,7 +2248,7 @@ impl Widget for DbClientApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -2268,7 +2270,7 @@ impl Widget for DbClientApp {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -2321,7 +2323,7 @@ impl Widget for DbClientApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -2399,7 +2401,7 @@ impl Widget for DbClientApp {
 
     /// The schema browser eases wheel scrolling and row transitions on its
     /// own clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.schema_in_tree() && self.tree.update(state, path)
     }
 
@@ -2461,7 +2463,7 @@ impl Widget for DbClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -2517,7 +2519,7 @@ impl Widget for DbClientApp {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -2589,12 +2591,6 @@ impl ui::undo::UndoPoints for DbClientApp {
     }
     fn set_state(&mut self, state: &str) {
         self.editor.set_state(state);
-    }
-}
-
-impl ui::search::capability::SearchSource for DbClientApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
@@ -4287,8 +4283,8 @@ mod responsive_tests {
         // --- phase: demo_query_automatic_height_follows_its_content ---
         {
             let mut app = DbClientApp::sampled();
-            let mut doc = sample_document();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = sample_document();
+            app.sync(&doc, &automerge::ROOT);
             lay_out(&mut app, 1200.0, 800.0);
 
             assert_eq!(
@@ -4305,8 +4301,8 @@ mod responsive_tests {
         // --- phase: shaped_wrapped_query_refines_the_automatic_height ---
         {
             let mut app = DbClientApp::sampled();
-            let mut doc = sample_document();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = sample_document();
+            app.sync(&doc, &automerge::ROOT);
             app.editor.set_text(
             "SELECT this_is_a_deliberately_long_projection_name, another_long_projection_name, a_third_long_projection_name FROM albums;",
         );
@@ -4329,8 +4325,8 @@ mod responsive_tests {
         // --- phase: short_query_layout_keeps_every_region_ordered_and_usable ---
         {
             let mut app = DbClientApp::sampled();
-            let mut doc = sample_document();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = sample_document();
+            app.sync(&doc, &automerge::ROOT);
             lay_out(&mut app, 800.0, 480.0);
             let layout = app.query_layout;
 
@@ -4398,15 +4394,16 @@ mod honesty_tests {
             let mut doc = AutoCommit::new();
 
             assert!(!app.modal.is_open());
-            assert!(
-                app.empty_state
-                    .perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT)
-            );
+            assert!(app.empty_state.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert!(
                 !app.modal.is_open(),
                 "the child publishes its action before the parent sync drains it"
             );
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert!(
                 app.modal.is_open(),
                 "semantic activation enters the existing new-connection flow"
@@ -4530,7 +4527,7 @@ mod behavior_tests {
 
     fn send(
         app: &mut DbClientApp,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         ev: &WindowEvent,
         mods: Modifiers,
     ) -> bool {
@@ -4542,7 +4539,7 @@ mod behavior_tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: doc.reborrow(),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -4555,8 +4552,8 @@ mod behavior_tests {
 
     fn synced() -> (DbClientApp, AutoCommit) {
         let mut app = DbClientApp::sampled();
-        let mut doc = sample_document();
-        app.sync(&mut doc, &ROOT);
+        let doc = sample_document();
+        app.sync(&doc, &ROOT);
         (app, doc)
     }
 
@@ -4584,26 +4581,26 @@ mod behavior_tests {
 
             assert!(!send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(before.center().x, before.center().y),
                 Modifiers::default(),
             ));
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &left_button(ElementState::Pressed),
                 Modifiers::default(),
             ));
             assert!(app.wants_pointer_capture());
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(before.center().x, before.center().y + 300.0),
                 Modifiers::default(),
             ));
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &left_button(ElementState::Released),
                 Modifiers::default(),
             ));
@@ -4622,9 +4619,14 @@ mod behavior_tests {
             assert_eq!(app.query_layout.divider.height(), manual.height());
 
             let ctrl = Modifiers::from(ModifiersState::CONTROL);
-            assert!(send(&mut app, &mut doc, &enter_event(), ctrl));
+            assert!(send(
+                &mut app,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &enter_event(),
+                ctrl
+            ));
             app.session.block_until_idle();
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             app.relayout();
             assert_eq!(
                 app.query_layout.divider.y0, manual.y0,
@@ -4661,7 +4663,7 @@ mod behavior_tests {
             divider.set_focus(true);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::ArrowDown),
                 Modifiers::default(),
             ));
@@ -4673,21 +4675,25 @@ mod behavior_tests {
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-divider"))
                 .unwrap();
-            assert!(divider.perform_action(&ui::a11y::Action::Increment, &mut doc, &ROOT));
-            app.sync(&mut doc, &ROOT);
+            assert!(divider.perform_action(
+                &ui::a11y::Action::Increment,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
+            app.sync(&doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider.y0, automatic.y0 + 48.0);
 
             let divider_rect = app.query_layout.divider;
             send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(divider_rect.center().x, divider_rect.center().y),
                 Modifiers::default(),
             );
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &right_button(),
                 Modifiers::default(),
             ));
@@ -4712,13 +4718,13 @@ mod behavior_tests {
                 .1;
             send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &cursor_event(reset.center().x, reset.center().y),
                 Modifiers::default(),
             );
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &left_button(ElementState::Pressed),
                 Modifiers::default(),
             ));
@@ -4734,7 +4740,7 @@ mod behavior_tests {
             divider.set_focus(true);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::ArrowDown),
                 Modifiers::default(),
             ));
@@ -4743,15 +4749,24 @@ mod behavior_tests {
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-divider"))
                 .unwrap();
-            assert!(divider.perform_action(&ui::a11y::Action::ShowContextMenu, &mut doc, &ROOT,));
-            app.sync(&mut doc, &ROOT);
+            assert!(divider.perform_action(
+                &ui::a11y::Action::ShowContextMenu,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+            ));
+            app.sync(&doc, &ROOT);
             let menu = app
                 .children_mut()
                 .into_iter()
                 .find(|child| child.test_id() == Some("db.query-resize-menu"))
                 .expect("semantic context action opens the retained resize menu");
-            assert!(menu.perform_action_at(&ui::a11y::Action::Activate, &[2], &mut doc, &ROOT,));
-            app.sync(&mut doc, &ROOT);
+            assert!(menu.perform_action_at(
+                &ui::a11y::Action::Activate,
+                &[2],
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+            ));
+            app.sync(&doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider, automatic);
 
@@ -4763,13 +4778,13 @@ mod behavior_tests {
             divider.set_focus(true);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::ArrowDown),
                 Modifiers::default(),
             ));
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::Home),
                 Modifiers::default(),
             ));
@@ -4777,14 +4792,14 @@ mod behavior_tests {
             assert_eq!(app.query_layout.divider, automatic);
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::Enter),
                 Modifiers::default(),
             ));
             assert!(app.query_resize_menu.is_open());
             assert!(send(
                 &mut app,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &named_key_event(NamedKey::Escape),
                 Modifiers::default(),
             ));
@@ -5118,7 +5133,7 @@ mod behavior_tests {
             assert!(app.perform_semantic_action(
                 "db.new-connection",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
             let dialog = app.accessibility().expect("open modal is accessible");
@@ -5161,8 +5176,13 @@ mod behavior_tests {
             let (mut app, mut doc) = synced();
             doc.commit();
             let before = doc.get_heads();
-            send(&mut app, &mut doc, &char_event("Z"), Modifiers::default());
-            app.sync(&mut doc, &ROOT);
+            send(
+                &mut app,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &char_event("Z"),
+                Modifiers::default(),
+            );
+            app.sync(&doc, &ROOT);
             assert_eq!(doc.get_heads(), before, "the document is unchanged");
             assert_eq!(app.editor.value(), crate::doc::EditorDoc::read_sql(&doc));
         }
@@ -5172,7 +5192,7 @@ mod behavior_tests {
             let (mut app, mut doc) = synced();
             crate::doc::EditorDoc::set_sql(&mut doc, "SELECT * FROM remote_table");
 
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
 
             assert_eq!(app.editor.value(), "SELECT * FROM remote_table");
         }
@@ -5202,7 +5222,7 @@ mod behavior_tests {
             assert!(app.perform_semantic_action(
                 "db.tab:data",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
             assert_eq!(app.session.tab, MainTab::Data);
@@ -5222,7 +5242,12 @@ mod behavior_tests {
 
             let ctrl = Modifiers::from(ModifiersState::CONTROL);
             assert!(
-                send(&mut app, &mut doc, &enter_event(), ctrl),
+                send(
+                    &mut app,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &enter_event(),
+                    ctrl
+                ),
                 "Ctrl+Enter runs the query"
             );
             assert_eq!(
@@ -5262,7 +5287,12 @@ mod behavior_tests {
             ("db.modal.save", A11yAction::Activate),
         ] {
             assert!(
-                app.perform_semantic_action(target, &action, &mut doc, &ROOT),
+                app.perform_semantic_action(
+                    target,
+                    &action,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &ROOT
+                ),
                 "{target}"
             );
         }
@@ -5380,14 +5410,17 @@ mod behavior_tests {
             "{inspection}"
         );
 
+        assert!(
+            of_kind(&app.harness().resources(), "database.schema").is_none(),
+            "saved SQL and its filename do not mean the connection is open"
+        );
         let connection = crate::resource::connection_resource_id(profile.id);
         app.call_on(&connection, "connect", serde_json::json!({}))
             .unwrap();
         tilo_test_env::wait_until("the connection to open its catalog", || {
             app.settle();
-            app.harness()
-                .inspection_json()
-                .is_ok_and(|inspection| inspection.contains("proof"))
+            of_kind(&app.harness().resources(), "database.schema")
+                .is_some_and(|schema| schema.label == "main")
         });
         let heads = app.read_document(|doc| doc.clone().get_heads());
         app.effect_confirmed(&crate::resource::DbEffect::Query {

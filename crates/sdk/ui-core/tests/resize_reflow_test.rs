@@ -57,9 +57,9 @@ fn build_tree() -> Box<dyn Widget> {
             .push(Box::new(Text::new("para")))
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(Button::new("b7", "seven", None)))
-                    .push(Box::new(Button::new("b8", "eight", None)))
-                    .push(Box::new(Button::new("b9", "nine", None))),
+                    .push(Box::new(Button::new("b7", "seven")))
+                    .push(Box::new(Button::new("b8", "eight")))
+                    .push(Box::new(Button::new("b9", "nine"))),
             )),
     )
 }

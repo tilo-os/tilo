@@ -49,7 +49,6 @@ pub(super) enum ToolAction {
     ToggleStyles,
     ToggleRuler,
     ToggleOutline,
-    ToggleHistory,
     InsertToc,
     NewMenu,
     More,

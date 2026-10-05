@@ -1245,6 +1245,23 @@ fn pump_floating_surface_service(
                 app_id,
                 message,
             } => match message {
+                ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
+                    if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
+                        if let Some(writer) = service.reply_writer(connection) {
+                            frame_builder
+                                .host_mut()
+                                .request_native_host_shell_allow(writer);
+                        }
+                    } else {
+                        service.send(
+                            connection,
+                            &ui::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
+                                allowed: false,
+                            },
+                        );
+                    }
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => {
                     let mode = match mode {
                         ui::floating_surface::CaptureStudioProtocolMode::Screenshot => {
@@ -2798,6 +2815,8 @@ impl ControlState for FrameBuilderControlState<'_> {
             // and where it is painted while it serves the focused field.
             "on_screen_keyboard": {
                 "connected": self.fb.osk_connected(),
+                "requested": self.fb.osk_requested(),
+                "mapped": self.fb.osk_mapped(),
                 "commits": self.fb.osk_commits(),
                 "serves_shell_field": self.fb.osk_serves_shell(),
                 "shown": self.fb.osk_surface_rect().map(|(_, rect)| serde_json::json!({
@@ -3253,7 +3272,7 @@ fn pump_controller_navigation(
                     let _ = frame_builder.dispatch_event(
                         &event,
                         &ctx.modifiers,
-                        &mut ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut ctx.doc),
                         &ctx.root_obj,
                         &mut ctx.focus,
                     );
@@ -3420,7 +3439,7 @@ fn dispatch_synth_event(
     fb.dispatch_event(
         event,
         &ctx.modifiers,
-        &mut ctx.doc,
+        &mut ui::widget::Edits::lend(&mut ctx.doc),
         &ctx.root_obj,
         &mut ctx.focus,
     );
@@ -3585,7 +3604,7 @@ fn dispatch_test_control_touch(
         let handled = fb.dispatch_event(
             &event,
             &ctx.modifiers,
-            &mut ctx.doc,
+            &mut ui::widget::Edits::lend(&mut ctx.doc),
             &ctx.root_obj,
             &mut ctx.focus,
         );
@@ -3709,7 +3728,12 @@ fn execute_invoke_action(
         // Re-bound against *this* resolution's parameters — the catalogue was just
         // rebuilt and may have landed on a different action under the same address.
         let bound = selected
-            .invoke_json_disposition(&mut ctx.doc, &ctx.root_obj, &chrome_handle, args)
+            .invoke_json_disposition(
+                &mut ui::widget::Edits::lend(&mut ctx.doc),
+                &ctx.root_obj,
+                &chrome_handle,
+                args,
+            )
             .map_err(|e| InvokeFailure {
                 code: e.code().to_string(),
                 message: e.to_string(),
@@ -8861,7 +8885,7 @@ pub fn run() {
                     ) && frame_builder.dispatch_a11y_action(
                         request.target_node,
                         &action,
-                        &mut test_control_ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                         &test_control_ctx.root_obj,
                         &mut test_control_ctx.focus,
                     ) {
@@ -9249,7 +9273,7 @@ pub fn run() {
                             chrome_handled = frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,
-                                &mut test_control_ctx.doc,
+                                &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
@@ -9482,7 +9506,7 @@ pub fn run() {
                     let _ = frame_builder.dispatch_event(
                         &event,
                         &test_control_ctx.modifiers,
-                        &mut test_control_ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                         &test_control_ctx.root_obj,
                         &mut test_control_ctx.focus,
                     );
@@ -10060,6 +10084,12 @@ pub fn run() {
             frame_builder.with_chrome(|chrome| {
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
+                    eprintln!(
+                        "app-close-requested: app={} room={} windows={}",
+                        request.app_id,
+                        request.room,
+                        tabs.len()
+                    );
                     for tab in tabs {
                         let _ = crate::shell::window_actions::close_tab(chrome, tab);
                     }
@@ -10169,7 +10199,7 @@ pub fn run() {
                 frame_builder.dispatch_event(
                     event,
                     &test_control_ctx.modifiers,
-                    &mut test_control_ctx.doc,
+                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                     &test_control_ctx.root_obj,
                     &mut test_control_ctx.focus,
                 );
@@ -10425,21 +10455,21 @@ pub fn run() {
                 }
             );
             let personal_viewers = crate::shell::device_fabric_runtime::window_viewers();
-            let desired = {
-                let viewer_hosts = if backend_kind == BackendKind::Headless {
-                    let active_room = {
-                        let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-                        let tree = tree_handle.read();
-                        tree.desktop
-                            .active_workspace()
-                            .map(|workspace| workspace.room)
-                    };
-                    active_room.map_or_else(std::collections::HashSet::new, |room| {
-                        net.viewer_hosts(room)
-                    })
-                } else {
-                    std::collections::HashSet::new()
+            let viewer_hosts = if backend_kind == BackendKind::Headless {
+                let active_room = {
+                    let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                    let tree = tree_handle.read();
+                    tree.desktop
+                        .active_workspace()
+                        .map(|workspace| workspace.room)
                 };
+                active_room.map_or_else(std::collections::HashSet::new, |room| {
+                    net.viewer_hosts(room)
+                })
+            } else {
+                std::collections::HashSet::new()
+            };
+            let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
                 // A headless session whose active room has a host shows its
@@ -10459,6 +10489,18 @@ pub fn run() {
                 }
                 desired_legacy_shares(&tree, backend.watched(), &viewer_hosts, &personal_viewers)
             };
+            state.set_headless_host_viewers(
+                desired
+                    .iter()
+                    .flat_map(|(surface, (share, _))| {
+                        share
+                            .viewers
+                            .iter()
+                            .filter(|peer| viewer_hosts.contains(peer))
+                            .map(|peer| (*peer, *surface))
+                    })
+                    .collect(),
+            );
             // A window hidden here is sized for the devices showing it.
             crate::compositor::foreign::store()
                 .set_remote_extents(remote_extents(&desired, &personal_viewers));

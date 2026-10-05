@@ -1193,7 +1193,7 @@ impl Widget for Scrollable {
     fn child_clip_rect(&self) -> Option<Rect> {
         Some(self.content_viewport_rect())
     }
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         // Drives click-and-hold auto-repeat while the host pumps frames.
         if self.hold.is_some() {
             self.advance_hold(crate::time::now());
@@ -1203,7 +1203,7 @@ impl Widget for Scrollable {
         }
     }
 
-    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let ticking = self.momentum_speed() > 0.0;
         if ticking {
             self.tick(1.0 / 60.0);
@@ -1801,7 +1801,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2100,7 +2100,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -2131,7 +2131,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -2871,7 +2871,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -3081,15 +3081,15 @@ mod tests {
                 s.needs_animation_frame(),
                 "momentum must not depend on scrollbar opacity"
             );
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             // Match the admitted primary-frame lifecycle: update runs even when
             // the prior frame consumed all ordinary dirty flags.
             for _ in 0..240 {
                 if !s.needs_animation_frame() {
                     break;
                 }
-                s.update(&mut doc, &automerge::ROOT);
-                s.sync(&mut doc, &automerge::ROOT);
+                s.update(&doc, &automerge::ROOT);
+                s.sync(&doc, &automerge::ROOT);
                 s.mark_drawn();
             }
             assert!(s.offset_y() > 0.0, "the demanded frames advance content");

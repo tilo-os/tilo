@@ -449,6 +449,7 @@ mod tests {
             None,
             None,
             &InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: provider.to_string(),

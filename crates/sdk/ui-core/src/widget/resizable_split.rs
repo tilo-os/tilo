@@ -219,17 +219,12 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     /// Forward the per-frame update pass to both panes, so a pane that
     /// polls a model (a data table, a pending image) keeps updating.
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let left = self.left.update(state, path);
         let right = self.right.update(state, path);
         left | right
@@ -538,19 +533,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 }
 
-impl<L: Widget + 'static, R: Widget + 'static> crate::undo::UndoPoints for ResizableSplit<L, R> {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
-        }
-    }
-}
-
 impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
     for ResizableSplit<L, R>
 {
@@ -592,7 +574,7 @@ mod tests {
     impl Widget for TestLeaf {
         fn update(
             &mut self,
-            _state: &mut crate::widget::AppModel,
+            _state: &crate::widget::AppModel,
             _path: &crate::widget::ModelPath,
         ) -> bool {
             self.updates += 1;
@@ -694,7 +676,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -707,11 +689,11 @@ mod tests {
     #[test]
     fn both_panes_receive_the_update_pass() {
         let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
-        assert!(!s.update(&mut doc, &root), "nothing changed");
+        assert!(!s.update(&doc, &root), "nothing changed");
         s.right.changes = true;
-        assert!(s.update(&mut doc, &root), "a pane's change is the split's");
+        assert!(s.update(&doc, &root), "a pane's change is the split's");
         assert_eq!((s.left.updates, s.right.updates), (2, 2));
     }
 

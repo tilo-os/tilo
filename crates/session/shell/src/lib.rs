@@ -18,6 +18,7 @@ pub mod bluetooth_prompt;
 pub mod collab;
 pub mod compositor;
 pub mod config;
+pub mod crash_log;
 pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
@@ -50,9 +51,3 @@ tilo_automerge_isolate::test_worker!();
 pub mod tray;
 pub mod wayland;
 pub mod workspace;
-
-// These existing app tests need no Linux adapter. Keep their Linux integration
-// owner and compile the same source for native library-only validation.
-#[cfg(all(test, target_os = "macos"))]
-#[path = "../tests/apps_integration.rs"]
-mod apps_integration;

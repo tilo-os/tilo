@@ -145,12 +145,29 @@ class InstallerTests(unittest.TestCase):
             self.assertNotIn("test-registry", production)
             self.assertIn("shell", production)
             self.assertIn("native-runtime-host", production)
+        with self.subTest(phase='developer CLI installs globally through its VM component'):
+            manifest = installer.load_manifest(REPO / "os/components.toml")
+            component = manifest.component("vm-cli")
+            self.assertEqual(component.scope, "vm")
+            self.assertTrue(component.dev_only)
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                out = self.build_outputs(root)
+                image = root / "cli-layer"
+                status = self.run_installer("--from", str(out), "--dest", str(image),
+                                            "vm-cli")
+                self.assertEqual(status, 0)
+                binary = image / "usr/bin/tilo-vm"
+                self.assertEqual(binary.read_bytes(), b"\x7fELFtilo-vm")
+                self.assertEqual(binary.stat().st_mode & 0o777, 0o755)
+                self.assertEqual({p.relative_to(image).as_posix() for p in image.rglob("*")
+                                  if p.is_file()}, {"usr/bin/tilo-vm"})
         with self.subTest(phase='dev cargo plan adds dev features'):
             manifest = installer.load_manifest(REPO / "os/components.toml")
             dev = installer.select_components(manifest, [], False, True)
             packages, bins, features = installer.cargo_plan(dev, True)
             self.assertIn("dev-overrides", features)
-            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin",
+            self.assertEqual(set(bins), {"shell", "tilo-runtime-mcp", "tilo-vmd", "tilo-device-admin", "tilo-vm",
                                          "tilo-test-registry"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertNotIn("dev-overrides", production_features)

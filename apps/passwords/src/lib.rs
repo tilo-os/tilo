@@ -17,9 +17,13 @@ pub use actions::PasswordsEffect;
 pub use resource::{Passwords, PasswordsShell};
 pub use showcase::PasswordsSurface;
 
+/// The items of this device's vault, or none for a window that must not
+/// open it (a past version: the vault keeps no history).
 pub struct PasswordsModel {
-    store: SecretStore,
+    store: Option<SecretStore>,
 }
+
+const CLOSED: &str = "the vault is not open in this window";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct VaultHealth {
@@ -77,36 +81,54 @@ pub(crate) fn analyze_health(items: &[SecretItem]) -> VaultHealth {
 impl PasswordsModel {
     pub fn open() -> Self {
         Self {
-            store: SecretStore::open(),
+            store: Some(SecretStore::open()),
         }
     }
     pub fn open_in(root: &std::path::Path) -> Self {
         Self {
-            store: SecretStore::open_in(root),
+            store: Some(SecretStore::open_in(root)),
         }
     }
+    /// A window that shows no items and opens nothing.
+    pub fn closed() -> Self {
+        Self { store: None }
+    }
+    fn store(&self) -> Result<&SecretStore, String> {
+        self.store.as_ref().ok_or_else(|| CLOSED.to_owned())
+    }
+    fn store_mut(&mut self) -> Result<&mut SecretStore, String> {
+        self.store.as_mut().ok_or_else(|| CLOSED.to_owned())
+    }
     pub fn recovery_error(&self) -> Option<&str> {
-        self.store.recovery_error()
+        self.store.as_ref()?.recovery_error()
     }
     pub fn items(&self) -> Vec<SecretItem> {
-        self.store.list()
+        self.store
+            .as_ref()
+            .map(SecretStore::list)
+            .unwrap_or_default()
     }
     /// Durable application access shown in the vault's management UI.
     pub fn app_grants(&self) -> Vec<CredentialGrant> {
-        self.store.grants()
+        self.store
+            .as_ref()
+            .map(SecretStore::grants)
+            .unwrap_or_default()
     }
     /// Where the encryption key for this vault is currently held. A
     /// `LocalFile` result is still encrypted storage, but it is not a system
     /// keyring and the UI must not present it as one.
     pub fn custody(&self) -> SecretCustody {
-        self.store.custody()
+        self.store
+            .as_ref()
+            .map_or_else(SecretCustody::for_session, SecretStore::custody)
     }
     /// Revoke one exact app/account/origin relationship.
     ///
     /// # Errors
     /// Returns an error if the vault cannot durably store the revocation.
     pub fn revoke_app_grant(&mut self, grant: &CredentialGrant) -> Result<bool, String> {
-        self.store
+        self.store_mut()?
             .revoke_grant(grant)
             .map_err(|error| format!("could not revoke app access: {error:?}"))
     }
@@ -115,7 +137,7 @@ impl PasswordsModel {
     /// # Errors
     /// Returns an error if the vault cannot durably store the revocations.
     pub fn revoke_all_app_grants(&mut self, app_id: &str) -> Result<usize, String> {
-        self.store
+        self.store_mut()?
             .revoke_app_grants(app_id)
             .map_err(|error| format!("could not revoke app access: {error:?}"))
     }
@@ -178,7 +200,7 @@ impl PasswordsModel {
                 .map_err(|e| format!("invalid sign-in address: {e:?}"))?;
         }
         let id = item.id.clone();
-        self.store
+        self.store_mut()?
             .put(&mut item)
             .map_err(|e| format!("could not save login: {e:?}"))?;
         Ok(id)
@@ -189,7 +211,7 @@ impl PasswordsModel {
     /// Returns an error when serialization or durable credential storage fails.
     pub fn save_item(&mut self, item: &mut SecretItem) -> Result<SecretId, String> {
         let id = item.id.clone();
-        self.store
+        self.store_mut()?
             .put(item)
             .map_err(|error| format!("could not save item: {error:?}"))?;
         Ok(id)
@@ -200,7 +222,7 @@ impl PasswordsModel {
     ///
     /// Returns an error when the secret store cannot complete the removal.
     pub fn remove(&mut self, id: &SecretId) -> Result<bool, String> {
-        self.store
+        self.store_mut()?
             .remove(id)
             .map_err(|e| format!("could not remove login: {e:?}"))
     }
@@ -210,7 +232,7 @@ impl PasswordsModel {
     ///
     /// Returns an error when the secret store cannot persist the update.
     pub fn update(&mut self, item: &mut SecretItem) -> Result<(), String> {
-        self.store
+        self.store_mut()?
             .put(item)
             .map_err(|error| format!("could not update login: {error:?}"))
     }
@@ -220,7 +242,7 @@ impl PasswordsModel {
     ///
     /// Returns an error when the item is missing or the store cannot reveal it.
     pub fn reveal(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
-        self.store
+        self.store()?
             .reveal_password(id)
             .map_err(|error| format!("could not reveal login: {error:?}"))
     }
@@ -230,7 +252,7 @@ impl PasswordsModel {
     /// Returns an error if the item no longer exists.
     pub fn reveal_value(&self, id: &SecretId) -> Result<zeroize::Zeroizing<String>, String> {
         let item = self
-            .store
+            .store()?
             .get(id)
             .ok_or_else(|| "item no longer exists".to_string())?;
         let value = if item.kind == accounts::SecretItemKind::SecureNote {
