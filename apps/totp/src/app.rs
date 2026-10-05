@@ -1142,17 +1142,14 @@ impl Widget for AuthenticatorApp {
         reason = "the root publishes one coherent semantic tree"
     )]
     fn accessibility(&self) -> Option<AccessNode> {
-        // While the sheet is open it owns the window: what is behind it is
-        // not reachable.
+        // Omit the virtual account actions while the sheet owns the window.
+        // This ancestor remains visible so its retained ModalDialog and focus
+        // trap are reachable; hiding it would prune the sheet's fields too.
         if self.add_panel.is_open() {
             return Some(
                 AccessNode::new(Role::Group)
                     .with_name("Authenticator")
-                    .with_bounds(self.rect)
-                    .with_state(AccessState {
-                        hidden: true,
-                        ..AccessState::default()
-                    }),
+                    .with_bounds(self.rect),
             );
         }
         let visible = self.vault.ordered();
@@ -1499,6 +1496,20 @@ mod tests {
                 .iter()
                 .any(|(_, n)| n.label().is_some_and(|s| s.starts_with("Copy code for"))),
             "modal removes background actions"
+        );
+        let focus_order = app.harness().focus_access_nodes();
+        assert!(
+            focus_order.iter().any(|node| node.role == Role::TextInput),
+            "the visible modal exposes its fields to keyboard focus: {focus_order:?}"
+        );
+        assert!(
+            !focus_order.iter().any(|node| matches!(
+                node.semantic_key.as_deref(),
+                Some(
+                    "search-open" | "add-account" | "nav-shell-more-content" | "nav-shell-history"
+                )
+            )),
+            "the modal trap excludes background header controls: {focus_order:?}"
         );
         let secret = nodes(&mut app)
             .into_iter()

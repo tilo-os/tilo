@@ -427,6 +427,86 @@ fn modal_controls_are_hittable_and_show_their_states() {
 }
 
 #[test]
+fn narrow_large_text_footer_stacks_full_actions_without_covering_the_body() {
+    use crate::platform::{Platform, PlatformConventions};
+    let window = Rect::new(0.0, 0.0, 360.0, 640.0);
+    let actions = [
+        ModalAction::alternate("Keep separate"),
+        ModalAction::secondary("Cancel"),
+        ModalAction::danger("Merge contacts"),
+    ];
+    for (_, base) in themes() {
+        let theme = base.with_text_scale(2.0);
+        let mut text = crate::font_catalog::fixture_renderer();
+        text.set_text_scale(theme.text_scale);
+        let spec = ModalSpec::new("Merge contacts")
+            .platform_conventions(PlatformConventions::new(Platform::Linux))
+            .actions(&actions)
+            .body_height(600.0);
+        let geometry = layout(window, &spec, &mut text, &theme);
+        assert_eq!(geometry.actions.len(), 3);
+        assert!(geometry.body_overflows, "the real body must scroll");
+        assert_eq!(geometry.primary, Some(1), "Enter remains the safe Cancel");
+        for (index, rect) in geometry.actions.iter().enumerate() {
+            assert!(rect.x0 >= geometry.card.x0 && rect.x1 <= geometry.card.x1);
+            assert!(rect.y0 >= geometry.body.y1 && rect.y1 <= geometry.card.y1);
+            assert!((rect.height() - action_height(&theme)).abs() < 0.5);
+            let (label_width, _) = text.measure_style(
+                actions[index].label,
+                None,
+                &ControlSize::Regular.label_style(&theme),
+            );
+            assert!(
+                f64::from(label_width) + 2.0 * f64::from(theme.tokens.spacing.s4)
+                    <= rect.width() + 0.5,
+                "the complete action label fits: {}",
+                actions[index].label,
+            );
+        }
+        let gap = f64::from(theme.tokens.spacing.s2);
+        assert!(geometry.actions[0].y1 + gap <= geometry.actions[1].y0 + 0.5);
+        assert!(geometry.actions[1].y1 + gap <= geometry.actions[2].y0 + 0.5);
+        assert!(geometry.body.height() > 0.0);
+    }
+}
+
+#[test]
+fn retained_narrow_dialog_footer_targets_follow_the_stacked_geometry() {
+    let window = Rect::new(0.0, 0.0, 360.0, 640.0);
+    let theme = Theme::dark().with_text_scale(2.0);
+    let confirmed = Rc::new(Cell::new(false));
+    let cancelled = Rc::new(Cell::new(false));
+    let yes = confirmed.clone();
+    let no = cancelled.clone();
+    let mut dialog = ModalDialog::new("Merge contacts", TestContent)
+        .open(true)
+        .with_destructive(true)
+        .primary_action("Merge contacts", move || yes.set(true))
+        .secondary_action("Cancel", move || no.set(true));
+    lay_out(&mut dialog, window, &theme);
+    let _ = present(&mut dialog, window, &theme);
+    let secondary = dialog.secondary_rect();
+    let primary = dialog.primary_rect();
+    assert!(secondary.width() > 0.0 && primary.width() > 0.0);
+    assert!(
+        secondary.y1 <= primary.y0,
+        "the safe answer precedes the primary"
+    );
+    for key in &dialog.keys {
+        let actual = key.get_rect();
+        assert_eq!(actual, dialog.slot_rect(key.slot));
+        assert!(actual.x0 >= window.x0 && actual.x1 <= window.x1);
+        assert!(actual.y0 >= window.y0 && actual.y1 <= window.y1);
+    }
+    assert!(dispatch(&mut dialog, &key_press_event(NamedKey::Enter)));
+    assert!(
+        cancelled.get(),
+        "Enter cancels the destructive confirmation"
+    );
+    assert!(!confirmed.get());
+}
+
+#[test]
 fn actions_follow_platform_order_inside_the_sheet() {
     use crate::platform::{Platform, PlatformConventions};
 

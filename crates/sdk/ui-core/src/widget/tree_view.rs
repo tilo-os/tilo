@@ -826,6 +826,9 @@ pub struct TreeView<T, M = TreeNode<T>> {
     selection: crate::selection::KeySelection<NodeId>,
     multi_select: bool,
     focused: Option<TreeRowKey>,
+    /// Current exported button target, distinct from the row owning it.
+    focused_affordance: Option<String>,
+    affordance_focus_valid: bool,
     on_select: Option<Box<dyn FnMut(NodeId)>>,
     on_expand: Option<Box<dyn FnMut(NodeId, bool)>>,
     on_load_request: Option<Box<dyn FnMut(TreeLoadRequest)>>,
@@ -1089,6 +1092,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             selection: crate::selection::KeySelection::new(),
             multi_select: false,
             focused: None,
+            focused_affordance: None,
+            affordance_focus_valid: false,
             on_select: None,
             on_expand: None,
             on_load_request: None,
@@ -1581,6 +1586,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// host whose selection changed elsewhere, so arrow keys continue from
     /// the row it now shows as chosen.
     pub fn set_focused(&mut self, id: Option<NodeId>) {
+        self.focused_affordance = None;
         self.focused = id
             .filter(|id| self.model.contains(*id))
             .map(TreeRowKey::Node);
@@ -1599,6 +1605,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     fn reconcile_model_state(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
+        self.affordance_focus_valid = false;
         let anchor = anchor.map(|anchor| self.normalize_anchor(anchor.clone()));
         // A node that accepts children stays expanded while it has none, so
         // a row dropped or indented into it is revealed once the host's model
@@ -1647,6 +1654,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let reconcile = Self::changes_require_reconcile(changes);
         let anchor = reconcile.then(|| self.capture_view_anchor()).flatten();
         let result = update(&mut self.model);
+        self.affordance_focus_valid = false;
         self.paint_dirty = true;
         self.invalidate_changed_delegates(changes);
         self.resolve_changed_slots(changes);
@@ -1660,6 +1668,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// geometry; structural and slot-state changes rebuild once and preserve
     /// the current viewport anchor by stable row identity.
     pub fn notify_model_changes(&mut self, changes: &[TreeModelChange]) {
+        if !changes.is_empty() {
+            self.affordance_focus_valid = false;
+        }
         self.paint_dirty = true;
         self.invalidate_changed_slots(changes);
         self.invalidate_changed_delegates(changes);
@@ -2461,6 +2472,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     fn focus_at(&mut self, index: usize) -> bool {
+        self.focused_affordance = None;
         let Some((key, _)) = self.index.row_at(&self.model, index) else {
             return false;
         };
@@ -2509,6 +2521,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
                     | NamedKey::End
             )
         );
+        if navigation {
+            self.focused_affordance = None;
+        }
         let handled = self.on_key_inner(logical_key, toggle, extend);
         if handled && navigation && !toggle && !extend {
             self.follow_focus();
@@ -3432,6 +3447,20 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 .input
                 .draw(scene, transform, text_renderer, theme, presence);
         }
+        if self.is_focused
+            && self.affordance_focus_valid
+            && let Some(target) = self.focused_affordance.as_deref()
+            && let Some(button) = self.available_affordance(target)
+            && let Some(bounds) = button.bounds
+        {
+            crate::widget::paint_focus_ring(
+                scene,
+                transform,
+                bounds.to_rect(),
+                f64::from(tokens.radii.detail),
+                theme,
+            );
+        }
         // The lifted row floats beside the pointer; the drop line marks
         // where it lands, over the lifted row, so the copy never hides it.
         self.paint_drag_ghost(scene, transform, text_renderer, theme, &text_style, line_h);
@@ -3642,6 +3671,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.is_focused = focused;
         // Focus leaving the tree ends an inline rename, keeping the edit.
         if !focused {
+            self.focused_affordance = None;
             self.commit_rename();
         }
     }
@@ -3739,7 +3769,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .with_level(depth.saturating_add(1))
                     .with_state(AccessState {
                         focusable: true,
-                        focused: self.is_focused && self.focused == Some(key),
+                        focused: self.is_focused
+                            && self.focused_affordance.is_none()
+                            && self.focused == Some(key),
                         selected,
                         expanded,
                         disabled: !self.is_enabled(),
@@ -3866,12 +3898,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             }
             match action {
                 Action::Focus => {
+                    self.focused_affordance = None;
                     let Some(index) = self.visible_index_of(id) else {
                         return false;
                     };
                     self.focus_at(index)
                 }
                 Action::Activate => {
+                    self.focused_affordance = None;
                     self.focused = Some(TreeRowKey::Node(id));
                     self.activate_focus(true)
                 }
@@ -3920,6 +3954,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     .index_of_key(&self.model, TreeRowKey::Slot(slot))
                     .is_some_and(|index| self.focus_at(index)),
                 Action::Activate => {
+                    self.focused_affordance = None;
                     self.focused = Some(TreeRowKey::Slot(slot));
                     self.activate_focus(true)
                 }
@@ -3952,6 +3987,38 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         }
         if let WindowEvent::CursorLeft { .. } = event {
             self.hovered = None;
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+        ) {
+            self.focused_affordance = None;
+        }
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+            && self.is_focused
+            && self.focused_affordance.is_some()
+            && (event.logical_key == Key::Named(NamedKey::Enter)
+                || event.logical_key == Key::Named(NamedKey::Space)
+                || matches!(&event.logical_key, Key::Character(text) if text == " "))
+        {
+            let target = self.focused_affordance.clone().unwrap_or_default();
+            if self.affordance_focus_valid && self.available_affordance(&target).is_some() {
+                let _ = self.perform_affordance_action(
+                    &target,
+                    &crate::a11y::Action::Activate,
+                    state,
+                    path,
+                );
+            } else {
+                self.focused_affordance = None;
+            }
+            // A stale button must not fall through to activate its parent row.
+            *handled = true;
+            return;
         }
         if self.route_context_menu(
             event,

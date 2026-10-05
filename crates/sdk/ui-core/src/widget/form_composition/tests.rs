@@ -16,6 +16,79 @@ fn fixture() -> Element {
         ),
     )
 }
+
+#[test]
+fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    for scale in [1.0, 2.0] {
+        let offset = Rc::new(Cell::new((0.0, 0.0)));
+        let mut section = FormSection::new("Details");
+        for index in 0..20 {
+            let name = format!("Detail {index}");
+            section = section.field(Field::new(
+                name.clone(),
+                TextInput::local()
+                    .with_id(name.clone())
+                    .with_accessible_name(name),
+            ));
+        }
+        let page = FormPage::new("Long form", Form::new().section(section))
+            .with_persisted_offset(Rc::clone(&offset));
+        let mut harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(page),
+            (360, 420),
+            Theme::dark().with_text_scale(scale),
+        );
+        assert!(harness.targets()["Detail 19"].y0 > 420.0);
+        assert!(offset.get().1.abs() < f32::EPSILON);
+
+        let input_node = |harness: &FrameHarness, name: &str| {
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.label() == Some(name) && node.role() == crate::accesskit::Role::TextInput
+                })
+                .unwrap()
+                .0
+        };
+        let last = input_node(&harness, "Detail 19");
+        harness
+            .perform_a11y_action(last, &crate::a11y::Action::Focus)
+            .unwrap();
+        assert_eq!(harness.a11y_focus().unwrap().0, last);
+        let revealed = harness.targets()["Detail 19"];
+        assert!(revealed.y0 >= 0.0 && revealed.y1 <= 420.0, "{revealed:?}");
+        let revealed_offset = offset.get().1;
+        assert!(revealed_offset > 0.0);
+
+        // A real wheel event may move the focused field off screen. Re-layout
+        // must not undo that deliberate scroll while focus stays unchanged.
+        harness.send(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(180.0, 210.0),
+        });
+        harness.scroll(0.0, 3.0);
+        let manual_offset = offset.get().1;
+        assert!(manual_offset < revealed_offset);
+        assert_eq!(harness.a11y_focus().unwrap().0, last);
+        harness.recompose().unwrap();
+        assert!((offset.get().1 - manual_offset).abs() < f32::EPSILON);
+
+        let first = input_node(&harness, "Detail 0");
+        harness
+            .perform_a11y_action(first, &crate::a11y::Action::Focus)
+            .unwrap();
+        assert_eq!(harness.a11y_focus().unwrap().0, first);
+        let revealed = harness.targets()["Detail 0"];
+        assert!(revealed.y0 >= 0.0 && revealed.y1 <= 420.0, "{revealed:?}");
+        assert!(offset.get().1 < manual_offset);
+    }
+}
+
 fn collect<'a>(node: &'a InspectionNode, name: &str, out: &mut Vec<&'a InspectionNode>) {
     if node.widget == name {
         out.push(node);

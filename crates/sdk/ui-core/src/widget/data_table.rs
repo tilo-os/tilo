@@ -7125,6 +7125,19 @@ mod content_edge_tests {
 
     #[test]
     fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
+        struct RetainedTable(DataTable<Item>);
+        impl crate::widget::Decorator for RetainedTable {
+            type Inner = DataTable<Item>;
+            fn inner(&self) -> &Self::Inner {
+                &self.0
+            }
+            fn inner_mut(&mut self) -> &mut Self::Inner {
+                &mut self.0
+            }
+            fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+                Some(self)
+            }
+        }
         let checks = Rc::new(RefCell::new(Vec::new()));
         let seen = Rc::clone(&checks);
         let activations = Rc::new(Cell::new(0));
@@ -7138,8 +7151,11 @@ mod content_edge_tests {
         .on_check(move |row, on| seen.borrow_mut().push((row, on)))
         .on_activate(move |_| activated.set(activated.get() + 1));
         table.set_rows(items(2));
-        let mut harness =
-            crate::headless::FrameHarness::new(crate::State::new(), Box::new(table), (400, 300));
+        let mut harness = crate::headless::FrameHarness::new(
+            crate::State::new(),
+            Box::new(RetainedTable(table)),
+            (400, 300),
+        );
         let cells: Vec<_> = harness
             .a11y_nodes()
             .into_iter()
@@ -7163,7 +7179,7 @@ mod content_edge_tests {
         assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
         assert_eq!(activations.get(), 0, "a checkbox never activates its row");
         harness
-            .with_widget_mut::<DataTable<Item>, _>(|table| table.set_rows(vec![item("item 1")]))
+            .with_widget_mut::<RetainedTable, _>(|table| table.0.set_rows(vec![item("item 1")]))
             .unwrap();
         harness.relayout();
         assert!(

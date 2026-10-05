@@ -3999,8 +3999,20 @@ impl App {
             return false;
         };
         if self.actions.action_palette.is_none() {
-            self.actions.ordinary_palette_return_focus =
-                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref());
+            // Native semantic focus is authoritative even before the next
+            // retained render propagates the widget's focused flag.
+            // SAFETY: modal admission has not retired either map; both still
+            // describe this exclusively held, live background widget tree.
+            self.actions.ordinary_palette_return_focus = unsafe {
+                crate::widget::layout::CompositionFocus::capture(
+                    self.focused_node,
+                    &self.layout.node_map,
+                    &self.bindings,
+                )
+            }
+            .or_else(|| {
+                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref())
+            });
         }
         self.open_action_palette();
         self.bindings.clear();

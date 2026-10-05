@@ -301,14 +301,18 @@ struct Frame {
 }
 
 impl Frame {
-    fn new(body: PageBody) -> Self {
+    fn new(body: PageBody, reveal_focus: bool) -> Self {
         let gutter_probe = Rc::new(Cell::new(0.0));
+        let scroller = Scrollable::new_vertical()
+            .with_gutter_probe(Rc::clone(&gutter_probe))
+            .with_child(Box::new(body));
+        let scroller = if reveal_focus {
+            scroller.with_focus_reveal()
+        } else {
+            scroller
+        };
         Self {
-            parts: Parts::new(vec![Box::new(
-                Scrollable::new_vertical()
-                    .with_gutter_probe(Rc::clone(&gutter_probe))
-                    .with_child(Box::new(body)),
-            )]),
+            parts: Parts::new(vec![Box::new(scroller)]),
             gutter_probe,
             has_footer: false,
         }
@@ -386,7 +390,7 @@ impl Page {
     pub fn new() -> Self {
         let effective = Rc::new(Cell::new(None));
         Self {
-            frame: Frame::new(PageBody::new("PageContent", Rc::clone(&effective))),
+            frame: Frame::new(PageBody::new("PageContent", Rc::clone(&effective)), false),
             effective,
             sections: 0,
         }
@@ -523,7 +527,9 @@ impl FormPage {
         let mut body = PageBody::new("FormPageContent", Rc::clone(&effective));
         body.push(Box::new(form), Lead::None);
         Self {
-            frame: Frame::new(body),
+            // Keyboard and assistive-technology focus must reveal a form field
+            // even when its measured row starts beyond the current viewport.
+            frame: Frame::new(body, true),
             effective,
             title: None,
             has_description: false,
