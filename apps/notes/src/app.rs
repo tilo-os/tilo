@@ -4624,6 +4624,59 @@ impl Widget for NotesApp {
         &[crate::actions::NOTES_OPERATION_TYPE]
     }
 
+    fn native_input_snapshot(
+        &self,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> Option<serde_json::Value> {
+        let (doc, _) = ui::doc::document_ref(state, path);
+        let page = self.main.page_id();
+        // The native observer runs only for opt-in diagnostic input. Observe
+        // both canonical text and the editor cache used to draw that frame,
+        // without placing a person's note content in the diagnostic log.
+        let body = page
+            .filter(|id| NotesDoc::page_body(doc, *id).is_some())
+            .map(|id| {
+                NotesDoc::page_block_snapshots(doc, id)
+                    .into_iter()
+                    .map(|(_, text)| text)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            });
+        let editor = self.main.editor();
+        let rendered = editor
+            .blocks()
+            .iter()
+            .map(|block| block.line.value())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let caret = editor.focused_index().and_then(|index| {
+            editor.blocks().get(index).map(|block| {
+                serde_json::json!({
+                    "block_id": block.id,
+                    "block_index": index,
+                    "byte_offset": block.line.cursor_pos(),
+                })
+            })
+        });
+        let rect = editor.get_rect();
+        Some(serde_json::json!({
+            "app": "so.tilo.notes",
+            "editor_id": "block_editor",
+            "selected_page": self.workspace.selected(),
+            "bound_page": page,
+            "hash_algorithm": "blake3",
+            "body_hash": body.as_ref().map(|body| blake3::hash(body.as_bytes()).to_hex().to_string()),
+            "body_chars": body.as_ref().map(|body| body.chars().count()),
+            "body_bytes": body.as_ref().map(String::len),
+            "rendered_body_hash": blake3::hash(rendered.as_bytes()).to_hex().to_string(),
+            "rendered_body_chars": rendered.chars().count(),
+            "editor_focused": editor.is_focused(),
+            "caret": caret,
+            "editor_rect": [rect.x0, rect.y0, rect.x1, rect.y1],
+        }))
+    }
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.follow_hosted_save_status();
         let (state, path) = ui::doc::document(state, path);

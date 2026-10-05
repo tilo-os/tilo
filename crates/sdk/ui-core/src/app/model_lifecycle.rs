@@ -72,6 +72,19 @@ impl super::App {
         self.pump_hosted_model_as(host_perf_baseline());
     }
 
+    /// Advance the ordinary dirty-tracked native worker without a window.
+    /// This never forces synchronization or layout to mask a missing wake.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn controlled_hosted_model_for_test(&mut self) -> bool {
+        self.pump_hosted_model_as(false).synced
+    }
+
+    /// Read the same state observer used around scheduled native inputs.
+    #[cfg(all(feature = "native", any(test, feature = "test-support")))]
+    pub fn controlled_native_input_snapshot_for_test(&self) -> Option<serde_json::Value> {
+        self.native_input_snapshot()
+    }
+
     /// `always_refresh` is the previous behaviour: synchronize, invalidate and
     /// republish unconditionally. Otherwise the pump is dirty-tracked like the
     /// window runner, whose redraw syncs only on `needs_sync`: a pass with no

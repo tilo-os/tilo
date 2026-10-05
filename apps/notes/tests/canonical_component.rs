@@ -290,3 +290,121 @@ fn canonical_component_status_and_binding_hydrate_without_touching_the_document(
         assert_eq!((doc.base_heads(), doc.pending_ops()), emptied);
     }
 }
+
+#[test]
+fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let mut app =
+        ui::App::from_component(component(&f, 11, existing(&checkout)), runner_inputs()).unwrap();
+    app.init_layout();
+    app.controlled_hosted_model_for_test();
+    app.controlled_hosted_model_for_test();
+    assert!(
+        !app.controlled_hosted_model_for_test(),
+        "native worker settles before navigation"
+    );
+    let before = f
+        .records
+        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .unwrap();
+    app.refresh_semantic_tree();
+    let target = app
+        .semantic_tree()
+        .iter()
+        .find(|node| node.name.as_deref() == Some("Launch") && node.action("open").is_some())
+        .expect("actual bound Notes page action")
+        .id
+        .clone();
+    assert!(app.invoke_semantic_action(&target, "open", None).unwrap());
+    assert!(
+        app.controlled_hosted_model_for_test(),
+        "completed bound navigation schedules its worker"
+    );
+    let observed = app
+        .controlled_native_input_snapshot_for_test()
+        .expect("drawn Notes editor observer");
+    assert_eq!(observed["bound_page"], f.child.to_string());
+    assert_eq!(observed["selected_page"], f.child.to_string());
+    let body = f
+        .records
+        .read(&checkout.id, |doc| {
+            NotesDoc::page_block_snapshots(doc, f.child)
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap();
+    assert!(!body.is_empty());
+    assert_eq!(
+        observed["body_hash"],
+        blake3::hash(body.as_bytes()).to_hex().to_string()
+    );
+    assert_eq!(observed["body_chars"], body.chars().count());
+    assert!(observed["rendered_body_chars"].as_u64().unwrap() > 0);
+    assert_eq!(
+        f.records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap(),
+        before,
+        "opening binds the real canonical body without writing it"
+    );
+    assert!(
+        !app.controlled_hosted_model_for_test(),
+        "navigation does not keep the worker spinning"
+    );
+    app.close_components();
+    for report in app.take_component_close_reports() {
+        assert_closed(&report);
+    }
+}
+
+#[test]
+fn native_accessibility_page_activation_binds_an_empty_note_without_another_input() {
+    let f = LegacyFixture::rich();
+    let checkout = imported(&f);
+    let mut app =
+        ui::App::from_component(component(&f, 11, existing(&checkout)), runner_inputs()).unwrap();
+    app.controlled_hosted_model_for_test();
+    app.controlled_hosted_model_for_test();
+    app.init_layout();
+    assert!(!app.controlled_hosted_model_for_test());
+    let before = f
+        .records
+        .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+        .unwrap();
+    let target = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Empty"))
+        .expect("exported native page row")
+        .0;
+    assert!(
+        app.dispatch_a11y_action(target, &ui::a11y::Action::Activate)
+            .is_none(),
+        "row activation uses its semantic owner rather than coordinate fallback"
+    );
+    assert!(
+        app.controlled_hosted_model_for_test(),
+        "native accessibility selection dirties the worker"
+    );
+    let observed = app
+        .controlled_native_input_snapshot_for_test()
+        .expect("native Notes observer");
+    assert_eq!(observed["selected_page"], f.empty.to_string());
+    assert_eq!(observed["bound_page"], f.empty.to_string());
+    assert_eq!(observed["body_chars"], 0);
+    assert!(!app.controlled_hosted_model_for_test());
+    assert_eq!(
+        f.records
+            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+            .unwrap(),
+        before
+    );
+    app.close_components();
+    for report in app.take_component_close_reports() {
+        assert_closed(&report);
+    }
+}
