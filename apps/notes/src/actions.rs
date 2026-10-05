@@ -1995,12 +1995,13 @@ pub(crate) fn notebook_bound_declarations(
     ];
     let title = today_title();
     if !workspace.pages().iter().any(|page| page.title == title) {
+        let order = PageResourceIndex::new(workspace.pages()).next_order(None);
         declarations.push(
             ui::tilo_resource::ActionDecl::new(
                 "daily-note",
                 "Create today's note",
                 Vec::new(),
-                move |_, _| Ok(append_page_action(Uuid::new_v4(), None, &title)),
+                move |_, _| Ok(new_page_action(Uuid::new_v4(), None, order, &title)),
             )
             .describe("Create today's note, titled with the date."),
         );
