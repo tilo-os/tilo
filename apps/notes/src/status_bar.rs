@@ -1,5 +1,5 @@
-//! `StatusModel` — the note's save + page/word status, surfaced as a
-//! transient floating [`ui::StatusBubble`] rather than a permanent bottom
+//! `StatusModel` — the note's save + page/word status, surfaced on the
+//! framework's [`ui::SaveStatusSurface`] rather than a permanent bottom
 //! strip (which stole a row of vertical space from the editor at every
 //! width, and read especially poorly on mobile).
 //!
@@ -87,14 +87,13 @@ impl StatusModel {
         }
     }
 
-    /// The bubble's label: the save state and, once the note is saved, how
-    /// long it is. A save that is running or has failed says only that.
-    pub fn bubble_text(&self) -> String {
-        match (self.state.save_status, self.state.word_count) {
-            (SaveStatus::Saved, Some(1)) => format!("{}, 1 word", self.save_text()),
-            (SaveStatus::Saved, Some(words)) => format!("{}, {words} words", self.save_text()),
-            _ => self.save_text().to_string(),
-        }
+    /// How long the open note is ("142 words"), for the saved bubble; none
+    /// with no note open.
+    pub fn word_text(&self) -> Option<String> {
+        self.state.word_count.map(|words| match words {
+            1 => "1 word".to_string(),
+            _ => format!("{words} words"),
+        })
     }
 }
 

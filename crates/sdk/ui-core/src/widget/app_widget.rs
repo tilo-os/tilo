@@ -262,6 +262,14 @@ pub trait AppWidget: Widget {
     /// Framework-owned durability, delivered only after the record loan ends.
     fn record_save_status(&mut self, _status: crate::record::RecordSaveStatus) {}
 
+    /// Whether the person asked to try a failed record save again
+    /// ([`crate::SaveAction::Retry`] on the [`crate::SaveStatusSurface`]),
+    /// once. The host that owns the record submits its changes again before
+    /// it next reports [`Self::record_save_status`].
+    fn take_save_retry(&mut self) -> bool {
+        false
+    }
+
     /// Drain a one-shot request for shell-owned chrome.
     fn take_host_intent(&mut self) -> Option<AppHostIntent> {
         None

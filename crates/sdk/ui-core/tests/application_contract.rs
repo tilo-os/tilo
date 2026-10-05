@@ -1271,6 +1271,7 @@ mod save_status_fixture {
         static STORE: RefCell<Option<RecordStore>> = const { RefCell::new(None) };
         static DELIVERED: RefCell<Vec<RecordSaveStatus>> = const { RefCell::new(Vec::new()) };
         static TYPE_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static RETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     struct StatusRoot {
         records: RecordStore,
@@ -1337,6 +1338,9 @@ mod save_status_fixture {
             assert_eq!(self.records.save_status(&self.checkout.id).unwrap(), status);
             DELIVERED.with(|seen| seen.borrow_mut().push(status));
         }
+        fn take_save_retry(&mut self) -> bool {
+            RETRY.replace(false)
+        }
     }
     fn factory(
         mut context: HostContext,
@@ -1365,6 +1369,7 @@ mod save_status_fixture {
             STORE.with(|store| *store.borrow_mut() = None);
             DELIVERED.with(|seen| seen.borrow_mut().clear());
             TYPE_PENDING.set(false);
+            RETRY.set(false);
         }
     }
     struct Obstruction {
@@ -1544,8 +1549,11 @@ mod save_status_fixture {
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Failed(_))
             ));
-            self.host.records.try_flush().unwrap();
+            // "Try again" on the app's save status surface: the host that
+            // owns the record submits it again before it next reports.
+            RETRY.set(true);
             self.tile.sync(&mut self.outer, &ROOT);
+            assert!(!RETRY.get(), "the host drained the request");
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)

@@ -125,6 +125,13 @@ impl StatusBubble {
         self.poke(now)
     }
 
+    /// Change what the bubble says without showing it: a count that follows
+    /// the document reads current while the bubble shows, but does not
+    /// reopen it.
+    pub fn set_text(&mut self, text: &str) {
+        text.clone_into(&mut self.text);
+    }
+
     /// What the bubble says.
     pub fn text(&self) -> &str {
         &self.text
@@ -318,6 +325,8 @@ pub enum SaveAction {
 pub struct SaveStatusSurface {
     bubble: StatusBubble,
     state: Option<SaveState>,
+    /// What the saved bubble adds about the document ("142 words").
+    detail: Option<String>,
     dismissed: bool,
     hit: crate::widget::toast::ToastCardHit,
     hover: Option<Point>,
@@ -338,16 +347,116 @@ impl SaveStatusSurface {
         }
         let was_failed = self.failure().is_some();
         self.dismissed = false;
-        let text = match &state {
-            SaveState::Saving => crate::i18n!("save-status-saving"),
-            SaveState::Saved => crate::i18n!("save-status-saved"),
-            SaveState::Idle | SaveState::Failed(_) => String::new(),
-        };
         self.state = Some(state);
+        let text = self.bubble_label();
         if !text.is_empty() {
             self.bubble.show(&text, now);
         }
         was_failed != self.failure().is_some() || !text.is_empty()
+    }
+
+    /// What the bubble says for the current state: the state, and after
+    /// "Saved" the document's [`Self::set_detail`].
+    fn bubble_label(&self) -> String {
+        match &self.state {
+            Some(SaveState::Saving) => crate::i18n!("save-status-saving"),
+            Some(SaveState::Saved) => match &self.detail {
+                Some(detail) => format!("{}, {detail}", crate::i18n!("save-status-saved")),
+                None => crate::i18n!("save-status-saved"),
+            },
+            _ => String::new(),
+        }
+    }
+
+    /// Say something about the saved document after "Saved" (a note's
+    /// length). It reads current while the bubble shows and never reopens
+    /// it on its own.
+    pub fn set_detail(&mut self, detail: Option<String>) {
+        if self.detail == detail {
+            return;
+        }
+        self.detail = detail;
+        let text = self.bubble_label();
+        if !text.is_empty() {
+            self.bubble.set_text(&text);
+        }
+    }
+
+    /// Show the bubble again (another document opened under it). A
+    /// showing failure needs no reminder.
+    pub fn poke(&mut self, now: Instant) -> bool {
+        if self.failure().is_some() || self.bubble.text().is_empty() {
+            return false;
+        }
+        self.bubble.poke(now)
+    }
+
+    /// The pointer moved to `p` over `area`: resting on the bubble's corner
+    /// pins it open (see [`StatusBubble::pointer_moved`]). Returns whether
+    /// visibility changed.
+    pub fn hover_bubble(
+        &mut self,
+        area: Rect,
+        p: Point,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        now: Instant,
+    ) -> bool {
+        if self.failure().is_some() {
+            return false;
+        }
+        let corner = Self::corner(area, theme);
+        self.bubble.pointer_moved(corner, p, tr, theme, now)
+    }
+
+    /// The surface for assistive technology while a failure shows: the
+    /// reason, announced, with "Try again" and "Dismiss" buttons whose
+    /// action targets are `{target}.retry` and `{target}.dismiss`.
+    #[must_use]
+    pub fn accessibility(&self, target: &str) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Politeness, Role};
+        let reason = self.failure()?;
+        let button = |name: String, part: &str, rect: Rect| {
+            AccessNode::new(Role::Button)
+                .with_name(name)
+                .with_action_target(format!("{target}.{part}"))
+                .with_bounds(rect)
+        };
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(crate::i18n!("save-status-failed"))
+                .with_description(reason.to_owned())
+                .with_live(Politeness::Assertive)
+                .with_bounds(self.hit.card_rect)
+                .with_children(vec![
+                    button(
+                        crate::i18n!("save-status-retry"),
+                        "retry",
+                        self.hit.primary_action_rect,
+                    ),
+                    button(
+                        crate::i18n!("save-status-dismiss"),
+                        "dismiss",
+                        self.hit.secondary_action_rect,
+                    ),
+                ]),
+        )
+    }
+
+    /// Assistive technology activated `action_target` (one of
+    /// [`Self::accessibility`]'s buttons under `target`): the action it is.
+    pub fn perform(&mut self, target: &str, action_target: &str) -> Option<SaveAction> {
+        self.failure()?;
+        let part = action_target.strip_prefix(target)?.strip_prefix('.')?;
+        let action = match part {
+            "retry" => SaveAction::Retry,
+            "dismiss" => SaveAction::Dismiss,
+            _ => return None,
+        };
+        if action == SaveAction::Dismiss {
+            self.dismissed = true;
+        }
+        Some(action)
     }
 
     /// The reason of a failed save that is showing, if any.
@@ -651,5 +760,51 @@ mod tests {
         assert!(surface.failure().is_none(), "dismissed");
         assert!(surface.set(SaveState::Saving, much_later));
         assert!(surface.is_visible(much_later));
+    }
+
+    #[test]
+    fn the_saved_bubble_carries_a_quiet_detail_and_the_failure_its_actions() {
+        crate::i18n::I18nManager::init("en-US");
+        let t0 = Instant::now();
+        let mut surface = SaveStatusSurface::new();
+        surface.set_detail(Some("3 words".into()));
+        surface.set(SaveState::Saved, t0);
+        assert!(surface.bubble.text().ends_with(", 3 words"));
+        let later = t0 + DEFAULT_LINGER + Duration::from_millis(10);
+        surface.set_detail(Some("4 words".into()));
+        assert!(
+            surface.bubble.text().ends_with(", 4 words"),
+            "reads current"
+        );
+        assert!(
+            !surface.is_visible(later),
+            "but a new count does not reopen it"
+        );
+        assert!(surface.poke(later), "another page does");
+
+        assert!(
+            surface.accessibility("doc.save").is_none(),
+            "nothing to act on"
+        );
+        surface.set(SaveState::Failed("Disk full".into()), later);
+        assert!(!surface.poke(later), "a showing failure needs no reminder");
+        let node = surface.accessibility("doc.save").expect("the failure");
+        assert_eq!(node.description.as_deref(), Some("Disk full"));
+        let targets: Vec<_> = node
+            .children
+            .iter()
+            .filter_map(|child| child.action_target.clone())
+            .collect();
+        assert_eq!(targets, ["doc.save.retry", "doc.save.dismiss"]);
+        assert_eq!(surface.perform("doc.save", "other.retry"), None);
+        assert_eq!(
+            surface.perform("doc.save", "doc.save.retry"),
+            Some(SaveAction::Retry)
+        );
+        assert_eq!(
+            surface.perform("doc.save", "doc.save.dismiss"),
+            Some(SaveAction::Dismiss)
+        );
+        assert!(surface.failure().is_none());
     }
 }
