@@ -285,7 +285,7 @@ impl<'a> ChoiceCardFace<'a> {
 /// description and a trailing chevron, all one target.
 ///
 /// Activation follows [`Button`]: a click, Enter, Space or an assistive
-/// `Activate` writes `on_click_path` in the document.
+/// `Activate` runs [`ChoiceCard::on_click`].
 pub struct ChoiceCard {
     icon: Icon,
     title: String,
@@ -314,6 +314,14 @@ impl ChoiceCard {
             emphasized: false,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Run `f` on each activation: a click, Enter, Space or an assistive
+    /// `Activate`.
+    #[must_use]
+    pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.control = self.control.on_click(f);
+        self
     }
 
     /// Give the recommended path the accent surface.
