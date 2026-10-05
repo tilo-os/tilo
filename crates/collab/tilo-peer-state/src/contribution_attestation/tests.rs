@@ -1,8 +1,8 @@
 use super::*;
 use neighbour_wire::contribution::{
     ContributionAttestorV1, ContributionCheckpointBodyV1, ContributionContractV1,
-    ContributionDocumentBasisV1, ContributionOperationV1, ContributionReceiptV1,
-    ContributionTaskFrontierV1,
+    ContributionConversationReplyV1, ContributionDocumentBasisV1, ContributionOperationV1,
+    ContributionPurposeV1, ContributionReceiptV1, ContributionTaskFrontierV1,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
@@ -60,13 +60,13 @@ fn checkpoint_body(original: DeviceCert) -> ContributionCheckpointBodyV1 {
                 source_invocation: [11; 16],
                 action: "write-topic".into(),
                 contract: 0,
-                task: Some(ContributionTaskFrontierV1 {
+                purpose: Some(ContributionPurposeV1::Task(ContributionTaskFrontierV1 {
                     task_id: "task-a".into(),
                     agent: "scribe".into(),
                     run_epoch: 1,
                     direction_revision: 2,
                     task_basis: 0,
-                }),
+                })),
             }],
         }],
     }
@@ -143,11 +143,12 @@ fn governor_and_explicit_delegate_sign_only_canonical_exact_basis_checkpoints() 
     verify_contribution_checkpoint(&delegated, &fixture.governor, &revocations, 10).unwrap();
 
     let mut changed = delegated.clone();
-    changed.body.operations[0].receipts[0]
-        .task
-        .as_mut()
-        .unwrap()
-        .run_epoch = 2;
+    let Some(ContributionPurposeV1::Task(task)) =
+        changed.body.operations[0].receipts[0].purpose.as_mut()
+    else {
+        panic!("an exact Task receipt")
+    };
+    task.run_epoch = 2;
     assert!(verify_contribution_checkpoint(&changed, &fixture.governor, &revocations, 10).is_err());
     let mut missing_basis = delegated;
     missing_basis.body.task_bases.clear();
@@ -221,4 +222,99 @@ fn delegation_is_distinct_from_invitation_and_exactly_governor_bound() {
         fixture.governor_root.verifying_key(),
         fixture.host_root.verifying_key()
     );
+}
+
+fn conversation_body(original: DeviceCert, delivery: uuid::Uuid) -> ContributionCheckpointBodyV1 {
+    let mut body = checkpoint_body(original);
+    body.task_bases.clear();
+    let request = uuid::Uuid::from_u128(101);
+    let operation = &mut body.operations[0];
+    operation.record = "chat-record-a".into();
+    let receipt = &mut operation.receipts[0];
+    receipt.action = "complete-agent-message".into();
+    receipt.source_invocation = *uuid::Uuid::from_u128(303).as_bytes();
+    receipt.purpose = Some(ContributionPurposeV1::ConversationReply(
+        ContributionConversationReplyV1 {
+            room: ROOM.into(),
+            chat_record: operation.record.clone(),
+            channel: "channel-a".into(),
+            message: format!("m_{}", request.simple()),
+            request_invocation: *request.as_bytes(),
+            delivery_invocation: *delivery.as_bytes(),
+            agent: receipt.actor.clone(),
+        },
+    ));
+    body
+}
+
+#[test]
+fn conversation_checkpoints_preserve_parent_delivery_and_completion_without_a_task() {
+    let fixture = authorities();
+    for delivery in [uuid::Uuid::from_u128(101), uuid::Uuid::from_u128(202)] {
+        let body = conversation_body(fixture.host.clone(), delivery);
+        let signed = sign_contribution_checkpoint(
+            body.clone(),
+            ContributionAttestorV1::Governor {
+                certificate: Box::new(fixture.governor.clone()),
+            },
+            &fixture.governor,
+            &RevocationList::new(),
+            &fixture.governor_key,
+        )
+        .unwrap();
+        verify_contribution_checkpoint(&signed, &fixture.governor, &RevocationList::new(), 10)
+            .unwrap();
+        let encoded = postcard::to_allocvec(&signed).unwrap();
+        let decoded: neighbour_wire::contribution::DocumentContributionCheckpointV1 =
+            postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.body, body);
+        assert!(decoded.body.task_bases.is_empty());
+        assert_eq!(
+            decoded.body.operations[0].receipts[0].source_invocation,
+            *uuid::Uuid::from_u128(303).as_bytes()
+        );
+    }
+}
+
+#[test]
+fn conversation_checkpoint_signer_refuses_malformed_source_bindings() {
+    let fixture = authorities();
+    let original = conversation_body(fixture.host.clone(), uuid::Uuid::from_u128(202));
+    let refused = |body| {
+        assert!(
+            sign_contribution_checkpoint(
+                body,
+                ContributionAttestorV1::Governor {
+                    certificate: Box::new(fixture.governor.clone()),
+                },
+                &fixture.governor,
+                &RevocationList::new(),
+                &fixture.governor_key,
+            )
+            .is_err()
+        );
+    };
+    for mutation in 0..9 {
+        let mut body = original.clone();
+        let operation = &mut body.operations[0];
+        let receipt = &mut operation.receipts[0];
+        let Some(ContributionPurposeV1::ConversationReply(reply)) = receipt.purpose.as_mut() else {
+            panic!("an explicit Conversation reply")
+        };
+        match mutation {
+            0 => reply.room = "another-room".into(),
+            1 => reply.chat_record = "another-record".into(),
+            2 => reply.channel.clear(),
+            3 => reply.message = "m_wrong-parent".into(),
+            4 => reply.request_invocation = [0; 16],
+            5 => reply.delivery_invocation = [0; 16],
+            6 => reply.agent = "another-agent".into(),
+            7 => receipt.action = "write-topic".into(),
+            _ => {
+                assert_eq!(mutation, 8);
+                operation.app = "so.tilo.notes".into();
+            }
+        }
+        refused(body);
+    }
 }

@@ -2,7 +2,7 @@ use super::delegation::{validate_certificate, verify_contribution_delegation};
 use ed25519_dalek::{Signer as _, Verifier as _};
 use neighbour_wire::contribution::{
     CONTRIBUTION_CHECKPOINT_VERSION, ContributionAttestorV1, ContributionCheckpointBodyV1,
-    DocumentContributionCheckpointV1, MAX_CONTRIBUTION_BASIS_HEADS,
+    ContributionPurposeV1, DocumentContributionCheckpointV1, MAX_CONTRIBUTION_BASIS_HEADS,
     MAX_CONTRIBUTION_CHANGES_PER_OPERATION, MAX_CONTRIBUTION_CHECKPOINT_BYTES,
     MAX_CONTRIBUTION_RECEIPTS,
 };
@@ -105,6 +105,7 @@ impl ReferencedTables {
 
 fn validate_receipt(
     body: &ContributionCheckpointBodyV1,
+    operation: &neighbour_wire::contribution::ContributionOperationV1,
     receipt: &neighbour_wire::contribution::ContributionReceiptV1,
     referenced: &mut ReferencedTables,
 ) -> Result<(), String> {
@@ -125,16 +126,37 @@ fn validate_receipt(
     }
     referenced.certificates.insert(receipt.original_certificate);
     referenced.contracts.insert(receipt.contract);
-    if let Some(task) = &receipt.task {
-        if !valid_text(&task.task_id, 256, false)
-            || !valid_text(&task.agent, 128, false)
-            || task.agent != receipt.actor
-            || task.run_epoch == 0
-            || usize::try_from(task.task_basis).map_or(true, |index| index >= body.task_bases.len())
-        {
-            return Err("invalid contribution task frontier".into());
+    match &receipt.purpose {
+        Some(ContributionPurposeV1::Task(task)) => {
+            if !valid_text(&task.task_id, 256, false)
+                || !valid_text(&task.agent, 128, false)
+                || task.agent != receipt.actor
+                || task.run_epoch == 0
+                || usize::try_from(task.task_basis)
+                    .map_or(true, |index| index >= body.task_bases.len())
+            {
+                return Err("invalid contribution task frontier".into());
+            }
+            referenced.task_bases.insert(task.task_basis);
         }
-        referenced.task_bases.insert(task.task_basis);
+        Some(ContributionPurposeV1::ConversationReply(reply)) => {
+            let request = uuid::Uuid::from_bytes(reply.request_invocation);
+            if reply.room != body.room
+                || operation.app != "so.tilo.chat"
+                || reply.chat_record != operation.record
+                || !valid_text(&reply.chat_record, 256, false)
+                || !valid_text(&reply.channel, 256, false)
+                || !valid_text(&reply.agent, 128, false)
+                || reply.agent != receipt.actor
+                || request.is_nil()
+                || reply.delivery_invocation == [0; 16]
+                || reply.message != format!("m_{}", request.simple())
+                || receipt.action != "complete-agent-message"
+            {
+                return Err("invalid contribution Conversation reply frontier".into());
+            }
+        }
+        None => {}
     }
     Ok(())
 }
@@ -162,7 +184,7 @@ fn validate_operations(body: &ContributionCheckpointBodyV1) -> Result<(), String
             .filter(|count| *count <= MAX_CONTRIBUTION_RECEIPTS)
             .ok_or("contribution checkpoint receipt limit exceeded")?;
         for receipt in &operation.receipts {
-            validate_receipt(body, receipt, &mut referenced)?;
+            validate_receipt(body, operation, receipt, &mut referenced)?;
         }
     }
     if referenced.certificates.len() != body.certificates.len()
