@@ -40,6 +40,17 @@ mod authoring;
 /// binary **fails** the test rather than skipping it; without the binary the
 /// installation path cannot be exercised.
 pub(crate) fn tilo_install_bin() -> PathBuf {
+    // The remote native runner mounts its configured artifact directory
+    // (for example target/aarch64). The executed test and real installer
+    // still share a profile directory; use that concrete location first.
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(profile) = executable.parent().and_then(|deps| deps.parent())
+    {
+        let installer = profile.join("tilo-install");
+        if installer.is_file() {
+            return installer;
+        }
+    }
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
         .ancestors()

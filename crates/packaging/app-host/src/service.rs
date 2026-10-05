@@ -158,6 +158,63 @@ fn app_bin() -> std::path::PathBuf {
     )
 }
 
+fn require_offer_identity(
+    offer: &app_cli::CatalogueApp,
+    expected: &InstallExpectation,
+) -> Result<(), Error> {
+    let same_app = offer.package_id == expected.app_id;
+    if !same_app
+        || offer.version != expected.version
+        || offer.tapp_root_hash_hex != expected.package_root.to_hex()
+        || !offer
+            .publisher_pubkey_hex
+            .eq_ignore_ascii_case(&hex::encode(expected.publisher))
+        || offer.tapp_size_bytes != expected.size_bytes
+    {
+        return Err(Error::failed(
+            "The app catalogue changed; refresh Store before opening this version.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn install_offer_from_catalogue(
+    catalog: &Catalog,
+    registry: &str,
+    expected: &InstallExpectation,
+) -> Result<PackageId, Error> {
+    let offers = app_cli::version_offers(&expected.app_id, registry).map_err(failed)?;
+    let offer = offers
+        .iter()
+        .find(|offer| {
+            offer.version == expected.version
+                && offer.tapp_root_hash_hex == expected.package_root.to_hex()
+        })
+        .ok_or_else(|| {
+            Error::failed(
+                "This app version is no longer offered for this device; refresh Store.".into(),
+            )
+        })?;
+    require_offer_identity(offer, expected)?;
+    // The shared CLI pipeline fetches missing content-addressed blobs, verifies
+    // exact archive/root/publisher identities and provisions the signed runtime
+    // before replacing an app. Store must not implement another installer.
+    let installed = catalog
+        .list()
+        .map_err(failed)?
+        .iter()
+        .any(|package| package.id == expected.app_id);
+    if installed {
+        app_cli::install::update_app_reporting(offer, &mut |_| {}).map_err(failed)?;
+    } else {
+        app_cli::install::install_app(offer).map_err(failed)?;
+    }
+    let package = find(catalog, expected.package_root)?;
+    package
+        .package_id()
+        .ok_or_else(|| Error::failed("installed app has no package identity".into()))
+}
+
 fn flatpak_status_from(binary: &std::path::Path) -> Result<crate::client::FlatpakStatus, Error> {
     let probe = |args: &[&str]| {
         let mut command = std::process::Command::new(binary);
@@ -648,6 +705,45 @@ impl app_host::Server for AppHostServer {
         }
     }
 
+    fn install_offer(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::InstallOfferParams,
+        mut results: app_host::InstallOfferResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        let catalog = Arc::clone(&self.catalog);
+        async move {
+            let params = params.get().map_err(failed)?;
+            let registry = params
+                .get_registry()
+                .map_err(failed)?
+                .to_string()
+                .map_err(failed)?;
+            let expected = InstallExpectation {
+                package_root: parse_id(params.get_expected_root().map_err(failed)?)?,
+                publisher: params
+                    .get_expected_publisher()
+                    .map_err(failed)?
+                    .try_into()
+                    .map_err(|_| Error::failed("publisher key must be 32 bytes".into()))?,
+                app_id: params
+                    .get_app_id()
+                    .map_err(failed)?
+                    .to_string()
+                    .map_err(failed)?,
+                version: params
+                    .get_version()
+                    .map_err(failed)?
+                    .to_string()
+                    .map_err(failed)?,
+                size_bytes: params.get_expected_size_bytes(),
+            };
+            let id = blocking(move || install_offer_from_catalogue(&catalog, &registry, &expected))
+                .await?;
+            results.get().set_id(id.as_bytes());
+            Ok(())
+        }
+    }
+
     #[allow(
         clippy::manual_async_fn,
         reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
@@ -693,6 +789,57 @@ impl app_host::Server for AppHostServer {
 #[cfg(test)]
 mod command_tests {
     use super::{repositories_json_from, safe_host_diagnostic};
+
+    #[test]
+    fn catalogue_install_requires_the_exact_selected_signed_identity() {
+        let expected = crate::install::InstallExpectation {
+            package_root: tilo_app_package::PackageId::from_bytes([7; 32]),
+            publisher: [8; 32],
+            app_id: "so.tilo.notes".into(),
+            version: "1.2.3".into(),
+            size_bytes: 42,
+        };
+        let offer = app_cli::CatalogueApp {
+            package_id: expected.app_id.clone(),
+            display_name: "Notes".into(),
+            description: String::new(),
+            tagline: String::new(),
+            images: Vec::new(),
+            supported_languages: Vec::new(),
+            category: None,
+            version: expected.version.clone(),
+            registry: "Tilo main".into(),
+            download_url: "https://apps.tilo.so/notes.tapp".into(),
+            tapp_root_hash_hex: expected.package_root.to_hex(),
+            tapp_size_bytes: expected.size_bytes,
+            tapp_blake3_hex: "09".repeat(32),
+            architecture: std::env::consts::ARCH.into(),
+            isa: std::env::consts::ARCH.into(),
+            runtime: None,
+            publisher_pubkey_hex: hex::encode(expected.publisher),
+            trust: "verified".into(),
+        };
+        super::require_offer_identity(&offer, &expected).unwrap();
+        let mut replacements = Vec::new();
+        let mut changed = offer.clone();
+        changed.package_id = "so.tilo.settings".into();
+        replacements.push(changed);
+        let mut changed = offer.clone();
+        changed.version = "1.2.4".into();
+        replacements.push(changed);
+        let mut changed = offer.clone();
+        changed.tapp_root_hash_hex = "0a".repeat(32);
+        replacements.push(changed);
+        let mut changed = offer.clone();
+        changed.publisher_pubkey_hex = "0b".repeat(32);
+        replacements.push(changed);
+        let mut changed = offer;
+        changed.tapp_size_bytes += 1;
+        replacements.push(changed);
+        for replacement in replacements {
+            assert!(super::require_offer_identity(&replacement, &expected).is_err());
+        }
+    }
 
     #[test]
     fn flatpak_status_reads_host_apps_and_remotes_and_reports_failure() {

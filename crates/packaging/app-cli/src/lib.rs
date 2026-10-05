@@ -148,7 +148,7 @@ pub fn entry_to_app_for_channel(
 }
 
 /// The versions of `entry` this machine can run on `channel`.
-fn installable_versions(
+pub fn installable_versions(
     entry: &registry_types::RegistryEntry,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> impl Iterator<Item = &registry_types::RegistryVersion> {

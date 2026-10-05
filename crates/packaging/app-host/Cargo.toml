@@ -29,6 +29,7 @@ tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry and store; this daemon keeps none of its own.
 package-store = { path = "../package-store", features = ["store"] }
 app-registry = { path = "../app-registry" }
+app-cli = { path = "../app-cli" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 
 # Cap'n Proto RPC for the control socket, matching format-host.
