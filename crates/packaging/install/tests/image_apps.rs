@@ -25,6 +25,15 @@ use tilo_app_package::{Manifest, SigningIdentity, pack};
 const APP: &str = "so.tilo.settings";
 
 fn manifest_src(version: &str, pub_hex: &str) -> String {
+    manifest_requiring(version, pub_hex, None)
+}
+
+/// A manifest that, given `system`, requires that version of the system
+/// interface.
+fn manifest_requiring(version: &str, pub_hex: &str, system: Option<u32>) -> String {
+    let services = system
+        .map(|system| format!("\n[sandbox.services]\nsystem = \"required@{system}\"\n"))
+        .unwrap_or_default();
     format!(
         r#"
 [package]
@@ -46,7 +55,7 @@ mode = "off"
 
 [entrypoint]
 bin = "bin/app"
-"#
+{services}"#
     )
 }
 
@@ -75,12 +84,17 @@ impl Machine {
     }
 
     fn tapp(&self, version: &str, key: &SigningKey) -> PathBuf {
+        self.tapp_requiring(version, key, None)
+    }
+
+    fn tapp_requiring(&self, version: &str, key: &SigningKey, system: Option<u32>) -> PathBuf {
         let build = self.root.path().join(format!("build-{version}"));
         let payload = build.join("payload");
         std::fs::create_dir_all(payload.join("bin")).unwrap();
         std::fs::write(payload.join("bin/app"), version.as_bytes()).unwrap();
         let pub_hex = hex::encode(key.verifying_key().to_bytes());
-        let manifest = Manifest::from_toml_str(&manifest_src(version, &pub_hex)).unwrap();
+        let manifest =
+            Manifest::from_toml_str(&manifest_requiring(version, &pub_hex, system)).unwrap();
         let identity = SigningIdentity::from_signing_key(key.clone());
         let packed = pack(&payload, &manifest, &identity).expect("pack");
         let path = build.join("pkg.tapp");
@@ -95,8 +109,29 @@ impl Machine {
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", self.root.path().join("home"))
             .env("XDG_CONFIG_HOME", self.root.path().join("home/.config"))
-            .env("XDG_DATA_HOME", self.data());
+            .env("XDG_DATA_HOME", self.data())
+            .env("TILO_SYSTEM_INTERFACES", self.interfaces());
         c
+    }
+
+    /// The image's system-interface declaration; absent unless a test
+    /// writes one.
+    fn interfaces(&self) -> PathBuf {
+        self.root
+            .path()
+            .join("usr/share/tilo/system-interfaces.toml")
+    }
+
+    /// The OS now serves exactly `system` of the system interface.
+    fn serve_system(&self, system: &[u32]) {
+        let path = self.interfaces();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let versions: Vec<String> = system.iter().map(ToString::to_string).collect();
+        std::fs::write(
+            path,
+            format!("[interfaces]\nsystem = [{}]\n", versions.join(", ")),
+        )
+        .unwrap();
     }
 
     fn run(mut command: Command, args: &[&str]) -> (bool, String) {
@@ -275,4 +310,55 @@ fn an_image_update_supersedes_an_older_user_copy() {
         package_store::Registry::load(&machine.data().join("tilo-apps/registry.toml")).unwrap();
     assert!(user_rows.find(APP).is_none(), "{user_rows:?}");
     assert_eq!(machine.listed(), ("0.1.20".into(), "image".into()));
+}
+
+#[test]
+fn an_update_the_os_cannot_serve_is_refused_and_the_image_copy_is_the_fallback() {
+    let machine = Machine::new();
+    let baked = machine.tapp_requiring("0.1.10", &machine.image_key, Some(1));
+    assert!(
+        machine
+            .image_build(&["install", baked.to_str().unwrap(), "--allow-self-signed"])
+            .0
+    );
+    machine.serve_system(&[1]);
+    let update = |tapp: &PathBuf| {
+        machine.session(&[
+            "update",
+            APP,
+            "--from",
+            tapp.to_str().unwrap(),
+            "--require-publisher",
+            &pub_hex(&machine.registry_key),
+            "--allow-self-signed",
+        ])
+    };
+
+    // Phase `a_build_for_an_unserved_interface_is_refused`.
+    let for_newer_os = machine.tapp_requiring("0.2.0", &machine.registry_key, Some(2));
+    let (ok, out) = update(&for_newer_os);
+    assert!(!ok, "{out}");
+    assert!(
+        out.contains("system@2 (this system provides system@1)"),
+        "{out}"
+    );
+    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+
+    // Phase `an_os_serving_it_installs_and_runs_it`.
+    machine.serve_system(&[1, 2]);
+    let (ok, out) = update(&for_newer_os);
+    assert!(ok, "{out}");
+    assert_eq!(machine.listed(), ("0.2.0".into(), "user".into()));
+
+    // Phase `after_an_os_rollback_the_image_copy_runs`.
+    machine.serve_system(&[1]);
+    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+
+    // Phase `removing_the_update_keeps_the_image_copy`.
+    let (ok, out) = machine.session(&["uninstall", APP, "--keep-state"]);
+    assert!(ok, "{out}");
+    assert_eq!(machine.listed(), ("0.1.10".into(), "image".into()));
+    let user_rows =
+        package_store::Registry::load(&machine.data().join("tilo-apps/registry.toml")).unwrap();
+    assert!(user_rows.find(APP).is_none(), "{user_rows:?}");
 }
