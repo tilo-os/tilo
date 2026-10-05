@@ -2994,6 +2994,19 @@ impl FrameHarness {
     pub fn wait_until(
         &mut self,
         timeout: crate::time::Duration,
+        condition: impl FnMut(&Self) -> bool,
+    ) -> bool {
+        let background = crate::background::Background::current();
+        self.wait_until_on(timeout, || background.now(), condition)
+    }
+
+    /// [`Self::wait_until`] with `timeout` measured on `clock`: the
+    /// executor's clock for background work, the toolkit's clock for what
+    /// widgets animate on.
+    fn wait_until_on(
+        &mut self,
+        timeout: crate::time::Duration,
+        clock: impl Fn() -> crate::time::Instant,
         mut condition: impl FnMut(&Self) -> bool,
     ) -> bool {
         self.relayout();
@@ -3003,11 +3016,11 @@ impl FrameHarness {
             return true;
         }
         let background = crate::background::Background::current();
-        let Some(deadline) = background.now().checked_add(timeout) else {
+        let Some(deadline) = clock().checked_add(timeout) else {
             return false;
         };
         loop {
-            let now = background.now();
+            let now = clock();
             if now >= deadline {
                 return false;
             }
@@ -3032,8 +3045,12 @@ impl FrameHarness {
     /// panel sliding in) and no image load the frame asked for still in
     /// flight. Waits at most `bound` and returns whether it settled. A
     /// capture calls this before it writes, so shots match the live window.
+    ///
+    /// Animations run on the toolkit's clock ([`crate::time::now`]), so the
+    /// bound is measured on it too: an executor with a virtual clock (a
+    /// pumped test) cannot run the bound out before an entrance has ended.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
-        self.wait_until(bound, |driver| {
+        self.wait_until_on(bound, crate::time::now, |driver| {
             !driver.frame_schedule().needs_animation_frame
                 && !driver.root.has_pending_visual_work()
                 && crate::image_store::loads_in_flight() == 0
@@ -8199,9 +8216,26 @@ mod tests {
         );
     }
 
-    /// Animates until `until`, like a tab's entrance or a sliding panel.
+    /// Animates for `length` from the first time it is asked whether it
+    /// animates, like a tab's entrance or a sliding panel; `until` records
+    /// when that ends, so a slow harness start cannot end it unseen.
     struct Entrance {
-        until: crate::time::Instant,
+        length: crate::time::Duration,
+        until: std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
+    }
+
+    impl Entrance {
+        fn new() -> (
+            Self,
+            std::rc::Rc<std::cell::Cell<Option<crate::time::Instant>>>,
+        ) {
+            let until = std::rc::Rc::new(std::cell::Cell::new(None));
+            let entrance = Self {
+                length: crate::time::Duration::from_millis(150),
+                until: std::rc::Rc::clone(&until),
+            };
+            (entrance, until)
+        }
     }
 
     impl Widget for Entrance {
@@ -8226,7 +8260,13 @@ mod tests {
         ) {
         }
         fn needs_animation_frame(&self) -> bool {
-            crate::time::now() < self.until
+            let now = crate::time::now();
+            let until = self
+                .until
+                .get()
+                .unwrap_or_else(|| now.checked_add(self.length).unwrap_or(now));
+            self.until.set(Some(until));
+            now < until
         }
         fn name(&self) -> &str {
             "Entrance"
@@ -8240,14 +8280,23 @@ mod tests {
     fn a_capture_settles_animations_and_lands_on_the_window_ground() {
         // Case `capture_waits_until_the_animation_schedule_is_idle`.
         {
-            let until = crate::time::now()
-                .checked_add(crate::time::Duration::from_millis(150))
-                .unwrap();
-            let mut harness =
-                FrameHarness::new(State::new(), Box::new(Entrance { until }), (200, 100));
+            let (entrance, until) = Entrance::new();
+            let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
             assert!(harness.frame_schedule().needs_animation_frame);
-            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(5)));
+            assert!(harness.settle_for_capture(crate::HANG_BOUND));
             assert!(!harness.frame_schedule().needs_animation_frame);
+            let until = until.get().expect("the entrance started");
+            assert!(crate::time::now() >= until, "it ran the animation out");
+        }
+
+        // Case `a_virtual_executor_clock_does_not_cut_the_settle_short`.
+        {
+            let pumped = crate::background::Pumped::new();
+            let _entered = pumped.background().enter();
+            let (entrance, until) = Entrance::new();
+            let mut harness = FrameHarness::new(State::new(), Box::new(entrance), (200, 100));
+            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(5)));
+            let until = until.get().expect("the entrance started");
             assert!(crate::time::now() >= until, "it ran the animation out");
         }
 
