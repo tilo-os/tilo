@@ -1646,11 +1646,25 @@ impl GreeterApp {
     /// Environment handed to greetd's `StartSession`. Mirrors the
     /// `DesktopNames=tilo` advertised by the session `.desktop` file.
     fn session_env() -> Vec<String> {
-        vec![
+        let mut env = vec![
             "XDG_SESSION_TYPE=wayland".to_string(),
             "XDG_SESSION_DESKTOP=tilo".to_string(),
             "XDG_CURRENT_DESKTOP=tilo".to_string(),
-        ]
+        ];
+        // Explicit host diagnostics must survive greetd's clean session
+        // environment. Forward fixed booleans only; never forward scenarios,
+        // input gates, arbitrary environment or caller-supplied session argv.
+        for name in [
+            "TILO_PROFILE_PRESENTATION",
+            "TILO_PROFILE_GPU_STAGES",
+            "VELLO_GPU_TIMESTAMPS",
+            "VELLO_GPU_DISPATCH_TIMESTAMPS",
+        ] {
+            if std::env::var(name).is_ok_and(|value| value == "1") {
+                env.push(format!("{name}=1"));
+            }
+        }
+        env
     }
 
     /// The username this attempt is for.
@@ -2216,6 +2230,43 @@ impl Widget for GreeterApp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn diagnostic_session_environment_forwards_only_explicit_fixed_booleans() {
+        let mut guard = tilo_test_env::ScopedEnv::new();
+        guard
+            .set("TILO_NATIVE_SCENARIO", "secret-scenario")
+            .set("TILO_TEST_CONTROL_FIRST_USE", "mint-identity")
+            .set("TILO_PROFILE_PRESENTATION", "0")
+            .set("TILO_PROFILE_GPU_STAGES", "true")
+            .set("VELLO_GPU_TIMESTAMPS", "1;unexpected")
+            .set("VELLO_GPU_DISPATCH_TIMESTAMPS", "0");
+        let baseline = GreeterApp::session_env();
+        assert_eq!(
+            baseline,
+            vec![
+                "XDG_SESSION_TYPE=wayland",
+                "XDG_SESSION_DESKTOP=tilo",
+                "XDG_CURRENT_DESKTOP=tilo",
+            ]
+        );
+        guard
+            .set("TILO_PROFILE_PRESENTATION", "1")
+            .set("TILO_PROFILE_GPU_STAGES", "1")
+            .set("VELLO_GPU_TIMESTAMPS", "1")
+            .set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+        let enabled = GreeterApp::session_env();
+        assert_eq!(&enabled[..3], baseline.as_slice());
+        assert_eq!(
+            &enabled[3..],
+            [
+                "TILO_PROFILE_PRESENTATION=1",
+                "TILO_PROFILE_GPU_STAGES=1",
+                "VELLO_GPU_TIMESTAMPS=1",
+                "VELLO_GPU_DISPATCH_TIMESTAMPS=1",
+            ]
+        );
+    }
+
     use super::*;
     use automerge::{AutoCommit, ReadDoc};
     use std::collections::HashMap;
