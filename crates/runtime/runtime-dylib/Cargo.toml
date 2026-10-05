@@ -69,6 +69,10 @@ tilo-oauth = { path = "../../system/tilo-oauth" }
 async-imap.workspace = true
 agent-provider-config = { path = "../../agent/provider-config" }
 tilo-model-gateway = { path = "../../agent/model-gateway" }
+# Deterministic painting and subject-matte engines belong in the shared runtime. Canvas
+# keeps its resources and actions in the tapp without repeating these engines.
+tilo-wet-media = { path = "../../media/wet-media" }
+tilo-subject = { path = "../../platform/tilo-subject" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
 tilo-files = { path = "../../platform/tilo-files" }
 # Versioned format/network engines used by system apps. Keeping these in the
