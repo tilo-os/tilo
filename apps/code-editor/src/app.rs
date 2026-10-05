@@ -90,7 +90,7 @@ impl BottomPanelToggle {
 
     fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
         Self {
-            button: Self::button(&binding, false),
+            button: Self::button(binding, false),
             expanded: false,
             dirty: true,
         }
@@ -100,13 +100,13 @@ impl BottomPanelToggle {
         if expanded { "Hide panel" } else { "Show panel" }
     }
 
-    fn button(binding: &tilo_actions::ActionBinding<()>, expanded: bool) -> Button {
+    fn button(binding: tilo_actions::ActionBinding<()>, expanded: bool) -> Button {
         let icon = if expanded {
             ui::icons::Icon::ChevronDown
         } else {
             ui::icons::Icon::ChevronUp
         };
-        Button::icon_only(Self::ID, icon, Self::name(expanded)).on_action(binding.clone())
+        Button::icon_only(Self::ID, icon, Self::name(expanded)).on_action(binding)
     }
 
     /// Captures and past versions have no executor for the panel effect.

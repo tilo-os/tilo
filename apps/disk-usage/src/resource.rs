@@ -378,14 +378,12 @@ mod tests {
                 }),
                 "{scenario}: a capture must not bind unavailable device effects: {bindings:?}",
             );
-            let folders: Vec<_> = capture
-                .harness()
-                .controls()
-                .into_iter()
-                .filter(|control| control.role == ui::accesskit::Role::ListItem)
-                .collect();
             assert!(
-                !folders.is_empty(),
+                capture
+                    .harness()
+                    .controls()
+                    .into_iter()
+                    .any(|control| control.role == ui::accesskit::Role::ListItem),
                 "{scenario}: folder rows must remain visible"
             );
             let audit = capture.harness().native_app_audit();

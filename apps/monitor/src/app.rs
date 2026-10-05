@@ -823,7 +823,7 @@ impl MonitorApp {
 
     // ---- framework hosting ------------------------------------------------
 
-    pub(crate) fn attach_actions(&mut self, actions: ui::framework::Actions<Monitor>) {
+    pub(crate) fn attach_actions(&self, actions: ui::framework::Actions<Monitor>) {
         let mut shared = self.shared.borrow_mut();
         shared.actions = Some(actions);
         shared.revision += 1;
