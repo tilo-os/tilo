@@ -527,6 +527,10 @@ pub struct State {
     /// retaining this short bounded history lets us reject fabricated and
     /// stale serials instead of treating the opaque integer as authority.
     pub activation_serials: VecDeque<(Serial, u64, std::time::Instant)>,
+    /// Wayland clients (by connection index) the person has sent input to.
+    /// A window of one of these may have been closed from inside the app;
+    /// a window of any other that goes away unasked was lost.
+    pub(crate) clients_given_input: std::collections::HashSet<u32>,
     /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
     /// Per-peer virtual-seat attribution. Click focus scopes which shared
@@ -647,6 +651,11 @@ pub struct State {
     /// reload that only moves the active source switches groups instead of
     /// recompiling and re-sending the keymap to every client.
     applied_keyboard: crate::compositor::backend::drm::input_config::KeyboardSettings,
+    /// Whether clients' own key repeat is off because a remote participant
+    /// types: a release crossing the network late must not let a client
+    /// repeat the key meanwhile. The sender repeats a held key instead, and
+    /// local keyboard input turns client repeat back on.
+    remote_typing: bool,
     /// Combined output size in physical pixels, mirrored from the backend
     /// (`(0, 0)` until the first output is known). Used as the size in a
     /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
@@ -1168,6 +1177,7 @@ impl State {
             seat,
             serial_counter: 0,
             activation_serials: VecDeque::new(),
+            clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             personal_fabric_input: PersonalFabricInputHolders::default(),
@@ -1203,6 +1213,7 @@ impl State {
             output_presentation_sequences: HashMap::new(),
             fullscreen_target: None,
             applied_keyboard,
+            remote_typing: false,
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
@@ -1439,20 +1450,50 @@ impl State {
                 let active = settings.active_index;
                 self.applied_keyboard = settings;
                 self.activate_keyboard_source(active);
-                let (delay, rate) =
-                    crate::compositor::backend::drm::input_config::InputSettings::load()
-                        .key_repeat_params();
-                // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
-                keyboard.change_repeat_info(
-                    i32::try_from(rate).unwrap_or(i32::MAX),
-                    i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
-                );
+                let (rate, delay) = Self::local_key_repeat();
+                keyboard.change_repeat_info(if self.remote_typing { 0 } else { rate }, delay);
             }
             Err(error) => tracing::warn!(
                 sources = ?settings.source_ids,
                 %error,
                 "Wayland seat: requested XKB keymap did not compile; preserving the working keymap"
             ),
+        }
+    }
+
+    /// The configured client key repeat as `wl_keyboard.repeat_info` takes
+    /// it: rate in Hz, delay in milliseconds.
+    fn local_key_repeat() -> (i32, i32) {
+        let (delay, rate) = crate::compositor::backend::drm::input_config::InputSettings::load()
+            .key_repeat_params();
+        // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
+        (
+            i32::try_from(rate).unwrap_or(i32::MAX),
+            i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
+        )
+    }
+
+    /// Clients stop repeating keys on their own: a remote participant's
+    /// key is held exactly as long as the sender says, and repeats only
+    /// as the sender repeats it.
+    fn begin_remote_typing(&mut self) {
+        if std::mem::replace(&mut self.remote_typing, true) {
+            return;
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.change_repeat_info(0, Self::local_key_repeat().1);
+        }
+    }
+
+    /// The person at this machine types again: clients repeat held keys
+    /// with the configured rate and delay.
+    pub fn end_remote_typing(&mut self) {
+        if !std::mem::take(&mut self.remote_typing) {
+            return;
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let (rate, delay) = Self::local_key_repeat();
+            keyboard.change_repeat_info(rate, delay);
         }
     }
 
@@ -3399,26 +3440,41 @@ impl RemoteInputSink for State {
                 //
                 // Modifier state is *not* force-set: smithay's
                 // `key_input` maintains it from the keycode stream, so peers send Shift-press → A-press → A-release → Shift-release; the wire `modifiers` bitfield is diagnostics only.
-                if self.remote_seats.key_transition(peer, keysym, pressed)
-                    && let Some(keyboard) = self.seat.get_keyboard()
-                {
-                    let key_state = if pressed {
-                        KeyState::Pressed
+                //
+                // A press of a key the peer already holds is the sender's
+                // auto-repeat: the client sees one more stroke of it. Clients
+                // never repeat a remote key themselves, so a release that
+                // arrives late cannot leave one typing the key meanwhile.
+                let repeat = pressed && self.remote_seats.repeats(peer, keysym);
+                if pressed {
+                    self.begin_remote_typing();
+                }
+                let strokes: &[KeyState] = if repeat {
+                    &[KeyState::Released, KeyState::Pressed]
+                } else if self.remote_seats.key_transition(peer, keysym, pressed) {
+                    if pressed {
+                        &[KeyState::Pressed]
                     } else {
-                        KeyState::Released
-                    };
-                    // The compatibility wire's historical field name is
-                    // `keysym`, but the value is an evdev keycode. Smithay's
-                    // keyboard API consumes XKB keycodes (evdev + 8), exactly
-                    // like the local-client path.
-                    let _: Option<()> = keyboard.input(
-                        self,
-                        keysym.saturating_add(8).into(),
-                        key_state,
-                        serial,
-                        time,
-                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-                    );
+                        &[KeyState::Released]
+                    }
+                } else {
+                    &[]
+                };
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    for key_state in strokes {
+                        // The compatibility wire's historical field name is
+                        // `keysym`, but the value is an evdev keycode. Smithay's
+                        // keyboard API consumes XKB keycodes (evdev + 8), exactly
+                        // like the local-client path.
+                        let _: Option<()> = keyboard.input(
+                            self,
+                            keysym.saturating_add(8).into(),
+                            *key_state,
+                            serial,
+                            time,
+                            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                        );
+                    }
                 }
             }
         }
@@ -3862,6 +3918,12 @@ pub(crate) fn is_privileged_client(client: &Client) -> bool {
 /// registry, frame tracker — keys off one flat `SurfaceId`, avoiding a
 /// second client's window overwriting the first's. The id is the client's
 /// connection index in the high 32 bits, protocol id in the low 32 — both stable, so it can be recomputed rather than remembered, staying a plain `u64` for the peer-sync wire protocol.
+/// The connection index a [`surface_id`] was minted under.
+#[must_use]
+pub fn client_index_of(surface_id: u64) -> u32 {
+    u32::try_from(surface_id >> 32).unwrap_or(u32::MAX)
+}
+
 pub fn surface_id(surface: &WlSurface) -> u64 {
     let protocol_id = u64::from(surface.id().protocol_id());
     if let Some(client) = surface.client() {
@@ -5145,8 +5207,11 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::note_client_pump();
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        crate::shell::launcher::forget_surface_launch(surface_id);
-        self.closing_toplevels.remove(&surface_id);
+        let asked_to_close = self.closing_toplevels.remove(&surface_id).is_some();
+        let person_reached_it = self
+            .clients_given_input
+            .contains(&client_index_of(surface_id));
+        crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {

@@ -55,6 +55,8 @@ pub(crate) mod desktop_continuation;
 pub mod device_fabric;
 pub mod device_fabric_runtime;
 pub mod device_fabric_secrets;
+pub mod device_unlock;
+pub mod device_unlock_runtime;
 pub mod device_wake;
 pub mod display_bars;
 pub mod display_confirm;

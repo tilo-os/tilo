@@ -103,8 +103,9 @@ pub(crate) struct Shared {
     dismissed_peer_windows: Rc<RefCell<std::collections::HashSet<String>>>,
     /// Of those, the ones not reported yet.
     newly_dismissed: Rc<RefCell<Vec<String>>>,
-    /// The legacy applications the node beside the host runs, which the
-    /// person can open there and see here as legacy windows.
+    /// The applications the node beside the host runs that this desktop
+    /// does not (legacy ones, Tilo apps that need a host), which the person
+    /// can open there and see here as legacy windows.
     node_apps: Rc<RefCell<Vec<NodeApp>>>,
     /// Node applications the person asked to open, by id, for the page to
     /// ask the node.
@@ -114,14 +115,20 @@ pub(crate) struct Shared {
     paint_pages: Rc<RefCell<HashMap<String, Arc<tilo_browser_peer::remote_page::RemotePage>>>>,
 }
 
-/// Launch name of a legacy application the node runs.
+/// Launch name of an application the node runs.
 pub(crate) const NODE_APP_LAUNCH: &str = "tilo.node-app:";
 
-/// A legacy application on the node: its launch id there and its name.
+/// What search says of an application the node runs.
+const NODE_APP_DESCRIPTION: &str = "Runs on the node";
+
+/// An application on the node: its launch id there, its name, and for a
+/// Tilo application its package id.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub(crate) struct NodeApp {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 /// Launch name of the window showing the legacy window `key`.
@@ -276,9 +283,44 @@ impl Shared {
         (launch, close)
     }
 
-    /// The legacy applications the node runs, as the page listed them.
-    pub fn set_node_apps(&self, apps: Vec<NodeApp>) {
+    /// The applications the node runs, as the page listed them, but for
+    /// the Tilo applications this desktop opens itself.
+    pub fn set_node_apps(&self, mut apps: Vec<NodeApp>) {
+        apps.retain(|node| {
+            node.app
+                .as_deref()
+                .is_none_or(|package| application(package).is_none())
+        });
         *self.node_apps.borrow_mut() = apps;
+    }
+
+    /// The search entries of the applications the node runs, then of the
+    /// catalog's apps this desktop cannot open, the node's left out.
+    fn node_search_entries(&self) -> Vec<tilo_desktop_search::providers::AppEntry> {
+        let node_apps = self.node_apps.borrow();
+        let hosted: Vec<&str> = node_apps
+            .iter()
+            .filter_map(|node| node.app.as_deref())
+            .collect();
+        node_apps
+            .iter()
+            .map(|node| tilo_desktop_search::providers::AppEntry {
+                id: format!("{NODE_APP_LAUNCH}{}", node.id),
+                title: node.title.clone(),
+                category: node.app.as_deref().and_then(|package| {
+                    tilo_desktop_search::availability::catalog()
+                        .iter()
+                        .find(|app| app.id == package && !app.category.is_empty())
+                        .map(|app| app.category.into())
+                }),
+                description: Some(NODE_APP_DESCRIPTION.into()),
+                unavailable: None,
+            })
+            .chain(tilo_desktop_search::availability::unavailable_on(
+                &["web"],
+                &hosted,
+            ))
+            .collect()
     }
 
     /// The node applications the person asked to open since the last call.
@@ -591,21 +633,7 @@ impl TileSource for Tiles {
                 description: None,
                 unavailable: None,
             })
-            .chain(
-                self.shared
-                    .node_apps
-                    .borrow()
-                    .iter()
-                    .map(|app| tilo_desktop_search::providers::AppEntry {
-                        id: format!("{NODE_APP_LAUNCH}{}", app.id),
-                        title: app.title.clone(),
-                        category: None,
-                        description: None,
-                        unavailable: None,
-                    })
-                    .collect::<Vec<_>>(),
-            )
-            .chain(tilo_desktop_search::availability::unavailable_on(&["web"]))
+            .chain(self.shared.node_search_entries())
             .collect()
     }
 }

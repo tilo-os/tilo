@@ -518,6 +518,7 @@ dependencies = [
  "package-store",
  "registry-types",
  "reqwest",
+ "runtime-bundle",
  "serde",
  "serde_json",
  "tempfile",
@@ -576,6 +577,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "iroh-blobs",
+ "reqwest",
  "semver",
  "serde",
  "serde_json",
@@ -1082,7 +1084,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "shlex",
  "syn 2.0.117",
 ]
@@ -1553,6 +1555,7 @@ dependencies = [
  "tilo-app",
  "tilo-content",
  "tilo-files",
+ "tilo-subject",
  "tilo-test-env",
  "tilo-wet-media",
  "tracing",
@@ -2301,7 +2304,7 @@ checksum = "3c963350b2b08aa4b725d7802593245380ab53dacfedcaa971385fc33306c0d4"
 dependencies = [
  "comemo-macros",
  "parking_lot",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "siphasher",
  "slab",
 ]
@@ -2582,7 +2585,7 @@ dependencies = [
  "linebender_resource_handle",
  "log",
  "rangemap",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "self_cell",
  "skrifa 0.40.0",
  "smol_str 0.3.6",
@@ -4186,7 +4189,7 @@ dependencies = [
  "fluent-syntax",
  "intl-memoizer",
  "intl_pluralrules",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "self_cell",
  "smallvec",
  "unic-langid",
@@ -5483,7 +5486,7 @@ dependencies = [
  "kurbo",
  "moxcms",
  "phf 0.13.1",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "siphasher",
  "skrifa 0.42.1",
  "smallvec",
@@ -5540,7 +5543,7 @@ dependencies = [
  "hayro-jbig2",
  "hayro-jpeg2000",
  "memchr",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "smallvec",
  "zune-jpeg",
 ]
@@ -6809,7 +6812,7 @@ dependencies = [
  "portmapper",
  "rand 0.10.1",
  "reqwest",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
  "serde",
@@ -7386,7 +7389,7 @@ dependencies = [
  "pdf-writer",
  "png",
  "rayon",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustybuzz",
  "siphasher",
  "skrifa 0.42.1",
@@ -8879,7 +8882,7 @@ dependencies = [
  "noq-proto",
  "noq-udp",
  "pin-project-lite",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustls",
  "socket2",
  "thiserror 2.0.18",
@@ -8905,7 +8908,7 @@ dependencies = [
  "rand 0.10.1",
  "rand_pcg",
  "ring",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier 0.7.1",
@@ -11157,7 +11160,7 @@ dependencies = [
  "pin-project-lite",
  "quinn-proto",
  "quinn-udp",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustls",
  "socket2",
  "thiserror 2.0.18",
@@ -11179,7 +11182,7 @@ dependencies = [
  "rand 0.10.1",
  "rand_pcg",
  "ring",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier 0.7.1",
@@ -11920,6 +11923,102 @@ dependencies = [
 ]
 
 [[package]]
+name = "rten"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "639c5d2ce961f3e154878d1d48c2ac3451e5a6ea5d9c0b0d5f0da362f4c57dab"
+dependencies = [
+ "num_cpus",
+ "rayon",
+ "rten-base",
+ "rten-gemm",
+ "rten-onnx",
+ "rten-parallel",
+ "rten-shape-inference",
+ "rten-simd",
+ "rten-tensor",
+ "rten-vecmath",
+ "rustc-hash 2.1.3",
+ "smallvec",
+ "typeid",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "rten-base"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d03e46486326bd528b70e87095b920ab09b6b8d25064d4b3e80cddc18052686"
+
+[[package]]
+name = "rten-gemm"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "648ac7ea5e2a7937630eb5e36e64ae46398871b9761e5312e5e856950fca5af8"
+dependencies = [
+ "rayon",
+ "rten-base",
+ "rten-parallel",
+ "rten-simd",
+ "rten-tensor",
+]
+
+[[package]]
+name = "rten-onnx"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f5e1b53db6b98229a00ea28d0868c5d8078e4f8e891ae5e15bc519f526d9b43"
+
+[[package]]
+name = "rten-parallel"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e29f5ffc5bfd9a53dc31dbbbb1e18d7adebf4ac6c97f0e4778db0c92fad7ac"
+dependencies = [
+ "rayon",
+ "rten-base",
+]
+
+[[package]]
+name = "rten-shape-inference"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a11dc044d2062a73da9600699f5f94e14bf330bed2b417852ff49ccbda281062"
+dependencies = [
+ "rten-tensor",
+ "smallvec",
+]
+
+[[package]]
+name = "rten-simd"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b45ecd18c74788450eff4bb40b290e7b4ed95fbd243745028048960b4bd18fa"
+
+[[package]]
+name = "rten-tensor"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d6dc7c9e8164f73399bf71c8d638d18478365be3d682b65a9af52b166603ff"
+dependencies = [
+ "rayon",
+ "rten-base",
+ "rten-parallel",
+ "smallvec",
+ "typeid",
+]
+
+[[package]]
+name = "rten-vecmath"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdaec2ab84d663ce7c77cacfa68187683532808eabad844e3213571df5fdd11d"
+dependencies = [
+ "rten-base",
+ "rten-simd",
+]
+
+[[package]]
 name = "runtime"
 version = "0.1.0"
 dependencies = [
@@ -12059,6 +12158,7 @@ dependencies = [
 name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
@@ -12261,9 +12361,9 @@ checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
 
 [[package]]
 name = "rustc-hash"
-version = "2.1.1"
+version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustc_version"
@@ -13218,6 +13318,7 @@ dependencies = [
  "neighbour-wire",
  "notify",
  "os-actions",
+ "p256 0.14.0",
  "package-store",
  "parking_lot",
  "percent-encoding",
@@ -13300,6 +13401,7 @@ dependencies = [
  "tilo-thumbnail",
  "tilo-tts",
  "tilo-ui",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -14035,7 +14137,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38803281d1c23166c5ebcb455439a5d2afe711cc909cf88af72448c297756ad6"
 dependencies = [
  "kurbo",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "skrifa 0.42.1",
  "write-fonts",
 ]
@@ -14830,6 +14932,7 @@ dependencies = [
  "registry-types",
  "semver",
  "serde",
+ "serde_json",
  "tar",
  "tempfile",
  "thiserror 2.0.18",
@@ -14939,7 +15042,7 @@ dependencies = [
  "js-sys",
  "leb128",
  "rand 0.10.1",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "serde",
  "sha2 0.11.0",
  "smol_str 0.3.6",
@@ -15713,8 +15816,10 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-files",
  "tilo-relay-protocol",
+ "tilo-seal",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tracing",
  "wire-frame",
@@ -15854,7 +15959,9 @@ dependencies = [
  "agent-provider-config",
  "base64",
  "clap",
+ "image",
  "libc",
+ "local-model-service",
  "reqwest",
  "serde",
  "serde_json",
@@ -15864,6 +15971,7 @@ dependencies = [
  "tilo-clock",
  "tilo-net",
  "tilo-rt",
+ "tilo-segment",
  "tokio",
  "url",
  "wire-frame",
@@ -16587,6 +16695,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-segment"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "rten",
+ "rten-tensor",
+ "thiserror 2.0.18",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-sibling-unlock"
 version = "0.1.0"
 dependencies = [
@@ -16630,6 +16749,20 @@ dependencies = [
  "tilo-files",
  "tracing",
  "web-time",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-subject"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "hex",
+ "image",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tilo-model-gateway",
+ "tilo-segment",
  "workspace-hack",
 ]
 
@@ -16729,7 +16862,7 @@ dependencies = [
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustls",
  "serde",
  "serde_bytes",
@@ -17732,7 +17865,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb30dbbd9036155e74adad6812e9898d03ec374946234fbcebd5dfc7b9187b90"
 dependencies = [
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
 ]
 
 [[package]]
@@ -17746,6 +17879,12 @@ name = "typed-path"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e"
+
+[[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
 
 [[package]]
 name = "typenum"
@@ -17762,7 +17901,7 @@ dependencies = [
  "arrayvec",
  "comemo",
  "ecow",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "typst-eval",
  "typst-html",
  "typst-layout",
@@ -17818,7 +17957,7 @@ dependencies = [
  "comemo",
  "ecow",
  "indexmap",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "stacker",
  "toml 0.8.23",
  "typst-library",
@@ -17840,7 +17979,7 @@ dependencies = [
  "comemo",
  "ecow",
  "palette",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "time",
  "typst-assets",
  "typst-library",
@@ -17872,7 +18011,7 @@ dependencies = [
  "kurbo",
  "libm",
  "memchr",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustybuzz",
  "smallvec",
  "ttf-parser",
@@ -17927,7 +18066,7 @@ dependencies = [
  "regex-syntax",
  "roxmltree 0.21.1",
  "rust_decimal",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "rustybuzz",
  "serde",
  "serde_json",
@@ -17984,7 +18123,7 @@ dependencies = [
  "infer",
  "krilla",
  "krilla-svg",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "serde",
  "smallvec",
  "typst-assets",
@@ -18053,7 +18192,7 @@ dependencies = [
  "image",
  "indexmap",
  "itoa",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "ryu",
  "ttf-parser",
  "typst-assets",
@@ -18072,7 +18211,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92a20d79df5d10c7fb0b4f7c18e4b2671edfc21e5ed9ad9894e18cccefd1c70f"
 dependencies = [
  "ecow",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "serde",
  "toml 0.8.23",
  "typst-timing",
@@ -18105,7 +18244,7 @@ dependencies = [
  "once_cell",
  "portable-atomic",
  "rayon",
- "rustc-hash 2.1.1",
+ "rustc-hash 2.1.3",
  "semver",
  "siphasher",
  "smallvec",

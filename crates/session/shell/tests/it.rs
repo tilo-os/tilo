@@ -181,6 +181,8 @@ mod qs_actions_click_routing;
 mod real_apps_visual;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
+#[path = "remote_typing_wire.rs"]
+mod remote_typing_wire;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
 #[path = "runtime_daemon_process.rs"]

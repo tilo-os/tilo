@@ -437,11 +437,11 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
         let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap()]);
         assert!(!ok, "install must refuse: {out}{err}");
         assert!(
-            err.contains("declares runtime `tilo-runtime/2025.06`"),
+            err.contains("needs runtime `tilo-runtime/2025.06`"),
             "{err}"
         );
         assert!(
-            err.contains("tilo-install runtime install --version 2025.06"),
+            err.contains("app install so.tilo.lifecycle"),
             "the refusal must name the command that fixes it: {err}"
         );
         assert!(err.contains("--ignore-missing-runtime"), "{err}");
@@ -469,7 +469,7 @@ fn dry_runs_and_runtime_dependencies_are_reported_before_anything_changes() {
         let (ok, out, err) = env.cmd(&["install", pkg.to_str().unwrap(), "--dry-run"]);
         assert!(ok, "{out}{err}");
         assert!(out.contains("tilo-runtime/2025.06 MISSING"), "{out}");
-        assert!(out.contains("--with-runtime"), "{out}");
+        assert!(out.contains("--ignore-missing-runtime"), "{out}");
     }
 }
 

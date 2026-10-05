@@ -21,6 +21,7 @@ on:
       - "dist/apps/**"
       - "os/scripts/build-thin-apps.sh"
       - "os/scripts/bake-runtime-bundle.sh"
+      - "os/scripts/stamp-runtime.sh"
       - "os/scripts/verify-elf-hardening.sh"
       - "os/Containerfile.builder"
       - "os/external-assets/github-assets.tsv"
@@ -608,6 +609,7 @@ jobs:
           path: |
             dist/app-release/tapp/*.tapp
             dist/app-release/runtime/**
+            dist/app-release/runtime-package/**
             dist/app-release/SHA256SUMS
             dist/app-release/index.json
             dist/app-release/publication-receipt.json

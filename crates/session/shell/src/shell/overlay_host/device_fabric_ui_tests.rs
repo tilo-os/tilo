@@ -53,6 +53,7 @@ fn fixture() -> (DeviceFabricView, DeviceId) {
             revertible_calibrations: Vec::new(),
             tethering: Vec::new(),
             remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView::default(),
+            device_unlocks: Vec::new(),
         },
         remote,
     )

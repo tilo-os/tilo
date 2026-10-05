@@ -68,6 +68,18 @@ fn envelope_for(
     // The action declares what it is; a context may only say a content
     // action is nobody's step this time (a record's first-run seed).
     let change = action.change_kind();
+    // What history calls this step: what the value did, in its own words
+    // ("Recolour 2 marks"), read before it applies, over the label of the
+    // action it came through.
+    let context = context.map(|mut context| {
+        if let Some(label) = action
+            .history_label(doc)
+            .filter(|label| !label.trim().is_empty())
+        {
+            context.action_label = label;
+        }
+        context
+    });
     let context = match context {
         Some(context) if change.is_content() => Some(context),
         Some(context) => Some(context.with_change(change)),

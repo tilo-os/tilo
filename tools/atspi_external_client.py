@@ -237,16 +237,65 @@ class AtspiClient:
         result = self.call(path, "org.a11y.atspi.EditableText.SetTextContents", value, check=False)
         return "true" in result
 
+    def clickable(self, tree: dict[str, str], expected: str) -> list[str]:
+        """Paths of the nodes named EXPECTED that offer AT-SPI's click action."""
+        return [
+            path for path in self.named(tree, expected)
+            if "'click'" in self.call(path, "org.a11y.atspi.Action.GetActions", check=False)
+        ]
+
     def click(self, tree: dict[str, str], expected: str) -> None:
-        for path in self.named(tree, expected):
-            actions = self.call(path, "org.a11y.atspi.Action.GetActions", check=False)
-            if "'click'" not in actions:
-                continue
+        for path in self.clickable(tree, expected):
             result = self.call(path, "org.a11y.atspi.Action.DoAction", "0")
             if "true" not in result:
                 raise GateError(f"AT-SPI action {expected!r} was rejected: {result.strip()}")
             return
         raise GateError(f"AT-SPI tree has no click-capable node named {expected!r}")
+
+
+# Below its breakpoint an app built on the shared shell shows one screen at a
+# time: it opens on the selected pane, with a Back arrow to its navigation list
+# (crates/sdk/ui-core/src/widget/app_shell.rs). A tiled desktop window is often
+# that narrow. Someone who cannot see an entry there goes back to the list once.
+NARROW_BACK = "Back"
+
+
+def wait_for_reachable(
+    client: AtspiClient,
+    names: tuple[str, ...],
+    subject: str,
+    limit: int = TREE_NODE_LIMIT,
+    clickable: bool = False,
+) -> dict[str, str]:
+    """The app's tree once it exposes every name in NAMES (as something that
+    can be clicked, with CLICKABLE), going back from a narrow window's pane to
+    its list once if that is where they are."""
+    find = client.clickable if clickable else client.named
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    latest: dict[str, str] = {}
+    went_back = False
+    while True:
+        try:
+            latest = client.tree(limit)
+            if all(find(latest, name) for name in names):
+                return latest
+            if not went_back and client.clickable(latest, NARROW_BACK):
+                client.click(latest, NARROW_BACK)
+                went_back = True
+                # The list replaces the pane; give the deadline back for it.
+                deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        except GateError:
+            # AccessKit can replace a subtree while it is walked; walk again.
+            pass
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(POLL_SECONDS * 4)
+    observed = "\n".join(sorted({name.strip() for name in latest.values() if name.strip()}))
+    raise GateError(
+        f"{subject}: tree never exposed {'click-capable ' if clickable else ''}"
+        f"{', '.join(names)}{' (also not after going Back)' if went_back else ''}; "
+        f"observed AT-SPI names:\n{observed}"
+    )
 
 
 def bus_pids(address: str) -> dict[str, int]:
@@ -623,7 +672,7 @@ def exercise(scenario: Scenario, address: str) -> None:
     bus_name, pid = open_in_session(address, scenario.app_name)
     try:
         client = AtspiClient(address, bus_name)
-        initial = wait_for_tree(client, (scenario.root, *scenario.required), scenario.app_id)
+        initial = wait_for_reachable(client, (scenario.root, *scenario.required), scenario.app_id)
         client.click(initial, scenario.action)
         wait_for_tree(client, scenario.after_action, scenario.app_id)
     except GateError as error:
@@ -839,16 +888,12 @@ def settings_network(address: str) -> None:
     bus_name, pid = open_in_session(address, SETTINGS_APP_NAME)
     try:
         client = AtspiClient(address, bus_name)
-        deadline = time.monotonic() + START_TIMEOUT_SECONDS
-        while True:
-            try:
-                tree = client.tree(SHELL_TREE_NODE_LIMIT)
-                client.click(tree, NETWORK_PANE)
-                break
-            except GateError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(POLL_SECONDS * 4)
+        # The Network pane's heading is also named "Network"; the category
+        # entry is the one that can be clicked.
+        tree = wait_for_reachable(
+            client, (NETWORK_PANE,), SETTINGS_APP_NAME, SHELL_TREE_NODE_LIMIT, clickable=True,
+        )
+        client.click(tree, NETWORK_PANE)
         deadline = time.monotonic() + NETWORK_TIMEOUT_SECONDS
         problems: list[str] = ["the pane was never read"]
         names: list[str] = []

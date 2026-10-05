@@ -75,7 +75,11 @@ fn assert_xrgb_pixels_eq(actual: &[u8], expected: &[u8], label: &str) {
     );
 }
 
-fn settled_builder() -> PopulatedShellFixture {
+/// A settled fixture, and the guard pinning the bar's clock while it lives: two paints
+/// compared pixel for pixel must not straddle a minute.
+fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
+    let mut clock = tilo_test_env::ScopedEnv::new();
+    clock.set("TILO_CLOCK", "09:41");
     // The test needs state transitions, not a time-dependent animation sample. The explicit
     // fixture receives reduced motion before its initial layout; benchmark inputs stay normal.
     let mut frame = PopulatedShellFixture::new(
@@ -88,7 +92,7 @@ fn settled_builder() -> PopulatedShellFixture {
         !warm.encoding().is_empty(),
         "the desktop warm paint must record source commands"
     );
-    frame
+    (frame, clock)
 }
 
 fn assert_legacy_and_segmented_match(
@@ -189,7 +193,7 @@ fn paint_retained_and_compare(
 
 #[test]
 fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycle() {
-    let mut frame = settled_builder();
+    let (mut frame, _clock) = settled_builder();
 
     assert!(!frame.chrome().overlays.quick_settings);
     let initial_pixels = legacy_and_segmented_pixels(&mut frame, "initial desktop", false);
@@ -209,7 +213,7 @@ fn native_4k_legacy_and_segmented_shell_frames_match_through_quick_settings_cycl
 
 #[test]
 fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dense() {
-    let mut frame = settled_builder();
+    let (mut frame, _clock) = settled_builder();
     frame.theme.tokens.elevation.e4.blur = 120.0;
     frame.theme.tokens.elevation.e4.offset_y = 40.0;
 
@@ -300,7 +304,7 @@ fn native_4k_retained_quick_settings_damage_covers_large_shadow_and_matches_dens
 
 #[test]
 fn workspace_root_rebuild_forces_dense_boundary_and_keeps_live_topbar_pixels() {
-    let mut frame = settled_builder();
+    let (mut frame, _clock) = settled_builder();
     let baseline = frame.paint_with_damage();
     assert!(!baseline.scene.encoding().is_empty());
     assert!(
