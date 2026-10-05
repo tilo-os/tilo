@@ -4359,19 +4359,27 @@ mod tests {
     }
 
     fn onboarding_frame() -> (FrameBuilder, tempfile::TempDir) {
+        let (fb, identity_dir, _press) = onboarding_frame_with_presser();
+        (fb, identity_dir)
+    }
+
+    /// An onboarding frame plus a way to take a setup action as its button
+    /// would, for tests that walk past a step rather than exercise it.
+    fn onboarding_frame_with_presser()
+    -> (FrameBuilder, tempfile::TempDir, Box<dyn Fn(&'static str)>) {
         let identity_dir = tempfile::tempdir().expect("temporary identity directory");
         let mut fb = FrameBuilder::new((1280, 800));
         let identity_path = identity_dir.path().join("primary.json");
-        fb.enable_test_onboarding(crate::onboarding_view::OnboardingView::with_minter(
-            Box::new(move || {
-                Ok(crate::onboarding::MintedIdentity {
-                    fingerprint: "ab".repeat(32),
-                    path: identity_path.clone(),
-                })
-            }),
-        ));
+        let view = crate::onboarding_view::OnboardingView::with_minter(Box::new(move || {
+            Ok(crate::onboarding::MintedIdentity {
+                fingerprint: "ab".repeat(32),
+                path: identity_path.clone(),
+            })
+        }));
+        let press = view.presser();
+        fb.enable_test_onboarding(view);
         fb.relayout();
-        (fb, identity_dir)
+        (fb, identity_dir, press)
     }
 
     #[test]
@@ -4572,14 +4580,13 @@ mod tests {
         }
 
         fn native_oobe_external_tree_replaces_step_and_updates_control_state() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
             let intro = fb.build_a11y_tree_update(focus, 1.0);
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-                .expect("begin identity setup");
+            press(crate::onboarding_view::KEY_BEGIN);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
@@ -4676,10 +4683,9 @@ mod tests {
             ));
             assert_eq!(
                 doc.get(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN)
-                    .expect("read begin action")
-                    .and_then(|(value, _)| value.as_bool()),
-                Some(true),
-                "activation must write the begin action into the document"
+                    .expect("read begin action"),
+                None,
+                "activation is a view action, never a document write"
             );
 
             fb.pump_apps(&mut doc, &automerge::ROOT);
@@ -4694,14 +4700,18 @@ mod tests {
         }
 
         fn native_oobe_backup_tab_order_reaches_fields_acknowledgement_and_continue() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             for key in [
                 crate::onboarding_view::KEY_BEGIN,
                 crate::onboarding_view::KEY_UNDERSTOOD,
             ] {
-                doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
+                if key == crate::onboarding_view::KEY_UNDERSTOOD {
+                    doc.put(&automerge::ROOT, key, true).expect("advance OOBE");
+                } else {
+                    press(key);
+                }
                 fb.pump_apps(&mut doc, &automerge::ROOT);
                 fb.relayout();
                 // The replacement subtree must sync once before a gated control
@@ -4719,8 +4729,7 @@ mod tests {
             .expect("acknowledge identity protection");
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_CREATE, true)
-                .expect("create identity");
+            press(crate::onboarding_view::KEY_CREATE);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.pump_apps(&mut doc, &automerge::ROOT);
@@ -4811,10 +4820,9 @@ mod tests {
         }
 
         fn native_oobe_focus_order_excludes_disabled_controls() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut doc = AutoCommit::new();
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-                .expect("begin identity setup");
+            press(crate::onboarding_view::KEY_BEGIN);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
 
@@ -5224,7 +5232,7 @@ mod tests {
         }
 
         fn native_oobe_step_transition_reseats_focus_on_new_first_control() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
@@ -5233,8 +5241,7 @@ mod tests {
                 Some("Use my existing Tilo identity")
             );
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_BEGIN, true)
-                .expect("begin identity setup");
+            press(crate::onboarding_view::KEY_BEGIN);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);
@@ -5246,19 +5253,13 @@ mod tests {
         }
 
         fn native_oobe_step_transition_keeps_the_new_page_at_its_top() {
-            let (mut fb, _identity_dir) = onboarding_frame();
+            let (mut fb, _identity_dir, press) = onboarding_frame_with_presser();
             let mut focus = None;
             let mut doc = AutoCommit::new();
             fb.reconcile_native_focus(&mut focus);
 
-            doc.put(&automerge::ROOT, crate::onboarding_view::KEY_EXISTING, true)
-                .expect("open the use-existing choice");
-            doc.put(
-                &automerge::ROOT,
-                crate::onboarding_view::KEY_CHOOSE_RESTORE,
-                true,
-            )
-            .expect("open identity restore");
+            press(crate::onboarding_view::KEY_EXISTING);
+            press(crate::onboarding_view::KEY_CHOOSE_RESTORE);
             fb.pump_apps(&mut doc, &automerge::ROOT);
             fb.relayout();
             fb.reconcile_native_focus(&mut focus);

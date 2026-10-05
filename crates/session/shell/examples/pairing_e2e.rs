@@ -15,8 +15,8 @@
 //!    under `sudo` to play that part.
 //! 3. The question reaches the prompt handle, is rendered by
 //!    `PairingPromptView`, and the PNG is written out.
-//! 4. The answer is delivered through the widget's own CRDT key, exactly as a
-//!    click would, and travels back to the caller.
+//! 4. The answer is delivered as a click on the dialog's primary action, and
+//!    travels back to the caller.
 //!
 //! This is a tool rather than a test because it requires Bluetooth hardware;
 //! every step that cannot observe its subject exits non-zero.
@@ -25,9 +25,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use automerge::{ScalarValue, transaction::Transactable};
 use shell::bluetooth::{PairingPromptHandle, PairingService};
-use shell::bluetooth_prompt::{KEY_ACCEPT, PairingPromptView};
+use shell::bluetooth_prompt::PairingPromptView;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::State;
 use ui::offscreen::OffscreenRenderer;
@@ -156,11 +155,9 @@ async fn run() -> Result<(), String> {
     render(&mut view, &out)?;
     println!("render   wrote {}", out.display());
 
-    // 5. Answer through the widget's own key, as a click would.
+    // 5. Answer as a click on the primary action would.
     let mut state = State::new();
-    let _ = state
-        .doc
-        .put(&state.root, KEY_ACCEPT, ScalarValue::Boolean(true));
+    view.press_accept();
     view.sync(&mut state.doc, &state.root);
     let reply = view
         .take_answer()
