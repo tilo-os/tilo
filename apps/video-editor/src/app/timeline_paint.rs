@@ -122,17 +122,10 @@ impl VideoEditorApp {
     ) {
         let c = &theme.tokens.colors;
         let ground = c.surfaces.content;
-        // The timeline stands on the window's own ground; one hairline says
-        // where the panes above it end, and one more under the ruler band.
-        ui::surface::separator(
-            scene,
-            tf,
-            r.timeline.x0,
-            r.timeline.x1,
-            r.timeline.y0 + 0.5,
-            0.0,
-            ground,
-        );
+        // The timeline stands on the window's own ground; the divider the
+        // person drags says where the panes above it end, and one hairline
+        // more lies under the ruler band.
+        self.timeline_split.paint(scene, tf, ground, theme);
         ui::surface::separator(
             scene,
             tf,
@@ -323,6 +316,15 @@ impl VideoEditorApp {
         }
 
         // --- lanes + headers + clips ---
+        // Lanes scroll under the ruler: their stripes and heads stay inside
+        // the band below it.
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            tf,
+            &Rect::new(r.timeline.x0, r.lanes.y0, r.timeline.x1, r.timeline.y1),
+        );
         let lanes = self.lane_rects(r);
         // One lift of the ground for a lane and its head, so the two read as
         // one row of the timeline.
@@ -431,6 +433,7 @@ impl VideoEditorApp {
             }
         }
 
+        scene.pop_layer();
         // Clip bodies clipped to the lane area so they don't bleed over the gutter/ruler.
         scene.push_layer(
             Fill::NonZero,
@@ -632,8 +635,26 @@ impl VideoEditorApp {
             Button::paint(scene, tf, tr, theme, &face);
         }
 
-        // Horizontal scrollbar, floated over the bottom of the lane area.
+        // Lanes that go on past the band fade out there.
+        let band = Rect::new(r.timeline.x0, r.lanes.y0, r.timeline.x1, r.timeline.y1);
+        let m = self.lanes_metrics(r);
+        if self.lane_scroll > 0.5 {
+            ui::surface::content_edge_fade(scene, tf, band, ui::surface::ContentEdge::Top, ground);
+        }
+        if m.max_scroll() - self.lane_scroll > 0.5 {
+            ui::surface::content_edge_fade(
+                scene,
+                tf,
+                band,
+                ui::surface::ContentEdge::Bottom,
+                ground,
+            );
+        }
+
+        // Horizontal scrollbar, floated over the bottom of the lane area,
+        // and the lanes' vertical one at their trailing edge.
         self.draw_scrollbar(scene, tf, theme, ScrollPane::Timeline, r);
+        self.draw_scrollbar(scene, tf, theme, ScrollPane::Lanes, r);
     }
 
     /// The playhead's time tag in the ruler: its words and its chip.

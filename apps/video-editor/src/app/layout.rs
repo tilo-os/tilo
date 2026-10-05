@@ -141,7 +141,7 @@ impl VideoEditorApp {
         if project_btn.x1 > import_btn.x0 - gap {
             project_btn = Rect::ZERO;
         }
-        let timeline_top = (r.y1 - self.timeline_height()).max(topbar.y1 + 80.0);
+        let timeline_top = self.timeline_top(topbar.y1, r.y1);
         let timeline = Rect::new(r.x0, timeline_top, r.x1, r.y1);
         let mid_top = topbar.y1;
         let mid_bot = timeline.y0;
