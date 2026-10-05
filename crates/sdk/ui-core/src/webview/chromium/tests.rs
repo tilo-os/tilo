@@ -2088,13 +2088,10 @@ fn owned_navigation_concurrent_cancel_cannot_overtake_admitted_command() {
 #[test]
 #[cfg(unix)]
 fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
-    // Closing the command queue drops the helper's stdin. Keep its output
-    // alive independently so an unrelated helper EOF cannot win the first
-    // failure race and wake the callback instead of the cancellation refusal.
-    // The normal runtime supervisor kills and reaps this blocked helper.
-    let (dir, host) = helper_fixture(
-        "profile=${1#--profile=}\nmkfifo \"$profile/hold-open\" || exit 1\nexec cat \"$profile/hold-open\"",
-    );
+    // Closing the command queue drops the helper's stdin. Keep the helper and
+    // its stdout alive past that EOF so a racing "engine disconnected/exited"
+    // failure cannot claim the one-shot failure report before the refusal.
+    let (dir, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
     let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
     let enabled = Arc::new(AtomicBool::new(false));
     let reentered = Arc::new(AtomicBool::new(false));

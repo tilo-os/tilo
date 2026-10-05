@@ -2509,6 +2509,18 @@ impl TextRenderer {
         max_width: f32,
         max_lines: usize,
     ) -> Vec<String> {
+        self.clamp_to_lines_style(text, max_width, max_lines, style)
+    }
+
+    /// Style-aware line clamping. Wrapping and the final truncation marker
+    /// use the same font, weight and features as the text that will be drawn.
+    pub fn clamp_to_lines_style(
+        &mut self,
+        text: &str,
+        max_width: f32,
+        max_lines: usize,
+        style: &TextStyle,
+    ) -> Vec<String> {
         if max_lines == 0 || text.is_empty() || max_width <= 0.0 {
             return Vec::new();
         }
@@ -2517,14 +2529,20 @@ impl TextRenderer {
         }
         let wrapped = self.wrap_lines(text, style, max_width);
         if wrapped.len() <= max_lines {
-            return wrapped;
+            return wrapped
+                .into_iter()
+                .map(|line| self.elide_to_width_style(&line, max_width, style))
+                .collect();
         }
         // Keep the first `max_lines - 1` whole lines, then merge the rest
         // onto the final line and elide it as the truncation marker.
         let (head, tail) = wrapped
             .split_at_checked(max_lines.saturating_sub(1))
             .unwrap_or((&wrapped, &[]));
-        let mut kept: Vec<String> = head.to_vec();
+        let mut kept: Vec<String> = head
+            .iter()
+            .map(|line| self.elide_to_width_style(line, max_width, style))
+            .collect();
         let remainder: String = tail.join(" ");
         kept.push(self.elide_to_width_style(&remainder, max_width, style));
         kept
@@ -4274,6 +4292,44 @@ mod tests {
                 hl_paths > plain_paths,
                 "highlight must add a fill path: plain={plain_paths} highlighted={hl_paths}",
             );
+        }
+    }
+
+    #[test]
+    fn styled_line_clamping_keeps_drawn_weight_within_the_budget() {
+        for scale in [1.0, 2.0] {
+            with_layout_renderer(scale, |renderer| {
+                let title = "Review the launch announcement, compact navigation, translated labels, and final release checklist";
+                let style = TextStyle::new(13.0).with_weight(TextWeight::Semibold);
+                let width = 240.0;
+                assert!(renderer.measure_style(title, None, &style).0 > width);
+                let lines = renderer.clamp_to_lines_style(title, width, 2, &style);
+                assert_eq!(lines.len(), 2);
+                assert!(lines.last().is_some_and(|line| line.ends_with(ELLIPSIS)));
+                for line in &lines {
+                    let (actual_width, height) = renderer.measure_style(line, None, &style);
+                    assert!(height > 0.0, "real glyph metrics must be observable");
+                    assert!(actual_width <= width + 0.1, "{line:?} exceeds {width}");
+                }
+                assert_eq!(
+                    renderer.clamp_to_lines_style("Review", width, 2, &style),
+                    ["Review"]
+                );
+                assert!(
+                    renderer
+                        .clamp_to_lines_style(title, width, 0, &style)
+                        .is_empty()
+                );
+                assert_eq!(
+                    renderer.clamp_to_lines_style(title, width, 1, &style),
+                    [renderer.elide_to_width_style(title, width, &style)]
+                );
+                let unbreakable = "abcdefghijklmnopqrstuvwxyzzabcdefghijklmnopqrstuvwxyzz";
+                let lines = renderer.clamp_to_lines_style(unbreakable, width, 2, &style);
+                assert_eq!(lines.len(), 1);
+                assert!(lines[0].ends_with(ELLIPSIS));
+                assert!(renderer.measure_style(&lines[0], None, &style).0 <= width + 0.1);
+            });
         }
     }
 
