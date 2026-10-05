@@ -33,7 +33,7 @@ use ui::widget::{
     Slider, SliderFace, TransportControl, TransportFace,
 };
 use vello::peniko::BlendMode;
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 // ---- owned per-frame display rows (decouple draw from &self.lib borrow) ---
@@ -1037,54 +1037,17 @@ impl Widget for MusicApp {
             self.dirty = true;
             return;
         }
-        match event {
-            WindowEvent::CursorMoved { .. } => {
-                self.on_cursor_moved(event, ctx.scale_factor, ctx.state, ctx.handled);
+        // The body's scrolling: wheel and touchpad over it, its bar, and
+        // Page Up/Down, Home/End and the arrows.
+        if let Some(theme) = self.frame_theme.take() {
+            self.dirty |= self.body_scroll.handle_event(event, ctx, &theme);
+            self.frame_theme = Some(theme);
+            if *ctx.handled {
+                self.dirty = true;
+                return;
             }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } => {
-                self.on_right_click(ctx.state, ctx.handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.on_left_press(ctx.state, ctx.handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Released,
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.on_left_release(ctx.state, ctx.handled);
-            }
-            WindowEvent::MouseWheel { delta, .. } => {
-                self.on_wheel(*delta, ctx.scale_factor, ctx.handled);
-            }
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        text,
-                        ..
-                    },
-                ..
-            } => {
-                self.on_key(
-                    logical_key,
-                    text.as_deref(),
-                    *ctx.modifiers,
-                    ctx.state,
-                    ctx.handled,
-                );
-            }
-            _ => {}
         }
+        self.on_input(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -1714,6 +1677,22 @@ impl Widget for MusicApp {
             // Keep frames flowing so the download spinner spins + progresses.
             || !self.downloads.is_empty()
             || !self.offline_resolves.is_empty()
+            || self
+                .frame_theme
+                .as_ref()
+                .is_some_and(|theme| self.body_scroll.needs_animation_frame(theme))
+    }
+
+    fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
+        self.body_scroll.primary_vertical_scroll()
+    }
+
+    fn apply_primary_vertical_scroll(
+        &mut self,
+        action: ui::widget::PrimaryScrollAction,
+    ) -> ui::widget::PrimaryScrollResult {
+        self.dirty = true;
+        self.body_scroll.apply_primary_vertical_scroll(action)
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2044,6 +2023,56 @@ impl MusicApp {
 }
 
 impl MusicApp {
+    /// Pointer and key input the header, the sidebar and the scroll region
+    /// left for the page.
+    fn on_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        match event {
+            WindowEvent::CursorMoved { .. } => {
+                self.on_cursor_moved(event, ctx.scale_factor, ctx.state, ctx.handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } => {
+                self.on_right_click(ctx.state, ctx.handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.on_left_press(ctx.state, ctx.handled);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                self.on_left_release(ctx.state, ctx.handled);
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        text,
+                        ..
+                    },
+                ..
+            } => {
+                self.on_key(
+                    logical_key,
+                    text.as_deref(),
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.handled,
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// Hover labels for icon-only controls. Text-labelled rows and navigation
     /// deliberately return `None`; repeating their visible label would add
     /// noise rather than information.
@@ -2258,18 +2287,6 @@ impl MusicApp {
             self.drag = None;
             *handled = true;
         }
-    }
-
-    /// Scroll the body, clamped to content height.
-    fn on_wheel(&mut self, delta: MouseScrollDelta, scale_factor: f64, handled: &mut bool) {
-        let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 48.0,
-            MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
-        };
-        let max = (self.content_height - self.body_rect.height()).max(0.0);
-        self.scroll = (self.scroll - dy).clamp(0.0, max);
-        self.dirty = true;
-        *handled = true;
     }
 
     /// Whether the Home page is genuinely still loading — a fetch is in flight
@@ -2629,7 +2646,13 @@ impl MusicApp {
         let compact = Self::compact_bar(ctx.theme, &self.drawer, content.width());
         self.bar_h = Self::bar_height(ctx, &look, compact);
         let bar = self.nowplaying_rect();
-        let body = Rect::new(content.x0, header.row.y1, r.x1, bar.y0);
+        // The body scrolls in the toolkit's region; its content is laid out
+        // beside the bar's lane while it overflows.
+        self.body_scroll.set_viewport(
+            Rect::new(content.x0, header.row.y1, r.x1, bar.y0),
+            ctx.theme,
+        );
+        let body = self.body_scroll.content_rect();
         self.body_rect = body;
 
         // Body first so chrome draws on top (and chrome hits win). The window
@@ -2641,13 +2664,29 @@ impl MusicApp {
             ctx.transform,
             &body,
         );
-        let start_y = body.y0 - self.scroll;
+        let scrolled = self.scroll_y();
+        let start_y = body.y0 - scrolled;
         let end_y = self.draw_body(ctx, &look, body, start_y);
         ctx.scene.pop_layer();
-        self.content_height = (end_y + self.scroll) - body.y0 + look.gutter;
-        let max = (self.content_height - body.height()).max(0.0);
-        if self.scroll > max {
-            self.scroll = max;
+        self.content_height = (end_y + scrolled) - body.y0 + look.gutter;
+        self.body_scroll
+            .set_content_size(body.width(), self.content_height);
+        // An offset asked for this frame (or during it) is clamped to the
+        // content it was laid out against.
+        if let Some(target) = self.scroll_target.take() {
+            self.body_scroll
+                .set_offset(vello::kurbo::Vec2::new(0.0, target));
+        }
+        self.body_scroll
+            .paint_bars(ctx.scene, ctx.transform, ctx.theme);
+        if self.frame_theme.as_ref().map(|theme| theme.name.as_str())
+            != Some(ctx.theme.name.as_str())
+            || self
+                .frame_theme
+                .as_ref()
+                .is_some_and(|theme| (theme.text_scale - ctx.theme.text_scale).abs() > f32::EPSILON)
+        {
+            self.frame_theme = Some(ctx.theme.clone());
         }
         self.open_staged_track_menu();
 
@@ -4499,14 +4538,14 @@ impl MusicApp {
                 let row_h = ui::widget::ListRowFace::new("")
                     .secondary("")
                     .height(ctx.text, ctx.theme);
-                let row_document_y = y + self.scroll + index as f64 * row_h;
-                let content_document_end = y + self.scroll + ids.len() as f64 * row_h + look.gutter;
+                let scrolled = self.scroll_y();
+                let row_document_y = y + scrolled + index as f64 * row_h;
+                let content_document_end = y + scrolled + ids.len() as f64 * row_h + look.gutter;
                 let max_scroll = (content_document_end - body.y0 - body.height()).max(0.0);
                 let desired =
                     (row_document_y - body.y0 - body.height() * 0.42).clamp(0.0, max_scroll);
-                if (self.scroll - desired).abs() > 0.5 {
-                    self.scroll = desired;
-                    self.dirty = true;
+                if (scrolled - desired).abs() > 0.5 {
+                    self.set_scroll_y(desired);
                 }
             } else {
                 // The authority-door check should have caught this, but never
