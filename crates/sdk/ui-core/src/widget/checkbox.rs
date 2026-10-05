@@ -138,7 +138,7 @@ impl Checkbox {
             accessible_name: None,
             label: None,
             label_style: TextStyle::new(14.0),
-            binding: Some(crate::doc_binding::bool_key(on_toggle_path)),
+            binding: Some(crate::doc_source::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -204,12 +204,12 @@ impl Checkbox {
         }
     }
 
-    fn commit_user_toggle(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn commit_user_toggle(&mut self, _state: &AppModel, _root: &ModelPath) {
         let checked = !self.is_checked;
         if let Some(action) = &mut self.action {
             let _ = action.emit(checked);
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &checked);
+            binding.publish(&checked);
         }
         self.is_checked = checked;
         if self.action.is_none()
