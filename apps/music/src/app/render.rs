@@ -4499,6 +4499,9 @@ impl MusicApp {
             }
             HomeItemKind::Playlist => {
                 self.push_hit(card, Action::Nav(View::Playlist(item.id.clone())));
+                if item.id.starts_with("spotify:playlist:") {
+                    self.push_row_menu(card, Action::OpenSpotifyPlaylistMenu(item.id.clone()));
+                }
                 self.draw_cover(ctx, art_rect, &item.id, &item.title, 12.0);
             }
         }
@@ -6294,7 +6297,7 @@ impl MusicApp {
         }
     }
 
-    /// A live (YouTube-Music) playlist rendered from a real [`PlaylistPage`]:
+    /// A live provider playlist rendered from a real [`PlaylistPage`]:
     /// cover + owner header with Play / Shuffle, then the ordered track list.
     fn draw_playlist_detail_live(
         &mut self,
@@ -6305,6 +6308,12 @@ impl MusicApp {
         page: &PlaylistPage,
     ) -> f64 {
         let pad = 28.0;
+        if page.id.starts_with("spotify:playlist:") {
+            self.push_row_menu(
+                Rect::new(body.x0 + pad, y, body.x1 - pad, y + 200.0),
+                Action::OpenSpotifyPlaylistMenu(page.id.clone()),
+            );
+        }
         let ids: Vec<String> = page
             .tracks
             .iter()

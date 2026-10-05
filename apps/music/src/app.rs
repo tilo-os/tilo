@@ -243,6 +243,8 @@ enum Action {
         track: String,
         save: bool,
     },
+    SpotifyEffect(crate::actions::MusicEffect),
+    OpenSpotifyPlaylistMenu(String),
     /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
     FocusSearch,
@@ -2219,6 +2221,8 @@ impl MusicApp {
             Action::SpotifyLibrary { track, save } => {
                 self.queue_spotify_library_control(&track, save);
             }
+            Action::SpotifyEffect(effect) => self.queue_spotify_effect_control(&effect),
+            Action::OpenSpotifyPlaylistMenu(playlist) => self.open_spotify_playlist_menu(&playlist),
             Action::FocusSearch => self.on_focus_search(),
             Action::RetrySearch => self.request_live_search(),
             Action::ToggleQueue => self.on_toggle_queue(),
@@ -2626,6 +2630,7 @@ impl MusicApp {
             .lib
             .playlist(&id)
             .map(|p| p.name.clone())
+            .or_else(|| self.spotify_playlist_name(&id))
             .unwrap_or_default();
         self.name_prompt = Some(NamePrompt::Rename(id));
         self.name_dialog = None;
@@ -2635,8 +2640,17 @@ impl MusicApp {
     fn on_commit_rename(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let name = self.name_input.trim().to_string();
         if !name.is_empty() {
-            self.perform_action(state, &crate::actions::rename_playlist_action(id, &name));
-            self.reload_library(state);
+            if id.starts_with("spotify:playlist:") {
+                self.queue_spotify_effect_control(
+                    &crate::actions::MusicEffect::SpotifyRenamePlaylist {
+                        playlist: id.into(),
+                        name,
+                    },
+                );
+            } else {
+                self.perform_action(state, &crate::actions::rename_playlist_action(id, &name));
+                self.reload_library(state);
+            }
         }
         self.name_prompt = None;
         self.name_input.clear();
@@ -4669,6 +4683,18 @@ impl MusicApp {
                     save: false,
                 },
             );
+            if let View::Playlist(playlist) = &self.view
+                && playlist.starts_with("spotify:playlist:")
+            {
+                let effect = crate::actions::MusicEffect::SpotifyPlaylistRemove {
+                    playlist: playlist.clone(),
+                    track: track.clone(),
+                };
+                self.push_menu(
+                    ui::i18n!("music-spotify-remove-playlist"),
+                    Action::SpotifyEffect(effect),
+                );
+            }
         }
         if self.lib.tracks.contains_key(&track) {
             self.context.push(MenuItem::separator());
@@ -4736,6 +4762,8 @@ impl MusicApp {
                 },
             );
         }
+
+        self.append_spotify_playlist_choices(track);
 
         self.open_context_menu_at_pointer();
     }
