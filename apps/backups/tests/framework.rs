@@ -24,22 +24,6 @@ fn row<'a>(surface: &'a serde_json::Value, resource: &str, action: &str) -> &'a 
         .unwrap_or_else(|| panic!("{resource}#{action} is published: {surface:#}"))
 }
 
-/// Click the control a screen reader announces as `name`, where it is drawn.
-fn click(app: &mut TestApp<BackupsShell>, name: &str) {
-    let bounds = app
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .find(|(_, node)| node.label() == Some(name))
-        .and_then(|(_, node)| node.bounds())
-        .unwrap_or_else(|| panic!("{name} is on screen"));
-    app.harness().click_at(
-        f64::midpoint(bounds.x0, bounds.x1),
-        f64::midpoint(bounds.y0, bounds.y1),
-    );
-    app.settle();
-}
-
 #[test]
 fn the_retention_steppers_edit_the_document_as_one_undo_step() {
     let mut app = TestApp::<BackupsShell>::capture(Some("schedules")).unwrap();

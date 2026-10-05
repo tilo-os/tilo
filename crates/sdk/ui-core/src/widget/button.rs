@@ -1612,6 +1612,14 @@ impl Widget for Button {
             || self.i18n_revision != crate::i18n::I18nManager::revision()
     }
 
+    fn layout_needs_measure(&self) -> bool {
+        // A missing paint cache asks for drawing, not another intrinsic
+        // measurement. Geometry is available as soon as layout is applied.
+        self.rect == Rect::ZERO
+            || self.layout_dirty
+            || self.i18n_revision != crate::i18n::I18nManager::revision()
+    }
+
     fn needs_idle_sync(&self) -> bool {
         self.i18n_revision != crate::i18n::I18nManager::revision()
     }
