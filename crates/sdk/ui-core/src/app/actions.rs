@@ -3197,7 +3197,7 @@ impl App {
 
     /// Resolve queued local control intents against the current resource tree
     /// and enter through the same door/lifecycle as every other caller.
-    fn dispatch_control_invocations(&mut self) -> usize {
+    pub(super) fn dispatch_control_invocations(&mut self) -> usize {
         self.service_close_admission();
         if self
             .history

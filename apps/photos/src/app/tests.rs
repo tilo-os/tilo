@@ -6,6 +6,30 @@ use crate::doc::PhotosDoc;
 fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
     present(app, doc);
     Widget::sync(app, doc, &ROOT);
+    settle(app, doc);
+}
+
+/// Apply what `app` submitted to `doc`, as the host does after a pass,
+/// without showing it the result yet.
+fn land(app: &PhotosApp, doc: &mut AutoCommit) {
+    if let Some(dispatch) = &app.dispatch {
+        ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
+    }
+}
+
+/// Apply what `app` submitted to `doc`, as the host does after a pass, and
+/// show it the result.
+fn settle(app: &mut PhotosApp, doc: &mut AutoCommit) {
+    let Some(dispatch) = app.dispatch.clone() else {
+        return;
+    };
+    if !ui::framework::testing::resolve(&dispatch, doc)
+        .expect("submitted edits apply")
+        .is_empty()
+    {
+        present(app, doc);
+        Widget::sync(app, doc, &ROOT);
+    }
 }
 
 /// Present `doc`'s library to `app`, as the framework does after a change.
@@ -241,7 +265,8 @@ fn people_review_commits_only_explicit_canonical_actions() {
                 .confirm_suggestion("manual-person", "Sam"),
             crate::people::PeopleChange::Updated
         );
-        assert!(app.approve_people_cluster(&mut doc, "manual-person"));
+        assert!(app.approve_people_cluster("manual-person"));
+        settle(&mut app, &mut doc);
         assert_eq!(PhotosDoc::photo(&doc, &photo_id).unwrap().people, ["Sam"]);
         assert_eq!(
             app.people_controller()
@@ -282,7 +307,8 @@ fn people_review_commits_only_explicit_canonical_actions() {
 
         app.select_people_item(PeopleSelection::Suggestion("review-me".to_owned()));
         app.people_name_input.set_text("Sam");
-        app.handle_people_intent(PeopleIntent::ApproveSuggestion, &mut doc);
+        app.handle_people_intent(PeopleIntent::ApproveSuggestion);
+        settle(&mut app, &mut doc);
         assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Sam"]);
         assert!(
             app.people_controller().cluster("review-me").unwrap().hidden,
@@ -291,16 +317,18 @@ fn people_review_commits_only_explicit_canonical_actions() {
 
         app.select_people_item(PeopleSelection::Approved("Sam".to_owned()));
         app.people_name_input.set_text("Samuel");
-        app.handle_people_intent(PeopleIntent::SaveName, &mut doc);
+        app.handle_people_intent(PeopleIntent::SaveName);
+        settle(&mut app, &mut doc);
         assert_eq!(
             PhotosDoc::photo(&doc, &first_id).unwrap().people,
             ["Samuel"]
         );
-        app.handle_people_intent(PeopleIntent::MergeApprovedInto("Alex".to_owned()), &mut doc);
+        app.handle_people_intent(PeopleIntent::MergeApprovedInto("Alex".to_owned()));
+        settle(&mut app, &mut doc);
         assert_eq!(PhotosDoc::photo(&doc, &first_id).unwrap().people, ["Alex"]);
 
         app.select_people_item(PeopleSelection::Approved("Alex".to_owned()));
-        app.handle_people_intent(PeopleIntent::BrowseApproved, &mut doc);
+        app.handle_people_intent(PeopleIntent::BrowseApproved);
         assert_eq!(app.active_person.as_deref(), Some("Alex"));
         assert_eq!(app.library_destination, LibraryDestination::Timeline);
         assert!(!app.people_mode);
@@ -588,7 +616,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         let mut app = test_app();
         let (sender, receiver) = std::sync::mpsc::sync_channel(ANALYSIS_QUEUE_LIMIT);
         app.analysis_rx = receiver;
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
 
         let cancelled = tilo_actions::InvocationId::new();
         app.cancelled_analysis.insert(cancelled);
@@ -607,7 +635,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             })
             .unwrap();
         present(&mut app, &doc);
-        app.drain_analysis_results(&mut doc);
+        app.drain_analysis_results();
         assert!(app.take_settled(cancelled).is_none());
 
         let stale = tilo_actions::InvocationId::new();
@@ -626,7 +654,7 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
             })
             .unwrap();
         present(&mut app, &doc);
-        app.drain_analysis_results(&mut doc);
+        app.drain_analysis_results();
         assert!(matches!(
             app.take_settled(stale),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. })
@@ -707,7 +735,8 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
 
         present(&mut app, &doc);
 
-        app.drain_analysis_results(&mut doc);
+        app.drain_analysis_results();
+        settle(&mut app, &mut doc);
         let analysis = PhotosDoc::photo(&doc, &id).unwrap().analysis.unwrap();
         assert_eq!(analysis.ocr_text, "receipt forty two");
         assert_eq!(analysis.description, "A bicycle beside a lake");
@@ -747,31 +776,29 @@ fn analysis_queue_is_shared_bounded_and_commits_only_current_results() {
         );
         app.active_analysis.insert(invocation);
         present(&mut app, &doc);
-        app.drain_library_analysis_result(
-            AnalysisResult {
-                invocation,
-                photo_id: id.clone(),
-                content: Some(content.clone()),
-                result: AnalysisOutcome::Image {
-                    component: ImageAnalysisComponent::Vision,
-                    result: Ok(crate::model::ImageAnalysis {
-                        description: "A bicycle beside a lake".into(),
-                        objects: vec!["bicycle".into()],
-                        provenance: crate::model::AnalysisProvenance {
-                            source: "local-vision".into(),
-                            engine: "tilo-vision".into(),
-                            model_id: "vision-local".into(),
-                            model_revision: "b".repeat(64),
-                            content,
-                            scope: "local".into(),
-                            ..Default::default()
-                        },
+        app.drain_library_analysis_result(AnalysisResult {
+            invocation,
+            photo_id: id.clone(),
+            content: Some(content.clone()),
+            result: AnalysisOutcome::Image {
+                component: ImageAnalysisComponent::Vision,
+                result: Ok(crate::model::ImageAnalysis {
+                    description: "A bicycle beside a lake".into(),
+                    objects: vec!["bicycle".into()],
+                    provenance: crate::model::AnalysisProvenance {
+                        source: "local-vision".into(),
+                        engine: "tilo-vision".into(),
+                        model_id: "vision-local".into(),
+                        model_revision: "b".repeat(64),
+                        content,
+                        scope: "local".into(),
                         ..Default::default()
-                    }),
-                },
+                    },
+                    ..Default::default()
+                }),
             },
-            &mut doc,
-        );
+        });
+        settle(&mut app, &mut doc);
         let stored = PhotosDoc::photo(&doc, &id)
             .and_then(|photo| photo.analysis)
             .expect("result committed through the typed document action");
@@ -1220,8 +1247,8 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             2,
             "range selects visible cards"
         );
-        app.set_selected_favorite(&mut doc, true);
-        present(&mut app, &doc);
+        app.set_selected_favorite(true);
+        settle(&mut app, &mut doc);
         assert!(
             PhotosDoc::library(&doc)
                 .photos
@@ -1243,6 +1270,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             &AccessAction::Activate,
             &mut doc,
         ));
+        land(&app, &mut doc);
         let favorites = PhotosResources
             .publish_resources(&doc)
             .pop()
@@ -1297,7 +1325,8 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
             Some("photos.album:trip"),
             "the target album is an explicit, stable choice rather than the current view"
         );
-        app.add_selected_to_destination_album(&mut doc);
+        app.add_selected_to_destination_album();
+        land(&app, &mut doc);
         let album = PhotosResources
             .publish_resource(&doc, "photos.album:trip")
             .expect("chosen album remains published");
@@ -1603,6 +1632,7 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         assert!(PhotosDoc::library(&doc).photo(&id).is_some());
         assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
         assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
+        settle(&mut app, &mut doc);
         assert!(PhotosDoc::library(&doc).photo(&id).is_none());
     }
 }
@@ -1644,8 +1674,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
         assert!(
             !app.perform_toolbar_semantic_action(
                 "photos:toolbar:photos-rotate-right",
-                &AccessAction::Activate,
-                &mut doc,
+                &AccessAction::Activate
             ),
             "a disabled semantic control must reject activation"
         );
@@ -1664,6 +1693,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
             &mut doc,
             &ROOT,
         ));
+        settle(&mut app, &mut doc);
         assert_eq!(
             PhotosDoc::photo_edits(&doc, app.open_photo_id().unwrap()).rotate_quarters,
             1
