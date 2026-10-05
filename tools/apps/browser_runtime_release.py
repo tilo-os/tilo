@@ -134,7 +134,7 @@ def snapshot_tree(root, top=True, included=None):
 
 
 def tracked_source_tree(root, revision):
-    # Git's canonical source view is exactly what normal rcargo mirrors after
+    # Git's canonical source view is exactly what source-only builders mirror after
     # clean admission. Hash actual bytes/modes/links, never index hashes alone.
     names = subprocess.check_output(['git', '-C', str(root), 'ls-tree', '-rz', '--name-only', revision])
     included = set()
@@ -318,7 +318,11 @@ def verify_package(out, architecture, source, sequence, trusted_key):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('plan', 'compile', 'seal', 'verify', 'native-proof', 'source-proof', 'proof-rcargo'))
+    parser.add_argument('mode', choices=('plan', 'compile', 'seal', 'verify', 'native-proof', 'source-proof', 'proof-cargo'))
+    parser.add_argument('--cargo-command', default=os.environ.get('CARGO', 'cargo'),
+                        help='Cargo-compatible executable for proof-cargo; defaults to CARGO or cargo')
+    parser.add_argument('--cargo-argument', action='append', default=[],
+                        help='additional executable argument for proof-cargo; may be repeated')
     parser.add_argument('--out', type=Path, default=ROOT / 'dist/browser-runtime-release')
     parser.add_argument('--arch', choices=MACHINES)
     parser.add_argument('--source')
@@ -328,7 +332,7 @@ def main():
     arguments = parser.parse_args()
     require(not arguments.source_commit or arguments.mode == 'native-proof',
             'snapshot commits are exclusive to the nonpublishing native proof')
-    if arguments.mode not in ('plan', 'source-proof', 'proof-rcargo'):
+    if arguments.mode not in ('plan', 'source-proof', 'proof-cargo'):
         require(arguments.arch and arguments.source, 'architecture and source are required')
         if arguments.mode in ('seal', 'verify'):
             require(arguments.sequence and re.fullmatch('[1-9][0-9]*', arguments.sequence),
@@ -336,12 +340,13 @@ def main():
         if arguments.mode == 'verify':
             require(arguments.trusted_key and re.fullmatch('[0-9a-f]{64}', arguments.trusted_key),
                     'trusted publisher key required')
-    if arguments.mode in ('source-proof', 'proof-rcargo'):
+    if arguments.mode in ('source-proof', 'proof-cargo'):
         revision, commit = source_proof()
         if arguments.mode == 'source-proof':
             print(json.dumps({'source': revision, 'commit': commit}))
         else:
-            subprocess.run(['rcargo', '--on-builder', 'run', '--locked', '-p', 'runtime-bundle',
+            subprocess.run([arguments.cargo_command, *arguments.cargo_argument,
+                            'run', '--locked', '-p', 'runtime-bundle',
                             '--example', 'browser_runtime_release', '--', revision, commit], check=True)
     elif arguments.mode == 'native-proof':
         require(arguments.out.resolve().is_relative_to((ROOT / 'target').resolve()),

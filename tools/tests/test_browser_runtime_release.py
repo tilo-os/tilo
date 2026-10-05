@@ -18,6 +18,27 @@ spec.loader.exec_module(release)
 
 
 class BrowserRuntimeRelease(unittest.TestCase):
+    def test_native_proof_uses_selected_cargo_argv_after_source_admission(self):
+        for arguments, environment, expected in (
+                (['--cargo-command', '/native/cargo-driver', '--cargo-argument=--execute-native'],
+                 {}, ['/native/cargo-driver', '--execute-native']),
+                ([], {'CARGO': '/native/selected-cargo'}, ['/native/selected-cargo'])):
+            with patch.object(sys, 'argv', ['release', 'proof-cargo', *arguments]), \
+                    patch.dict(os.environ, environment, clear=True), \
+                    patch.object(release, 'source_proof', return_value=('a' * 40, 'commit-object')) as admission, \
+                    patch.object(release.subprocess, 'run') as run:
+                release.main()
+                admission.assert_called_once_with()
+                run.assert_called_once_with([*expected, 'run', '--locked', '-p', 'runtime-bundle',
+                                            '--example', 'browser_runtime_release', '--',
+                                            'a' * 40, 'commit-object'], check=True)
+        with patch.object(sys, 'argv', ['release', 'proof-cargo']), \
+                patch.object(release, 'source_proof', side_effect=ValueError('dirty source')), \
+                patch.object(release.subprocess, 'run') as run:
+            with self.assertRaisesRegex(ValueError, 'dirty source'):
+                release.main()
+            run.assert_not_called()
+
     def plan(self, overrides):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'

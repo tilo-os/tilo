@@ -15,7 +15,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 .output()?;
             if !result.status.success() {
                 return Err(format!(
-                    "source admission failed; use the maintained proof-rcargo launcher: {}",
+                    "source admission failed; use the maintained proof-cargo launcher: {}",
                     String::from_utf8_lossy(&result.stderr)
                 )
                 .into());
