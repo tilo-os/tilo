@@ -25,6 +25,7 @@ pub struct Scopes {
     pub files: Vec<String>,
     pub mail: Vec<String>,
     pub music: Vec<String>,
+    pub music_streaming: Vec<String>,
 }
 
 impl Scopes {
@@ -33,6 +34,7 @@ impl Scopes {
             Capability::Files => &self.files,
             Capability::Mail => &self.mail,
             Capability::Music => &self.music,
+            Capability::MusicStreaming => &self.music_streaming,
         }
     }
 }

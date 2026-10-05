@@ -441,6 +441,8 @@ block-editor-replace-all-help = Replace all — Shift+Enter in the replacement f
 
 music-home-heading = Your music
 music-connect-spotify = Connect Spotify
+music-spotify-playback = Authorize playback
+music-spotify-devices = Spotify devices
 music-browse-spotify = Browse Spotify
 music-browse-youtube = YouTube Music
 music-source-connecting = Connecting… Finish sign-in in your browser.
@@ -449,3 +451,21 @@ music-disconnect-spotify = Disconnect Spotify
 
 music-searching-catalogue = Searching the music catalogue…
 music-search-hint = Press Enter to search the selected music source
+
+music-spotify-updating = Updating Spotify…
+music-spotify-output = Spotify output:
+music-spotify-device-help = Move Spotify playback to this device. Spotify manages its queue.
+music-spotify-library = Your Spotify library
+music-spotify-liked = Spotify Liked Songs
+music-spotify-liked-description = Songs saved to your Spotify account
+music-sources-heading = Music sources
+music-sources-guide = Choose a catalogue alongside your local files. Authorize Spotify Premium playback separately.
+music-spotify-active = active
+music-spotify-save = Save to Spotify Liked Songs
+music-spotify-unsave = Remove from Spotify Liked Songs
+music-spotify-signin-expired = Spotify sign-in expired. Connect again to refresh your library; your local files remain available.
+music-spotify-queue-changed = The queue changed during the Spotify transition. Choose a song to continue.
+music-spotify-request-timeout = Spotify did not finish this request in time. A change may already have been applied; refresh before retrying.
+music-spotify-select-device = Select { $device }
+music-spotify-pause-device = Pause { $device }
+music-spotify-play-device = Play on { $device }

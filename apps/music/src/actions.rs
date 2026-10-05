@@ -232,6 +232,72 @@ pub enum MusicEffect {
     /// Opens Spotify's PKCE sign-in in the system browser; grants stay in system custody.
     #[effect(job, device_only)]
     ConnectSpotify,
+    /// Authorize Spotify playback
+    ///
+    /// Separately grants native streaming for the same Premium account.
+    #[effect(job, device_only)]
+    ConnectSpotifyPlayback,
+    /// Refresh Spotify devices
+    #[effect(job, device_only)]
+    SpotifyDevices,
+    /// Transfer Spotify playback
+    #[effect(job, device_only)]
+    SpotifyTransfer {
+        #[param("Spotify Connect device ID")]
+        device: String,
+    },
+    /// Play on a Spotify device
+    #[effect(job, device_only)]
+    SpotifyRemotePlay {
+        #[param("Spotify Connect device ID")]
+        device: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Pause a Spotify device
+    #[effect(job, device_only)]
+    SpotifyRemotePause {
+        #[param("Spotify Connect device ID")]
+        device: String,
+    },
+    /// Save to Spotify library
+    #[effect(job, device_only)]
+    SpotifySave {
+        #[param("Spotify track, album or playlist URI")]
+        uri: String,
+    },
+    /// Remove from Spotify library
+    #[effect(job, device_only)]
+    SpotifyUnsave {
+        #[param("Spotify track, album or playlist URI")]
+        uri: String,
+    },
+    /// Rename Spotify playlist
+    #[effect(job, device_only)]
+    SpotifyRenamePlaylist {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("New name")]
+        name: String,
+    },
+    /// Add to Spotify playlist
+    #[effect(job, device_only)]
+    SpotifyPlaylistAdd {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
+    /// Remove from Spotify playlist
+    ///
+    /// Removes every occurrence of the track from this Spotify playlist.
+    #[effect(job, device_only)]
+    SpotifyPlaylistRemove {
+        #[param("Spotify playlist URI")]
+        playlist: String,
+        #[param("Spotify track URI")]
+        track: String,
+    },
     /// Disconnect Spotify
     ///
     /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
@@ -1582,7 +1648,12 @@ pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
         },
         "Play track",
     ))
-    .with_action(if track.offline {
+    .with_action(if track.id.starts_with("spotify:") {
+        MusicEffect::KeepOffline { tracks }.bound().unavailable(
+            "spotify_offline_unsupported",
+            "Spotify protected audio cannot be downloaded through Tilo",
+        )
+    } else if track.offline {
         MusicEffect::RemoveOffline { tracks }.bound()
     } else {
         MusicEffect::KeepOffline { tracks }.bound()
@@ -1608,6 +1679,21 @@ pub(crate) fn catalog_track_resource(track: &CatalogTrackResource) -> Resource {
         }
         .bound(),
     );
+    if track.id.starts_with("spotify:track:") {
+        resource = resource
+            .with_action(
+                MusicEffect::SpotifySave {
+                    uri: track.id.clone(),
+                }
+                .bound(),
+            )
+            .with_action(
+                MusicEffect::SpotifyUnsave {
+                    uri: track.id.clone(),
+                }
+                .bound(),
+            );
+    }
     if !track.album_id.is_empty() {
         resource = resource.with_action(
             MusicEffect::OpenAlbum {

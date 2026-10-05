@@ -31,6 +31,16 @@ const MAX_EXTERNAL_ID_BYTES: usize = 512;
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum StreamRequest {
+    Spotify {
+        request_id: u64,
+        operation: crate::backend::SpotifyOperation,
+    },
+    ConnectSpotifyPlayback,
+    NativeSpotify {
+        track_id: String,
+        source_id: String,
+        request_id: u64,
+    },
     DisconnectSpotify,
     Source {
         spotify: bool,
@@ -72,6 +82,16 @@ pub enum StreamRequest {
 /// A result folded back into the app on the UI thread.
 #[derive(Clone, Debug)]
 pub enum StreamUpdate {
+    Spotify {
+        request_id: u64,
+        result: Result<crate::backend::SpotifyReply, String>,
+    },
+    NativeSpotify {
+        track_id: String,
+        source_id: String,
+        account: String,
+        request_id: u64,
+    },
     SourceSelected {
         result: Result<(String, bool), String>,
     },
@@ -121,7 +141,7 @@ pub enum StreamUpdate {
     /// The Home fetch could not complete (offline build, geo-block, network
     /// error). The UI stops the loading skeleton and shows its honest empty
     /// Home rather than shimmering forever.
-    HomeUnavailable,
+    HomeUnavailable { error: String },
     /// A real artist page landed.
     Artist { page: Box<ArtistPage> },
     /// A real album page landed.
@@ -265,9 +285,28 @@ impl StreamWorker {
     }
 }
 
+fn valid_native_track(id: &str) -> bool {
+    id.strip_prefix("spotify:track:")
+        .is_some_and(|id| id.len() == 22 && id.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+}
+
 fn validate_request(request: &StreamRequest) -> Result<(), String> {
     let valid_id = |value: &str| !value.is_empty() && value.len() <= MAX_EXTERNAL_ID_BYTES;
     match request {
+        StreamRequest::Spotify { operation, .. } => {
+            if format!("{operation:?}").len() > 2048 {
+                return Err("Spotify operation is too large".into());
+            }
+        }
+        StreamRequest::NativeSpotify {
+            track_id,
+            source_id,
+            ..
+        } => {
+            if !valid_id(track_id) || !valid_native_track(source_id) {
+                return Err("Invalid Spotify track identity".into());
+            }
+        }
         StreamRequest::Search { query, .. } | StreamRequest::SearchMore { query, .. } => {
             if query.trim().is_empty() {
                 return Err("music search needs a non-empty query".to_string());
@@ -290,7 +329,10 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
                 return Err("music resource identifier is empty or too long".to_string());
             }
         }
-        StreamRequest::Home | StreamRequest::Source { .. } | StreamRequest::DisconnectSpotify => {}
+        StreamRequest::Home
+        | StreamRequest::Source { .. }
+        | StreamRequest::DisconnectSpotify
+        | StreamRequest::ConnectSpotifyPlayback => {}
     }
     Ok(())
 }
@@ -332,6 +374,47 @@ fn handle_request(
     request: StreamRequest,
 ) {
     match request {
+        StreamRequest::Spotify {
+            request_id,
+            operation,
+        } => {
+            let result = backend
+                .spotify_operation(&operation)
+                .map_err(|error| error.to_string());
+            let _ = up_tx.send(StreamUpdate::Spotify { request_id, result });
+        }
+        StreamRequest::ConnectSpotifyPlayback => {
+            let result = backend
+                .spotify_playback(true)
+                .map(|_| ("Spotify • Premium playback authorized".to_string(), true))
+                .map_err(|error| error.to_string());
+            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+        }
+        StreamRequest::NativeSpotify {
+            track_id,
+            source_id,
+            request_id,
+        } => {
+            let result = if valid_native_track(&source_id) {
+                backend.spotify_playback(false)
+            } else {
+                Err(crate::backend::BackendError("Invalid Spotify track".into()))
+            };
+            let update = match result {
+                Ok(account) => StreamUpdate::NativeSpotify {
+                    track_id,
+                    source_id,
+                    account,
+                    request_id,
+                },
+                Err(error) => StreamUpdate::ResolveFailed {
+                    track_id,
+                    request_id,
+                    error: error.to_string(),
+                },
+            };
+            let _ = up_tx.send(update);
+        }
         StreamRequest::DisconnectSpotify => {
             let result = backend
                 .disconnect_spotify()
@@ -412,7 +495,9 @@ fn handle_request(
             }
             Err(e) => {
                 let _ = up_tx.send(StreamUpdate::Note(format!("home: {e}")));
-                let _ = up_tx.send(StreamUpdate::HomeUnavailable);
+                let _ = up_tx.send(StreamUpdate::HomeUnavailable {
+                    error: e.to_string(),
+                });
             }
         },
         StreamRequest::Artist(id) => match backend.artist(&id) {

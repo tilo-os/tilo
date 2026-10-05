@@ -910,7 +910,10 @@ impl Continuable for MusicApp {
 }
 
 impl Widget for MusicApp {
-    ui::provides!(dyn ui::widget::Continuable);
+    ui::provides!(
+        dyn ui::widget::Continuable,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn take_structure_dirty(&mut self) -> bool {
         // Reported once: an app that is not rebuilt right away (a tab behind
@@ -925,6 +928,7 @@ impl Widget for MusicApp {
                 .chain(
                     self.source_buttons
                         .iter()
+                        .chain(self.spotify_device_buttons.iter())
                         .map(|button| button as &dyn Widget),
                 )
                 .collect()
@@ -939,6 +943,7 @@ impl Widget for MusicApp {
                 .chain(
                     self.source_buttons
                         .iter_mut()
+                        .chain(self.spotify_device_buttons.iter_mut())
                         .map(|button| button as &mut dyn Widget),
                 )
                 .collect()
@@ -989,6 +994,7 @@ impl Widget for MusicApp {
                 .chain(
                     self.source_buttons
                         .iter_mut()
+                        .chain(self.spotify_device_buttons.iter_mut())
                         .map(|button| button.build_layout(taffy, theme, node_map)),
                 )
                 .collect::<Vec<_>>()
@@ -1082,18 +1088,7 @@ impl Widget for MusicApp {
             return;
         }
 
-        if matches!(self.view, View::Home)
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(button_node) = children.first()
-        {
-            self.open_file_button
-                .handle_event(event, &mut ctx.reborrow(ctx.path, *button_node));
-            for (button, node) in self.source_buttons.iter_mut().zip(children.iter().skip(1)) {
-                if !*ctx.handled {
-                    button.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
-                }
-            }
-        }
+        self.route_source_widgets(event, ctx);
         if *ctx.handled {
             self.dirty = true;
             return;
@@ -1841,6 +1836,7 @@ impl Widget for MusicApp {
             || self.toast.is_some()
             || self.live_search_pending.is_some()
             || self.source_invocation.is_some()
+            || !self.spotify_jobs.is_empty()
             || self.resolve_in_flight > 0
             || self.images_pending()
             || self.lyrics_pending_for.is_some()
@@ -1871,6 +1867,26 @@ impl Widget for MusicApp {
 }
 
 impl MusicApp {
+    fn route_source_widgets(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if matches!(self.view, View::Home)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
+            && let Some(button_node) = children.first()
+        {
+            self.open_file_button
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *button_node));
+            for (button, node) in self
+                .source_buttons
+                .iter_mut()
+                .chain(self.spotify_device_buttons.iter_mut())
+                .zip(children.iter().skip(1))
+            {
+                if !*ctx.handled {
+                    button.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+                }
+            }
+        }
+    }
+
     fn begin_source_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1880,12 +1896,14 @@ impl MusicApp {
         if !self.allow_network {
             return Err("Network access is unavailable in this session".into());
         }
-        if self.source_invocation.is_some() {
+        if self.source_invocation.is_some() || !self.spotify_jobs.is_empty() {
             return Err("A music source request is already running".into());
         }
         self.ensure_worker();
         let request = if matches!(effect, MusicEffect::DisconnectSpotify) {
             crate::stream::StreamRequest::DisconnectSpotify
+        } else if matches!(effect, MusicEffect::ConnectSpotifyPlayback) {
+            crate::stream::StreamRequest::ConnectSpotifyPlayback
         } else {
             crate::stream::StreamRequest::Source {
                 spotify: !matches!(effect, MusicEffect::BrowseYouTube),
@@ -1898,6 +1916,7 @@ impl MusicApp {
             .request(request)?;
         self.source_error = None;
         self.source_invocation = Some(invocation);
+        self.source_disconnect_pending = matches!(effect, MusicEffect::DisconnectSpotify);
         self.dirty = true;
         Ok(ui::framework::Effected::Pending)
     }
@@ -1916,13 +1935,36 @@ impl MusicApp {
         invocation: tilo_actions::InvocationId,
         effect: crate::actions::MusicEffect,
     ) -> Result<ui::framework::Effected, String> {
-        use crate::actions::{MusicEffect, Place};
-        let done = ui::framework::Effected::done();
+        use crate::actions::MusicEffect;
         match effect {
             MusicEffect::ConnectSpotify
+            | MusicEffect::ConnectSpotifyPlayback
             | MusicEffect::DisconnectSpotify
             | MusicEffect::BrowseSpotify
             | MusicEffect::BrowseYouTube => self.begin_source_effect(invocation, &effect),
+            MusicEffect::SpotifyDevices
+            | MusicEffect::SpotifyTransfer { .. }
+            | MusicEffect::SpotifyRemotePlay { .. }
+            | MusicEffect::SpotifyRemotePause { .. }
+            | MusicEffect::SpotifySave { .. }
+            | MusicEffect::SpotifyUnsave { .. }
+            | MusicEffect::SpotifyRenamePlaylist { .. }
+            | MusicEffect::SpotifyPlaylistAdd { .. }
+            | MusicEffect::SpotifyPlaylistRemove { .. } => {
+                self.begin_spotify_operation(invocation, &effect)
+            }
+            other => self.begin_player_effect(invocation, other),
+        }
+    }
+
+    fn begin_player_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        effect: crate::actions::MusicEffect,
+    ) -> Result<ui::framework::Effected, String> {
+        use crate::actions::{MusicEffect, Place};
+        let done = ui::framework::Effected::done();
+        match effect {
             MusicEffect::OpenFile => {
                 self.begin_local_file_pick(invocation)?;
                 Ok(ui::framework::Effected::Pending)
@@ -2050,19 +2092,25 @@ impl MusicApp {
                 self.on_nav(view);
             }
             Place::Album(id) => {
-                if !self.lib.albums.contains_key(&id) {
+                if !self.lib.albums.contains_key(&id)
+                    && !self.known_catalogue_entity(&crate::actions::album_resource_id(&id))
+                {
                     return Err("album is no longer in the library".into());
                 }
                 self.on_nav(View::Album(id));
             }
             Place::Artist(id) => {
-                if !self.lib.artists.contains_key(&id) {
+                if !self.lib.artists.contains_key(&id)
+                    && !self.known_catalogue_entity(&crate::actions::artist_resource_id(&id))
+                {
                     return Err("artist is no longer in the library".into());
                 }
                 self.on_nav(View::Artist(id));
             }
             Place::Playlist(id) => {
-                if self.lib.playlist(&id).is_none() {
+                if self.lib.playlist(&id).is_none()
+                    && !self.known_catalogue_entity(&crate::actions::playlist_resource_id(&id))
+                {
                     return Err("playlist is no longer in the library".into());
                 }
                 self.on_nav(View::Playlist(id));
@@ -2708,7 +2756,11 @@ impl MusicApp {
     ) {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         self.open_file_button.apply_layout_external(Rect::ZERO);
-        for button in &mut self.source_buttons {
+        for button in self
+            .source_buttons
+            .iter_mut()
+            .chain(self.spotify_device_buttons.iter_mut())
+        {
             button.apply_layout_external(Rect::ZERO);
         }
         self.hits.clear();
@@ -3276,6 +3328,30 @@ impl MusicApp {
             }
             _ => {}
         }
+        if matches!(self.view, View::Home)
+            && let Some(home) = &self.home
+        {
+            for item in home
+                .sections
+                .iter()
+                .flat_map(|section| &section.items)
+                .take(2_048)
+            {
+                let view = match item.kind {
+                    HomeItemKind::Album => View::Album(item.id.clone()),
+                    HomeItemKind::Artist => View::Artist(item.id.clone()),
+                    HomeItemKind::Playlist => View::Playlist(item.id.clone()),
+                    HomeItemKind::Track => continue,
+                };
+                rows.push((
+                    item.title.clone(),
+                    item.subtitle.clone(),
+                    String::new(),
+                    Action::Nav(view),
+                    false,
+                ));
+            }
+        }
         let mut y = body.y0 - self.scroll;
         if matches!(self.view, View::Home) && !rows.is_empty() {
             y = self.position_open_file_button(body.x0, y);
@@ -3375,24 +3451,23 @@ impl MusicApp {
                 heading,
                 &TextStyle::new(18.0).with_weight(TextWeight::Bold),
                 c.text,
-                Point::new(body.x0 + 34.0, body.y0 + 64.0),
-                None,
+                Point::new(body.x0 + 34.0, body.y0 - self.scroll + 64.0),
+                Some((body.width() - 68.0).max(0.0) as f32),
             );
-            let detail = elide(
-                ctx.text,
-                detail,
-                11.0,
-                TextWeight::Regular,
-                body.width() - 68.0,
-            );
+            let budget = Some((body.width() - 68.0).max(0.0) as f32);
+            let (_, heading_h) = ctx
+                .text
+                .measure_weighted(heading, 18.0, budget, TextWeight::Bold);
+            let detail_y = body.y0 - self.scroll + 64.0 + f64::from(heading_h) + 18.0;
+            let (_, detail_h) = ctx.text.measure(detail, 11.0, budget);
             ctx.text(
-                &detail,
+                detail,
                 &TextStyle::new(11.0),
                 c.dim,
-                Point::new(body.x0 + 34.0, body.y0 + 116.0),
-                None,
+                Point::new(body.x0 + 34.0, detail_y),
+                budget,
             );
-            y = body.y0 + 160.0;
+            y = detail_y + f64::from(detail_h) + 24.0;
             if matches!(self.view, View::Home) {
                 y = self.position_open_file_button(body.x0, y);
                 y = self.position_source_buttons(ctx, c, body, y);
@@ -4080,9 +4155,35 @@ impl MusicApp {
         let gap = f64::from(ctx.theme.padding_standard);
         let left = body.x0 + CONTENT_GUTTER;
         let width = (body.width() - CONTENT_GUTTER * 2.0).max(0.0);
+        let heading = ui::i18n!("music-sources-heading");
+        let (_, heading_height) =
+            ctx.text
+                .measure_weighted(&heading, 16.0, Some(width as f32), TextWeight::Semibold);
+        ctx.text(
+            &heading,
+            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
+            c.text,
+            Point::new(left, y),
+            Some(width as f32),
+        );
+        y += f64::from(heading_height) + gap;
+        let guide = ui::i18n!("music-sources-guide");
+        let (_, guide_height) = ctx.text.measure(&guide, 13.0, Some(width as f32));
+        ctx.text(
+            &guide,
+            &TextStyle::new(13.0),
+            c.dim,
+            Point::new(left, y),
+            Some(width as f32),
+        );
+        y += f64::from(guide_height) + gap * 2.0;
         let mut x = left;
         let mut row_height: f64 = 0.0;
-        for button in &mut self.source_buttons {
+        for button in self
+            .source_buttons
+            .iter_mut()
+            .chain(self.spotify_device_buttons.iter_mut())
+        {
             let size = button.measure(
                 Size {
                     width: None,
@@ -4106,7 +4207,11 @@ impl MusicApp {
             x += f64::from(size.width) + gap;
             row_height = row_height.max(f64::from(size.height));
         }
-        for button in &mut self.source_buttons {
+        for button in self
+            .source_buttons
+            .iter_mut()
+            .chain(self.spotify_device_buttons.iter_mut())
+        {
             button.draw(
                 ctx.scene,
                 ctx.transform,
@@ -4392,7 +4497,10 @@ impl MusicApp {
                 let disc = Circle::new(art_rect.center(), radius);
                 self.draw_avatar(ctx, c, disc, &item.id, &item.title);
             }
-            HomeItemKind::Playlist => {}
+            HomeItemKind::Playlist => {
+                self.push_hit(card, Action::Nav(View::Playlist(item.id.clone())));
+                self.draw_cover(ctx, art_rect, &item.id, &item.title, 12.0);
+            }
         }
     }
 

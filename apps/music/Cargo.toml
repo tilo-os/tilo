@@ -24,20 +24,20 @@ thin = ["dep:runtime-dylib"]
 # The default app includes live search, stream resolution, and audio output.
 # The bundled sample library and runtime offline switch keep shots and tests
 # hermetic. Live builds also support network lyrics.
-default = ["audio", "live"]
+default = ["audio", "live", "spotify-native"]
+spotify-native = ["audio", "live", "tilo-spotify/native"]
 # Desktop audio output. Media controls and the host file chooser for playlist
 # covers come with `ui`.
 audio = ["dep:gstreamer", "dep:tokio"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking", "dep:account-custody", "dep:accounts"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
 # Enable network lyrics without the full live backend; live already enables them.
 lyrics = ["tilo-net/http", "tilo-net/blocking"]
 
 [dependencies]
-account-custody = { path = "../../crates/system/account-custody", optional = true }
-accounts = { path = "../../crates/system/accounts", optional = true }
+tilo-spotify = { path = "../../crates/platform/tilo-spotify", optional = true }
 fnv.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
