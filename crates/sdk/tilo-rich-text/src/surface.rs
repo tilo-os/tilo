@@ -905,7 +905,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         self.source.sync(state);
         // An edit made outside an input event (an accessibility action).
         self.commit(state);

@@ -523,7 +523,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Follow the document when it moved — a local action, a
     /// collaborator's change, an undo or a restore — reading only what the
     /// change touched.
-    fn refresh(&self, doc: &mut AutoCommit) {
+    fn refresh(&self, doc: &AutoCommit) {
         if let Err(error) = self.live.sync(doc) {
             tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }

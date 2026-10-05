@@ -4,7 +4,6 @@ struct DeclaredDirectory {
     semantic_calls: std::rc::Rc<Cell<usize>>,
     count: usize,
     domain_provider: Option<DirectoryDomainProvider>,
-    sync_change: Option<std::rc::Rc<Cell<Option<&'static str>>>>,
 }
 impl Widget for DeclaredDirectory {
     crate::provides!(
@@ -12,12 +11,7 @@ impl Widget for DeclaredDirectory {
         dyn crate::search::capability::SearchSource
     );
 
-    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, _) = crate::doc::document_ref(doc, path);
-        if let Some(change) = self.sync_change.as_ref().and_then(|change| change.take()) {
-            doc.put(ROOT, change, true).unwrap();
-        }
-    }
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         t: &mut TaffyTree<()>,
@@ -184,7 +178,6 @@ fn declared_directory(count: usize) -> (App, std::rc::Rc<Cell<usize>>) {
         State::new(),
         Box::new(DeclaredDirectory {
             domain_provider: None,
-            sync_change: None,
             calls: calls.clone(),
             semantic_calls: std::rc::Rc::new(Cell::new(0)),
             count,
@@ -411,7 +404,6 @@ fn directory_snapshot_pages_and_resolves_without_redeclaring_resources() {
             State::new(),
             Box::new(DeclaredDirectory {
                 domain_provider: None,
-                sync_change: None,
                 calls: calls.clone(),
                 semantic_calls: semantics.clone(),
                 count: 1,

@@ -6018,7 +6018,7 @@ impl Widget for VideoEditorApp {
         reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
     )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+        let (state, _) = ui::doc::document_ref(state, path);
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }

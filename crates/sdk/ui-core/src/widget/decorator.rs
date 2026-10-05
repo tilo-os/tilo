@@ -493,7 +493,7 @@ pub trait Decorator {
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         self.inner_mut().on_nav_gesture(dir, state, path)
@@ -1072,7 +1072,7 @@ impl<T: Decorator + 'static> Widget for T {
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         Decorator::on_nav_gesture(self, dir, state, path)

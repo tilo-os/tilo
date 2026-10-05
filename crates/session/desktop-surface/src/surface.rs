@@ -877,7 +877,7 @@ impl DesktopSurface {
         clippy::too_many_lines,
         reason = "one pass: every command against the tree, then its widget follow-ups in order"
     )]
-    fn apply_commands(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn apply_commands(&mut self, state: &AutoCommit, path: &ObjId) {
         let queue = std::mem::take(&mut self.shared.borrow_mut().queue);
         if queue.is_empty() {
             return;
