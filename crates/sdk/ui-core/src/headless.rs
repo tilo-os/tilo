@@ -6932,11 +6932,13 @@ impl FrameHarness {
     /// widened for exactly these two presses, so a slow host cannot split
     /// them into two single clicks.
     pub fn double_click_at(&mut self, x: f64, y: f64) {
-        let window = crate::gesture::multi_click_interval();
-        crate::gesture::set_multi_click_interval(crate::time::Duration::from_secs(3600));
-        self.click_at(x, y);
-        self.click_at(x, y);
-        crate::gesture::set_multi_click_interval(window);
+        crate::gesture::with_capture_multi_click_interval(
+            crate::time::Duration::from_secs(3600),
+            || {
+                self.click_at(x, y);
+                self.click_at(x, y);
+            },
+        );
     }
 
     /// Press the left button at `from`, move through intermediate points to
