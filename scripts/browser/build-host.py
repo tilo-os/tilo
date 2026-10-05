@@ -179,6 +179,25 @@ def install_runtime(build, dest, strip=None):
     return engine
 
 
+def build_blocker_library():
+    built = subprocess.run(
+        ["cargo", "build", "--locked", "-p", "tilo-chromium-blocker", "--profile", "thin-app",
+         "--message-format=json-render-diagnostics"],
+        cwd=ROOT, check=True, stdout=subprocess.PIPE, text=True,
+    )
+    for line in built.stdout.splitlines():
+        message = json.loads(line)
+        target = message.get("target", {})
+        if (message.get("reason") == "compiler-artifact"
+                and target.get("name") == "tilo_chromium_blocker"
+                and "staticlib" in target.get("crate_types", [])):
+            for filename in message.get("filenames", []):
+                artifact = Path(filename)
+                if artifact.suffix == ".a" and artifact.is_file():
+                    return artifact
+    raise ValueError("Cargo did not report the built Chromium blocker static library")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fetch-only", action="store_true")
@@ -198,8 +217,7 @@ def main():
     if not cmake:
         raise SystemExit("CMake is required. Install CMake, or use target/chromium-tools Python venv with cmake and ninja.")
     env = dict(os.environ, PATH=str(local_bin) + os.pathsep + os.environ["PATH"])
-    subprocess.run(["cargo", "build", "-p", "tilo-chromium-blocker", "--profile", "thin-app"], cwd=ROOT, check=True)
-    blocker = ROOT / "target/thin-app/libtilo_chromium_blocker.a"
+    blocker = build_blocker_library()
     build = ROOT / "target/chromium-build"
     subprocess.run([cmake, "-S", str(ROOT / "apps/browser/chromium"), "-B", str(build),
                     f"-DCEF_ROOT={sdk}", f"-DTILO_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",
