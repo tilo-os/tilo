@@ -497,7 +497,7 @@ fn search_inputs_are_present_and_navigate() {
             app.settle();
             eprintln!(
                 "Tube Search pointer refused: viewport={viewport:?}, scale={scale}, search={search:?}, focus={focus:?}, controls={controls:?}; same control AT activation={activation:?}, AT query={:?}, AT focus={:?}",
-                app.harness().global_search_query(),
+                app.harness().global_search_query().map(str::to_owned),
                 app.harness().a11y_focus()
             );
         }
