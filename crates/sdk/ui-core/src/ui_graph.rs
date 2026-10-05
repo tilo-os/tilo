@@ -49,8 +49,8 @@ pub struct UiComponentRequest<'a> {
     pub values: &'a UiValues,
 }
 
-/// What is typed into a graph's text inputs, by each input's `value_path`,
-/// and which of its buttons were clicked, by each button's `on_click_path`.
+/// A graph's text and checked values, by each control's `value_path`, and
+/// which buttons were clicked, by each button's `on_click_path`.
 ///
 /// The values are view state, never written to the document: every input
 /// naming one path shows and edits the same value, and the app reads them
@@ -62,6 +62,8 @@ pub struct UiComponentRequest<'a> {
 pub struct UiValues {
     texts: Rc<RefCell<HashMap<String, LocalState<String>>>>,
     routes: Rc<RefCell<HashMap<String, tilo_actions::ActionBinding<String>>>>,
+    booleans: Rc<RefCell<HashMap<String, LocalState<bool>>>>,
+    bool_routes: Rc<RefCell<HashMap<String, tilo_actions::ActionBinding<bool>>>>,
     clicks: Rc<RefCell<HashMap<String, String>>>,
 }
 
@@ -94,6 +96,56 @@ impl UiValues {
     ) {
         self.texts.borrow_mut().insert(path.to_owned(), shown);
         self.routes.borrow_mut().insert(path.to_owned(), action);
+    }
+
+    /// The shared view value checked controls naming `path` edit, starting false.
+    #[must_use]
+    pub fn boolean(&self, path: &str) -> LocalState<bool> {
+        self.booleans
+            .borrow_mut()
+            .entry(path.to_owned())
+            .or_insert_with(|| LocalState::new(false))
+            .clone()
+    }
+
+    /// The checked value at `path`, if a control names it.
+    #[must_use]
+    pub fn get_bool(&self, path: &str) -> Option<bool> {
+        self.booleans.borrow().get(path).map(LocalState::get)
+    }
+
+    /// Route checked controls through the resource's typed action. The app keeps
+    /// `shown` current, including refused edits, undo and remote changes.
+    pub fn route_bool(
+        &self,
+        path: &str,
+        shown: LocalState<bool>,
+        action: tilo_actions::ActionBinding<bool>,
+    ) {
+        self.booleans.borrow_mut().insert(path.to_owned(), shown);
+        self.bool_routes
+            .borrow_mut()
+            .insert(path.to_owned(), action);
+    }
+
+    /// A checkbox over the shared view value, invoking the app's action when routed.
+    #[must_use]
+    pub fn checkbox(&self, path: &str) -> Checkbox {
+        let control = Checkbox::from_state(&self.boolean(path));
+        match self.bool_routes.borrow().get(path) {
+            Some(action) => control.on_action(action.clone()),
+            None => control,
+        }
+    }
+
+    /// A toggle over the shared view value, invoking the app's action when routed.
+    #[must_use]
+    pub fn toggle(&self, path: &str) -> Toggle {
+        let control = Toggle::from_state(&self.boolean(path));
+        match self.bool_routes.borrow().get(path) {
+            Some(action) => control.on_action(action.clone()),
+            None => control,
+        }
     }
 
     /// Record a click of a button naming `path`, carrying `value`. Only the
@@ -136,10 +188,16 @@ impl fmt::Debug for UiValues {
         routes.sort_unstable();
         let mut clicks: Vec<String> = self.clicks.borrow().keys().cloned().collect();
         clicks.sort_unstable();
+        let mut booleans: Vec<String> = self.booleans.borrow().keys().cloned().collect();
+        booleans.sort_unstable();
+        let mut bool_routes: Vec<String> = self.bool_routes.borrow().keys().cloned().collect();
+        bool_routes.sort_unstable();
         formatter
             .debug_struct("UiValues")
             .field("paths", &paths)
             .field("routes", &routes)
+            .field("booleans", &booleans)
+            .field("bool_routes", &bool_routes)
             .field("clicks", &clicks)
             .finish()
     }
@@ -484,7 +542,9 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             enabled,
         } => {
             let name = label.as_deref().unwrap_or(accessible_name);
-            let control = Checkbox::new(id, value_path)
+            let control = context
+                .values
+                .checkbox(value_path)
                 .with_id(id)
                 .with_accessible_name(name)
                 .with_enabled(*enabled);
@@ -502,7 +562,9 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             enabled,
         } => {
             let name = label.as_deref().unwrap_or(accessible_name);
-            let control = Toggle::new(id, value_path)
+            let control = context
+                .values
+                .toggle(value_path)
                 .with_id(id)
                 .with_accessible_name(name)
                 .with_enabled(*enabled);
@@ -3316,6 +3378,34 @@ mod tests {
     use crate::a11y::{Action, Role};
     use automerge::transaction::Transactable;
     use automerge::{ObjType, ROOT};
+
+    #[test]
+    fn graph_checked_controls_share_view_values_without_document_writes() {
+        let document = UiDocument::from_json(
+            r#"{"version":1,"root":{"type":"column","id":"root","children":[{"type":"checkbox","id":"check","value_path":"shared","accessible_name":"Check"},{"type":"toggle","id":"toggle","value_path":"shared","accessible_name":"Toggle"}]}}"#,
+        ).unwrap();
+        let context = UiBuildContext::default();
+        let widget = document.build_with(&Theme::dark(), &context).unwrap();
+        let mut driver = crate::headless::Driver::new(crate::State::new(), widget, (360, 200));
+        let before = driver.dump_json();
+        driver.perform_named("check", &Action::ToggleCheck).unwrap();
+        driver
+            .expect(&crate::headless::SemanticExpectation::named("toggle").checked(true))
+            .unwrap();
+        assert_eq!(context.values().get_bool("shared"), Some(true));
+        driver
+            .perform_named("toggle", &Action::ToggleCheck)
+            .unwrap();
+        driver
+            .expect(&crate::headless::SemanticExpectation::named("check").checked(false))
+            .unwrap();
+        assert_eq!(context.values().get_bool("shared"), Some(false));
+        assert_eq!(
+            driver.dump_json(),
+            before,
+            "unrouted graph controls edit view state only"
+        );
+    }
 
     fn graph_field(id: &str, value_path: &str) -> UiNode {
         UiNode::TextInput {

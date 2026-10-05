@@ -2834,7 +2834,9 @@ pub fn {module_name}(id: &str, state: &{type_name}State) -> ui::widget::Column {
 
 /// Build one `{name}` form for a serialized graph. The value is the graph's
 /// typed value at `value_path`, which the app reads when it acts on it; the
-/// checkbox is bound to the app document at `enabled_path`.
+/// checkbox shares the graph's checked value at `enabled_path`. The app routes
+/// that path through its resource action with `ViewCx::route_graph_bool` when
+/// the value belongs in the document.
 ///
 /// Reusing either path in another component or ordinary graph control creates
 /// another synchronized view of the same value.
@@ -2849,7 +2851,7 @@ pub fn {module_name}_in_graph(
     let value = TextInput::from_state(&values.text(value_path))
         .with_id(&value_id)
         .with_placeholder("{name}-value-placeholder");
-    let enabled = Checkbox::new(&enabled_id, enabled_path).with_id(&enabled_id);
+    let enabled = values.checkbox(enabled_path).with_id(&enabled_id);
     ui::column![
         labeled_field("{name}-value-label", value),
         labeled_check("{name}-enabled-label", enabled),
@@ -2893,6 +2895,7 @@ mod tests {{
     use super::*;
     use ui::a11y::{{Action, Role}};
     use ui::headless::SemanticExpectation;
+    use ui::prelude::*;
 
     #[test]
     fn component_binds_typed_state_and_stable_semantics() {{
@@ -2916,53 +2919,117 @@ mod tests {{
         assert!(!state.enabled.with(|enabled| *enabled));
     }}
 
+    #[derive(ui::prelude::Model, Default, Debug, Clone, PartialEq)]
+    pub struct GraphFlags {{
+        flags: std::collections::BTreeMap<String, bool>,
+    }}
+
+    #[ui::prelude::resource(kind = "template.form-flags", label = "Form flags")]
+    impl GraphFlags {{
+        #[action]
+        fn set_enabled(&mut self, value: bool) {{
+            self.flags.insert("shared-enabled".into(), value);
+        }}
+    }}
+
+    struct GraphForm {{
+        root: Element,
+        values: ui::UiValues,
+    }}
+
+    impl ui::widget::Widget for GraphForm {{
+        fn name(&self) -> &'static str {{ "GraphForm" }}
+        fn children(&self) -> Vec<&dyn ui::widget::Widget> {{ vec![self.root.as_ref()] }}
+        fn children_mut(&mut self) -> Vec<&mut (dyn ui::widget::Widget + '_)> {{ vec![self.root.as_mut()] }}
+        fn build_layout(&mut self, tree: &mut ui::taffy::TaffyTree<()>, theme: &ui::Theme, nodes: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>) -> ui::taffy::NodeId {{
+            self.root.build_layout(tree, theme, nodes)
+        }}
+        fn apply_layout(&mut self, tree: &ui::taffy::TaffyTree<()>, node: ui::taffy::NodeId, origin: ui::kurbo::Point) {{ self.root.apply_layout(tree, node, origin); }}
+        fn draw(&mut self, scene: &mut ui::vello::Scene, transform: ui::kurbo::Affine, text: &mut ui::TextRenderer, theme: &ui::Theme, presence: &ui::presence::PresenceCtx) {{ self.root.draw(scene, transform, text, theme, presence); }}
+        fn handle_event(&mut self, event: &ui::winit::event::WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {{ self.root.handle_event(event, ctx); }}
+        fn get_rect(&self) -> ui::kurbo::Rect {{ self.root.get_rect() }}
+    }}
+
+    impl ui::prelude::ResourceSurface<GraphFlags> for GraphForm {{
+        fn present(&mut self, _: &std::rc::Rc<GraphFlags>) {{}}
+    }}
+
+    struct GraphApp;
+
+    impl ui::prelude::ResourceApp for GraphApp {{
+        type Resource = GraphFlags;
+        const ID: &'static str = "template.form-graph";
+        const TITLE: &'static str = "Form graph";
+
+        fn view(cx: &mut ui::prelude::ViewCx<GraphFlags>) -> Element {{
+            let context = register_ui_graph(UiBuildContext::default());
+            cx.route_graph_bool(context.values(), "shared-enabled", |state| state.flags.get("shared-enabled").copied().unwrap_or(false), GraphFlags::SET_ENABLED);
+            let document = graph_document();
+            let root = ui::UiDocumentExt::build_with(&document, &ui::Theme::default(), &context).expect("registered form component");
+            cx.surface(GraphForm {{ root, values: context.values().clone() }})
+        }}
+    }}
+
+    fn graph_document() -> ui::UiDocument {{
+        ui::UiDocument::from_json(
+            r#"{{"version":1,"root":{{"type":"column","id":"root","children":[{{"type":"component","id":"first","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"component","id":"second","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"toggle","id":"ordinary-enabled","value_path":"shared-enabled","accessible_name":"Enabled"}}]}}}}"#,
+        ).expect("valid component graph")
+    }}
+
+    #[test]
+    fn graph_checked_controls_use_resource_actions_and_permissions() {{
+        let mut app = TestApp::<GraphApp>::new().expect("the graph app opens");
+        app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck)
+            .expect("the ordinary graph toggle invokes the resource action");
+        assert_eq!(app.state().flags.get("shared-enabled"), Some(&true));
+        app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
+            .expect("the component follows the ordinary graph toggle");
+        app.set_role(ui::Role::Viewer);
+        assert!(app.invoke(GraphFlags::SET_ENABLED.with(false)).is_err(), "a viewer cannot invoke the routed edit");
+        let _ = app.harness().perform_named("ordinary-enabled", &Action::ToggleCheck);
+        assert_eq!(app.state().flags.get("shared-enabled"), Some(&true));
+        app.harness().expect(&SemanticExpectation::named("second-enabled").checked(true))
+            .expect("refusal preserves the displayed resource value");
+    }}
+
     #[test]
     fn graph_factory_binds_shared_graph_values_and_document_state() {{
-        let document = ui::UiDocument::from_json(
-            r#"{{"version":1,"root":{{"type":"column","id":"root","children":[{{"type":"component","id":"first","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}},{{"type":"component","id":"second","name":"{name}","props":{{"value_path":"shared-value","enabled_path":"shared-enabled"}}}}]}}}}"#,
-        )
-        .expect("valid component graph");
-        let context = register_ui_graph(UiBuildContext::default());
-        let widget = ui::UiDocumentExt::build_with(
-            &document,
-            &ui::Theme::default(),
-            &context,
-        )
-        .expect("registered form component");
-        let mut app = ui::headless::Driver::new(ui::State::new(), widget, (480, 240));
-        app.perform_named("first-value", &Action::SetValue("Ada".into()))
+        let mut app = ui::prelude::TestApp::<GraphApp>::new().expect("the graph app opens");
+        let values = app.surface_mut::<GraphForm>().values.clone();
+        app.harness().perform_named("first-value", &Action::SetValue("Ada".into()))
             .expect("first graph form edits the shared value");
-        app.expect(
+        app.harness().expect(
             &SemanticExpectation::named("second-value")
                 .role(Role::TextInput)
                 .value("Ada"),
         )
         .expect("second graph form observes the shared value");
-        app.perform_named("first-enabled", &Action::ToggleCheck)
+        app.harness().perform_named("first-enabled", &Action::ToggleCheck)
             .expect("first graph form edits shared boolean");
-        app.expect(
+        app.harness().expect(
             &SemanticExpectation::named("second-enabled")
                 .role(Role::Checkbox)
                 .checked(true),
         )
         .expect("second graph form observes shared document boolean");
-        assert!(app.perform_undo(), "document-bound toggle is undoable");
-        app.expect(
+        assert!(app.undo(), "document-bound toggle is undoable");
+        app.harness().expect(
             &SemanticExpectation::named("second-enabled")
                 .role(Role::Checkbox)
                 .checked(false),
         )
         .expect("undo updates every bound view");
-        assert!(app.perform_redo(), "document-bound toggle is redoable");
+        assert!(app.redo(), "document-bound toggle is redoable");
         assert_eq!(
-            context.values().get("shared-value").as_deref(),
+            values.get("shared-value").as_deref(),
             Some("Ada"),
             "the app reads what the forms typed"
         );
-        let state = app.dump_json();
+        let state = app.harness().dump_json();
         assert!(!state.contains("shared-value"), "typing never writes the document");
         assert!(state.contains("shared-enabled"));
 
+        let context = register_ui_graph(UiBuildContext::default());
         let invalid = ui::UiDocument::from_json(
             r#"{{"version":1,"root":{{"type":"component","id":"invalid","name":"{name}","props":{{"value_path":"","enabled_path":"enabled"}}}}}}"#,
         )
