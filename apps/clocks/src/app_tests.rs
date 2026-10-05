@@ -23,9 +23,11 @@ fn compact_and_large_text_layouts_keep_full_disjoint_touch_targets() {
     for width in [360_u32, 520_u32] {
         let mut app = TestApp::<ClocksShell>::capture_at(Some("timers"), (width, 820)).unwrap();
         let harness = app.harness();
+        harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
         harness
             .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
             .unwrap();
+        assert!(harness.settle_for_capture(ui::time::Duration::from_secs(1)));
         for label in ["World", "Alarms", "Timers", "Stopwatch"] {
             let (_, row) = harness
                 .a11y_nodes()

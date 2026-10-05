@@ -7,6 +7,8 @@
 //! ([`MenuButton`]). In a compact window the site information, bookmark and
 //! library commands join them: nothing is ever hidden, only moved.
 
+use tilo_app::prelude::Resource;
+
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::webview::WebViewCommand;
@@ -50,18 +52,18 @@ impl BrowserWidget {
     /// The resource and action a press of the library button performs.
     fn library_command(&self) -> (&'static str, &'static str) {
         if self.show_library {
-            ("browser", "show-page")
+            (crate::resource::Browser::KIND, "show-page")
         } else {
-            ("browser.history", "show")
+            ("browser.history", "show-history")
         }
     }
 
     /// The resource and action a press of the settings row performs.
     fn settings_command(&self) -> (&'static str, &'static str) {
         if self.show_settings {
-            ("browser", "show-page")
+            (crate::resource::Browser::KIND, "show-page")
         } else {
-            ("browser.settings", "show")
+            ("browser.settings", "show-settings")
         }
     }
 
@@ -267,7 +269,7 @@ impl BrowserWidget {
             row = row.push(Box::new(self.bind_button(
                 button,
                 "browser.downloads",
-                "show",
+                "show-downloads",
             )));
         }
         row = row.push(Box::new(self.overflow_menu()));

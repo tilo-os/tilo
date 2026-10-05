@@ -753,6 +753,8 @@ mod tests {
         // A click puts the caret in a field, Tab moves it on.
         type_into(&mut app, "totp-issuer", "Acme");
         app.harness().tab(false);
+        let after_tab = app.harness().a11y_focus();
+        let focus_order = app.harness().focus_access_nodes();
         app.harness().type_text("bob");
         let typed: Vec<_> = app
             .harness()
@@ -763,7 +765,7 @@ mod tests {
             .collect();
         assert!(
             typed.iter().any(|value| value == "Acme") && typed.iter().any(|value| value == "bob"),
-            "the click and Tab each put the caret in a field: {typed:?}"
+            "the click and Tab each put the caret in a field: {typed:?}; after Tab {after_tab:?}; order {focus_order:?}"
         );
 
         // Escape closes the sheet and Enter copies the selected code.

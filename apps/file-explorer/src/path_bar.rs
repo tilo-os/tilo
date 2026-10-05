@@ -634,8 +634,19 @@ mod tests {
                 bar.accessibility().unwrap().value.as_deref(),
                 expected.last().copied()
             );
-            let mut text = TextRenderer::new();
+            let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/sdk/ui-core/assets/fonts"),
+                "en-US",
+            );
+            let mut text = TextRenderer::with_font_catalog(&catalog)
+                .expect("the breadcrumb uses the shipped font fixture");
             for theme in [Theme::dark(), Theme::light()] {
+                assert!(
+                    text.measure_style("Documents", None, &theme.text(ui::TextRole::Caption))
+                        .0
+                        > 0.0,
+                    "the actual breadcrumb face shapes its labels"
+                );
                 let wide = bar.crumbs.visible_segments(900.0, &theme, &mut text);
                 assert_eq!(wide, expected);
                 let narrow = bar.crumbs.visible_segments(160.0, &theme, &mut text);

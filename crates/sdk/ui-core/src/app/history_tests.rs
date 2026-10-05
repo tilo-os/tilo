@@ -1846,7 +1846,11 @@ fn tiled_history_routes_to_its_own_record_and_remounts_live_views() {
             .app
             .dispatch_a11y_action(target, &crate::a11y::Action::Activate);
         layout(&mut fixture.app);
-        native_key(&mut fixture.app, "Enter");
+        let confirm = named(&mut fixture.app, "Restore version");
+        fixture
+            .app
+            .dispatch_a11y_action(confirm, &crate::a11y::Action::Activate);
+        layout(&mut fixture.app);
         assert_eq!(fixture.value(0, "body").as_deref(), Some("old version"));
         assert_eq!(fixture.app.state.doc.base_heads(), outer);
         assert_eq!(

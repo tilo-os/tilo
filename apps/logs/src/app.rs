@@ -1229,17 +1229,14 @@ mod tests {
     #[test]
     fn journal_commands_and_empty_states_act_through_production_paths() {
         let mut app = captured((1280, 800));
-        surface(&mut app, |viewer| {
-            viewer.request_journal_operation("refresh")
-        });
-        app.settle();
+        let invocation = app
+            .start_effect(&JournalEffect::Refresh)
+            .expect("the canonical refresh effect admits a journal read job");
         assert!(
-            app.effect_progress().iter().any(|update| matches!(
-                update,
-                ui::tilo_actions::InvocationUpdate::Accepted { .. }
-            )),
-            "refresh is admitted through the canonical effect door"
+            surface(&mut app, |viewer| viewer.source_loading),
+            "admitted journal read {invocation:?} presents its pending state"
         );
+        app.settle();
         let mut app = captured((1280, 800));
         request(
             &mut app,

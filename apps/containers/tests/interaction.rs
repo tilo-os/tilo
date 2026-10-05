@@ -94,13 +94,6 @@ impl Driver {
 fn offline() -> Driver {
     Driver::offline()
 }
-fn semantic_nodes(root: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
-    let mut out = vec![root];
-    for child in &root.children {
-        out.extend(semantic_nodes(child));
-    }
-    out
-}
 
 fn app(d: &mut Driver) -> &mut ContainersApp {
     d.root_mut::<ContainersApp>()
@@ -470,27 +463,31 @@ fn keyboard_pointer_and_semantic_navigation() {
         d.key(winit::keyboard::NamedKey::Escape);
         d.frame();
         let expected = sample_engine().containers[0].id.clone();
-        let target = format!("containers.container:{expected}:select");
-        let tree = d
-            .app()
-            .accessibility()
-            .expect("custom canvas exports a semantic window");
-        assert_eq!(tree.role, ui::a11y::Role::Window);
-        let nodes = semantic_nodes(&tree);
-        assert!(nodes.iter().any(|node| {
-            node.action_target.as_deref() == Some(target.as_str())
-                && node.role == ui::a11y::Role::ListItem
-                && node.name.as_deref().is_some_and(|name| !name.is_empty())
-                && node.bounds.is_some()
-        }));
-        let (app, doc) = d.parts();
-        assert!(app.perform_semantic_action(
-            &target,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(doc),
-            &automerge::ROOT,
-        ));
+        let row = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some(sample_engine().containers[0].name.as_str()))
+            .expect("the actual table publishes its container row");
+        assert_eq!(row.1.role(), ui::accesskit::Role::Row);
+        assert!(row.1.label().is_some_and(|name| !name.is_empty()));
+        assert!(row.1.bounds().is_some());
+        d.perform_a11y_action(row.0, &ui::a11y::Action::Activate)
+            .expect("the real semantic row activation selects its own container");
+        d.frame();
         assert_eq!(d.app().selected(), Some(expected.as_str()));
+
+        // The same container has a canonical row operation whose target is
+        // bound by its published owner, rather than a caller-supplied id.
+        let mut hosted = TestApp::<ContainersShell>::capture(None).unwrap();
+        let address = format!("container:{expected}");
+        hosted
+            .call_on(&address, "select-container", serde_json::json!({}))
+            .expect("the canonical published row action is admitted");
+        hosted
+            .with_widget::<ContainersApp, _>(|app| {
+                assert_eq!(app.selected(), Some(expected.as_str()));
+            })
+            .unwrap();
     }
 }
 

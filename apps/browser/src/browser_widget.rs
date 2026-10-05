@@ -5181,18 +5181,25 @@ mod architecture_tests {
                 ("browser.back", "browser.page", "back"),
                 ("browser.forward", "browser.page", "forward"),
                 ("browser.reload", "browser.page", "reload"),
-                ("browser.history-pause", "browser.session", "toggle-pause"),
                 ("browser.library", "browser.history", "show-history"),
                 ("browser.pip", "browser.page", "picture-in-picture"),
                 ("browser.settings", "browser.settings", "show-settings"),
             ] {
                 assert_action_binding(&page, control, resource, action);
             }
+            page.debug_show_library("history");
+            compose(&mut page);
+            assert_action_binding(
+                &page,
+                "browser.library.history-pause",
+                "browser.session",
+                "toggle-pause",
+            );
             // The overflow menu's commands queue the same canonical actions.
             for (resource, action) in [
                 ("browser.session", "toggle-pause"),
                 ("browser.page", "picture-in-picture"),
-                ("browser.settings", "show"),
+                ("browser.settings", "show-settings"),
             ] {
                 let mut page = BrowserWidget::new_headless();
                 compose(&mut page);
@@ -6367,7 +6374,10 @@ mod tests {
             assert!(widget.credentials.open);
             let panel = widget.anchored_panel.as_ref().unwrap().get_rect();
             let row = widget.find_rect("browser.credentials.open").unwrap();
-            assert!((panel.x0 - row.x0).abs() < 1.0, "{panel:?} {row:?}");
+            assert!(
+                (panel.x1 - row.x1).abs() < 1.0,
+                "the panel aligns with its trailing management control: {panel:?} {row:?}"
+            );
             assert!(
                 panel.y1 <= row.y0 || panel.y0 >= row.y1,
                 "the panel {panel:?} must not cover its row {row:?}"
@@ -6788,7 +6798,11 @@ mod tests {
                 .perform_browser_operation(BrowserOperation::ClearLibraryFilter)
                 .unwrap();
             assert!(widget.library_filter.get().is_empty());
-            ui::widget::search_field::apply_filter(&mut widget, "rust learn");
+            widget
+                .perform_browser_operation(BrowserOperation::SetLibraryFilter {
+                    query: "rust learn".into(),
+                })
+                .unwrap();
             assert_eq!(
                 widget.library_filter.get(),
                 "rust learn",
@@ -7924,6 +7938,7 @@ mod tests {
                 started: ui::time::now(),
                 persistent: false,
             }));
+            layout_at(&mut w, 1000.0, 700.0);
             let (tree, node) = layout_keeping_tree(&mut w, 1000.0, 700.0, &Theme::dark());
             let choose = w
                 .find_rect("browser.pip.select-area")

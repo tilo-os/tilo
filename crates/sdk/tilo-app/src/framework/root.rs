@@ -50,6 +50,9 @@ pub(crate) struct ResourceRoot<R: Resource> {
     followed: std::cell::Cell<u64>,
     _alive: Rc<()>,
     dispatch: Dispatcher<R>,
+    /// Results awaiting return to the dispatcher that submitted each intent.
+    /// Resource ids need not share the root's kind or a textual prefix.
+    control_results: Vec<tilo_actions::ActionAddress>,
     saved: LocalState<RecordSaveStatus>,
     /// The participant's permissions, re-checked every sync so a role change
     /// while the app runs takes effect at once. `None` for a read-only view
@@ -278,6 +281,7 @@ impl<R: Resource> ResourceRoot<R> {
             followed: std::cell::Cell::new(0),
             _alive: alive,
             dispatch: cx.dispatch,
+            control_results: Vec::new(),
             saved: cx.saved,
             permissions: None,
             write: None,
@@ -1502,9 +1506,12 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
     fn take_attributed_control_invocation(
         &mut self,
     ) -> Option<ui_core::widget::controls::AttributedControlInvocation> {
-        self.dispatch.take_attributed().or_else(|| {
+        if let Some(invocation) = self.dispatch.take_attributed() {
+            self.control_results.push(invocation.0.address.clone());
+            Some(invocation)
+        } else {
             ui_core::widget::controls::take_attributed_control_invocation(self.content.as_mut())
-        })
+        }
     }
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a
@@ -1515,12 +1522,15 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
         address: &tilo_actions::ActionAddress,
         result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
     ) {
-        // The resource itself, or a child its dispatcher edits through it.
-        let ours = address.resource == self.dispatch.resource_id()
-            || address
-                .resource
-                .strip_prefix(R::KIND)
-                .is_some_and(|rest| rest.starts_with('/'));
+        // Follow actual dispatcher custody, including children with arbitrary
+        // ids and records removed since submission. A nested root consumes
+        // its own results instead of being mistaken for this resource.
+        let ours = self
+            .control_results
+            .iter()
+            .position(|pending| pending == address)
+            .map(|index| self.control_results.remove(index))
+            .is_some();
         if let Err(error) = result
             && ours
         {

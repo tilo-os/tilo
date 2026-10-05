@@ -4682,6 +4682,116 @@ pub(crate) mod ordinary_confirmation_tests {
         }
     }
     #[test]
+    fn ordinary_confirmation_cancel_does_not_focus_a_removed_opener() {
+        let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
+        let mut host = Host::new(true, root);
+        host.act("Emit request", crate::a11y::Action::Focus);
+        assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+        host.activate("Emit request");
+        assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        // Retire the old custody map before removing its retained owner.
+        app.bindings.clear();
+        app.layout.node_map.clear();
+        app.focused_node = None;
+        app.root_widget = Box::new(crate::widget::Button::new(
+            "replacement-control",
+            "Unrelated control",
+        ));
+        app.layout.structure_dirty = true;
+        layout(app);
+        host.activate("Cancel");
+        let Host::Native(app) = &mut host else {
+            unreachable!()
+        };
+        let published = app.build_a11y_tree_update(1.0);
+        assert!(
+            published
+                .nodes
+                .iter()
+                .any(|(_, node)| { node.label() == Some("Unrelated control") })
+        );
+        assert!(
+            published
+                .nodes
+                .iter()
+                .all(|(_, node)| { node.label() != Some("Emit request") })
+        );
+        assert!(
+            app.focused_node.is_none(),
+            "removed focus must not transfer"
+        );
+        assert!(
+            ledger.borrow().is_empty(),
+            "cancellation executes no action"
+        );
+    }
+
+    #[test]
+    fn native_control_coverage_admits_only_declared_app_and_host_actions() {
+        use tilo_actions::{ActionBinding, ActionSpec, OperationKind, Resource};
+        let (widget, _, _) = fixture_widget(tilo_actions::ConfirmationPolicy::None, source());
+        let missing_binding = |resource_id: &str| {
+            let resource = Resource::new(resource_id, "fixture.coverage", "Missing action")
+                .with_action(
+                    ActionSpec::operation(
+                        "nonexistent",
+                        "Missing action",
+                        OperationKind::View,
+                        "fixture.coverage",
+                        &(),
+                    )
+                    .unwrap(),
+                );
+            ActionBinding::unit_for(&resource, "nonexistent").unwrap()
+        };
+        let controls = crate::widget::Column::new()
+            .push(Box::new(widget))
+            .push(Box::new(
+                crate::widget::Button::new("coverage-search", "Search").on_action(
+                    crate::search::open_search_binding(&crate::search::SearchRequest::this_app()),
+                ),
+            ))
+            .push(Box::new(
+                crate::standalone_history_host::history_control_button(
+                    "coverage-history",
+                    crate::widget::window_header::HistoryControl::Closed,
+                ),
+            ))
+            .push(Box::new(
+                crate::widget::Button::new("coverage-missing-app", "Missing app action")
+                    .on_action(missing_binding("ordinary:fixture")),
+            ))
+            .push(Box::new(
+                crate::widget::Button::new("coverage-missing-host", "Missing host action")
+                    .on_action(missing_binding("tilo.host:search")),
+            ));
+        let mut app = App::from_managed_root_with_controlled_inputs(
+            State::new(),
+            managed(Box::new(controls)),
+        )
+        .unwrap();
+        layout(&mut app);
+        assert!(app.history.is_some(), "the real History owner is installed");
+        let coverage = app.control_action_coverage();
+        for (control, expected) in [
+            ("ordinary-emitter", ControlBindingStatus::Resolved),
+            ("coverage-search", ControlBindingStatus::Resolved),
+            ("coverage-history", ControlBindingStatus::Resolved),
+            ("coverage-missing-app", ControlBindingStatus::StaleAddress),
+            ("coverage-missing-host", ControlBindingStatus::StaleAddress),
+        ] {
+            let entry = coverage
+                .iter()
+                .find(|entry| entry.binding.control_id == control)
+                .unwrap_or_else(|| panic!("missing retained binding {control}"));
+            assert_eq!(entry.status, expected, "binding {control}");
+        }
+    }
+
+    #[test]
     fn ordinary_confirmation_native_closed_or_replaced_outer_domain_refuses() {
         for replacement in [false, true] {
             let (root, ledger, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);

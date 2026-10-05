@@ -2321,6 +2321,9 @@ mod tests {
                 let mut centre =
                     TestApp::<PrintCentreShell>::capture_at(Some("print"), (width, height))
                         .unwrap();
+                centre
+                    .harness()
+                    .set_interaction_environment(ui::InteractionEnvironment::TOUCH);
                 let snapshot = centre.harness().inspection();
                 let surface = print_centre(&snapshot.root);
 

@@ -350,7 +350,7 @@ fn select_version(app: &mut TestApp<WordProcessorApp>, version: &[automerge::Cha
         panic!("a single-author edit leaves one head");
     };
     if !app.harness().targets().contains_key("history-back-live") {
-        app.harness().click_named("nav-shell-history").unwrap();
+        app.harness().click_named("history-open").unwrap();
     }
     let entry = format!("timeline-entry:{}", &hash.to_string()[..32]);
     // A typed word is a run of keystrokes; expand runs until the change shows.
@@ -424,7 +424,7 @@ fn history_previews_a_version_and_restores_it_like_a_revert() {
         ["History"],
         "the editor's own version strip is not offered beside the shared History"
     );
-    assert!(app.harness().targets().contains_key("nav-shell-history"));
+    assert!(app.harness().targets().contains_key("history-open"));
 
     select_version(&mut app, &v1);
     let shown = preview_text(&mut app);

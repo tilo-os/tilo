@@ -66,19 +66,22 @@ fn act_named(app: &mut Live, name: &str, action: &ui::a11y::Action) {
         .unwrap_or_else(|error| panic!("{name}: {error}"));
     app.settle();
 }
-fn access_list(node: &AccessNode) -> Option<&AccessNode> {
-    if node.role == Role::List {
-        return Some(node);
-    }
-    node.children.iter().find_map(access_list)
-}
 
-fn menu_rows(app: &ContactsApp) -> Vec<Rect> {
+fn menu_rows(app: &ContactsApp) -> std::collections::HashMap<usize, Rect> {
     let Some(OpenMenu::Contact(_, rows)) = &app.open_menu else {
         panic!("the actual contact menu is open");
     };
-    (0..rows.len())
-        .map(|index| app.menu.item_rect(index).expect("actual menu row geometry"))
+    rows.iter()
+        .enumerate()
+        .filter(|(_, action)| action.is_some())
+        .map(|(index, _)| {
+            (
+                index,
+                app.menu
+                    .item_rect(index)
+                    .expect("actual action-row geometry"),
+            )
+        })
         .collect()
 }
 fn menu_index(app: &ContactsApp, action: ContextAction) -> usize {
@@ -898,7 +901,9 @@ fn search_and_open_operations_reveal_their_target() {
             &encoded.payload,
         )
         .expect("the address names a contacts effect");
-        app.app.effect(&effect).expect("open succeeds");
+        app.app
+            .effect_on(&address.resource, &effect)
+            .expect("the addressed open succeeds");
         app.settle();
 
         assert_eq!(app.selected, Some(id), "activation selected Grace");
@@ -1492,7 +1497,9 @@ impl Harness {
     /// Dispatch a key event with explicit modifier state through the real
     /// `handle_event` path.
     fn dispatch_key_mods(&mut self, event: &WindowEvent, mods: ModifiersState) -> bool {
-        self.app.dispatch(event, mods)
+        let handled = self.app.dispatch(event, mods);
+        self.app.settle();
+        handled
     }
 
     /// Press a single `Named` key (no modifiers).
@@ -1939,7 +1946,7 @@ fn context_menu_opens_canonical_contact_actions() {
         // Click the "Delete" row in the menu → the delete-confirm modal opens.
         let rows = menu_rows(&h.app);
         let delete_idx = menu_index(&h.app, ContextAction::Delete);
-        h.press_left(rows[delete_idx].center());
+        h.press_left(rows[&delete_idx].center());
         assert_eq!(
             h.app.confirm_delete,
             Some(id),
@@ -2010,7 +2017,7 @@ fn context_menu_opens_canonical_contact_actions() {
 
         // Click the Favorite item in the actual shared menu.
         let rows = menu_rows(&h.app);
-        h.press_left(rows[fav_idx].center());
+        h.press_left(rows[&fav_idx].center());
 
         // The flag flipped in the store AND in the CRDT, and the menu closed.
         assert_eq!(
@@ -2042,7 +2049,7 @@ fn context_menu_opens_canonical_contact_actions() {
 
         // Toggling again restores the original state (round-trip).
         let rows = menu_rows(&h.app);
-        h.press_left(rows[fav_idx].center());
+        h.press_left(rows[&fav_idx].center());
         assert_eq!(
             fav_in_doc(h.book(), id),
             before,
@@ -2170,7 +2177,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         assert!(h.press_right(row));
         let rows = menu_rows(&h.app);
         let fav_idx = menu_index(&h.app, ContextAction::Favorite);
-        h.press_left(rows[fav_idx].center());
+        h.press_left(rows[&fav_idx].center());
         assert_eq!(
             h.book(),
             expected,
@@ -2694,13 +2701,13 @@ fn search_field_focus_and_typing_narrow_the_list() {
         .harness_mut()
         .open_search(&request)
         .expect("the actual platform search opens");
-    let query = h
+    let (_, query) = h
         .app
         .harness_mut()
-        .focused_access_node()
+        .a11y_focus()
         .expect("platform query input is focused");
     assert!(
-        matches!(query.role, Role::TextInput),
+        query.role() == ui::accesskit::Role::TextInput,
         "the host owns the query input"
     );
     h.press_named(NamedKey::Escape);
@@ -2946,20 +2953,24 @@ fn list_keyboard_and_scroll_navigation() {
             "keyboard selection scrolls itself into the virtualized viewport"
         );
 
-        let tree = h.app.accessibility().expect("semantic tree is present");
-        let list = access_list(&tree).expect("contacts list is exposed within the shared shell");
-        assert_eq!(list.children.len(), h.app.shared.borrow().painted.len());
+        let nodes = h.app.harness_mut().a11y_nodes();
+        let (_, list) = nodes
+            .iter()
+            .find(|(_, node)| node.role() == ui::accesskit::Role::List)
+            .expect("contacts list is exported within the shared shell");
+        assert_eq!(list.children().len(), h.app.shared.borrow().painted.len());
         assert!(
-            list.children.len() < h.app.shared.borrow().rows.len(),
+            list.children().len() < h.app.shared.borrow().rows.len(),
             "accessibility mirrors the bounded viewport rather than allocating every row"
         );
-        let selected_row = list
-            .children
+        let selected_row = nodes
             .iter()
-            .find(|node| node.state.selected)
-            .expect("selected row is in the semantic viewport");
-        assert_eq!(selected_row.pos_in_set, Some(41));
-        assert_eq!(selected_row.set_size, Some(1_000));
+            .find(|(id, node)| list.children().contains(id) && node.is_selected() == Some(true))
+            .expect("selected row is in the semantic viewport")
+            .1
+            .clone();
+        assert_eq!(selected_row.position_in_set(), Some(41));
+        assert_eq!(selected_row.size_of_set(), Some(1_000));
     }
 }
 
@@ -2972,7 +2983,12 @@ fn split_divider_and_compact_toolbar_fit_their_space() {
         let before = h.app.shell.geometry().sidebar_column.width();
         let grab = h.app.shell.geometry().resize_handle.center();
         assert!(h.app.shell.geometry().resize_handle.width() > 0.0);
-        h.press_left(grab);
+        h.move_to(grab);
+        assert!(h.dispatch(&WindowEvent::MouseInput {
+            device_id: device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }));
         h.move_to(Point::new(grab.x + 60.0, grab.y));
         h.relayout();
         assert!(
@@ -3058,9 +3074,10 @@ fn repeated_rows_grow_shrink_and_keep_ids_in_the_draft() {
         let phone_id = contact.phones[0].id;
         let first_group_id = contact.groups[0].id;
         let second_group_id = contact.groups[1].id;
+        let reordered_groups = format!("{}, {}", contact.groups[1].value, contact.groups[0].value);
         let mut form = EditForm::new(contact, false);
         form.set_value(Slot::Phone(0), "+44 20 7946 0999");
-        form.set_value(Slot::Groups, "Favorites, Work");
+        form.set_value(Slot::Groups, &reordered_groups);
         form.collect();
         assert_eq!(form.draft.phones[0].id, phone_id);
         assert_eq!(form.draft.phones[0].value, "+44 20 7946 0999");

@@ -396,7 +396,8 @@ fn add_steps_bind_them_validate_and_save_through_the_door() {
     app.harness()
         .wait_for_named("shortcuts-save-sheet", tilo_test_env::hang_bound())
         .expect("the sheet shows");
-    // Enter is the sheet's default action: it saves.
+    // Keyboard activation of the reviewed primary action saves the grant.
+    act(&mut app, "shortcuts-save-sheet.primary", &Action::Focus);
     app.harness().key("Enter");
 
     let created = host.library_calls("create");

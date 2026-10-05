@@ -176,22 +176,39 @@ fn text_cell(
     row: &KvRow,
     state: &LocalState<String>,
     name: &str,
-    edit: fn(String) -> RowEdit,
+    field: &'static str,
 ) -> Element {
-    let sink = sink.clone();
     let id = row.id.clone();
+
+    let section = match table {
+        Table::Params => crate::actions::RowSection::Params,
+        Table::Headers => crate::actions::RowSection::Headers,
+        Table::Form => crate::actions::RowSection::Form,
+    };
     let input = TextInput::from_state(state)
+        .with_id(format!("api.kv.{section:?}.{id}.{field}"))
         .with_kind(TextInputKind::Code)
         .with_plain_chrome()
         .with_placeholder(name)
-        .with_accessible_name(name)
-        .on_change(move |text| {
-            sink.borrow_mut().push(Cmd::Edit {
-                table,
-                row: id.clone(),
-                edit: edit(text.to_owned()),
-            });
-        });
+        .with_accessible_name(name);
+    let input = match sink.actions.borrow().as_ref() {
+        Some(actions) => actions.bind(
+            input,
+            ui::tilo_resource::ActionRef::<
+                crate::resource::ApiTester,
+                crate::actions::ApiTesterAction,
+            >::new(ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM])
+            .map(
+                move |value: String| crate::actions::ApiTesterAction::EditRowField {
+                    section,
+                    row_id: id.clone(),
+                    field: field.into(),
+                    value,
+                },
+            ),
+        ),
+        None => input.with_enabled(false),
+    };
     // The plain field draws its text at its own edge; the inset lines the
     // text up under the column's header.
     Box::new(
@@ -261,28 +278,44 @@ pub(crate) fn build(
                 gated(row, "enabled", move || -> Element {
                     let sink = sink.clone();
                     let id = id.clone();
-                    Box::new(
-                        Checkbox::from_state(&state)
-                            .with_accessible_name("Use this row")
-                            .on_change(move |enabled| {
-                                sink.borrow_mut().push(Cmd::Edit {
-                                    table,
-                                    row: id.clone(),
-                                    edit: RowEdit::Enabled(enabled),
-                                });
+                    let control = Checkbox::from_state(&state).with_accessible_name("Use this row");
+                    let section = match table {
+                        Table::Params => crate::actions::RowSection::Params,
+                        Table::Headers => crate::actions::RowSection::Headers,
+                        Table::Form => crate::actions::RowSection::Form,
+                    };
+                    let control = match sink.actions.borrow().as_ref() {
+                        Some(actions) => actions.bind(
+                            control,
+                            ui::tilo_resource::ActionRef::<
+                                crate::resource::ApiTester,
+                                crate::actions::ApiTesterAction,
+                            >::new(
+                                ui::tilo_resource::APPLY, &[ui::tilo_resource::APPLY_PARAM]
+                            )
+                            .map(move |enabled: bool| {
+                                crate::actions::ApiTesterAction::EditRowField {
+                                    section,
+                                    row_id: id.clone(),
+                                    field: "enabled".into(),
+                                    value: enabled.to_string(),
+                                }
                             }),
-                    )
+                        ),
+                        None => control.with_enabled(false),
+                    };
+                    Box::new(control)
                 })
             },
         ),
         ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0)).with_widget(
             move |row: &KvRow, _| -> Element {
-                text_cell(&key_sink, table, row, &row.key, "Key", RowEdit::Key)
+                text_cell(&key_sink, table, row, &row.key, "Key", "key")
             },
         ),
         ColumnDef::new("value", "Value", ColumnWidth::Flex(2.0)).with_widget(
             move |row: &KvRow, _| -> Element {
-                text_cell(&value_sink, table, row, &row.value, "Value", RowEdit::Value)
+                text_cell(&value_sink, table, row, &row.value, "Value", "value")
             },
         ),
         ColumnDef::new("remove", "", ColumnWidth::Fixed(control)).with_widget(

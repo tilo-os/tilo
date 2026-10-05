@@ -365,7 +365,9 @@ fn history_restores_a_past_version_through_the_host() {
         )
         .unwrap();
     harness.click_named("history-restore").unwrap();
-    harness.key("Enter");
+    harness
+        .click_named("history-restore-review.primary")
+        .unwrap();
     harness.relayout();
     assert_eq!(app.state(), past);
 

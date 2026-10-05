@@ -424,6 +424,11 @@ impl SlidesApp {
                 .chain(Background::ALL.iter().map(|b| b.label()))
                 .map(|label| (label.to_owned(), Measure::Segment)),
         );
+        set.extend(
+            PaletteKind::ALL
+                .iter()
+                .map(|kind| command(kind.label().to_owned())),
+        );
         if let Some(el) = self.selected_element()
             && el.fill.starts_with('#')
         {
@@ -1205,12 +1210,18 @@ impl SlidesApp {
         y += m.s6;
 
         Self::push_section_label(m, labels, x0, &mut y, &tr("slides-deck-theme"));
-        let n = PaletteKind::ALL.len() as f64;
-        let w = (x1 - x0 - (n - 1.0) * m.s2) / n;
+        let widest = PaletteKind::ALL
+            .iter()
+            .map(|kind| m.width(kind.label(), Measure::Button { icon: true }))
+            .fold(0.0_f64, f64::max);
+        let columns = (((x1 - x0 + m.s2) / (widest + m.s2)).floor() as usize)
+            .clamp(1, PaletteKind::ALL.len());
+        let w = (x1 - x0 - (columns - 1) as f64 * m.s2) / columns as f64;
         for (i, kind) in PaletteKind::ALL.iter().enumerate() {
-            let x = x0 + i as f64 * (w + m.s2);
+            let x = x0 + (i % columns) as f64 * (w + m.s2);
+            let top = y + (i / columns) as f64 * (m.control_h + m.s2);
             buttons.push(UiButton {
-                rect: Rect::new(x, y, x + w, y + m.small_h),
+                rect: Rect::new(x, top, x + w, top + m.control_h),
                 kind: ButtonKind::Theme {
                     kind: *kind,
                     selected: *kind == self.deck.palette,
@@ -1218,7 +1229,8 @@ impl SlidesApp {
                 hit: Hit::SetPalette(*kind),
             });
         }
-        y + m.small_h + m.s6
+        let rows = PaletteKind::ALL.len().div_ceil(columns);
+        y + rows as f64 * (m.control_h + m.s2) - m.s2 + m.s6
     }
 
     /// A segmented strip across `x0..x1`: one row while every label fits
@@ -1648,7 +1660,21 @@ impl SlidesApp {
                     .paint(scene, t, tr, theme);
             }
             ButtonKind::Theme { kind, selected } => {
-                ColorSwatchFace::new(b.rect, Palette::resolve(*kind, theme).accent, kind.label())
+                let face = ButtonFace::new(b.rect, kind.label())
+                    .icon(Icon::Circle)
+                    .toggled(*selected)
+                    .hovered(hovered);
+                Button::paint(scene, t, tr, theme, &face);
+                let edge = f64::from(theme.tokens.metrics.icon_sm);
+                let swatch = Rect::from_center_size(
+                    Point::new(
+                        b.rect.x0 + f64::from(theme.tokens.spacing.s3) + edge / 2.0,
+                        b.rect.center().y,
+                    ),
+                    (edge, edge),
+                );
+                ColorSwatchFace::new(swatch, Palette::resolve(*kind, theme).accent, kind.label())
+                    .target_rect(b.rect)
                     .selected(*selected)
                     .hovered(hovered)
                     .paint(scene, t, tr, theme);

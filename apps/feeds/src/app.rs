@@ -1685,6 +1685,16 @@ impl FeedsApp {
             "sidebar-open" => self.shell.open_sidebar(),
             "detail" => self.shell.show(NavPane::Content),
             "reader-settings" => {
+                // This is capture-only staging; use the same personal preference
+                // store the live reader follows, without changing the library.
+                let mut core = self.core.borrow_mut();
+                if let Err(error) = core.change_read_settings(|settings| {
+                    settings.font = ReadFont::Serif;
+                    settings.theme = ReadTheme::Sepia;
+                }) {
+                    core.set_toast(error);
+                }
+                drop(core);
                 let ready = self
                     .core
                     .borrow()
