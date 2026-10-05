@@ -104,9 +104,11 @@ def git_object(kind, contents):
     return hashlib.sha1(kind + b' ' + str(len(contents)).encode() + b'\0' + contents).digest()
 
 
-def snapshot_tree(root, top=True):
+def snapshot_tree(root, top=True, included=None):
     entries = []
     for path in root.iterdir():
+        if included is not None and path not in included:
+            continue
         if path.name == '.git' or (top and path.name == 'target'):
             continue
         mode = path.lstat().st_mode
@@ -118,7 +120,7 @@ def snapshot_tree(root, top=True):
             entry_mode = b'100755' if mode & stat.S_IXUSR else b'100644'
             hash_value = git_object(b'blob', path.read_bytes())
         elif stat.S_ISDIR(mode):
-            hash_value = snapshot_tree(path, False)
+            hash_value = snapshot_tree(path, False, included)
             if hash_value is None:
                 continue  # Git tracks no empty directories.
             entry_mode = b'40000'
@@ -129,6 +131,23 @@ def snapshot_tree(root, top=True):
     if not entries and not top:
         return None
     return git_object(b'tree', b''.join(value for _, value in sorted(entries)))
+
+
+def tracked_source_tree(root, revision):
+    # Git's canonical source view is exactly what normal rcargo mirrors after
+    # clean admission. Hash actual bytes/modes/links, never index hashes alone.
+    names = subprocess.check_output(['git', '-C', str(root), 'ls-tree', '-rz', '--name-only', revision])
+    included = set()
+    for name in names.split(b'\0'):
+        if not name:
+            continue
+        path = root / os.fsdecode(name)
+        included.add(path)
+        for parent in path.parents:
+            if parent == root:
+                break
+            included.add(parent)
+    return snapshot_tree(root, included=included)
 
 
 def verify_source(source, root=ROOT):
@@ -160,7 +179,7 @@ def source_proof():
             'snapshot admission requires a clean committed source')
     commit = subprocess.check_output(['git', 'cat-file', 'commit', revision], cwd=ROOT)
     require(git_object(b'commit', commit).hex() == revision, 'local commit object differs')
-    require(snapshot_tree(ROOT).hex() == commit.split(b'\n', 1)[0][5:].decode(),
+    require(tracked_source_tree(ROOT, revision).hex() == commit.split(b'\n', 1)[0][5:].decode(),
             'local snapshot source tree differs')
     return revision, base64.b64encode(commit).decode()
 

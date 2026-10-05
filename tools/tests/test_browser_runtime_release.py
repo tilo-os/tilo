@@ -164,6 +164,27 @@ class BrowserRuntimeRelease(unittest.TestCase):
                 (root / 'target/output').write_text('known generated build output\n')
                 self.assertEqual(release.verify_source(source, root), revision)
 
+    def test_local_canonical_source_view_excludes_only_git_ignored_host_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            (root / '.gitignore').write_text('__pycache__/\n')
+            (root / 'source.py').write_text('print("source")\n')
+            subprocess.run(['git', '-C', str(root), 'add', '.gitignore', 'source.py'], check=True)
+            subprocess.run(['git', '-C', str(root), '-c', 'user.name=Proof',
+                            '-c', 'user.email=proof@example.test', 'commit', '-qm', 'source view'], check=True)
+            tree = subprocess.check_output(['git', '-C', str(root), 'write-tree'], text=True).strip()
+            revision = subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'], text=True).strip()
+            commit = subprocess.check_output(['git', '-C', str(root), 'cat-file', 'commit', revision])
+            (root / '__pycache__').mkdir()
+            (root / '__pycache__/source.pyc').write_bytes(b'generated, not mirrored')
+            self.assertEqual(release.tracked_source_tree(root, revision).hex(), tree)
+            with patch.dict(os.environ, {'REQUESTED_PUBLISH': 'false'}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'source tree differs'):
+                    release.verify_source(release.Source(revision, commit), root)
+            (root / 'source.py').write_text('changed source\n')
+            self.assertNotEqual(release.tracked_source_tree(root, revision).hex(), tree)
+
     def test_snapshot_proof_refuses_publication_keys_and_ci_before_compiler_children(self):
         source = release.Source('a' * 40, b'not admitted')
         for variable in ('GITHUB_EVENT_NAME', 'GITEA_EVENT_NAME', 'FORGEJO_EVENT_NAME',
