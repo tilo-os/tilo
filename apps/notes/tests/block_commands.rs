@@ -230,8 +230,16 @@ fn duplicate_refuses_viewers_and_composition_then_converges_with_peer_text() {
     use ui::tilo_resource::Invoke;
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&notes::actions::new_page_action(page, None, 0, "Copy")).unwrap())
-        .unwrap();
+    app.invoke(
+        Invoke::apply(&notes::actions::new_page_action(
+            page,
+            None,
+            "a".into(),
+            "Copy",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Original é😀");

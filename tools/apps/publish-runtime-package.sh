@@ -59,19 +59,24 @@ for attempt in 1 2 3; do
   # its versions (the other architecture's, say), so build on it.
   "$REGISTRY_CLI" pending --registry "$REGISTRY_URL" \
     --identity "$REGISTRY_IDENTITY" "$package_id" > "$previous"
-  [[ -s $previous ]] || jq --arg pkg "$package_id" \
-    '.entries[] | select(.package_id == $pkg)' "$snapshot" > "$previous"
+  # Whether the package is published decides add or update; a request still
+  # waiting for review (the other architecture's, say) is only the entry to
+  # build on.
+  if jq -e --arg pkg "$package_id" '[.entries[] | select(.package_id == $pkg)] | length > 0' \
+      "$snapshot" >/dev/null; then
+    action=update
+    [[ -s $previous ]] || jq --arg pkg "$package_id" \
+      '.entries[] | select(.package_id == $pkg)' "$snapshot" > "$previous"
+  else
+    action=add
+  fi
   args=(entry --arch "$arch" --identity "$REGISTRY_IDENTITY" --metadata "$metadata"
     --url "$REGISTRY_URL/artifacts/$OWNER/generic/$artifact/$VERSION/${tapp##*/}"
-    --objects "$dir"
+    --objects "$dir" --action "$action"
     # Each runtime build is hundreds of megabytes the registry keeps; an app
     # version whose build has been pruned is refused, not broken.
     --keep-releases 5)
-  if [[ -s $previous ]]; then
-    args+=(--action update --previous-entry "$previous")
-  else
-    args+=(--action add)
-  fi
+  [[ -s $previous ]] && args+=(--previous-entry "$previous")
   "$REGISTRY_CLI" "${args[@]}" "$tapp" > "$request"
   status=$(curl --silent --show-error --connect-timeout 10 --max-time 60 \
     --retry 3 --retry-all-errors \

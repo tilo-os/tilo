@@ -30,8 +30,14 @@ pub fn tilo_to_store_item(
     installed_index: &[InstalledPackage],
 ) -> StoreItem {
     let entry = &verified.entry;
-    let versions: Vec<StoreItemVersion> =
-        entry.versions.iter().map(tilo_version_to_store).collect();
+    // A build that needs system interfaces this OS does not serve is never
+    // offered: it could not run here.
+    let versions: Vec<StoreItemVersion> = entry
+        .versions
+        .iter()
+        .filter(|version| app_cli::serves_interfaces(version))
+        .map(tilo_version_to_store)
+        .collect();
     let latest = versions
         .first()
         .map(|v| v.version.clone())
@@ -392,6 +398,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 300,

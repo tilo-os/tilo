@@ -37,6 +37,8 @@ def main(argv: list[str]) -> int:
     startups = app_startup.parse_startups(log)
     opens = app_startup.parse_history_opens(log)
     print("\n".join(app_startup.table(startups)))
+    for launch in startups:
+        print(launch["line"])
     for opened in opens:
         print(f"{opened['app']}: History opened in {opened['ms']} ms "
               f"({opened['listed']} changes listed, earlier ones {'paged' if opened['earlier'] else 'none'})")

@@ -28,7 +28,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --features browser/wpe"; \
        fi \
     && THIN_EXCLUDES="browser" \
-    && RELEASE_ARGS="-p shell -p fs -p terminal -p tilo-crypto" \
+    && RELEASE_ARGS="-p shell -p fs -p tilo-crypto" \
     && build_phase rust-release \
     && CARGO_PROFILE_RELEASE_LTO=thin \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
@@ -40,7 +40,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
     && build_phase rust-output-validation \
     && missing=0 \
-    && for b in shell fs terminal tilo-crypto tilo-windows-vm-control tilo-windows-rail; do \
+    && for b in shell fs tilo-crypto tilo-windows-vm-control tilo-windows-rail; do \
          if [ ! -x "target/release/$b" ]; then \
            printf 'Required build output is missing: %s\n' "$b" >&2; missing=1; \
          fi; \

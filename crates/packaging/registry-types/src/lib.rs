@@ -64,6 +64,7 @@ pub mod change;
 pub mod compact;
 pub mod entry;
 pub mod handshake;
+pub mod interfaces;
 pub mod moderation;
 pub mod namespace;
 pub mod pending;
@@ -88,6 +89,10 @@ pub use entry::{
     entry_signing_message, index_signing_message, sign_entry, valid_language_tag,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
+pub use interfaces::{
+    InterfaceError, InterfaceRequirement, ProvidedInterfaces, SYSTEM_INTERFACE, Unmet,
+    describe_unmet, valid_interface_name,
+};
 pub use moderation::{
     MODERATION_DOMAIN, ModerationActorRole, ModerationCase, ModerationCaseStatus,
     ModerationDecision, ModerationEvent, ModerationEventKind, ModerationMutation,

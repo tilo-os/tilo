@@ -9,7 +9,9 @@
 #   4. `tilo-control actions list` answers, and lists Notes;
 #   5. the state read (`tilo-control windows`) shows its new window;
 #   6. a note created through Notes' new-page action reads back, as typed
-#      data, through Notes' read action.
+#      data, through Notes' read action;
+#   7. the Notes it opened closes again through its own action, pass or fail,
+#      so the checks after it start from the desktop they expect.
 set -euo pipefail
 
 fail() { printf 'admin actions: %s\n' "$*" >&2; exit 1; }
@@ -31,9 +33,16 @@ mode=$(stat -c %a "$socket")
 [[ $mode == 600 ]] || fail "admin control socket is mode $mode, expected 600"
 
 # The compositor must not have been started with the dev control variable.
+# Its environment is unreadable when the process is not dumpable; then the
+# variable's effect is checked instead: no test-control socket is served.
 shell_pid=$(pgrep -u "$(id -u)" -x shell | head -n 1) || fail "no compositor process"
-if tr '\0' '\n' <"/proc/$shell_pid/environ" | grep -q '^TILO_TEST_CONTROL='; then
-  fail "the compositor runs with TILO_TEST_CONTROL; this check must not depend on it"
+if shell_env=$(tr '\0' '\n' 2>/dev/null <"/proc/$shell_pid/environ"); then
+  ! grep -q '^TILO_TEST_CONTROL=' <<<"$shell_env" \
+    || fail "the compositor runs with TILO_TEST_CONTROL; this check must not depend on it"
+else
+  test_socket="$XDG_RUNTIME_DIR/tilo-session/test-control.sock"
+  [[ ! -S $test_socket ]] \
+    || fail "the compositor serves $test_socket; this check must not depend on it"
 fi
 
 notes_tabs() {
@@ -41,19 +50,40 @@ notes_tabs() {
     | python3 -c 'import json,sys; [print("%s:%s" % (w["group"], w["tab"])) for w in json.load(sys.stdin) if w.get("app_id") == "so.tilo.notes"]'
 }
 
+# Close every Notes window through its own action and wait until it is gone.
+close_notes() {
+  local open_tabs tab
+  open_tabs=$(notes_tabs) || { echo "windows read failed" >&2; return 1; }
+  for tab in $open_tabs; do
+    tilo-control actions invoke desktop-windows "tab.close:$tab" >/dev/null || {
+      echo "closing Notes tab $tab through desktop-windows:tab.close:$tab failed" >&2
+      return 1
+    }
+  done
+  for _ in $(seq 1 30); do
+    [[ -z $(notes_tabs) ]] && return 0
+    sleep 1
+  done
+  echo "Notes tabs still open 30 s after closing them: $(notes_tabs)" >&2
+  return 1
+}
+
 # Earlier checks may have left Notes open, and opening an open app only
-# focuses it. Close those windows through their own actions first, so the
-# launch below must produce a new one.
-open_tabs=$(notes_tabs) || fail "windows read failed"
-for tab in $open_tabs; do
-  tilo-control actions invoke desktop-windows "tab.close:$tab" >/dev/null \
-    || fail "closing Notes tab $tab through desktop-windows:tab.close:$tab failed"
-done
-for _ in $(seq 1 30); do
-  [[ -z $(notes_tabs) ]] && break
-  sleep 1
-done
-[[ -z $(notes_tabs) ]] || fail "Notes tabs still open 30 s after closing them: $(notes_tabs)"
+# focuses it. Close those windows first, so the launch below must produce a
+# new one.
+close_notes || fail "Notes was open before the check and did not close"
+
+# The checks after this one open apps from an empty workspace: leave it so,
+# whether this check passes or fails.
+cleanup() {
+  local status=$?
+  if ! close_notes; then
+    printf 'admin actions: the Notes this check opened did not close\n' >&2
+    ((status != 0)) || status=1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 
 # Invoke by address first: an address resolves without a listing before it.
 answer=$(tilo-control actions invoke applications so.tilo.notes) \
@@ -108,7 +138,7 @@ item=""
 for _ in $(seq 1 30); do
   notebook=$(tilo-control read so.tilo.notes --json) || fail "reading the notebook failed"
   item=$(python3 -c 'import json,sys
-pages = json.loads(sys.argv[1])["pages"]
+pages = json.loads(sys.argv[1]).get("pages", [])
 print(next((p["item"] for p in pages if p["title"] == sys.argv[2]), ""))' "$notebook" "$title")
   [[ -n $item ]] && break
   sleep 1

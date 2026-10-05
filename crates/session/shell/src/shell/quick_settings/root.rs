@@ -2393,13 +2393,21 @@ impl QuickSettingsRoot {
         );
         if !self.edit_mode {
             // Children follow the keyboard focus table, so an assistive
-            // technology's child index is the focus stop it names.
+            // technology's child index is the focus stop it names. Each is
+            // keyed by the stop it is, not its place: the stops shift when a
+            // reading lands after the panel opens (a wired link turns the
+            // network tile on, volume becomes available), and a reader that
+            // resolved a control a moment earlier must still press that
+            // control, not whichever one moved into its slot.
             for stop in self.root_stops(state) {
-                let node = self.stop_access_node(stop, state).with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .focused(self.is_focused(state, stop)),
-                );
+                let node = self
+                    .stop_access_node(stop, state)
+                    .with_hashed_key(self.semantic_stop_name(stop))
+                    .with_state(
+                        AccessState::new()
+                            .focusable(true)
+                            .focused(self.is_focused(state, stop)),
+                    );
                 let node = match stop {
                     RootStop::Control(_, control) if Self::is_switch(control) => {
                         let mut node = node;
@@ -3664,6 +3672,51 @@ mod tests {
             QuickSettingsRoot::subline(QuickSettingsControl::RotationLock, &state),
             "Locked"
         );
+    }
+
+    /// A reading that lands after the panel opened adds a stop in front of
+    /// the power row. The power row's node keeps its key, so a reader that
+    /// resolved it before the reading still presses the power row, and no
+    /// two stops ever share a key.
+    #[test]
+    fn root_stops_keep_their_accessible_identity_when_a_stop_appears() {
+        let root = QuickSettingsRoot {
+            panel: PANEL,
+            ..QuickSettingsRoot::default()
+        };
+        let mut state = QuickSettingsState::default();
+        let key_of = |snapshot: &ui::a11y::AccessNode, name: &str| {
+            let node = snapshot
+                .children
+                .iter()
+                .find(|node| node.name.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("{name} is in the tree"));
+            node.key.unwrap_or_else(|| panic!("{name} carries a key"))
+        };
+        let before = root.accessibility_snapshot(&state);
+        let power = key_of(&before, "Change power profile");
+        let power_index = before
+            .children
+            .iter()
+            .position(|node| node.name.as_deref() == Some("Change power profile"));
+
+        state.radios.wifi_available = true;
+        state.volume_available = true;
+        let after = root.accessibility_snapshot(&state);
+        assert_ne!(
+            after
+                .children
+                .iter()
+                .position(|node| node.name.as_deref() == Some("Change power profile")),
+            power_index,
+            "the stops in front of the power row grew"
+        );
+        assert_eq!(key_of(&after, "Change power profile"), power);
+        let mut keys: Vec<u64> = after.children.iter().filter_map(|node| node.key).collect();
+        assert_eq!(keys.len(), after.children.len(), "every stop is keyed");
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), after.children.len(), "no two stops share a key");
     }
 
     #[test]

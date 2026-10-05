@@ -1234,6 +1234,7 @@ net-status = Status
 net-wifi-off = Wi-Fi is off
 net-connected-to = Connected to { $ssid }
 net-not-connected = Not connected
+net-no-wifi-adapter = No Wi-Fi adapter on this device
 net-applying = Applying network changes…
 net-refreshing = Refreshing…
 net-refresh = Refresh

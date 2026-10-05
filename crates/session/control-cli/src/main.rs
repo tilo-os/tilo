@@ -387,6 +387,19 @@ fn parse_read<'a>(iter: &mut impl Iterator<Item = &'a String>) -> Result<Command
 /// the session answers a cold directory query on a later request.
 const READ_DISCOVERY_ATTEMPTS: u32 = 20;
 const READ_DISCOVERY_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+/// How long `read` follows an admitted invocation to its answer: an app
+/// action is admitted first and answers on its job.
+const READ_ANSWER_ATTEMPTS: u32 = 100;
+const READ_ANSWER_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The job of an admitted invocation that has not answered yet.
+fn unanswered_job(response: &serde_json::Value) -> Option<u64> {
+    let receipt = response.pointer("/answer/receipt")?;
+    let state = receipt.pointer("/update/state")?.as_str()?;
+    matches!(state, "accepted" | "running" | "streaming")
+        .then(|| receipt.get("broker_invocation_id")?.as_u64())
+        .flatten()
+}
 
 /// The address of `app`'s `read` action in an enumeration answer.
 fn read_action_id(answer: &serde_json::Value, app: &str) -> Option<String> {
@@ -400,6 +413,11 @@ fn read_action_id(answer: &serde_json::Value, app: &str) -> Option<String> {
                 && row.get("operation").and_then(serde_json::Value::as_str) == Some("read")
         })
         .and_then(|row| row.get("id")?.as_str().map(str::to_string))
+}
+
+/// The request that reads `job`'s latest state and output.
+fn job_status_request(job: u64) -> String {
+    serde_json::json!({ "op": "actions_status", "invocation_id": job }).to_string()
 }
 
 /// `read APP [ITEM]`: find the open app's `read` action, invoke it, and
@@ -453,13 +471,27 @@ fn run_read(stream: &mut UnixStream, app: &str, item: Option<&str>, json: bool) 
         "args": args,
     })
     .to_string();
-    let response = match round_trip(stream, &invoke) {
+    let mut response = match round_trip(stream, &invoke) {
         Ok(response) => response,
         Err(e) => {
             eprintln!("tilo-control: socket round-trip: {e}");
             return 2;
         }
     };
+    // The app answers on the job the session admitted it as.
+    for _ in 0..READ_ANSWER_ATTEMPTS {
+        let Some(job) = unanswered_job(&response) else {
+            break;
+        };
+        std::thread::sleep(READ_ANSWER_PAUSE);
+        response = match round_trip(stream, &job_status_request(job)) {
+            Ok(response) => response,
+            Err(e) => {
+                eprintln!("tilo-control: socket round-trip: {e}");
+                return 2;
+            }
+        };
+    }
     print_read_answer(&response, json)
 }
 
@@ -502,9 +534,15 @@ fn print_read_answer(response: &serde_json::Value, json: bool) -> u8 {
             eprintln!("error [{code}]: {msg}");
             1
         }
-        _ => {
-            println!("{}", response.get("answer").cloned().unwrap_or_default());
-            0
+        state => {
+            // A receipt is not what the resource holds: printing it as the
+            // answer would hand the caller something else to parse.
+            eprintln!(
+                "error [unanswered]: the read did not answer (state {}): {}",
+                state.unwrap_or("none"),
+                response.get("answer").cloned().unwrap_or_default()
+            );
+            1
         }
     }
 }
@@ -1517,6 +1555,30 @@ mod tests {
         let failed = serde_json::json!({"answer": {"receipt": {"update": {
             "state": "failed", "error": {"code": "action_failed", "message": "no note"}}}}});
         assert_eq!(print_read_answer(&failed, true), 1);
+    }
+
+    /// An app's read is admitted first and answers on its job: `read`
+    /// follows the job, and never prints a receipt as if it were content.
+    #[test]
+    fn read_follows_an_admitted_job_to_its_answer() {
+        let admitted = serde_json::json!({"answer": {"receipt": {
+            "broker_invocation_id": 7, "update": {"state": "accepted"}}}});
+        assert_eq!(unanswered_job(&admitted), Some(7));
+        assert_eq!(print_read_answer(&admitted, true), 1);
+        let request: serde_json::Value =
+            serde_json::from_str(&job_status_request(7)).expect("json");
+        assert_eq!(
+            request,
+            serde_json::json!({"op": "actions_status", "invocation_id": 7})
+        );
+
+        let answered = serde_json::json!({"answer": {"receipt": {
+            "broker_invocation_id": 7,
+            "update": {"state": "succeeded", "output": {"value": {"pages": []}}}}}});
+        assert_eq!(unanswered_job(&answered), None);
+        assert_eq!(print_read_answer(&answered, true), 0);
+        let refused = serde_json::json!({"err": {"code": "unknown_action", "message": "gone"}});
+        assert_eq!(unanswered_job(&refused), None);
     }
 
     /// `windows` reads the tree in the desktop's own terms, and marks the

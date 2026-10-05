@@ -370,6 +370,17 @@ else
   bad 'AT-SPI release gate can ship an app outside the readable, action-capable desktop endpoint'
 fi
 
+# polkit's rules engine reads a subject as a process or a bus name only; a
+# unix-session subject reaches g_assert_not_reached() and aborts polkitd, so
+# the administrator-prompt check must ask as a process in the session.
+smoke="$repo/crates/session/shell/tests/native_atspi_smoke.sh"
+if grep -Fq "('unix-process', {'pid': <uint32 \$asker>, 'start-time': <uint64 \$started>" "$smoke" \
+  && ! grep -Fq "('unix-session'" "$smoke"; then
+  ok 'the release VM asks polkit for administrator access as a session process'
+else
+  bad 'the release VM asks polkit with a subject its rules engine aborts on'
+fi
+
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
   && grep -Fq 'github.event.inputs.full_native' "$imager" \
   && grep -Fq 'runner":"imager-linux-x86_64"' "$imager" \

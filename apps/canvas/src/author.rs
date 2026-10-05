@@ -220,6 +220,21 @@ pub fn colour_region(
     art: &Artwork,
     query: &ColourQuery,
 ) -> Result<Region, String> {
+    // Colour is found in the pictures themselves, never in the placeholder
+    // the canvas shows while a just-opened photo is still being decoded.
+    let patient = std::mem::replace(&mut renderer.pictures.patient, true);
+    let found = look_for_colour(renderer, text, art, query);
+    renderer.pictures.patient = patient;
+    found
+}
+
+/// [`colour_region`], its pictures waited for.
+fn look_for_colour(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    query: &ColourQuery,
+) -> Result<Region, String> {
     let whole = art.bounds();
     let scale = (f64::from(WAND_SIDE) / art.width.max(art.height).max(1.0)).min(2.0);
     let mut eye = Eye {
