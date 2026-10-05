@@ -3204,6 +3204,18 @@ impl FrameBuilder {
 
     /// Whether the trusted on-screen keyboard service has a surface, shown
     /// or not.
+    /// Whether field activation and the input modality request the keyboard.
+    pub fn osk_requested(&self) -> bool {
+        self.osk_active
+    }
+
+    /// Whether the keyboard has supplied a buffer, even while hidden.
+    pub fn osk_mapped(&self) -> bool {
+        self.osk_overlay
+            .as_ref()
+            .is_some_and(ForeignSurfaceWidget::is_mapped)
+    }
+
     pub fn osk_connected(&self) -> bool {
         self.osk_overlay.is_some()
     }
@@ -3254,6 +3266,9 @@ impl FrameBuilder {
     /// What the focused chrome widget asks of an input method — its purpose
     /// and caret — when it takes text; `None` otherwise.
     pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
+        if self.host.palette_visible() {
+            return self.host.palette_ime_field();
+        }
         let widget = *self.node_map.get(&focus?)?;
         // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
         // pointer stays valid until the next structural rebuild, the same
@@ -4457,6 +4472,37 @@ mod tests {
             Some(0),
             "the sources wrap around"
         );
+    }
+
+    #[test]
+    fn palette_text_input_is_exposed_without_a_native_focus_node() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let mut doc = AutoCommit::new();
+        let mut focus = None;
+        assert!(fb.focused_ime_field(focus).is_none());
+        assert!(fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Space)),
+            &Modifiers::from(ModifiersState::SUPER),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        ));
+        let _ = fb.paint_settled();
+        assert!(fb.host().palette_visible());
+        let field = fb
+            .focused_ime_field(None)
+            .expect("the open palette owns the input method even without a native focus node");
+        assert_eq!(field.purpose, winit::window::ImePurpose::Normal);
+        assert!(field.width > 0 && field.height > 0);
+        fb.dispatch_event(
+            &key_press(Key::Named(NamedKey::Escape)),
+            &Modifiers::default(),
+            &mut doc,
+            &automerge::ROOT,
+            &mut focus,
+        );
+        assert!(!fb.host().palette_visible());
+        assert!(fb.focused_ime_field(None).is_none());
     }
 
     #[test]

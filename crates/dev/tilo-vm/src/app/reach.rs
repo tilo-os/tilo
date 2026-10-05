@@ -86,6 +86,28 @@ pub fn describe_lease(lease: &AwakeLease) -> String {
     }
 }
 
+/// Whether the device can be reached beyond the LAN, in one line.
+pub fn describe_peer(entry: &VmEntry, enrolled: bool) -> String {
+    match &entry.peer {
+        Some(route) => format!(
+            "over the peer network as device {} ({}){}",
+            route.device.get(..12).unwrap_or(&route.device),
+            route.relay.as_deref().map_or_else(
+                || "public relays".to_owned(),
+                |relay| format!("relay {relay}")
+            ),
+            if enrolled {
+                ""
+            } else {
+                "; enrol this machine for it once: tilo-vm vm enrol-admin"
+            }
+        ),
+        None => {
+            "not recorded: its image serves no device-admin route (a current dev image does)".into()
+        }
+    }
+}
+
 fn wake_line(entry: &VmEntry) -> String {
     match (&entry.mac, &entry.wake, &entry.hostname) {
         (Some(mac), Some(wake), hostname) => format!(
@@ -438,6 +460,9 @@ pub fn apply_net(entry: &mut VmEntry, facts: &NetFacts) {
     if facts.mac.is_some() {
         entry.mac.clone_from(&facts.mac);
         entry.wake.clone_from(&facts.wake);
+    }
+    if facts.peer.is_some() {
+        entry.peer.clone_from(&facts.peer);
     }
 }
 
