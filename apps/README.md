@@ -61,9 +61,9 @@ UI controls, scripts and agents invoke the same typed operation:
 For a zero-argument control:
 
 ```rust
-let sync = ui::Button::new("sync", "Sync", None)
+let sync = ui::Button::new("sync", "Sync")
     .on_effect(move || sync_now());
-let preview = ui::Button::new("preview", "Preview", None)
+let preview = ui::Button::new("preview", "Preview")
     .on_view(move || preview_state.toggle());
 ```
 
@@ -72,7 +72,7 @@ To bind a declared resource action:
 ```rust
 let resource = project_resource(&project);
 let binding = ui::tilo_actions::ActionBinding::unit_for(&resource, "build")?;
-let build = ui::Button::new("build", "Build", None).on_action(binding);
+let build = ui::Button::new("build", "Build").on_action(binding);
 ```
 
 Controls emit inert intents. The host permission-filters and re-resolves each

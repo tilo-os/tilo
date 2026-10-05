@@ -391,8 +391,8 @@ fn build_controls_card(theme: &Theme) -> Box<dyn Widget> {
             col(12.0)
                 .push(Box::new(
                     Row::new()
-                        .push(Box::new(Button::new("g_save", "Save", None)))
-                        .push(Box::new(Button::new("g_cancel", "Discard", None))),
+                        .push(Box::new(Button::new("g_save", "Save")))
+                        .push(Box::new(Button::new("g_cancel", "Discard"))),
                 ))
                 .push(Box::new(
                     Row::new()

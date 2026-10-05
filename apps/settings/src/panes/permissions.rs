@@ -499,7 +499,7 @@ fn workspace_grants_intro_card(cx: &PaneCx) -> El {
         rows(vec![
             Box::new(Text::new(&t("perm-workspace-intro-body")).with_size(12.0)),
             Box::new(cx.bind_invocation(
-                Button::new("open-workspace-privacy", &open, None).content_sized(),
+                Button::new("open-workspace-privacy", &open).content_sized(),
                 PermissionsEffect::OpenWorkspacePrivacy,
             )),
         ]),

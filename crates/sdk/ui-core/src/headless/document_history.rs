@@ -831,7 +831,7 @@ mod tests {
         let calls = Rc::new(Cell::new(0));
         let called = calls.clone();
         let root = Box::new(
-            Button::new("app-operation", "App operation", None)
+            Button::new("app-operation", "App operation")
                 .on_view(move || called.set(called.get() + 1)),
         );
         let mut driver = FrameHarness::new_with_controlled_inputs(

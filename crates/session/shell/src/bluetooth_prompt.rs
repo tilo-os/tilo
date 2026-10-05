@@ -318,12 +318,12 @@ impl PairingPromptView {
 impl PairingPromptView {
     fn accept_button(&self, label: &str) -> Button {
         let clicked = Rc::clone(&self.clicked);
-        Button::new("bluetooth.pair.accept", label, None).on_click(move || clicked.accept.set(true))
+        Button::new("bluetooth.pair.accept", label).on_click(move || clicked.accept.set(true))
     }
 
     fn reject_button(&self, label: &str) -> Button {
         let clicked = Rc::clone(&self.clicked);
-        Button::new("bluetooth.pair.reject", label, None).on_click(move || clicked.reject.set(true))
+        Button::new("bluetooth.pair.reject", label).on_click(move || clicked.reject.set(true))
     }
 }
 

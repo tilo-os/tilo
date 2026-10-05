@@ -501,7 +501,7 @@ fn fold(cx: &ViewCx<ArtworkResource>, open: &LocalState<bool>) -> Element {
         let name = ui::i18n::I18nManager::lookup_plain(id);
         let flip = flip.clone();
         Box::new(
-            Button::new(id, "", None)
+            Button::new(id, "")
                 .with_icon(icon)
                 .ghost()
                 .with_accessible_name(&name)

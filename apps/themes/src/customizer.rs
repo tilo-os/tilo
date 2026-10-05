@@ -373,9 +373,9 @@ impl Customizer {
             })
             .with_id("font_dropdown"),
             buttons: vec![
-                Button::new("themes.duplicate", "Duplicate", None).fit_content(ACTIONS_H),
-                Button::new("themes.reset", "Reset", None).fit_content(ACTIONS_H),
-                Button::new("themes.delete", "Delete", None)
+                Button::new("themes.duplicate", "Duplicate").fit_content(ACTIONS_H),
+                Button::new("themes.reset", "Reset").fit_content(ACTIONS_H),
+                Button::new("themes.delete", "Delete")
                     .fit_content(ACTIONS_H)
                     .danger(),
             ],
@@ -533,24 +533,24 @@ impl Customizer {
             return;
         }
         let mut buttons = vec![
-            Button::new("themes.duplicate", "Duplicate", None)
+            Button::new("themes.duplicate", "Duplicate")
                 .on_action(duplicate)
                 .fit_content(ACTIONS_H),
         ];
         buttons.push(match reset {
-            Some(binding) => Button::new("themes.reset", "Reset", None)
+            Some(binding) => Button::new("themes.reset", "Reset")
                 .on_action(binding)
                 .fit_content(ACTIONS_H),
-            None => Button::new("themes.reset", "Reset", None)
+            None => Button::new("themes.reset", "Reset")
                 .fit_content(ACTIONS_H)
                 .with_enabled(false),
         });
         buttons.push(match delete {
-            Some(binding) => Button::new("themes.delete", "Delete", None)
+            Some(binding) => Button::new("themes.delete", "Delete")
                 .on_action(binding)
                 .fit_content(ACTIONS_H)
                 .danger(),
-            None => Button::new("themes.delete", "Delete", None)
+            None => Button::new("themes.delete", "Delete")
                 .fit_content(ACTIONS_H)
                 .danger()
                 .with_enabled(false),

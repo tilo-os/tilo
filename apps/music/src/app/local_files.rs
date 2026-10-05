@@ -14,7 +14,7 @@ impl MusicApp {
         )]
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "open-file")
             .expect("canonical Music picker binding");
-        ui::widget::Button::new("music-open-file", "music-open-audio-file", None)
+        ui::widget::Button::new("music-open-file", "music-open-audio-file")
             .content_sized()
             .on_action(binding)
     }

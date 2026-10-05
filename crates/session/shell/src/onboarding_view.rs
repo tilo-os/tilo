@@ -559,7 +559,7 @@ impl PressedActions {
     /// A button whose click takes `action`.
     fn button(&self, id: &str, label: &str, action: &'static str) -> Button {
         let pressed = self.clone();
-        Button::new(id, label, None).on_click(move || pressed.press(action))
+        Button::new(id, label).on_click(move || pressed.press(action))
     }
 
     /// A choice card whose activation takes `action`.
@@ -1735,7 +1735,6 @@ impl OnboardingView {
                         ui::icons::Icon::User,
                         t("onboarding-choice-existing"),
                         t("onboarding-choice-existing-detail"),
-                        None,
                     ),
                     KEY_EXISTING,
                 ),
@@ -1745,7 +1744,6 @@ impl OnboardingView {
                         ui::icons::Icon::Plus,
                         t("onboarding-choice-create"),
                         t("onboarding-choice-create-detail"),
-                        None,
                     ),
                     KEY_BEGIN,
                 ),
@@ -1757,7 +1755,6 @@ impl OnboardingView {
                         ui::icons::Icon::Monitor,
                         t("onboarding-choice-nearby"),
                         t("onboarding-choice-nearby-detail"),
-                        None,
                     ),
                     KEY_CHOOSE_NEARBY,
                 ),
@@ -1767,7 +1764,6 @@ impl OnboardingView {
                         ui::icons::Icon::Archive,
                         t("onboarding-choice-restore"),
                         t("onboarding-choice-restore-detail"),
-                        None,
                     ),
                     KEY_CHOOSE_RESTORE,
                 ),

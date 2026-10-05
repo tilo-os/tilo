@@ -219,7 +219,7 @@ fn layer_adjust(cx: &ViewCx<ArtworkResource>, tools: &Tools, layer: &str) -> Ele
                 .push(heading("canvas-layer-adjust"))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
-                    Button::new("canvas-layer-adjust-fold", "", None)
+                    Button::new("canvas-layer-adjust-fold", "")
                         .with_icon(icon)
                         .ghost()
                         .with_accessible_name(&name)

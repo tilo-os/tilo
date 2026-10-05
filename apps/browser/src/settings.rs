@@ -220,7 +220,7 @@ impl SettingsPane {
             ))
             .push(Box::new(Spacer::new()))
             .push(Box::new(button_with_action(
-                Button::new("settings.close", "Done", None)
+                Button::new("settings.close", "Done")
                     .with_size(if large_text { 112.0 } else { 96.0 }, action_height),
                 self.actions.close.clone(),
             )));
@@ -299,7 +299,7 @@ impl SettingsPane {
                     "Private browsing",
                     "Open a separate private window with memory-only browsing state.",
                     Box::new(
-                        Button::new("settings.new_private_window", "New Private Window", None)
+                        Button::new("settings.new_private_window", "New Private Window")
                             .with_size(180.0, 36.0)
                             .on_effect(move || request.set(true)),
                     ),
@@ -401,12 +401,12 @@ fn browsing_data_controls(
     action_height: f32,
 ) -> El {
     let clear_history = Box::new(button_with_action(
-        Button::new("settings.clear_history", "Clear history", None)
+        Button::new("settings.clear_history", "Clear history")
             .with_size(if large_text { 240.0 } else { 140.0 }, action_height),
         actions.clear_history.clone(),
     ));
     let clear_site_data = Box::new(button_with_action(
-        Button::new("settings.clear_cookies", "Request site-data clear", None)
+        Button::new("settings.clear_cookies", "Request site-data clear")
             .with_size(if large_text { 300.0 } else { 200.0 }, action_height),
         actions.clear_site_data.clone(),
     ));

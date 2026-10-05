@@ -336,7 +336,7 @@ impl Credentials {
     }
     fn button(&self, id: &str, label: &str, action: Action) -> Button {
         let pending = self.action.clone();
-        Button::new(id, label, None)
+        Button::new(id, label)
             .with_size(210.0, 32.0)
             .on_effect(move || pending.set(Some(action.clone())))
     }

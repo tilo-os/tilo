@@ -217,16 +217,12 @@ impl BrowserWindow {
             column = column.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("browser.download-exit.keep", "Keep downloading", None)
+                        Button::new("browser.download-exit.keep", "Keep downloading")
                             .on_effect(move || keep.set(Some(false))),
                     ))
                     .push(Box::new(
-                        Button::new(
-                            "browser.download-exit.cancel",
-                            "Cancel downloads and quit",
-                            None,
-                        )
-                        .on_effect(move || cancel.set(Some(true))),
+                        Button::new("browser.download-exit.cancel", "Cancel downloads and quit")
+                            .on_effect(move || cancel.set(Some(true))),
                     )),
             ));
         }

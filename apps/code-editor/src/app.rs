@@ -112,7 +112,7 @@ impl BottomPanelToggle {
 
     fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
         Self {
-            button: Button::new(Self::ID, "", None)
+            button: Button::new(Self::ID, "")
                 .tooltip("Show bottom panel")
                 .with_size(PANEL_TOGGLE_W, EDITOR_CHROME_H)
                 .ghost()

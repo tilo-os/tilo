@@ -69,7 +69,7 @@ fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
                     .with_id("editor"),
             )),
         ))
-        .push(Box::new(Button::new("footer", "Save", None)));
+        .push(Box::new(Button::new("footer", "Save")));
     let theme = Theme::dark().with_text_scale(scale);
     Driver::new_with_theme(State::new(), Box::new(root), (600, 400), theme)
 }

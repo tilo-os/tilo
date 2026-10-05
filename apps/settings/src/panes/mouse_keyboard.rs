@@ -1844,7 +1844,7 @@ impl MouseKeyboardPane {
             let up = format!("input.source.{index}.up");
             let down = format!("input.source.{index}.down");
             let remove = format!("input.source.{index}.remove");
-            let mut up_button = Button::new(&up, "↑", None)
+            let mut up_button = Button::new(&up, "↑")
                 .with_size(36.0, 34.0)
                 .with_accessible_name(&move_up)
                 .with_enabled(index > 0);
@@ -1853,7 +1853,7 @@ impl MouseKeyboardPane {
                     .cx
                     .bind_invocation(up_button, InputEffect::MoveSourceUp { source: id.clone() });
             }
-            let mut down_button = Button::new(&down, "↓", None)
+            let mut down_button = Button::new(&down, "↓")
                 .with_size(36.0, 34.0)
                 .with_accessible_name(&move_down)
                 .with_enabled(index + 1 < self.last.keyboard_layouts.len());
@@ -1863,7 +1863,7 @@ impl MouseKeyboardPane {
                     InputEffect::MoveSourceDown { source: id.clone() },
                 );
             }
-            let mut remove_button = Button::new(&remove, &remove_label, None)
+            let mut remove_button = Button::new(&remove, &remove_label)
                 .content_sized()
                 .with_enabled(self.last.keyboard_layouts.len() > 1);
             if self.last.keyboard_layouts.len() > 1 {

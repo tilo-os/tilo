@@ -9461,11 +9461,7 @@ mod tests {
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
             let mut app = crate::App::with_collaboration_manager(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "complete",
-                    "Complete",
-                    Some("completed"),
-                )),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
                 manager,
             );
             assert!(captures.lock().unwrap().action_publications.is_empty());
@@ -9502,11 +9498,7 @@ mod tests {
             let manager = CollaborationManager::from_sdk_fd_for_test(fd, &app_id, Uuid::new_v4());
             let mut app = crate::App::with_collaboration_manager(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "complete",
-                    "Complete",
-                    Some("completed"),
-                )),
+                Box::new(crate::widget::Button::new("complete", "Complete").on_view(|| {})),
                 manager,
             );
             crate::app::draw_prepared_component_test_frame(&mut app);

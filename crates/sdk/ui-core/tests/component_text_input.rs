@@ -292,8 +292,7 @@ fn locus_component_with_scroll(
     }
     for index in 0..count {
         column = column.push(Box::new(
-            Button::new(&format!("locus-button-{index}"), "Exact locus", None)
-                .on_action(binding.clone()),
+            Button::new(&format!("locus-button-{index}"), "Exact locus").on_action(binding.clone()),
         ));
     }
     let scroll_root: tilo_ui::widget::Element = if scroll_gap.is_some() {

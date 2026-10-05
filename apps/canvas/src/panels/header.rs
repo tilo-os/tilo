@@ -108,7 +108,7 @@ fn add_picture(tools: &Tools) -> Element {
     let confirm = ui::i18n::I18nManager::lookup_plain("canvas-add-picture-confirm");
     let kinds = ui::i18n::I18nManager::lookup_plain("canvas-pictures");
     Box::new(
-        Button::new("canvas-add-picture", "", None)
+        Button::new("canvas-add-picture", "")
             .with_icon(Icon::Image)
             .ghost()
             .with_accessible_name(&name)
@@ -235,12 +235,12 @@ impl Command {
     fn button(self, cx: &ViewCx<ArtworkResource>, labelled: bool) -> Element {
         let label = self.label();
         let button = if labelled {
-            Button::new(&self.id, &label, None)
+            Button::new(&self.id, &label)
                 .with_icon(self.icon)
                 .ghost()
                 .fit_content(super::ICON_BUTTON)
         } else {
-            Button::new(&self.id, "", None)
+            Button::new(&self.id, "")
                 .with_icon(self.icon)
                 .ghost()
                 .with_accessible_name(&label)
@@ -417,7 +417,7 @@ fn mask_back(tools: &Tools, owner: String) -> Element {
     let chosen = tools.layer.clone();
     let label = ui::i18n::I18nManager::lookup_plain("canvas-paint-layer");
     Box::new(
-        Button::new("canvas-paint-layer", "", None)
+        Button::new("canvas-paint-layer", "")
             .with_icon(Icon::Brush)
             .ghost()
             .with_accessible_name(&label)
@@ -661,7 +661,7 @@ const NOTICE_LETTERS: usize = 44;
 fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
     let sheet = tools.sheet.clone();
     let name = ui::i18n::I18nManager::lookup_plain(id);
-    Button::new(id, "", None)
+    Button::new(id, "")
         .with_icon(icon)
         .ghost()
         .with_accessible_name(&name)
@@ -777,7 +777,7 @@ fn view_button(tools: &Tools, id: &str, icon: Icon, request: ViewRequest) -> Ele
     let view = tools.view.clone();
     let name = ui::i18n::I18nManager::lookup_plain(id);
     Box::new(
-        Button::new(id, "", None)
+        Button::new(id, "")
             .with_icon(icon)
             .ghost()
             .with_accessible_name(&name)
@@ -791,7 +791,7 @@ fn view_button(tools: &Tools, id: &str, icon: Icon, request: ViewRequest) -> Ele
 fn toggle(state: &LocalState<bool>, id: &str, icon: Icon) -> Button {
     let flip = state.clone();
     let name = ui::i18n::I18nManager::lookup_plain(id);
-    Button::new(id, "", None)
+    Button::new(id, "")
         .with_icon(icon)
         .ghost()
         .with_accessible_name(&name)

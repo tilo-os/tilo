@@ -524,7 +524,7 @@ impl PrintersModel {
             t("settings-printers-refresh")
         };
         let refresh = Box::new(self.cx.bind_invocation(
-            Button::new("settings.printers.refresh", &refresh_label, None).content_sized(),
+            Button::new("settings.printers.refresh", &refresh_label).content_sized(),
             PrinterEffect::RefreshPrinters,
         ));
         let printers = if let Some(error) = &self.read_errors.printers {
@@ -549,7 +549,7 @@ impl PrintersModel {
             t("settings-printers-find")
         };
         let find = Box::new(self.cx.bind_invocation(
-            Button::new("settings.printers.discover", &find_label, None).content_sized(),
+            Button::new("settings.printers.discover", &find_label).content_sized(),
             PrinterEffect::FindPrinters,
         ));
         let discovery = if self.discovered.is_empty() {
@@ -629,7 +629,6 @@ impl PrintersModel {
                     Button::new(
                         &format!("settings.printers.default.{}", slug(&name)),
                         &make_default,
-                        None,
                     )
                     .content_sized(),
                     PrinterEffect::SetDefaultPrinter {
@@ -649,7 +648,6 @@ impl PrintersModel {
                 Button::new(
                     &format!("settings.printers.enabled.{}", slug(&name)),
                     &pause_label,
-                    None,
                 )
                 .content_sized(),
                 PrinterEffect::SetPrinterPaused {
@@ -664,7 +662,6 @@ impl PrintersModel {
                 Button::new(
                     &format!("settings.printers.remove.{}", slug(&name)),
                     &remove_label,
-                    None,
                 )
                 .content_sized(),
                 PrinterEffect::RemovePrinter { printer: name },
@@ -739,7 +736,7 @@ impl PrintersModel {
                         .push(Box::new(Text::new(&p.name).with_size(13.0)))
                         .push(Box::new(Spacer::new()))
                         .push(Box::new(self.cx.bind_invocation(
-                            Button::new(&key, &add, None).content_sized(),
+                            Button::new(&key, &add).content_sized(),
                             PrinterEffect::AddPrinter { uri: p.uri.clone() },
                         ))),
                 ))
@@ -788,7 +785,7 @@ impl PrintersModel {
             Some(JobState::Stopped | JobState::Canceled | JobState::Aborted)
         ) {
             action_row = action_row.push(Box::new(self.cx.bind_invocation(
-                Button::new(&retry, &retry_label, None).content_sized(),
+                Button::new(&retry, &retry_label).content_sized(),
                 PrinterEffect::RetryPrintJob {
                     job: job.id.clone(),
                 },
@@ -801,7 +798,7 @@ impl PrintersModel {
             )
         ) {
             action_row = action_row.push(Box::new(self.cx.bind_invocation(
-                Button::new(&cancel, &cancel_label, None).content_sized(),
+                Button::new(&cancel, &cancel_label).content_sized(),
                 PrinterEffect::CancelPrintJob {
                     job: job.id.clone(),
                 },

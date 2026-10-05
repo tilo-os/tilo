@@ -79,12 +79,12 @@ impl Controls {
 }
 
 fn button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
-    Box::new(Button::new(id, label, None).fit_content(44.0).on_effect(f))
+    Box::new(Button::new(id, label).fit_content(44.0).on_effect(f))
 }
 
 fn primary_button(id: &str, label: &str, f: impl FnMut() + 'static) -> Element {
     Box::new(
-        Button::new(id, label, None)
+        Button::new(id, label)
             .primary()
             .fit_content(44.0)
             .on_effect(f),
@@ -208,10 +208,6 @@ fn timezone_results(query: &str) -> Vec<String> {
         .collect()
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
-)]
 fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let list_controls = controls.clone();
     let list = ModelView::from_state(state, move |s| {
@@ -230,13 +226,10 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                     Text::new(&city_time(&clock.timezone.0, s.now())).with_size(28.0),
                 ))
                 .push(Box::new(Spacer::new()))
-                .push(Box::new(
-                    list_controls.button(
-                        Button::new(&format!("clocks.world.{id}.remove"), "Remove", None)
-                            .fit_content(44.0),
-                        Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
-                    ),
-                ));
+                .push(Box::new(list_controls.button(
+                    Button::new(&format!("clocks.world.{id}.remove"), "Remove").fit_content(44.0),
+                    Clocks::REMOVE_WORLD_CLOCK.with(id.clone()),
+                )));
             col = col.push(Box::new(Card::titled(&clock.city, Box::new(row))));
         }
         Box::new(col)
@@ -361,19 +354,15 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         Button::new(
                             &format!("clocks.alarm.{id}.toggle"),
                             if alarm.enabled { "Turn off" } else { "Turn on" },
-                            None,
                         )
                         .fit_content(44.0),
                         Clocks::SET_ALARM_ENABLED.with((id.clone(), !alarm.enabled)),
                     ),
                 ))
-                .push(Box::new(
-                    list_controls.button(
-                        Button::new(&format!("clocks.alarm.{id}.remove"), "Remove", None)
-                            .fit_content(44.0),
-                        Clocks::REMOVE_ALARM.with(id.clone()),
-                    ),
-                ));
+                .push(Box::new(list_controls.button(
+                    Button::new(&format!("clocks.alarm.{id}.remove"), "Remove").fit_content(44.0),
+                    Clocks::REMOVE_ALARM.with(id.clone()),
+                )));
             col = col.push(Box::new(Card::titled(&alarm.label, Box::new(row))));
         }
         Box::new(col)
@@ -421,7 +410,6 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                     let mut day_button = Button::new(
                                         &format!("clocks.alarm.repeat.{}", label.to_lowercase()),
                                         label,
-                                        None,
                                     )
                                     .with_size(44.0, 44.0)
                                     .with_accessible_name(&format!("Repeat on {label}"))
@@ -523,13 +511,12 @@ fn timer_card(
                     Row::new()
                         .push(Box::new(
                             controls.button(
-                                Button::new(
-                                    &format!("clocks.timer.{id}.add-minute"),
-                                    "+1 min",
-                                    None,
-                                )
-                                .with_accessible_name(&format!("Add one minute to {}", timer.label))
-                                .fit_content(44.0),
+                                Button::new(&format!("clocks.timer.{id}.add-minute"), "+1 min")
+                                    .with_accessible_name(&format!(
+                                        "Add one minute to {}",
+                                        timer.label
+                                    ))
+                                    .fit_content(44.0),
                                 Clocks::ADD_MINUTE.with(id.clone()),
                             ),
                         ))
@@ -544,7 +531,6 @@ fn timer_card(
                                     } else {
                                         "Resume"
                                     },
-                                    None,
                                 )
                                 .with_icon(if running { Icon::Pause } else { Icon::Play })
                                 .primary()
@@ -557,7 +543,6 @@ fn timer_card(
                                 Button::new(
                                     &format!("clocks.timer.{id}.pin"),
                                     if floating { "Hide" } else { "Float" },
-                                    None,
                                 )
                                 .with_icon(Icon::PictureInPicture2)
                                 .with_accessible_name(float_label)
@@ -571,7 +556,7 @@ fn timer_card(
                         ))
                         .push(Box::new(
                             controls.button(
-                                Button::new(&format!("clocks.timer.{id}.remove"), "", None)
+                                Button::new(&format!("clocks.timer.{id}.remove"), "")
                                     .with_icon(Icon::Trash2)
                                     .with_accessible_name("Remove timer")
                                     .tooltip("Remove timer")
@@ -617,13 +602,10 @@ fn timers_screen(
         for &(label, button_label, secs) in preset_row {
             // A common, generous width keeps the two-column grid legible at
             // 200% text while still fitting inside the phone content rail.
-            row = row.push(Box::new(
-                controls.button(
-                    Button::new(&format!("clocks.preset.{secs}"), button_label, None)
-                        .with_size(200.0, 44.0),
-                    Clocks::ADD_TIMER.with((label.to_owned(), secs)),
-                ),
-            ));
+            row = row.push(Box::new(controls.button(
+                Button::new(&format!("clocks.preset.{secs}"), button_label).with_size(200.0, 44.0),
+                Clocks::ADD_TIMER.with((label.to_owned(), secs)),
+            )));
         }
         presets = presets.push(Box::new(row));
     }
@@ -816,7 +798,6 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                                 Button::new(
                                     "clocks.stopwatch.toggle",
                                     if running { "Pause" } else { "Start" },
-                                    None,
                                 )
                                 .primary()
                                 .with_icon(if running { Icon::Pause } else { Icon::Play })
@@ -831,8 +812,7 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                         .push(Box::new(
                             controls
                                 .button(
-                                    Button::new("clocks.stopwatch.lap", "Lap", None)
-                                        .fit_content(44.0),
+                                    Button::new("clocks.stopwatch.lap", "Lap").fit_content(44.0),
                                     Clocks::LAP.invoke(),
                                 )
                                 .with_enabled(running),
@@ -840,7 +820,7 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                         .push(Box::new(
                             controls
                                 .button(
-                                    Button::new("clocks.stopwatch.reset", "Reset", None)
+                                    Button::new("clocks.stopwatch.reset", "Reset")
                                         .fit_content(44.0),
                                     Clocks::RESET_STOPWATCH.invoke(),
                                 )
@@ -856,7 +836,6 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                             } else {
                                 "Keep stopwatch visible"
                             },
-                            None,
                         )
                         .with_icon(Icon::PictureInPicture2)
                         .fit_content(44.0),

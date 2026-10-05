@@ -1207,7 +1207,7 @@ impl GreeterApp {
                 .with_align_items(AlignItems::Stretch)
                 .push(Box::new(password_input))
                 .push(Box::new(
-                    Button::new("greeter.login", "", None)
+                    Button::new("greeter.login", "")
                         .primary()
                         .with_icon(Icon::ArrowRight)
                         .with_accessible_name(&sign_in)
@@ -1228,7 +1228,7 @@ impl GreeterApp {
                 Stack::column(
                     0.0,
                     vec![Box::new(
-                        Button::new("greeter.fingerprint", &t("greeter-use-fingerprint"), None)
+                        Button::new("greeter.fingerprint", &t("greeter-use-fingerprint"))
                             .ghost()
                             .with_icon(Icon::Fingerprint)
                             .content_sized()
@@ -1265,7 +1265,6 @@ impl GreeterApp {
                 Button::new(
                     &format!("greeter.account.{}", user.username),
                     &user.display_name,
-                    None,
                 )
                 .ghost()
                 .with_icon(Icon::User)
@@ -1296,7 +1295,7 @@ impl GreeterApp {
         let toggle = |id: &str, icon: Icon, key: &str, on: bool, request: AccessibilityRequest| {
             let label = t(key);
             let requests = Rc::clone(&self.requests);
-            let button = Button::new(id, "", None)
+            let button = Button::new(id, "")
                 .with_icon(icon)
                 .with_accessible_name(&label)
                 .tooltip(label)

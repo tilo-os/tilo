@@ -29,8 +29,8 @@ fn email_input() -> TextInput {
     input
 }
 fn actions() -> Actions {
-    Actions::new(Button::new("save", "Save account changes", None).primary())
-        .secondary(Button::new("cancel", "Cancel", None))
+    Actions::new(Button::new("save", "Save account changes").primary())
+        .secondary(Button::new("cancel", "Cancel"))
 }
 // Automatic authoring: content, grouping and order; no layout pixels or breakpoints.
 fn account() -> Form {

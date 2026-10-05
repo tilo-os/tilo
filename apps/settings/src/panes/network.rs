@@ -1968,8 +1968,7 @@ impl NetworkModel {
 
     /// A button invoking `effect`.
     fn button(&self, id: &str, label: &str, effect: NetworkEffect) -> Button {
-        self.cx
-            .bind_invocation(Button::new(id, label, None), effect)
+        self.cx.bind_invocation(Button::new(id, label), effect)
     }
 
     /// `button`, sized to its label and pushed to the row's start.
@@ -2646,7 +2645,7 @@ impl NetworkModel {
         let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
         let cta_id = format!("settings.network.connect.{}", net.ssid);
         let cta: El = if net.connected {
-            Box::new(Button::new(&cta_id, &t("net-connected"), None).content_sized())
+            Box::new(Button::new(&cta_id, &t("net-connected")).content_sized())
         } else if self.expanded.as_deref() == Some(net.ssid.as_str()) {
             Box::new(
                 self.button(

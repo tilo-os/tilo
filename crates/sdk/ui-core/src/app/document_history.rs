@@ -1130,7 +1130,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("login", "Log in", None)),
+                Box::new(crate::widget::Button::new("login", "Log in")),
             )
             .without_native_document_chrome();
             // Exercise the same preparation used before the live event loop.
@@ -1159,7 +1159,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("document", "Document", None)),
+                Box::new(crate::widget::Button::new("document", "Document")),
             );
             app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
             app.init_layout();
@@ -1181,7 +1181,7 @@ mod tests {
         ] {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("document", "Document", None)),
+                Box::new(crate::widget::Button::new("document", "Document")),
             );
             app.prepare_native_presentation(chrome);
             app.init_layout();
@@ -1222,7 +1222,6 @@ mod tests {
                 Box::new(crate::widget::Button::new(
                     "document-control",
                     "Document control",
-                    None,
                 )),
             );
             app.state.doc.put(ROOT, "title", "before").unwrap();
@@ -1304,7 +1303,6 @@ mod tests {
                 Box::new(crate::widget::Button::new(
                     "private-app-control",
                     "Private app control",
-                    None,
                 )),
             );
             app.state.doc.put(ROOT, "title", "history").unwrap();
@@ -1353,7 +1351,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("content", "Content", None)),
+                Box::new(crate::widget::Button::new("content", "Content")),
             );
             app.state.doc.put(ROOT, "title", "private").unwrap();
             app.state.commit_action(None, None);
@@ -1434,7 +1432,7 @@ mod tests {
         let (state, writer) = crate::persist::open_in(store, "so.tilo.history-restore").unwrap();
         let mut app = App::new_with_controlled_inputs(
             state,
-            Box::new(crate::widget::Button::new("document", "Document", None)),
+            Box::new(crate::widget::Button::new("document", "Document")),
         )
         .with_autosave(writer);
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
@@ -1536,7 +1534,7 @@ mod tests {
     fn native_history_restore_requires_write() {
         let mut app = App::new_with_controlled_inputs(
             crate::State::new(),
-            Box::new(crate::widget::Button::new("document", "Document", None)),
+            Box::new(crate::widget::Button::new("document", "Document")),
         );
         app.state.doc.put(ROOT, "title", "v1").unwrap();
         app.state.commit_action(None, None);
@@ -1578,11 +1576,10 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "app-write",
-                    "Write",
-                    Some("pressed"),
-                )),
+                Box::new(
+                    crate::widget::Button::new("app-write", "Write")
+                        .on_click(crate::testing::record_click("pressed")),
+                ),
             );
             app.state.doc.put(ROOT, "title", "committed").unwrap();
             app.state.commit_action(None, None);

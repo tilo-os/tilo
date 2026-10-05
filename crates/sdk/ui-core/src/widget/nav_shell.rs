@@ -1832,7 +1832,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let button = crate::widget::Button::new("go", "Go", None)
+            let button = crate::widget::Button::new("go", "Go")
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
             let mut ns =
                 NavShell::sidebar_over_content(Box::new(Text::new("places")), Box::new(button));

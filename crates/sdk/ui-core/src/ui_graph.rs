@@ -392,7 +392,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
                         UiNavigation::Back | UiNavigation::Forward => true,
                     })
             });
-            let mut button = Button::new(id, label, None)
+            let mut button = Button::new(id, label)
                 .with_enabled(*enabled && (navigation_bound || on_click_path.is_some()))
                 .with_style((*style).into());
             if let Some(name) = accessible_name {
@@ -1881,7 +1881,7 @@ fn build_editor_child(
         let graph = handle.clone();
         let id_for_click = id.clone();
         hierarchy = hierarchy.push(Box::new(
-            Button::new(&button_id, &label, None)
+            Button::new(&button_id, &label)
                 .fit_content(34.0)
                 .with_style(if selected_row {
                     ButtonStyle::Primary
@@ -2699,7 +2699,6 @@ fn boolean_property_button(
     Button::new(
         id,
         &format!("{label}: {}", if value { "On" } else { "Off" }),
-        None,
     )
     .fit_content(36.0)
     .on_click(move || {
@@ -2769,7 +2768,7 @@ fn choice_property_button(
     let graph = handle.clone();
     let state = Rc::clone(shared);
     let selected = selected.to_owned();
-    Button::new(id, &format!("{label}: {value}"), None)
+    Button::new(id, &format!("{label}: {value}"))
         .fit_content(36.0)
         .on_click(move || {
             let result = graph.update_node(&selected, |node| cycle_editable_choice(node, property));
@@ -2881,7 +2880,7 @@ fn parent_relation<'a>(node: &'a UiNode, id: &str) -> Option<(&'a str, usize, us
 fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>) -> Button {
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-save", "Save", None)
+    Button::new("builder-save", "Save")
         .primary()
         .on_click(move || {
             let status = state.borrow().status.clone();
@@ -2910,7 +2909,7 @@ fn save_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
 fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>) -> Button {
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-undo", "Undo", None)
+    Button::new("builder-undo", "Undo")
         .fit_content(36.0)
         .with_enabled(handle.can_undo())
         .on_click(move || {
@@ -2926,7 +2925,7 @@ fn undo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>)
 fn redo_button(handle: &UiGraphHandle, shared: &Rc<RefCell<UiGraphEditorState>>) -> Button {
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-redo", "Redo", None)
+    Button::new("builder-redo", "Redo")
         .fit_content(36.0)
         .with_enabled(handle.can_redo())
         .on_click(move || {
@@ -2951,7 +2950,7 @@ fn add_button(
     let parent = selected.to_owned();
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new(id, label, None)
+    Button::new(id, label)
         .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
@@ -3098,7 +3097,7 @@ fn move_button(
     let selected = selected.to_owned();
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new(id, label, None)
+    Button::new(id, label)
         .fit_content(36.0)
         .with_enabled(enabled)
         .on_click(move || {
@@ -3134,7 +3133,7 @@ fn delete_button(
     let selected = selected.to_owned();
     let graph = handle.clone();
     let state = Rc::clone(shared);
-    Button::new("builder-delete", "Delete", None)
+    Button::new("builder-delete", "Delete")
         .danger()
         .with_enabled(enabled)
         .on_click(move || {

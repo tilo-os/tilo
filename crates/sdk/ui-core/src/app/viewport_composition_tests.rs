@@ -66,9 +66,7 @@ impl Widget for ResponsiveRoot {
             1
         };
         self.children = (0..count)
-            .map(|index| {
-                Box::new(Button::new(&format!("action-{index}"), "Action", None)) as Element
-            })
+            .map(|index| Box::new(Button::new(&format!("action-{index}"), "Action")) as Element)
             .collect();
         if self.editing {
             self.children = vec![
@@ -76,7 +74,7 @@ impl Widget for ResponsiveRoot {
                     vec![crate::presence::PathSegment::Field("body".into())],
                     "editor",
                 ),
-                Box::new(Button::new("other", "Other", None)),
+                Box::new(Button::new("other", "Other")),
             ];
             if self.rect.width() < 1100.0 {
                 self.children.reverse();

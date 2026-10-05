@@ -996,10 +996,7 @@ mod tests {
                     Ok(LocalEmission::Suppressed)
                 );
                 *output.borrow_mut() = Some(producer);
-                Box::new(
-                    crate::widget::Button::new("passive", "Passive", None)
-                        .on_action(unit_binding()),
-                )
+                Box::new(crate::widget::Button::new("passive", "Passive").on_action(unit_binding()))
             },
         );
         crate::widget::controls::install_control_custody(

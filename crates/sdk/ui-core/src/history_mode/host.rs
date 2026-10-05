@@ -228,7 +228,7 @@ impl HistoryHost {
             .push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("history-open", "History", None)
+                        Button::new("history-open", "History")
                             .fit_content(32.0)
                             .on_click(move || clicked.set(true)),
                     ))
@@ -1254,7 +1254,7 @@ impl HistoryHost {
     }
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label, None)
+        Button::new(id, label)
             .fit_content(32.0)
             .on_click(move || queue.borrow_mut().push_back(command))
     }
@@ -1313,7 +1313,7 @@ impl HistoryHost {
                 toolbar = toolbar.push(Box::new(
                     Row::new()
                         .push(Box::new(
-                            Button::new("history-open", "history-mode-title", None)
+                            Button::new("history-open", "history-mode-title")
                                 .fit_content(32.0)
                                 .on_click(move || clicked.set(true)),
                         ))
@@ -1397,7 +1397,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
+                            Button::new(&id, label)
                                 .fit_content(32.0)
                                 .on_click(move || callback.invoke()),
                         ));
@@ -1411,7 +1411,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None)
+                            Button::new(&id, label)
                                 .fit_content(32.0)
                                 .on_click(move || callback.invoke()),
                         ));
@@ -1427,7 +1427,7 @@ impl HistoryHost {
                     self.pending_control_callbacks
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
-                        Button::new(&cancel_id, "history-mode-cancel", None)
+                        Button::new(&cancel_id, "history-mode-cancel")
                             .fit_content(32.0)
                             .on_click(move || callback.invoke()),
                     ));

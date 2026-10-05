@@ -1946,7 +1946,7 @@ mod tests {
                 pending: Rc::default(),
             };
             let mut list = VirtualList::new(model, 24.0, |_, _, key| {
-                Box::new(crate::widget::Button::new(&key.to_string(), "Row", None))
+                Box::new(crate::widget::Button::new(&key.to_string(), "Row"))
             })
             .with_viewport_height(48.0);
             let _ = lay_out(&mut list, 300.0);
