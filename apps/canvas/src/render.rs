@@ -1161,10 +1161,21 @@ fn draw_picture(
         .collect();
     let treatment = Treatment::of(&adjusts, per_unit);
     let device = pixels_per_unit(at) / per_unit.max(1e-9);
-    let Some((image, step)) = pictures.shown(src, device, &treatment) else {
+    let Some((image, step)) = pictures.shown(
+        src,
+        if mark.style.pixelated {
+            device.max(1.0)
+        } else {
+            device
+        },
+        &treatment,
+    ) else {
         return;
     };
-    let brush = ImageBrush::new(image).with_alpha(narrow(mark.style.opacity()));
+    let mut brush = ImageBrush::new(image).with_alpha(narrow(mark.style.opacity()));
+    if mark.style.pixelated {
+        brush = brush.with_quality(ui::vello::peniko::ImageQuality::Low);
+    }
     let to_frame = placement.picture_to_local(size) * Affine::scale(step);
     let vignetted = mark
         .style
@@ -1391,9 +1402,7 @@ fn wet_marks(mark: &Mark, clip: Option<&BezPath>, palette: &[Pigment], scale: f6
     };
     let mut painted = Vec::new();
     match &mark.shape {
-        Shape::Stroke { points, size, .. }
-            if crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser =>
-        {
+        Shape::Stroke { points, size, .. } if crate::brushes::Preset::of(style).erases() => {
             let dynamics = crate::brushes::Dynamics::of_mark(mark);
             painted.push(Painted::new(
                 &mark.id,
@@ -1657,7 +1666,7 @@ fn draw_mark(
 ) {
     let transform = cx.transform;
     let preset = crate::brushes::Preset::of(&mark.style);
-    if matches!(mark.shape, Shape::Stroke { .. }) && preset == crate::brushes::Preset::Eraser {
+    if matches!(mark.shape, Shape::Stroke { .. }) && preset.erases() {
         draw_eraser(art, mark, scene, cx);
         return;
     }
@@ -1771,7 +1780,7 @@ fn draw_eraser(art: &Artwork, mark: &Mark, scene: &mut Scene, cx: &mut MarkCx<'_
     for outline in &cuts {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, outline);
     }
-    if crate::brushes::Preset::Eraser.dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
+    if crate::brushes::Preset::of(&mark.style).dabbed(&crate::brushes::Dynamics::of_mark(mark)) {
         draw_dabbed(mark, &[], scene, cx, Compose::SrcOver);
     } else {
         scene.fill(
@@ -1825,7 +1834,7 @@ fn draw_dabbed(
         return;
     }
     let style = &mark.style;
-    let eraser = crate::brushes::Preset::of(style) == crate::brushes::Preset::Eraser;
+    let eraser = crate::brushes::Preset::of(style).erases();
     let ink = if eraser {
         ERASED
     } else {
@@ -2545,7 +2554,7 @@ pub fn draw_vector(
     match &mark.shape {
         Shape::Stroke { .. } => {
             let preset = crate::brushes::Preset::of(style);
-            if preset == crate::brushes::Preset::Eraser {
+            if preset.erases() {
                 return;
             }
             let Some(ink) = named(&style.stroke).or_else(|| named(&style.fill)) else {
