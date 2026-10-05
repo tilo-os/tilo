@@ -1360,7 +1360,7 @@ fn run_bench_scroll(
         }
         let mut widget: Box<dyn Widget> = Box::new(app);
         let mut state = ui::State::new();
-        widget.sync(&mut state.doc, &state.root);
+        widget.sync(&state.doc, &state.root);
         let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
         let root = taffy.new_with_children(
             Style {
@@ -1423,7 +1423,7 @@ fn run_bench_scroll(
             // media engine (pulling the freshest frame + playhead), so a loaded
             // watch page's per-frame engine cost is measured, not just layout.
             let t = ui::time::now();
-            widget.sync(&mut state.doc, &state.root);
+            widget.sync(&state.doc, &state.root);
             sync.push(t.elapsed().as_micros());
 
             // Real scroll: a wheel notch routed through the widget tree, exactly

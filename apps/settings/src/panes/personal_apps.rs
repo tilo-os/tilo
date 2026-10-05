@@ -609,8 +609,8 @@ mod tests {
                 apps.handlers.insert(pdf.clone(), "so.tilo.b".into());
             })
             .unwrap();
-        let mut doc = ui::automerge::AutoCommit::new();
-        pane.sync(&mut doc, &ui::automerge::ROOT);
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
         assert_eq!(pane.shown[&pdf].get(), "so.tilo.b — so.tilo.b");
     }
 }

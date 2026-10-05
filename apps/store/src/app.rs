@@ -4699,11 +4699,11 @@ mod tests {
         // Case `unsubmitted_remote_draft_stays_on_its_device`.
         {
             let mut app = seeded_app();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             app.remote_name_state.set("studio-tools".into());
             app.remote_url_state
                 .set("https://apps.tilo.so/artifacts/repo".into());
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(doc.keys(&automerge::ROOT).all(|key| {
                 !key.starts_with("store.remote_name") && !key.starts_with("store.remote_url")
             }));
@@ -5385,9 +5385,9 @@ mod tests {
         // Case `typed_search_query_filters_through_local_sync`.
         {
             let mut app = seeded_app();
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             app.query_state.set("Term".into());
-            app.sync(&mut doc, &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.query(), "Term");
             let names: Vec<&str> = app
                 .visible_items()
@@ -5405,8 +5405,8 @@ mod tests {
             let heads = doc.get_heads();
             first.source_filter_state.set("Tilo".into());
             first.category_filter_state.set("Games".into());
-            first.sync(&mut doc, &automerge::ROOT);
-            second.sync(&mut doc, &automerge::ROOT);
+            first.sync(&doc, &automerge::ROOT);
+            second.sync(&doc, &automerge::ROOT);
             assert_eq!(first.active_filter(), SourceFilter::Tilo);
             assert_eq!(first.active_category(), Some("Games"));
             assert_eq!(second.active_filter(), SourceFilter::All);

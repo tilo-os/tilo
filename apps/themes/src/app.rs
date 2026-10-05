@@ -1859,7 +1859,7 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-        app.sync(&mut state.doc, &state.root);
+        app.sync(&state.doc, &state.root);
     }
 
     /// Deliver one event at `node` with default modifiers; returns whether it was handled.
@@ -1993,7 +1993,7 @@ mod tests {
     fn narrow_view_follows_pointer_keyboard_resize_and_escape() {
         let mut app = seeded_demo();
         let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        app.sync(&state.doc, &state.root);
         let (mut tree, mut node) = layout_narrow(&mut app, 480.0);
         assert_eq!(
             narrow_view_state(&app),

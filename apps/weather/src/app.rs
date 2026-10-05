@@ -1017,13 +1017,13 @@ mod interaction_tests {
                 &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root,
             ));
-            assert!(app.update(&mut state.doc, &state.root));
+            assert!(app.update(&state.doc, &state.root));
             assert_eq!(
                 app.core.borrow().model.selected_location().unwrap().id,
                 chosen
             );
             assert!(app.nav.is_detail_shown());
-            assert!(!app.update(&mut state.doc, &state.root));
+            assert!(!app.update(&state.doc, &state.root));
         }
         // Case `arrow_keys_navigate_cities_and_fetch`.
         {

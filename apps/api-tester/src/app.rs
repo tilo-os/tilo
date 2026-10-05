@@ -3892,11 +3892,11 @@ mod tests {
     /// The app presented the sample workspace and staged as a plain
     /// screenshot shows it, its URL and body bound to the sample's texts.
     fn demo() -> ApiTesterApp {
-        let mut state = demo_state();
+        let state = demo_state();
         let mut app = ApiTesterApp::detached();
         app.present_workspace(&ApiTester::read(&state.doc).unwrap());
         app.stage_scenario(None);
-        app.sync(&mut state.doc, &state.root);
+        app.sync(&state.doc, &state.root);
         app
     }
 

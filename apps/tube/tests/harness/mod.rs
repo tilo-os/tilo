@@ -141,7 +141,7 @@ impl<W: Widget> Harness<W> {
     pub fn frame(&mut self) {
         self.taffy = TaffyTree::new();
         self.node_map.clear();
-        self.app.sync(&mut self.state.doc, &self.state.root);
+        self.app.sync(&self.state.doc, &self.state.root);
         let child = self
             .app
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
@@ -391,7 +391,7 @@ impl<W: Widget> Harness<W> {
         // the tree doesn't exist yet). In the live app the tree persists so a
         // later `sync` folds the image in; mirror that here by syncing the tree
         // that `frame` just built before we draw it.
-        self.app.sync(&mut self.state.doc, &self.state.root);
+        self.app.sync(&self.state.doc, &self.state.root);
         let (w, h) = self.viewport;
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();

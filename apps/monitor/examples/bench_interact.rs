@@ -145,7 +145,7 @@ impl BenchHarness {
         let us = |t: Instant| t.elapsed().as_secs_f64() * 1e6;
 
         let t = ui::time::now();
-        self.widget.sync(&mut self.state.doc, &self.state.root);
+        self.widget.sync(&self.state.doc, &self.state.root);
         let sync_us = us(t);
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();

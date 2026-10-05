@@ -205,7 +205,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
             .with_width_hint(NW);
         let mut doc = AutoCommit::new();
         let (taffy, node) = lay_out_at(&mut app, NW, NH);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         assert!(app.is_narrow(), "440px resolves to the narrow layout");
         assert!(
             !app.sidebar_open(),
@@ -217,7 +217,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let back = app.back_button_rect();
         assert!(back.width() > 0.0, "the back arrow has a resolved rect");
         click_at(&mut app, &taffy, node, &mut doc, back.center());
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let _ = app.take_structure_dirty();
         let _ = lay_out_at(&mut app, NW, NH);
         assert!(
@@ -240,7 +240,7 @@ fn back_button_and_wifi_toggle_drive_pane_state() {
         let _ = navigate(&mut app, &mut doc, Category::Network);
         let root = automerge::ROOT;
         let heads = doc.get_heads();
-        app.sync(&mut doc, &root);
+        app.sync(&doc, &root);
         assert_eq!(doc.get_heads(), heads);
     }
 }
@@ -259,7 +259,7 @@ fn all_panels_navigate_and_seed_their_controls() {
         // The pane rebuilt by navigate's final layout seeds on its next
         // sync; run one so the seed lands before we assert on it.
         let heads_before_idle_sync = doc.get_heads();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         // Panes render from their models and never write the document.
         assert_eq!(
             doc.get_heads(),

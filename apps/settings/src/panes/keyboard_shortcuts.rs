@@ -484,8 +484,8 @@ mod tests {
             .settings_document()
             .update_section(SHORTCUTS_SECTION, config.section().unwrap())
             .unwrap();
-        let mut doc = ui::automerge::AutoCommit::new();
-        pane.sync(&mut doc, &ui::automerge::ROOT);
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
         assert_eq!(pane.chords[&ShortcutAction::Search].get(), "Super+j");
     }
 }

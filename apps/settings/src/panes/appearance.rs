@@ -1008,8 +1008,8 @@ mod tests {
                 prefs.reduce_motion = true;
             })
             .unwrap();
-        let mut doc = ui::automerge::AutoCommit::new();
-        pane.sync(&mut doc, &ui::automerge::ROOT);
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
         assert_eq!(pane.shown.theme.get(), "Gruvbox");
         assert!(pane.shown.reduce_motion.get());
         assert!(pane.take_structure_dirty());

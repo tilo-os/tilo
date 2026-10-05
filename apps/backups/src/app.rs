@@ -5469,7 +5469,7 @@ mod tests {
         /// repopulates `hits` from the current state).
         fn draw(&mut self) {
             self.tr.set_text_scale(self.theme.text_scale);
-            self.app.sync(&mut self.state.doc, &self.state.root);
+            self.app.sync(&self.state.doc, &self.state.root);
             let mut scene = Scene::new();
             self.app
                 .render(&mut scene, Affine::IDENTITY, &mut self.tr, &self.theme);
@@ -6070,8 +6070,8 @@ mod tests {
     fn first_run_has_a_reachable_setup_action() {
         let mut app = BackupsApp::with_catalog(Catalog::empty());
         app.rect = Rect::new(0.0, 0.0, 1000.0, 700.0);
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        let state = ui::State::new();
+        app.sync(&state.doc, &state.root);
         let mut scene = Scene::new();
         app.render(
             &mut scene,
@@ -6175,8 +6175,8 @@ mod tests {
         use automerge::ReadDoc;
         use ui::widget::Widget;
         let mut app = BackupsApp::new();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let state = ui::State::new();
+        Widget::sync(&mut app, &state.doc, &state.root);
         assert!(
             state
                 .doc
