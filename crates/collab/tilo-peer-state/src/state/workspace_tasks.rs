@@ -2,6 +2,7 @@ use super::{Role, StatePeer, SystemTime};
 use crate::workspace_task::{
     AdmittedTaskActor, AppliedTaskCommand, WorkspaceTaskAuthority, WorkspaceTaskCommand,
 };
+use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
 
 impl StatePeer {
     /// Apply one typed task command against the current admitted room document.
@@ -56,8 +57,18 @@ impl StatePeer {
         }
         let actor = match authority {
             WorkspaceTaskAuthority::Person { caller } => {
-                let (role, _, person) = self.permissions(caller.device_public_key, now)?;
-                if !matches!(role, Role::Owner | Role::Editor) {
+                let (role, caps, person) = self.permissions(caller.device_public_key, now)?;
+                let actor =
+                    Actor::person(Some(role), person.clone()).in_room(self.core.room.clone());
+                if !matches!(role, Role::Owner | Role::Editor)
+                    || decide_capability(
+                        &actor,
+                        &ResourceRef::Workspace,
+                        Verb::Write,
+                        &caps,
+                        Some(seconds),
+                    ) != CapDecision::Allow
+                {
                     return Err("workspace task person lacks write authority".into());
                 }
                 AdmittedTaskActor::Person {
@@ -168,6 +179,44 @@ mod tests {
         )
         .unwrap();
         (peer, governor, other, now)
+    }
+
+    #[test]
+    fn current_owner_with_read_restriction_cannot_queue_a_task() {
+        let (mut peer, governor, _, now) = peer();
+        let restriction = CapOverride::new(
+            Subject::Role(Role::Owner),
+            Scope::Workspace,
+            collab_types::caps::Effect::Restrict,
+            Verb::Read,
+        )
+        .with_id("read-only-owner");
+        peer.put_governed_capabilities(&[restriction], &SigningKey::from_bytes(&[2; 32]), now)
+            .unwrap();
+        let before = peer.durable().unwrap();
+        let result = peer.apply_workspace_task_command(
+            uuid::Uuid::from_u128(1),
+            [1; 32],
+            &WorkspaceTaskAuthority::Person { caller: governor },
+            &WorkspaceTaskCommand::Queue {
+                title: "Must not execute".into(),
+                assigned_agent: "scribe".into(),
+                route: WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+            now,
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "workspace task person lacks write authority"
+        );
+        assert_eq!(peer.durable().unwrap(), before);
+        assert!(
+            crate::workspace_task::snapshot(peer.admitted_room().unwrap())
+                .unwrap()
+                .tasks
+                .is_empty()
+        );
     }
 
     #[test]
