@@ -34,6 +34,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ActionEmitter;
+use ui::widget::toast::ToastAnchor;
 use ui::widget::{CropSelection, Image, ImageCropEditor, ImageFit, Popover, Widget};
 use winit::event::WindowEvent;
 
@@ -3159,32 +3160,40 @@ impl Widget for CameraApp {
         let full = self.rect;
         // A toast never covers what it reports on: over the viewfinder it
         // rises above the shutter row; on the scanner and the documents,
-        // whose lower half is content, it sits in the top band beside the
+        // whose lower half is content, it stands at the top beside the
         // corner cluster.
-        let toast_area = match self.base_screen() {
+        let (toast_area, toast_anchor) = match self.base_screen() {
             Screen::Camera | Screen::Settings => {
                 let controls_top = self.draw_camera(scene, t, tr, theme, full);
-                Rect::new(full.x0, full.y0, full.x1, controls_top)
+                (
+                    Rect::new(full.x0, full.y0, full.x1, controls_top),
+                    ToastAnchor::BottomCenter,
+                )
             }
             Screen::Scanner => {
                 let corner = self.draw_scanner(scene, t, tr, theme, full);
-                hud::top_band_toast_area(full, corner, theme)
+                (
+                    hud::top_band_toast_area(full, corner, theme),
+                    ToastAnchor::TopCenter,
+                )
             }
             Screen::Document => {
                 let corner = self.draw_document_scanner(scene, t, tr, theme, presence, full);
-                hud::top_band_toast_area(full, corner, theme)
+                (
+                    hud::top_band_toast_area(full, corner, theme),
+                    ToastAnchor::TopCenter,
+                )
             }
         };
         if self.screen == Screen::Settings {
             // Under the modal sheet only the sheet is operable.
             self.regions.clear();
             self.tooltip_targets.clear();
-            self.settings_sheet.fit(full, theme);
         } else {
             self.draw_tooltip(scene, t, tr, theme);
         }
         self.expire_toast();
-        self.draw_toast(scene, t, tr, theme, toast_area);
+        self.draw_toast(scene, t, tr, theme, toast_area, toast_anchor);
     }
 
     #[allow(

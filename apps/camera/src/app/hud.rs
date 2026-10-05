@@ -134,19 +134,14 @@ pub(super) fn corner_actions() -> [HudItem<'static>; 2] {
 }
 
 /// Where a toast goes on a screen whose top band holds only the
-/// top-trailing cluster: centred in the band, clear of the cluster. The
-/// toast is placed at the bottom of the returned area.
+/// top-trailing cluster: centred at the top ([`ToastAnchor::TopCenter`]),
+/// clear of the cluster on both sides.
 pub(super) fn top_band_toast_area(full: Rect, cluster: Rect, theme: &Theme) -> Rect {
     let m = HudMetrics::of(theme);
     let gutter = f64::from(theme.tokens.spacing.s6);
     // `paint_transient` keeps a gutter on each side of its area already.
     let inset = (full.x1 - cluster.x0 + m.gap - gutter).max(0.0);
-    Rect::new(
-        full.x0 + inset,
-        full.y0,
-        full.x1 - inset,
-        cluster.y1 + gutter,
-    )
+    Rect::new(full.x0 + inset, full.y0, full.x1 - inset, full.y1)
 }
 
 impl CameraApp {
@@ -807,6 +802,7 @@ impl CameraApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         area: Rect,
+        anchor: ToastAnchor,
     ) {
         let Some(msg) = self.toast.as_deref() else {
             return;
@@ -833,7 +829,7 @@ impl CameraApp {
             tr,
             theme,
             area,
-            ToastAnchor::BottomCenter,
+            anchor,
             &ToastCard::new(msg, kind),
         );
     }

@@ -12,9 +12,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::LocalState;
-use ui::theme::Theme;
 use ui::widget::{Dropdown, Field, Form, FormSection, ModalDialog, Toggle};
-use vello::kurbo::Rect;
 
 use super::Action;
 use crate::model::{Facing, PhotoFormat, Resolution, Settings, Timer};
@@ -28,11 +26,7 @@ const TITLE: &str = "Camera settings";
 /// The settings sheet and the local values its controls show.
 pub(super) struct SettingsSheet {
     pub(super) dialog: ModalDialog<Form>,
-    queue: ActionQueue,
     states: States,
-    /// Whether the form was built for a compact window: the choosers are an
-    /// ordinary form there, each label above a chooser as wide as the sheet.
-    compact: Option<bool>,
 }
 
 struct States {
@@ -75,26 +69,21 @@ fn timer_value(timer: Timer) -> &'static str {
 }
 
 /// A chooser row. The dropdowns of a section share one column at the
-/// trailing edge; on a compact window each spans the sheet under its label.
+/// trailing edge; once the section stacks, each spans the row under its
+/// label.
 fn choice(
     label: &str,
     all: Vec<(String, String)>,
     state: &LocalState<String>,
     queue: &ActionQueue,
     to_action: fn(&str) -> Action,
-    compact: bool,
 ) -> Field {
     let queue = Rc::clone(queue);
     let mut dropdown = Dropdown::from_state(Vec::new(), state).on_change(move |value| {
         queue.borrow_mut().push(to_action(value));
     });
     dropdown.set_value_options(all);
-    let field = Field::new(label, dropdown);
-    if compact {
-        field
-    } else {
-        field.with_trailing_control()
-    }
+    Field::new(label, dropdown)
 }
 
 fn switch(label: &str, state: &LocalState<bool>, queue: &ActionQueue, action: Action) -> Field {
@@ -123,21 +112,15 @@ impl States {
     }
 
     /// The form, its controls bound to these values.
-    fn form(&self, queue: &ActionQueue, compact: bool) -> Form {
-        // Each section holds one kind of control, so every control in it
-        // lines up at the trailing edge.
-        // On a compact window the choosers are an ordinary form: each label
-        // above a chooser that spans the sheet, with the form's spacing.
-        let capture = FormSection::new("Capture");
-        let capture = if compact { capture } else { capture.grouped() };
-        let capture = capture
+    fn form(&self, queue: &ActionQueue) -> Form {
+        let capture = FormSection::new("Capture")
+            .grouped()
             .field(choice(
                 "Resolution",
                 options(&Resolution::ALL, Resolution::as_str, Resolution::label),
                 &self.resolution,
                 queue,
                 |value| Action::SetResolution(Resolution::parse_str(value)),
-                compact,
             ))
             .field(choice(
                 "Photo format",
@@ -145,7 +128,6 @@ impl States {
                 &self.photo_format,
                 queue,
                 |value| Action::SetPhotoFormat(PhotoFormat::parse_str(value)),
-                compact,
             ))
             .field(choice(
                 "Self-timer",
@@ -153,7 +135,6 @@ impl States {
                 &self.timer,
                 queue,
                 |value| Action::SetTimer(Timer::from_seconds(value.parse().unwrap_or(0))),
-                compact,
             ))
             .field(choice(
                 "Default camera",
@@ -161,7 +142,6 @@ impl States {
                 &self.default_camera,
                 queue,
                 |value| Action::SetDefaultFacing(Facing::parse_str(value)),
-                compact,
             ));
         let options = FormSection::new("Viewfinder and photos")
             .grouped()
@@ -198,28 +178,10 @@ impl SettingsSheet {
     pub(super) fn new(queue: &ActionQueue, settings: &Settings) -> Self {
         let states = States::of(settings);
         let dismiss = Rc::clone(queue);
-        let dialog = ModalDialog::new(TITLE, states.form(queue, false))
+        let dialog = ModalDialog::new(TITLE, states.form(queue))
             .with_test_id("camera.settings")
             .on_dismiss(move || dismiss.borrow_mut().push(Action::Back));
-        Self {
-            dialog,
-            queue: Rc::clone(queue),
-            states,
-            compact: None,
-        }
-    }
-
-    /// Build the form for `window`: compact below the compact breakpoint.
-    /// The dialog sizes and scrolls the sheet itself. Call before the sheet
-    /// is drawn; a change shows from that frame on.
-    pub(super) fn fit(&mut self, window: Rect, theme: &Theme) {
-        let compact = window.width() < f64::from(theme.tokens.metrics.compact_breakpoint);
-        if self.compact == Some(compact) {
-            return;
-        }
-        *self.dialog.content_mut() = self.states.form(&self.queue, compact);
-        self.dialog.invalidate_layout();
-        self.compact = Some(compact);
+        Self { dialog, states }
     }
 
     /// Show `settings` in the sheet's controls.
