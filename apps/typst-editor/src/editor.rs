@@ -90,7 +90,7 @@ impl SourceEditor {
 
     /// Show the open file's source as `doc` holds it. Called from the app's
     /// `sync`.
-    pub fn pull(&mut self, doc: &mut AutoCommit) {
+    pub fn pull(&mut self, doc: &AutoCommit) {
         self.code.pull(doc);
     }
 
@@ -207,7 +207,7 @@ impl SourceEditor {
         &mut self,
         event: &WindowEvent,
         modifiers: &Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use taffy::{Style, TaffyTree};
         self.code.control_mut().set_focused(self.focused);
@@ -224,7 +224,7 @@ impl SourceEditor {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers,
-                state: &mut *doc,
+                state: doc.reborrow(),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -609,7 +609,7 @@ mod tests {
             let (mut doc, id) = doc_with("");
             let mut ed = editor_on(&id);
             ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-            ed.pull(&mut doc);
+            ed.pull(&doc);
             ed.focused = true;
             for ch in ["h", "i"] {
                 let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
@@ -626,16 +626,20 @@ mod tests {
                     event: ev,
                     is_synthetic: false,
                 };
-                assert!(ed.handle_key(&event, &Modifiers::default(), &mut doc));
+                assert!(ed.handle_key(
+                    &event,
+                    &Modifiers::default(),
+                    &mut ui::widget::Edits::lend(&mut doc)
+                ));
             }
             assert_eq!(doc.text(&id).unwrap(), "");
             assert_eq!(ed.text(), "");
         }
         // Case `goto_line_moves_the_caret_to_the_line_start`.
         {
-            let (mut doc, id) = doc_with("one\ntwo\nthree");
+            let (doc, id) = doc_with("one\ntwo\nthree");
             let mut ed = editor_on(&id);
-            ed.pull(&mut doc);
+            ed.pull(&doc);
             ed.goto_line("", 2);
             assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
         }

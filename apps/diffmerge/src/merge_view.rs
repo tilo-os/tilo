@@ -1022,7 +1022,7 @@ impl MergeView {
 
 impl Widget for MergeView {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(state, path);
+        let (doc, _) = ui::doc::document_ref(state, path);
         self.merged_editor.pull(doc);
     }
 
@@ -1136,7 +1136,7 @@ impl Widget for MergeView {
         let editor = self.merged_editor.control();
         if editor.is_focused() || editor.rect().contains(self.cursor) {
             self.merged_editor.control_mut().handle_event(event, ctx);
-            self.merged_editor.submit(ctx.state);
+            self.merged_editor.submit(&mut ctx.state);
             if *ctx.handled {
                 return;
             }
@@ -1312,7 +1312,7 @@ impl Widget for MergeView {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use ui::a11y::hash_key;
