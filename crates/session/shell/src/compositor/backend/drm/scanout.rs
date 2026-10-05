@@ -1540,6 +1540,32 @@ fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<u
     })
 }
 
+/// Without event cookies, a late completion after cancellation cannot be
+/// distinguished from a newer flip on the same CRTC. Once ownership becomes
+/// uncertain, only a newly established scanout can supply physical proof.
+#[derive(Clone, Copy, Debug)]
+struct PhysicalFlipIdentity {
+    eligible: bool,
+}
+
+impl Default for PhysicalFlipIdentity {
+    fn default() -> Self {
+        Self { eligible: true }
+    }
+}
+
+impl PhysicalFlipIdentity {
+    fn cancel_pending(&mut self, pending: bool) {
+        if pending {
+            self.eligible = false;
+        }
+    }
+
+    fn uncertain_completion(&mut self) {
+        self.eligible = false;
+    }
+}
+
 /// Holds one card fd as master and owns one output's scanout buffers.
 #[allow(
     clippy::struct_excessive_bools,
@@ -1561,6 +1587,8 @@ pub struct DrmScanout {
     /// Monotonic instant at which the currently pending page flip was queued.
     /// Diagnostic only: completion clears it and logs only anomalously slow
     /// retirements, keeping the normal 144 Hz path silent.
+    flip_submission: u64,
+    physical_identity: PhysicalFlipIdentity,
     flip_queued_at: Option<std::time::Instant>,
     /// Whether the page-flip path is in use. Virtual connectors start `false`
     /// because they never signal vblank; a flip there blocks in the kernel
@@ -1835,6 +1863,8 @@ impl DrmScanout {
             fbs: [fb0, fb1],
             front: 0,
             flip_pending: false,
+            flip_submission: 0,
+            physical_identity: PhysicalFlipIdentity::default(),
             flip_queued_at: None,
             use_pageflip,
             damage_clips: Vec::new(),
@@ -2153,6 +2183,7 @@ impl DrmScanout {
         std::mem::swap(&mut self.buffers, &mut pair.buffers);
         std::mem::swap(&mut self.fbs, &mut pair.fbs);
         self.standby = Some(pair);
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.format = ScanoutFormat::Xbgr2101010;
         self.front = 0;
         self.flip_pending = false;
@@ -2167,6 +2198,7 @@ impl DrmScanout {
 
     /// Return to 8-bit SDR: signal off, SDR dumb pair back on the CRTC.
     pub fn leave_hdr(&mut self) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         let was_active = self.hdr_signal.enabled() || self.format.is_hdr();
         if let Err(error) = self.hdr_signal.disable(&self.card, self.connector) {
             tracing::warn!(%error, "DRM scanout: restoring SDR signalling was refused");
@@ -2270,6 +2302,7 @@ impl DrmScanout {
     /// Re-establish this output after the session regains hardware (VT switch/suspend): nothing
     /// survives — CRTC has no mode, framebuffer unbound, cursor plane reset, and the queued flip died with the master lock, leaving `flip_pending` latched forever. Best-effort throughout.
     pub fn restore(&mut self) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
@@ -2645,6 +2678,7 @@ impl DrmScanout {
             .page_flip(self.crtc, fb, PageFlipFlags::EVENT, None)
         {
             Ok(()) => {
+                self.flip_submission = self.flip_submission.wrapping_add(1);
                 self.flip_queued_at = Some(std::time::Instant::now());
                 self.front = idx;
                 self.note_publish(false, true);
@@ -2776,15 +2810,41 @@ impl DrmScanout {
     /// Drain pending DRM events, returning the crtc of each flip completion. Every per-connector
     /// scanout dups the same open file description, so completions for all crtcs arrive on any one fd — must drain **once** and route via [`Self::mark_flip_complete`], or the first scanout wedges its siblings' `flip_pending` forever.
     pub fn poll_flip_completions(&mut self) -> Vec<crtc::Handle> {
-        let mut done = Vec::new();
-        if let Ok(events) = self.card.receive_events() {
-            for ev in events {
-                if let Event::PageFlip(pf) = ev {
-                    done.push(pf.crtc);
-                }
-            }
-        }
-        done
+        self.poll_flip_events()
+            .into_iter()
+            .map(|event| event.crtc)
+            .collect()
+    }
+
+    fn poll_flip_events(&self) -> Vec<drm_re::control::PageFlipEvent> {
+        self.card.receive_events().map_or_else(
+            |_| Vec::new(),
+            |events| {
+                events
+                    .filter_map(|event| match event {
+                        Event::PageFlip(flip) => Some(flip),
+                        _ => None,
+                    })
+                    .collect()
+            },
+        )
+    }
+
+    pub fn flip_submission(&self) -> u64 {
+        self.flip_submission
+    }
+
+    pub fn can_prove_physical_flip(&self) -> bool {
+        self.physical_identity.eligible
+            && matches!(
+                self.card
+                    .get_driver_capability(drm_re::DriverCapability::MonotonicTimestamp),
+                Ok(1)
+            )
+    }
+
+    pub fn invalidate_physical_feedback(&mut self) {
+        self.physical_identity.uncertain_completion();
     }
 
     /// Wait for the page-flip event for this CRTC without spinning.
@@ -2795,15 +2855,16 @@ impl DrmScanout {
     pub fn wait_flip_completions(
         &mut self,
         timeout: Duration,
-    ) -> (DirectRetirement, Vec<crtc::Handle>) {
+    ) -> (DirectRetirement, Vec<drm_re::control::PageFlipEvent>) {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
+        let mut completed = Vec::new();
         loop {
-            let completed = self.poll_flip_completions();
+            completed.extend(self.poll_flip_events());
             let now = Instant::now();
-            if let Some(retirement) = retirement_after_poll(self.crtc, &completed, now >= deadline)
-            {
+            let crtcs: Vec<_> = completed.iter().map(|event| event.crtc).collect();
+            if let Some(retirement) = retirement_after_poll(self.crtc, &crtcs, now >= deadline) {
                 return (retirement, completed);
             }
             let remaining = deadline.saturating_duration_since(now);
@@ -2880,6 +2941,7 @@ impl DrmScanout {
             Ok(()) => {
                 self.flip_pending = true;
                 if targets.state.submit(index) {
+                    self.flip_submission = self.flip_submission.wrapping_add(1);
                     DirectSubmit::Queued
                 } else {
                     self.flip_pending = false;
@@ -2987,6 +3049,7 @@ impl DrmScanout {
     /// released. KMS retains its own framebuffer reference after a successful flip, so dropping
     /// userspace BO/FB owners first can leave the CRTC scanning an object we just destroyed.
     pub fn restore_legacy_front(&mut self) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.flip_pending = false;
         self.force_flush_via_set_crtc();
         self.match_signal_to_dumb_front();
@@ -2996,6 +3059,7 @@ impl DrmScanout {
     /// Power the display for idle/lock blanking, via the legacy DPMS property (`0 = On`, `3 = Off`
     /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips `Self::present` while blanked.
     pub fn set_dpms(&mut self, on: bool) {
+        self.physical_identity.cancel_pending(self.flip_pending);
         self.invalidate_xrgb_history();
         self.set_dpms_property(on);
         if on {
@@ -3359,6 +3423,50 @@ fn pending_pageflip_refuses_frame(use_pageflip: bool, flip_pending: bool) -> boo
 /// untouched back buffer.
 fn paint_completed<E>(result: Result<(), E>) -> Result<bool, E> {
     result.map(|()| true)
+}
+
+#[cfg(test)]
+mod physical_identity_tests {
+    use super::PhysicalFlipIdentity;
+
+    #[test]
+    fn physical_completion_identity_stays_unavailable_after_timeout_or_pending_reset() {
+        let mut normal = PhysicalFlipIdentity::default();
+        assert!(normal.eligible);
+        normal.cancel_pending(false);
+        assert!(normal.eligible, "an idle restore has no outstanding event");
+        normal.cancel_pending(true);
+        assert!(
+            !normal.eligible,
+            "a late cancelled event cannot certify a newer frame"
+        );
+        let crtc = std::num::NonZeroU32::new(11).unwrap().into();
+        let late = [smithay::reexports::drm::control::PageFlipEvent {
+            crtc,
+            frame: 42,
+            duration: std::time::Duration::from_secs(123),
+        }];
+        assert!(
+            super::super::physical_flip_proof(
+                super::DirectRetirement::Complete,
+                &late,
+                crtc,
+                normal.eligible
+            )
+            .is_none(),
+            "even a real matching CRTC completion after cancellation cannot credit new pixels"
+        );
+        normal.cancel_pending(false);
+        assert!(
+            !normal.eligible,
+            "later idle restoration cannot erase ambiguity"
+        );
+        let mut timed_out = PhysicalFlipIdentity::default();
+        timed_out.uncertain_completion();
+        assert!(!timed_out.eligible);
+        timed_out.cancel_pending(false);
+        assert!(!timed_out.eligible);
+    }
 }
 
 #[cfg(test)]

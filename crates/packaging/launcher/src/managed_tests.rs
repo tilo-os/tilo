@@ -82,6 +82,65 @@ type = "cli"
 }
 
 #[test]
+fn managed_package_verifies_actual_content_addressed_install() {
+    let (_legacy_root, legacy, trust) = installed();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::create_dir(source.path().join("bin")).unwrap();
+    std::fs::copy(
+        legacy.payload_root().join("bin/agent"),
+        source.path().join("bin/agent"),
+    )
+    .unwrap();
+    let manifest = tilo_app_package::Manifest::from_toml_str(
+        &std::fs::read_to_string(legacy.manifest_path()).unwrap(),
+    )
+    .unwrap();
+    let packed = tilo_app_package::pack(
+        source.path(),
+        &manifest,
+        &tilo_app_package::SigningIdentity::from_signing_key(
+            ed25519_dalek::SigningKey::from_bytes(&[31; 32]),
+        ),
+    )
+    .unwrap();
+    let archive = tilo_app_package::tapp::write(Vec::new(), &packed.meta, Some(&packed)).unwrap();
+    let destination = tempfile::tempdir().unwrap();
+    let installed = package_store::PackageStore::at(destination.path())
+        .install(
+            archive.as_slice(),
+            |_| Ok(package_store::Admission::default()),
+            None,
+        )
+        .unwrap()
+        .package;
+    assert!(!installed.payload_root.join("manifest.toml").exists());
+    assert!(
+        package_store::integrity::record_dir(&installed)
+            .join("signed-root")
+            .is_file()
+    );
+    let package = InstalledManagedPackage::verify(
+        installed,
+        destination.path().to_path_buf(),
+        packed.id(),
+        &trust,
+    )
+    .unwrap();
+    package.revalidate(&trust).unwrap();
+    assert!(
+        package
+            .revalidate(&PackageTrust {
+                publishers: vec![],
+                attestors: vec![],
+                revoked: tilo_app_package::trust::RevocationList::default(),
+            })
+            .is_err()
+    );
+    std::fs::write(package.manifest_path(), b"replaced metadata").unwrap();
+    assert!(package.revalidate(&trust).is_err());
+}
+
+#[test]
 fn managed_package_binds_installed_bytes_and_independent_trust() {
     let (_root, package, trust) = installed();
     package.revalidate(&trust).unwrap();
@@ -133,8 +192,10 @@ fn managed_descriptors_are_bound_and_consumed_once() {
         room: uuid::Uuid::new_v4().to_string(),
         app: WORKSPACE_AGENT_PACKAGE_ID.into(),
         agent: "agent-1".into(),
-        task: "task-1".into(),
-        run: "run-1".into(),
+        scope: ManagedLaunchScope::Task {
+            task: "task-1".into(),
+            run: "run-1".into(),
+        },
         launch: "launch-1".into(),
         generation: 1,
     };
@@ -163,6 +224,9 @@ fn managed_descriptors_are_bound_and_consumed_once() {
     .into_iter()
     .collect();
     let mut wrong = binding.clone();
+    wrong.scope = ManagedLaunchScope::AgentSession;
+    assert!(context.take_for_launch(&wrong, &required).is_err());
+    wrong.scope = binding.scope.clone();
     wrong.agent = "other".into();
     assert!(context.take_for_launch(&wrong, &required).is_err());
     let services = context.take_for_launch(&binding, &required).unwrap();
@@ -225,11 +289,59 @@ fn binding() -> ManagedBinding {
         room: uuid::Uuid::new_v4().to_string(),
         app: WORKSPACE_AGENT_PACKAGE_ID.into(),
         agent: "agent-1".into(),
-        task: "task-1".into(),
-        run: "run-1".into(),
+        scope: ManagedLaunchScope::Task {
+            task: "task-1".into(),
+            run: "run-1".into(),
+        },
         launch: "launch-1".into(),
         generation: 1,
     }
+}
+
+#[test]
+fn managed_session_scope_needs_no_fabricated_task_but_retains_route_validation() {
+    let mut session = binding();
+    let task = session.clone();
+    session.scope = ManagedLaunchScope::AgentSession;
+    session.validate().unwrap();
+    task.validate().unwrap();
+    assert_ne!(session, task, "scope is part of exact launch custody");
+    session.agent.clear();
+    assert!(session.validate().is_err());
+    session = binding();
+    session.scope = ManagedLaunchScope::Task {
+        task: String::new(),
+        run: "run-1".into(),
+    };
+    assert!(session.validate().is_err());
+    session.scope = ManagedLaunchScope::Task {
+        task: "task-1".into(),
+        run: "run with spaces".into(),
+    };
+    assert!(session.validate().is_err());
+    session.scope = ManagedLaunchScope::AgentSession;
+    session.generation = 0;
+    assert!(session.validate().is_err());
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn managed_agent_argv_uses_its_actual_package_not_the_document_default() {
+    let binding = binding();
+    assert_eq!(
+        managed_service_argv(&binding),
+        [
+            "--task-runs",
+            "--workspace",
+            &binding.room,
+            "--app",
+            WORKSPACE_AGENT_PACKAGE_ID,
+            "--agent-id",
+            &binding.agent,
+            "--name",
+            &binding.agent,
+        ]
+    );
 }
 #[test]
 fn managed_runtime_lease_cannot_survive_shutdown_or_mint_a_second_attempt() {
