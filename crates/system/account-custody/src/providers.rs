@@ -162,6 +162,7 @@ pub enum Capability {
     /// Mail over IMAP and SMTP (`XOAUTH2`).
     Mail,
     Music,
+    MusicStreaming,
 }
 
 /// One use of an issuer's client: who signs the person in, and what for.
@@ -185,7 +186,7 @@ impl OAuthUse {
     pub fn label(self) -> &'static str {
         match (self.issuer, self.capability) {
             (OAuthIssuer::Spotify, _) => "Spotify",
-            (_, Capability::Music) => "Music",
+            (_, Capability::Music | Capability::MusicStreaming) => "Music",
             (OAuthIssuer::Google, Capability::Files) => "Google Drive",
             (OAuthIssuer::Google, Capability::Mail) => "Gmail",
             (OAuthIssuer::Microsoft, Capability::Files) => "OneDrive",

@@ -1,12 +1,17 @@
 //! Spotify's public Web API catalogue. No audio URLs, credentials or DRM
-//! material enter the collaborative document. Playback is deliberately refused:
-//! a Web API grant is not a native streaming session.
+//! material enter the collaborative document. Native streaming uses its own
+//! authorized transport; a catalogue grant is never treated as an audio URL.
 use std::io::Read as _;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use ui::time::Instant;
 
-use account_custody::{Capability, Custodian, OAuthIssuer, OAuthUse};
 use serde_json::Value;
+use tilo_spotify::AccountId;
+use tilo_spotify::custody::{Capability, Custodian, OAuthIssuer, OAuthUse};
+
+#[path = "spotify_control.rs"]
+mod control;
 
 use super::{
     AlbumHit, AlbumKind, AlbumPage, ArtistAlbum, ArtistHit, ArtistPage, BackendError, HomeContent,
@@ -45,8 +50,11 @@ impl SpotifyBackend {
 
     pub(super) fn disconnect(&self) -> Result<(), BackendError> {
         self.custody
-            .forget_oauth(&accounts::AccountId::from(ACCOUNT.to_string()))
-            .map_err(|_| BackendError("Could not forget Spotify sign-in".into()))
+            .forget_oauth(&AccountId::from(ACCOUNT.to_string()))
+            .map_err(|_| BackendError("Could not forget Spotify sign-in".into()))?;
+        self.custody
+            .forget_oauth(&AccountId::from("music.spotify.streaming".to_string()))
+            .map_err(|_| BackendError("Could not forget Spotify streaming sign-in".into()))
     }
 
     /// PKCE browser sign-in, with state validation and encrypted system custody.
@@ -59,7 +67,11 @@ impl SpotifyBackend {
     /// # Errors
     /// Missing registration, failed browser launch, rejected sign-in or vault failure.
     pub fn sign_in(&self) -> Result<(), BackendError> {
-        let authorization = self.custody.begin_sign_in_for(USE, None)
+        self.sign_in_for(USE, ACCOUNT)
+    }
+
+    fn sign_in_for(&self, usage: OAuthUse, account: &str) -> Result<(), BackendError> {
+        let authorization = self.custody.begin_sign_in_for(usage, None)
             .map_err(|_| BackendError("Spotify sign-in is not configured or its callback port is busy. Register Tilo's public client with http://127.0.0.1:47654/oauth.".into()))?;
         ui::portal::open_uri(authorization.url()).map_err(|_| {
             BackendError("Could not open Spotify sign-in in the system browser".into())
@@ -67,18 +79,77 @@ impl SpotifyBackend {
         let tokens = Custodian::finish_sign_in(authorization)
             .map_err(|_| BackendError("Spotify sign-in did not complete. Try again.".into()))?;
         self.custody
-            .seal_oauth(&accounts::AccountId::from(ACCOUNT.to_string()), &tokens)
+            .seal_oauth(&AccountId::from(account.to_string()), &tokens)
             .map_err(|_| {
                 BackendError("Could not save Spotify sign-in in system credential custody".into())
             })
     }
 
+    pub(super) fn playback_account(&self, sign_in: bool) -> Result<String, BackendError> {
+        let profile = self.get("me", &[])?;
+        if profile.get("product").and_then(Value::as_str) != Some("premium") {
+            return Err(BackendError(
+                "Spotify Premium is required for native playback; you can still browse your music"
+                    .into(),
+            ));
+        }
+        let account = profile
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| BackendError("Spotify did not confirm your account identity".into()))?
+            .to_string();
+        #[cfg(feature = "spotify-native")]
+        {
+            use crate::audio::spotify_audio::{STREAMING_ACCOUNT, STREAMING_USE};
+            if sign_in {
+                self.sign_in_for(STREAMING_USE, STREAMING_ACCOUNT)?;
+            }
+            let streaming_profile = self.get_for(STREAMING_USE, STREAMING_ACCOUNT, "me", &[])?;
+            if streaming_profile.get("id").and_then(Value::as_str) != Some(account.as_str()) {
+                return Err(BackendError(
+                    "Catalogue and playback are signed in to different Spotify accounts".into(),
+                ));
+            }
+            Ok(account)
+        }
+        #[cfg(not(feature = "spotify-native"))]
+        {
+            let _ = (sign_in, account);
+            Err(BackendError(
+                "This build does not include native Spotify playback".into(),
+            ))
+        }
+    }
+
     fn get(&self, path: &str, params: &[(&str, &str)]) -> Result<Value, BackendError> {
+        self.get_for(USE, ACCOUNT, path, params)
+    }
+
+    fn get_for(
+        &self,
+        usage: OAuthUse,
+        account: &str,
+        path: &str,
+        params: &[(&str, &str)],
+    ) -> Result<Value, BackendError> {
+        self.request_for(usage, account, &reqwest::Method::GET, path, params, None)
+    }
+
+    fn request_for(
+        &self,
+        usage: OAuthUse,
+        account: &str,
+        method: &reqwest::Method,
+        path: &str,
+        params: &[(&str, &str)],
+        body: Option<&Value>,
+    ) -> Result<Value, BackendError> {
         if self
             .retry_after
             .lock()
             .map_err(|_| BackendError("Spotify retry state unavailable".into()))?
-            .is_some_and(|until| Instant::now() < until)
+            .is_some_and(|until| ui::time::now() < until)
         {
             return Err(BackendError(
                 "Spotify is rate limited. Wait before retrying.".into(),
@@ -87,21 +158,27 @@ impl SpotifyBackend {
         for force in [false, true] {
             let token = self
                 .custody
-                .oauth_access_token(&accounts::AccountId::from(ACCOUNT.to_string()), USE, force)
+                .oauth_access_token(&AccountId::from(account.to_string()), usage, force)
                 .map_err(|_| BackendError("Connect Spotify again to browse your library".into()))?;
             let mut endpoint = url::Url::parse(&format!("{}{path}", self.api_origin))
                 .map_err(|_| BackendError("Invalid Spotify endpoint".into()))?;
-            endpoint
-                .query_pairs_mut()
-                .extend_pairs(params.iter().copied());
-            let response = self
+            if !params.is_empty() {
+                endpoint
+                    .query_pairs_mut()
+                    .extend_pairs(params.iter().copied());
+            }
+            let mut request = self
                 .http
-                .get(endpoint)
-                .bearer_auth(token.as_str())
-                .send()
-                .map_err(|_| {
-                    BackendError("Spotify is unreachable. Check your connection and retry.".into())
-                })?;
+                .request(method.clone(), endpoint)
+                .bearer_auth(token.as_str());
+            if let Some(body) = body {
+                request = request.json(body);
+            } else if *method != reqwest::Method::GET {
+                request = request.body(Vec::new());
+            }
+            let response = request.send().map_err(|_| {
+                BackendError("Spotify is unreachable. Check your connection and retry.".into())
+            })?;
             if response.status() == reqwest::StatusCode::UNAUTHORIZED && !force {
                 continue;
             }
@@ -117,10 +194,13 @@ impl SpotifyBackend {
                     .retry_after
                     .lock()
                     .map_err(|_| BackendError("Spotify retry state unavailable".into()))? =
-                    Instant::now().checked_add(Duration::from_secs(seconds));
+                    ui::time::now().checked_add(Duration::from_secs(seconds));
             }
             if let Some(error) = status_error(response.status().as_u16()) {
                 return Err(error);
+            }
+            if response.status() == reqwest::StatusCode::NO_CONTENT {
+                return Ok(Value::Null);
             }
             let mut body = Vec::new();
             response
@@ -129,6 +209,9 @@ impl SpotifyBackend {
                 .map_err(|_| BackendError("Spotify response could not be read".into()))?;
             if body.len() as u64 > MAX_RESPONSE {
                 return Err(BackendError("Spotify response is too large".into()));
+            }
+            if body.is_empty() {
+                return Ok(Value::Null);
             }
             return serde_json::from_slice(&body)
                 .map_err(|_| BackendError("Spotify returned an invalid response".into()));
@@ -349,7 +432,7 @@ fn playlist(value: &Value) -> Option<PlaylistHit> {
 
 impl MusicBackend for SpotifyBackend {
     fn name(&self) -> &'static str {
-        "Spotify catalogue • playback unavailable"
+        "Spotify"
     }
     fn is_live(&self) -> bool {
         true
@@ -414,6 +497,22 @@ impl MusicBackend for SpotifyBackend {
         Ok(HomeContent {
             sections: vec![
                 HomeSection {
+                    title: ui::i18n!("music-spotify-library"),
+                    items: vec![HomeItem {
+                        id: "spotify:collection:liked".into(),
+                        title: ui::i18n!("music-spotify-liked"),
+                        subtitle: ui::i18n!("music-spotify-liked-description"),
+                        cover_url: String::new(),
+                        kind: HomeItemKind::Playlist,
+                        video_id: String::new(),
+                        artist_id: String::new(),
+                        artist_name: String::new(),
+                        album_id: String::new(),
+                        album_title: String::new(),
+                        duration_s: 0,
+                    }],
+                },
+                HomeSection {
                     title: "Saved Spotify albums".into(),
                     items: album_items,
                 },
@@ -453,6 +552,19 @@ impl MusicBackend for SpotifyBackend {
         })
     }
     fn playlist(&self, id: &str) -> Result<PlaylistPage, BackendError> {
+        if id == "spotify:collection:liked" {
+            let tracks = self
+                .pages("me/tracks")?
+                .iter()
+                .filter_map(|item| item.get("track").and_then(track))
+                .collect();
+            return Ok(PlaylistPage {
+                id: id.into(),
+                title: ui::i18n!("music-spotify-liked"),
+                tracks,
+                ..Default::default()
+            });
+        }
         let value = self.get(&format!("playlists/{}", raw_id(id, "playlist")?), &[])?;
         let entries = self.pages(&format!("playlists/{}/items", raw_id(id, "playlist")?))?;
         Ok(PlaylistPage {
@@ -500,6 +612,7 @@ impl MusicBackend for SpotifyBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_spotify::custody as account_custody;
     fn fixture(
         origin: &str,
         server: &tilo_oauth::fake::FakeAuthorizationServer,
@@ -508,13 +621,14 @@ mod tests {
         let mut table = account_custody::ClientTable::default();
         table.spotify.client_id = "tilo-test".into();
         table.spotify.scopes.music = vec!["user-library-read".into()];
+        table.spotify.scopes.music_streaming = vec!["streaming".into(), "user-read-private".into()];
         let custody = Custodian::for_root(Some(root.path().to_owned()))
             .with_client_table(table)
             .with_issuer_endpoints(OAuthIssuer::Spotify, server.provider());
         server.accept_refresh_token("refresh-test");
         custody
             .seal_oauth(
-                &accounts::AccountId::from(ACCOUNT.to_string()),
+                &AccountId::from(ACCOUNT.to_string()),
                 &account_custody::TokenSet {
                     access_token: "initial-test".into(),
                     refresh_token: "refresh-test".into(),
@@ -528,6 +642,214 @@ mod tests {
         backend.custody = custody;
         backend.api_origin = format!("{origin}/");
         (backend, root)
+    }
+
+    #[test]
+    #[cfg(feature = "spotify-native")]
+    fn spotify_streaming_identity_must_match_the_catalogue_account() {
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"id":"catalogue","product":"premium"}"#.to_vec()),
+            Reply::status(200).body(br#"{"id":"different"}"#.to_vec()),
+            Reply::status(200).body(br#"{"id":"catalogue","product":"premium"}"#.to_vec()),
+            Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        backend
+            .custody
+            .seal_oauth(
+                &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
+                &account_custody::TokenSet {
+                    access_token: "stream-test".into(),
+                    refresh_token: "refresh-test".into(),
+                    expires_in: 3600,
+                    ..Default::default()
+                }
+                .stamp_now(),
+            )
+            .unwrap();
+        assert!(
+            backend
+                .playback_account(false)
+                .unwrap_err()
+                .to_string()
+                .contains("different Spotify accounts")
+        );
+        assert_eq!(backend.playback_account(false).unwrap(), "catalogue");
+        assert_eq!(
+            api.next_request().header("Authorization"),
+            Some("Bearer initial-test")
+        );
+        assert_eq!(
+            api.next_request().header("Authorization"),
+            Some("Bearer stream-test")
+        );
+        api.next_request();
+        api.next_request();
+        assert_eq!(oauth.refreshes(), 0);
+    }
+
+    #[test]
+    fn spotify_connect_confirms_provider_state_and_rejects_acknowledgement_only() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let devices = br#"{"devices":[{"id":"bedroom","name":"Bedroom","is_active":false,"is_restricted":false}]}"#;
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"product":"premium"}"#.to_vec()),
+            Reply::status(200).body(devices.to_vec()),
+            Reply::status(204),
+            Reply::status(200).body(br#"{"device":{"id":"other"},"is_playing":true}"#.to_vec()),
+            Reply::status(200).body(br#"{"product":"premium"}"#.to_vec()),
+            Reply::status(200).body(devices.to_vec()),
+            Reply::status(204),
+            Reply::status(200).body(br#"{"device":{"id":"bedroom"},"is_playing":false}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        assert!(
+            backend
+                .operation(&SpotifyOperation::Transfer {
+                    device: "bedroom".into()
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("not confirmed")
+        );
+        api.next_request();
+        api.next_request();
+        let transfer = api.next_request();
+        assert_eq!(transfer.method, "PUT");
+        assert_eq!(transfer.target, "/me/player");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&transfer.body).unwrap(),
+            serde_json::json!({"device_ids":["bedroom"],"play":false})
+        );
+        api.next_request();
+        let reply = backend
+            .operation(&SpotifyOperation::Transfer {
+                device: "bedroom".into(),
+            })
+            .unwrap();
+        assert_eq!(reply.state["device"]["id"], "bedroom");
+        for _ in 0..4 {
+            api.next_request();
+        }
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_free_accounts_cannot_start_streaming_or_connect_commands() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"product":"free"}"#.to_vec()),
+            Reply::status(200).body(br#"{"product":"free"}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        assert!(
+            backend
+                .playback_account(true)
+                .unwrap_err()
+                .to_string()
+                .contains("Premium")
+        );
+        assert!(
+            backend
+                .operation(&SpotifyOperation::Transfer {
+                    device: "bedroom".into()
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("Premium")
+        );
+        api.next_request();
+        api.next_request();
+        api.assert_untouched();
+        assert_eq!(oauth.refreshes(), 0);
+    }
+
+    #[test]
+    fn spotify_library_edits_confirm_saves_and_playlist_revisions() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200),
+            Reply::status(200).body(b"[true]".to_vec()),
+            Reply::status(200),
+            Reply::status(200).body(b"[false]".to_vec()),
+            Reply::status(201).body(br#"{"snapshot_id":"revision-a"}"#.to_vec()),
+            Reply::status(200).body(br#"{"snapshot_id":"revision-b"}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        let track = "spotify:track:1234567890123456789012";
+        let playlist = "spotify:playlist:1234567890123456789012";
+        assert!(
+            backend
+                .operation(&SpotifyOperation::Save {
+                    uri: "spotify:track:../bad".into(),
+                    saved: true
+                })
+                .is_err()
+        );
+        assert!(api.drain_requests().is_empty());
+        assert_eq!(
+            backend
+                .operation(&SpotifyOperation::Save {
+                    uri: track.into(),
+                    saved: true
+                })
+                .unwrap()
+                .state["saved"],
+            true
+        );
+        let save = api.next_request();
+        assert_eq!(save.method, "PUT");
+        assert!(
+            save.target
+                .starts_with("/me/library?uris=spotify%3Atrack%3A")
+        );
+        api.next_request();
+        assert_eq!(
+            backend
+                .operation(&SpotifyOperation::Save {
+                    uri: track.into(),
+                    saved: false
+                })
+                .unwrap()
+                .state["saved"],
+            false
+        );
+        assert_eq!(api.next_request().method, "DELETE");
+        api.next_request();
+        backend
+            .operation(&SpotifyOperation::PlaylistAdd {
+                playlist: playlist.into(),
+                track: track.into(),
+            })
+            .unwrap();
+        let added = api.next_request();
+        assert_eq!(added.method, "POST");
+        assert_eq!(added.target, "/playlists/1234567890123456789012/items");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&added.body).unwrap(),
+            serde_json::json!({"uris":[track]})
+        );
+        backend
+            .operation(&SpotifyOperation::PlaylistRemove {
+                playlist: playlist.into(),
+                track: track.into(),
+            })
+            .unwrap();
+        let removed = api.next_request();
+        assert_eq!(removed.method, "DELETE");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&removed.body).unwrap(),
+            serde_json::json!({"items":[{"uri":track}]})
+        );
+        api.assert_untouched();
     }
 
     #[test]

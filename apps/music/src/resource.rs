@@ -112,6 +112,9 @@ const SCENARIOS: &[&str] = &[
     "album-page",
     "error",
     "membership-open",
+    "spotify-home",
+    "spotify-devices",
+    "spotify-error",
 ];
 
 /// Framework app: the music widget is the surface over [`Music`].
@@ -139,7 +142,10 @@ impl ResourceApp for MusicShell {
 
     /// Every scenario but `empty` shows the sample library.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Music>> {
-        if matches!(name, Some("empty")) {
+        if matches!(
+            name,
+            Some("empty" | "spotify-home" | "spotify-devices" | "spotify-error")
+        ) {
             return Vec::new();
         }
         crate::seed::sample_actions()

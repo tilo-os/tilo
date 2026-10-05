@@ -368,9 +368,9 @@ mod tests {
             .unwrap();
             app.settle();
             assert_eq!(
-                app.harness().focus_order().len() + 1,
+                app.harness().focus_order().len() + 7,
                 on_home,
-                "the picker leaves the focus order with Home"
+                "the picker and six source controls leave the focus order with Home"
             );
             app.call_on(
                 &crate::actions::view_resource_id("home"),
@@ -1065,6 +1065,7 @@ mod tests {
             assert_eq!(doc.get_heads(), before);
             assert!(app.lib.tracks.is_empty());
             let profile = crate::storage::DeviceProfile {
+                spotify_catalogue: false,
                 local_file: app.local_file.clone(),
                 playback: app.pb.clone(),
             };
@@ -1083,6 +1084,7 @@ mod tests {
             wav(&path);
             let file = crate::local_file::LocalFile::open(path.to_str().unwrap(), None).unwrap();
             let profile = crate::storage::DeviceProfile {
+                spotify_catalogue: false,
                 playback: crate::model::Playback {
                     current: Some(file.track.id.clone()),
                     queue: vec![file.track.id.clone()],
@@ -1271,6 +1273,11 @@ impl MusicApp {
         use ui::tilo_resource::Effect as _;
         [
             (MusicEffect::ConnectSpotify, "music-connect-spotify"),
+            (
+                MusicEffect::ConnectSpotifyPlayback,
+                "music-spotify-playback",
+            ),
+            (MusicEffect::SpotifyDevices, "music-spotify-devices"),
             (MusicEffect::DisconnectSpotify, "music-disconnect-spotify"),
             (MusicEffect::BrowseSpotify, "music-browse-spotify"),
             (MusicEffect::BrowseYouTube, "music-browse-youtube"),
@@ -1378,7 +1385,7 @@ mod spotify_tests {
                     &mut text,
                     &theme,
                 );
-                assert_eq!(app.source_buttons.len(), 4);
+                assert_eq!(app.source_buttons.len(), 6);
                 for (index, button) in app.source_buttons.iter().enumerate() {
                     let rect = button.get_rect();
                     assert!(

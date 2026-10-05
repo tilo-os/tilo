@@ -239,6 +239,10 @@ enum Action {
     },
     /// Open the "Add to playlist…" picker for the menu's target track.
     OpenAddToPlaylist(String),
+    SpotifyLibrary {
+        track: String,
+        save: bool,
+    },
     /// Dismiss the inline name-input overlay without committing.
     CloseNamePrompt,
     FocusSearch,
@@ -312,7 +316,15 @@ pub struct MusicApp {
     search_input: TextInput,
     open_file_button: ui::widget::Button,
     source_buttons: Vec<ui::widget::Button>,
+    spotify_catalogue: bool,
     source_invocation: Option<tilo_actions::InvocationId>,
+    source_disconnect_pending: bool,
+    spotify_jobs: HashMap<u64, spotify::PendingJob>,
+    spotify_devices: Vec<crate::backend::SpotifyDevice>,
+    spotify_device_buttons: Vec<ui::widget::Button>,
+    spotify_remote_state: serde_json::Value,
+    spotify_menu_controls: Vec<ui::widget::ActionEmitter<()>>,
+    control_domain: Option<ui::ControlDomain>,
     source_error: Option<String>,
     open_file_layout_visible: Option<bool>,
     open_file_gap: f64,
@@ -724,7 +736,15 @@ impl MusicApp {
             search_input,
             open_file_button: Self::make_open_file_button(),
             source_buttons: Self::make_source_buttons(),
+            spotify_catalogue: device_profile.spotify_catalogue,
             source_invocation: None,
+            source_disconnect_pending: false,
+            spotify_jobs: HashMap::new(),
+            spotify_devices: Vec::new(),
+            spotify_device_buttons: Vec::new(),
+            spotify_remote_state: serde_json::Value::Null,
+            spotify_menu_controls: Vec::new(),
+            control_domain: None,
             source_error: None,
             open_file_layout_visible: None,
             open_file_gap: 0.0,
@@ -1014,6 +1034,7 @@ impl MusicApp {
         }
         self.pb.position_ms = self.playhead_ms as u64;
         self.bound_track = self.pb.current.clone();
+        self.prepare_spotify_queue();
         self.report_device_profile_error();
     }
 
@@ -1022,6 +1043,7 @@ impl MusicApp {
             return Ok(());
         }
         crate::storage::save_device_profile(&crate::storage::DeviceProfile {
+            spotify_catalogue: self.spotify_catalogue,
             local_file: self.local_file.clone(),
             playback: self.pb.clone(),
         })
@@ -1195,6 +1217,12 @@ impl MusicApp {
             .map(live_row)
             .collect();
         rows.push(self.source_row());
+        rows.extend(self.spotify_device_rows());
+        rows.extend(
+            self.catalogue_rows()
+                .into_iter()
+                .take(crate::actions::OPEN_RESOURCE_CATEGORY_LIMIT),
+        );
         rows.extend(
             self.device_cache
                 .iter()
@@ -1210,6 +1238,15 @@ impl MusicApp {
     pub(crate) fn device_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
         if id == "music.source:catalogue" {
             return Some(self.source_row());
+        }
+        if id.starts_with("music.spotify-device:") {
+            return self
+                .spotify_device_rows()
+                .into_iter()
+                .find(|row| row.id() == id);
+        }
+        if let Some(row) = self.catalogue_rows().into_iter().find(|row| row.id() == id) {
+            return Some(row);
         }
         if let Some(track) = id.strip_prefix("music.track:") {
             return matches!(self.cache_state(track), CacheState::Cached)
@@ -1229,10 +1266,19 @@ impl MusicApp {
     fn source_status(&self) -> String {
         if self.source_invocation.is_some() {
             ui::i18n!("music-source-connecting")
+        } else if !self.spotify_jobs.is_empty() {
+            ui::i18n!("music-spotify-updating")
         } else {
-            self.source_error
-                .clone()
-                .unwrap_or_else(|| self.backend_name.clone())
+            self.source_error.clone().unwrap_or_else(|| {
+                self.spotify_remote_state
+                    .get("device")
+                    .and_then(|device| device.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map_or_else(
+                        || self.backend_name.clone(),
+                        |name| format!("{} {name}", ui::i18n!("music-spotify-output")),
+                    )
+            })
         }
     }
 
@@ -1244,6 +1290,8 @@ impl MusicApp {
             self.source_status(),
         )
         .effect(&MusicEffect::ConnectSpotify)
+        .effect(&MusicEffect::ConnectSpotifyPlayback)
+        .effect(&MusicEffect::SpotifyDevices)
         .effect(&MusicEffect::DisconnectSpotify)
         .effect(&MusicEffect::BrowseSpotify)
         .effect(&MusicEffect::BrowseYouTube)
@@ -1638,6 +1686,16 @@ impl MusicApp {
         let now = ui::time::now();
         self.last_tick = now;
         self.expire_resource_stream_if_due(now);
+        self.expire_spotify_jobs();
+        if let Some(track) = self.audio.take_spotify_transition() {
+            self.advance(true);
+            if self.pb.current.as_deref() != Some(track.as_str()) {
+                self.audio.stop();
+                self.pb.playing = false;
+                self.playback_error = Some(ui::i18n!("music-spotify-queue-changed"));
+            }
+        }
+        self.prepare_spotify_queue();
         if (!self.pb.playing || self.pb.current.is_none()) && !self.audio.needs_poll() {
             return;
         }
@@ -1693,7 +1751,7 @@ impl MusicApp {
             }
         }
         let dur = self.current_duration_ms();
-        if dur > 0 && self.playhead_ms >= dur as f64 {
+        if !self.audio.uses_spotify() && dur > 0 && self.playhead_ms >= dur as f64 {
             self.auto_advance();
         }
     }
@@ -2158,6 +2216,9 @@ impl MusicApp {
                 queue_index,
             } => self.open_track_menu(track, in_playlist.as_deref(), queue_index),
             Action::OpenAddToPlaylist(track) => self.open_add_to_playlist_menu(&track),
+            Action::SpotifyLibrary { track, save } => {
+                self.queue_spotify_library_control(&track, save);
+            }
             Action::FocusSearch => self.on_focus_search(),
             Action::RetrySearch => self.request_live_search(),
             Action::ToggleQueue => self.on_toggle_queue(),
@@ -2667,10 +2728,18 @@ impl MusicApp {
             // Stop the previous stream while the next one resolves so two
             // tracks never overlap on a fast skip.
             self.audio.pause();
-            w.request(StreamRequest::Resolve {
-                track_id: track_id.to_string(),
-                video_id: yt_id,
-                request_id,
+            w.request(if yt_id.starts_with("spotify:track:") {
+                StreamRequest::NativeSpotify {
+                    track_id: track_id.to_string(),
+                    source_id: yt_id,
+                    request_id,
+                }
+            } else {
+                StreamRequest::Resolve {
+                    track_id: track_id.to_string(),
+                    video_id: yt_id,
+                    request_id,
+                }
             })
         } else {
             Err("music worker is unavailable".to_string())
@@ -3179,13 +3248,35 @@ impl MusicApp {
         };
         for up in updates {
             match up {
+                StreamUpdate::Spotify { request_id, result } => {
+                    self.finish_spotify_operation(request_id, result);
+                }
                 StreamUpdate::SourceSelected { result } => {
                     if let Some(invocation) = self.source_invocation.take() {
                         let update = match result {
                             Ok((name, live)) => {
+                                if self.source_disconnect_pending {
+                                    self.spotify_devices.clear();
+                                    self.spotify_device_buttons.clear();
+                                    self.open_file_layout_visible = None;
+                                    self.spotify_remote_state = serde_json::Value::Null;
+                                }
+                                if self.source_disconnect_pending
+                                    && self
+                                        .pb
+                                        .current
+                                        .as_ref()
+                                        .is_some_and(|id| id.starts_with("spotify:"))
+                                {
+                                    self.audio.stop();
+                                    self.pb.playing = false;
+                                }
+                                self.source_disconnect_pending = false;
                                 self.source_error = None;
+                                self.spotify_catalogue = name.starts_with("Spotify");
                                 self.backend_name = name;
                                 self.backend_live = live;
+                                self.report_device_profile_error();
                                 self.playlist_pages
                                     .retain(|id, _| !id.starts_with("spotify:"));
                                 self.playlist_requested
@@ -3282,10 +3373,11 @@ impl MusicApp {
                     self.home = Some(*content);
                     self.home_failed = false;
                 }
-                StreamUpdate::HomeUnavailable => {
+                StreamUpdate::HomeUnavailable { error } => {
                     // No live Home (offline build / network error): stop the
                     // skeleton and let the honest empty Home settle.
                     self.home_failed = true;
+                    self.source_error = Some(error);
                 }
                 StreamUpdate::PageUnavailable { id } => {
                     // A live detail fetch failed: stop that page's skeleton so it
@@ -3303,6 +3395,39 @@ impl MusicApp {
                 StreamUpdate::Playlist { page } => {
                     self.absorb_playlist(&page);
                     self.playlist_pages.insert(page.id.clone(), *page);
+                }
+                StreamUpdate::NativeSpotify {
+                    track_id,
+                    source_id,
+                    account,
+                    request_id,
+                } => {
+                    if self.active_resolve_request != Some(request_id)
+                        || self.pb.current.as_deref() != Some(track_id.as_str())
+                    {
+                        continue;
+                    }
+                    self.active_resolve_request = None;
+                    self.resolve_in_flight = 0;
+                    match self.audio.load_spotify(&source_id, &account) {
+                        Ok(()) => {
+                            self.playback_error = None;
+                            self.audio.seek_ms(self.pb.position_ms);
+                            if self.pb.playing {
+                                self.audio.play();
+                            }
+                        }
+                        Err(error) => {
+                            self.playback_error = Some(error.clone());
+                            self.pb.playing = false;
+                            self.fail_resource_stream(
+                                "music.spotify_audio_unavailable",
+                                &error,
+                                None,
+                                true,
+                            );
+                        }
+                    }
                 }
                 StreamUpdate::Resolved {
                     track_id,
@@ -3968,6 +4093,7 @@ impl MusicApp {
             "album-page" => self.snap_album_page(),
             "error" => self.snap_error_page(),
             "membership-open" => self.snap_membership_open(),
+            "spotify-home" | "spotify-devices" | "spotify-error" => self.snap_spotify(scenario),
             _ => {}
         }
     }
@@ -4528,6 +4654,22 @@ impl MusicApp {
         );
         self.push_menu("Play next", Action::PlayNext(track.clone()));
         self.push_menu("Add to queue", Action::AddToQueue(track.clone()));
+        if track.starts_with("spotify:track:") {
+            self.push_menu(
+                ui::i18n!("music-spotify-save"),
+                Action::SpotifyLibrary {
+                    track: track.clone(),
+                    save: true,
+                },
+            );
+            self.push_menu(
+                ui::i18n!("music-spotify-unsave"),
+                Action::SpotifyLibrary {
+                    track: track.clone(),
+                    save: false,
+                },
+            );
+        }
         if self.lib.tracks.contains_key(&track) {
             self.context.push(MenuItem::separator());
             self.menu_actions.push(Action::Back); // separator placeholder, never fired
@@ -5115,6 +5257,7 @@ pub(crate) fn image_fetcher() -> ui::Fetcher {
 
 mod local_files;
 mod render;
+mod spotify;
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]

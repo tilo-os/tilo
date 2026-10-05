@@ -15,7 +15,9 @@ impl Sources {
         Self {
             youtube,
             spotify: spotify::SpotifyBackend::new().ok(),
-            selected: AtomicBool::new(false),
+            selected: AtomicBool::new(
+                !cfg!(test) && crate::storage::load_device_profile().spotify_catalogue,
+            ),
         }
     }
     fn selected(&self) -> &dyn MusicBackend {
@@ -38,6 +40,15 @@ impl Sources {
     }
 }
 impl MusicBackend for Sources {
+    fn spotify_operation(
+        &self,
+        operation: &super::SpotifyOperation,
+    ) -> Result<super::SpotifyReply, BackendError> {
+        self.spotify
+            .as_ref()
+            .ok_or_else(|| BackendError("Spotify unavailable".into()))?
+            .operation(operation)
+    }
     fn name(&self) -> &str {
         self.selected().name()
     }
@@ -65,6 +76,17 @@ impl MusicBackend for Sources {
             .disconnect()?;
         self.selected.store(false, Ordering::Relaxed);
         Ok(())
+    }
+    fn spotify_playback(&self, sign_in: bool) -> Result<String, BackendError> {
+        let account = self
+            .spotify
+            .as_ref()
+            .ok_or_else(|| BackendError("Spotify unavailable".into()))?
+            .playback_account(sign_in)?;
+        if sign_in {
+            self.selected.store(true, Ordering::Relaxed);
+        }
+        Ok(account)
     }
     fn search_tracks(&self, query: &str) -> SearchOutcome {
         self.selected().search_tracks(query)

@@ -323,10 +323,46 @@ impl std::error::Error for BackendError {}
 pub type SearchOutcome = Result<Vec<TrackHit>, BackendError>;
 pub type ResolveOutcome = Result<ResolvedStream, BackendError>;
 
+/// Device-local Spotify work; remote player state never claims local PCM.
+#[derive(Clone, Debug)]
+pub enum SpotifyOperation {
+    Devices,
+    Transfer { device: String },
+    RemotePlay { device: String, track: String },
+    RemotePause { device: String },
+    Save { uri: String, saved: bool },
+    RenamePlaylist { playlist: String, name: String },
+    PlaylistAdd { playlist: String, track: String },
+    PlaylistRemove { playlist: String, track: String },
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SpotifyDevice {
+    pub id: String,
+    pub name: String,
+    pub active: bool,
+    pub restricted: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SpotifyReply {
+    pub devices: Vec<SpotifyDevice>,
+    pub state: serde_json::Value,
+}
+
 /// The data-source seam. One trait, two worlds (offline sample / live
 /// rustypipe). Implementations are `Send + Sync` because the live backend is
 /// driven from the [`crate::stream`] worker thread.
 pub trait MusicBackend: Send + Sync {
+    /// Execute a Spotify API operation, reporting only confirmed provider state.
+    /// # Errors
+    /// Source unavailable, missing scopes, restricted device or unconfirmed state.
+    fn spotify_operation(
+        &self,
+        _operation: &SpotifyOperation,
+    ) -> Result<SpotifyReply, BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
     /// Human name for the status log / toast ("offline (bundled library)",
     /// "youtube-music (live)").
     fn name(&self) -> &str;
@@ -337,6 +373,15 @@ pub trait MusicBackend: Send + Sync {
     /// Source unavailable, sign-in failed or account inaccessible.
     fn select_source(&self, _spotify: bool, _sign_in: bool) -> Result<(), BackendError> {
         Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
+    /// Validate Premium entitlement and the separate native playback grant.
+    /// # Errors
+    /// Unavailable support, missing sign-in, Free account or rejected grant.
+    fn spotify_playback(&self, _sign_in: bool) -> Result<String, BackendError> {
+        Err(BackendError(
+            "Native Spotify playback is unavailable in this build".into(),
+        ))
     }
 
     /// Forget Spotify authorization on this device.
