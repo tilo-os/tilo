@@ -310,8 +310,10 @@ def verify_package(out, architecture, source, sequence, trusted_key):
             and manifest['package']['version'] == proof['package_version']
             and manifest['package']['provides'] == expected['runtime']
             and manifest['package']['kind'] == 'runtime'
-            and manifest['package']['isa'] == {architecture: 'v3' if architecture == 'x86_64' else 'aarch64'},
-            'produced tapp identity, version, runtime or architecture differs')
+            and manifest['package']['isa'] == {architecture: 'v3' if architecture == 'x86_64' else 'armv8-a'},
+            'produced tapp identity, version, runtime or architecture differs: '
+            + json.dumps({key: manifest['package'].get(key)
+                          for key in ('id', 'version', 'provides', 'kind', 'isa')}, sort_keys=True))
 
 
 def main():
