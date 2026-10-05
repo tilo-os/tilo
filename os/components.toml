@@ -549,6 +549,20 @@ files = [
   { link = "../libexec/tilo-device-admin", to = "/usr/bin/tilo-device-admin" },
 ]
 
+# The host CLI, so a Tilo dev machine is a developer's machine too: it drives
+# other devices over SSH, or beyond the LAN through tilo-device-admin beside
+# it (os/dev/test-device-admin-reach.sh drives a device that way).
+[[component]]
+name = "vm-cli"
+kind = "userspace"
+scope = "session"
+packages = ["tilo-vm"]
+bins = ["tilo-vm"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-vm", to = "/usr/bin/tilo-vm", mode = "0755" },
+]
+
 # A signed app registry on loopback offering newer versions of an installed
 # app, for os/tests/booted_app_update.sh: the system image's apps update and
 # roll back through `app` like any other.
