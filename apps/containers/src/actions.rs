@@ -72,7 +72,7 @@ mod tests {
         host.with_surface::<ContainersApp, _>(ContainersApp::stage_sample_engine)
             .unwrap();
         host.settle();
-        let heads = host.harness().state_mut().doc.get_heads();
+        let heads = host.peer_document().get_heads();
         let expected = host
             .with_widget::<ContainersApp, _>(|app| app.engine.containers[0].id.clone())
             .unwrap();
@@ -102,11 +102,13 @@ mod tests {
             );
         })
         .unwrap();
-        let doc = &mut host.harness().state_mut().doc;
+        // The hosted resource owns its canonical record; the frame harness's
+        // outer document is not the container draft.
+        let mut doc = host.peer_document();
         assert_eq!(doc.get_heads(), heads, "nothing was written");
         let keys: Vec<String> = doc.keys(ROOT).collect();
         assert_eq!(keys, ["create"], "the document is the draft");
-        assert_eq!(Containers::read(doc).unwrap(), ContainersState::default());
+        assert_eq!(Containers::read(&doc).unwrap(), ContainersState::default());
     }
 
     /// The rows carry only view and effect operations; offline they are
