@@ -564,17 +564,21 @@ impl Widget for ListPane {
             (candidate.semantic_id() == target
                 && core.visible.contains(id)
                 && core.library.get(*id).is_some())
-            .then(|| candidate.clone())
+            .then_some(*id)
         });
         let Some(selected) = selected else {
             return false;
         };
         match action {
             ui::a11y::Action::Activate => {
-                core.apply(selected);
+                core.apply(Action::OpenSnippet(selected));
                 true
             }
             ui::a11y::Action::Focus => {
+                // Like directional list focus, select and reveal the row while
+                // keeping the overview in front on a narrow window.
+                core.open = Some(selected);
+                core.list.reveal = true;
                 core.list.focused = true;
                 true
             }
