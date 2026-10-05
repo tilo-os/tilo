@@ -172,7 +172,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -295,7 +295,7 @@ impl App {
                 &encoded.type_id,
                 &encoded.payload,
             ),
-            &mut self.state.doc,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         )?;
         if result.is_none() {
@@ -450,7 +450,7 @@ impl App {
     pub(super) fn build_history_presentation(&mut self) {
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
             self.layout.taffy = taffy::TaffyTree::new();
-            dialog.sync(&mut self.state.doc, &self.state.root);
+            dialog.sync(&self.state.doc, &self.state.root);
             let root = dialog.build_layout(
                 &mut self.layout.taffy,
                 &self.theme,
@@ -546,7 +546,7 @@ impl App {
 
         let _ = self.history_local_resources();
         self.document_history
-            .sync(&mut self.state.doc, &self.state.root);
+            .sync(&self.state.doc, &self.state.root);
         let layout = self.document_history.build_layout(
             app,
             &mut self.layout.taffy,
@@ -658,7 +658,7 @@ impl App {
                             &mut crate::widget::EventCtx {
                                 scale_factor: scale,
                                 modifiers: &self.input.modifiers,
-                                state: doc,
+                                state: crate::widget::Edits::lend(doc),
                                 path,
                                 handled,
                                 focus_target: focus,
@@ -679,7 +679,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -697,7 +697,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -719,7 +719,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -738,7 +738,7 @@ impl App {
                 &mut crate::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: &mut self.state.doc,
+                    state: crate::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled,
                     focus_target: focus,
@@ -1130,7 +1130,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("login", "Log in", None)),
+                Box::new(crate::widget::Button::new("login", "Log in")),
             )
             .without_native_document_chrome();
             // Exercise the same preparation used before the live event loop.
@@ -1159,7 +1159,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("document", "Document", None)),
+                Box::new(crate::widget::Button::new("document", "Document")),
             );
             app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
             app.init_layout();
@@ -1181,7 +1181,7 @@ mod tests {
         ] {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("document", "Document", None)),
+                Box::new(crate::widget::Button::new("document", "Document")),
             );
             app.prepare_native_presentation(chrome);
             app.init_layout();
@@ -1222,7 +1222,6 @@ mod tests {
                 Box::new(crate::widget::Button::new(
                     "document-control",
                     "Document control",
-                    None,
                 )),
             );
             app.state.doc.put(ROOT, "title", "before").unwrap();
@@ -1304,7 +1303,6 @@ mod tests {
                 Box::new(crate::widget::Button::new(
                     "private-app-control",
                     "Private app control",
-                    None,
                 )),
             );
             app.state.doc.put(ROOT, "title", "history").unwrap();
@@ -1353,7 +1351,7 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new("content", "Content", None)),
+                Box::new(crate::widget::Button::new("content", "Content")),
             );
             app.state.doc.put(ROOT, "title", "private").unwrap();
             app.state.commit_action(None, None);
@@ -1434,7 +1432,7 @@ mod tests {
         let (state, writer) = crate::persist::open_in(store, "so.tilo.history-restore").unwrap();
         let mut app = App::new_with_controlled_inputs(
             state,
-            Box::new(crate::widget::Button::new("document", "Document", None)),
+            Box::new(crate::widget::Button::new("document", "Document")),
         )
         .with_autosave(writer);
         app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
@@ -1536,7 +1534,7 @@ mod tests {
     fn native_history_restore_requires_write() {
         let mut app = App::new_with_controlled_inputs(
             crate::State::new(),
-            Box::new(crate::widget::Button::new("document", "Document", None)),
+            Box::new(crate::widget::Button::new("document", "Document")),
         );
         app.state.doc.put(ROOT, "title", "v1").unwrap();
         app.state.commit_action(None, None);
@@ -1578,11 +1576,10 @@ mod tests {
         {
             let mut app = App::new_with_controlled_inputs(
                 crate::State::new(),
-                Box::new(crate::widget::Button::new(
-                    "app-write",
-                    "Write",
-                    Some("pressed"),
-                )),
+                Box::new(
+                    crate::widget::Button::new("app-write", "Write")
+                        .on_click(crate::testing::record_click("pressed")),
+                ),
             );
             app.state.doc.put(ROOT, "title", "committed").unwrap();
             app.state.commit_action(None, None);
@@ -1677,7 +1674,11 @@ mod tests {
             );
             let handled = moved
                 .dispatch_node(toolbar, |widget, document, path| {
-                    widget.perform_action(&crate::a11y::Action::Activate, document, path)
+                    widget.perform_action(
+                        &crate::a11y::Action::Activate,
+                        &mut crate::widget::Edits::lend(document),
+                        path,
+                    )
                 })
                 .unwrap();
             assert!(handled);

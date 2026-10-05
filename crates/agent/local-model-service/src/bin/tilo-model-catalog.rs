@@ -290,8 +290,8 @@ fn compile(
         return Err(format!("unsupported source schema {}", source.schema));
     }
     validate_identifier("key id", &source.key_id)?;
-    if source.runtimes.is_empty() || source.models.is_empty() {
-        return Err("catalog needs at least one runtime and model".into());
+    if source.models.is_empty() {
+        return Err("catalog needs at least one model".into());
     }
     source
         .runtimes
@@ -425,9 +425,11 @@ fn compile(
             .map_err(|error| format!("invalid model {}: {error}", release.id))?;
         models.push(release);
     }
-    if !models
-        .iter()
-        .any(|model| model.id == source.recommendation && !model.runs_in_process())
+    let has_served_models = models.iter().any(|model| !model.runs_in_process());
+    if (has_served_models || !source.recommendation.is_empty())
+        && !models
+            .iter()
+            .any(|model| model.id == source.recommendation && !model.runs_in_process())
     {
         return Err("recommended model is not a runtime-served model in this catalog".into());
     }
@@ -761,6 +763,39 @@ mod tests {
             face_recognition: false,
             segmentation: true,
         }
+    }
+
+    #[test]
+    fn in_process_only_catalog_compiles_without_chat_recommendation() {
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let temp = tempfile::tempdir().unwrap();
+        let mut catalog = source(temp.path());
+        catalog.models = vec![in_process_source(temp.path())];
+        catalog.runtimes.clear();
+        catalog.recommendation.clear();
+        let (signed, trust) = compile(catalog.clone(), temp.path(), &key).unwrap();
+        assert_eq!(signed.payload.models.len(), 1);
+        assert!(signed.payload.runtimes.is_empty());
+        assert!(signed.payload.recommendation.is_empty());
+        let public = hex::decode(&trust.keys["test-release-1"]).unwrap();
+        let verifying =
+            ed25519_dalek::VerifyingKey::from_bytes(&public.try_into().unwrap()).unwrap();
+        verifying
+            .verify(
+                &catalog_signing_bytes(&signed.payload).unwrap(),
+                &Signature::from_slice(&signed.signature).unwrap(),
+            )
+            .unwrap();
+
+        catalog.recommendation = "example-subject".into();
+        assert!(
+            compile(catalog, temp.path(), &key)
+                .unwrap_err()
+                .contains("runtime-served")
+        );
+        let mut served = source(temp.path());
+        served.runtimes.clear();
+        assert!(compile(served, temp.path(), &key).is_err());
     }
 
     /// An ONNX model compiles with no runtime and no context window, but

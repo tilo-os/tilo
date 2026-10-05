@@ -187,7 +187,6 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                         .push(Box::new(Button::new(
                             leak_label(&format!("dash_btn_{row_idx}")),
                             leak_label(&format!("dash_btnlbl_{row_idx}")),
-                            None,
                         ))),
                 ));
             }
@@ -982,7 +981,7 @@ fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEven
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: tilo_ui::widget::Edits::lend(doc),
             path: &automerge::ObjId::Root,
             handled: &mut handled,
             focus_target: &mut focus_target,

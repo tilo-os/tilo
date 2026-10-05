@@ -1161,7 +1161,7 @@ impl PdfApp {
         // tokens, then centred as one group, so the title never runs into
         // the detail line and the label never outgrows its button at 200 %.
         let sp = &theme.tokens.spacing;
-        let (title, sub, sub_color) = if self.pending_open.is_some() {
+        let (title, sub, sub_color) = if self.opening() {
             (
                 "Opening PDF…",
                 "Reading the selected document.",
@@ -1285,7 +1285,7 @@ impl PdfApp {
         y += f64::from(sh) + gap_btn;
 
         let btn = Rect::new(cx - btn_w / 2.0, y, cx + btn_w / 2.0, y + btn_h);
-        if self.pending_open.is_some() {
+        if self.opening() {
             // Opening is a singular, passive state.  Do not render a second
             // open affordance (or a duplicate toast) while the worker owns the
             // request; the quiet progress rail is enough feedback. Nothing to
@@ -2015,7 +2015,7 @@ impl PdfApp {
         lay: &ToolbarLayout,
     ) {
         // Open a document (folder button), left-most after the page-rail toggle.
-        let can_open = self.pending_open.is_none();
+        let can_open = !self.opening();
         Self::icon_button_bg(
             scene,
             base,
@@ -2928,17 +2928,18 @@ impl PdfApp {
         out: &mut SidebarHits,
     ) {
         let c = &theme.tokens.colors;
+        let author = self.author_name(&cm.author);
         draw_avatar(
             scene,
             base,
             tr,
             theme,
-            &cm.author,
+            &author,
             hdr.avatar_c,
             hdr.avatar_radius,
         );
         let name = tr.elide_to_width_weighted(
-            &cm.author,
+            &author,
             self.type_px.sm,
             hdr.name_max,
             TextWeight::Semibold,
@@ -3141,7 +3142,7 @@ impl PdfApp {
             );
             tr.draw_text_weighted(
                 scene,
-                &r.author,
+                &self.author_name(&r.author),
                 10.0,
                 theme.text_dim,
                 base * Affine::translate((card.x0 + 24.0 * s, yy)),

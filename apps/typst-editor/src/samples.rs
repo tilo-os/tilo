@@ -1,5 +1,4 @@
-//! Bundled Typst documents shown when the editor first opens and cycled
-//! through by the toolbar's document switcher. Each one is valid Typst 0.14
+//! Bundled Typst documents for captures and tests. Each one is valid Typst 0.14
 //! and is deliberately kept simple so it always compiles cleanly — they double
 //! as the `--shots` fixture and as a feature tour of the highlighter.
 

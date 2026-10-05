@@ -211,37 +211,52 @@ pub fn default_target(
     }
 }
 
-/// The most recently used environment, kept per device in the app's data
-/// directory. Device-local on purpose: which environment you last opened here
-/// says nothing about the next device.
+/// The most recently used environment, a device-local setting of the
+/// app's: which environment you last opened here says nothing about the next
+/// device, and nothing about it reaches a collaborator.
 #[derive(Clone, Debug)]
 pub struct RecentTarget {
-    path: Option<std::path::PathBuf>,
+    settings: Option<ui::storage::Settings<RecentTargetSetting>>,
 }
 
+/// What [`RecentTarget`] keeps: the target, encoded as a request carries it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecentTargetSetting {
+    #[serde(default)]
+    pub target: Option<String>,
+}
+
+impl ui::storage::SettingsSchema for RecentTargetSetting {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+/// The app id the setting is kept under.
+const TERMINAL_APP_ID: &str = "so.tilo.terminal";
+
 impl RecentTarget {
-    /// The store under the per-user data directory.
+    /// The app's settings in the document its host keeps.
     pub fn discover() -> Self {
         Self {
-            path: xdg_paths::data_dir().map(|dir| dir.join("tilo/terminal/recent-target.json")),
+            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID)),
         }
     }
 
-    /// A store at `path`; tests use a scratch directory.
+    /// The setting in the settings document at `path`; tests use a scratch
+    /// profile's.
     pub fn at(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
-            path: Some(path.into()),
+            settings: Some(ui::storage::Settings::for_app(TERMINAL_APP_ID).in_file(path)),
         }
     }
 
     /// No store: nothing is remembered.
     pub fn none() -> Self {
-        Self { path: None }
+        Self { settings: None }
     }
 
     pub fn load(&self) -> Option<SessionTarget> {
-        let raw = std::fs::read_to_string(self.path.as_ref()?).ok()?;
-        SessionTarget::decode(raw.trim())
+        let stored = self.settings.as_ref()?.get().target?;
+        SessionTarget::decode(stored.trim())
     }
 
     /// Remember `target` if it is an environment; the device's own shell and
@@ -250,19 +265,45 @@ impl RecentTarget {
         if !matches!(target, SessionTarget::Environment { .. }) {
             return;
         }
-        let Some(path) = self.path.as_ref() else {
+        let Some(settings) = self.settings.as_ref() else {
             return;
         };
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Err(error) = settings.set(&RecentTargetSetting {
+            target: Some(target.encode()),
+        }) {
+            tracing::warn!(%error, "terminal: the recent environment could not be kept");
         }
-        let _ = std::fs::write(path, target.encode());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_recent_environment_is_a_device_local_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("settings.json");
+        let recent = RecentTarget::at(&file);
+        recent.remember(&SessionTarget::Host);
+        assert_eq!(
+            recent.load(),
+            None,
+            "the device's own shell is never remembered"
+        );
+        recent.remember(&SessionTarget::environment("work"));
+        assert_eq!(recent.load(), Some(SessionTarget::environment("work")));
+        let stored: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(
+            stored["app_device_local"][TERMINAL_APP_ID]["target"].is_string(),
+            "{stored}"
+        );
+        assert!(
+            stored.get("app_personal").is_none(),
+            "it never roams to the person's other devices"
+        );
+    }
 
     #[test]
     fn a_target_round_trips_and_rejects_what_a_request_may_not_carry() {

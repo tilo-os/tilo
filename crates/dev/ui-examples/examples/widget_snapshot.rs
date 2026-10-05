@@ -62,7 +62,7 @@ fn stamp(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     theme: &Theme,
-    state: &mut AutoCommit,
+    state: &AutoCommit,
     widget: &mut dyn Widget,
     origin: Point,
     size: (f32, f32),

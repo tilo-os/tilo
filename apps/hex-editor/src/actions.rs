@@ -10,10 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use ui::tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionSpec, ChangeKind,
-    OperationKind, ParamType,
-};
+use ui::tilo_actions::{Action, ActionArgs, ActionError, ActionParam, ChangeKind, ParamType};
 // `#[derive(Effect)]` names the crate as `tilo_resource`.
 use ui::tilo_resource;
 use ui::tilo_resource::{ActionDecl, Doc, Effect};
@@ -23,8 +20,6 @@ use crate::resource::HexEditor;
 
 /// Registry `type_id` for every hex-editor action.
 pub const HEX_EDITOR_ACTION_TYPE: &str = "hex_editor.action";
-/// Operation type of the editor's views (search, go to offset).
-pub const HEX_EDITOR_VIEW_TYPE: &str = "hex_editor.view";
 
 /// One change to the buffer. Every keystroke that changes the bytes reduces
 /// to an insert, delete or overwrite at a concrete offset; opening a file
@@ -291,7 +286,7 @@ pub(crate) fn cursor_declarations(
 
 /// Work outside the buffer: reading a file into it and writing it out.
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "hex_editor.effects")]
+#[effect(operation = "hex_editor.effects", device_only)]
 pub enum HexEffect {
     /// Open a file.
     #[effect(job, cancellable, label = "Open file")]
@@ -308,50 +303,25 @@ pub enum HexEffect {
         #[param("save destination")]
         path: String,
     },
+    /// Show the byte search bar.
+    #[effect(view, idempotent, label = "Search bytes")]
+    Search,
+    /// Show the go-to-offset prompt.
+    #[effect(view, idempotent, label = "Go to offset")]
+    GotoOffset,
 }
 
 /// A view of the editor a caller opens: the search bar, the go-to prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HexPanel {
     Search,
     GotoOffset,
 }
 
-/// The editor's views, published beside the resource's actions.
-#[allow(
-    clippy::expect_used,
-    reason = "a unit enum always serializes; the spec builder has no error path"
-)]
-pub(crate) fn view_operations() -> Vec<ActionSpec> {
-    [
-        ("search", "Search bytes", HexPanel::Search),
-        ("goto-offset", "Go to offset", HexPanel::GotoOffset),
-    ]
-    .into_iter()
-    .map(|(id, label, view)| {
-        ActionSpec::operation(id, label, OperationKind::View, HEX_EDITOR_VIEW_TYPE, &view)
-            .expect("a hex view always serializes")
-            .with_contract(ActionContract::view())
-    })
-    .collect()
-}
-
-/// The view an operation of [`HEX_EDITOR_VIEW_TYPE`] opens.
-///
-/// # Errors
-/// Returns the decoder's error for a malformed payload.
-pub fn decode_view(type_id: &str, payload: &[u8]) -> Result<Option<HexPanel>, String> {
-    if type_id != HEX_EDITOR_VIEW_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::tilo_actions::OperationKind;
 
     #[test]
     fn bytes_travel_as_hexadecimal_text_and_parse_as_people_write_them() {
@@ -419,9 +389,12 @@ mod tests {
     fn effects_and_views_are_published_with_their_contracts() {
         let specs = HexEffect::specs();
         let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        assert_eq!(ids, ["open", "save", "save-as"]);
-        for spec in &specs {
+        assert_eq!(ids, ["open", "save", "save-as", "search", "goto-offset"]);
+        for spec in &specs[..3] {
             assert_eq!(spec.kind, OperationKind::Effect);
+        }
+        for spec in &specs[3..] {
+            assert_eq!(spec.kind, OperationKind::View);
         }
         assert!(!specs[0].params()[0].required, "open may use the picker");
         assert!(specs[1].params().is_empty());
@@ -440,19 +413,5 @@ mod tests {
             ),
             "replacing another file is confirmed"
         );
-        let views = view_operations();
-        assert_eq!(
-            views
-                .iter()
-                .map(|spec| spec.id.as_str())
-                .collect::<Vec<_>>(),
-            ["search", "goto-offset"]
-        );
-        let payload = serde_json::to_vec(&HexPanel::GotoOffset).unwrap();
-        assert_eq!(
-            decode_view(HEX_EDITOR_VIEW_TYPE, &payload).unwrap(),
-            Some(HexPanel::GotoOffset)
-        );
-        assert_eq!(decode_view("other", &payload).unwrap(), None);
     }
 }

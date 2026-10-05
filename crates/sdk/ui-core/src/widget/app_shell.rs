@@ -211,7 +211,7 @@ impl AppShell {
     )]
     fn back_button(id: &str, name: &str, requested: &Rc<Cell<bool>>, side: f64) -> Button {
         let requested = Rc::clone(requested);
-        Button::new(id, "", None)
+        Button::new(id, "")
             .with_icon(crate::icons::Icon::ArrowLeft)
             .with_accessible_name(name)
             .with_size(side as f32, side as f32)
@@ -690,7 +690,7 @@ fn paint_child(
 }
 
 impl Widget for AppShell {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.back_requested.replace(false) {
             self.back();
         }
@@ -1433,7 +1433,7 @@ mod tests {
 
             screen.set(NarrowScreen::Content);
             let mut document = AutoCommit::new();
-            shell.sync(&mut document, &automerge::ROOT);
+            shell.sync(&document, &automerge::ROOT);
             assert!(shell.take_structure_dirty());
             lay(&mut shell, 460.0, 820.0);
 
@@ -1443,7 +1443,7 @@ mod tests {
             assert_eq!(back.name.as_deref(), Some("Go back"));
             assert!(shell.back.perform_action(
                 &crate::a11y::Action::Activate,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             dispatch_view_actions(&mut shell, &mut document);
@@ -1587,7 +1587,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled,
                 focus_target: &mut focus,
@@ -1621,7 +1621,7 @@ mod tests {
                         &encoded.type_id,
                         &encoded.payload
                     ),
-                    doc,
+                    &mut crate::widget::Edits::lend(doc),
                     &automerge::ROOT
                 )
                 .expect("Back view action succeeds")

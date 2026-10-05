@@ -7,7 +7,9 @@
 //! file path; the network engines show host/port/db/user. It is a focused
 //! form widget that paints over a scrim.
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
@@ -81,7 +83,7 @@ struct EditorEvent<'a> {
     event: &'a WindowEvent,
     scale_factor: f64,
     modifiers: Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     root: &'a ObjId,
     node_id: NodeId,
     taffy: &'a TaffyTree<()>,
@@ -365,7 +367,7 @@ impl ConnectModal {
             event,
             scale_factor: ctx.scale_factor,
             modifiers: *ctx.modifiers,
-            state: &mut *ctx.state,
+            state: ctx.state.reborrow(),
             root: ctx.path,
             node_id: ctx.node_id,
             taffy: ctx.taffy,
@@ -469,7 +471,7 @@ impl ConnectModal {
             &mut EventCtx {
                 scale_factor: event.scale_factor,
                 modifiers: &event.modifiers,
-                state: event.state,
+                state: event.state.reborrow(),
                 path: event.root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -829,7 +831,7 @@ mod tests {
             &mut EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

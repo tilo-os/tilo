@@ -56,7 +56,13 @@ impl Driver {
     }
     fn send(&mut self, fb: &mut FrameBuilder, ev: &WindowEvent) {
         let mods = Modifiers::default();
-        fb.dispatch_event(ev, &mods, &mut self.doc, &ROOT, &mut self.focus);
+        fb.dispatch_event(
+            ev,
+            &mods,
+            &mut ui::widget::Edits::lend(&mut self.doc),
+            &ROOT,
+            &mut self.focus,
+        );
     }
     fn cursor(&mut self, fb: &mut FrameBuilder, p: Point) {
         self.send(

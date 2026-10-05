@@ -125,7 +125,7 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
-    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send")));
     let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
     history.set_width(900.0);
     assert!(history.request_open());
@@ -166,7 +166,7 @@ fn replacing_admitted_history_controls_reports_structure_dirty() {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "existing document").unwrap();
     state.commit_action(None, None);
-    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send")));
     let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
     history.set_width(900.0);
     let build = |history: &mut host::HistoryHost, live: &mut Column| {
@@ -213,7 +213,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
         let effects = Rc::new(Cell::new(0));
         let probe = effects.clone();
         let root = Column::new().push(Box::new(
-            Button::new("live-effect", "Send", None).on_click(move || probe.set(probe.get() + 1)),
+            Button::new("live-effect", "Send").on_click(move || probe.set(probe.get() + 1)),
         ));
         let mut state = State::new();
         state.doc.put(ROOT, "body", "first").unwrap();
@@ -282,14 +282,7 @@ fn every_input_enters_the_same_history_canvas_without_live_effects() {
                 .unwrap()
                 .contains("Notebook: first")
         );
-        assert!(
-            driver
-                .state_mut()
-                .doc
-                .get(ROOT, "effect")
-                .unwrap()
-                .is_none()
-        );
+        assert_eq!(crate::testing::clicks("effect"), 0);
         driver.click_named("history-back-live").unwrap();
         assert!(driver.targets().contains_key("live-effect"));
         assert!(!driver.targets().contains_key("history-preview"));
@@ -683,7 +676,9 @@ fn versioned_driver(viewport: (u32, u32)) -> (Driver, String, Vec<automerge::Cha
     state.doc.put(ROOT, "body", "second").unwrap();
     state.commit_action(None, None);
     let before = state.doc.get_heads();
-    let root = Column::new().push(Box::new(Button::new("live-effect", "Send", Some("effect"))));
+    let root = Column::new().push(Box::new(
+        Button::new("live-effect", "Send").on_click(crate::testing::record_click("effect")),
+    ));
     let driver = Driver::from_managed_root(
         state,
         ManagedRoot::new(Box::new(root), registration()),
@@ -830,9 +825,7 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
                 "timeline-entry:{}",
                 crate::widget::history_group::hex16(&id)
             );
-            let root = Column::new().push(Box::new(
-                TextInput::from_document_string("draft").with_id("draft-editor"),
-            ));
+            let root = Column::new().push(Box::new(TextInput::local().with_id("draft-editor")));
             let mut driver = Driver::from_managed_root(
                 state,
                 ManagedRoot::new(Box::new(root), registration()),
@@ -969,12 +962,8 @@ fn history_preserves_pending_work_and_restores_exactly_one_focus() {
         use crate::widget::TextInput;
         for route in ["tab", "shift-tab", "pointer"] {
             let root = Column::new()
-                .push(Box::new(
-                    TextInput::from_document_string("first").with_id("first-editor"),
-                ))
-                .push(Box::new(
-                    TextInput::from_document_string("second").with_id("second-editor"),
-                ));
+                .push(Box::new(TextInput::local().with_id("first-editor")))
+                .push(Box::new(TextInput::local().with_id("second-editor")));
             let mut driver = Driver::from_managed_root(
                 State::new(),
                 ManagedRoot::new(Box::new(root), registration()),
@@ -1130,7 +1119,6 @@ fn the_history_timeline_explains_scopes_and_announces_live_updates() {
             let live = Column::new().push(Box::new(Button::new(
                 "external-live-marker",
                 "Retained live session",
-                None,
             )));
             let mut driver = Driver::from_managed_root(
                 State::new(),
@@ -1305,7 +1293,7 @@ impl Widget for LazyOwnerRoot {
     fn get_rect(&self) -> Rect {
         self.child.get_rect()
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         if !self.during_layout {
             self.mount_owner();
         } else if self.mount.get() && !self.mounted {
@@ -1453,7 +1441,6 @@ fn checked_files_activity_keeps_the_wide_live_surface() {
         inner: Box::new(Column::new().push(Box::new(Button::new(
             "checked-live-marker",
             "Retained checked file",
-            None,
         )))),
         source,
     };

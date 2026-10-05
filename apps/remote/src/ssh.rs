@@ -11,7 +11,6 @@
 //! failure the shared [`SessionStatus`] carries the honest error — the UI
 //! never falls back to a fabricated terminal.
 
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -56,7 +55,7 @@ pub struct SshConfig {
     pub cols: u16,
     pub rows: u16,
     /// Device-private trust database; never part of a shared Remote profile.
-    pub known_hosts_path: PathBuf,
+    pub known_hosts: KnownHostStore,
 }
 
 /// The public identity that a person compares out-of-band before trusting an
@@ -109,94 +108,59 @@ struct KnownHosts {
     entries: Vec<KnownHostEntry>,
 }
 
-fn load_known_hosts(path: &Path) -> Result<KnownHosts, String> {
-    validate_private_store_path(path)?;
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(KnownHosts::default()),
-        Err(error) => Err(error.to_string()),
+/// The setting the trust database is kept in: this device's own, never
+/// synced to the person's other devices and never part of a shared Remote
+/// profile. Held as raw JSON so a corrupt database is refused rather than
+/// read as empty.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct KnownHostsSetting {
+    #[serde(default)]
+    entries: serde_json::Value,
+}
+
+impl ui::storage::SettingsSchema for KnownHostsSetting {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::DeviceLocal;
+}
+
+/// This device's SSH host-key trust: a device-local setting of the app.
+#[derive(Clone, Debug)]
+pub struct KnownHostStore {
+    settings: ui::storage::Settings<KnownHostsSetting>,
+}
+
+impl KnownHostStore {
+    /// The trust database in the app's settings in the document its host
+    /// gave it.
+    #[must_use]
+    pub fn in_settings(settings: ui::storage::Settings<KnownHostsSetting>) -> Self {
+        Self { settings }
     }
-}
 
-fn write_known_hosts(path: &Path, known_hosts: &KnownHosts) -> Result<(), String> {
-    validate_private_store_path(path)?;
-    let bytes = serde_json::to_vec_pretty(known_hosts).map_err(|error| error.to_string())?;
-    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
-        .map_err(|error| error.to_string())?;
-    validate_private_store_path(path)
-}
-
-/// Per-device default location for host trust, intentionally outside the
-/// collaborative document. Tests and managed deployments can override it.
-///
-/// # Errors
-///
-/// Returns an error when no private state root exists or when the configured
-/// store path is not a private, non-symlinked directory/file pair.
-pub fn default_known_hosts_path() -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("REMOTE_SSH_KNOWN_HOSTS") {
-        let path = PathBuf::from(path);
-        validate_private_store_path(&path)?;
-        return Ok(path);
+    /// The trust database in the session's settings.
+    #[must_use]
+    pub fn of_session() -> Self {
+        Self::in_settings(ui::storage::Settings::for_app(
+            crate::resource::REMOTE_APP_ID,
+        ))
     }
-    let state = tilo_paths::xdg::state_home()
-        .ok_or_else(|| "no private state directory is available for SSH host trust".to_string())?;
-    let directory = state.join("tilo").join("remote");
-    ensure_private_directory(&directory)?;
-    let path = directory.join("known-hosts.json");
-    validate_private_store_path(&path)?;
-    Ok(path)
-}
 
-/// The trust database is an integrity boundary. A world- or group-writable
-/// parent permits an attacker to replace it; a symlinked path permits it to
-/// point elsewhere. Reject both rather than trying to repair arbitrary paths.
-fn validate_private_store_path(path: &Path) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .ok_or_else(|| "SSH host-key store has no private parent directory".to_string())?;
-    validate_private_directory(parent)?;
-    match fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-                return Err("SSH host-key store must be a regular file".into());
-            }
-            validate_private_mode(&metadata, "SSH host-key store")?;
+    fn load(&self) -> Result<KnownHosts, String> {
+        match self.settings.get().entries {
+            serde_json::Value::Null => Ok(KnownHosts::default()),
+            entries @ serde_json::Value::Array(_) => serde_json::from_value(entries)
+                .map(|entries| KnownHosts { entries })
+                .map_err(|error| format!("the SSH host-key store is unreadable: {error}")),
+            _ => Err("the SSH host-key store is unreadable".into()),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.to_string()),
     }
-    Ok(())
-}
 
-fn ensure_private_directory(path: &Path) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => validate_private_directory(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(path).map_err(|error| error.to_string())?;
-            private_fs::restrict_directory(path).map_err(|error| error.to_string())?;
-            validate_private_directory(path)
-        }
-        Err(error) => Err(error.to_string()),
+    fn write(&self, known_hosts: &KnownHosts) -> Result<(), String> {
+        let entries =
+            serde_json::to_value(&known_hosts.entries).map_err(|error| error.to_string())?;
+        self.settings
+            .set(&KnownHostsSetting { entries })
+            .map_err(|error| error.to_string())
     }
-}
-
-fn validate_private_directory(path: &Path) -> Result<(), String> {
-    let metadata = fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
-        return Err("SSH host-key store parent must be a real directory".into());
-    }
-    validate_private_mode(&metadata, "SSH host-key store parent")
-}
-
-fn validate_private_mode(metadata: &fs::Metadata, label: &str) -> Result<(), String> {
-    if !private_fs::is_owner_only(metadata) {
-        return Err(format!(
-            "{label} must not be accessible to group or other users"
-        ));
-    }
-    Ok(())
 }
 
 /// Explicitly trust the exact fingerprint shown by a failed first-contact
@@ -207,12 +171,12 @@ fn validate_private_mode(metadata: &fs::Metadata, label: &str) -> Result<(), Str
 /// Returns an error for an insecure/corrupt trust store or when the target
 /// already has a different trusted key.
 pub fn trust_host_key(
-    path: &Path,
+    store: &KnownHostStore,
     host: &str,
     port: u16,
     observed: &HostKeyIdentity,
 ) -> Result<(), String> {
-    let mut known_hosts = load_known_hosts(path)?;
+    let mut known_hosts = store.load()?;
     if let Some(entry) = known_hosts
         .entries
         .iter()
@@ -229,7 +193,7 @@ pub fn trust_host_key(
         port,
         identity: observed.clone(),
     });
-    write_known_hosts(path, &known_hosts)
+    store.write(&known_hosts)
 }
 
 /// Explicitly forget the local trust entry. This only changes device-private
@@ -238,8 +202,8 @@ pub fn trust_host_key(
 /// # Errors
 ///
 /// Returns an error if the local trust store cannot be safely read or written.
-pub fn forget_host_key(path: &Path, host: &str, port: u16) -> Result<bool, String> {
-    let mut known_hosts = load_known_hosts(path)?;
+pub fn forget_host_key(store: &KnownHostStore, host: &str, port: u16) -> Result<bool, String> {
+    let mut known_hosts = store.load()?;
     let before = known_hosts.entries.len();
     known_hosts
         .entries
@@ -247,7 +211,7 @@ pub fn forget_host_key(path: &Path, host: &str, port: u16) -> Result<bool, Strin
     if known_hosts.entries.len() == before {
         return Ok(false);
     }
-    write_known_hosts(path, &known_hosts)?;
+    store.write(&known_hosts)?;
     Ok(true)
 }
 
@@ -461,7 +425,7 @@ fn lock_recover<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Handler {
     host: String,
     port: u16,
-    known_hosts_path: PathBuf,
+    known_hosts: KnownHostStore,
     issue: Arc<Mutex<Option<HostKeyIssue>>>,
 }
 
@@ -481,7 +445,7 @@ impl client::Handler for Handler {
         server_public_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
         let observed = host_key_identity(server_public_key);
-        let issue = match load_known_hosts(&self.known_hosts_path) {
+        let issue = match self.known_hosts.load() {
             Ok(known_hosts) => {
                 match verify_known_host(&known_hosts, &self.host, self.port, observed) {
                     Ok(()) => return Ok(true),
@@ -530,7 +494,7 @@ async fn run_session(
         Handler {
             host: cfg.host.clone(),
             port: cfg.port,
-            known_hosts_path: cfg.known_hosts_path.clone(),
+            known_hosts: cfg.known_hosts.clone(),
             issue: Arc::clone(&host_key_issue),
         },
     )
@@ -630,6 +594,7 @@ async fn run_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     /// Bounds a wait that ends as soon as its condition holds; only a hang reaches it.
     const HANG_BOUND: Duration = Duration::from_secs(30);
@@ -678,23 +643,22 @@ mod tests {
         }
     }
 
-    fn test_known_hosts_path() -> PathBuf {
-        let directory =
-            std::env::temp_dir().join(format!("tilo-remote-known-hosts-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&directory).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
-        }
-        directory.join("known-hosts.json")
+    /// A trust database in a scratch profile's settings document, and the
+    /// directory that holds it.
+    fn test_known_hosts() -> (KnownHostStore, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = KnownHostStore::in_settings(
+            ui::storage::Settings::for_app(crate::resource::REMOTE_APP_ID)
+                .in_file(directory.path().join("settings.json")),
+        );
+        (store, directory)
     }
 
     #[test]
     fn known_hosts_store_fails_closed_until_exactly_trusted() {
         eprintln!("phase device_private_known_hosts_fails_closed_until_an_exact_key_is_trusted");
         {
-            let path = test_known_hosts_path();
+            let (store, directory) = test_known_hosts();
             let first = HostKeyIdentity {
                 algorithm: "ssh-ed25519".into(),
                 fingerprint: "SHA256:first".into(),
@@ -704,7 +668,7 @@ mod tests {
                 fingerprint: "SHA256:changed".into(),
             };
 
-            let empty = load_known_hosts(&path).unwrap();
+            let empty = store.load().unwrap();
             assert!(
                 matches!(
                     verify_known_host(&empty, "host.example", 2222, first.clone()),
@@ -712,8 +676,8 @@ mod tests {
                 ),
                 "first contact must fail closed until the displayed key is explicitly trusted"
             );
-            trust_host_key(&path, "host.example", 2222, &first).unwrap();
-            let stored = load_known_hosts(&path).unwrap();
+            trust_host_key(&store, "host.example", 2222, &first).unwrap();
+            let stored = store.load().unwrap();
             assert_eq!(stored.entries[0].identity, first);
             assert!(
                 verify_known_host(&stored, "host.example", 2222, first.clone()).is_ok(),
@@ -727,42 +691,58 @@ mod tests {
                 "a changed key must fail closed"
             );
             assert!(
-                trust_host_key(&path, "host.example", 2222, &changed).is_err(),
+                trust_host_key(&store, "host.example", 2222, &changed).is_err(),
                 "a changed key cannot silently replace a pin"
             );
-            assert!(forget_host_key(&path, "host.example", 2222).unwrap());
-            assert!(!forget_host_key(&path, "host.example", 2222).unwrap());
-            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+
+            // The pin is this device's: a device-local setting, never one
+            // that roams to the person's other devices.
+            let document: serde_json::Value =
+                serde_json::from_slice(&fs::read(directory.path().join("settings.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                document["app_device_local"][crate::resource::REMOTE_APP_ID]["entries"][0]["identity"]
+                    ["fingerprint"],
+                "SHA256:first",
+                "{document}"
+            );
+            assert!(document.get("app_personal").is_none());
+
+            assert!(forget_host_key(&store, "host.example", 2222).unwrap());
+            assert!(!forget_host_key(&store, "host.example", 2222).unwrap());
         }
 
         eprintln!("phase corrupt_known_hosts_store_fails_closed");
         {
-            let path = test_known_hosts_path();
-            fs::write(&path, b"not JSON").unwrap();
+            let (store, directory) = test_known_hosts();
+            fs::write(
+                directory.path().join("settings.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "app_device_local": {
+                        crate::resource::REMOTE_APP_ID: { "entries": "not a list" }
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             assert!(
-                load_known_hosts(&path).is_err(),
+                store.load().is_err(),
                 "corrupt trust state cannot be treated as empty"
             );
-            fs::remove_dir_all(path.parent().unwrap()).unwrap();
+            assert!(
+                trust_host_key(
+                    &store,
+                    "host.example",
+                    22,
+                    &HostKeyIdentity {
+                        algorithm: "ssh-ed25519".into(),
+                        fingerprint: "SHA256:any".into(),
+                    }
+                )
+                .is_err(),
+                "nothing is trusted over a corrupt store"
+            );
         }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn known_hosts_file_is_owner_only() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = test_known_hosts_path();
-        let identity = HostKeyIdentity {
-            algorithm: "ssh-ed25519".into(),
-            fingerprint: "SHA256:private".into(),
-        };
-        trust_host_key(&path, "host.example", 22, &identity).unwrap();
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     // ---- Real round-trip against a loopback russh server ----------------
@@ -870,7 +850,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             })
             .unwrap();
 
-        let known_hosts_path = test_known_hosts_path();
+        let (known_hosts, known_hosts_directory) = test_known_hosts();
         let host_key = russh::keys::decode_secret_key(TEST_HOST_KEY, None).unwrap();
         let identity = HostKeyIdentity {
             algorithm: host_key.public_key().algorithm().as_str().to_string(),
@@ -879,8 +859,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
                 .fingerprint(HashAlg::Sha256)
                 .to_string(),
         };
-        trust_host_key(&known_hosts_path, "127.0.0.1", port, &identity).unwrap();
-        let known_hosts_directory = known_hosts_path.parent().unwrap().to_path_buf();
+        trust_host_key(&known_hosts, "127.0.0.1", port, &identity).unwrap();
 
         // Real client — a task on the app runtime, exactly as production.
         let mut ssh = SshSession::connect(SshConfig {
@@ -890,7 +869,7 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             auth: SshAuth::Password("secret".into()),
             cols: 80,
             rows: 24,
-            known_hosts_path,
+            known_hosts,
         })
         .expect("the mock ssh transport connects");
 
@@ -955,6 +934,6 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
         }
         assert!(saw_echo, "server never echoed the upstream keystroke");
         drop(ssh);
-        fs::remove_dir_all(known_hosts_directory).unwrap();
+        drop(known_hosts_directory);
     }
 }

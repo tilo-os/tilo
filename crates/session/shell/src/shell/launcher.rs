@@ -269,6 +269,44 @@ fn register_trusted_service_launch(pid: u32, identity: ServiceLaunchIdentity) {
     );
 }
 
+/// Launch records of the apps the session shows inside its own process: the
+/// app and room each is about to connect for, until its collaboration
+/// connection is attested or the record expires.
+static IN_PROCESS_LAUNCHES: Mutex<Vec<(ServiceLaunchIdentity, Instant)>> = Mutex::new(Vec::new());
+
+/// Record that the session itself is about to connect `app_id` in room
+/// `workspace_id`, as it records a process it launched.
+pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    launches.push((
+        ServiceLaunchIdentity {
+            app_id: app_id.to_owned(),
+            workspace_id: workspace_id.to_owned(),
+            allowed_compat_entry_ids: Vec::new(),
+            compat_entry_generation: 0,
+        },
+        Instant::now(),
+    ));
+}
+
+/// Spend the session's launch record for a connection from its own process
+/// naming `app_id` in room `workspace_id`.
+pub fn consume_in_process_launch(pid: u32, app_id: &str, workspace_id: &str) -> bool {
+    if pid != std::process::id() {
+        return false;
+    }
+    let mut launches = lock(&IN_PROCESS_LAUNCHES);
+    launches.retain(|(_, registered)| registered.elapsed() <= SERVICE_LAUNCH_TTL);
+    let Some(index) = launches.iter().position(|(identity, _)| {
+        identity.app_id == app_id && identity.workspace_id == workspace_id
+    }) else {
+        return false;
+    };
+    launches.remove(index);
+    true
+}
+
 /// Consume the compositor's one-shot authority record for a launcher child.
 /// Kernel process facts corroborate the record but never create authority.
 pub fn consume_trusted_service_launch_identity(
@@ -3087,6 +3125,19 @@ fn start_launch(
 
         let launcher_pid = child.id();
         let status = child.wait();
+        // Every end of an app, clean or not, with how it ended (a signal has
+        // no exit code). The session's default log passes errors only, so a
+        // clean exit would otherwise leave no trace; stderr is recorded.
+        match &status {
+            Ok(status) => eprintln!(
+                "app-exit: package={} launcher_pid={launcher_pid} status={status}",
+                app.package_id
+            ),
+            Err(error) => eprintln!(
+                "app-exit: package={} launcher_pid={launcher_pid} wait_failed={error}",
+                app.package_id
+            ),
+        }
         let tail = stderr_drain
             .and_then(|drain| drain.join().ok())
             .unwrap_or_default();
@@ -6057,7 +6108,7 @@ mod tests {
         catalog
             .select(&ResourceRef::new("desktop-windows", id))
             .unwrap_or_else(|| panic!("{id} must stay a visible action"))
-            .invoke(doc, &ROOT, chrome, [])
+            .invoke(&mut ui::widget::Edits::lend(doc), &ROOT, chrome, [])
             .unwrap_or_else(|err| panic!("{id} failed: {err}"));
     }
 

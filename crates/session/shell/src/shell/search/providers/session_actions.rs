@@ -465,7 +465,9 @@ mod tests {
                 .select(&ResourceRef::new(PROVIDER_ID, "restart"))
                 .expect("exact session action");
             assert!(
-                restart.invoke(&mut doc, &ROOT, &chrome, []).is_err(),
+                restart
+                    .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
+                    .is_err(),
                 "a destructive session action needs explicit confirmation"
             );
             assert!(
@@ -475,12 +477,17 @@ mod tests {
                     .is_empty()
             );
             restart
-                .invoke(&mut doc, &ROOT, &chrome, [confirmed()])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &ROOT,
+                    &chrome,
+                    [confirmed()],
+                )
                 .expect("confirmed restart is admitted");
             exact_catalog(&policy, &chrome, "lock")
                 .select(&ResourceRef::new(PROVIDER_ID, "lock"))
                 .expect("exact session action")
-                .invoke(&mut doc, &ROOT, &chrome, [])
+                .invoke(&mut ui::widget::Edits::lend(&mut doc), &ROOT, &chrome, [])
                 .expect("lock needs no confirmation");
             assert_eq!(
                 chrome.borrow_mut().take_session_action_requests(),
@@ -508,7 +515,12 @@ mod tests {
             let error = exact_catalog(&policy, &chrome, "switch-user")
                 .select(&ResourceRef::new(PROVIDER_ID, "switch-user"))
                 .expect("exact session action")
-                .invoke(&mut AutoCommit::new(), &ROOT, &chrome, [confirmed()])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                    &ROOT,
+                    &chrome,
+                    [confirmed()],
+                )
                 .expect_err("an inhibitor refuses the typed action like the flyout row");
             assert!(format!("{error:?}").contains("Call is sharing the screen"));
             assert!(

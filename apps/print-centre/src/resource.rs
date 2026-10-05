@@ -4,7 +4,7 @@
 //! the pages are the surface's [`PrintCentreEffect`]s.
 
 use ui::framework::{
-    Effect, EffectAnswer, EffectCx, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    Effect, EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
     RunMode, SurfaceCx, ViewCx,
 };
 use ui::prelude::*;
@@ -149,13 +149,22 @@ impl PrintDefaults {
 /// What Print Centre does on this machine: the pages it shows, and the work
 /// it asks of CUPS and SANE.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "print-centre.effects")]
+#[effect(operation = "print-centre.effects", device_only)]
 pub enum PrintCentreEffect {
     /// Refresh printers and documents.
     #[effect(permission = "read")]
     Refresh,
     /// Find network printers.
+    #[effect(job)]
     FindPrinters,
+    /// Add printer.
+    ///
+    /// Sets up a printer the last search found nearby for every app.
+    #[effect(job)]
+    AddPrinter {
+        #[param("The found printer's address")]
+        printer: String,
+    },
     /// Open dashboard.
     #[effect(view)]
     OpenDashboard,
@@ -183,6 +192,7 @@ pub enum PrintCentreEffect {
         printer: String,
     },
     /// Set as default printer.
+    #[effect(job)]
     SetDefaultPrinter {
         #[param("The printer's queue name")]
         printer: String,
@@ -190,31 +200,110 @@ pub enum PrintCentreEffect {
     /// Pause printer.
     ///
     /// Documents wait until it is resumed.
+    #[effect(job)]
     PausePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
     /// Resume printer.
+    #[effect(job)]
     ResumePrinter {
         #[param("The printer's queue name")]
         printer: String,
     },
     /// Cancel document.
+    #[effect(job)]
     CancelDocument {
         #[param("The print job's id")]
         job: String,
     },
     /// Print again.
+    #[effect(job)]
     RetryDocument {
         #[param("The print job's id")]
         job: String,
     },
+    /// Confirm cancelling.
+    ///
+    /// Shows the document in the queue, asking whether to cancel it.
+    #[effect(view, programmatic)]
+    ConfirmCancel {
+        #[param("The print job's id")]
+        job: String,
+    },
+    /// Choose printer.
+    ///
+    /// Sends the document being set up to this printer.
+    #[effect(view)]
+    ChoosePrinter {
+        #[param("The printer's queue name")]
+        printer: String,
+    },
+    /// Send to printer.
+    ///
+    /// Prints the document being set up, with its copies and sides.
+    #[effect(job)]
+    SendToPrinter,
+    /// Close print setup.
+    ///
+    /// Puts the document being set up away without printing it.
+    #[effect(view)]
+    ClosePrintSetup,
     /// Scan with a scanner.
+    ///
+    /// Opens scanning with it, keeping the pages scanned so far when
+    /// scanning is already open.
     #[effect(view)]
     ScanWith {
         #[param("The scanner's device name")]
         scanner: String,
     },
+    /// Scan page.
+    ///
+    /// Scans a page with the chosen scanner and settings and recognizes its
+    /// text.
+    #[effect(job)]
+    ScanPage,
+    /// Scan another page.
+    #[effect(view)]
+    ScanAnother,
+    /// Previous scanned page.
+    #[effect(view)]
+    PreviousScanPage,
+    /// Next scanned page.
+    #[effect(view)]
+    NextScanPage,
+    /// Move scanned page earlier.
+    MoveScanPageEarlier,
+    /// Move scanned page later.
+    MoveScanPageLater,
+    /// Remove scanned page.
+    RemoveScanPage,
+    /// Rotate scanned page.
+    ///
+    /// Turns the page under review a quarter turn clockwise.
+    RotateScanPage,
+    /// Crop scanned page.
+    ///
+    /// Keeps the part of the page under review the crop frame selects.
+    CropScanPage,
+    /// Update recognized text.
+    ///
+    /// Recognizes the text of the page under review again.
+    #[effect(job)]
+    RecognizeText,
+    /// Copy recognized text.
+    CopyRecognizedText,
+    /// Export scanned page.
+    ///
+    /// Asks where to save the page under review as an image.
+    #[effect(job)]
+    SaveScannedPage,
+    /// Save scanned document.
+    ///
+    /// Asks where to save every scanned page as one PDF with its text.
+    #[effect(job)]
+    SaveScannedDocument,
 }
 
 /// Framework app.
@@ -300,10 +389,14 @@ impl ResourceSurface<PrintDefaults, PrintCentreEffect> for PrintCentre {
     fn effect(
         &mut self,
         effect: PrintCentreEffect,
-        _cx: &mut EffectCx<PrintDefaults, Self>,
+        cx: &mut EffectCx<PrintDefaults, Self>,
     ) -> EffectAnswer {
-        self.perform(effect)?;
-        Ok(Effected::done())
+        self.perform(effect, cx)
+    }
+
+    /// The scan and print steps that have nothing to act on right now.
+    fn effects(&self) -> Vec<EffectStatus> {
+        self.effect_statuses()
     }
 
     /// The printers, documents and scanners CUPS and SANE reported.

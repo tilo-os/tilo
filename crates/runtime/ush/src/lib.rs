@@ -77,6 +77,7 @@ pub mod broker;
 pub mod fleet;
 pub mod guard;
 pub mod guest;
+pub mod helper_runtime;
 pub mod host;
 pub mod images;
 pub mod legacy_relay;

@@ -109,6 +109,17 @@ impl ActionCx {
     pub fn author(&self) -> Option<&str> {
         self.author.as_deref()
     }
+
+    /// The content store of the window applying the action, where the bytes
+    /// the record names by hash are kept: the one the host lent that window,
+    /// which carries them on the record's route. Content is not replayed —
+    /// a replica that applies the action reads the bytes through its own
+    /// window's store. `None` where no window applies it (a tool writing a
+    /// document directly).
+    #[must_use]
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        crate::content::current()
+    }
 }
 
 /// A deterministic seed for applying `payload` to `doc`: the document's

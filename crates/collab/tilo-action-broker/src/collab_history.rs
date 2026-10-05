@@ -238,6 +238,43 @@ impl CollabHistoryStore {
         self.log(artifact)?.append_all(ops)
     }
 
+    /// Remember that `artifact`'s history belongs to the room `cluster_id`,
+    /// beside its log, so a later session still knows which room's members
+    /// may page through it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the I/O error of writing the binding.
+    pub fn bind_room(&mut self, artifact: ArtifactId, cluster_id: &str) -> std::io::Result<()> {
+        let path = self.room_path(artifact);
+        if fs::read_to_string(&path).is_ok_and(|bound| bound == cluster_id) {
+            return Ok(());
+        }
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
+        file.write_all(cluster_id.as_bytes())?;
+        file.sync_data()
+    }
+
+    /// The room `artifact`'s history was bound to, if any session bound it.
+    pub fn room_of(&self, artifact: ArtifactId) -> Option<String> {
+        fs::read_to_string(self.room_path(artifact))
+            .ok()
+            .filter(|room| !room.is_empty())
+    }
+
+    fn room_path(&self, artifact: ArtifactId) -> PathBuf {
+        self.root.join(format!("{}.room", artifact.0))
+    }
+
     /// One scrollback page from durable history.
     ///
     /// # Errors
@@ -372,7 +409,7 @@ mod tests {
         };
         for seq in 101..=130 {
             let envelope = signed(&key, artifact, seq, sealed);
-            channels.record_history(&envelope);
+            channels.record_history("room-a", &envelope);
             channels.state_for(artifact).record_validated_op(envelope);
         }
         let (page, exhausted) = channels.scrollback_page(artifact, 131, 10);

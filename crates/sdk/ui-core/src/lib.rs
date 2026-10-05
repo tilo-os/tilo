@@ -110,10 +110,15 @@ pub mod a11y_tree;
 #[cfg(all(feature = "native", target_os = "android"))]
 mod accesskit_android_adapter;
 pub mod accesskit_bridge;
+/// The document action host behind the framework's dispatcher. Apps submit
+/// edits through the framework, never through this host.
+#[doc(hidden)]
 pub mod action_host;
 mod action_locus;
+pub mod table_model;
 pub use action_locus::ActionUiRoute;
 pub mod action_palette;
+pub mod agent_identity;
 pub mod animation;
 #[cfg(test)]
 extern crate self as tilo_ui;
@@ -150,7 +155,7 @@ pub mod diag;
 pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
-pub mod doc_binding;
+pub mod doc_source;
 #[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
 pub mod floating_surface;
@@ -219,6 +224,18 @@ pub mod text_assistance;
 pub mod text_break;
 pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
+/// The raw operation protocol between a host and the toolkit's widgets: the
+/// operation the host admits, how a widget starts it, and the routing to a
+/// widget's children. For the toolkit's hosts (the app framework, the shell,
+/// the browser runtime, the installer); an app answers operations as a typed
+/// effect vocabulary and never names these
+/// (`tools/policy/check_app_resource_action_contract.py`).
+pub mod host_operation {
+    pub use crate::widget::resource_operation::{
+        OperationRequest, ResourceOperation, ResourceOperationStart, start_in_children,
+    };
+}
+pub mod host_palette;
 pub mod reader_hud;
 pub mod record;
 pub mod remote_actions;
@@ -344,7 +361,7 @@ pub use theme::{
 pub use ui_graph::{
     LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
     UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
-    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource, UiValues,
     parse_ui_graph_edits,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
@@ -369,7 +386,6 @@ pub use a11y_tree::{
 // narrator the `App` holds when `A11ySettings.screen_reader` is on.
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
-pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
 pub use tilo_actions;
 pub use widget::ModelView;
@@ -441,8 +457,8 @@ pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
 pub use text_edit::{
-    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TYPING_RUN_IDLE,
-    TypingRun, delete_last_grapheme, word_at_caret,
+    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,
+    delete_last_grapheme, word_at_caret,
 };
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,

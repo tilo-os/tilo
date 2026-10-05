@@ -133,6 +133,8 @@ pub struct FloatingSurfaceProtocolRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceClientMessage {
+    /// Terminal asks for the existing host-shell permission prompt.
+    AllowHostShell,
     /// Ask the trusted session shell to show its ordinary user-confirmed
     /// chooser. This shares the same authenticated channel as floating
     /// surfaces so a separately hosted app and an embedded app have identical
@@ -227,6 +229,10 @@ pub enum FloatingSurfaceClientMessage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceHostMessage {
+    /// The trusted desktop's answer, after supervisor admission.
+    HostShellAllowed {
+        allowed: bool,
+    },
     DesktopBounds {
         bounds: [f64; 4],
     },

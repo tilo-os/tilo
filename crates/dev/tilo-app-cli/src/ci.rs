@@ -267,8 +267,8 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
          # Pushing a tag named v* also publishes the packages to the registry,\n\
          # which lists them once its owner has reviewed the request.\n\
          #\n\
-         # Publishing needs the TILO_PUBLISHER_KEY secret: the contents of the\n\
-         # file `tilo-app keys new` wrote. Packages built without it (pull\n\
+         # Publishing needs the TILO_PUBLISHER_KEY secret: what\n\
+         # `tilo-app keys export` prints. Packages built without it (pull\n\
          # requests from forks) are signed with a throwaway key. Set the\n\
          # TILO_REGISTRY variable to publish somewhere other than apps.tilo.so.\n\
          \n\

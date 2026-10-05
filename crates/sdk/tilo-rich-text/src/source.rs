@@ -16,7 +16,7 @@ use ui::framework::{Dispatcher, Live, ResourceSelection};
 use ui::presence::PresenceKey;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{Demand, Doc, ModelError, Resource, Tracker};
-use ui::widget::PresenceKeyFn;
+use ui::widget::{Edits, PresenceKeyFn};
 
 /// Everything the editor reads.
 fn all() -> Demand {
@@ -30,7 +30,7 @@ pub trait RichTextSource {
     fn read_only(&self) -> bool;
 
     /// Bring the state up to date with `doc`, every paragraph read.
-    fn sync(&mut self, doc: &mut Doc);
+    fn sync(&mut self, doc: &Doc);
 
     /// Increases whenever the state changes; `None` before there is one.
     fn revision(&self) -> Option<u64>;
@@ -48,7 +48,7 @@ pub trait RichTextSource {
     ///
     /// # Errors
     /// Returns the refusal; nothing is written.
-    fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError>;
+    fn apply(&mut self, edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError>;
 
     /// The presence keys collaborators address paragraphs by.
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
@@ -78,7 +78,7 @@ impl RichTextSource for Hosted {
         self.dispatch.as_ref().is_none_or(Dispatcher::read_only)
     }
 
-    fn sync(&mut self, doc: &mut Doc) {
+    fn sync(&mut self, doc: &Doc) {
         let Some(live) = &self.live else {
             return;
         };
@@ -102,9 +102,9 @@ impl RichTextSource for Hosted {
         self.live.as_ref().map(|live| live.with(read))
     }
 
-    fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
+    fn apply(&mut self, edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError> {
         match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, edit),
+            Some(dispatch) => dispatch.apply_now(edits, edit),
             None => Err(ActionError::Refused("the editor is not attached".into())),
         }
     }
@@ -136,11 +136,9 @@ pub(crate) struct FieldState {
 impl FieldState {
     /// The rich text under `root`, every paragraph read, with changes
     /// tracked from here.
-    pub(crate) fn read(doc: &mut Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
+    pub(crate) fn read(doc: &Doc, root: ObjId, revision: u64) -> Result<Self, ModelError> {
         let mut field = Self::read_only(doc, root, revision)?;
-        let mut tracker = Tracker::new();
-        tracker.start(doc);
-        field.tracker = Some(tracker);
+        field.tracker = Some(Tracker::at(doc.committed_heads()));
         Ok(field)
     }
 
@@ -167,12 +165,12 @@ impl FieldState {
     /// # Errors
     /// Returns [`ModelError`] when the change cannot be placed; a fresh
     /// [`read`](Self::read) is then the way back.
-    pub(crate) fn refresh(&mut self, doc: &mut Doc) -> Result<bool, ModelError> {
+    pub(crate) fn refresh(&mut self, doc: &Doc) -> Result<bool, ModelError> {
         let state = &self.state;
         let Some(tracker) = self.tracker.as_mut() else {
             return Err(ModelError::invalid("nothing tracked yet"));
         };
-        let delta = tracker.delta_located(doc, &|obj| RichText::locate(state, obj));
+        let delta = tracker.committed_delta_located(doc, &|obj| RichText::locate(state, obj));
         if delta.is_empty() {
             return Ok(false);
         }
@@ -246,7 +244,7 @@ impl RichTextField {
         self
     }
 
-    fn reread(&mut self, doc: &mut Doc, root: ObjId) {
+    fn reread(&mut self, doc: &Doc, root: ObjId) {
         let revision = self
             .field
             .as_ref()
@@ -266,7 +264,7 @@ impl RichTextSource for RichTextField {
         self.dispatch.as_ref().is_none_or(Dispatcher::read_only)
     }
 
-    fn sync(&mut self, doc: &mut Doc) {
+    fn sync(&mut self, doc: &Doc) {
         let Some(root) = (self.locate)(doc) else {
             self.field = None;
             return;
@@ -315,9 +313,9 @@ impl RichTextSource for RichTextField {
         self.field.as_ref().map(|field| read(&field.state))
     }
 
-    fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
+    fn apply(&mut self, edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError> {
         match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, edit),
+            Some(dispatch) => dispatch.apply_now(edits, edit),
             None => Err(ActionError::Refused(
                 "this text is open to view only".into(),
             )),
@@ -336,7 +334,7 @@ impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
         self.borrow().read_only()
     }
 
-    fn sync(&mut self, doc: &mut Doc) {
+    fn sync(&mut self, doc: &Doc) {
         self.borrow_mut().sync(doc);
     }
 
@@ -352,128 +350,11 @@ impl<S: RichTextSource> RichTextSource for Rc<std::cell::RefCell<S>> {
         self.borrow().with_state(read)
     }
 
-    fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
-        self.borrow_mut().apply(doc, edit)
+    fn apply(&mut self, edits: &mut Edits<'_>, edit: &RichTextAction) -> Result<(), ActionError> {
+        self.borrow_mut().apply(edits, edit)
     }
 
     fn presence_keys(&self) -> Option<PresenceKeyFn> {
         self.borrow().presence_keys()
-    }
-}
-
-/// Rich text at a place in a shared document, edited by writing to it
-/// directly: shared working state that is not history, such as a draft two
-/// people type into before either sends it. Collaborators see every
-/// keystroke; nothing is recorded as an action or undone as one.
-pub struct DirectField {
-    locate: Locate,
-    field: Option<FieldState>,
-    read_only: bool,
-    presence: Option<PresenceKeyFn>,
-}
-
-impl DirectField {
-    /// The rich text `locate` finds (created by its owner with
-    /// [`RichText::initialize_under`]).
-    pub fn new(locate: impl Fn(&Doc) -> Option<ObjId> + 'static) -> Self {
-        Self {
-            locate: Box::new(locate),
-            field: None,
-            read_only: false,
-            presence: None,
-        }
-    }
-
-    /// Key collaborators' carets by paragraph with `key`.
-    #[must_use]
-    pub fn with_presence(mut self, key: impl Fn(&str) -> PresenceKey + 'static) -> Self {
-        self.presence = Some(Rc::new(key));
-        self
-    }
-
-    /// Whether the participant may only view: edits are refused while set.
-    pub fn set_read_only(&mut self, read_only: bool) {
-        self.read_only = read_only;
-    }
-
-    fn reread(&mut self, doc: &mut Doc, root: ObjId) {
-        let revision = self
-            .field
-            .as_ref()
-            .map_or(0, |field| field.revision.wrapping_add(1));
-        match FieldState::read(doc, root, revision) {
-            Ok(field) => self.field = Some(field),
-            Err(error) => {
-                tracing::warn!(%error, "rich text unreadable");
-                self.field = None;
-            }
-        }
-    }
-}
-
-impl RichTextSource for DirectField {
-    fn read_only(&self) -> bool {
-        self.read_only
-    }
-
-    fn sync(&mut self, doc: &mut Doc) {
-        let Some(root) = (self.locate)(doc) else {
-            self.field = None;
-            return;
-        };
-        if doc.pending_ops() > 0 {
-            // Typing in progress: read without committing it, so the writes
-            // stay one open transaction the host commits as it chooses.
-            let revision = self
-                .field
-                .as_ref()
-                .map_or(0, |field| field.revision.wrapping_add(1));
-            match FieldState::read_only(doc, root, revision) {
-                Ok(field) => self.field = Some(field),
-                Err(error) => {
-                    tracing::warn!(%error, "rich text unreadable");
-                    self.field = None;
-                }
-            }
-            return;
-        }
-        let current = self
-            .field
-            .as_ref()
-            .is_some_and(|field| field.root == root && field.tracker.is_some());
-        if !current {
-            self.reread(doc, root);
-            return;
-        }
-        let Some(field) = &mut self.field else {
-            return;
-        };
-        if field.refresh(doc).is_err() {
-            self.reread(doc, root);
-        }
-    }
-
-    fn revision(&self) -> Option<u64> {
-        self.field.as_ref().map(|field| field.revision)
-    }
-
-    fn with_state<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        self.field.as_ref().map(|field| read(&field.state))
-    }
-
-    fn apply(&mut self, doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
-        if self.read_only {
-            return Err(ActionError::Refused(
-                "this text is open to view only".into(),
-            ));
-        }
-        let Some(root) = (self.locate)(doc) else {
-            return Err(ActionError::Refused("the text is gone".into()));
-        };
-        edit.apply_under(doc, &root)
-    }
-
-    fn presence_keys(&self) -> Option<PresenceKeyFn> {
-        self.presence.clone()
     }
 }

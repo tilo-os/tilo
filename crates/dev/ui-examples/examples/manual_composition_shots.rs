@@ -182,11 +182,9 @@ fn manual_account(scale: f32) -> Element {
         .child(Box::new(
             Checkbox::new("updates", "updates").with_label(UPDATES),
         ))
+        .child(Box::new(Button::new("cancel", "Cancel").content_sized()))
         .child(Box::new(
-            Button::new("cancel", "Cancel", None).content_sized(),
-        ))
-        .child(Box::new(
-            Button::new("save", "Save account changes", Some("saved"))
+            Button::new("save", "Save account changes")
                 .primary()
                 .content_sized(),
         ));
@@ -216,8 +214,8 @@ fn account() -> Form {
             Checkbox::new("updates", "updates").with_label(UPDATES),
         )))
         .with_actions(
-            Actions::new(Button::new("save", "Save account changes", Some("saved")).primary())
-                .secondary(Button::new("cancel", "Cancel", None)),
+            Actions::new(Button::new("save", "Save account changes").primary())
+                .secondary(Button::new("cancel", "Cancel")),
         )
 }
 fn automatic_in_manual() -> Element {

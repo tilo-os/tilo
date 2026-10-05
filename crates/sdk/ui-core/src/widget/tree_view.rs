@@ -2670,14 +2670,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_dirty = true;
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile_mounted_rows();
         for row in &mut self.mounted_rows {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let model_changes = self.model.poll_changes();
         let received_changes = !model_changes.is_empty();
         if received_changes {
@@ -3626,7 +3626,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -3720,7 +3720,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
     fn route_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         let scale_factor = ctx.scale_factor;
         let modifiers = ctx.modifiers;
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         let path = ctx.path;
         let handled = &mut *ctx.handled;
         let focus_target = &mut *ctx.focus_target;
@@ -3739,7 +3739,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled,
                 focus_target,
@@ -3754,7 +3754,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled,
                 focus_target,
@@ -3770,7 +3770,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                 &mut EventCtx {
                     scale_factor,
                     modifiers,
-                    state,
+                    state: state.reborrow(),
                     path,
                     handled,
                     focus_target,
@@ -4713,8 +4713,8 @@ mod tests {
         view: &mut TreeView<T, M>,
         width: f32,
     ) -> (TaffyTree<()>, taffy::NodeId) {
-        let mut doc = AutoCommit::new();
-        view.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        view.sync(&doc, &automerge::ROOT);
         let mut taffy = TaffyTree::new();
         let mut node_map = HashMap::new();
         let node = view.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -4784,7 +4784,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -4808,7 +4808,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -4828,8 +4828,8 @@ mod tests {
         {
             let root = TreeNode::branch(1, "crates", (), vec![TreeNode::leaf(2, "main.rs", ())]);
             let mut view = TreeView::new(root);
-            let mut doc = AutoCommit::new();
-            view.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            view.sync(&doc, &automerge::ROOT);
             let mut taffy = TaffyTree::new();
             let mut node_map = HashMap::new();
             let theme = Theme::dark().with_text_scale(2.0);
@@ -5555,7 +5555,7 @@ mod tests {
             );
             assert!(Widget::update(
                 &mut view,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             assert!(view.scroll_y() > immediate, "momentum advances after input");
@@ -5672,8 +5672,8 @@ mod tests {
             assert!(demanded > 0);
             assert_eq!(view.model().requests.len(), demanded);
 
-            let mut document = AutoCommit::new();
-            assert!(Widget::update(&mut view, &mut document, &automerge::ROOT));
+            let document = AutoCommit::new();
+            assert!(Widget::update(&mut view, &document, &automerge::ROOT));
 
             let first = PagedModel::id(0).expect("stable paged id");
             assert_eq!(
@@ -6091,8 +6091,8 @@ mod tests {
                 view.reorder_target(),
                 Some(&DropTarget::new(2, DropPlacement::Inside))
             );
-            let mut state = AutoCommit::new();
-            assert!(view.update(&mut state, &automerge::ROOT));
+            let state = AutoCommit::new();
+            assert!(view.update(&state, &automerge::ROOT));
             assert!(view.is_expanded(2));
             assert_eq!(view.visible_index_of(20), Some(2));
         }
@@ -6270,7 +6270,7 @@ mod tests {
                 &mut view,
                 "node:5",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(*activated.borrow(), [5]);
