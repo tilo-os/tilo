@@ -547,11 +547,18 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     click_tab(d, 2);
     assert!(!d.targets().contains_key("api.body"));
     assert_eq!(d.targets()["api.request-divider"], manual);
-    let modes = d.targets()["api.response-view"];
-    d.click_at(modes.x0 + modes.width() * 5.0 / 6.0, modes.center().y);
+    let headers = semantic_nodes(d)
+        .into_iter()
+        .find(|node| node.action_target.as_deref() == Some("api.response-view:segment:2"))
+        .expect("the response switch publishes its Headers segment")
+        .bounds
+        .expect("the real Headers segment publishes its pointer bounds");
+    d.click_at(headers.center().x, headers.center().y);
     assert!(
         semantic_nodes(d).iter().any(|node| {
-            node.name.as_deref() == Some("Headers") && node.state.checked == Some(true)
+            node.action_target.as_deref() == Some("api.response-view:segment:2")
+                && node.name.as_deref() == Some("Headers")
+                && node.state.checked == Some(true)
         }),
         "the real response switch selects Headers"
     );
