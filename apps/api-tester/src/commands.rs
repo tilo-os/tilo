@@ -57,9 +57,6 @@ pub(crate) enum Table {
 /// An edit to one row of a [`Table`], by durable row id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RowEdit {
-    Key(String),
-    Value(String),
-    Enabled(bool),
     Remove,
 }
 

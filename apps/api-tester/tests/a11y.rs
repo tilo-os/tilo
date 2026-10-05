@@ -42,6 +42,23 @@ fn captured(scenario: &str, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
     staged(Some(scenario), viewport)
 }
 
+/// All published semantic descendants, including shared list rows that do
+/// not each create another Tab stop.
+fn semantic_nodes(d: &Driver) -> Vec<ui::a11y::AccessNode> {
+    fn flatten(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
+        let children = node.children.clone();
+        out.push(node);
+        for child in children {
+            flatten(child, out);
+        }
+    }
+    let mut nodes = Vec::new();
+    for node in d.focus_access_nodes() {
+        flatten(node, &mut nodes);
+    }
+    nodes
+}
+
 /// Drive a synthetic retained row action through its published AT owner.
 fn act_named(d: &mut Driver, name: &str, action: &ui::a11y::Action) {
     let node = d
@@ -220,9 +237,9 @@ fn contextual_forms_expose_only_their_named_fields() {
     for name in [
         "Variable key",
         "Variable value",
-        "Where the value is kept",
+        "Keep value on this device",
         "Cancel",
-        "Confirm",
+        "Add variable",
     ] {
         assert!(
             nodes.iter().any(|node| node.name.as_deref() == Some(name)),
@@ -350,7 +367,7 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     );
 
     // Expanded: its request rows are present.
-    let before = d.focus_access_nodes();
+    let before = semantic_nodes(d);
     assert!(
         before
             .iter()
@@ -362,7 +379,7 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
     d.key("Enter");
 
     // Collapsed: the request rows are gone and the header reports it.
-    let after = d.focus_access_nodes();
+    let after = semantic_nodes(d);
     assert!(
         !after
             .iter()

@@ -412,19 +412,17 @@ fn view_commands_stay_device_local() {
 #[test]
 fn key_value_tables_edit_the_request() {
     let (mut a, mut doc) = demo();
-    let (table, queue) = a.table.clone().expect("the Params table is showing");
+    let (table, _) = a.table.clone().expect("the Params table is showing");
     assert_eq!(table, Table::Params);
     let count = a.request.params.len();
     let blank = a.blanks.params.clone();
 
-    push(
-        &a,
-        Cmd::Edit {
-            table: Table::Params,
-            row: blank.clone(),
-            edit: RowEdit::Key("limit".into()),
-        },
-    );
+    a.submit(&ApiTesterAction::EditRowField {
+        section: RowSection::Params,
+        row_id: blank.clone(),
+        field: "key".into(),
+        value: "limit".into(),
+    });
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
     let pair = a.request.params.last().expect("the new pair");
@@ -433,33 +431,30 @@ fn key_value_tables_edit_the_request() {
         (blank.as_str(), "limit")
     );
     assert_ne!(a.blanks.params, blank, "the table gets a fresh blank row");
-    assert_eq!(
-        queue.pending(),
-        2,
-        "the pair is activated and a blank appended"
+    resync(&mut a, &doc);
+    assert_eq!(a.request.params[count].id, blank);
+    assert!(
+        a.request.params.iter().all(|row| row.id != a.blanks.params),
+        "the activated pair and appended blank have distinct identities"
     );
 
     // Further typing edits the same pair; it does not append again.
-    push(
-        &a,
-        Cmd::Edit {
-            table: Table::Params,
-            row: blank.clone(),
-            edit: RowEdit::Value("10".into()),
-        },
-    );
+    a.submit(&ApiTesterAction::EditRowField {
+        section: RowSection::Params,
+        row_id: blank.clone(),
+        field: "value".into(),
+        value: "10".into(),
+    });
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
     assert_eq!(a.request.params[count].value, "10");
 
-    push(
-        &a,
-        Cmd::Edit {
-            table: Table::Params,
-            row: blank.clone(),
-            edit: RowEdit::Enabled(false),
-        },
-    );
+    a.submit(&ApiTesterAction::EditRowField {
+        section: RowSection::Params,
+        row_id: blank.clone(),
+        field: "enabled".into(),
+        value: "false".into(),
+    });
     drain(&mut a, &mut doc);
     assert!(!a.request.params[count].enabled);
     assert!(
@@ -469,14 +464,12 @@ fn key_value_tables_edit_the_request() {
 
     // Emptying the blank row's text does not add a pair.
     let fresh = a.blanks.params.clone();
-    push(
-        &a,
-        Cmd::Edit {
-            table: Table::Params,
-            row: fresh,
-            edit: RowEdit::Key(String::new()),
-        },
-    );
+    a.submit(&ApiTesterAction::EditRowField {
+        section: RowSection::Params,
+        row_id: fresh,
+        field: "key".into(),
+        value: String::new(),
+    });
     drain(&mut a, &mut doc);
     assert_eq!(a.request.params.len(), count + 1);
 

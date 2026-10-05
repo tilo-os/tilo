@@ -499,6 +499,12 @@ suites = [
 # (a nextest filterset) within its `test` target runs for that package.
 
 [[cargo]]
+package = "file-explorer"
+# Breadcrumb geometry shapes labels with the shipped toolkit font fixture.
+inputs = ["crates/sdk/ui-core/assets/fonts/"]
+readers = ["apps/file-explorer/src/path_bar.rs"]
+
+[[cargo]]
 package = "tilo-ui"
 # The design and spacing audits ratchet every app and shell source file; the
 # launcher audit reads each app's main.rs and the framework launcher.

@@ -2592,7 +2592,7 @@ mod event_tests {
     #[test]
     #[serial(pdfium)]
     fn open_goes_through_the_host_portal_and_loads_or_cancels_on_the_frame_drain() {
-        let (mut app, mut st) = sample_app();
+        let (mut app, _) = sample_app();
         let open = app.toolbar_layout().open;
         assert!(
             matches!(app.toolbar_hit(centre(open)), Some(ToolbarHit::Open)),

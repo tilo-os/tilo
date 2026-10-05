@@ -68,13 +68,15 @@ fn pane(slot: Swap, below_divider: bool) -> Column {
     let column = if below_divider {
         column.with_extra_top_padding(gap)
     } else {
-        column.with_extra_bottom_padding(gap)
+        column
+            .with_extra_bottom_padding(gap)
+            .with_intrinsic_height()
     };
     let body = Column::new().with_no_padding();
     let body = if below_divider {
         body.with_fill_remaining_height()
     } else {
-        body
+        body.with_intrinsic_height()
     };
     column.push(Box::new(body.push(Box::new(slot))))
 }
@@ -933,58 +935,20 @@ impl ApiTesterApp {
     /// Apply one edit to a row of a table. Typing in the blank row makes it a
     /// real pair and gives the table a new blank row.
     fn edit_rows(&mut self, table: Table, row: &str, edit: RowEdit) {
-        let blank = self.blanks.of(table).to_owned();
-        let queue = self
-            .table
-            .as_ref()
-            .filter(|(shown, _)| *shown == table)
-            .map(|(_, queue)| queue.clone());
-        if row == blank {
-            match edit {
-                RowEdit::Remove | RowEdit::Enabled(_) => {}
-                RowEdit::Key(_) | RowEdit::Value(_) => {
-                    let mut pair = KeyValue::new("", "");
-                    pair.id.clone_from(&blank);
-                    apply_edit(&mut pair, edit);
-                    if pair.is_blank() {
-                        return;
-                    }
-                    self.submit(&ApiTesterAction::SetRow {
-                        section: row_section(table),
-                        row: pair.clone(),
-                    });
-                    self.rows_mut(table).push(pair);
-                    let next = self.blanks.renew(table);
-                    if let Some(queue) = &queue {
-                        queue.push(KvChange::Activate(blank));
-                        queue.push(KvChange::Append(next));
-                    }
-                }
-            }
+        if row == self.blanks.of(table) {
             return;
         }
-        match edit {
-            RowEdit::Remove => {
-                self.submit(&ApiTesterAction::RemoveRow {
-                    section: row_section(table),
-                    row_id: row.to_owned(),
-                });
-                self.rows_mut(table).retain(|pair| pair.id != row);
-                if let Some(queue) = queue {
-                    queue.push(KvChange::Remove(row.to_owned()));
-                }
-            }
-            other => {
-                if let Some(pair) = self.rows_mut(table).iter_mut().find(|pair| pair.id == row) {
-                    apply_edit(pair, other);
-                    let pair = pair.clone();
-                    self.submit(&ApiTesterAction::SetRow {
-                        section: row_section(table),
-                        row: pair,
-                    });
-                }
-            }
+        self.submit(&ApiTesterAction::RemoveRow {
+            section: row_section(table),
+            row_id: row.to_owned(),
+        });
+        self.rows_mut(table).retain(|pair| pair.id != row);
+        if let Some((shown, queue)) = &self.table
+            && *shown == table
+        {
+            queue.push(KvChange::Remove(row.to_owned()));
         }
+        let RowEdit::Remove = edit;
     }
 
     // -----------------------------------------------------------------------
@@ -1311,16 +1275,6 @@ impl ApiTesterApp {
     // -----------------------------------------------------------------------
 }
 
-/// Apply a field edit to one pair.
-fn apply_edit(pair: &mut KeyValue, edit: RowEdit) {
-    match edit {
-        RowEdit::Key(text) => pair.key = text,
-        RowEdit::Value(text) => pair.value = text,
-        RowEdit::Enabled(enabled) => pair.enabled = enabled,
-        RowEdit::Remove => {}
-    }
-}
-
 impl Default for ApiTesterApp {
     fn default() -> Self {
         Self::new()
@@ -1398,9 +1352,9 @@ impl ui::widget::Decorator for ApiTesterApp {
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.nav.settle(edits, path);
         self.drain_commands(edits.doc(), path);
         self.refresh_views();
-        self.nav.settle(edits, path);
     }
     fn name(&self) -> &'static str {
         "ApiTesterApp"
@@ -1616,6 +1570,21 @@ impl ApiTesterApp {
         self.history.clone_from(&state.history);
         self.sink.method.set(request.method.as_str().to_owned());
         self.request = request;
+        // Canonical row-field actions turn the trailing blank into a durable
+        // row. Its next presentation must expose a new blank identity.
+        for table in [Table::Params, Table::Headers, Table::Form] {
+            let blank = self.blanks.of(table);
+            let consumed = match table {
+                Table::Params => &self.request.params,
+                Table::Headers => &self.request.headers,
+                Table::Form => &self.request.form,
+            }
+            .iter()
+            .any(|row| row.id == blank);
+            if consumed {
+                self.blanks.renew(table);
+            }
+        }
         self.selected = self.collections.iter().enumerate().find_map(|(ci, c)| {
             c.requests
                 .iter()

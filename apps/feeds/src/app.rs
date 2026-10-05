@@ -1707,6 +1707,18 @@ impl FeedsApp {
                 }
                 self.toggle_settings_panel();
             }
+            "tags" => {
+                let article = {
+                    let core = self.core.borrow();
+                    core.selected
+                        .or_else(|| core.store.articles.first().map(|article| article.id))
+                };
+                if let Some(article) = article {
+                    self.core.borrow_mut().reveal_article(article);
+                    self.stage_tag_editor();
+                    self.take_pending_modal();
+                }
+            }
             "context-menu" => {
                 let row = self.core.borrow().first_feed_row;
                 let Some((id, rect)) = row else {
