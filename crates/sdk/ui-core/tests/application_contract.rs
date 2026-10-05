@@ -1306,7 +1306,9 @@ mod save_status_fixture {
         fn get_rect(&self) -> vello::kurbo::Rect {
             vello::kurbo::Rect::ZERO
         }
-        fn sync(&mut self, _: &tilo_ui::widget::AppModel, _: &tilo_ui::widget::ModelPath) {
+        fn settle(&mut self, _: &mut tilo_ui::widget::Edits<'_>, _: &automerge::ObjId) {
+            // Only settlement holds an exclusive record loan; sync/update
+            // are immutable projections and may share durability reads.
             assert!(matches!(
                 self.records.save_status(&self.checkout.id),
                 Err(RecordOpenError::Busy)
@@ -1411,7 +1413,9 @@ mod save_status_fixture {
             let checkout = component.record().clone();
             host.records.try_flush().unwrap();
             let mut tile = TileHost::from_component(component);
-            let outer = automerge::AutoCommit::new();
+            let mut outer = automerge::AutoCommit::new();
+            tile.settle(&mut tilo_ui::widget::Edits::lend(&mut outer), &ROOT);
+            tile.update(&outer, &ROOT);
             tile.sync(&outer, &ROOT);
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().clone()),
@@ -1426,6 +1430,12 @@ mod save_status_fixture {
                 edits: 0,
             }
         }
+        fn pump(&mut self) {
+            self.tile
+                .settle(&mut tilo_ui::widget::Edits::lend(&mut self.outer), &ROOT);
+            self.tile.update(&self.outer, &ROOT);
+            self.tile.sync(&self.outer, &ROOT);
+        }
         fn path(&self) -> std::path::PathBuf {
             app_state::DocStore::room_record_dir_at(
                 &self.host.root(),
@@ -1438,7 +1448,7 @@ mod save_status_fixture {
         }
         pub(super) fn pending_and_visible_checkpoint(&mut self) {
             self.type_pending();
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             let before = self
                 .host
                 .records
@@ -1447,7 +1457,7 @@ mod save_status_fixture {
                 })
                 .unwrap();
             for _ in 0..3 {
-                self.tile.sync(&self.outer, &ROOT);
+                self.pump();
             }
             assert_eq!(
                 self.host
@@ -1473,7 +1483,7 @@ mod save_status_fixture {
                 .read(&self.checkout.id, Transactable::base_heads)
                 .unwrap();
             self.type_pending();
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             let pending = self
                 .host
                 .records
@@ -1498,7 +1508,7 @@ mod save_status_fixture {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saving)
@@ -1521,7 +1531,7 @@ mod save_status_fixture {
                 "a component showing Saving… must resample its durability"
             );
             self.host.records.try_flush().unwrap();
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
@@ -1545,10 +1555,10 @@ mod save_status_fixture {
             };
             std::fs::create_dir(&obstruction.path).unwrap();
             self.type_pending();
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             assert!(self.host.records.try_flush().is_err());
             for _ in 0..3 {
-                self.tile.sync(&self.outer, &ROOT);
+                self.pump();
                 assert!(matches!(
                     DELIVERED.with(|seen| seen.borrow().last().cloned()),
                     Some(RecordSaveStatus::Failed(_))
@@ -1556,13 +1566,13 @@ mod save_status_fixture {
             }
             assert_eq!(std::fs::read(&obstruction.retained).unwrap(), original);
             obstruction.restore();
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             assert!(matches!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Failed(_))
             ));
             self.host.records.try_flush().unwrap();
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             assert_eq!(
                 DELIVERED.with(|seen| seen.borrow().last().cloned()),
                 Some(RecordSaveStatus::Saved)
@@ -1575,7 +1585,7 @@ mod save_status_fixture {
                 && report.view_error.is_none()
                 && report.teardown_error.is_none()));
             let delivered = DELIVERED.with(|seen| seen.borrow().len());
-            self.tile.sync(&self.outer, &ROOT);
+            self.pump();
             assert_eq!(DELIVERED.with(|seen| seen.borrow().len()), delivered);
             STORE.with(|store| *store.borrow_mut() = None);
         }

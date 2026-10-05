@@ -813,7 +813,7 @@ mod component_adapter {
         fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
             let binding = self.component.callback_binding();
             binding
-                .with_document(edits.document_mut(), |document, record_root| {
+                .with_settlement(edits.document_mut(), |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
                         return;
                     };
