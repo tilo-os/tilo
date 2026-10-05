@@ -100,7 +100,15 @@ pub fn apps_in(root: &Path) -> Vec<String> {
 pub fn pack(dir: &Path, out: &Path) -> Result<(), CliError> {
     let file =
         std::fs::File::create(out).map_err(CliError::io(format!("create {}", out.display())))?;
-    let mut builder = tar::Builder::new(file);
+    pack_into(dir, file)
+}
+
+/// [`pack`] into any writer.
+///
+/// # Errors
+/// I/O failures.
+pub fn pack_into(dir: &Path, out: impl std::io::Write) -> Result<(), CliError> {
+    let mut builder = tar::Builder::new(out);
     builder.follow_symlinks(false);
     for top in ["usr", "opt"] {
         let path = dir.join(top);
@@ -349,17 +357,17 @@ mod tests {
         // Phase: build_uses_manifest_features_plus_dev_overrides.
         {
             let shell = component(
-                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/wpe\"]\n",
+                "[[component]]\nname = \"browser\"\npackages = [\"browser\", \"helper\"]\nfeatures = [\"browser/thin\"]\n",
             );
             let metadata = json!({"packages": [
-                {"name": "browser", "features": {"wpe": [], "dev-overrides": []}},
+                {"name": "browser", "features": {"thin": [], "dev-overrides": []}},
                 {"name": "helper", "features": {}},
             ]});
             let extra = dev_features(&metadata, &shell.packages);
             assert_eq!(extra, ["browser/dev-overrides"]);
             assert_eq!(
                 as_cargo(&cargo_build(&shell, &extra)),
-                "cargo build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/wpe,browser/dev-overrides"
+                "cargo build --locked --profile release --config profile.release.lto=\"off\" --config profile.release.codegen-units=16 -p browser -p helper --features browser/thin,browser/dev-overrides"
             );
             let plain = component(
                 "[[component]]\nname = \"x\"\npackages = [\"x\"]\nprofile = \"thin-app\"\n",

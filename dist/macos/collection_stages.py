@@ -19,10 +19,11 @@ def disk_floor(path):
         raise ValueError('20 GiB free disk floor reached; stopped owned stage')
 
 
-def bounded_build(command, env, *, cwd=None, seconds=1800):
+def bounded_build(command, env, *, cwd=None, seconds=1800, stdout=None, stderr=None):
     directory = cwd or ROOT
     disk_floor(directory)
-    child = subprocess.Popen(command, cwd=directory, env=env, start_new_session=True)
+    child = subprocess.Popen(command, cwd=directory, env=env, start_new_session=True,
+                             stdout=stdout, stderr=stderr)
     started = time.monotonic()
     try:
         while child.poll() is None:
@@ -140,7 +141,7 @@ def verify_image(path, identity):
     run(['/usr/bin/hdiutil', 'verify', path])
     command = ['/usr/bin/codesign', '--verify', '--strict']
     if identity['sha1'] != '-':
-        command += ['-R', f'anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
+        command += ['-R', f'=anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
     run(command + [path])
 
 

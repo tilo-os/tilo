@@ -85,7 +85,6 @@ suites = [
   "os/tests/sealed_extensions.sh",
   "os/tests/validation_access.sh",
   "os/tests/test-installer-cycle-runtime.py",
-  "os/tests/test_adopt_development_wpe.py",
   "os/tests/test_allocate_windows_direct_final_install.py",
   "os/tests/test_bootc_registry_wrapper.py",
   "os/tests/test_broker_signing_runner.py",
@@ -134,7 +133,6 @@ suites = [
   "os/tests/test_native_resume_admission.py",
   "os/tests/test_oci_image_diff.py",
   "os/tests/test_pack_apps_cleanup.py",
-  "os/tests/test_prepare_wpe_stage.py",
   "os/tests/test_prepare_windows_direct_source.py",
   "os/tests/test_read_fat32_efi.py",
   "os/tests/test_private_disk_image.py",
@@ -154,6 +152,7 @@ suites = [
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
@@ -167,8 +166,6 @@ suites = [
   "os/tests/test_forgejo_dev_installer_metadata.py",
   "os/tests/test_download_dev_installer.py",
   "os/tests/windows_direct_install_orchestrator_test.py",
-  "os/tests/test_wpe_recipe_inputs.py",
-  "os/tests/test_wpe_stage_artifact.py",
   "os/tests/vm_firmware_selection.sh",
   "os/tests/vm_release_gate_invariants.sh",
   "os/tests/windows_guest_powershell_syntax.py",
@@ -185,7 +182,6 @@ suites = [
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
-  "os/tests/wpe_runtime_check.sh",
 ]
 
 [[group]]
@@ -323,6 +319,7 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
+  "dist/local-models/u2net-subject/contract-test.sh",
   "dist/rpm/test-app-collection.sh",
   "dist/rpm/test-app-store-stage.sh",
   "dist/rpm/test-build-target-dir.sh",
@@ -333,9 +330,16 @@ suites = [
 
 [[group]]
 name = "browser-tools"
-inputs = ["scripts/browser/"]
+inputs = [
+  "scripts/browser/",
+  "os/Containerfile",
+  "os/external-assets/github-assets.tsv",
+  "apps/browser/tilo-app.toml",
+  "crates/sdk/ui-core/src/webview/chromium/runtime.rs",
+]
 suites = [
   "scripts/browser/test_build_host.py",
+  "scripts/browser/test_engine_runtime.py",
   "scripts/browser/test_frame_presentation.py",
   "scripts/browser/test_package.py",
   "scripts/browser/test_scroll_presentation.py",
@@ -344,7 +348,13 @@ suites = [
 [[group]]
 name = "vm-acceptance"
 inputs = ["scripts/vm-acceptance/"]
-suites = ["scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_frames.py"]
+suites = [
+  "scripts/vm-acceptance/test_apps.py",
+  "scripts/vm-acceptance/test_app_startup.py",
+  "scripts/vm-acceptance/test_ci_select.py",
+  "scripts/vm-acceptance/test_frames.py",
+  "scripts/vm-acceptance/test_provenance.py",
+]
 
 [[group]]
 name = "perf-tools"
@@ -532,8 +542,8 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
+readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
 
 [[cargo]]
 package = "tilo-vm"
@@ -917,7 +927,12 @@ workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots two VMs (KVM) from the gated dev disk"
+reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-slow-frame-launch.sh"
+reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
 workflow = "build-image.yml"
 
 [[unrequired]]
@@ -1041,11 +1056,6 @@ reason = "needs the disposable root native container with Podman"
 workflow = "ci-development-signing.yml"
 
 [[unrequired]]
-suite = "os/tests/development_wpe_artifact_native.py"
-reason = "needs the disposable root native container with Podman and Skopeo"
-workflow = "ci-development-signing.yml"
-
-[[unrequired]]
 suite = "os/tests/fex-assembler.sh"
 reason = "needs NASM"
 
@@ -1077,6 +1087,11 @@ reason = "needs squashfs-tools, absent from the ci-fast image"
 [[unrequired]]
 suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
+
+[[unrequired]]
+suite = "os/tests/installed-admin-actions.sh"
+reason = "runs inside a booted guest as its device admin, after first login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"
@@ -1216,15 +1231,6 @@ reason = "runs as the graphical user inside an installed Fedora VM with the ship
 [[unrequired]]
 suite = "os/tests/windows_vm_schema.sh"
 reason = "needs the libvirt domain RelaxNG schema as an argument"
-
-[[unrequired]]
-suite = "os/tests/wpe-webdriver-smoke.py"
-reason = "needs a built WPE browser"
-
-[[unrequired]]
-suite = "os/tests/wpe_stage_cache.py"
-reason = "needs the disposable root native container with Podman"
-workflow = "ci-development-signing.yml"
 
 [[unrequired]]
 suite = "os/usr/bin/fs-test.sh"

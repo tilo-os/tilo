@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Fetch the pinned CEF SDK and build the native Chromium host independently of Cargo."""
+"""Fetch the pinned CEF SDK and build the native Chromium host independently of Cargo.
+
+A plain run builds target/chromium/ for development (point TILO_CHROMIUM_HOST
+at target/chromium/tilo-chromium-host). `--runtime DIR` also assembles the
+engine runtime tree, DIR/chromium/, which image builds sign as the
+`tilo-runtime/<version>` bundle the browser's manifest names
+(ui::webview::chromium::runtime). `--sdk-archive` builds offline from an
+already downloaded, still digest-checked SDK archive.
+"""
 import argparse
 import concurrent.futures
 import hashlib
@@ -97,14 +105,17 @@ def download_archive(cache, entry):
     return archive
 
 
-def acquire_sdk(cache, entry):
+def acquire_sdk(cache, entry, archive=None):
     cache.mkdir(parents=True, exist_ok=True)
     name = entry["name"].removesuffix(".tar.bz2")
     sdk = cache / name
     marker = sdk / ".tilo-verified-archive"
     if marker.is_file() and marker.read_text().strip() == entry["sha256"] and (sdk / "include/cef_app.h").is_file():
         return sdk
-    archive = download_archive(cache, entry)
+    if archive is None:
+        archive = download_archive(cache, entry)
+    elif not verify_archive(archive, entry):
+        raise ValueError(f"{archive} is not the pinned CEF distribution")
     print("Extracting verified CEF SDK", flush=True)
     with tempfile.TemporaryDirectory(prefix="cef-extract-", dir=cache) as temporary:
         with tarfile.open(archive) as source:
@@ -119,15 +130,66 @@ def acquire_sdk(cache, entry):
     return sdk
 
 
+# What the engine needs at run time, beside the host: CEF's library, its
+# graphics fallbacks and its resources. The setuid `chrome-sandbox` helper is
+# left out: the host's renderers are confined through user namespaces.
+RUNTIME_FILES = (
+    "tilo-chromium-host",
+    "libcef.so",
+    "libEGL.so",
+    "libGLESv2.so",
+    "libvk_swiftshader.so",
+    "libvulkan.so.1",
+    "vk_swiftshader_icd.json",
+    "v8_context_snapshot.bin",
+    "icudtl.dat",
+    "resources.pak",
+    "chrome_100_percent.pak",
+    "chrome_200_percent.pak",
+)
+RUNTIME_DIRS = ("locales",)
+
+
+def is_elf(path):
+    with path.open("rb") as stream:
+        return stream.read(4) == b"\x7fELF"
+
+
+def install_runtime(build, dest, strip=None):
+    """Copy the engine's run-time files from `build` into `dest`/chromium.
+
+    Fails when any is missing, so a CEF update that renames one is caught
+    here and not on a device. ELF files are stripped when `strip` names the
+    tool: CEF's library carries over a gigabyte of symbols.
+    """
+    engine = dest / "chromium"
+    if engine.exists():
+        shutil.rmtree(engine)
+    engine.mkdir(parents=True)
+    missing = [name for name in RUNTIME_FILES + RUNTIME_DIRS if not (build / name).exists()]
+    if missing:
+        raise ValueError(f"engine build lacks {', '.join(missing)}")
+    for name in RUNTIME_FILES:
+        target = engine / name
+        shutil.copy2(build / name, target)
+        if strip and is_elf(target):
+            subprocess.run([strip, "--strip-unneeded", str(target)], check=True)
+    for name in RUNTIME_DIRS:
+        shutil.copytree(build / name, engine / name)
+    return engine
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fetch-only", action="store_true")
     parser.add_argument("--platform", choices=["macosarm64", "macosx64", "linux64", "linuxarm64"])
     parser.add_argument("--jobs", type=int, default=min(os.cpu_count() or 4, 8))
+    parser.add_argument("--sdk-archive", type=Path, help="Pinned CEF archive already on disk (no download)")
+    parser.add_argument("--runtime", type=Path, help="Also assemble the engine runtime tree under this directory")
     args = parser.parse_args()
     key = args.platform or platform_key(platform.system(), platform.machine())
     lock = json.loads(Path(__file__).with_name("cef-lock.json").read_text())
-    sdk = acquire_sdk(ROOT / "target/cef-sdk", lock["platforms"][key])
+    sdk = acquire_sdk(ROOT / "target/cef-sdk", lock["platforms"][key], args.sdk_archive)
     print(f"CEF_ROOT={sdk}", flush=True)
     if args.fetch_only:
         return
@@ -143,6 +205,9 @@ def main():
                     f"-DCEF_ROOT={sdk}", f"-DTILO_BLOCKER_LIBRARY={blocker}", "-DCMAKE_BUILD_TYPE=Release",
                     f"-DTILO_OUTPUT_DIR={ROOT / 'target/chromium'}"], check=True, env=env)
     subprocess.run([cmake, "--build", str(build), "--parallel", str(args.jobs)], check=True, env=env)
+    if args.runtime:
+        engine = install_runtime(ROOT / "target/chromium", args.runtime, shutil.which("strip"))
+        print(f"Engine runtime tree: {engine}", flush=True)
 
 
 if __name__ == "__main__":

@@ -44,6 +44,7 @@ use super::access_keys::{
     BounceKeys, BounceVerdict, ButtonEdge, MouseKeys, MouseKeysOutput, PointerButton,
 };
 use super::devices::{ModeInfo, filter_kms_nodes, is_kms_node, order_by_connected_connectors};
+use super::direct_retry::DirectDegradation;
 #[cfg(test)]
 use super::gestures::GestureAction;
 use super::gestures::{GestureConfig, GestureTracker};
@@ -1553,8 +1554,9 @@ impl DrmDispatchState {
                 color_transform: None,
                 color_buffer: Vec::new(),
                 direct_targets: None,
-                direct_unavailable: None,
-                hdr_direct_unavailable: None,
+                direct_ineligible: None,
+                direct_degradation: DirectDegradation::default(),
+                hdr_direct_degradation: DirectDegradation::default(),
                 hdr_failure: None,
                 powered_off: false,
                 signal_reported: OutputSignalStatus::default(),
@@ -3395,11 +3397,14 @@ pub struct ScanoutEntry {
     /// Lazily created same-device GBM/Vulkan targets. `None` means the safe
     /// readback presenter remains authoritative.
     pub direct_targets: Option<DirectScanoutTargets>,
-    /// Permanent failure for this output generation. Cleared only when a
-    /// lifecycle/topology boundary makes reprobe meaningful.
-    pub direct_unavailable: Option<String>,
-    /// HDR direct targets could not be made; HDR uses the readback path.
-    pub hdr_direct_unavailable: Option<String>,
+    /// Why this output's current shape cannot use direct scanout (more than
+    /// one output, a rotation, ...). Re-evaluated every frame.
+    pub direct_ineligible: Option<&'static str>,
+    /// Direct scanout failed: the readback presenter stands in until the
+    /// retry this records.
+    pub direct_degradation: DirectDegradation,
+    /// The same for HDR direct targets; HDR uses the readback path meanwhile.
+    pub hdr_direct_degradation: DirectDegradation,
     /// HDR could not be driven at all; the output fell back to SDR.
     pub hdr_failure: Option<settings_store::hardware::HdrUnavailable>,
     /// An output-power client switched this panel off. It is neither
@@ -3437,7 +3442,7 @@ impl ScanoutEntry {
             self.direct_targets = None;
         }
         if request.is_some() {
-            self.hdr_direct_unavailable = None;
+            self.hdr_direct_degradation.reset();
         }
         self.scanout.set_hdr_request(request);
     }

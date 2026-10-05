@@ -23,7 +23,8 @@ use ui::theme::Theme;
 
 use ui::accesskit::{
     Action as AccessAction, Node as AccessNode, NodeId as AccessNodeId, Rect as AccessRect,
-    Role as AccessRole, TreeId, TreeInfo, TreeUpdate,
+    Role as AccessRole, TextPosition as AccessTextPosition, TextSelection as AccessTextSelection,
+    TreeId, TreeInfo, TreeUpdate,
 };
 
 use crate::compositor::lock_auth::UNAVAILABLE_MSG;
@@ -47,6 +48,7 @@ const LOCK_MEDIA_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 5);
 pub const LOCK_MEDIA_PREVIOUS_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 6);
 pub const LOCK_MEDIA_PLAY_PAUSE_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 7);
 pub const LOCK_MEDIA_NEXT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 8);
+const LOCK_PASSWORD_TEXT_ID: AccessNodeId = AccessNodeId(LOCK_ID_BASE + 9);
 
 /// The transport button an accessibility node stands for. The lock tree has
 /// no other actionable media node: no player switching, no output routing.
@@ -533,6 +535,26 @@ fn locked_clock_label(view: &LockView<'_>) -> String {
     }
 }
 
+/// The password's text run, attached to `password` with the caret at its
+/// start. AccessKit offers AT-SPI `Text` and `EditableText` only on a field with
+/// a text run; this one stays empty whatever was typed, so it discloses
+/// neither the password nor its length.
+fn password_text_run(password: &mut AccessNode, bounds: Rect) -> AccessNode {
+    let mut run = AccessNode::new(AccessRole::TextRun);
+    run.set_value("");
+    run.set_bounds(access_rect(bounds));
+    let start = AccessTextPosition {
+        node: LOCK_PASSWORD_TEXT_ID,
+        character_index: 0,
+    };
+    password.set_text_selection(AccessTextSelection {
+        anchor: start,
+        focus: start,
+    });
+    password.set_children(vec![LOCK_PASSWORD_TEXT_ID]);
+    run
+}
+
 /// The locked semantic tree has one password target, matching the primary
 /// output. It never publishes a password or masked value to assistive tech.
 pub fn build_accessibility_tree(
@@ -572,6 +594,7 @@ pub fn build_accessibility_tree(
         // else, so it does not expose hidden desktop actions while locked.
         password.add_action(AccessAction::Click);
     }
+    let password_text = password_text_run(&mut password, layout.password);
 
     let mut help = AccessNode::new(AccessRole::Label);
     help.set_label(t("lock-screen-help"));
@@ -581,6 +604,7 @@ pub fn build_accessibility_tree(
     let mut nodes = vec![
         (LOCK_CLOCK_ID, clock),
         (LOCK_PASSWORD_ID, password),
+        (LOCK_PASSWORD_TEXT_ID, password_text),
         (LOCK_HELP_ID, help),
     ];
     if let (Some(player), Some(media)) = (
@@ -1474,6 +1498,19 @@ mod tests {
             assert!(password.supports_action(AccessAction::SetValue));
             assert!(password.supports_action(AccessAction::Click));
             assert_eq!(password.value(), None, "credential values never enter AT");
+            // AT-SPI Text and EditableText need a text run; it stays empty
+            // with the caret at its start, whatever length was typed.
+            assert_eq!(password.children(), [LOCK_PASSWORD_TEXT_ID].as_slice());
+            let (_, run) = update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == LOCK_PASSWORD_TEXT_ID)
+                .expect("the password's text run is exported");
+            assert_eq!(run.role(), AccessRole::TextRun);
+            assert_eq!(run.value(), Some(""));
+            let selection = password.text_selection().expect("a caret");
+            assert_eq!(selection.focus.node, LOCK_PASSWORD_TEXT_ID);
+            assert_eq!(selection.focus.character_index, 0);
             assert!(
                 update.nodes.iter().all(|(_, node)| {
                     node.label()

@@ -78,18 +78,35 @@ pub struct Heightfield {
     pub height: usize,
     pub texture: Texture,
     pub values: Vec<f32>,
+    /// Cells per artwork unit: slopes are measured per unit, so the tooth
+    /// stands as high however finely it is sampled.
+    pub scale: f32,
 }
 
 impl Heightfield {
     /// The ground's tooth for a `width` by `height` grid; `scale` is cells
     /// per artwork unit, so the grain keeps its physical size.
     pub fn new(width: usize, height: usize, texture: Texture, scale: f32, seed: u64) -> Self {
+        Self::window((0, 0), width, height, texture, scale, seed)
+    }
+
+    /// The part of the ground [`Self::new`] would give at `scale` that
+    /// starts at cell `origin`, `width` by `height` cells: the same tooth,
+    /// cell for cell, without the cells outside it.
+    pub fn window(
+        origin: (usize, usize),
+        width: usize,
+        height: usize,
+        texture: Texture,
+        scale: f32,
+        seed: u64,
+    ) -> Self {
         let scale = scale.max(0.05);
         let mut values = Vec::with_capacity(width.saturating_mul(height));
         for y in 0..height {
             for x in 0..width {
-                let px = float(x) / scale;
-                let py = float(y) / scale;
+                let px = float(x.saturating_add(origin.0)) / scale;
+                let py = float(y.saturating_add(origin.1)) / scale;
                 values.push(height_at(texture, px, py, seed));
             }
         }
@@ -98,6 +115,7 @@ impl Heightfield {
             height,
             texture,
             values,
+            scale,
         }
     }
 
@@ -112,7 +130,7 @@ impl Heightfield {
         let last_y = self.height.saturating_sub(1);
         let across = self.at(x.saturating_add(1).min(last_x), y) - self.at(x.saturating_sub(1), y);
         let down = self.at(x, y.saturating_add(1).min(last_y)) - self.at(x, y.saturating_sub(1));
-        0.5 * (across * dx + down * dy)
+        0.5 * (across * dx + down * dy) * self.scale
     }
 
     /// The lit ground, as opaque straight-alpha sRGB RGBA8.
@@ -125,7 +143,7 @@ impl Heightfield {
                 let left = self.at(x.saturating_sub(1), y);
                 let up = self.at(x, y.saturating_sub(1));
                 // Light from the upper left: rising slopes toward it brighten.
-                let slope = (here - left) + (here - up);
+                let slope = ((here - left) + (here - up)) * self.scale;
                 let shade = 1.0 + relief * (0.22 * slope + 0.05 * (here - 0.5));
                 let lit = colour.scale(shade);
                 rgba.push(encode8(from_linear(lit.r)));

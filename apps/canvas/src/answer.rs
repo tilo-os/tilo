@@ -23,7 +23,23 @@ const MOSTLY: f64 = 0.75;
 /// The answer to `action`, which changed `doc` as `changes`.
 pub fn answer(doc: &Doc, action: &str, changes: &[Patch]) -> Option<Value> {
     match action {
-        "select" => Some(json!({"selection": selection(&crate::doc::read(doc))})),
+        "select" => {
+            let mut answer = json!({"selection": selection(&crate::doc::read(doc))});
+            if let (Some(found), Some(fields)) =
+                (crate::subject::take_found(), answer.as_object_mut())
+            {
+                fields.insert(
+                    "found_by".into(),
+                    json!({
+                        "model": found.model,
+                        "load_ms": found.load_ms,
+                        "infer_ms": found.infer_ms,
+                        "refine_ms": found.refine_ms,
+                    }),
+                );
+            }
+            Some(answer)
+        }
         "paint" | "draw" | "use-selection" => {
             let added = added(changes);
             if added.is_empty() {
@@ -86,6 +102,12 @@ pub fn selection(art: &Artwork) -> Value {
         && let Some(fields) = summary.as_object_mut()
     {
         fields.insert("feather".into(), rounded(selection.feather).into());
+    }
+    if selection.matte.is_some()
+        && let Some(fields) = summary.as_object_mut()
+    {
+        // A mask made of it is soft where the picture's edge is.
+        fields.insert("edge".into(), "refined".into());
     }
     summary
 }

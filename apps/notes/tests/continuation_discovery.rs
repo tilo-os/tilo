@@ -76,13 +76,12 @@ fn destination_ids(encoded: &EncodedAction, source: Uuid, duplicate: bool) -> BT
         assert_eq!(ids.len(), 2, "every copied page receives an id of its own");
         ids
     } else {
-        let NotesAction::UpsertPage(page) = action else {
+        let NotesAction::AppendPage { id, title, parent } = action else {
             panic!("expected creation of the missing daily note");
         };
-        assert!(page.parent.is_empty());
-        assert_eq!(page.order, 2, "append after the fixture's two root notes");
-        assert!(chrono::NaiveDate::parse_from_str(&page.title, "%Y-%m-%d").is_ok());
-        BTreeSet::from([page.id.parse().unwrap()])
+        assert!(parent.is_empty());
+        assert!(chrono::NaiveDate::parse_from_str(&title, "%Y-%m-%d").is_ok());
+        BTreeSet::from([id.parse().unwrap()])
     }
 }
 

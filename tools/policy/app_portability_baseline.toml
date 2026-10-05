@@ -1,3 +1,4 @@
+
 # Platform code that apps and the SDK's portable crates still contain
 # (tools/policy/check_app_portability.py, rules in app_portability_rules.toml).
 # Keyed package -> rule -> count. Counts may only fall: lower an entry when you
@@ -220,7 +221,7 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 321
-W1 = 19
+R1 = 318
+W1 = 18
 W2 = 2
-W3 = 80
+W3 = 77

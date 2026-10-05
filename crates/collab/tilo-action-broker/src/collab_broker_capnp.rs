@@ -1195,6 +1195,7 @@ impl PendingInvocation {
 mod action_host;
 mod app_consent;
 mod launchable;
+mod local_action_host;
 
 pub use launchable::launchable_provider;
 #[path = "desktop_commands.rs"]
@@ -3199,6 +3200,7 @@ impl CapnpBrokerState {
     }
 
     /// Stand in for an application's invocation stream on `peer_id`.
+    /// The fixture receives the full envelope, including its stable invocation UUID.
     #[cfg(any(test, feature = "test-support"))]
     pub fn capture_invocations_for_test(
         &self,
@@ -3207,6 +3209,9 @@ impl CapnpBrokerState {
         let (tx, rx) = mpsc::unbounded_channel();
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.insert(peer_id, tx);
+        }
+        if let Ok(mut stable) = self.stable_invocation_subscribers.lock() {
+            stable.insert(peer_id);
         }
         rx
     }
@@ -4244,11 +4249,32 @@ impl CapnpBrokerState {
         inputs: InvocationInputs<'_>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
+        self.start_invocation_from_offered_origin(peer_id, offered, inputs, revision, None)
+    }
+
+    fn start_invocation_from_offered_origin(
+        &self,
+        peer_id: u64,
+        offered: (PublishedSurface, PublishedAction),
+        inputs: InvocationInputs<'_>,
+        revision: Option<&str>,
+        origin: Option<InvocationCaller>,
+    ) -> Result<InvocationJob, String> {
         let _admission = self
             .admission_lock
             .lock()
             .map_err(|_| "invocation admission unavailable")?;
-        self.dispatch_invocation_from_offered(peer_id, offered, inputs, None, revision)
+        self.dispatch_invocation_from_offered_owned(
+            peer_id,
+            offered,
+            inputs,
+            AdmissionProvenance {
+                durable: None,
+                revision,
+                origin,
+                retained_time: None,
+            },
+        )
     }
 
     fn dispatch_invocation_from_offered(
@@ -4304,7 +4330,31 @@ impl CapnpBrokerState {
         );
         owner.validate()?;
         // Never trust an envelope's invoker: the host sets it.
-        let context = invoker::host_set_invoker(context, actor)?;
+        let context = invoker::host_set_invoker(context, actor, execution.as_ref())?;
+        // A certified local origin retains its original registered clock and
+        // exact person/room through an asynchronous directory lookup. Never
+        // recapture a replacement origin at dispatch or accept a payload actor.
+        let original_time = if let Some(InvocationCaller::Certified { caller, .. }) = &origin {
+            let admitted = self.current_action_caller(caller)?;
+            if caller.room != offered.0.route.cluster_id
+                || actor.is_agent
+                || actor.id != admitted.principal_id
+            {
+                return Err("original caller does not match the invocation route or actor".into());
+            }
+            Some(
+                caller
+                    .policy_time
+                    .as_ref()
+                    .ok_or("original policy clock unavailable")?,
+            )
+        } else {
+            None
+        };
+        if original_time.is_some() && (durable.is_some() || retained_time.is_some()) {
+            return Err("duplicate original invocation custody".into());
+        }
+        let retained_time = original_time.or(retained_time);
         let policy_time = match (durable, retained_time) {
             (Some(context), None) => self.checked_policy_time(context.time())?.0,
             (None, Some(original)) => self.checked_policy_time(Some(original))?.0,
@@ -4369,7 +4419,7 @@ impl CapnpBrokerState {
                 &offered.1,
             )?;
         }
-        if durable.is_some()
+        if (durable.is_some() || execution.is_some())
             && !self
                 .stable_invocation_subscribers
                 .lock()
@@ -4419,7 +4469,10 @@ impl CapnpBrokerState {
             .map_err(|_| "invocation handle space exhausted")?;
         let invocation = match durable {
             Some(context) => context.invocation(),
-            None => tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+            None => execution.as_ref().map_or_else(
+                || tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id))),
+                ExecutionScope::invocation,
+            ),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let mut receipt_context = tilo_actions::ActionContext::for_resource(
@@ -4471,7 +4524,7 @@ impl CapnpBrokerState {
         registry.insert(
             id,
             PendingInvocation {
-                activity: ActivityTarget::new(execution, actor, &offered.0, &offered.1),
+                activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
                 original: OriginalInvocationData::capture(
@@ -4491,6 +4544,7 @@ impl CapnpBrokerState {
                     revision,
                     durable.map(DurableContext::origin).or(origin),
                     policy_time.clone(),
+                    execution.as_ref().map(ExecutionScope::lease),
                 ),
                 policy_time,
                 journal_key,
@@ -7330,6 +7384,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        // The app the launcher attested, else the one this channel names.
+        let (app, room) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map_or_else(
+                || {
+                    let route = self.route();
+                    (route.app_id, route.cluster_id)
+                },
+                |app| (app.app_id.clone(), app.workspace_id.clone()),
+            );
+        let delivered = invocation_delivery_notice(&self.state.services, app, room);
         let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -7337,6 +7404,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 &self.verified_identity,
             ),
             rx: Rc::new(AsyncMutex::new(rx)),
+            delivered,
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -9256,9 +9324,22 @@ impl realtime_stream::Server for RealtimeStreamServer {
     }
 }
 
+/// What the host is told each time an invocation is handed to `app` in
+/// `room`; nothing when no launcher hosts it.
+fn invocation_delivery_notice(
+    services: &HostServices,
+    app: String,
+    room: String,
+) -> Option<Box<dyn Fn()>> {
+    let launcher = services.launcher.clone().filter(|_| !app.is_empty())?;
+    Some(Box::new(move || launcher.note_acted_on(&app, &room)))
+}
+
 struct InvocationStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+    /// Told each time an invocation is handed to the app.
+    delivered: Option<Box<dyn Fn()>>,
 }
 
 struct TaskRunStreamServer {
@@ -9322,6 +9403,9 @@ impl invocation_stream::Server for InvocationStreamServer {
             })?;
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            if let Some(delivered) = &self.delivered {
+                delivered();
+            }
             let mut result = results.get();
             result.set_id(invocation.id);
             result.set_invocation_uuid(invocation.invocation.0.as_bytes());
@@ -10362,10 +10446,104 @@ async fn has_collab_launch_marker(stream: &tokio::net::UnixStream) -> Result<boo
     ))
 }
 
+/// A launcher's handoff, read whole: the stream is now where the app's
+/// first Cap'n Proto message begins.
+struct LauncherHandoff {
+    handoff: CollabLaunchHandoff,
+    pid: u32,
+    media_process: Option<native_media::PeerProcess>,
+}
+
+/// Why a connection was refused before its first Cap'n Proto call.
+struct LaunchRefusal {
+    error: capnp::Error,
+    /// What the connection said it was, as far as it got: the process and
+    /// the app and room its launcher named.
+    peer: String,
+    /// The handoff was read whole, so the app can still be told the reason
+    /// over Cap'n Proto instead of seeing its connection reset.
+    answerable: bool,
+}
+
 async fn authenticate_launcher_handoff(
     stream: &mut tokio::net::UnixStream,
     services: &HostServices,
-) -> Result<Option<Arc<native_media::LocalAppConnection>>, capnp::Error> {
+) -> Result<Option<Arc<native_media::LocalAppConnection>>, LaunchRefusal> {
+    let LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    } = match read_launcher_handoff(stream).await {
+        Ok(Some(read)) => read,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            let peer = stream.peer_cred().ok().and_then(|c| c.pid()).map_or_else(
+                || "a peer without credentials".to_owned(),
+                |pid| format!("pid {pid}"),
+            );
+            return Err(LaunchRefusal {
+                error,
+                peer,
+                answerable: false,
+            });
+        }
+    };
+    let peer = format!(
+        "pid {pid} launching {} in room {}",
+        handoff.app_id, handoff.workspace_id
+    );
+    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
+        || handoff.app_id.trim().is_empty()
+        || handoff.workspace_id.trim().is_empty()
+    {
+        return Err(LaunchRefusal {
+            error: capnp::Error::failed(
+                "collaboration launch handoff has an unsupported or empty identity".into(),
+            ),
+            peer,
+            answerable: true,
+        });
+    }
+
+    // `spawn_launch` records immediately after `Command::spawn`; the child
+    // can connect first on a fast machine. Retry only this narrow registration
+    // race. A direct tilo-launcher command never obtains a record and fails
+    // closed instead of becoming a way around admin/admission checks.
+    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
+        if services.launcher.as_ref().is_some_and(|service| {
+            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
+        }) {
+            return Ok(media_process.and_then(|process| {
+                native_media::LocalAppConnection::attested(
+                    handoff.app_id,
+                    handoff.workspace_id,
+                    process,
+                )
+            }));
+        }
+        if attempt < LAUNCH_RECORD_RACE_RETRIES {
+            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
+        }
+    }
+    let error = if services.launcher.is_none() {
+        "collaboration launch cannot be attested: this broker has no launcher service"
+    } else {
+        "collaboration launch is not an authenticated shell-managed process: the \
+         shell holds no live launch record for this process, app and room (an app \
+         started by hand through tilo-launcher, or one whose record expired)"
+    };
+    Err(LaunchRefusal {
+        error: capnp::Error::failed(error.into()),
+        peer,
+        answerable: true,
+    })
+}
+
+/// Read the launcher's marker and handoff off `stream`; `None` for a raw
+/// client that sent no marker.
+async fn read_launcher_handoff(
+    stream: &mut tokio::net::UnixStream,
+) -> Result<Option<LauncherHandoff>, capnp::Error> {
     if !has_collab_launch_marker(stream).await? {
         return Ok(None);
     }
@@ -10425,39 +10603,37 @@ async fn authenticate_launcher_handoff(
     let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })?;
-    if handoff.protocol != collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION
-        || handoff.app_id.trim().is_empty()
-        || handoff.workspace_id.trim().is_empty()
-    {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an unsupported or empty identity".into(),
-        ));
-    }
-
-    // `spawn_launch` records immediately after `Command::spawn`; the child
-    // can connect first on a fast machine. Retry only this narrow registration
-    // race. A direct tilo-launcher command never obtains a record and fails
-    // closed instead of becoming a way around admin/admission checks.
-    for attempt in 0..=LAUNCH_RECORD_RACE_RETRIES {
-        if services.launcher.as_ref().is_some_and(|service| {
-            service.attest_process(pid, &handoff.app_id, &handoff.workspace_id)
-        }) {
-            return Ok(media_process.and_then(|process| {
-                native_media::LocalAppConnection::attested(
-                    handoff.app_id,
-                    handoff.workspace_id,
-                    process,
-                )
-            }));
-        }
-        if attempt < LAUNCH_RECORD_RACE_RETRIES {
-            tokio::time::sleep(LAUNCH_RECORD_RACE_DELAY).await;
-        }
-    }
-    Err(capnp::Error::failed(
-        "collaboration launch is not an authenticated shell-managed process".into(),
-    ))
+    Ok(Some(LauncherHandoff {
+        handoff,
+        pid,
+        media_process,
+    }))
 }
+
+/// Tell a refused app why over the protocol it speaks: every call on the
+/// service it bootstraps fails with `error`. Dropping the socket instead
+/// leaves its first message unread, and the app only sees its connection
+/// reset. Bounded, so a peer that never hangs up holds nothing for long.
+#[allow(
+    clippy::future_not_send,
+    reason = "Cap'n Proto RPC is Rc-backed and runs only on the broker LocalSet"
+)]
+async fn answer_refused_launch(stream: tokio::net::UnixStream, error: capnp::Error) {
+    let (reader, writer) = stream.into_split();
+    let network = Box::new(twoparty::VatNetwork::new(
+        futures::io::BufReader::new(reader.compat()),
+        futures::io::BufWriter::new(writer.compat_write()),
+        rpc_twoparty_capnp::Side::Server,
+        capnp::message::ReaderOptions::default(),
+    ));
+    let refused: collab_service::Client =
+        capnp_rpc::new_future_client(std::future::ready(Err(error)));
+    let rpc = RpcSystem::new(network, Some(refused.client));
+    let _ = tokio::time::timeout(REFUSED_LAUNCH_ANSWER_WINDOW, rpc).await;
+}
+
+/// How long a refused app's connection is kept open to hear why.
+const REFUSED_LAUNCH_ANSWER_WINDOW: Duration = Duration::from_secs(5);
 
 #[allow(
     clippy::future_not_send,
@@ -10477,7 +10653,23 @@ async fn drive_connection(
     };
     let mut stream = stream;
     let local_media = if worker.is_none() {
-        authenticate_launcher_handoff(&mut stream, &state.services).await?
+        match authenticate_launcher_handoff(&mut stream, &state.services).await {
+            Ok(local_media) => local_media,
+            Err(refusal) => {
+                // Error, not warning: an app the shell launched is about to
+                // exit for this, and the default session log keeps errors only.
+                tracing::error!(
+                    peer_id,
+                    peer = %refusal.peer,
+                    reason = %refusal.error,
+                    "capnp broker: refused a collaboration connection before its first call",
+                );
+                if refusal.answerable {
+                    answer_refused_launch(stream, refusal.error).await;
+                }
+                return Ok(());
+            }
+        }
     } else {
         None
     };
@@ -10835,6 +11027,109 @@ pub mod tests {
             "an operation admitted before shutdown keeps its non-retryable identity"
         );
         state.stop();
+    }
+
+    /// An app whose launch the shell holds no record of (one started by hand
+    /// through tilo-launcher, or one whose record is gone) is refused. It used
+    /// to be refused by dropping its socket with its first call unread, so the
+    /// app saw only "Connection reset by peer" and the shell logged nothing it
+    /// keeps. The app must hear why, as an ordinary failed call.
+    #[test]
+    fn an_unattested_launch_is_told_why_it_was_refused() {
+        struct NoLaunchRecords;
+        impl crate::services::LauncherServices for NoLaunchRecords {
+            fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                Vec::new()
+            }
+            fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                Err("this broker launches nothing".into())
+            }
+            fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                false
+            }
+        }
+        let directory = tempfile::tempdir().expect("temporary socket directory");
+        let socket = lifecycle_socket(&directory, "unattested");
+        let config = crate::peer_actions::NativePeerBrokerConfig {
+            journal_root: directory.path().join("unattested-invocations"),
+            certificate_authority: Arc::new(LifecycleAuthority),
+        };
+        let _broker = crate::collab_broker::spawn_with_test_services(
+            socket.clone(),
+            None,
+            PeerPublisher::disabled(),
+            Some(&config),
+            HostServices {
+                launcher: Some(Arc::new(NoLaunchRecords)),
+                ..Default::default()
+            },
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("test broker");
+
+        // What tilo-launcher writes before handing the descriptor to the app.
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).expect("connect");
+        let handoff = serde_json::to_vec(&serde_json::json!({
+            "protocol": collab_types::local_transport::COLLAB_LAUNCH_PROTOCOL_VERSION,
+            "app_id": "so.tilo.calculator",
+            "workspace_id": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        }))
+        .expect("handoff json");
+        std::io::Write::write_all(
+            &mut stream,
+            &collab_types::local_transport::COLLAB_LAUNCH_MAGIC,
+        )
+        .expect("marker");
+        std::io::Write::write_all(
+            &mut stream,
+            &launcher::services::COLLAB_LAUNCH_FRAMING
+                .encode(&handoff)
+                .expect("framed handoff"),
+        )
+        .expect("handoff");
+        stream.set_nonblocking(true).expect("nonblocking");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let error = tokio::task::LocalSet::new().block_on(&runtime, async move {
+            let stream = tokio::net::UnixStream::from_std(stream).expect("tokio stream");
+            let (reader, writer) = stream.into_split();
+            let network = Box::new(twoparty::VatNetwork::new(
+                futures::io::BufReader::new(reader.compat()),
+                futures::io::BufWriter::new(writer.compat_write()),
+                rpc_twoparty_capnp::Side::Client,
+                capnp::message::ReaderOptions::default(),
+            ));
+            let mut rpc = RpcSystem::new(network, None);
+            let client = runtime_collab::CollabClient::from_raw(
+                rpc.bootstrap(rpc_twoparty_capnp::Side::Server),
+            );
+            tokio::task::spawn_local(async move {
+                let _ = rpc.await;
+            });
+            match client
+                .join_channel(
+                    "5ba25f73-87c5-447f-a5a6-880dc4249a81#app:so.tilo.calculator",
+                    b"",
+                )
+                .await
+            {
+                Ok(_) => panic!("an unattested launch joined a channel"),
+                Err(error) => error.to_string(),
+            }
+        });
+        assert!(
+            error.contains("not an authenticated shell-managed process"),
+            "the refused app must learn why, not see its connection reset: {error}",
+        );
+        assert!(
+            !error.contains("reset by peer"),
+            "the refusal arrived as a reset: {error}",
+        );
     }
 
     #[test]
@@ -11566,6 +11861,13 @@ pub mod tests {
             self.directory_state.borrow_mut().resolve_mode = mode;
         }
 
+        pub fn take_invocation_identity(&mut self) -> Option<(u64, tilo_actions::InvocationId)> {
+            self.invocation_rx
+                .try_recv()
+                .ok()
+                .map(|invocation| (invocation.id, invocation.invocation))
+        }
+
         pub fn take_invocation_actor(&mut self) -> Option<String> {
             self.invocation_rx
                 .try_recv()
@@ -11722,12 +12024,7 @@ pub mod tests {
                 },
             );
         state.refresh_action_directory_root_snapshot();
-        let (invocation_tx, invocation_rx) = tokio::sync::mpsc::unbounded_channel();
-        state
-            .invocation_subscribers
-            .lock()
-            .expect("invocation subscribers")
-            .insert(peer_id, invocation_tx);
+        let invocation_rx = state.capture_invocations_for_test(peer_id);
         fanout.attach_capnp(Arc::clone(&state));
         LocalDirectoryFixture {
             _fanout: fanout,
@@ -11903,6 +12200,59 @@ pub mod tests {
         let after_disconnect = fixture.state.action_directory_root_page(Some(128), 1);
         assert!(after_disconnect.roots.is_empty());
         assert!(after_disconnect.generation > second.generation);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
+        use tilo_actions::remote::{
+            Caller, InvokeArgument, InvokeRequest, PendingPoll, RemoteActionTarget,
+        };
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let mut fixture = local_directory_fixture();
+                let caller = Caller::local_person("fixture-owner")
+                    .in_room(fixture.cluster_id.clone())
+                    .in_new_execution();
+                let request = InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: fixture.peer_id.to_string(),
+                        address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: Some("directory-r1".into()),
+                };
+                let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
+                let admitted = tokio::time::timeout(Duration::from_secs(2), async {
+                    loop {
+                        drain_directory_bridge(&fixture).await;
+                        if let PendingPoll::Ready(result) = pending.poll_ready() {
+                            break result;
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .expect("bounded actual directory admission");
+                admitted.expect("full-envelope consumer supports scoped invocation UUIDs");
+                let (job, delivered) = fixture.take_invocation_identity().expect("actual delivery");
+                assert_eq!(delivered, request.invocation);
+                assert_ne!(delivered.0, uuid::Uuid::from_u128(u128::from(job)));
+                fixture
+                    .complete_invocation(
+                        job,
+                        &tilo_actions::InvocationUpdate::Succeeded {
+                            invocation: delivered,
+                            output: tilo_actions::ActionOutput::default(),
+                        },
+                    )
+                    .await
+                    .expect("actual peer-bound completion accepts the delivered UUID");
+                assert!(fixture.take_invocation_identity().is_none());
+            })
+            .await;
     }
 
     #[test]
@@ -13887,6 +14237,7 @@ pub mod tests {
                             capnp_rpc::new_client(InvocationStreamServer {
                                 host_guard: None,
                                 rx: rx.clone(),
+                                delivered: None,
                             });
                         let response = stream.read_request().send().promise.await.unwrap();
                         assert_eq!(response.get().unwrap().get_id(), wire_id);
@@ -14027,6 +14378,7 @@ pub mod tests {
                         capnp_rpc::new_client(InvocationStreamServer {
                             host_guard: None,
                             rx: rx.clone(),
+                            delivered: None,
                         });
                     let response = stream.read_request().send().promise.await.unwrap();
                     let delivered = response.get().unwrap();
@@ -14348,6 +14700,74 @@ pub mod tests {
                 );
                 assert!(fixture.invocation_rx.try_recv().is_err());
             }
+        }
+
+        /// An agent, a device admin or another device drives an app through
+        /// its actions. The host learns of each invocation the app is handed,
+        /// so a window the app closes because of it is not taken for one it
+        /// lost.
+        #[tokio::test(flavor = "current_thread")]
+        async fn the_host_learns_each_invocation_an_app_is_handed() {
+            struct Recording(Mutex<Vec<(String, String)>>);
+            impl crate::services::LauncherServices for Recording {
+                fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                    Vec::new()
+                }
+                fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                    Err("this host launches nothing".into())
+                }
+                fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                    false
+                }
+                fn note_acted_on(&self, app: &str, room: &str) {
+                    self.0.lock().unwrap().push((app.into(), room.into()));
+                }
+            }
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let recording = Arc::new(Recording(Mutex::new(Vec::new())));
+                    let services = HostServices {
+                        launcher: Some(recording.clone()),
+                        ..Default::default()
+                    };
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let stream: invocation_stream::Client =
+                        capnp_rpc::new_client(InvocationStreamServer {
+                            host_guard: None,
+                            rx: Rc::new(AsyncMutex::new(rx)),
+                            delivered: invocation_delivery_notice(
+                                &services,
+                                "so.tilo.notes".into(),
+                                "room-7".into(),
+                            ),
+                        });
+                    assert!(recording.0.lock().unwrap().is_empty());
+                    tx.send(InvocationEnvelope {
+                        id: 1,
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(1)),
+                        resource: "window".into(),
+                        action: "close".into(),
+                        argument: None,
+                        actor: "agent:assistant".into(),
+                        context: None,
+                    })
+                    .unwrap();
+                    stream.read_request().send().promise.await.unwrap();
+                    assert_eq!(
+                        *recording.0.lock().unwrap(),
+                        vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
+                    );
+                    assert!(
+                        invocation_delivery_notice(
+                            &HostServices::default(),
+                            "a".into(),
+                            "r".into()
+                        )
+                        .is_none(),
+                        "a host without a launcher has no one to tell"
+                    );
+                })
+                .await;
         }
 
         #[tokio::test(flavor = "current_thread")]

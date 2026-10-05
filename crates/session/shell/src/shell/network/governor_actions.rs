@@ -21,9 +21,23 @@ struct GovernorRoute {
     source: [u8; 32],
     target: [u8; 32],
     governor_user: [u8; 32],
+    /// The governor is a host (a relay governing the room as a service),
+    /// which runs no apps.
+    governor_hosts: bool,
 }
 
 impl GovernorRoute {
+    /// Whether another device governs the room.
+    fn elsewhere(&self) -> bool {
+        self.source != self.target
+    }
+
+    /// Whether the room's governor opens its apps: another device that runs
+    /// them, not a host.
+    fn opens_apps(&self) -> bool {
+        self.elsewhere() && !self.governor_hosts
+    }
+
     async fn ask(
         &self,
         commands: &mpsc::Sender<NetCmd>,
@@ -155,6 +169,7 @@ impl ShellNetwork {
                 source: view.device().device_public_key,
                 target: view.governor().device_public_key,
                 governor_user: view.governor().user_public_key,
+                governor_hosts: view.governor().capabilities.can_act_as_host,
             })
         })
     }
@@ -163,7 +178,15 @@ impl ShellNetwork {
     /// and records are created by that governor.
     pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
         self.governor_route(room)
-            .is_ok_and(|route| route.source != route.target)
+            .is_ok_and(|route| route.elsewhere())
+    }
+
+    /// Whether `room`'s governor opens the apps launched in it, creating
+    /// and placing their records. A host governing it runs no apps: this
+    /// session opens them itself, as it does its legacy windows.
+    pub(crate) fn governor_opens_apps(&self, room: RoomId) -> bool {
+        self.governor_route(room)
+            .is_ok_and(|route| route.opens_apps())
     }
 
     /// Invoke `resource`/`action` of `app_id` on `room`'s governor with
@@ -247,6 +270,23 @@ mod tests {
         let room = tree.read().desktop.workspaces[0].room;
         let (net, _commands) = super::super::shell_network_for_test(tree, 0);
         assert!(!net.governed_elsewhere(room));
+        assert!(!net.governor_opens_apps(room));
+    }
+
+    #[test]
+    fn only_a_governing_device_opens_apps_not_a_host() {
+        let route = |target: u8, governor_hosts| super::GovernorRoute {
+            ws: 1,
+            room: uuid::Uuid::nil(),
+            source: [1; 32],
+            target: [target; 32],
+            governor_user: [9; 32],
+            governor_hosts,
+        };
+        assert!(route(2, false).opens_apps(), "a person's other device");
+        assert!(!route(2, true).opens_apps(), "a relay governing the room");
+        assert!(route(2, true).elsewhere());
+        assert!(!route(1, false).opens_apps(), "this device governs it");
     }
 
     #[test]

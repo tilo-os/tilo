@@ -166,7 +166,8 @@ impl ListRow {
             return;
         }
         let rect: Rect = Widget::get_rect(&self.content);
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.md));
+        let radius = f64::from(theme.tokens.radii.md);
+        let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -174,6 +175,26 @@ impl ListRow {
             None,
             &shape,
         );
+        // The chosen row's edge, as every chosen control in the toolkit has
+        // it: a hover lifts the fill alone, so the two never look alike.
+        if let Some(border) = tier.border {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &shape,
+            );
+        }
+        if let Some(glow) = tier.inner_glow {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                glow,
+                None,
+                &RoundedRect::from_rect(rect.inset(-1.0), (radius - 1.0).max(0.0)),
+            );
+        }
     }
 }
 

@@ -38,13 +38,13 @@ Unchecked entries need implementation or caller-level qualification.
 | P0 | Selection / multiselect | Cross-block text selection, subtree-aware indent/duplicate/move batches | Dedicated whole-block selection mode and delete/convert commands |
 | P1 | Move / drag and drop | Shared atomic selected sibling batches, per-ID group movement and semantic controls (increment 3) | Pointer batch dragging and browser qualification |
 | P1 | Duplicate / delete / convert | Shared duplication of focused/selected blocks and subtrees (increment 2); canonical insert/delete/style actions | Whole-block delete/convert batches and pointer menu |
-| P0 | Plain / rich / Markdown paste | Text clipboard, canonical paste vocabulary; cuts wait for accepted clipboard writes | Rich MIME negotiation, formatting/literal modes; atomic image replacement |
+| P0 | Plain / rich / Markdown paste | Text clipboard, accepted-write cuts, atomic native image replacement | Browser image transport, rich MIME negotiation, formatting/literal modes |
 | P0 | Markdown import/export | Notes `markdown`, canonical page projection | Nested/inline/code/table round trips; document extension limits |
 | P0 | Undo / redo | Canonical Notes actions; indent and duplicate atomicity/concurrency caller tests | Independent first-type undo-to-empty failure; remaining command qualification |
 | P0 | IME / Unicode / caret | Shared line/table composition guards, Unicode joins, safe copy selection | Browser/OS input-method qualification |
 | P0 | Keyboard / accessibility | Focus escape, canonical read-only refusals and semantic duplication | Pointer command menu and browser/native assistive-technology qualification |
 | P1 | Tables as content | Shared source/grid table editor and canonical cells | Qualify cell navigation, paste and round-trip consistency |
-| P1 | Find / replace | Shared `open_find`; Notes search provider | Replace absent; selection-safe Unicode replacement |
+| P1 | Find / replace | Shared find overlay, current-match and atomic Replace all actions | Advanced matching options and broader qualification |
 | P2 | Block anchors / mentions / backlinks | Notes resources, links and backlinks | Qualify reusable block links and cross-note references |
 
 ## Implementation sequence
@@ -241,3 +241,214 @@ Successful cuts retain their existing single canonical undo boundary.
 - Strict all-target Clippy passes again after that integration. The mandatory
   shell check reproduces the same 22 Darwin errors; both failing compositor
   modules are unchanged between the proven base and integrated main.
+
+### Independent increment: atomic image replacement
+
+Clipboard images now carry a stable selection intent to the shared rich-text
+surface. Notes validates the image and dispatches asset storage plus canonical
+replacement as one existing action. Undo restores both text and marks in one
+step; redo restores the image. No History implementation or schema changes.
+
+- The original Notes context-menu replacement failure and unavailable-clipboard
+  preview selection failure were reproduced before repair. Fourteen mounted
+  Notes clipboard tests now pass, covering keyboard/menu paste, rejected bytes,
+  retry, marked Unicode ranges, empty notes/rows, separator-only selections,
+  column-zero endpoint identity, peer text through undo, viewer and IME refusal.
+  Three existing image paste/drop/large-screenshot caller tests also pass.
+- Selection planning validates stable IDs, current source and compatible kinds
+  before mutation; unsupported child trees/attributes and peer-interleaved
+  ranges are refused. Prefix/suffix fragments retain all canonical marks,
+  including links and metadata not painted by the editor.
+- All 60 shared block-editor tests, four text-selection helper tests and 37
+  rich-text tests pass. Strict all-target Notes/SDK Clippy passes. Empty clipboard
+  strings are unavailable; whitespace remains pasteable. Image-preview paste
+  reads usable content before exposing its hidden source as a selection.
+- The standard offline WASM bundle builds. Browser image transport remains
+  unsupported: image-only ClipboardEvents are explicitly refused by the existing
+  browser host. This increment does not claim functional browser image paste.
+- Independent review found no remaining issues. Legacy fixture file storage
+  validates the target before writing; live notes retain canonical asset storage.
+- Four disposable Chrome checks pass: image-only refusal over selected text and
+  an image preview, refused cuts with accepted retry, and atomic cut undo. No
+  browser errors were recorded. Final WASM SHA-256:
+  `602825102932ac61a2192ee7db55a3e18873a2a0b8126c8e67522ba333ddc35a`.
+- Required shell test compilation reproduces the same 22 Darwin-only unresolved
+  compositor imports documented and proven at the clipboard-safety base. The
+  affected compositor modules are unchanged in this increment.
+
+### Independent increment: slash commands from committed text
+
+The shared editor now recognizes a single committed `/` as the same trigger as
+its native slash key. This matches browser `beforeinput` delivery without changing
+browser host routing. Preedit and multi-character inserts remain literal; code
+blocks retain their literal slash behavior. The existing menu owns subsequent
+committed filter text, keyboard navigation and conversion.
+
+- On exact main `945d8345b5`, the new mounted Notes regression inserted `/quote`
+  into the body instead of filtering the menu. It now passes with stable block
+  identity and direct one-step conversion undo/redo.
+- The first three focused Notes tests pass, including preedit/multi-character
+  refusal, literal code slashes and Escape preserving the typed source. The
+  existing Notes slash-menu focus/navigation caller also passes.
+- Review found the existing native slash anchor used the old caret when replacing
+  a forward selection. A new caller regression reproduced the leftover slash.
+  Both input routes now capture the normalized selection start; the regression
+  covers forward/reverse Unicode selections, surrounding source and stable IDs.
+- This does not release the held whole-block/callout conversions: their shared
+  History resurrection defect is independent of how the menu opens.
+- All four new Notes cases, the existing Notes focus case, all 60 shared
+  block-editor cases and four menu tests pass. Strict all-target Notes/UI Clippy
+  passes. Required shell compilation hits the same 22 Darwin-only unresolved
+  Linux compositor imports. Independent review found no remaining issues.
+- The standard offline WASM build and three disposable Chrome checks pass:
+  slash opening/filtering/conversion with direct undo/redo, Unicode with a soft
+  break, and forward-selection replacement preserving surrounding source and
+  one-step conversion undo/redo. No browser errors were recorded. WASM SHA-256:
+  `6a41395b0a98eae232a3c026b8647eb7324770f6499981ca31cfdd4963961231`.
+
+
+### Independent increment: replace the current find match
+
+The shared Find overlay adds a replacement field and Replace button. Tab moves
+between the two inputs, Enter in the replacement field replaces one match, F3
+navigates matches, and Escape closes the overlay. Pointer and semantic actions
+use the same command. The shared rich-text surface validates the captured block
+and match before one existing canonical `SpliceText` action; no schema or History
+changes are involved. Empty replacement deletes the match. Replacement is
+single-line (tabs allowed); Replace all and advanced matching options remain open.
+
+- Red: the mounted Notes caller had no find-query/replacement semantic targets.
+- Six actual Notes regressions pass: Unicode replacement, one-step undo/redo,
+  keyboard and pointer activation, marked suffix preservation, empty replacement,
+  peer text surviving undo, stale peer target refusal, viewer and IME safety,
+  and exclusive focus after navigation or replacing the final match.
+- This operation's concurrent-undo test passes independently of the unpublished
+  formatting increment's mark-inheritance failure. It edits a single existing
+  text object and does not recreate blocks.
+- Strict all-target Notes and SDK Clippy passes. Remaining SDK/browser results
+  are recorded after validation; no browser pass is inferred from compilation.
+- All 60 block-editor tests (including bounded typing work), both SearchField
+  tests and all 37 rich-text tests pass. Independent final review has no findings.
+- The standard offline WASM bundle builds. Disposable Chrome passes actual
+  Ctrl/Cmd+F entry, semantic Unicode replacement, empty replacement, atomic
+  undo/redo, and Tab/Enter replacement input. No browser errors were recorded.
+- Visual inspection found the default button footprint overlapping the input;
+  an explicit theme-scaled button size fixes it. The native pointer caller now
+  asserts the controls do not overlap; that regression and strict Clippy pass.
+- Required shell test compilation reproduces the same 22 baseline Darwin
+  compositor import errors. No compositor or History implementation was changed.
+
+
+### Independent increment: replace all find matches
+
+The shared replacement field supports a Replace all button and Shift+Enter.
+Both keyboard and semantic `notes.find:replace-all` activation use one canonical
+`ReplaceMatches` action. It validates disjoint character ranges and the aggregate
+text budget before mutation, then splices back to front without recreating blocks.
+This extends the action vocabulary without migrating stored documents or changing
+History. Matching retains the existing case-insensitive literal search behavior;
+regular expressions and whole-word options remain open.
+
+- The original real Notes caller regression failed because no Replace all target
+  existed. Twelve current Notes find/replace tests pass, including single and batch
+  replacement, Unicode, stable block IDs, one-step undo/redo, shortcut modifiers,
+  pointer activation, empty replacements, surviving link marks, IME/viewer refusal,
+  stale matches and newly inserted peer blocks, concurrent text surviving undo,
+  exclusive input focus, and replacements that themselves contain the query.
+- Two canonical tests cover shuffled Unicode character ranges, one replay envelope,
+  missing blocks, out-of-bounds/empty/reversed/overlapping/duplicate ranges, batch
+  size and aggregate insertion limits. Invalid batches leave document heads unchanged.
+- Each search captures one linear-size body snapshot. Replace all refuses if its
+  order or projected content changed; refreshing the query captures the new body.
+  Character offset conversion advances once through each source paragraph instead
+  of repeatedly scanning its prefix. The user must explicitly refresh a stale search.
+- Independent review found no remaining issues after adding keyboard activation and
+  reflecting the canonical insertion budget in button eligibility.
+- All 60 SDK block-editor tests and all 37 rich-text tests pass, including bounded
+  typing-work regressions. Strict all-target Clippy and repository checks pass.
+  Required shell test compilation reproduces the same 22 Darwin-only unresolved
+  Linux imports as the verified previous base; those compositor files are unchanged.
+- The standard offline Notes WASM bundle builds. Three disposable Chrome checks
+  pass for Unicode Replace all with stable IDs and one-step undo/redo, empty
+  replacements, and Shift+Enter when the replacement contains the query. No
+  browser errors were recorded. Final WASM SHA-256:
+  `82ab5a487728c603e2f1981a6f09bcb7d1c82f2ec5602a10260c3982f67d3962`.
+  Shift+Enter is the advertised cross-platform shortcut; the shared browser host
+  retains Ctrl/Cmd+Enter inside native text inputs, so no host routing was changed.
+- The Agent adapter maps every batch replacement span to the original block and
+  character range for its interaction anchor. A focused regression covers two
+  blocks, Unicode replacement text and unrelated focus. Strict Agent library
+  Clippy passes; independent review found no remaining issues in the adapter.
+  The focused Agent test and all-target check cannot run through their shell
+  dependency on Darwin: the same 22 unresolved Linux compositor imports stop
+  compilation before the new assertion. Linux CI must execute that regression.
+
+
+### Browser rich clipboard transport foundation
+
+Added an optional paired `RichTextOffer` to the shared clipboard API and event
+scope, and implemented it in the browser DataTransfer adapter. Both formats
+come from one event. HTML and its captured plain fallback each have a 1 MiB
+UTF-8 cap; the browser checks size before copying strings into WASM memory.
+Accepted rich offers consume the event once; missing, empty or oversized offers
+leave the existing plain read available. Nested scopes restore their outer
+state, and diagnostics report lengths rather than clipboard contents.
+
+- Eight native event-scope tests pass; strict clipboard all-target Clippy passes.
+- The production JavaScript bound checker passes 1,809 UTF-8 boundary/seeded
+  cases plus seven invalid-value/error cases, including surrogate handling.
+- Four disposable Chrome/WASM transport checks pass, including a real trusted
+  copy/paste event, paired Unicode content, one-read behavior and size refusal.
+  The temporary fixture export was removed before the production build.
+- The final production Notes WASM bundle builds; three real Notes browser
+  regressions pass with zero browser errors, and the fixture export is absent.
+- The required shell test compile still fails on the 22 established Darwin
+  compositor/Wayland import errors at this main base; no assertions weakened.
+- Extra strict WASM lint checks reproduce four advisory-lock errors and 31
+  browser-runtime errors with unchanged baseline browser source. None reports
+  the changed clipboard adapter; this is not a passing WASM lint qualification.
+- No browser host, geometry, authority, History or Wayland implementation changed
+  in this increment. Browser/Wayland file ownership is now confirmed separately.
+
+This is transport support, not released formatted Notes paste. Its SDK decoder
+and canonical caller remain on the History-held rich-paste branch. The current
+browser host also rejects HTML-only offers before dispatch; changing that host
+preflight requires its owner's scoped follow-up. Real Notes rich-paste
+undo/redo and full-browser caller qualification remain release gates.
+
+### Wayland paired clipboard transport (held for protocol qualification)
+
+The existing publication worker now requests HTML and its optional plain
+fallback from one focus-authorized `wl_data_offer`. Both formats have the shared
+1 MiB cap; nonblocking reads do at most eight 8 KiB syscalls per callback, validate
+UTF-8 at EOF, and expire after 40 ms. Replacement, keyboard Leave, seat removal,
+worker exit and backend teardown invalidate the cached offer and pending reads.
+An epoch prevents late publication after invalidation. Native backend forwarding
+uses the attached Wayland connection and does not acquire additional privileges.
+Existing image transfer limits and publication behavior are unchanged.
+
+Linux all-target compilation and strict Clippy pass with the installed target
+and Zig toolchain, offline and locked. Four production cache/reader tests compile;
+four new isolated compositor tests cover paired Unicode, completed-cache focus
+loss, plain replacement, NULL selection and deadline pipe closure/late-write
+refusal. Linux execution of these tests is still required before release.
+A separate private-socket protocol fixture now supplies four deterministic tests
+for selection-before-Enter, same-client surface switches, both-pipe cancellation
+on Leave/NULL, multi-seat authority, and the public 40 ms deadline. It waits for
+both seats to bind and uses a worker-queue protocol sync as its event barrier.
+Cancellation tests have one absolute failure deadline earlier than the private
+read budget, so timer expiry cannot make them pass. Both public constructors
+retain 40 ms. The fixture uses the already-locked Wayland server crate as a
+Linux-only dev-dependency; no dependency versions changed or downloads were
+required. Linux execution is still pending; these client-worker tests complement
+the real-compositor authorization tests. The local Linux shell cross-check stops
+in glib-sys because no Linux pkg-config sysroot is configured on this Mac.
+This transport does not release the History-held Notes rich-paste consumer.
+
+The first deterministic Linux run (`dd629311eb`, focused run 67474) executed all
+eight requested worker/cache cases: seven passed and pending NULL cancellation
+failed. SCTK 0.20 clears a NULL selection without invoking its selection callback.
+The adapter now forwards raw data-device events through SCTK and additionally
+processes NULL for rich text, preserving SCTK child initialization and the
+existing image handler. The both-pipe closure and late-write assertions remain
+unchanged; fixed-source execution is required before lifting the hold.

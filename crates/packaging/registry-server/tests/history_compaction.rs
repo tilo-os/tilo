@@ -88,6 +88,7 @@ fn registry(entries: usize) -> Registry {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1,

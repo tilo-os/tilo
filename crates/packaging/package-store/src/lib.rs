@@ -31,6 +31,7 @@
 
 pub mod catalog;
 pub mod integrity;
+pub mod interfaces;
 pub mod layout;
 pub mod registry;
 

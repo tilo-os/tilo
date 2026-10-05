@@ -1,9 +1,9 @@
-//! What a person's page does with a company node's legacy applications,
-//! from a native peer, against a running node: certify a browser device with
-//! the person's root, create and enter a workspace, find the session beside
-//! the node (`/node`), list the legacy applications it offers in the
-//! workspace, open one, and receive its window's frames on the live plane.
-//! Then close the window and see its stream end.
+//! What a person's page does with a company node's applications, from a
+//! native peer, against a running node: certify a browser device with the
+//! person's root, create and enter a workspace, find the session beside the
+//! node (`/node`), list the applications it offers in the workspace (legacy
+//! ones and Tilo apps such as Terminal), open one, and receive its window's
+//! frames on the live plane. Then close the window and see its stream end.
 //!
 //! ```text
 //! node_apps_probe --addr 127.0.0.1:8443 --cert-sha256 <hex> --root-key <file> --app chromium
@@ -19,6 +19,8 @@
 //! new frames afterwards. `--save FILE` writes the window's encoded frames
 //! (H.264, Annex B) from its first keyframe on, and prints how many came
 //! before the input, so a decoder can compare the picture before and after.
+//! `--leave-open` leaves the window open, as a person does who goes on to
+//! open another application beside it.
 
 #![allow(
     clippy::unwrap_used,
@@ -60,14 +62,19 @@ struct Args {
     app: String,
     keys: Option<String>,
     save: Option<std::path::PathBuf>,
+    leave_open: bool,
     deadline: Instant,
 }
 
 fn args() -> Args {
     let mut args = std::env::args().skip(1);
     let (mut addr, mut cert, mut root, mut app, mut seconds) = (None, None, None, None, 180);
-    let (mut keys, mut save) = (None, None);
+    let (mut keys, mut save, mut leave_open) = (None, None, false);
     while let Some(flag) = args.next() {
+        if flag == "--leave-open" {
+            leave_open = true;
+            continue;
+        }
         let value = args
             .next()
             .unwrap_or_else(|| panic!("{flag} needs a value"));
@@ -89,6 +96,7 @@ fn args() -> Args {
         app: app.expect("--app"),
         keys,
         save,
+        leave_open,
         deadline: Instant::now()
             .checked_add(Duration::from_secs(seconds))
             .expect("--seconds fits"),
@@ -320,8 +328,10 @@ async fn main() {
         .ok()?;
         page.rows.into_iter().find_map(|row| {
             let action = row.action.as_ref()?;
-            (action.resource_kind == "applications.host-app"
-                && action.address.action == "open"
+            (matches!(
+                action.resource_kind.as_str(),
+                "applications.host-app" | "applications.app"
+            ) && action.address.action == "open"
                 && action.resource_label.to_lowercase().contains(&args.app))
             .then(|| {
                 (
@@ -416,7 +426,10 @@ async fn main() {
                         if !watched.insert(stream.surface.clone()) {
                             continue;
                         }
-                        let named = !stream.app.starts_with("anon-");
+                        // Its own window: a splash screen has no application id, and
+                        // windows already open belong to other applications.
+                        let named = !stream.app.starts_with("anon-")
+                            && stream.app.to_lowercase().contains(&args.app);
                         println!(
                             "probe: stream {} {} {}x{}",
                             stream.surface, stream.app, stream.width, stream.height
@@ -468,6 +481,11 @@ async fn main() {
     );
     let surface = u64::from_str_radix(&stream.surface, 16).unwrap();
 
+    if args.leave_open {
+        println!("probe: left open; node apps ok");
+        peer.close();
+        return;
+    }
     // Driving it closes it at the session.
     let input = |events: Vec<wire::InputEvent>| {
         let (reply, answer) = tokio::sync::oneshot::channel();

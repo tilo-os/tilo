@@ -59,8 +59,8 @@ fn round_to_u32_px(v: f64) -> u32 {
 }
 
 /// Backends may render the exact physical request or quantize it through an
-/// integer logical viewport. Allow rounding in either direction (WPE rounds
-/// logical dimensions to nearest; CEF rounds outward). Integer device scales
+/// integer logical viewport. Allow rounding in either direction (an engine may
+/// round logical dimensions to nearest; CEF rounds outward). Integer device scales
 /// need at most scale - 1 pixels; fractional scales can add a final pixel when
 /// converting the logical viewport back to an integer physical buffer.
 fn frame_quantization_slack(scale_factor: f32) -> u32 {
@@ -375,6 +375,7 @@ impl Widget for WebView {
             &self.rect,
         );
 
+        self.engine.presented();
         self.share_page();
         // A display list replaces pixels: draw it like any other widget
         // content, in this toolkit's own text and Vello.
@@ -466,6 +467,19 @@ impl Widget for WebView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // Someone is using the page: it is on screen, whether or not a frame
+        // has been drawn since it came back.
+        if matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::KeyboardInput { .. }
+                | WindowEvent::Focused(true)
+                | WindowEvent::Occluded(false)
+        ) {
+            self.engine.presented();
+        }
         if (f64::from(self.scale_factor) - ctx.scale_factor).abs() > f64::EPSILON {
             self.scale_factor = to_f32(ctx.scale_factor);
             // Force a resize eagerly, to keep engine DPI in step without a re-layout.
@@ -1061,8 +1075,9 @@ mod tests {
 
         // Case `quantized_engine_frames_draw_on_either_side_of_requested_size`.
         {
-            // CEF rounds outward twice; WPE rounds the logical size to nearest.
-            // At 3x WPE's 802x451 request becomes 267x150 logical / 801x450 physical.
+            // CEF rounds outward twice; an engine rounding the logical size to
+            // nearest turns an 802x451 request at 3x into 267x150 logical /
+            // 801x450 physical.
             for (requested, painted, scale) in [
                 ((802, 451), (804, 452), 1.75),
                 ((802, 451), (801, 450), 3.0),

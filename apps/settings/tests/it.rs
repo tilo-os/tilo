@@ -42,6 +42,8 @@ mod category_nav;
 mod category_sidebar;
 #[path = "control_interaction.rs"]
 mod control_interaction;
+#[path = "narrow_navigation.rs"]
+mod narrow_navigation;
 #[path = "no_app_title_header.rs"]
 mod no_app_title_header;
 #[path = "scroll.rs"]

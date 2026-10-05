@@ -1493,8 +1493,12 @@ impl Widget for NavShell {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        let mut d = std::mem::take(&mut self.host_structure_dirty)
-            || self.host_interactive_panels != self.interactive_panels();
+        // Reported once, like every other flag here: a shell that is never
+        // built (an inactive tab) would otherwise ask for a new layout tree on
+        // every frame, since only `build_layout` would catch the panels up.
+        let panels = self.interactive_panels();
+        let panels_changed = std::mem::replace(&mut self.host_interactive_panels, panels) != panels;
+        let mut d = std::mem::take(&mut self.host_structure_dirty) || panels_changed;
         d |= self.overview.take_structure_dirty();
         if let Some(det) = self.detail.as_mut() {
             d |= det.take_structure_dirty();
@@ -1801,6 +1805,27 @@ mod tests {
             assert!(ns.take_structure_dirty());
             ns.close_sidebar();
             assert!(ns.take_structure_dirty());
+            assert!(
+                !ns.take_structure_dirty(),
+                "a panel change is reported once, whether or not the host rebuilds"
+            );
+        }
+
+        // Case `unbuilt_shell_settles`: a shell in a tab that is never shown
+        // has no layout tree to catch its panels up, and must not ask for
+        // one on every frame.
+        {
+            let mut ns = NavShell::sidebar_over_content(
+                Box::new(Text::new("places")),
+                Box::new(Text::new("files")),
+            );
+            let _ = ns.take_structure_dirty();
+            for frame in 0..3 {
+                assert!(
+                    !ns.take_structure_dirty(),
+                    "frame {frame}: an unbuilt shell keeps asking for a layout tree"
+                );
+            }
         }
 
         // Case `opaque_hold_deadline_reaches_host_through_modal_nav_shell`.

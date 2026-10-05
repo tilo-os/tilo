@@ -88,6 +88,7 @@ history-mode-unavailable = History unavailable
 history-mode-content-unavailable = Historical content unavailable
 history-mode-back-to-activity = Back to activity
 history-mode-back-to-live = Back to live
+history-mode-earlier = Show earlier changes
 history-mode-before = Before
 history-mode-after = After
 history-mode-showing-before = Historical: Before
@@ -426,3 +427,9 @@ widget-block-duplicate-selection = Duplicate selected or focused blocks
 
 widget-block-move-selection-up = Move selected blocks up
 widget-block-move-selection-down = Move selected blocks down
+
+block-editor-replace-placeholder = Replace with
+block-editor-replace = Replace
+
+block-editor-replace-all = Replace all
+block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field

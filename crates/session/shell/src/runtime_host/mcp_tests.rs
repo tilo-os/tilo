@@ -592,7 +592,7 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
     // The MCP client's allow/deny decision admitted the call, so an action
     // whose contract asks for confirmation runs.
     tokio::task::LocalSet::new().run_until(Box::pin(async {
-        let (fixture,room,actor)=fixture();
+        let (mut fixture,room,actor)=fixture();
         let actor_name=actor.clone();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         fixture.set_confirmation_required(true);
@@ -612,10 +612,14 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         assert_eq!(invocation.0.to_string(),id,"the update speaks in the caller's invocation id");
         let job=fixture.broker.statuses(&actor_name).into_iter().map(|(job,_)|job).max().expect("the broker job behind it");
         let output=tilo_actions::ActionOutput {value:Some(json!({"content":"sha256:123","width":200})),resources:vec!["content:sha256:123".into()]};
-        // The application answers in the broker's own id for its job; the
-        // caller keeps hearing about it under the id it chose.
-        let broker_invocation=tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
-        fixture.complete_invocation(job,&tilo_actions::InvocationUpdate::Succeeded {invocation:broker_invocation,output:output.clone()}).await.unwrap();
+        // Scoped applications answer with the exact stable UUID they received.
+        let (first_job,first_invocation)=fixture.take_invocation_identity().expect("first actual delivery");
+        let (delivered_job,delivered_invocation)=fixture.take_invocation_identity().expect("second actual delivery");
+        assert_ne!(first_job,delivered_job);
+        assert_ne!(first_invocation,delivered_invocation);
+        assert_eq!(delivered_job,job);
+        assert_eq!(delivered_invocation,invocation);
+        fixture.complete_invocation(job,&tilo_actions::InvocationUpdate::Succeeded {invocation:delivered_invocation,output:output.clone()}).await.unwrap();
         let update=tilo_actions::InvocationUpdate::Succeeded {invocation,output};
         let status=server.handle(call("tilo_status",&json!({"invocation_id":id}))).await.unwrap();
         assert_eq!(status["result"]["structuredContent"],json!({"invocation_id":id,"update":update}));
