@@ -2617,9 +2617,9 @@ mod bounded_tests {
 
         fn width_uses_shaping_and_legacy_open_resets_bounded_geometry() {
             let mut narrow = ContextMenu::new();
-            narrow.push(MenuItem::action(&"i".repeat(40), || {}));
+            narrow.push(MenuItem::action("i".repeat(40), || {}));
             let mut wide = ContextMenu::new();
-            wide.push(MenuItem::action(&"W".repeat(40), || {}));
+            wide.push(MenuItem::action("W".repeat(40), || {}));
             let mut text = TextRenderer::new();
             for menu in [&mut narrow, &mut wide] {
                 menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 1000.0, 1000.0));
