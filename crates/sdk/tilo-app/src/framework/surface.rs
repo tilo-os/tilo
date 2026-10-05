@@ -88,6 +88,12 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
     /// The resource state to show.
     fn present(&mut self, state: &Rc<R::State>);
 
+    /// A pending device-local request for the hosting shell, consumed once.
+    /// The host answers it through its permission flow; this callback lends no document.
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+        None
+    }
+
     /// The channel edits go through, and whether they will be accepted.
     /// Called once, before the first [`present`](Self::present).
     fn attach(&mut self, cx: SurfaceCx<R>) {
@@ -240,6 +246,7 @@ pub(crate) trait SurfacePublication<R: Resource> {
     fn live_row(&self, id: &str) -> Option<LiveRow>;
     fn row_declarations(&self, row: &str) -> Vec<ActionDecl<R>>;
     fn search_entries(&self) -> Vec<SearchEntry>;
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent>;
 }
 
 /// What a surface receives when attached.
@@ -748,6 +755,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
 impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfacePublication<R>
     for SurfaceHost<R, S, E>
 {
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+        self.surface.take_host_intent()
+    }
+
     fn bound_declarations(&self) -> Vec<ActionDecl<R>> {
         self.surface.bound_declarations()
     }

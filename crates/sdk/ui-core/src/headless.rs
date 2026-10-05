@@ -2370,6 +2370,16 @@ impl FrameHarness {
         crate::record::capability::record_intent(self.root.as_ref())
     }
 
+    /// Consume one device-local shell request through the mounted app's canonical adapter.
+    /// This exposes no mutable document or direct surface callback.
+    pub fn take_host_intent(&mut self) -> Option<crate::widget::AppHostIntent> {
+        let bound = self
+            .root
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::BoundAppWidget>()?;
+        crate::AppWidget::take_host_intent(bound)
+    }
+
     /// Offer the live document to its record's writer. Returns whether a
     /// record set handled it — `false` means the caller should persist the
     /// document itself, as an app without records does.

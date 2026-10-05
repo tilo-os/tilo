@@ -1388,6 +1388,18 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
         None
     }
 
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+        fn take<R: Resource>(widget: &mut dyn Widget) -> Option<ui_core::widget::AppHostIntent> {
+            if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)
+                && let Some(intent) = surface.take_host_intent()
+            {
+                return Some(intent);
+            }
+            widget.children_mut().into_iter().find_map(take::<R>)
+        }
+        take::<R>(self.content.as_mut())
+    }
+
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
     }

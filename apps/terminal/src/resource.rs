@@ -398,6 +398,10 @@ fn session_fields(doc: &Doc, obj: &ObjId) -> SessionState {
 }
 
 impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
+    fn take_host_intent(&mut self) -> Option<ui::widget::AppHostIntent> {
+        self.take_session_intent()
+    }
+
     fn present(&mut self, state: &std::rc::Rc<SessionState>) {
         self.present_session(state);
     }

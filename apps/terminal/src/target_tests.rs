@@ -567,33 +567,85 @@ fn native_terminal_requests_the_same_person_confirmed_host_shell_allow() {
 fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
     let allowed = Rc::new(RefCell::new(false));
     let gate = allowed.clone();
-    let (mut widget, _) = tab(RecentTarget::none(), move |target| {
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), move |target| {
         if target.is_host() && !*gate.borrow() {
             Err(OpenError::NeedsAllow("not allowed".into()))
         } else {
             Ok(())
         }
     });
-    let mut doc = AutoCommit::new();
-    widget.sync(&mut doc, &ROOT);
-    widget
-        .switch_target(&mut doc, &ROOT, &SessionTarget::Host, Requester::Person)
-        .unwrap();
-    let intent = ui::widget::capability::capability_mut::<dyn ui::AppWidget>(&mut widget)
-        .unwrap()
+    on_tab(&mut app, |widget| {
+        widget.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::AwaitingAllow
+    );
+    let versions = app.versions().len();
+    let intent = app
+        .harness()
         .take_host_intent()
-        .expect("native runtime must see the request");
+        .expect("the canonical native app adapter must see the request");
     let ui::widget::AppHostIntent::AllowHostShell { reply } = intent else {
         panic!("expected host permission");
     };
     assert!(
-        ui::widget::capability::capability_mut::<dyn ui::AppWidget>(&mut widget)
-            .unwrap()
-            .take_host_intent()
-            .is_none()
+        app.harness().take_host_intent().is_none(),
+        "the host consumes the request once"
+    );
+    assert_eq!(
+        app.versions().len(),
+        versions,
+        "consuming host intent does not write the record"
     );
     *allowed.borrow_mut() = true;
     reply.upgrade().unwrap().borrow_mut().answer = Some(true);
-    widget.sync(&mut doc, &ROOT);
-    assert_eq!(widget.session_state(), &OpenState::Open);
+    app.settle();
+    assert_eq!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Open
+    );
+    assert_eq!(
+        opened.borrow().last(),
+        Some(&(SessionTarget::Host, Requester::Person))
+    );
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+}
+
+#[test]
+fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
+    let mut app = App::new().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), |target| {
+        if target.is_host() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    });
+    on_tab(&mut app, |widget| {
+        widget.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
+        app.harness().take_host_intent()
+    else {
+        panic!("expected canonical host permission");
+    };
+    let attempts = opened.borrow().len();
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    app.settle();
+    assert!(matches!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Failed(_)
+    ));
+    assert!(on_tab(&mut app, |widget| widget.is_disconnected()));
+    assert!(app.harness().take_host_intent().is_none());
+    app.settle();
+    assert_eq!(
+        opened.borrow().len(),
+        attempts,
+        "refusal never retries the host session"
+    );
 }
