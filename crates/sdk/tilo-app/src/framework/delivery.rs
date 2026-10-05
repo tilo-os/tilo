@@ -60,7 +60,7 @@ impl<W: Widget + ?Sized> HostDelivery for W {
     ) -> Result<Option<Effected>, String> {
         let started = self.start_operation(
             &ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload),
-            doc,
+            &mut ui_core::widget::Edits::lend(doc),
             path,
         )?;
         Ok(started.map(|started| match started {

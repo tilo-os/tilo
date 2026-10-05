@@ -201,13 +201,11 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
     fn perform_action(
         &mut self,
         action: &ui_core::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self.control.perform_action(action, state, path);
-        self.submit(&mut ui_core::widget::Edits::lend(
-            ui_core::doc::document(state, path).0,
-        ));
+        self.submit(state);
         handled
     }
 
@@ -215,15 +213,13 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         &mut self,
         action: &ui_core::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self
             .control
             .perform_action_at(action, key_path, state, path);
-        self.submit(&mut ui_core::widget::Edits::lend(
-            ui_core::doc::document(state, path).0,
-        ));
+        self.submit(state);
         handled
     }
 
@@ -231,15 +227,13 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         &mut self,
         target: &str,
         action: &ui_core::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self
             .control
             .perform_semantic_action(target, action, state, path);
-        self.submit(&mut ui_core::widget::Edits::lend(
-            ui_core::doc::document(state, path).0,
-        ));
+        self.submit(state);
         handled
     }
 }

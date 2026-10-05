@@ -5,7 +5,7 @@ use std::rc::Rc;
 use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
-use ui_core::automerge::{AutoCommit, ObjId};
+use ui_core::automerge::ObjId;
 use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
@@ -110,7 +110,7 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
     fn start_operation(
         &mut self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut ui_core::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         ui_core::host_operation::start_in_children(self, op, doc, path)

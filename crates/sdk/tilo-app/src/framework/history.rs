@@ -16,6 +16,7 @@
 //! takes the place of this one.
 
 use std::collections::HashSet;
+use ui_core::automerge::transaction::Transactable;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -543,8 +544,8 @@ fn carry_over(listed: &mut [Value]) {
 }
 
 /// The versions as `history` lists them: the last `last`, oldest first.
-pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
-    let versions = tilo_resource::history::versions(doc);
+pub(crate) fn history(doc: &AutoCommit, last: usize) -> Value {
+    let versions = tilo_resource::history::committed_versions(doc);
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
@@ -559,7 +560,7 @@ pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
         "versions": listed,
         "carried": "run, run_id, by and time_ms, where absent, are the version before's",
         "total": total,
-        "now": version_name(&doc.get_heads()),
+        "now": version_name(&doc.base_heads()),
         "checkpoints": checkpoints.iter().map(|checkpoint| json!({
             "name": checkpoint.name,
             "version": version_name(&checkpoint.heads),
@@ -571,7 +572,7 @@ pub(crate) fn history(doc: &mut AutoCommit, last: usize) -> Value {
 ///
 /// # Errors
 /// Returns a malformed request or an unknown version.
-pub(crate) fn answer(doc: &mut AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
+pub(crate) fn answer(doc: &AutoCommit, payload: &[u8]) -> Result<ActionOutput, String> {
     let view: HistoryView =
         serde_json::from_slice(payload).map_err(|error| format!("not a history view: {error}"))?;
     let value = match view {
@@ -580,9 +581,9 @@ pub(crate) fn answer(doc: &mut AutoCommit, payload: &[u8]) -> Result<ActionOutpu
             let from = steps::resolve(doc, &from)?;
             let to = match to {
                 Some(to) => steps::resolve(doc, &to)?,
-                None => doc.get_heads(),
+                None => doc.base_heads(),
             };
-            let items: Vec<Value> = steps::changed_items(doc, &from, &to)
+            let items: Vec<Value> = steps::changed_items(&mut doc.clone(), &from, &to)
                 .into_iter()
                 .map(|item| json!({"item": item.path, "change": item.change}))
                 .collect();
@@ -646,9 +647,9 @@ fn items(patches: &[Patch]) -> Vec<String> {
 /// or brought back, the items a restore wrote, the checkpoint it named.
 pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Option<Value> {
     let mut doc = doc.clone();
-    let now = version_name(&doc.get_heads());
+    let now = version_name(&doc.base_heads());
     let described = |hashes: Vec<String>, doc: &mut AutoCommit| -> Vec<Value> {
-        let versions = tilo_resource::history::versions(doc);
+        let versions = tilo_resource::history::committed_versions(doc);
         versions
             .iter()
             .rev()

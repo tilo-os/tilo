@@ -5,6 +5,7 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use ui_core::automerge::transaction::Transactable;
 use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{Resource, SearchEntry};
@@ -204,9 +205,9 @@ fn read<R: Resource>(
 
 /// The revision a picture shows: the document's heads.
 #[allow(dead_code, reason = "called only by render, which is native-only")]
-fn revision(doc: &mut AutoCommit) -> String {
+fn revision(doc: &AutoCommit) -> String {
     let mut heads: Vec<String> = doc
-        .get_heads()
+        .base_heads()
         .iter()
         .map(|head| head.to_string().chars().take(12).collect())
         .collect();
@@ -491,7 +492,7 @@ impl<R: Resource> ResourceRoot<R> {
     fn render(
         &mut self,
         payload: &[u8],
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let args: serde_json::Value =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -523,6 +524,7 @@ impl<R: Resource> ResourceRoot<R> {
                 .ok_or_else(|| "this view cannot show another version".to_owned())?;
             let heads = ui_core::history_source::steps::resolve(doc, version)?;
             let past = doc
+                .clone()
                 .fork_at(&heads)
                 .map_err(|error| format!("version {version} is not in this document: {error}"))?;
             let bounds = ui_core::vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
@@ -987,7 +989,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
     fn start_operation(
         &mut self,
         op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         #[cfg(not(target_family = "wasm"))]

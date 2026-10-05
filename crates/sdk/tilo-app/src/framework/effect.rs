@@ -27,6 +27,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
+use ui_core::automerge::transaction::Transactable;
 
 use tilo_actions::{
     ActionFailure, ActionOutput, ActionSpec, Availability, InvocationId, InvocationUpdate,
@@ -1049,7 +1050,7 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         &mut self,
         op: &ResourceOperation<'_>,
         host: &mut H,
-        doc: Option<&mut tilo_resource::Doc>,
+        doc: Option<&tilo_resource::Doc>,
         handle: impl FnOnce(&mut H, E, &mut EffectCx<R, H>) -> EffectAnswer,
     ) -> Result<Option<ResourceOperationStart>, String> {
         // An invocation in a caller's custody stays with handlers that
@@ -1070,24 +1071,18 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         }
         let job = declaration.is_some_and(|decl| decl.is_job());
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation));
-        // The document is lent to the handler for reading and returned the
-        // moment it answers, whatever it answered.
-        let lent = doc.map(|doc| {
-            cx.heads = doc.get_heads();
-            (Rc::new(RefCell::new(std::mem::take(&mut *doc))), doc)
+        // Keep an immutable snapshot for this effect invocation, including any
+        // pending edits. The effect may also read a historical version; neither
+        // read borrows the author's document mutably.
+        cx.document = doc.map(|doc| {
+            cx.heads = doc.base_heads();
+            Rc::new(RefCell::new(doc.clone()))
         });
-        cx.document = lent.as_ref().map(|(document, _)| Rc::clone(document));
         let answer = {
             let _acting = ActingFor::enter(Some(request.invocation));
             handle(host, effect, &mut cx)
         };
         cx.document = None;
-        if let Some((document, doc)) = lent {
-            *doc = match Rc::try_unwrap(document) {
-                Ok(document) => document.into_inner(),
-                Err(shared) => std::mem::take(&mut *shared.borrow_mut()),
-            };
-        }
         let started = cx.started.take();
         match (answer?, started, job) {
             (Effected::Done(output), started, false) => {
@@ -1716,6 +1711,7 @@ mod tests {
                 .unwrap()
                 .and_then(|(value, _)| value.as_i64())
         };
+        let before = (doc.base_heads(), doc.pending_ops());
         let answered = runner
             .start(&op, &mut (), Some(&mut doc), |(), _, cx| {
                 let now = count(&cx.document().expect("lent to the handler"));
@@ -1724,6 +1720,7 @@ mod tests {
                 Ok(Effected::value([now, count(&past.doc)]))
             })
             .unwrap();
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
         assert!(matches!(
             answered,
             Some(ResourceOperationStart::Completed(output))
