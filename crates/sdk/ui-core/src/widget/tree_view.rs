@@ -886,6 +886,13 @@ pub struct TreeView<T, M = TreeNode<T>> {
     rect: Rect,
     is_focused: bool,
     last_cursor: Option<Point>,
+    /// The overlay bar's idle fade: shown while the rows scroll, then gone,
+    /// like every other scroll bar. Painting notices the offset move.
+    bar_fade: std::cell::Cell<crate::widget::scrollbar::BarFade>,
+    /// The offset the bar was last painted at.
+    bar_offset: std::cell::Cell<Option<f64>>,
+    /// Something keeps the bar shown (the pointer at it, reduced motion).
+    bar_held: std::cell::Cell<bool>,
     /// Sparse expanded-order overlay; memory is proportional to expanded
     /// branches rather than their total visible descendants.
     index: SparseTreeIndex,
@@ -1121,6 +1128,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             rect: Rect::ZERO,
             is_focused: false,
             last_cursor: None,
+            bar_fade: std::cell::Cell::default(),
+            bar_offset: std::cell::Cell::new(None),
+            bar_held: std::cell::Cell::new(false),
             index,
             viewport,
             last_anchor: None,
@@ -3444,6 +3454,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             );
         }
         scene.pop_layer();
+        self.paint_edge_fades(scene, transform, ground);
         self.paint_scroll_thumb(scene, transform, theme);
     }
 
@@ -3562,7 +3573,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.momentum.is_active()
+        self.bar_fade
+            .get()
+            .fading_at(crate::time::now(), self.bar_held.get())
+            || self.momentum.is_active()
             || self.model.needs_poll()
             || self.reorder.is_active()
             || self.transitions.is_active(crate::time::now())
@@ -3570,6 +3584,19 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 .mounted_rows
                 .iter()
                 .any(|row| row.widget.needs_animation_frame())
+    }
+
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let mut earliest = self
+            .bar_fade
+            .get()
+            .fade_deadline_at(crate::time::now(), self.bar_held.get());
+        for row in &self.mounted_rows {
+            if let Some(deadline) = row.widget.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+            }
+        }
+        earliest
     }
 
     fn take_structure_dirty(&mut self) -> bool {

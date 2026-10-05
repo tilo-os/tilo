@@ -1005,3 +1005,42 @@ fn a_reveal_before_the_first_layout_waits_for_a_viewport() {
         "the far row is brought into view"
     );
 }
+
+// --- scrolling -------------------------------------------------------------
+
+#[test]
+fn a_filled_tree_hides_its_bar_at_rest_and_shows_it_while_scrolling() {
+    let children = (1_u64..=40)
+        .map(|id| TreeNode::leaf(id, format!("row {id}"), ()))
+        .collect();
+    let mut view = TreeView::new(TreeNode::branch(100, "root", (), children))
+        .hide_root()
+        .fill();
+    view.place_at(Rect::new(0.0, 0.0, 240.0, 200.0));
+    view.transitions.clear();
+    let paint = |view: &mut TreeView<()>| {
+        let mut scene = Scene::new();
+        view.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+    };
+    paint(&mut view);
+    assert!(view.bar_fade.get().is_idle(), "no bar at rest");
+    assert!(view.next_wake_deadline().is_none());
+
+    view.set_scroll_offset(120.0);
+    paint(&mut view);
+    let now = crate::time::now();
+    assert!(
+        view.bar_fade.get().opacity_at(now, false) > 0.99,
+        "the bar shows while the rows scroll"
+    );
+    assert!(
+        view.next_wake_deadline().is_some(),
+        "and the tree wakes to fade it out"
+    );
+}
