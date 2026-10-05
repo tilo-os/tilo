@@ -476,16 +476,18 @@ fn run_handoff() {
 #[test]
 fn a_sandbox_that_cannot_be_built_is_explained() {
     let _guest = GUEST_ENV.lock().expect("guest env lock");
-    if which_bwrap().is_none() {
-        eprintln!("serve_handoff: bwrap is not installed; no sandbox to fail");
-        return;
-    }
+    assert!(
+        which_bwrap().is_some(),
+        "the sandbox diagnostic test requires bwrap"
+    );
     let unavailable = guest_unavailable();
     let dir = tempfile::tempdir().expect("tempdir");
     let images = dir.path().join("images");
     fixture_images(&images);
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_tilo-ush"))
-        .args(["run", "-c", "true"])
+    let public_command = dir.path().join("ush");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tilo-ush"), &public_command).unwrap();
+    let out = std::process::Command::new(&public_command)
+        .args(["-c", "printf ush-command-output"])
         .env(ush::store::STORE_ENV, dir.path().join("store"))
         .env("TILO_USH_IMAGES", &images)
         .stdin(std::process::Stdio::null())
@@ -493,6 +495,10 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
         .expect("tilo-ush runs");
     let stderr = String::from_utf8_lossy(&out.stderr);
     let explained = stderr.contains("sandbox could not be set up");
+    assert!(
+        !stderr.contains("usually means"),
+        "generic overlay advice must not mask the actual cause: {stderr}"
+    );
     if let Some(reason) = unavailable {
         assert!(!out.status.success(), "{reason}; yet the guest ran");
         assert!(
@@ -502,6 +508,10 @@ fn a_sandbox_that_cannot_be_built_is_explained() {
         );
     } else {
         assert!(out.status.success(), "the guest should run here: {stderr}");
+        assert_eq!(
+            out.stdout, b"ush-command-output",
+            "ush -c output must be observable"
+        );
         assert!(
             !explained,
             "a guest that ran is not a setup failure: {stderr}"
