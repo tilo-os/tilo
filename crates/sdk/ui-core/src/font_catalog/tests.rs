@@ -278,7 +278,7 @@ fn browser_startup_catalog_requires_only_the_core_family_assets() {
             .iter()
             .map(|name| std::fs::metadata(root.join(name)).unwrap().len())
             .sum::<u64>(),
-        4_098_812
+        4_159_800
     );
     assert_eq!(fonts.db().len(), 8);
 }
