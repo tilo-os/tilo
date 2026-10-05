@@ -496,7 +496,12 @@ impl ContextMenu {
         };
         // The content's inset on both sides; the row is the menu row height,
         // grown with `s2` of air round the line at large text.
-        self.measured_width = width + self.trailing_width + 2.0 * label_inset(theme);
+        // However short its labels, a menu stays a menu's width.
+        self.measured_width =
+            (width + self.trailing_width + 2.0 * label_inset(theme)).max(f64::from(
+                theme.tokens.metrics.menu_min_width
+                    * crate::tokens::Metrics::text_growth(theme.text_scale),
+            ));
         self.row_height = (height + f64::from(theme.tokens.spacing.s2))
             .max(f64::from(theme.tokens.metrics.menu_row_height));
         self.layout_at_position();
@@ -2612,15 +2617,18 @@ mod bounded_tests {
 
         fn width_uses_shaping_and_legacy_open_resets_bounded_geometry() {
             let mut narrow = ContextMenu::new();
-            narrow.push(MenuItem::action("iii", || {}));
+            narrow.push(MenuItem::action(&"i".repeat(40), || {}));
             let mut wide = ContextMenu::new();
-            wide.push(MenuItem::action("WWW", || {}));
+            wide.push(MenuItem::action(&"W".repeat(40), || {}));
             let mut text = TextRenderer::new();
             for menu in [&mut narrow, &mut wide] {
                 menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 1000.0, 1000.0));
                 menu.layout_within(&mut text, &Theme::dark());
             }
             assert!(wide.get_rect().width() > narrow.get_rect().width());
+            // However short its one label, a menu keeps a menu's width.
+            let min = f64::from(Theme::dark().tokens.metrics.menu_min_width);
+            assert!(narrow.get_rect().width() >= min - 0.5);
             wide.open_at([900.0, 950.0]);
             assert_eq!(
                 wide.get_rect(),
@@ -2798,15 +2806,26 @@ mod nested_and_anchored_tests {
     #[test]
     fn shortcuts_widen_the_menu_and_a_bare_key_has_no_modifier() {
         let fired = Arc::new(AtomicU32::new(0));
-        let mut plain = ContextMenu::with_items(vec![MenuItem::action("Open", || {})]);
-        let mut with = file_menu(&fired);
+        // Labels long enough that the menu is past its minimum width.
+        let label = "Open the most recent document";
+        let mut plain = ContextMenu::with_items(vec![MenuItem::action(label, || {})]);
+        let mut shortcut = ContextMenu::with_items(vec![
+            MenuItem::action(label, || {}).with_shortcut(crate::platform::Shortcut::command("O")),
+        ]);
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        plain.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+        for menu in [&mut plain, &mut shortcut] {
+            menu.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+            menu.layout_within(&mut tr, &theme);
+        }
+        assert!(
+            plain.get_rect().width() > f64::from(theme.tokens.metrics.menu_min_width),
+            "fixture: past the minimum"
+        );
+        assert!(shortcut.get_rect().width() > plain.get_rect().width());
+        let mut with = file_menu(&fired);
         with.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
-        plain.layout_within(&mut tr, &theme);
         with.layout_within(&mut tr, &theme);
-        assert!(with.get_rect().width() > plain.get_rect().width());
         let conventions = crate::platform::PlatformConventions::default();
         assert_eq!(
             crate::platform::Shortcut::key("Delete").label(conventions),
