@@ -237,3 +237,50 @@ fn overlay_badges_paint_legible_ink_in_every_theme() {
         }
     }
 }
+
+#[test]
+fn equal_column_rows_use_the_remainder_of_odd_viewport_widths() {
+    for width in [521, 875, 901, 1201] {
+        for scale in [1.0, 2.0] {
+            let cards = (0..12)
+                .map(|index| {
+                    MediaCard::new(format!("card-{index}"), MediaSource::Placeholder)
+                        .title("A full measured title")
+                })
+                .collect();
+            let harness = FrameHarness::new_with_theme(
+                crate::State::new(),
+                Box::new(MediaGrid::new(cards)),
+                (width, 1400),
+                Theme::light().with_text_scale(scale),
+            );
+            let root = harness.inspection().root;
+            let bounds = rect(&root);
+            let cards: Vec<_> = root.children.iter().map(rect).collect();
+            assert_eq!(cards.len(), 12);
+            let first = cards[0];
+            let row: Vec<_> = cards
+                .iter()
+                .copied()
+                .take_while(|card| (card.y0 - first.y0).abs() < 0.5)
+                .collect();
+            assert!((first.x0 - bounds.x0).abs() < 0.5);
+            assert!(
+                (row.last().unwrap().x1 - bounds.x1).abs() < 0.5,
+                "{width}px at {scale}x: full row must reach its edge: {row:?}"
+            );
+            let narrowest = row
+                .iter()
+                .map(|card| card.width())
+                .fold(f64::INFINITY, f64::min);
+            let widest = row.iter().map(|card| card.width()).fold(0.0, f64::max);
+            assert!(
+                widest - narrowest <= 1.0,
+                "only pixel rounding varies equal tracks"
+            );
+            for pair in row.windows(2) {
+                assert!(pair[0].x1 <= pair[1].x0);
+            }
+        }
+    }
+}
