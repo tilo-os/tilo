@@ -242,8 +242,8 @@ pub enum FilesEffect {
         #[param("Where to save it")]
         destination: NearbyDestinationHandle,
     },
-    /// Decline an incoming transfer.
-    #[effect(row)]
+    /// Decline an incoming transfer and discard its retained partial bytes.
+    #[effect(row, destructive)]
     DeclineNearby {
         #[param("The incoming transfer")]
         transfer: NearbyTransferHandle,

@@ -2152,6 +2152,64 @@ mod command_path_tests {
         (w, cfg)
     }
 
+    #[test]
+    fn nearby_recovered_receive_decline_is_available_without_a_destination() {
+        use ui::collaboration::{
+            CollabRequest, NearbyTransferCommand, NearbyTransferDirection, NearbyTransferHandle,
+            NearbyTransferPhase, NearbyTransferSnapshot, NearbyTransferStatus,
+        };
+        use ui::tilo_actions::ActionInput;
+
+        let transfer = NearbyTransferHandle::from_issued_bytes([0x61; 16]);
+        let (mut widget, _config) = hermetic();
+        widget
+            .nearby_send
+            .install_snapshot_for_test(NearbyTransferSnapshot {
+                transfers: vec![NearbyTransferStatus {
+                    handle: transfer,
+                    name: "Interrupted report".into(),
+                    device_label: "Offline laptop".into(),
+                    direction: NearbyTransferDirection::Receiving,
+                    phase: NearbyTransferPhase::AwaitingDestination,
+                    transferred_bytes: 8,
+                    total_bytes: 16,
+                }],
+                ..Default::default()
+            });
+        let rows = crate::files_app::published::tree(&widget, &automerge::AutoCommit::new());
+        let resource = rows[0]
+            .children
+            .iter()
+            .find(|resource| resource.kind == "files.nearby-transfer")
+            .expect("recoverable receive remains a semantic resource");
+        let decline = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "decline")
+            .expect("decline needs no destination grant");
+        assert_eq!(decline.contract.confirmation, ConfirmationPolicy::Confirm);
+        let ActionInput::Immediate(encoded) = &decline.input else {
+            panic!("decline must use the existing opaque action payload")
+        };
+        let mut document = automerge::AutoCommit::new();
+        crate::files_app::published::start(
+            &mut widget,
+            OperationKind::Effect,
+            &encoded.type_id,
+            &encoded.payload,
+            &mut document,
+            &automerge::ROOT,
+        )
+        .expect("execute recovered receive decline");
+        assert!(matches!(widget.nearby_send.take_requests().as_slice(), [
+            CollabRequest::NearbyTransferCommand {
+                command: NearbyTransferCommand::Decide {
+                    handle, accept: false, destination: None, remember_for_session: false,
+                }, ..
+            }
+        ] if *handle == transfer));
+    }
+
     fn nearby_receiver_actions_are_opaque_confirmed_and_current() {
         use ui::collaboration::{
             NearbyDestinationHandle, NearbyTransferDestination, NearbyTransferDirection,

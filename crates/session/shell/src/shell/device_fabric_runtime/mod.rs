@@ -4,6 +4,7 @@
 //! hardware discovery on the render path. Remote clipboard entries become
 //! history, not the live Wayland selection, until explicitly activated.
 
+mod receive_recovery;
 mod remote_capture;
 mod window_views;
 
@@ -4977,7 +4978,16 @@ pub fn decide_nearby_transfer_at(
         .remove(&transfer_id);
     let Some(pending) = pending else {
         if !accept {
-            return Err(crate::shell::i18n::t("device-fabric-error-consent-expired"));
+            let declined = {
+                let mut state = nearby_drop_state()
+                    .lock()
+                    .map_err(|_| "nearby transfer state is unavailable".to_string())?;
+                with_nearby_transfer_store(|store| {
+                    receive_recovery::decline_recovered_receive(store, &mut state, transfer_id)
+                })
+            }?;
+            declined.notify(|peer, action| network.send_personal_fabric_action(peer, action));
+            return Ok(());
         }
         let destination = destination
             .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-destination-expired"))?;
