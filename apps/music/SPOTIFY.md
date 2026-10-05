@@ -97,6 +97,13 @@ save/remove emits the same host-admitted action as scripts and accessibility.
 The sandbox declares optional browser/secrets capabilities; no access policy
 has been weakened.
 
+Spotify playlist tiles and detail headers expose the shared context menu for
+save, remove from library and rename. The existing shared rename dialog starts
+with the provider name. The track playlist picker includes known Spotify
+playlists, and provider playlist tracks offer removal of all matching entries.
+These controls emit host-admitted provider effects rather than writing remote
+changes into the local CRDT. Ownership/permission failures remain visible.
+
 ## Acceptance boundaries
 
 This remains a parked draft, with no merge or deployment authorized. A local
@@ -107,8 +114,8 @@ registration and an eligible, consenting Premium test account. Spotify account
 allowlists, quota mode and streaming eligibility apply independently of this UI.
 No credentials or grants were created during implementation.
 
-The competitive UX goal is not yet certified: further acceptance covers full
-playlist editing, library paging beyond the current bounds, followed artists,
+The competitive UX goal is not yet certified: further acceptance covers playlist
+creation and ownership guidance, library paging beyond the current bounds, followed artists,
 remote queue presentation, all search/queue/playback states at large text,
 keyboard/screen-reader journeys and responsiveness on older hardware.
 

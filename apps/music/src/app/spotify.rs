@@ -15,6 +15,96 @@ pub(super) struct PendingJob {
 use ui::widget::Widget as _;
 
 impl MusicApp {
+    /// A menu emits an inert typed intent; the host re-resolves the root's
+    /// effect declaration and participant authority before starting the job.
+    pub(super) fn queue_spotify_effect_control(&mut self, effect: &MusicEffect) {
+        use ui::tilo_resource::Effect as _;
+        let Some(spec) = MusicEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == effect.id())
+        else {
+            return;
+        };
+        let resource = tilo_actions::Resource::new("music.library", "music.library", "Music")
+            .with_action(spec.clone());
+        let arguments = effect.arguments();
+        let Ok(binding) =
+            tilo_actions::ActionBinding::new(&resource, &spec, move |()| arguments.clone())
+        else {
+            return;
+        };
+        if self.spotify_menu_controls.len() >= 16 {
+            return;
+        }
+        let mut emitter = self.control_domain.as_ref().map_or_else(
+            || ui::widget::ActionEmitter::new(binding.clone()),
+            |domain| ui::widget::ActionEmitter::new_in(binding.clone(), domain),
+        );
+        if emitter.emit(()).is_ok() {
+            self.spotify_menu_controls.push(emitter);
+        }
+    }
+
+    pub(super) fn append_spotify_playlist_choices(&mut self, track: &str) {
+        if !track.starts_with("spotify:track:") {
+            return;
+        }
+        let playlists: Vec<_> = self
+            .catalogue_entities()
+            .into_iter()
+            .filter(|(id, (_, kind))| {
+                id.starts_with("spotify:playlist:")
+                    && *kind == crate::backend::HomeItemKind::Playlist
+            })
+            .take(40)
+            .collect();
+        if !playlists.is_empty() {
+            self.context
+                .push(ui::widget::context_menu::MenuItem::separator());
+            self.menu_actions.push(super::Action::Back);
+        }
+        for (playlist, (name, _)) in playlists {
+            let label = ui::i18n::I18nManager::format(
+                "music-spotify-playlist-choice",
+                &[("name", name.into())],
+            );
+            self.push_menu(
+                label,
+                super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd {
+                    playlist,
+                    track: track.into(),
+                }),
+            );
+        }
+    }
+
+    pub(super) fn open_spotify_playlist_menu(&mut self, playlist: &str) {
+        self.context = ui::widget::context_menu::ContextMenu::new();
+        self.menu_actions.clear();
+        self.push_menu(
+            ui::i18n!("music-spotify-rename-playlist"),
+            super::Action::BeginRenamePlaylist(playlist.into()),
+        );
+        self.push_menu(
+            ui::i18n!("music-spotify-save-playlist"),
+            super::Action::SpotifyEffect(MusicEffect::SpotifySave {
+                uri: playlist.into(),
+            }),
+        );
+        self.push_menu(
+            ui::i18n!("music-spotify-unsave-playlist"),
+            super::Action::SpotifyEffect(MusicEffect::SpotifyUnsave {
+                uri: playlist.into(),
+            }),
+        );
+        self.open_context_menu_at_pointer();
+    }
+
+    pub(super) fn spotify_playlist_name(&self, playlist: &str) -> Option<String> {
+        self.catalogue_entities()
+            .get(playlist)
+            .map(|(name, _)| name.clone())
+    }
     pub(super) fn prepare_spotify_queue(&self) {
         use crate::model::RepeatMode;
         let next = if self.pb.shuffle || !self.pb.playing {
@@ -441,6 +531,19 @@ impl MusicApp {
 }
 
 impl ui::widget::controls::ActionControls for MusicApp {
+    fn on_control_invocation_result(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &ui::widget::controls::ControlResult,
+    ) {
+        if let Err(error) = result {
+            self.toast = Some((error.to_string(), ui::time::now()));
+            self.dirty = true;
+        }
+        for child in ui::widget::Widget::children_mut(self) {
+            ui::widget::controls::on_control_invocation_result(child, address, result);
+        }
+    }
     fn install_control_custody(
         &mut self,
         domain: &ui::ControlDomain,
@@ -635,6 +738,79 @@ mod tests {
             matches!(&app.view, super::super::View::Playlist(id) if id == "spotify:collection:liked")
         );
         assert!(doc.get_heads().is_empty());
+    }
+
+    #[test]
+    fn spotify_playlist_picker_emits_provider_edit_without_document_edits() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = MusicApp::without_profile();
+        app.snap_spotify("spotify-home");
+        let track = "spotify:track:2234567890123456789012";
+        let playlist = "spotify:playlist:1234567890123456789012";
+        app.open_add_to_playlist_menu(track);
+        let action = app.menu_actions.iter().find(|action| matches!(action,
+            super::super::Action::SpotifyEffect(MusicEffect::SpotifyPlaylistAdd { playlist: target, track: song })
+                if target == playlist && song == track
+        )).expect("provider playlist is selectable").clone();
+        let mut doc = automerge::AutoCommit::new();
+        let before = doc.get_heads();
+        app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
+        let invocation = app.take_control_invocation().expect("host-bound edit");
+        assert_eq!(invocation.address.resource, "music.library");
+        let spec = MusicEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == invocation.address.action)
+            .expect("root publishes effect");
+        let encoded = spec
+            .build_json(&invocation.arguments)
+            .expect("validated arguments");
+        let effect = MusicEffect::from_payload(&encoded.payload).expect("typed effect");
+        assert!(
+            matches!(effect, MusicEffect::SpotifyPlaylistAdd { playlist: target, track: song }
+            if target == playlist && song == track)
+        );
+        assert_eq!(doc.get_heads(), before);
+    }
+
+    #[test]
+    fn spotify_playlist_rename_dialog_emits_provider_name_without_local_mutation() {
+        use ui::tilo_resource::Effect as _;
+        let mut app = MusicApp::without_profile();
+        app.snap_spotify("spotify-home");
+        let playlist = "spotify:playlist:1234567890123456789012";
+        app.open_spotify_playlist_menu(playlist);
+        let action = app
+            .menu_actions
+            .iter()
+            .find(|action| {
+                matches!(action,
+                    super::super::Action::BeginRenamePlaylist(target) if target == playlist
+                )
+            })
+            .expect("rename is visible")
+            .clone();
+        let mut doc = automerge::AutoCommit::new();
+        let before = doc.get_heads();
+        app.dispatch(action, &mut ui::widget::Edits::lend(&mut doc));
+        assert_eq!(app.name_input, "After hours");
+        app.name_input = "  Evening music  ".into();
+        app.on_commit_rename(playlist, &mut ui::widget::Edits::lend(&mut doc));
+        let invocation = app.take_control_invocation().expect("host-bound rename");
+        assert_eq!(invocation.address.resource, "music.library");
+        let spec = MusicEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == invocation.address.action)
+            .expect("root publishes effect");
+        let encoded = spec
+            .build_json(&invocation.arguments)
+            .expect("validated arguments");
+        let effect = MusicEffect::from_payload(&encoded.payload).expect("typed effect");
+        assert!(
+            matches!(effect, MusicEffect::SpotifyRenamePlaylist { playlist: target, name }
+            if target == playlist && name == "Evening music")
+        );
+        assert!(app.name_prompt.is_none());
+        assert_eq!(doc.get_heads(), before);
     }
 
     #[test]
