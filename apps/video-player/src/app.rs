@@ -3642,7 +3642,7 @@ impl Widget for PlayerApp {
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         self.poll_kept_recall();
         self.drain_portal();
         self.tick_together();

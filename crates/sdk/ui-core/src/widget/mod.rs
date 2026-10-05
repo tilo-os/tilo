@@ -1415,7 +1415,7 @@ pub trait Widget {
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         for child in self.children_mut() {

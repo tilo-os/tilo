@@ -1240,17 +1240,17 @@ mod component_adapter {
         fn on_nav_gesture(
             &mut self,
             dir: crate::gesture::NavDirection,
-            state: &mut crate::widget::AppModel,
+            state: &crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
-            let (state, _) = crate::doc::document(state, path);
+            let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.on_nav_gesture(dir, document, record_root)
+                .read_document(state, |document, record_root| {
+                    self.component
+                        .root
+                        .as_deref_mut()
+                        .is_some_and(|root| root.on_nav_gesture(dir, document, record_root))
                 })
                 .unwrap_or(false)
         }

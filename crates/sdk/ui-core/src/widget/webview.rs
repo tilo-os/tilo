@@ -612,12 +612,7 @@ impl Widget for WebView {
     /// Two-finger swipe / edge-pull → browser-style history navigation.
     /// Overriding this here makes every embedder of `WebView`
     /// swipe-navigable, not just the browser app.
-    fn on_nav_gesture(
-        &mut self,
-        dir: NavDirection,
-        _state: &mut AppModel,
-        _path: &ModelPath,
-    ) -> bool {
+    fn on_nav_gesture(&mut self, dir: NavDirection, _state: &AppModel, _path: &ModelPath) -> bool {
         self.engine.send(match dir {
             NavDirection::Back => WebViewCommand::GoBack,
             NavDirection::Forward => WebViewCommand::GoForward,

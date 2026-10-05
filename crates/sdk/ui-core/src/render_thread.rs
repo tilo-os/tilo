@@ -1400,16 +1400,11 @@ mod admission_tests {
             impl Widget for Root {
                 fn update(
                     &mut self,
-                    doc: &crate::widget::AppModel,
-                    path: &crate::widget::ModelPath,
+                    _: &crate::widget::AppModel,
+                    _: &crate::widget::ModelPath,
                 ) -> bool {
-                    let (doc, path) = crate::doc::document_ref(doc, path);
-                    if let Some(value) = self.pending.take() {
-                        doc.put(path, "label", value).unwrap();
-                        true
-                    } else {
-                        false
-                    }
+                    // The owner wrote the label; this pass takes it up.
+                    self.pending.take().is_some()
                 }
                 fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
                     self.text.sync(doc, path);
@@ -1462,6 +1457,7 @@ mod admission_tests {
                 pending: Some("initial"),
             };
             let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "label", "initial").unwrap();
             root.update(&mut doc, &automerge::ROOT);
             root.sync(&mut doc, &automerge::ROOT);
             let now = crate::time::now();
@@ -1483,6 +1479,7 @@ mod admission_tests {
                 );
                 tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
                 root.pending = Some(value);
+                doc.put(automerge::ROOT, "label", value).unwrap();
                 let admitted_at = if index == 1 {
                     assert!(retry.known_occluded());
                     assert!(

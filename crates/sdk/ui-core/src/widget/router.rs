@@ -482,7 +482,7 @@ impl Widget for Router {
     fn on_nav_gesture(
         &mut self,
         direction: NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         if self.child.on_nav_gesture(direction, state, path) {

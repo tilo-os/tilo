@@ -158,7 +158,7 @@ impl ui::widget::Decorator for VersionPreview {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let wanted = self.preview.with(Clone::clone);
         if wanted.as_deref() != self.shown.as_ref().map(|(version, _)| version.as_str()) {
-            let (doc, _) = ui::doc::document(state, path);
+            let (doc, _) = ui::doc::document_ref(state, path);
             self.shown = wanted.and_then(|version| {
                 let art = Self::read(doc, &version)?;
                 Some((version, art))
