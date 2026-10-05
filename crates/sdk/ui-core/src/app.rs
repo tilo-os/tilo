@@ -2325,8 +2325,7 @@ impl App {
     #[doc(hidden)]
     pub fn refresh_focus_order(&mut self) {
         let _entry = self.enter_wake_scope();
-        self.root_widget.sync(&self.state.doc, &self.state.root);
-        self.invalidate_widget_resource_cache();
+        self.sync_model(true);
         self.update_focusable_order();
     }
 

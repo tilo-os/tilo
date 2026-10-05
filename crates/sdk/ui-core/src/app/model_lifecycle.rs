@@ -234,9 +234,7 @@ impl super::App {
             &self.state.root,
         );
         let settled = crate::widget::settle_mark(&self.state.doc) != before;
-        let submitted =
-            crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref())
-                && self.dispatch_control_invocations() != 0;
+        let submitted = self.dispatch_control_invocations() != 0;
         if settled || submitted {
             self.root_widget.sync(&self.state.doc, &self.state.root);
         }
