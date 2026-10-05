@@ -361,8 +361,7 @@ impl CodeApp {
             }
             Some("selection") => self.shots_select_words(),
             Some("completion") => self.shots_completion_demo(doc),
-            Some("find") => self.shots_open_find("primes", doc),
-            Some("find-options") => self.shots_open_find("primes", doc),
+            Some("find" | "find-options") => self.shots_open_find("primes", doc),
             Some("search") => self.shots_project_search("fn main"),
             Some("conflict") => self.shots_conflict(),
             Some("indexing") => self.shots_indexing(),

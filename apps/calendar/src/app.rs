@@ -614,7 +614,6 @@ impl CalendarApp {
                 self.staged_new_event = true;
                 self.staged_popover = Some(match name {
                     "date_popover" => FormPopover::StartDate,
-                    "time_popover" => FormPopover::StartTime,
                     _ => FormPopover::StartTime,
                 });
             }

@@ -1011,21 +1011,6 @@ impl GitClientApp {
         }
     }
 
-    /// The last preference [`EncodedAction`](tilo_actions::EncodedAction) an
-    /// on-screen control dispatched, for the affordance == `ActionSpec`
-    /// covenant test.
-    #[doc(hidden)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-
-    /// Show the diff preferences the framework resource already holds. The
-    /// live on-disk repository model is not replaced by the shared projection.
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.dispatcher.is_some()
-    }
-
     /// Write the shared repository projection when branches/commits/remotes move.
     fn publish_shared_repo_if_needed(&mut self) {
         if self.awaiting_repo || !self.mode.is_live() {
@@ -3790,39 +3775,8 @@ impl GitClientApp {
 }
 
 impl GitClientApp {
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: GitClientEffect,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
-    ) -> EffectAnswer {
-        // The diff preferences touch neither the repository nor the document.
-        let preference = match effect {
-            GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
-            GitClientEffect::SyntaxHighlight => {
-                Some(self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight))
-            }
-            GitClientEffect::ShowWhitespace => {
-                Some(self.change_preferences(|s| s.show_whitespace = !s.show_whitespace))
-            }
-            GitClientEffect::WrapLines => {
-                Some(self.change_preferences(|s| s.wrap_lines = !s.wrap_lines))
-            }
-            _ => None,
-        };
-        if let Some(kept) = preference {
-            return kept.map(|()| Effected::done());
-        }
-        let view = matches!(
-            effect,
-            GitClientEffect::ShowChanges
-                | GitClientEffect::ShowHistory
-                | GitClientEffect::ShowBranches
-                | GitClientEffect::OpenChange { .. }
-                | GitClientEffect::OpenCommit { .. }
-        );
-        if !view && self.repository_busy() {
-            return Err(ui::i18n!("git-remote-busy"));
-        }
+    /// Resolve a navigation target against the current repository projection.
+    fn open_effect_view(&mut self, effect: GitClientEffect) -> Result<(), String> {
         match effect {
             GitClientEffect::ShowChanges => self.switch_screen(Screen::Changes),
             GitClientEffect::ShowHistory => self.switch_screen(Screen::History),
@@ -3858,6 +3812,54 @@ impl GitClientApp {
                 self.selected_commit = index;
                 self.detail_scroll = 0.0;
             }
+            _ => return Ok(()),
+        }
+        Ok(())
+    }
+
+    /// Local diff preferences touch neither the repository nor the document.
+    fn apply_diff_preference(&mut self, effect: &GitClientEffect) -> Option<Result<(), String>> {
+        match effect {
+            GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
+            GitClientEffect::SyntaxHighlight => {
+                Some(self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight))
+            }
+            GitClientEffect::ShowWhitespace => {
+                Some(self.change_preferences(|s| s.show_whitespace = !s.show_whitespace))
+            }
+            GitClientEffect::WrapLines => {
+                Some(self.change_preferences(|s| s.wrap_lines = !s.wrap_lines))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: GitClientEffect,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let preference = self.apply_diff_preference(&effect);
+        if let Some(kept) = preference {
+            return kept.map(|()| Effected::done());
+        }
+        let view = matches!(
+            effect,
+            GitClientEffect::ShowChanges
+                | GitClientEffect::ShowHistory
+                | GitClientEffect::ShowBranches
+                | GitClientEffect::OpenChange { .. }
+                | GitClientEffect::OpenCommit { .. }
+        );
+        if !view && self.repository_busy() {
+            return Err(ui::i18n!("git-remote-busy"));
+        }
+        match effect {
+            effect @ (GitClientEffect::ShowChanges
+            | GitClientEffect::ShowHistory
+            | GitClientEffect::ShowBranches
+            | GitClientEffect::OpenChange { .. }
+            | GitClientEffect::OpenCommit { .. }) => self.open_effect_view(effect)?,
             GitClientEffect::StageAll => self.stage_all(),
             GitClientEffect::UnstageAll => self.unstage_all(),
             GitClientEffect::StageFile { path } => {

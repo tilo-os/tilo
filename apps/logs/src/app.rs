@@ -60,12 +60,9 @@ fn force_immediate_poll_at() -> Instant {
     now.checked_sub(POLL_INTERVAL).unwrap_or(now)
 }
 
-/// The journal's door with the Effects its controls bind to.
-
 /// The content header's commands: refresh, live tail and export. Live tail
 /// is a toggle glyph that stands on the selection lift while the journal is
 /// followed.
-
 fn header_actions(actions: Option<&ui::framework::Actions<Logs>>, live_tail: bool) -> Vec<Element> {
     use ui::framework::ActionControl;
     let controls = [
@@ -497,8 +494,7 @@ impl LogsApp {
     }
 
     /// Turn the views' requests into document actions.
-
-    fn apply_requests(&mut self) {
+    fn apply_requests(&self) {
         let requests = self.shared.borrow_mut().take_requests();
         for request in requests {
             match request {
@@ -550,27 +546,7 @@ impl LogsApp {
         }
     }
 
-    /// Test-only: mark the surface hosted without a real framework dispatcher.
-
-    /// Adopt collaborative view prefs; never clear the local journal cache.
-
-    /// Apply a document action to the widget caches without writing the doc.
-
-    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
-    /// with live journal entry children overlaid.
-
-    /// Live journal entry rows without a `logs.journal` root.
-
-    /// Local journal Effects. Polling and live-tail are device-local and must
-    /// not start work on every peer. Entry select Views also commit the shared
-    /// selection into the document.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "Decoded operations are consumed exactly once at the app boundary."
-    )]
-
     /// Show the presented filter.
-
     pub(crate) fn adopt_filter(&mut self, filter: Filter) {
         self.filter = filter;
         self.recompute_filtered();
@@ -747,13 +723,9 @@ impl LogsApp {
         Ok(entries)
     }
 
-    /// Complete a non-blocking host Save portal request. No selected path is
-    /// retained after the write, and all user-facing errors stay concise.
-
     /// Queue a root effect through the published resource tree, so
     /// accessibility, agents, history and policy see the same effect a
     /// keyboard shortcut starts.
-
     fn request_journal_operation(&self, action: &str) {
         let effect = match action {
             "refresh" => JournalEffect::Refresh,
@@ -974,6 +946,36 @@ impl ui::widget::controls::ActionControls for LogsApp {
     }
 }
 
+impl LogsApp {
+    pub fn new() -> Self {
+        Self::with_entries(Vec::new(), false)
+    }
+    fn show_entries(&mut self, entries: Vec<LogEntry>) {
+        self.entries = entries;
+        self.source_error = None;
+        self.rebuild_facets();
+        self.recompute_filtered();
+        self.publish();
+        self.dirty = true;
+    }
+    fn show_read(&mut self, read: JournalRead) {
+        self.source_loading = false;
+        match read {
+            Ok(entries) => self.show_entries(entries),
+            Err(error) => {
+                self.source_error = Some(error);
+                self.publish();
+                self.dirty = true;
+            }
+        }
+    }
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        if scenario == Some("detail") {
+            self.shots_show_detail();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1098,7 +1100,7 @@ mod tests {
                     .iter()
                     .all(|&i| viewer.entries[i].unit == "kernel"
                         && viewer.entries[i].boot_id == boot)
-            )
+            );
         });
         let stored = app.state().filter();
         assert_eq!(stored.unit, "kernel");
@@ -1176,7 +1178,7 @@ mod tests {
     fn portal_export_writes_the_frozen_snapshot_or_announces_failure() {
         let mut app = captured((1280, 800));
         surface(&mut app, |viewer| {
-            viewer.show_entries(sample_entries().into_iter().take(2).collect())
+            viewer.show_entries(sample_entries().into_iter().take(2).collect());
         });
         let path = std::env::temp_dir().join(format!(
             "tilo-logs-portal-export-{}.jsonl",
@@ -1194,7 +1196,7 @@ mod tests {
             Some("journal-filtered.jsonl")
         );
         surface(&mut app, |viewer| {
-            viewer.entries.extend(sample_entries().into_iter().skip(2))
+            viewer.entries.extend(sample_entries().into_iter().skip(2));
         });
         finish_job(&mut app);
         assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 2);
@@ -1206,7 +1208,7 @@ mod tests {
 
         let mut app = captured((1280, 800));
         surface(&mut app, |viewer| {
-            viewer.show_entries(sample_entries().into_iter().take(1).collect())
+            viewer.show_entries(sample_entries().into_iter().take(1).collect());
         });
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
@@ -1289,35 +1291,5 @@ mod tests {
             .iter()
             .find(|action| action["action"] == id)
             .cloned()
-    }
-}
-
-impl LogsApp {
-    pub fn new() -> Self {
-        Self::with_entries(Vec::new(), false)
-    }
-    fn show_entries(&mut self, entries: Vec<LogEntry>) {
-        self.entries = entries;
-        self.source_error = None;
-        self.rebuild_facets();
-        self.recompute_filtered();
-        self.publish();
-        self.dirty = true;
-    }
-    fn show_read(&mut self, read: JournalRead) {
-        self.source_loading = false;
-        match read {
-            Ok(entries) => self.show_entries(entries),
-            Err(error) => {
-                self.source_error = Some(error);
-                self.publish();
-                self.dirty = true;
-            }
-        }
-    }
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        if scenario == Some("detail") {
-            self.shots_show_detail();
-        }
     }
 }

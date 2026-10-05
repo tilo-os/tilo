@@ -990,10 +990,10 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
 
     let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
         .expect("spawn short-lived pty command");
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
     let deadline = ui::time::now() + HANG_BOUND;
     while ui::time::now() < deadline && !widget.is_disconnected() {
-        widget.sync(&mut doc, &ROOT);
+        widget.sync(&doc, &ROOT);
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     assert!(widget.is_disconnected());
@@ -1919,12 +1919,12 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         use ui::widget::Findable;
 
         let (mut widget, _writes) = build_test_widget();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        widget.sync(&mut doc, &ROOT);
+        widget.sync(&doc, &ROOT);
         let before = Findable::content_revision(&widget);
         widget.feed(b"build step 020\r\n");
-        widget.sync(&mut doc, &ROOT);
+        widget.sync(&doc, &ROOT);
         assert_ne!(
             Findable::content_revision(&widget),
             before,
@@ -1997,8 +1997,10 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
                 .a11y_nodes()
                 .into_iter()
                 .find(|(_, node)| node.label() == Some(label.as_str()))
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| panic!("missing exported Find control {label}"))
+                .map_or_else(
+                    || panic!("missing exported Find control {label}"),
+                    |(id, _)| id,
+                )
         };
         let harness = ui::headless::Framed::harness_mut(&mut framed);
         let next = control(harness, "find-bar-next");

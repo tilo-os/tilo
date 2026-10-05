@@ -164,6 +164,16 @@ fn the_key_operations_are_published_on_the_profile_as_the_key_stands() {
 
 #[test]
 fn applying_reports_what_the_registry_answered() {
+    fn notice_detail(node: &ui::headless::InspectionNode) -> Option<&str> {
+        if node.test_id.as_deref() == Some("notice") {
+            return node
+                .semantics
+                .as_ref()
+                .and_then(|node| node.description.as_deref());
+        }
+        node.children.iter().find_map(notice_detail)
+    }
+
     let _home = home();
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.effect_confirmed(&KeyEffect::CreateKey)
@@ -175,15 +185,6 @@ fn applying_reports_what_the_registry_answered() {
         matches!(&nothing, Err(DoorError::Failed(message)) if message.contains("name a domain or a forge account")),
         "the job answers its caller: {nothing:?}"
     );
-    fn notice_detail(node: &ui::headless::InspectionNode) -> Option<&str> {
-        if node.test_id.as_deref() == Some("notice") {
-            return node
-                .semantics
-                .as_ref()
-                .and_then(|node| node.description.as_deref());
-        }
-        node.children.iter().find_map(notice_detail)
-    }
     let inspection = app.harness().inspection();
     let detail =
         notice_detail(&inspection.root).expect("the actual status banner publishes its detail");

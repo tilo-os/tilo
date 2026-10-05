@@ -73,7 +73,7 @@ impl Choice {
     /// The value the person just picked, once.
     pub(super) fn take_pick(
         &mut self,
-        doc: &mut ui::widget::Edits<'_>,
+        doc: &ui::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Option<String> {
         self.dropdown.sync(doc.doc(), path);

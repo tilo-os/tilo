@@ -244,8 +244,8 @@ enum UiCommand {
 
 impl Door {
     fn send(&self, request: UiCommand) -> Result<(), String> {
-        let dispatcher = self.0.as_ref().ok_or("Print Centre is not open")?;
         use PrintCentreEffect as E;
+        let dispatcher = self.0.as_ref().ok_or("Print Centre is not open")?;
         let effect = match request {
             UiCommand::Refresh => E::Refresh,
             UiCommand::Dashboard => E::OpenDashboard,
