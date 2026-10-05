@@ -242,7 +242,7 @@ class BrowserRuntimeRelease(unittest.TestCase):
                 version = '0.1.9+g' + source
                 proof.update(package_version=version, app_publisher=key)
                 tapp = package / 'engine.tapp'
-                isa = 'v3' if architecture == 'x86_64' else 'aarch64'
+                isa = 'v3' if architecture == 'x86_64' else 'armv8-a'
                 tapp.write_text('--- manifest.toml ---\n[package]\n'
                                 + f'id = "{release.PACKAGE}"\nversion = "{version}"\n'
                                 + f'provides = "{proof["runtime"]}"\nkind = "runtime"\n'
@@ -254,7 +254,19 @@ class BrowserRuntimeRelease(unittest.TestCase):
                     release.verify_package(out, architecture, source, '9', key)
                     with self.assertRaisesRegex(ValueError, 'publisher differs'):
                         release.verify_package(out, architecture, source, '9', 'c' * 64)
-            self.assertEqual(trace.read_text().splitlines(), ['verify', 'inspect', 'verify', 'inspect'])
+                    baseline = tapp.read_text()
+                    other = 'x86_64' if architecture == 'aarch64' else 'aarch64'
+                    other_isa = 'v3' if other == 'x86_64' else 'armv8-a'
+                    for invalid in (f'{architecture} = "v4"' if architecture == 'x86_64'
+                                    else f'{architecture} = "v8.2-a"',
+                                    f'{other} = "{other_isa}"',
+                                    f'{architecture} = "{isa}"\n{other} = "{other_isa}"'):
+                        tapp.write_text(baseline.replace(f'{architecture} = "{isa}"', invalid))
+                        proof['files'] = {tapp.name: release.digest(tapp)}
+                        (package / 'provenance.json').write_text(json.dumps(proof))
+                        with self.assertRaisesRegex(ValueError, 'architecture differs'):
+                            release.verify_package(out, architecture, source, '9', key)
+            self.assertEqual(trace.read_text().splitlines(), ['verify', 'inspect'] * 8)
 
     def test_publication_wrong_event_stops_before_tools_credentials_or_network(self):
         for event, ref in (('push', 'refs/heads/main'), ('workflow_dispatch', 'refs/heads/task')):
