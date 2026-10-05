@@ -285,6 +285,23 @@ impl super::Decorator for ContextMenuArea {
         self.content.handle_event(event, ctx);
     }
 
+    fn concrete_type_name(&self) -> &'static str {
+        "ContextMenuArea"
+    }
+
+    // The content's node is this area's: named targets and hit tests that
+    // find the node meet the area, which answers as the content does.
+    fn build_layout(
+        &mut self,
+        taffy: &mut taffy::TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let node = self.content.build_layout(taffy, theme, node_map);
+        super::decorator::register_node(node_map, node, self);
+        node
+    }
+
     fn wants_pointer_capture(&self) -> bool {
         self.menu.is_open() || self.pending.is_some() || self.content.wants_pointer_capture()
     }
@@ -340,10 +357,6 @@ impl super::Decorator for ContextMenuArea {
             children.push(&mut self.menu);
         }
         children
-    }
-
-    fn name(&self) -> &str {
-        "ContextMenuArea"
     }
 }
 
