@@ -87,6 +87,26 @@ fn settled_builder() -> (PopulatedShellFixture, tilo_test_env::ScopedEnv) {
         Theme::dark().with_reduce_motion(true),
     );
     frame.relayout();
+    let _ = frame.paint();
+    frame.relayout();
+    // Pin Notes' real status presentation with the pointer. Reduced motion
+    // does not extend its transient lifetime, so renderer speed must not
+    // remove this unrelated app layer during the retained QS comparison.
+    let mut document = automerge::AutoCommit::new();
+    let mut focus = None;
+    let _ = frame.dispatch_event(
+        &winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(
+                f64::from(NATIVE_WIDTH) - 50.0,
+                f64::from(NATIVE_HEIGHT) - 50.0,
+            ),
+        },
+        &winit::event::Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut document),
+        &automerge::ROOT,
+        &mut focus,
+    );
     let warm = frame.paint();
     assert!(
         !warm.encoding().is_empty(),
