@@ -123,3 +123,38 @@ fn physical_observer_matches_real_note_dispatch_to_the_drawn_body_without_text_l
         assert!(row.get("input").is_none());
     }
 }
+
+#[test]
+fn native_typing_evidence_tracks_canonical_and_rendered_text_without_logging_content() {
+    let (mut app, page) = with_focused_page();
+    let before = app
+        .harness()
+        .native_input_snapshot()
+        .expect("Notes native observer");
+    assert_eq!(before["bound_page"], page.to_string());
+    assert_eq!(before["selected_page"], page.to_string());
+    assert_eq!(before["body_chars"], 0);
+    assert_eq!(before["editor_focused"], true);
+    let mut text = String::new();
+    for ch in ['h', 'i', 'é'] {
+        app.harness().key(&ch.to_string());
+        let _ = app.harness().poll_frame();
+        text.push(ch);
+        assert_eq!(body(&app, page), text);
+        let observed = app
+            .harness()
+            .native_input_snapshot()
+            .expect("typed native state");
+        let hash = blake3::hash(text.as_bytes()).to_hex().to_string();
+        assert_eq!(observed["body_hash"], hash);
+        assert_eq!(observed["rendered_body_hash"], hash);
+        assert_eq!(observed["body_chars"], text.chars().count());
+        assert_eq!(observed["rendered_body_chars"], text.chars().count());
+        assert_eq!(observed["body_bytes"], text.len());
+        assert_eq!(observed["caret"]["byte_offset"], text.len());
+        assert_eq!(observed["bound_page"], page.to_string());
+        assert_eq!(observed["editor_focused"], true);
+        assert!(observed.get("body").is_none());
+        assert!(observed.get("text").is_none());
+    }
+}

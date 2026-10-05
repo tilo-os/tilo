@@ -4007,15 +4007,27 @@ async fn spawn_action_catalogue_stream(
         .map_err(|error| format!("reading initial action catalogue failed: {error}"))?;
     let catalogue = serde_json::from_str::<BrokerActionCatalogueWire>(&initial)
         .map_err(|error| format!("decoding initial action catalogue failed: {error}"))?;
-    if !inbound_tx.send_durable(CollabEvent::ActionCatalogue {
-        surfaces: catalogue.surfaces,
-    }) {
+    // The initial baseline occupies the same turn as subsequent watched
+    // snapshots. Otherwise a busy constructor retains both before its first
+    // owner poll, which can exhaust the bridge despite each baseline fitting.
+    let turns = Arc::new(tokio::sync::Semaphore::new(1));
+    let turn = turns
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !inbound_tx.send_durable_turn(
+        CollabEvent::ActionCatalogue {
+            surfaces: catalogue.surfaces,
+        },
+        Some(turn),
+    ) {
         return Err("delivering initial action catalogue failed".to_string());
     }
 
     let tx = inbound_tx.clone();
     tokio::task::spawn_local(async move {
-        forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx).await;
+        forward_action_catalogues(async || stream.read().await.map_err(|_| ()), &tx, turns).await;
     });
     Ok(())
 }
@@ -4030,8 +4042,8 @@ async fn spawn_action_catalogue_stream(
 async fn forward_action_catalogues(
     mut read: impl AsyncFnMut() -> Result<String, ()>,
     tx: &InboundBridge,
+    turns: Arc<tokio::sync::Semaphore>,
 ) {
-    let turns = Arc::new(tokio::sync::Semaphore::new(1));
     loop {
         let Ok(turn) = turns.clone().acquire_owned().await else {
             break;
@@ -6121,6 +6133,9 @@ mod tests {
         refuse_action_publications: usize,
         refused_action_publications: usize,
         action_directories: Vec<String>,
+        action_catalogue_fixture: Option<Vec<String>>,
+        action_catalogue_subscriptions: usize,
+        action_catalogue_reads: usize,
     }
 
     struct DocumentSendGate {
@@ -6392,7 +6407,8 @@ mod tests {
     }
 
     struct FakeActionCatalogueStream {
-        initial: RefCell<Option<String>>,
+        backlog: RefCell<std::collections::VecDeque<String>>,
+        captures: SharedCaptures,
     }
 
     impl action_catalogue_stream::Server for FakeActionCatalogueStream {
@@ -6401,9 +6417,10 @@ mod tests {
             _params: action_catalogue_stream::ReadParams,
             mut results: action_catalogue_stream::ReadResults,
         ) -> Promise<(), capnp::Error> {
-            let Some(initial) = self.initial.borrow_mut().take() else {
+            let Some(initial) = self.backlog.borrow_mut().pop_front() else {
                 return Promise::from_future(std::future::pending::<Result<(), capnp::Error>>());
             };
+            self.captures.lock().unwrap().action_catalogue_reads += 1;
             results.get().set_catalogue_json(&initial);
             Promise::ok(())
         }
@@ -6757,11 +6774,20 @@ mod tests {
             _params: channel_handle::SubscribeActionCatalogueParams,
             mut results: channel_handle::SubscribeActionCatalogueResults,
         ) -> Promise<(), capnp::Error> {
+            let snapshots = {
+                let mut captures = self.captures.lock().unwrap();
+                captures.action_catalogue_subscriptions += 1;
+                captures
+                    .action_catalogue_fixture
+                    .clone()
+                    .unwrap_or_else(|| {
+                        vec![serde_json::json!({"version": 1, "surfaces": []}).to_string()]
+                    })
+            };
             let client: action_catalogue_stream::Client =
                 capnp_rpc::new_client(FakeActionCatalogueStream {
-                    initial: RefCell::new(Some(
-                        serde_json::json!({"version": 1, "surfaces": []}).to_string(),
-                    )),
+                    backlog: RefCell::new(snapshots.into()),
+                    captures: self.captures.clone(),
                 });
             results.get().set_stream(client);
             Promise::ok(())
@@ -10570,6 +10596,7 @@ mod tests {
                         Ok(snapshot(next))
                     },
                     &forwarder,
+                    Arc::new(tokio::sync::Semaphore::new(1)),
                 )
                 .await;
             });
@@ -10597,6 +10624,130 @@ mod tests {
         });
         assert_eq!(published.get(), 2, "no read while a catalogue is queued");
     }
+    fn notebook_action_catalogue_fixture(cluster: Uuid, count: usize) -> String {
+        let actions: Vec<_> = (0..count).map(|index| serde_json::json!({
+            "resource": format!("notes.page:{index:032x}"),
+            "action": "open", "resource_kind": "note",
+            "resource_label": format!("Notebook page {index}"),
+            "action_label": "Open page", "description": "Open this page in its notebook",
+            "operation_kind": tilo_actions::OperationKind::View,
+            "params": [tilo_actions::ActionParam::required("page", tilo_actions::ParamType::Resource, "The page to open")],
+            "contract": tilo_actions::ActionContract::view(),
+            "input": {"kind": "none"}
+        })).collect();
+        serde_json::json!({"version": 1, "surfaces": [{
+            "peer_id": 1, "app_id": "so.tilo.notes", "cluster_id": cluster.to_string(),
+            "record_id": "notebook", "live": true, "actions": actions
+        }]})
+        .to_string()
+    }
+
+    /// Production SDK socket, join and initial/watch delivery; this fixture
+    /// does not certify broker authorization.
+    #[test]
+    #[cfg(unix)]
+    fn initial_catalogue_and_watch_share_one_turn_for_a_busy_native_owner() {
+        let cluster = Uuid::new_v4();
+        let snapshot = notebook_action_catalogue_fixture(cluster, 1025);
+        let decoded: BrokerActionCatalogueWire = serde_json::from_str(&snapshot).unwrap();
+        let retained = event_bytes(&CollabEvent::ActionCatalogue {
+            surfaces: decoded.surfaces,
+        })
+        .expect("the declared catalogue has a finite retained size");
+        eprintln!(
+            "catalogue fixture serialized_bytes={} retained_bytes={retained}",
+            snapshot.len()
+        );
+        assert!(
+            retained < SDK_EVENT_QUEUE_BYTES,
+            "the complete baseline fits"
+        );
+        assert!(
+            retained * 2 > SDK_EVENT_QUEUE_BYTES,
+            "initial plus watch would overflow"
+        );
+        let mut updated: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        updated["surfaces"][0]["peer_id"] = serde_json::json!(2);
+        let captures = Captures {
+            action_catalogue_fixture: Some(vec![snapshot, updated.to_string()]),
+            ..Captures::default()
+        };
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(captures)),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, worker) = stand_up_fake_broker(broker);
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: Vec::new(),
+                participant_kind: "person",
+                signer: harness_document_signer(),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::with_transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: cluster,
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        let admission = manager.await_primary_route();
+        let state = broker_state(&manager);
+        let healthy = state.is_healthy();
+        let initial_reads = captures.lock().unwrap().action_catalogue_reads;
+        let initial = manager.poll().into_iter().find_map(|event| match event {
+            CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
+            _ => None,
+        });
+        // The first normal owner poll releases the initial turn. The broker
+        // watch can then deliver its complete next baseline without overflow.
+        let mut watched = None;
+        if healthy {
+            eventually(
+                "the watched catalogue reaches the ordinary owner poll",
+                || {
+                    watched = manager.poll().into_iter().find_map(|event| match event {
+                        CollabEvent::ActionCatalogue { surfaces } => Some(surfaces),
+                        _ => None,
+                    });
+                    watched.is_some()
+                },
+            );
+        }
+        drop(manager);
+        worker.join().unwrap();
+        assert!(
+            admission.is_ok(),
+            "startup must admit the route: {admission:?}"
+        );
+        assert!(
+            healthy,
+            "initial and watched baselines must not disconnect the application"
+        );
+        assert_eq!(
+            initial_reads, 1,
+            "do not read a watched snapshot while initial is queued"
+        );
+        assert_eq!(
+            initial.unwrap()[0].actions.len(),
+            1025,
+            "complete first baseline"
+        );
+        let watched = watched.unwrap();
+        assert_eq!(watched[0].actions.len(), 1025, "complete watched baseline");
+        assert_eq!(
+            watched[0].peer_id, 2,
+            "the watch delivered its next snapshot"
+        );
+        assert!(state.is_healthy());
+    }
+
     /// SDK transport/owner ordering only. This uncertified test endpoint cannot
     /// construct broker NativeDocumentReadContext and is not native authority proof.
     #[test]
