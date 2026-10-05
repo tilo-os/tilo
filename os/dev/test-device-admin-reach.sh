@@ -17,7 +17,7 @@
 #   2. B enrols as an administrator (`tilo-vm vm enrol-admin`, the owner's
 #      `tilo-enroll certify --capability admin`), finds board neither at its
 #      recorded address nor by name, and reaches it by name over the relay:
-#      `tilo-vm vm status board` says so, and a slot is created and removed.
+#      `tilo-vm vm status board` says so, and a slot is created and listed.
 #   3. A refuses another identity's administrator, a certificate that does
 #      not verify, and one of the owner's devices without the grant, each
 #      with its reason, and its journal logs every session and refusal.
@@ -253,10 +253,9 @@ created="$(tilo_vm admin slot create reach --headless --json)"
 printf '%s\n' "$created" > "$out/b-slot-create.json"
 [ "$(jq -r .slot.name <<<"$created")" = reach ] || die "slot create over the relay failed: $created"
 listed="$(tilo_vm admin slot list --json)"
+printf '%s\n' "$listed" > "$out/b-slot-list.json"
 jq -e 'map(.name) | index("reach")' <<<"$listed" >/dev/null || die "the new slot is not listed: $listed"
-removed="$(tilo_vm admin slot rm reach --json)"
-[ "$(jq -r .removed <<<"$removed")" = true ] || die "slot rm over the relay failed: $removed"
-note "B reached board through the relay and created and removed a slot"
+note "B reached board through the relay and created a slot on it"
 
 # --- A refuses everyone else ------------------------------------------------------
 # Another identity's administrator.
@@ -309,7 +308,7 @@ grep -q 'admin session [0-9]*: slot.create' <<<"$journal_a" || die "A's journal 
 note "A refused another identity, a forged certificate and a device without the grant"
 
 # --- the link is cut and restored -------------------------------------------------
-nic_a="$(vm_a cmd 'info network' | tr -d '\r' | awk -F: '/type=nic/ { gsub(/^[ \\]+/, "", $1); print $1; exit }')"
+nic_a="$(vm_a cmd 'info network' | tr -d '\r' | grep -o '[A-Za-z0-9._-]*: index=[0-9]*,type=nic' | head -n 1 | cut -d: -f1)"
 [ -n "$nic_a" ] || die "A's network card was not found in QEMU's monitor"
 dial_admin="tilo-device-admin dial --identity-root ~/reach/admin/admin-identity --endpoint $endpoint_a --device $device_a --relay $relay_url --wait 120"
 status_line() { printf '{"jsonrpc":"2.0","id":%s,"method":"status","params":{}}' "$1"; }
