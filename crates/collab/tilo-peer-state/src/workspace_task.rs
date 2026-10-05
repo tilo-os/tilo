@@ -123,6 +123,14 @@ pub enum WorkspaceTaskCommand {
         run_epoch: u64,
         reason: String,
     },
+    /// A person steers the exact run and instruction frontier they observed.
+    /// Appended to preserve the existing encoded command variant indices.
+    DirectionForRun {
+        task_id: String,
+        run_epoch: u64,
+        after_revision: u64,
+        text: String,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -302,6 +310,19 @@ fn dispatch(
             reason,
             context.now,
         ),
+        WorkspaceTaskCommand::DirectionForRun {
+            task_id,
+            run_epoch,
+            after_revision,
+            text,
+        } => direct_for_run(
+            tasks,
+            controls,
+            context,
+            task_id,
+            text,
+            (*run_epoch, *after_revision),
+        ),
     }
 }
 
@@ -458,6 +479,40 @@ fn start_run(
             epoch,
         },
     ))
+}
+
+fn direct_for_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    text: &str,
+    fence: (u64, u64),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let control = controls
+        .get(task_id)
+        .ok_or("task has no execution control")?;
+    if control
+        .active_run
+        .as_ref()
+        .is_none_or(|run| run.epoch != fence.0)
+        || control
+            .directions
+            .last()
+            .map_or(0, |direction| direction.revision)
+            != fence.1
+    {
+        return Err("task run or instruction frontier changed; review before steering".into());
+    }
+    direct(
+        tasks,
+        controls,
+        context.invocation,
+        context.actor,
+        task_id,
+        text,
+        context.now,
+    )
 }
 
 fn direct(
@@ -869,6 +924,74 @@ mod tests {
         );
         assert_eq!(snapshot(&reopened).unwrap().tasks.len(), 1);
         assert!(run(&mut reopened, 1, 8, &person(), &command).is_err());
+    }
+
+    #[test]
+    fn steering_requires_the_observed_run_and_instruction_frontier() {
+        let mut doc = AutoCommit::new();
+        let queued = run(&mut doc, 1, 1, &person(), &queue_command()).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
+            panic!("queue result")
+        };
+        run(
+            &mut doc,
+            2,
+            2,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        let direction = |epoch, revision| WorkspaceTaskCommand::DirectionForRun {
+            task_id: task_id.clone(),
+            run_epoch: epoch,
+            after_revision: revision,
+            text: "Focus on the compatibility changes".into(),
+        };
+        assert_eq!(postcard::to_allocvec(&direction(1, 0)).unwrap()[0], 6);
+        assert_eq!(
+            postcard::to_allocvec(&WorkspaceTaskCommand::Direction {
+                task_id: task_id.clone(),
+                text: "Earlier command".into(),
+            })
+            .unwrap()[0],
+            2
+        );
+        let before = doc.save();
+        assert!(run(&mut doc, 3, 3, &person(), &direction(2, 0)).is_err());
+        assert_eq!(doc.save(), before);
+        let saved = run(&mut doc, 4, 4, &person(), &direction(1, 0)).unwrap();
+        assert_eq!(
+            saved.result,
+            WorkspaceTaskMutationResult::DirectionAdded {
+                task_id: task_id.clone(),
+                revision: 1,
+            }
+        );
+        let after = doc.save();
+        assert!(run(&mut doc, 5, 5, &person(), &direction(1, 0)).is_err());
+        assert_eq!(doc.save(), after);
+        let mut reopened = AutoCommit::load(&after).unwrap();
+        run(&mut reopened, 6, 6, &person(), &direction(1, 1)).unwrap();
+        let state = snapshot(&reopened).unwrap();
+        let control = state.controls.get(&task_id).unwrap();
+        assert_eq!(control.directions.len(), 2);
+        assert_eq!(control.directions[1].revision, 2);
+        assert_eq!(
+            control
+                .active_run
+                .as_ref()
+                .unwrap()
+                .applied_direction_revision,
+            0
+        );
+        assert!(
+            !run(&mut reopened, 4, 4, &person(), &direction(1, 0))
+                .unwrap()
+                .changed
+        );
     }
 
     #[test]
