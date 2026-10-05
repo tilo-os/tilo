@@ -809,6 +809,9 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();
                 for (child_index, child) in w.children().into_iter().enumerate() {
+                    if w.accessibility_represents_child(child_index) {
+                        continue;
+                    }
                     if let Some(mut path) = w.accessibility_child_path(child_index)
                         && !path.is_empty()
                     {

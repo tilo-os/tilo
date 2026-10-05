@@ -607,6 +607,19 @@ fn the_contact_menu_runs_the_canonical_actions() {
     app.choose_menu(index(ContextAction::Export));
     app.publish();
     assert!(
+        app.export.is_none(),
+        "the sensitive export waits for the person's consent"
+    );
+    assert!(
+        app.harness_mut()
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.role() == ui::accesskit::Role::Dialog
+                && node.label() == Some("Action confirmation")),
+        "the actual host confirms the contact menu's sensitive operation"
+    );
+    act_named(&mut app, "Confirm", &ui::a11y::Action::Activate);
+    assert!(
         app.export
             .as_ref()
             .is_some_and(|export| export.ids == vec![grace]),
