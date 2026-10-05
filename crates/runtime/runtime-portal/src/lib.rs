@@ -13,6 +13,8 @@
 //!   on top of the bootstrap returned here.
 //! - [`NotAvailable`] — the single error type service clients surface when
 //!   the platform can't provide the requested service.
+//! - [`tools`] — typed requests asking the shell to open a tool, such as
+//!   Terminal in a directory.
 //!
 //! Tilo apps must also run as Flatpaks on stock Linux, where there is no
 //! service connection: every client returns
@@ -34,6 +36,7 @@
 
 pub mod agent_transport;
 pub mod local_socket;
+pub mod tools;
 
 use std::env;
 use std::io;
@@ -42,7 +45,7 @@ use std::io;
 use std::os::fd::BorrowedFd;
 #[cfg(unix)]
 pub use std::os::fd::RawFd;
-#[cfg(all(unix, feature = "rpc"))]
+#[cfg(unix)]
 use std::os::fd::{FromRawFd, OwnedFd};
 /// Placeholder descriptor type on hosts that cannot receive Tilo Unix-socket
 /// service descriptors. Service discovery always returns `None` there.
