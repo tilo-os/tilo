@@ -40,6 +40,7 @@ use ui::{Theme, permissions::PermissionContext, presence::PresenceCtx, text_rend
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
+use crate::bindings;
 use crate::doc_actions::StoreDocumentAction;
 use crate::model::{ActionKind, SourceFilter, StoreItem, StoreSource};
 use crate::resource::{ReportProjection, Store, StoreEffect};
