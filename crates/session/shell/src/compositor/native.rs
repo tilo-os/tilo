@@ -1233,6 +1233,13 @@ fn pump_floating_surface_service(
     for event in service.drain() {
         match event {
             FloatingServiceEvent::Connected { connection, app_id } => {
+                if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID
+                    && let Some(writer) = service.reply_writer(connection)
+                {
+                    frame_builder
+                        .host_mut()
+                        .connect_native_terminal(connection, writer);
+                }
                 service.send(
                     connection,
                     &ui::floating_surface::FloatingSurfaceHostMessage::DesktopBounds {
@@ -1246,6 +1253,17 @@ fn pump_floating_surface_service(
                 app_id,
                 message,
             } => match message {
+                ui::floating_surface::FloatingSurfaceClientMessage::DeviceShellOutcome {
+                    request,
+                    result,
+                } => {
+                    if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
+                        frame_builder
+                            .host_mut()
+                            .complete_native_terminal(connection, request, result);
+                    }
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
                     if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
                         if let Some(writer) = service.reply_writer(connection) {
@@ -1611,6 +1629,9 @@ fn pump_floating_surface_service(
                 }
             },
             FloatingServiceEvent::Disconnected { connection, app_id } => {
+                frame_builder
+                    .host_mut()
+                    .disconnect_native_terminal(connection);
                 for id in connection_ids.remove(&connection).unwrap_or_default() {
                     capture.dismiss_external_floating(id);
                 }

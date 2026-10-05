@@ -2057,6 +2057,24 @@ impl TerminalWidget {
     /// Do `effect`, invoked by the palette, an agent or a script through the
     /// host, or by the person's own gesture.
     ///
+    fn agent_host_input_refused(&self, effect: &crate::resource::TerminalEffect) -> bool {
+        use crate::resource::TerminalEffect as E;
+        self.sessions
+            .target
+            .as_ref()
+            .is_some_and(crate::target::SessionTarget::is_host)
+            && Requester::current() == Requester::Agent
+            && matches!(
+                effect,
+                E::Send { .. }
+                    | E::Run { .. }
+                    | E::Paste { .. }
+                    | E::PastePrimary { .. }
+                    | E::Interrupt
+                    | E::Clear
+            )
+    }
+
     /// # Errors
     /// Returns why the effect was refused or failed.
     pub(crate) fn perform(
@@ -2064,6 +2082,9 @@ impl TerminalWidget {
         effect: crate::resource::TerminalEffect,
     ) -> Result<(), String> {
         use crate::resource::TerminalEffect as E;
+        if self.agent_host_input_refused(&effect) {
+            return Err("agents may not send input to the device's own shell".into());
+        }
         match effect {
             E::InspectSession => {
                 return Err(
@@ -2151,6 +2172,77 @@ impl TerminalWidget {
             }
         }
         Ok(())
+    }
+
+    /// Execute only an authenticated owner operation on this live device-shell session.
+    pub(crate) fn device_shell_operation(
+        &mut self,
+        operation: &ui::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        use ui::floating_surface::DeviceShellOperation as O;
+        if matches!(operation, O::Select) {
+            let already_selected = self
+                .sessions
+                .target
+                .as_ref()
+                .is_some_and(crate::target::SessionTarget::is_host)
+                && matches!(
+                    self.sessions.state,
+                    crate::sessions::OpenState::Open | crate::sessions::OpenState::AwaitingAllow
+                );
+            if !(already_selected || self.request_device_shell()) {
+                return Err("The device shell could not open".into());
+            }
+            return Ok(self.inspect_session());
+        }
+        if matches!(operation, O::Inspect) {
+            return Ok(self.inspect_session());
+        }
+        let (O::Run { session, .. } | O::Read { session }) = operation else {
+            return Err("Invalid device shell operation".into());
+        };
+        if self.local_session.as_deref() != Some(session.as_str())
+            || !self
+                .sessions
+                .target
+                .as_ref()
+                .is_some_and(crate::target::SessionTarget::is_host)
+        {
+            return Err("This device shell session has changed".into());
+        }
+        if matches!(operation, O::Run { .. }) && self.input_unavailable().is_some() {
+            return Err("The device shell is not open".into());
+        }
+        match operation {
+            O::Run { command, .. } => {
+                if command.trim().is_empty()
+                    || command.len() > MAX_RESOURCE_SEND_BYTES
+                    || !is_reviewable_terminal_text(command)
+                {
+                    return Err(
+                        "Provide one bounded command without terminal control characters".into(),
+                    );
+                }
+                let mut bytes = command.as_bytes().to_vec();
+                bytes.push(b'\r');
+                self.try_write_input(&bytes)?;
+                Ok(serde_json::json!({"session":session,"status":"submitted"}))
+            }
+            O::Read { .. } => {
+                let text = self.current_visible_text();
+                let mut end = text.len().min(32768);
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let visible = text
+                    .get(..end)
+                    .ok_or("Terminal output boundary is unavailable")?;
+                Ok(
+                    serde_json::json!({"session":session,"text":visible,"truncated":end < text.len()}),
+                )
+            }
+            _ => Err("Invalid device shell operation".into()),
+        }
     }
 
     /// Ask for `effect` as the person's own gesture: through the session's
