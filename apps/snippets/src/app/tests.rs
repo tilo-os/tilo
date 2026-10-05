@@ -44,14 +44,28 @@ fn snippet(title: &str, body: &str) -> Snippet {
 /// Activate the control labelled `label` as assistive technology does.
 fn activate(app: &mut TestApp<SnippetsShell>, label: &str) {
     let harness = app.harness();
-    let node = harness.a11y_node_named(label).unwrap_or_else(|| {
-        let nodes = harness.a11y_nodes();
-        let labels: Vec<&str> = nodes.iter().filter_map(|(_, n)| n.label()).collect();
-        panic!("no control labelled {label:?} among {labels:?}")
-    });
+    // A snippet's header heading shares its label with the list row. Select
+    // the exported control that actually advertises activation, not the title.
+    let nodes = harness.a11y_nodes();
+    let actionable: Vec<_> = nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.label() == Some(label) && node.supports_action(ui::accesskit::Action::Click)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    let inventory: Vec<_> = nodes
+        .iter()
+        .filter_map(|(_, node)| node.label().map(|name| (name, node.role())))
+        .collect();
+    assert_eq!(
+        actionable.len(),
+        1,
+        "expected one actionable control labelled {label:?} among {inventory:?}"
+    );
     harness
-        .perform_a11y_action(node, &ui::a11y::Action::Activate)
-        .unwrap();
+        .perform_a11y_action(actionable[0], &ui::a11y::Action::Activate)
+        .unwrap_or_else(|error| panic!("activating {label:?}: {error}"));
     app.settle();
 }
 
