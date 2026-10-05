@@ -201,7 +201,13 @@ fi
 # proves the guest created all four shims and can parse their supported surface;
 # the broker request/response and signed update mutation are covered by native
 # Rust integration tests so this boot check never changes the subject machine.
-if on "/usr/libexec/tilo-ush run -c 'app --help >/dev/null && store --help >/dev/null && tilo --help >/dev/null && system --help >/dev/null'"; then
+if on 'test "$(readlink -e /usr/bin/ush)" = /usr/libexec/tilo-ush'; then
+  ok "ush is available on PATH through the confined runtime"
+else
+  bad "ush is missing from PATH or does not use the confined runtime"
+fi
+
+if on "/usr/bin/ush -c 'app --help >/dev/null && store --help >/dev/null && tilo --help >/dev/null && system --help >/dev/null'"; then
   ok "the sandboxed Terminal exposes discoverable app and system commands"
 else
   bad "the sandboxed Terminal cannot discover its brokered management commands"
