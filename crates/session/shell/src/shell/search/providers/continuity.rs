@@ -2000,42 +2000,42 @@ mod tests {
         }
     }
 
+    fn continuity_test_group(
+        id: u64,
+        tab_id: u64,
+        title: &str,
+    ) -> crate::shell::state::WindowGroup {
+        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+        WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id: tab_id,
+                title: title.into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.notes".into(),
+                    label: title.into(),
+                    note: String::new(),
+                },
+            }],
+            active_tab: tab_id,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }
+    }
+
     #[test]
     fn palette_continue_focuses_the_offered_tab_and_then_retires() {
         use crate::shell::continuity_suggestion::{ContinuityFeed, FocusObservation};
         use crate::shell::personal_continuity::{AppInstanceId, ContinuityStamp};
         use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
         use crate::shell::search::{SearchRegistry, SearchScope};
-        use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
-
         let mut tree = WorkspaceTree::bootstrap_default();
         let room = tree.desktop.workspaces[0].room;
         let workspace = tree.desktop.workspaces[0].id;
         let strip = tree.desktop.workspaces[0].strips[0].id;
-        let tab = |id: u64, title: &str| Tab {
-            id,
-            title: title.into(),
-            tile: TileContent::LocalApp {
-                app_id: "so.tilo.notes".into(),
-                label: title.into(),
-                note: String::new(),
-            },
-        };
         tree.desktop.workspaces[0].strips[0].window_groups = vec![
-            WindowGroup {
-                id: 1,
-                tabs: vec![tab(11, "Terminal")],
-                active_tab: 11,
-                width: WindowWidth::Normal,
-                maximized: false,
-            },
-            WindowGroup {
-                id: 2,
-                tabs: vec![tab(22, "Notes")],
-                active_tab: 22,
-                width: WindowWidth::Normal,
-                maximized: false,
-            },
+            continuity_test_group(1, 11, "Terminal"),
+            continuity_test_group(2, 22, "Notes"),
         ];
         tree.desktop.active = workspace;
         tree.desktop.active_strip.insert(workspace, strip);
