@@ -729,6 +729,38 @@ pub fn floating_edge(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     );
 }
 
+/// The boundary of authored content, independent of the pixels inside it.
+#[derive(Clone, Copy, Debug)]
+pub enum ContentFrame {
+    /// A square sheet on the canvas ground.
+    Sheet,
+    /// A thumbnail whose selected edge sits outside the image.
+    Thumbnail { selected: bool },
+}
+
+impl ContentFrame {
+    /// Paint only the frame, preserving every pixel of the content itself.
+    pub fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
+        let (radius, selected) = match self {
+            Self::Sheet => (0.0, false),
+            Self::Thumbnail { selected } => (f64::from(theme.tokens.radii.item), selected),
+        };
+        let (width, inset, color) = if selected {
+            (rule * 2.0, rule, theme.tokens.colors.text_primary)
+        } else {
+            (rule, 0.0, edge_on(theme.tokens.colors.surfaces.content))
+        };
+        scene.stroke(
+            &Stroke::new(width),
+            transform,
+            color,
+            None,
+            &rect.inflate(inset, inset).to_rounded_rect(radius + inset),
+        );
+    }
+}
+
 /// A 1 px separator between rows inside a surface: derived against
 /// `surface`, inset `inset` from both ends (HIG §9.5: `spacing.s3`, never
 /// full-bleed into a corner radius), centred on `y`.

@@ -33,8 +33,7 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Vec<Element> {
                     .with_id("canvas-title")
                     .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
                         "canvas-artwork-title",
-                    ))
-                    .filling(),
+                    )),
                 ArtworkResource::SET_TITLE,
             ),
         ) as Element
@@ -49,7 +48,6 @@ pub fn header(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Vec<Element> {
             Container::new()
                 .with_no_padding()
                 .with_flex_grow()
-                .with_min_width(0.0)
                 .with_child(Box::new(
                     Column::new()
                         .with_no_padding()
@@ -507,13 +505,13 @@ fn area_commands(tools: &Tools) -> Vec<Command> {
     ]
 }
 
-/// How far, in screen pixels, a click grows or shrinks the selection.
-const GROW: f64 = 4.0; // a step a person sees at the zoom they work at, not spacing
 /// How far, in screen pixels, a click fits the selection's edge to the
 /// picture.
-const EDGE: f64 = 8.0; // a reach a person sees at the zoom they work at, not spacing
+use crate::content_geometry::EDGE;
 /// How wide, in screen pixels, a click softens the selection's edge.
-const FEATHER: f64 = 8.0; // a step a person sees at the zoom they work at, not spacing
+use crate::content_geometry::FEATHER;
+/// How far, in screen pixels, a click grows or shrinks the selection.
+use crate::content_geometry::GROW;
 
 /// A change of the selection's edge, in screen pixels.
 #[derive(Clone, Copy)]
@@ -657,7 +655,7 @@ fn align_commands(tools: &Tools) -> Vec<Command> {
 fn notice(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     cx.switch(&tools.notice, |_, notice| {
         let Some(said) = notice else {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         };
         let shown = if said.chars().count() > NOTICE_LETTERS {
             let cut: String = said.chars().take(NOTICE_LETTERS - 1).collect();

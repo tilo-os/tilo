@@ -2914,6 +2914,7 @@ impl Grid {
                 line_h,
                 selection: e.shown_selection(),
                 caret: Some(e.shown_caret()),
+                preedit: e.shown_preedit(),
             },
         );
         scene.pop_layer();
@@ -2930,6 +2931,7 @@ pub(crate) struct EditLine<'a> {
     pub line_h: f64,
     pub selection: Option<(usize, usize)>,
     pub caret: Option<usize>,
+    pub preedit: Option<(usize, usize)>,
 }
 
 /// Paint one editable line in `style`: the selection wash under the text, the
@@ -2978,6 +2980,21 @@ pub(crate) fn draw_edit_line(
         line.origin,
         line.caret,
     );
+    if let Some((start, end)) = line.preedit {
+        // The grid cell and formula bar share the exact composed projection.
+        // Prefix measurements reuse the renderer cache used by hit mapping.
+        let chars: Vec<char> = line.text.chars().collect();
+        let prefix: String = chars.iter().take(start).collect();
+        let through: String = chars.iter().take(end).collect();
+        let x0 = tx + f64::from(tr.measure_style(&prefix, None, style).0);
+        let x1 = tx + f64::from(tr.measure_style(&through, None, style).0);
+        ui::widget::paint_preedit_underline(
+            scene,
+            transform,
+            Line::new((x0, ty + line.line_h), (x1, ty + line.line_h)),
+            theme,
+        );
+    }
     if line.caret.is_some() {
         scene.stroke(
             &Stroke::new(1.5),

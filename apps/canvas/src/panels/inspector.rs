@@ -162,7 +162,9 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                 let settings = match tool {
                     Tool::Eraser => eraser(cx, &tools),
                     // Picking lays no paint: nothing to set.
-                    Tool::Select => return Box::new(Spacer::fixed(0.0)) as Element,
+                    Tool::Select => {
+                        return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
+                    }
                     Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand => {
                         area_tool(&tools, tool)
                     }
@@ -337,7 +339,7 @@ fn tool_heading(tools: &Tools, medium: Option<&crate::media::MediumSpec>, tool: 
     };
     Box::new(
         Row::new()
-            .with_gap(8.0)
+            .with_rhythm(ui::tokens::Rhythm::Related)
             .no_wrap()
             .with_align_items(ui::taffy::AlignItems::Center)
             .push(heading("canvas-brush"))
@@ -735,11 +737,11 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
     };
     let heading_row = cx.switch(&summary, |_, summary| {
         let Some(summary) = summary else {
-            return Box::new(Spacer::fixed(0.0)) as Element;
+            return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         };
         Box::new(
             Row::new()
-                .with_gap(8.0)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .no_wrap()
                 .with_align_items(ui::taffy::AlignItems::Center)
                 .push(heading("canvas-selection"))
@@ -762,7 +764,7 @@ fn selection(cx: &ViewCx<ArtworkResource>, ids: Vec<String>, tools: &Tools) -> E
             if *picture {
                 super::picture::panel(cx, &ids, &tools)
             } else {
-                Box::new(Spacer::fixed(0.0))
+                Box::new(Spacer::token(ui::tokens::SpacingStep::S0))
             }
         })
     };

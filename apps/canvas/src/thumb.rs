@@ -10,7 +10,7 @@ use std::rc::Rc;
 use ui::framework::ResourceSurface;
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use ui::vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use ui::vello::peniko::Fill;
 use ui::widget::{AppModel, ModelPath, Widget};
 use ui::{LocalState, PresenceCtx, TextRenderer, Theme};
@@ -180,29 +180,8 @@ impl Widget for Thumb {
             .target
             .as_ref()
             .is_some_and(|(chosen, id)| chosen.with(|chosen| chosen == id));
-        if ringed {
-            // Outside the picture, so none of it is hidden by the ring.
-            // Two of the chrome's rules: heavy enough to say "this one".
-            let ring = 2.0 * f64::from(theme.tokens.metrics.chrome_rule_px);
-            scene.stroke(
-                &Stroke::new(ring),
-                transform,
-                theme.tokens.colors.text_primary,
-                None,
-                &frame
-                    .rect()
-                    .inflate(ring / 2.0, ring / 2.0)
-                    .to_rounded_rect(radius + ring / 2.0),
-            );
-        } else {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                ui::surface::edge_on(theme.tokens.colors.surfaces.content),
-                None,
-                &frame,
-            );
-        }
+        ui::surface::ContentFrame::Thumbnail { selected: ringed }
+            .draw(scene, transform, self.rect, theme);
     }
 
     fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}

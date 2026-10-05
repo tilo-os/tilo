@@ -238,11 +238,15 @@ fn create_form_submits_and_cancels() {
         app.state().draft.run_args(),
         Some(vec!["run".into(), "-d".into(), "alpine".into()])
     );
-    // The capture has no live engine: a rejected create must keep its draft.
+    // The hosted fixture uses the production offline engine: submission is
+    // accepted and clears the draft through the canonical create action.
     app.harness().key("Enter");
-    assert_eq!(draft(&app, CreateField::Image), "alpine");
-    // Successful creation clears through this same resource action.
-    app.call("clear-create", serde_json::json!({})).unwrap();
+    assert!(
+        !app.harness().a11y_nodes().into_iter().any(|(_, node)| {
+            node.role() == ui::accesskit::Role::Dialog && node.label() == Some("New container")
+        }),
+        "an accepted creation closes the form"
+    );
     assert!(
         app.state().draft.is_empty(),
         "a confirmed creation empties the draft"

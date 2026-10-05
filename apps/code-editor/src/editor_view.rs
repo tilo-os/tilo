@@ -36,7 +36,7 @@ use ui::widget::{
     Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, Ime, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -1743,13 +1743,7 @@ impl EditorView {
             );
             let uy = y + self.line_h - 2.0;
             let underline = Line::new(Point::new(x0, uy), Point::new(x1, uy));
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                c.text_primary,
-                None,
-                &underline,
-            );
+            ui::widget::paint_preedit_underline(scene, transform, underline, theme);
         }
     }
 
@@ -1799,20 +1793,9 @@ impl EditorView {
                 Severity::Info => c.semantic.info,
                 Severity::Hint => c.text_dim,
             };
-            // Zigzag underline — a couple of px amplitude reads as a squiggle.
-            // Stepped by an integer segment count (rather than a `while x <
-            // x_right` float loop) so the number of iterations is exact.
-            let mut path = BezPath::new();
-            path.move_to((x_left, sy));
-            let span = (x_right - x_left).max(0.0);
-            let segments = (span / 3.0).ceil() as usize;
-            let mut up = true;
-            for seg in 1..=segments {
-                let nx = (x_left + seg as f64 * 3.0).min(x_right);
-                path.line_to((nx, if up { sy - 1.6 } else { sy + 1.6 }));
-                up = !up;
-            }
-            scene.stroke(&Stroke::new(1.2), transform, color, None, &path);
+            ui::widget::code_editor::paint_diagnostic_underline(
+                scene, transform, x_left, x_right, sy, color,
+            );
         }
     }
 

@@ -2288,7 +2288,7 @@ impl CanvasSurface {
         self.overlay_selection(scene, to_screen, theme);
         self.overlay_drag(scene, to_screen, theme);
         self.overlay_paths(scene, to_screen, theme);
-        self.overlay_footprint(scene, to_screen);
+        self.overlay_footprint(scene, to_screen, theme);
         if let Some(session) = &self.text {
             self.draw_caret(scene, to_screen, theme, text, session);
         }
@@ -2396,18 +2396,15 @@ impl CanvasSurface {
             let mut outline = crate::render::silhouette(mark);
             outline.apply_affine(to_screen * mark.affine());
             let marked = hovered == Some(mark.id.as_str()) || self.selection.contains(&mark.id);
-            crate::render::eraser_outline(
-                scene,
-                &outline,
-                marked.then_some(theme.tokens.colors.intent.you),
-            );
+            ui::widget::selection_handles::ToolFeedback::Erased { marked }
+                .draw(scene, &outline, theme);
         }
     }
 
     /// The brush's or eraser's footprint round the pointer: a ring as wide
     /// as the mark it lays at this zoom, dark and light so it reads on any
     /// paint, as a painter's hand expects to see where it will land.
-    fn overlay_footprint(&self, scene: &mut Scene, to_screen: Affine) {
+    fn overlay_footprint(&self, scene: &mut Scene, to_screen: Affine, theme: &Theme) {
         if !matches!(self.current_tool(), Tool::Brush | Tool::Eraser)
             || self.space
             || matches!(self.drag, Some(Drag::Pan))
@@ -2425,7 +2422,7 @@ impl CanvasSurface {
         }
         let mut path = ui::vello::kurbo::Shape::to_path(&ring, 0.1);
         path.apply_affine(to_screen);
-        crate::render::footprint_ring(scene, &path);
+        ui::widget::selection_handles::ToolFeedback::Footprint.draw(scene, &path, theme);
     }
 
     /// What is hovered and picked: outlines, the frame and its guides.
@@ -2964,7 +2961,6 @@ impl Widget for CanvasSurface {
         // The sheet is an object lifted off the content ground: the one
         // soft shadow a floating thing casts, and an edge measured against
         // the ground it sits on.
-        let colors = &theme.tokens.colors;
         let sheet = self.viewport.content_to_screen().transform_rect_bbox(board);
         ui::surface::shadow(
             scene,
@@ -3006,13 +3002,7 @@ impl Widget for CanvasSurface {
                 .borrow_mut()
                 .draw(&art, scene, to_screen, text_renderer, &options);
         }
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            ui::surface::edge_on(colors.surfaces.content),
-            None,
-            &sheet,
-        );
+        ui::surface::ContentFrame::Sheet.draw(scene, transform, sheet, theme);
         self.paint_overlay(scene, to_screen, theme, text_renderer);
         if self.focused && !self.pressed_into_focus {
             ui::widget::paint_focus_ring(scene, transform, self.rect.inset(-2.0), 0.0, theme);

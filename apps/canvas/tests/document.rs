@@ -233,7 +233,7 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
     app.harness().key("Shift");
     let shown = |app: &mut TestApp<App>| app.harness().targets().contains_key("canvas-dock");
     let before = shown(&mut app);
-    app.harness().click_named("canvas-sidebar").unwrap();
+    app.harness().click_named("nav-shell-inspector").unwrap();
     for _ in 0..4 {
         app.harness().key("Shift");
     }
@@ -242,7 +242,7 @@ fn the_panels_stay_put_away_on_a_narrow_window() {
         before,
         "the toggle shows or hides the panels"
     );
-    app.harness().click_named("canvas-sidebar").unwrap();
+    app.harness().click_named("nav-shell-inspector").unwrap();
     for _ in 0..4 {
         app.harness().key("Shift");
     }

@@ -117,6 +117,7 @@ fn launch_spec_with_root(
     root: fn(&LaunchArgs) -> Result<Box<dyn Widget>, LaunchError>,
 ) -> LaunchSpec {
     LaunchSpec::new_with_args("so.tilo.osk", root)
+        .history(&osk::framework_history::HISTORY)
         .shot_root(shot_root)
         .scenarios(SCENARIOS)
         .shot_viewport(|_| default_shots_viewport())

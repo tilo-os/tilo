@@ -50,6 +50,24 @@ use preparation::Preparation;
 mod reveal;
 use reveal::RevealToggle;
 
+/// Paint the pending input method composition on a shaped line. Editors
+/// supply the segment from their own projection (proportional formula text
+/// or a fixed-width code line); its appearance follows the shared input role.
+pub fn paint_preedit_underline(
+    scene: &mut Scene,
+    transform: Affine,
+    segment: vello::kurbo::Line,
+    theme: &crate::Theme,
+) {
+    scene.stroke(
+        &Stroke::new(theme.caret_width / 2.0),
+        transform,
+        theme.tokens.colors.text_primary,
+        None,
+        &segment,
+    );
+}
+
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
 #[derive(Clone, Debug, PartialEq, Eq)]

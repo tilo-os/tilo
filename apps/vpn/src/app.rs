@@ -2133,18 +2133,29 @@ mod tests {
         let _scope = ui::host::enter(&services);
         let harness = app.harness();
         let empty = harness
-            .targets()
+            .a11y_nodes()
             .into_iter()
-            .find(|(id, _)| id.ends_with("EmptyState"))
-            .unwrap()
-            .1;
-        harness.click_at(empty.center().x, empty.center().y);
+            .filter(|(_, node)| node.label() == Some("Import configuration"))
+            .find_map(|(_, node)| node.bounds())
+            .expect("the empty state's actual import action is exposed");
+        harness.click_at(
+            f64::midpoint(empty.x0, empty.x1),
+            f64::midpoint(empty.y0, empty.y1),
+        );
         harness.relayout();
         let kinds = *harness.targets().get("vpn-import-kind").unwrap();
         harness.click_at(kinds.x0 + kinds.width() * 0.75, kinds.center().y);
         harness.relayout();
-        let primary = *harness.targets().get("vpn-import-sheet.primary").unwrap();
-        harness.click_at(primary.center().x, primary.center().y);
+        let primary = harness
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.label() == Some("Choose file"))
+            .find_map(|(_, node)| node.bounds())
+            .expect("the modal's primary file action is exposed");
+        harness.click_at(
+            f64::midpoint(primary.x0, primary.x1),
+            f64::midpoint(primary.y0, primary.y1),
+        );
         assert!(harness.wait_until(ui::time::Duration::from_secs(10), |_| {
             !recorder.pick_requests().is_empty()
         }));

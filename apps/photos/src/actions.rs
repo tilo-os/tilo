@@ -3659,7 +3659,12 @@ fn create_album_spec() -> ActionSpec {
                 "id",
                 ParamType::Text,
                 "stable album id, for example photos.album:holiday",
-            ),
+            )
+            .with_schema(serde_json::json!({
+                "pattern": "^photos[.]album:[A-Za-z0-9_.-]+$",
+                "maxLength": MAX_ALBUM_ID_CHARS,
+                "examples": ["photos.album:holiday"],
+            })),
             ActionParam::required("name", ParamType::Text, "visible album name"),
             photo_ids_param(false, "JSON array of stable photo ids", 0),
         ],

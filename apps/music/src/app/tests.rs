@@ -185,9 +185,7 @@ fn track_rows_play_and_act_through_the_shared_table() {
     let next = app.pb.queue[app.pb.queue_index + 1].clone();
     let after = app.pb.queue[app.pb.queue_index + 2].clone();
     let down = track_control(&mut app, &mut doc, &next, "down", draw_once);
-    send(&mut app, &cursor_at(down.center()), &mut doc);
-    send(&mut app, &press(MouseButton::Left), &mut doc);
-    send(&mut app, &released(MouseButton::Left), &mut doc);
+    hosted_click(&mut app, &mut doc, down.center());
     assert_eq!(
         app.pb.queue[app.pb.queue_index + 1],
         after,
@@ -201,9 +199,7 @@ fn track_rows_play_and_act_through_the_shared_table() {
     let before = app.pb.queue.len();
     draw_once(&mut app, &mut doc);
     let remove = track_control(&mut app, &mut doc, &after, "remove", draw_once);
-    send(&mut app, &cursor_at(remove.center()), &mut doc);
-    send(&mut app, &press(MouseButton::Left), &mut doc);
-    send(&mut app, &released(MouseButton::Left), &mut doc);
+    hosted_click(&mut app, &mut doc, remove.center());
     assert_eq!(
         app.pb.queue.len(),
         before - 1,
@@ -634,6 +630,25 @@ fn press(button: MouseButton) -> WindowEvent {
     }
 }
 /// Drive one event through the production `handle_event` path.
+/// Send a row-control click through the same custody and action runner as
+/// a live window, retaining the actual Music root and canonical document.
+fn hosted_click(app: &mut MusicApp, doc: &mut AutoCommit, at: Point) {
+    let mut state = ui::State::new();
+    state.adopt_doc(std::mem::take(doc));
+    let origin = app.get_rect().origin();
+    let owned = std::mem::take(app);
+    let mut frame = ui::headless::FrameHarness::for_root(state, owned, (1280, 800), Theme::dark());
+    let hosted_origin = frame.root::<MusicApp>().get_rect().origin();
+    frame.click_at(
+        at.x + hosted_origin.x - origin.x,
+        at.y + hosted_origin.y - origin.y,
+    );
+    frame.relayout();
+    let (owned, state) = frame.root_and_state_mut::<MusicApp>();
+    *app = std::mem::take(owned);
+    *doc = std::mem::take(&mut state.doc);
+}
+
 fn send(app: &mut MusicApp, ev: &WindowEvent, doc: &mut AutoCommit) -> bool {
     send_with(app, ev, winit::event::Modifiers::default(), doc)
 }
@@ -1357,9 +1372,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         }
         // Pressing the failed row's control retries it.
         let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once);
-        send(&mut app, &cursor_at(retry.center()), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        send(&mut app, &released(MouseButton::Left), &mut doc);
+        hosted_click(&mut app, &mut doc, retry.center());
         assert!(
             !app.offline_errors.contains_key("tk_g3"),
             "Retry clears the failure"
@@ -4279,9 +4292,7 @@ fn canonical_actions_converge_through_the_platform_document() {
         let before = doc::load_library(&doc).is_liked(&id);
         let expected = crate::actions::encode(&crate::actions::set_liked_action(&id, !before));
 
-        send(&mut app, &cursor_at(center), &mut doc);
-        send(&mut app, &press(MouseButton::Left), &mut doc);
-        send(&mut app, &released(MouseButton::Left), &mut doc);
+        hosted_click(&mut app, &mut doc, center);
 
         assert_eq!(
             app.actions.last_dispatched(),

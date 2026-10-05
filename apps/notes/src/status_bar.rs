@@ -126,7 +126,7 @@ impl StatusModel {
         if self.needs_attention() {
             return self.save_detail();
         }
-        format!("{}  ·  {}", self.save_text(), self.right_text())
+        format!("{}\n{}", self.save_text(), self.right_text())
     }
 }
 

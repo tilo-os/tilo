@@ -3361,7 +3361,14 @@ impl Widget for NavShell {
 
     fn layout_needs_measure(&self) -> bool {
         let mut dirty = self.invalidation.is_pending();
-        self.for_each_owned(|child| dirty |= child.layout_needs_measure());
+        // Hidden headers and controls may never have been measured. They
+        // must not invalidate an unrelated visible pane on every scroll.
+        // Revealing a part changes host_parts and invalidates the shell.
+        for part in &self.host_parts {
+            if let Some(child) = self.part(*part) {
+                dirty |= child.layout_needs_measure();
+            }
+        }
         dirty
     }
 

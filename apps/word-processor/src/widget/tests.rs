@@ -5583,9 +5583,12 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
                 &theme,
                 &PresenceCtx::empty(),
             );
-            assert!(
-                after.encoding().path_tags.len() > before.encoding().path_tags.len(),
-                "hovering a template must paint a row highlight"
+            // Shared rows paint their ground in both states; hover changes the
+            // actual paint colors rather than adding another geometry path.
+            assert_ne!(
+                after.encoding().draw_data,
+                before.encoding().draw_data,
+                "hovering a template must change the painted row highlight in each theme"
             );
             assert!(wp.lifecycle.dirty, "hover must request a repaint");
             if let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") {

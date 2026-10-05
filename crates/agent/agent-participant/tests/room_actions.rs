@@ -330,7 +330,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         .rows
         .iter()
         .filter_map(|row| row.action.as_ref())
-        .filter(|action| action.action_label == "New theme");
+        .filter(|action| action.address.action == "new-theme");
     assert_eq!(
         new_theme.count(),
         1,

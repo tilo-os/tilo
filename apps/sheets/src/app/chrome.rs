@@ -588,19 +588,9 @@ impl SheetsApp {
                 line_h,
                 selection: bar.selection,
                 caret: bar.caret,
+                preedit: bar.preedit,
             },
         );
-        if let Some((start, end)) = bar.preedit {
-            let x0 = self.formula_char_x.get(start).copied().unwrap_or(text_x0);
-            let x1 = self.formula_char_x.get(end).copied().unwrap_or(x0);
-            scene.stroke(
-                &ui::vello::kurbo::Stroke::new(theme.caret_width / 2.0),
-                transform,
-                theme.tokens.colors.text_primary,
-                None,
-                &ui::vello::kurbo::Line::new((x0, top + line_h), (x1, top + line_h)),
-            );
-        }
         scene.pop_layer();
     }
 

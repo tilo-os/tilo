@@ -303,6 +303,11 @@ impl SettingsApp {
             self.refresh_shell_children();
         }
         if let Some(shell) = &mut self.shell {
+            if let Some(sidebar) = shell.sidebar_mut::<ui::widget::NavList>()
+                && sidebar.selected_id().as_deref() != Some(category.slug())
+            {
+                sidebar.set_selected(Some(category.slug()));
+            }
             shell.show(NavPane::Content);
         }
     }

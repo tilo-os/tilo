@@ -1308,6 +1308,16 @@ impl Widget for TypstApp {
                 },
             });
         }
+        self.chrome.sync(
+            &[self.document.name.as_str()],
+            0,
+            self.err_count + self.warn_count,
+            self.show_diagnostics,
+            matches!(self.compact_view, CompactPane::Preview),
+        );
+        for child in self.chrome.children_mut() {
+            child.sync(doc, &automerge::ROOT);
+        }
         let src_id = self.ensure_source_obj(doc);
         self.source_id = Some(src_id.clone());
         // Land a finished Open/Save/Export file dialog before reading the

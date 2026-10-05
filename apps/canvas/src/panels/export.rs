@@ -74,7 +74,7 @@ const JPEG_QUALITY: u8 = 90;
 /// The sizes offered, as pixels per artwork unit.
 pub const SCALES: [f64; 5] = [0.5, 1.0, 2.0, 3.0, 4.0];
 /// The longest side a picture may have.
-pub const MAX_PIXELS: f64 = 8192.0; // a picture size limit in pixels, not on-screen spacing
+pub use crate::content_geometry::MAX_PIXELS;
 
 /// What the export dialog is set to.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -315,7 +315,7 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
             .map(|(index, scale)| {
                 (
                     index,
-                    ui::widget::toggle_group::Segment::new(format!("{scale}×")),
+                    ui::widget::toggle_group::Segment::new(format!("{scale} times")),
                 )
             })
             .collect(),
@@ -353,7 +353,7 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(6.0)
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .push(caption(&lookup(label)))
                 .push(control),
         )
@@ -363,13 +363,13 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
     let shown = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(10.0)
+        .with_rhythm(ui::tokens::Rhythm::Related)
         .push(preview(cx, tools))
         .push(Box::new(summary));
     let settings = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(14.0)
+        .with_rhythm(ui::tokens::Rhythm::Sibling)
         .push(field("canvas-export-format-label", Box::new(format)))
         .push(field("canvas-export-size-label", Box::new(scale)))
         .push(field("canvas-export-area-label", Box::new(area)))
@@ -377,13 +377,15 @@ pub fn body(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Ele
     Box::new(
         Row::new()
             .no_wrap()
-            .with_gap(20.0)
+            .with_rhythm(ui::tokens::Rhythm::Section)
             .with_align_items(ui::taffy::AlignItems::Start)
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_width(PREVIEW.0)
-                    .with_child(Box::new(shown)),
+            .push(super::layout::width(
+                Box::new(
+                    Container::new()
+                        .with_no_padding()
+                        .with_child(Box::new(shown)),
+                ),
+                |metrics| metrics.inspector_width,
             ))
             .push(Box::new(
                 Container::new()
@@ -433,13 +435,12 @@ fn preview(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Elem
         cut.as_ref()
             .map(|known| (Rc::clone(&known.part), known.region, bare))
     });
-    let thumb = crate::thumb::Thumb::new(tools.renderer.clone(), None, PREVIEW.0, PREVIEW.1)
-        .framed(framing);
-    cx.surface(thumb)
+    let thumb = crate::thumb::Thumb::new(tools.renderer.clone(), None, 0.0, 0.0).framed(framing);
+    super::layout::themed(cx.surface(thumb), |theme, style| {
+        style.size.width = ui::taffy::Dimension::length(theme.tokens.metrics.inspector_width);
+        style.size.height = ui::taffy::Dimension::length(theme.tokens.metrics.overview_width);
+    })
 }
-
-/// The export preview's box.
-const PREVIEW: (f32, f32) = (260.0, 200.0); // a picture's size, not spacing
 
 /// What [`summary`] said last, and for what.
 #[derive(Default)]
@@ -510,14 +511,14 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
         })
         .flatten();
     if let Some(bytes) = bytes {
-        said.push_str(" · ");
+        said.push_str("\n");
         said.push_str(&ui::i18n::I18nManager::format(
             "canvas-export-bytes",
             &[("size", ui::format::bytes_si(bytes).into())],
         ));
     }
     if settings.transparent && !settings.format.transparent() {
-        said.push_str(" · ");
+        said.push_str("\n");
         said.push_str(&ui::i18n::I18nManager::lookup_plain(
             "canvas-export-jpeg-opaque",
         ));

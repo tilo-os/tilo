@@ -840,6 +840,7 @@ impl NavList {
         let (model, openings) = NavModel::build(&sections, &mut keys);
         let shared = Rc::new(RefCell::new(NavShared::default()));
         let select_shared = Rc::clone(&shared);
+        let activate_shared = Rc::clone(&shared);
         let action_shared = Rc::clone(&shared);
         let rename_shared = Rc::clone(&shared);
         let expand_shared = Rc::clone(&shared);
@@ -861,6 +862,11 @@ impl NavList {
                 if let Some(callback) = shared.on_select.as_mut() {
                     callback(key);
                 }
+            })
+            .on_activate(move |_| {
+                // Activating the selected destination still navigates to its
+                // screen; selection callbacks remain change-only.
+                activate_shared.borrow_mut().navigated = true;
             })
             .on_row_action(move |id, index| {
                 let mut shared = action_shared.borrow_mut();
@@ -1410,6 +1416,13 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
 impl crate::widget::Decorator for NavList {
     type Inner = TreeView<(), NavModel>;
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn inner(&self) -> &Self::Inner {
         &self.tree
     }
@@ -1434,6 +1447,19 @@ impl crate::widget::Decorator for NavList {
             return;
         }
         crate::widget::Widget::provide_mut(&mut self.tree, request);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut crate::taffy::TaffyTree<()>,
+        theme: &crate::Theme,
+        node_map: &mut HashMap<crate::taffy::NodeId, *mut dyn crate::widget::Widget>,
+    ) -> crate::taffy::NodeId {
+        let node = crate::widget::Widget::build_layout(&mut self.tree, taffy, theme, node_map);
+        // The published owner is NavList, so host lookup and synthetic
+        // accessibility routing must identify this same retained wrapper.
+        node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
+        node
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
