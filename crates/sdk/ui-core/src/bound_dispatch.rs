@@ -3910,15 +3910,31 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
             let before = (doc.base_heads(), doc.pending_ops());
             let widget = unsafe { &mut *pointer };
             let result = callback(widget, doc, &ROOT);
-            let _ = crate::undo::take_committed_action(widget);
-            let changed = (doc.base_heads(), doc.pending_ops()) != before
-                && history.commit_action_authored_with_message(
+            let frontier_changed = (doc.base_heads(), doc.pending_ops()) != before;
+            // Typed actions close their transaction at dispatch. Forwarding
+            // controls can leave the bracket on a descendant, so retain the
+            // admitted owner's frontier as a fallback for committed edits.
+            let committed = crate::undo::take_committed_action(widget)
+                .or_else(|| (doc.pending_ops() == 0).then_some(before.0));
+            let changed = if !frontier_changed {
+                false
+            } else if let Some(committed) = committed {
+                history.record_committed_action_authored(
+                    doc,
+                    committed,
+                    None,
+                    crate::undo::get_state(widget),
+                    Some(author.clone()),
+                )
+            } else {
+                history.commit_action_authored_with_message(
                     doc,
                     None,
                     crate::undo::get_state(widget),
                     Some(author.clone()),
                     context.change_message(),
-                );
+                )
+            };
             if changed {
                 state.generation = Some(next);
                 state.statuses.clear();
