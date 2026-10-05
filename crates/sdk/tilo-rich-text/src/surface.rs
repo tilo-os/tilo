@@ -1005,7 +1005,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == "notes.find:replace-all" {
@@ -1013,36 +1013,35 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.replace_all_find_matches(&mut Edits::lend(state));
+            return self.replace_all_find_matches(state);
         }
         if target == "notes.find:replace" {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.replace_find_match(&mut Edits::lend(state));
+            return self.replace_find_match(state);
         }
         if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self
-                .move_selected_blocks(&mut Edits::lend(state), target.ends_with(":move-up"));
+            return self.move_selected_blocks(state, target.ends_with(":move-up"));
         }
         if target == "notes.editor:duplicate" {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.duplicate_blocks(&mut Edits::lend(state), None);
+            return self.duplicate_blocks(state, None);
         }
         if let Some(id) = target.strip_prefix("notes.block-duplicate:") {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.duplicate_blocks(&mut Edits::lend(state), Some(id));
+            return self.duplicate_blocks(state, Some(id));
         }
         // What the action edited is written by the settle pass that follows.
         self.editor
@@ -1058,7 +1057,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -1071,7 +1070,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 if self.source.read_only() || self.source.revision().is_none() {
                     return false;
                 }
-                self.set_text(&mut Edits::lend(state), text);
+                self.set_text(state, text);
                 true
             }
             // What the action edited is written by the settle pass that
