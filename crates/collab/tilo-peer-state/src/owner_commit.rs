@@ -51,6 +51,13 @@ pub enum CommitOperation {
         authority: crate::workspace_task::WorkspaceTaskAuthority,
         command: crate::workspace_task::WorkspaceTaskCommand,
     },
+    /// Original authenticated person command; governor signing custody is
+    /// supplied out of band by the installed owning host, never by arguments.
+    WorkspaceMembershipCommand {
+        invocation: uuid::Uuid,
+        caller: tilo_user_identity::DeviceCert,
+        command: crate::workspace_membership::WorkspaceMembershipCommand,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CommitTarget {
@@ -69,6 +76,10 @@ pub enum CommitTarget {
         invocation: uuid::Uuid,
     },
     WorkspaceTaskCommand {
+        device: [u8; 32],
+        invocation: uuid::Uuid,
+    },
+    WorkspaceMembershipCommand {
         device: [u8; 32],
         invocation: uuid::Uuid,
     },
@@ -137,6 +148,11 @@ impl OwnerCommitRequest {
                 authority,
                 command,
             } => task_binding(*invocation, authority, command)?,
+            CommitOperation::WorkspaceMembershipCommand {
+                invocation,
+                caller,
+                command,
+            } => membership_binding(*invocation, caller, command)?,
             CommitOperation::Document {
                 app,
                 record,
@@ -183,6 +199,23 @@ impl OwnerCommitRequest {
                 .as_bytes(),
         })
     }
+}
+fn membership_binding(
+    invocation: uuid::Uuid,
+    caller: &tilo_user_identity::DeviceCert,
+    command: &crate::workspace_membership::WorkspaceMembershipCommand,
+) -> Result<(CommitTarget, Vec<u8>), String> {
+    if invocation.is_nil() {
+        return Err("invalid workspace membership invocation".into());
+    }
+    command.validate()?;
+    Ok((
+        CommitTarget::WorkspaceMembershipCommand {
+            device: caller.device_public_key,
+            invocation,
+        },
+        postcard::to_allocvec(&(invocation, caller, command)).map_err(|error| error.to_string())?,
+    ))
 }
 fn task_binding(
     invocation: uuid::Uuid,
@@ -297,6 +330,13 @@ mod tests {
                 invocation,
             }),
             [vec![5], vec![9; 32], vec![16], vec![7; 16]].concat()
+        );
+        assert_eq!(
+            encoded(&CommitTarget::WorkspaceMembershipCommand {
+                device: [9; 32],
+                invocation,
+            }),
+            [vec![6], vec![9; 32], vec![16], vec![7; 16]].concat()
         );
         let request = OwnerCommitRequest {
             room: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".into(),

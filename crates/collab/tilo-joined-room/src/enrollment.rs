@@ -400,6 +400,7 @@ impl NativeWorkspaceOwner {
             continuity: 0,
             floor: None,
             publication: Some(publication::StoredPublication::default()),
+            workspace_memberships: std::collections::BTreeMap::new(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }

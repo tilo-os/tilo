@@ -16,7 +16,7 @@ pub use reservation::{preflight_storage, reserved_file_bytes};
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
-pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES * 2;
+pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES * 2 + 1;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StoredPublication {
     version: u32,
@@ -26,16 +26,19 @@ pub(crate) struct StoredPublication {
     pub(crate) entries: Vec<StoredOutgoing>,
     #[serde(deserialize_with = "read_entries")]
     pub(crate) projection: Vec<StoredOutgoing>,
+    #[serde(default, deserialize_with = "read_entries")]
+    governance: Vec<StoredOutgoing>,
     reservation: reservation::StoredReservation,
 }
 impl Default for StoredPublication {
     fn default() -> Self {
         Self {
-            version: 2,
+            version: 3,
             revision: 1,
             next_ordinal: 1,
             entries: Vec::new(),
             projection: Vec::new(),
+            governance: Vec::new(),
             reservation: reservation::StoredReservation::default(),
         }
     }
@@ -66,8 +69,9 @@ impl<'a> NativeOutgoing<'a> {
     pub fn entries(&self) -> impl Iterator<Item = NativeOutgoingEntry<'a>> {
         let allowed = self.allowed;
         self.state
-            .entries
+            .governance
             .iter()
+            .chain(self.state.entries.iter())
             .chain(self.state.projection.iter())
             .enumerate()
             .filter(move |(index, _)| allowed.get(*index).copied().unwrap_or(false))
@@ -195,8 +199,9 @@ pub(crate) fn status(
     let allowed = allowed(view, now)?;
     // `bounds` caps both lists, so neither sum nor difference can wrap.
     let total = publication
-        .entries
+        .governance
         .len()
+        .saturating_add(publication.entries.len())
         .saturating_add(publication.projection.len());
     Ok(NativeOutgoingStatus {
         pending: total,
@@ -210,6 +215,12 @@ fn allowed(
     let publication = state(view)?;
     bounds(publication)?;
     let mut allowed = [false; MAX_VISIBLE_ENTRIES];
+    for (index, entry) in publication.governance.iter().enumerate() {
+        if let Some(slot) = allowed.get_mut(index) {
+            *slot = validate_governance(view, entry).is_ok();
+        }
+    }
+    let governance_len = publication.governance.len();
     for (index, entry) in publication.entries.iter().enumerate() {
         if !entry.incremental || !fresh(entry, now) {
             continue;
@@ -225,7 +236,7 @@ fn allowed(
         else {
             return Err("invalid native outgoing document".into());
         };
-        if let Some(slot) = allowed.get_mut(index) {
+        if let Some(slot) = allowed.get_mut(governance_len.saturating_add(index)) {
             *slot = envelope.author.as_bytes() == &view.device().device_public_key
                 && view
                     .peer
@@ -251,9 +262,10 @@ fn allowed(
         {
             for (index, entry) in publication.projection.iter().enumerate() {
                 if let Some(slot) = publication
-                    .entries
+                    .governance
                     .len()
-                    .checked_add(index)
+                    .checked_add(publication.entries.len())
+                    .and_then(|slot| slot.checked_add(index))
                     .and_then(|slot| allowed.get_mut(slot))
                 {
                     *slot = entry.incremental && fresh(entry, now);
@@ -283,17 +295,20 @@ pub fn validate_file_layout(
     Ok(())
 }
 fn bounds(publication: &StoredPublication) -> Result<usize, String> {
-    if publication.version != 2
+    if !matches!(publication.version, 2 | 3)
+        || (publication.version == 2 && !publication.governance.is_empty())
         || publication.revision == 0
         || publication.next_ordinal == 0
         || publication.entries.len() > MAX_ENTRIES
         || publication.projection.len() > MAX_ENTRIES
+        || publication.governance.len() > 1
     {
         return Err("invalid native outgoing publication or entry capacity".into());
     }
     let bytes = publication
-        .entries
+        .governance
         .iter()
+        .chain(publication.entries.iter())
         .try_fold(0usize, |bytes, entry| {
             bytes
                 .checked_add(entry.bytes.len())
@@ -411,6 +426,90 @@ pub(crate) fn reserve(view: &NativeCommittedView, bytes: &[u8]) -> Result<(), St
     }
     Ok(())
 }
+
+pub(crate) fn replace_governance_checkpoint(
+    view: &mut NativeCommittedView,
+    binding: CommitBinding,
+    now: SystemTime,
+) -> Result<(), String> {
+    let message = view.peer.room_message();
+    let bytes = encode(&message, MAX_BYTES)?;
+    let existing = state(view)?.governance.first();
+    if existing.is_some_and(|entry| entry.bytes == bytes && entry.binding == binding) {
+        return Ok(());
+    }
+    let total = bounds(state(view)?)?;
+    let old = existing.map_or(0, |entry| entry.bytes.len());
+    if total
+        .checked_sub(old)
+        .and_then(|size| size.checked_add(bytes.len()))
+        .is_none_or(|size| size > MAX_BYTES)
+    {
+        return Err("native governance checkpoint exceeds outgoing capacity".into());
+    }
+    let (channel, retention) = tilo_peer_state::transport::retention(&message, true)
+        .ok_or("unsupported native governance checkpoint")?;
+    if retention != Retention::Checkpoint {
+        return Err("native governance publication is not a checkpoint".into());
+    }
+    let publication = view
+        .record
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?;
+    publication.version = 3;
+    let ordinal = publication.next_ordinal;
+    publication.next_ordinal = ordinal
+        .checked_add(1)
+        .ok_or("native publication ordinal exhausted")?;
+    publication.revision = publication
+        .revision
+        .checked_add(1)
+        .ok_or("native publication revision exhausted")?;
+    publication.governance = vec![StoredOutgoing {
+        ordinal,
+        id: *blake3::hash(&bytes).as_bytes(),
+        bytes,
+        binding,
+        timestamp_ns: enrollment::ns(now)?,
+        channel,
+        incremental: false,
+    }];
+    Ok(())
+}
+
+pub(crate) fn refresh_governance_checkpoint(view: &mut NativeCommittedView) -> Result<(), String> {
+    let Some(existing) = state(view)?.governance.first().cloned() else {
+        return Ok(());
+    };
+    let bytes = encode(&view.peer.room_message(), MAX_BYTES)?;
+    if bytes == existing.bytes {
+        return Ok(());
+    }
+    let total = bounds(state(view)?)?;
+    if total
+        .checked_sub(existing.bytes.len())
+        .and_then(|size| size.checked_add(bytes.len()))
+        .is_none_or(|size| size > MAX_BYTES)
+    {
+        return Err("refreshed native governance checkpoint exceeds outgoing capacity".into());
+    }
+    let publication = view
+        .record
+        .publication
+        .as_mut()
+        .ok_or("publication absent")?;
+    publication.revision = publication
+        .revision
+        .checked_add(1)
+        .ok_or("native publication revision exhausted")?;
+    publication.governance = vec![StoredOutgoing {
+        id: *blake3::hash(&bytes).as_bytes(),
+        bytes,
+        ..existing
+    }];
+    Ok(())
+}
 fn append(view: &mut NativeCommittedView, bytes: Vec<u8>, projected: bool) -> Result<(), String> {
     let id = *blake3::hash(&bytes).as_bytes();
     if state(view)?
@@ -505,8 +604,9 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
     let mut ids = BTreeSet::new();
     let mut ordinals = BTreeSet::new();
     for entry in publication
-        .entries
+        .governance
         .iter()
+        .chain(publication.entries.iter())
         .chain(publication.projection.iter())
     {
         if entry.ordinal == 0
@@ -519,17 +619,19 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
         }
         let message: NeighbourMsg =
             postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
-        if encode(&message, MAX_BYTES)? != entry.bytes
+        if publication
+            .governance
+            .iter()
+            .any(|item| item.id == entry.id)
+        {
+            validate_governance(view, entry)?;
+        } else if encode(&message, MAX_BYTES)? != entry.bytes
             || request(&message)?.binding()? != entry.binding
             || metadata(&message)? != (entry.timestamp_ns, entry.channel, entry.incremental)
         {
             return Err("native outgoing bytes/binding mismatch".into());
         }
-        if publication
-            .entries
-            .iter()
-            .any(|original| original.id == entry.id)
-        {
+        if publication.entries.iter().any(|item| item.id == entry.id) {
             validate_exact(&view.peer, &message, view.device().device_public_key)?;
         }
     }
@@ -551,6 +653,31 @@ pub(crate) fn validate(view: &NativeCommittedView) -> Result<(), String> {
         )?;
     }
     reservation::validate(view, &originals)?;
+    Ok(())
+}
+
+fn validate_governance(view: &NativeCommittedView, entry: &StoredOutgoing) -> Result<(), String> {
+    let message: NeighbourMsg = postcard::from_bytes(&entry.bytes).map_err(|e| e.to_string())?;
+    if !matches!(&message, NeighbourMsg::SyncResp { room, .. } if room == &view.record.room.to_string())
+        || encode(&view.peer.room_message(), MAX_BYTES)? != entry.bytes
+        || entry.id != *blake3::hash(&entry.bytes).as_bytes()
+        || entry.incremental
+    {
+        return Err("native governance checkpoint differs from canonical room policy".into());
+    }
+    let (channel, retention) = tilo_peer_state::transport::retention(&message, true)
+        .ok_or("unsupported native governance checkpoint")?;
+    if retention != Retention::Checkpoint || channel != entry.channel {
+        return Err("native governance checkpoint transport mismatch".into());
+    }
+    if !view
+        .record
+        .workspace_memberships
+        .values()
+        .any(|receipt| receipt.receipt.binding == entry.binding)
+    {
+        return Err("native governance checkpoint lacks its owner receipt".into());
+    }
     Ok(())
 }
 pub(crate) fn retire(view: &mut NativeCommittedView) -> Result<(), String> {
