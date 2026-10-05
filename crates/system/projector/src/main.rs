@@ -1051,6 +1051,10 @@ fn run_external_process(
         // Disconnect cannot strand a camera/audio/capture process.
         .process_group(0)
         .env("PYTHONUNBUFFERED", "1")
+        // Only the selected sender gets the explicitly supplied credential.
+        // Ambient codes must not pair a receiver or reach an unrelated helper.
+        .env_remove("TILO_PROJECTION_CREDENTIAL")
+        .env_remove("DOUBLETAKE_CODE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1070,31 +1074,30 @@ fn run_external_process(
         .ok_or_else(|| format!("{transport_name} sender has no diagnostic stream"))?;
     let (line_tx, line_rx) = mpsc::channel();
     let stdout_tx = line_tx.clone();
+    let secret = credential_env.map(|(_, value)| value.to_owned());
+    let stdout_secret = secret.clone();
+    let ready_messages = ready_messages
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect::<Vec<_>>();
+    let stdout_ready = ready_messages.clone();
     let stdout_reader = std::thread::Builder::new()
         .name("tilo-projection-status-out".to_owned())
         .spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if stdout_tx.send(line).is_err() {
-                    break;
-                }
-            }
+            forward_sender_diagnostics(stdout, stdout_tx, stdout_secret.as_deref(), &stdout_ready);
         })
         .map_err(|error| format!("cannot monitor {transport_name} sender output: {error}"))?;
     let stderr_reader = std::thread::Builder::new()
         .name("tilo-projection-status-err".to_owned())
         .spawn(move || {
-            for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                if line_tx.send(line).is_err() {
-                    break;
-                }
-            }
+            forward_sender_diagnostics(stderr, line_tx, secret.as_deref(), &ready_messages);
         })
         .map_err(|error| format!("cannot monitor {transport_name} diagnostics: {error}"))?;
     let mut diagnostics = Vec::new();
     let mut ready = false;
     loop {
-        while let Ok(line) = line_rx.try_recv() {
-            if ready_messages.iter().any(|message| line.contains(message)) {
+        while let Ok((is_ready, line)) = line_rx.try_recv() {
+            if is_ready {
                 fs::write(&paths.ready, b"ready").map_err(|error| {
                     format!("cannot publish {transport_name} readiness: {error}")
                 })?;
@@ -1118,8 +1121,11 @@ fn run_external_process(
         {
             let _ = stdout_reader.join();
             let _ = stderr_reader.join();
-            while let Ok(line) = line_rx.try_recv() {
+            while let Ok((_, line)) = line_rx.try_recv() {
                 diagnostics.push(line);
+                if diagnostics.len() > 8 {
+                    diagnostics.remove(0);
+                }
             }
             let detail = diagnostics.join("\n");
             return Err(if detail.is_empty() {
@@ -1131,6 +1137,27 @@ fn run_external_process(
             });
         }
         std::thread::sleep(SESSION_POLL_INTERVAL);
+    }
+}
+
+// Redact before queueing: helper diagnostics may repeat a rejected PIN or
+// password on either stream, and later become user-visible session errors.
+fn forward_sender_diagnostics(
+    stream: impl Read,
+    lines: mpsc::Sender<(bool, String)>,
+    credential: Option<&str>,
+    ready_messages: &[String],
+) {
+    for line in BufReader::new(stream).lines().map_while(Result::ok) {
+        // Classify before redaction: a password may coincide with a status word.
+        let ready = ready_messages.iter().any(|message| line.contains(message));
+        let line = match credential.filter(|value| !value.is_empty()) {
+            Some(secret) => line.replace(secret, "[redacted]"),
+            None => line,
+        };
+        if lines.send((ready, line)).is_err() {
+            break;
+        }
     }
 }
 
@@ -2068,6 +2095,67 @@ mod tests {
             drop(pipeline);
             fs::remove_dir_all(root).expect("remove HLS fixture directory");
         }
+    }
+
+    #[test]
+    fn rejected_airplay_credential_is_private_and_can_be_retried() {
+        let root = std::env::temp_dir().join(format!(
+            "tilo-projector-auth-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let paths = SessionPaths::for_root(root.clone()).expect("session paths");
+        let sender = root.join("sender");
+        fs::write(
+            &sender,
+            b"#!/bin/sh\n[ -z \"$TILO_PROJECTION_CREDENTIAL\" ] || exit 8\n[ \"$DOUBLETAKE_CODE\" = \"receiver-password\" ] || exit 9\necho \"rejected code: $DOUBLETAKE_CODE\"\necho \"authentication failed: $DOUBLETAKE_CODE\" >&2\nexit 1\n",
+        )
+        .expect("write sender");
+        fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
+            .expect("make sender executable");
+        let error = run_airplay_process(
+            &sender.display().to_string(),
+            &[],
+            &paths,
+            Some("receiver-password"),
+        )
+        .expect_err("rejected authentication must fail");
+        assert!(!error.contains("receiver-password"));
+        assert!(error.contains("rejected code: [redacted]"));
+        assert!(error.contains("authentication failed: [redacted]"));
+        assert!(!paths.ready.exists(), "rejection must not report streaming");
+
+        // A new explicitly supplied code can retry the same session. Readiness
+        // is still reported when the sender includes that code in its message.
+        fs::write(
+            &sender,
+            b"#!/bin/sh\n[ \"$DOUBLETAKE_CODE\" = \"mirror session ready\" ] || exit 9\necho \"mirror session ready: $DOUBLETAKE_CODE\"\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+        )
+        .expect("write retry sender");
+        let worker_paths = paths.clone();
+        let sender_path = sender.display().to_string();
+        let session = std::thread::spawn(move || {
+            run_airplay_process(
+                &sender_path,
+                &[],
+                &worker_paths,
+                Some("mirror session ready"),
+            )
+        });
+        let deadline = tilo_test_env::hang_deadline();
+        while !paths.ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let ready = paths.ready.exists();
+        fs::write(&paths.stop, b"stop").expect("stop retry");
+        session
+            .join()
+            .expect("join retry")
+            .expect("disconnect retry");
+        assert!(ready, "authenticated retry must report readiness");
+        assert!(!paths.ready.exists());
+        assert!(!paths.stop.exists());
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 
     #[test]
