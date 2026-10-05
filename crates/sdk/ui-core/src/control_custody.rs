@@ -1012,7 +1012,7 @@ mod tests {
         assert!(domain.drain_live().is_empty());
         assert!(view.children_mut()[0].perform_action(
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         let requests = domain.drain_live();

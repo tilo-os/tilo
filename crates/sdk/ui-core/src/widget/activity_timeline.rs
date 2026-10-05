@@ -4161,7 +4161,7 @@ mod tests {
                 &mut timeline,
                 &target,
                 &Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -4174,7 +4174,7 @@ mod tests {
                 &mut timeline,
                 &target,
                 &Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(timeline.selection(), Some((0, 0)));

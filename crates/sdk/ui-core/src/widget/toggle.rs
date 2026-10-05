@@ -1046,7 +1046,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Activate,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert!(!state.get(), "user activation publishes typed state");
@@ -1175,7 +1175,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut toggle,
                 &crate::a11y::Action::ToggleCheck,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());

@@ -339,7 +339,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         assert!(editor.perform_semantic_action(
             &format!("notes.image-edit:{id}"),
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(
@@ -371,7 +371,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         assert!(editor.perform_semantic_action(
             &format!("notes.image-done:{id}"),
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(editor.take_edit_ops().is_empty());
@@ -381,7 +381,7 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         assert!(!editor.perform_semantic_action(
             &format!("notes.image-source:{id}"),
             &crate::a11y::Action::SetValue("hidden overwrite".into()),
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
     }
@@ -541,7 +541,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
             &mut editor,
             &down_target,
             &crate::a11y::Action::Activate,
-            &mut AutoCommit::new(),
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(editor.blocks()[1].id, first_id);
@@ -568,7 +568,7 @@ fn block_reorder_emits_stable_id_moves_through_semantic_controls() {
                 &mut editor,
                 "notes.block-move:missing:down",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ),
             "a stale stable id must refuse instead of moving another block"
@@ -1100,7 +1100,7 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state,
+                    state: crate::widget::Edits::lend(state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,

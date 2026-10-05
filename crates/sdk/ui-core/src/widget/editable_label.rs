@@ -581,9 +581,7 @@ impl Widget for EditableLabel {
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let path = path
-            .downcast_ref::<automerge::ObjId>()
-            .expect("document path");
+        let (state, path) = crate::doc::document(state, path);
 
         if matches!(action, Action::Focus | Action::Activate) {
             if !self.editing {

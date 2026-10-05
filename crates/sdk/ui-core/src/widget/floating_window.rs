@@ -1745,7 +1745,7 @@ mod tests {
         let node = taffy.leaf_node(Style::default());
         let mut handled = false;
         let mut ft = None;
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         w.handle_event(
             e,
@@ -1933,12 +1933,12 @@ mod tests {
             assert_eq!(node.children[0].role, Role::Button);
             assert_eq!(node.children[0].name.as_deref(), Some("Close Compose"));
 
-            let mut state = AutoCommit::new();
+            let mut state = automerge::AutoCommit::new();
             assert!(Widget::perform_semantic_action(
                 &mut w,
                 "floating-window.close",
                 &Action::Activate,
-                &mut state,
+                &mut crate::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             assert!(!w.is_open());

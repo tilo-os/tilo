@@ -534,9 +534,7 @@ impl Widget for SearchField {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let path = path
-            .downcast_ref::<automerge::ObjId>()
-            .expect("document path");
+        let (state, path) = crate::doc::document(state, path);
         if self.opens_palette {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
@@ -874,7 +872,7 @@ immaterial"
             assert!(Widget::perform_action(
                 &mut sf,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(sf.take_palette_request());

@@ -84,7 +84,10 @@ impl Widget for ConsumingKeyboardRoot {
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
         ) {
-            ctx.state.put(&ROOT, "escaped_keyboard", true).unwrap();
+            ctx.state
+                .document_mut()
+                .put(&ROOT, "escaped_keyboard", true)
+                .unwrap();
             *ctx.handled = true;
         }
     }
@@ -140,7 +143,8 @@ impl crate::search::capability::SearchSource for Publisher {
         p: &ModelPath,
     ) {
         let (doc, _) = crate::doc::document(doc, p);
-        doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
+        doc.document_mut()
+            .put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
             .unwrap();
     }
 }
@@ -370,7 +374,7 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             assert_eq!(button.test_id(), Some("standalone-search-open"));
             assert!(button.perform_action(
                 &crate::a11y::Action::Activate,
-                &mut app.state.doc,
+                &mut crate::widget::Edits::lend(&mut app.state.doc),
                 &app.state.root
             ));
             assert_eq!(app.dispatch_history_controls(), 1);

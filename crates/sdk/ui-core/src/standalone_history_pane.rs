@@ -403,7 +403,7 @@ mod tests {
             assert!(pane.timeline.perform_semantic_action(
                 target,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(

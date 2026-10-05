@@ -1017,10 +1017,14 @@ impl<T: Widget + 'static> Widget for TileEditor<T> {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        self.0.start_operation(op, doc, path)
+        self.0.start_operation(
+            op,
+            &mut crate::widget::Edits::lend(doc.document_mut()),
+            path,
+        )
     }
     fn build_layout(
         &mut self,
@@ -2000,7 +2004,7 @@ fn admit(
                 RETAINED_LIFECYCLE_OPERATION,
                 &[]
             ),
-            doc,
+            &mut crate::widget::Edits::lend(doc),
             &ROOT
         )
         .unwrap(),
@@ -2175,7 +2179,10 @@ impl Widget for RetainedLifecycleProbe {
     ) {
         increment(&self.handles.events);
         if let Some(value) = self.handles.event_value.borrow().as_deref() {
-            ctx.state.put(ctx.path, "body", value).unwrap();
+            ctx.state
+                .document_mut()
+                .put(ctx.path, "body", value)
+                .unwrap();
         }
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2184,7 +2191,7 @@ impl Widget for RetainedLifecycleProbe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         use automerge::ReadDoc;
@@ -2356,7 +2363,7 @@ impl Widget for ReleasableLifecycleProbe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let Some(crate::host_operation::OperationRequest {
@@ -3179,7 +3186,7 @@ fn renewed_lifetime_blocks_recovery_event_before_old_custody_release() {
                     RETAINED_LIFECYCLE_OPERATION,
                     &[],
                 ),
-                &mut driver.state_mut().doc,
+                &mut crate::widget::Edits::lend(&mut driver.state_mut().doc),
                 &ROOT,
             )
         }

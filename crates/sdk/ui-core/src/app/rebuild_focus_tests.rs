@@ -1,5 +1,5 @@
 use super::*;
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use crate::widget::{Text, TextInput};
 use automerge::AutoCommit;
 use vello::kurbo::Rect;
@@ -136,8 +136,11 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
         // Triggers a structural rebuild that recreates the input as a fresh
         // instance whose own caret default is 5.
         let mut tmp = AutoCommit::new();
-        app.root_widget
-            .on_external_event("show_status", &mut tmp, &automerge::ROOT);
+        app.root_widget.on_external_event(
+            "show_status",
+            &mut crate::widget::Edits::lend(&mut tmp),
+            &automerge::ROOT,
+        );
         app.rebuild_structure();
 
         assert!(app.focused_node.is_some(), "focus preserved across rebuild");
@@ -168,8 +171,11 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
         }
 
         let mut tmp = AutoCommit::new();
-        app.root_widget
-            .on_external_event("reset", &mut tmp, &automerge::ROOT);
+        app.root_widget.on_external_event(
+            "reset",
+            &mut crate::widget::Edits::lend(&mut tmp),
+            &automerge::ROOT,
+        );
         app.rebuild_structure();
 
         assert_eq!(

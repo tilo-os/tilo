@@ -527,7 +527,7 @@ mod tests {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            _: &mut automerge::AutoCommit,
+            _: &mut crate::widget::Edits<'_>,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             let Some(request) = op.unscoped() else {

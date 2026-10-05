@@ -1485,7 +1485,7 @@ mod lifecycle_tests {
                                 assert!(tb.perform_semantic_action(
                                     &format!("toolbar.item.{index}"),
                                     &Action::Activate,
-                                    &mut AutoCommit::new(),
+                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                                     &automerge::ROOT
                                 ));
                             }
@@ -1516,7 +1516,7 @@ mod lifecycle_tests {
                                 assert!(tb.perform_semantic_action(
                                     &format!("toolbar.item.{index}"),
                                     &Action::Activate,
-                                    &mut AutoCommit::new(),
+                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                                     &automerge::ROOT
                                 ));
                             }
@@ -1828,7 +1828,7 @@ mod lifecycle_tests {
                 assert!(host.children_mut()[0].perform_semantic_action(
                     "toolbar.overflow",
                     &Action::Activate,
-                    &mut AutoCommit::new(),
+                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT
                 ));
                 let send = |host: &mut crate::widget::Row, event: WindowEvent| {

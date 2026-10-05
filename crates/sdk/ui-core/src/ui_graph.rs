@@ -3428,7 +3428,12 @@ mod tests {
         doc: &mut AutoCommit,
     ) -> bool {
         if widget.test_id() == Some(id) {
-            return Widget::perform_action(widget, action, doc, &ROOT);
+            return Widget::perform_action(
+                widget,
+                action,
+                &mut crate::widget::Edits::lend(doc),
+                &ROOT,
+            );
         }
         widget
             .children_mut()
@@ -3458,7 +3463,11 @@ mod tests {
             type_id,
             payload,
         )
-        .start(live, &mut AutoCommit::new(), &ROOT)
+        .start(
+            live,
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &ROOT,
+        )
         .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))
     }
 

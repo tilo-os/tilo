@@ -6,7 +6,6 @@
 //! before that write so the host records one undo step — exactly what an
 //! application's editor does.
 
-use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 
 use crate::widget::{AppModel, EventCtx, ModelPath, TextInput, Widget as _};
@@ -30,20 +29,43 @@ impl OwnedText {
 
     /// Write the input's pending user edit, keeping the earliest unreported
     /// heads as the boundary of the step it opens.
-    fn publish(&mut self, doc: &mut AutoCommit, root: &ObjId) {
+    fn publish(&mut self, doc: &mut crate::widget::Edits<'_>, root: &ObjId) {
         let Some(text) = self.input.take_dirty() else {
             return;
         };
-        if crate::doc::read_str_or_text(doc, root, self.key).as_deref() == Some(text.as_str()) {
+        if crate::doc::read_str_or_text(doc.doc(), root, self.key).as_deref() == Some(text.as_str())
+        {
             // A caret or selection change is not an edit.
             return;
         }
-        let before = doc.get_heads();
-        crate::doc::put_text_diffed(doc, root, self.key, &text);
-        if doc.pending_ops() > 0 {
+        #[derive(Debug, serde::Serialize)]
+        struct WriteText {
+            root: ObjId,
+            key: String,
+            text: String,
+        }
+        impl tilo_actions::Action for WriteText {
+            fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+                crate::doc::put_text_diffed(doc, &self.root, &self.key, &self.text);
+                Ok(())
+            }
+        }
+        let mut host = crate::action_host::ActionHost::new();
+        doc.apply(
+            &mut host,
+            "test.owned-text.write",
+            &WriteText {
+                root: root.clone(),
+                key: self.key.into(),
+                text,
+            },
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
+        if let Some(before) = host.take_committed() {
             self.committed.get_or_insert(before);
         }
-        self.show(doc, root);
+        self.show(doc.doc(), root);
     }
 
     /// Show the document's value: bind its text object, or adopt a plain
@@ -87,7 +109,7 @@ impl crate::widget::Decorator for OwnedText {
 
     fn handle_event(&mut self, event: &winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
         self.input.handle_event(event, ctx);
-        self.publish(ctx.state.doc(), ctx.path);
+        self.publish(&mut ctx.state, ctx.path);
     }
 
     fn perform_action(
@@ -97,7 +119,7 @@ impl crate::widget::Decorator for OwnedText {
         path: &ModelPath,
     ) -> bool {
         let performed = self.input.perform_action(action, state, path);
-        let (doc, root) = crate::doc::document_ref(state.doc(), path);
+        let (doc, root) = crate::doc::document(state, path);
         self.publish(doc, root);
         performed
     }
@@ -110,7 +132,7 @@ impl crate::widget::Decorator for OwnedText {
         path: &ModelPath,
     ) -> bool {
         let performed = self.input.perform_action_at(action, key_path, state, path);
-        let (doc, root) = crate::doc::document_ref(state.doc(), path);
+        let (doc, root) = crate::doc::document(state, path);
         self.publish(doc, root);
         performed
     }

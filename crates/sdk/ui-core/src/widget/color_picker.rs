@@ -1777,7 +1777,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("#36A2EB".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(picker.hex_string(), "#36A2EB");
@@ -1790,7 +1790,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("blue".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(picker.hex_string(), "#36A2EB");
@@ -1905,7 +1905,7 @@ mod tests {
                 &mut p,
                 &target,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.hex_string(), "#10B981");
@@ -1913,7 +1913,7 @@ mod tests {
                 &mut p,
                 &format!("{TARGET_SWATCH}9"),
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
         }
@@ -2019,7 +2019,7 @@ mod tests {
                 &mut p,
                 TARGET_DONE,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(matches!(
@@ -2030,7 +2030,7 @@ mod tests {
                 &mut p,
                 TARGET_VALUE,
                 &Action::SetValue("#ABCDEF".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.hex_string(), "#ABCDEF");

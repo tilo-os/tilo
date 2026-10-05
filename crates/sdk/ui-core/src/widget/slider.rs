@@ -1026,7 +1026,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), 0.55);
@@ -1099,14 +1099,14 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Decrement,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
@@ -1115,7 +1115,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("80%".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.80).abs() < 1e-9);
@@ -1124,7 +1124,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("0.2".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.20).abs() < 1e-9);
@@ -1140,7 +1140,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(s.value, before, "a disabled slider must not change value");
@@ -1243,7 +1243,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut slider,
                 &crate::a11y::Action::SetValue("80%".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());

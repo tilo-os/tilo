@@ -1347,7 +1347,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), 25.0);
@@ -1384,14 +1384,14 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::Increment,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(n.value(), 20.0);
             assert!(Widget::perform_action(
                 &mut n,
                 &Action::SetValue("100".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(n.value(), 72.0, "SetValue clamps");
@@ -1418,7 +1418,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut number,
                 &crate::a11y::Action::SetValue("42".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get_heads().is_empty(), "the field writes nothing");

@@ -6086,7 +6086,7 @@ mod tests {
                 &mut b,
                 "tab-new",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(b.take_new_tab().is_some());
@@ -6094,7 +6094,7 @@ mod tests {
                 &mut b,
                 "tab-close:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(b.take_close(), Some(2));
@@ -6141,7 +6141,7 @@ mod tests {
                 &mut b,
                 "tab:3",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(b.active_id(), 3);
@@ -6150,7 +6150,7 @@ mod tests {
                 &mut b,
                 "tab:999",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
         }

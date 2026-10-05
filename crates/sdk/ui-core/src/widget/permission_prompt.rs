@@ -759,7 +759,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
@@ -769,7 +769,7 @@ mod tests {
                 &mut p,
                 &crate::a11y::Action::Activate,
                 &[SESSION_KEY],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
@@ -780,7 +780,7 @@ mod tests {
                     &mut p,
                     &crate::a11y::Action::Activate,
                     &[ALWAYS_KEY],
-                    &mut doc,
+                    &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "a disabled persistent grant cannot be activated through AT"

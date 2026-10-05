@@ -89,7 +89,7 @@ impl Widget for TwoViews {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {

@@ -1050,7 +1050,7 @@ mod tests {
         let node = tree.leaf_node(Style::default());
         let mut handled = false;
         let mut focus_target = None;
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         d.handle_event(
             event,
@@ -1129,11 +1129,11 @@ mod tests {
                 .action_target
                 .clone()
                 .unwrap();
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 1);
@@ -1142,7 +1142,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             dialog.set_open(true);
@@ -1150,7 +1150,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let callback = fired.clone();
@@ -1160,7 +1160,7 @@ mod tests {
             assert!(!replacement.perform_semantic_action(
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let fresh = replacement.accessibility().unwrap().children[0]
@@ -1170,7 +1170,7 @@ mod tests {
             assert!(replacement.perform_semantic_action(
                 &fresh,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(fired.get(), 2);
@@ -1192,11 +1192,11 @@ mod tests {
                     .any(|child| child.name.as_deref() == Some("Apply")),
                 "the painted primary action must be accessible"
             );
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(dialog.perform_semantic_action(
                 "modal.primary",
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(clicked.get(), 1);
@@ -1204,7 +1204,7 @@ mod tests {
             assert!(!dialog.perform_semantic_action(
                 "modal.primary",
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(
@@ -1343,7 +1343,7 @@ mod tests {
                 &key_press_event(NamedKey::Escape),
                 1.0,
                 Modifiers::default(),
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(dismissed.get());

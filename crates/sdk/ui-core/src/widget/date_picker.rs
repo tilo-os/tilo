@@ -981,7 +981,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-11-23".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|date| *date), expected);
@@ -990,7 +990,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("2026-02-30".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|date| *date), expected);

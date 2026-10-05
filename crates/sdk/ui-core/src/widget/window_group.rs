@@ -3483,7 +3483,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state,
+                state: crate::widget::Edits::lend(state),
                 path: root_id,
                 handled: &mut handled,
                 focus_target,

@@ -436,12 +436,17 @@ impl Widget for CounterCard {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let (request, scope) = op.with_custody();
         if scope.is_none()
-            && let Some(started) = crate::widget::start_in_children(self, op, doc, path)?
+            && let Some(started) = crate::widget::start_in_children(
+                self,
+                op,
+                &mut crate::widget::Edits::lend(doc.document_mut()),
+                path,
+            )?
         {
             return Ok(Some(started));
         }
@@ -648,7 +653,7 @@ fn activate_bound_button(app: &mut App) {
     assert!(unsafe {
         (*pointer).perform_action(
             &crate::a11y::Action::Activate,
-            &mut app.state.doc,
+            &mut crate::widget::Edits::lend(&mut app.state.doc),
             &app.state.root,
         )
     });
@@ -819,7 +824,7 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert!(!unsafe {
             (*pointer).perform_action(
                 &crate::a11y::Action::Activate,
-                &mut app.state.doc,
+                &mut crate::widget::Edits::lend(&mut app.state.doc),
                 &app.state.root,
             )
         });

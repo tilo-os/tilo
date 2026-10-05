@@ -1098,7 +1098,7 @@ mod tests {
             Widget::perform_action(
                 &mut s.cells[1],
                 &crate::a11y::Action::SetValue("2468".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
             s.settle(None);
@@ -1116,7 +1116,7 @@ mod tests {
                     anchor: 0,
                     focus: 1,
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
             send(

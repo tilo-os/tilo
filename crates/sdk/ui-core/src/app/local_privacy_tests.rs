@@ -63,7 +63,7 @@ impl Widget for LocalEffectProbe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let Some(crate::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
@@ -124,7 +124,7 @@ impl crate::widget::Continuable for LocalEffectProbe {
     fn restore_continuation_metadata(
         &mut self,
         _: &crate::collaboration::ContinuationMetadata,
-        _: &mut automerge::AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> bool {
         self.restores.set(self.restores.get().saturating_add(1));

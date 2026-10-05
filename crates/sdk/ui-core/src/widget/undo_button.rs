@@ -611,13 +611,23 @@ mod tests {
             let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
             assert!(
-                !b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT),
+                !b.perform_action_at(
+                    &Action::Activate,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &ROOT
+                ),
                 "an unavailable verb declines the action"
             );
             assert_eq!(crate::undo::take_undo_request(&mut b), None);
 
             crate::undo::set_undo_status(&mut b, &mut || status(false, true));
-            assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
+            assert!(b.perform_action_at(
+                &Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert_eq!(
                 crate::undo::take_undo_request(&mut b),
                 Some(UndoRequest::Redo)

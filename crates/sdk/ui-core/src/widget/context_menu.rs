@@ -1561,7 +1561,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 100);
@@ -1578,7 +1578,7 @@ mod tests {
                 &mut menu,
                 "context-menu:item:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(fired.load(Ordering::SeqCst), 0);

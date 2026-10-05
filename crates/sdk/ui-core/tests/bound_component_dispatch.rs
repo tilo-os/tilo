@@ -240,7 +240,11 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                         if widget.name() == "Leaf" {
                             widget.set_focus(true);
                             widget.ime_cursor_rect();
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root);
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                &mut tilo_ui::widget::Edits::lend(doc),
+                                root,
+                            );
                         }
                     },
                 )
@@ -418,7 +422,11 @@ fn component_mounts_capture_their_descendants_for_dispatch_and_layout() {
                     &ROOT,
                     |widget, doc, path| {
                         if widget.name() == "Leaf" {
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, path);
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                &mut tilo_ui::widget::Edits::lend(doc),
+                                path,
+                            );
                         }
                     },
                 )
@@ -496,9 +504,9 @@ impl Leaf {
         );
         self.capture(label);
     }
-    fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
+    fn edit(&self, doc: &mut tilo_ui::widget::Edits<'_>, label: &'static str) {
         self.observe(doc, label);
-        doc.put(ROOT, "last_callback", label).unwrap();
+        crate::support::application::write_fixture_string(doc, "last_callback", label);
     }
 }
 impl Widget for Leaf {
@@ -560,7 +568,7 @@ impl Widget for Leaf {
             Some(ctx.node_id),
             "adapter shifted event topology"
         );
-        self.edit(ctx.state.doc(), "event");
+        self.edit(&mut ctx.state, "event");
     }
     fn name(&self) -> &'static str {
         "Leaf"
@@ -601,7 +609,7 @@ impl Widget for Leaf {
     fn perform_action(
         &mut self,
         _: &tilo_ui::a11y::Action,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (doc, _) = tilo_ui::doc::document(doc, path);
@@ -612,7 +620,7 @@ impl Widget for Leaf {
         &mut self,
         action: &tilo_ui::a11y::Action,
         path: &[u64],
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui::widget::Edits<'_>,
         doc_path: &ModelPath,
     ) -> bool {
         let (doc, _) = tilo_ui::doc::document(doc, doc_path);
@@ -628,7 +636,7 @@ impl Widget for Leaf {
     fn start_operation(
         &mut self,
         op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
@@ -735,7 +743,7 @@ impl Widget for Root {
     fn start_operation(
         &mut self,
         op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         if op.unscoped().is_none() {
@@ -762,8 +770,7 @@ impl Widget for Root {
             .and_then(|(value, _)| value.as_str().map(str::to_owned))
             .unwrap_or_default();
         LEGACY_DOCUMENTS.with_borrow_mut(|seen| seen.push((marker, path == &ROOT)));
-        doc.put(ROOT, "legacy-follow-up", true)
-            .map_err(|e| e.to_string())?;
+        crate::support::application::write_fixture_flag(doc, "legacy-follow-up");
         Ok(Some(
             tilo_ui::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -823,7 +830,12 @@ impl Widget for Root {
         self.mark("draw-permissions");
         self.0.draw(scene, transform, text, theme, presence);
     }
-    fn on_external_event(&mut self, _: &str, doc: &mut crate::widget::Edits<'_>, path: &ModelPath) {
+    fn on_external_event(
+        &mut self,
+        _: &str,
+        doc: &mut tilo_ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -886,7 +898,12 @@ impl tilo_ui::search::capability::SearchSource for Root {
         self.mark("provider-create");
         vec![]
     }
-    fn activate_search_result(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        _: &str,
+        doc: &mut tilo_ui::widget::Edits<'_>,
+        path: &ModelPath,
+    ) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
@@ -1054,7 +1071,11 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                         doc,
                         &ROOT,
                         |widget, doc, root| {
-                            widget.perform_action(&tilo_ui::a11y::Action::Focus, doc, root)
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                &mut tilo_ui::widget::Edits::lend(doc),
+                                root,
+                            )
                         },
                     )
                     .unwrap();
@@ -1097,7 +1118,7 @@ fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
                     "probe",
                     &[]
                 ),
-                &mut outer,
+                &mut tilo_ui::widget::Edits::lend(&mut outer),
                 &ROOT
             )
             .unwrap(),
@@ -1293,7 +1314,7 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                             "probe",
                             &[],
                         ),
-                        &mut shell,
+                        &mut tilo_ui::widget::Edits::lend(&mut shell),
                         &ROOT,
                     )
                     .unwrap();
@@ -1305,9 +1326,16 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     tilo_ui::search::capability::search_providers(&tile);
                 }
                 Callback::Search => tilo_ui::search::capability::activate_search_result(
-                    &mut tile, "result", &mut shell, &ROOT,
+                    &mut tile,
+                    "result",
+                    &mut tilo_ui::widget::Edits::lend(&mut shell),
+                    &ROOT,
                 ),
-                Callback::External => tile.on_external_event("probe", &mut shell, &ROOT),
+                Callback::External => tile.on_external_event(
+                    "probe",
+                    &mut tilo_ui::widget::Edits::lend(&mut shell),
+                    &ROOT,
+                ),
                 Callback::Control => {
                     // A tile with its own document owner is drained through that
                     // owner's control custody, never by the generic outer drain.
@@ -1505,7 +1533,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
                     "probe",
                     &[],
                 ),
-                &mut AutoCommit::new(),
+                &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &ROOT,
             )
             .unwrap();
@@ -1535,7 +1563,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
                 "probe",
                 &[],
             ),
-            &mut doc,
+            &mut tilo_ui::widget::Edits::lend(&mut doc),
             &ROOT,
         )
         .unwrap();
@@ -1612,7 +1640,11 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
             1,
             "close unwind left a live root in the tile"
         );
-        tile.on_external_event("refused", &mut AutoCommit::new(), &ROOT);
+        tile.on_external_event(
+            "refused",
+            &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &ROOT,
+        );
         assert_eq!(CLOSED_DROPS.get(), 1);
     }
 }
@@ -2055,7 +2087,7 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
                         "legacy",
                         &[],
                     ),
-                    &mut AutoCommit::new(),
+                    &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
                     &ROOT,
                 )
                 .unwrap();
@@ -2114,7 +2146,7 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
                         "legacy.mutable",
                         &[],
                     ),
-                    &mut outer,
+                    &mut tilo_ui::widget::Edits::lend(&mut outer),
                     &outer_path,
                 )
             };
@@ -2206,7 +2238,7 @@ fn legacy_mutable_admission_edits_only_its_record_once() {
                     "legacy.mutable",
                     &[],
                 ),
-                &mut outer,
+                &mut tilo_ui::widget::Edits::lend(&mut outer),
                 &ROOT,
             )
         };

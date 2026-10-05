@@ -1177,7 +1177,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut es,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(es.take_action(), "Enter/Space/AT Activate reaches the CTA");
@@ -1383,7 +1383,11 @@ mod tests {
             let child = scroll.children_mut().remove(0);
             assert!(fired(child), "the pointer reached the action");
             child.set_focus(true);
-            assert!(child.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
+            assert!(child.perform_action(
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root
+            ));
             assert!(fired(child), "assistive activation reaches it too");
         }
 

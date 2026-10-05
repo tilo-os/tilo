@@ -547,7 +547,7 @@ impl Widget for ProbeRoot {
     fn start_operation(
         &mut self,
         op: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        _: &mut tilo_ui::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         let Some(tilo_ui::host_operation::OperationRequest { kind, type_id, .. }) = op.unscoped()
@@ -983,4 +983,53 @@ pub fn initializer_failure(
     Err(LaunchError::Operation(
         "initializer unexpectedly succeeded".into(),
     ))
+}
+
+/// A fixture owner publishes a string through the same typed action loan as an app.
+pub fn write_fixture_string(edits: &mut tilo_ui::widget::Edits<'_>, key: &str, value: &str) {
+    #[derive(Debug, serde::Serialize)]
+    struct Write {
+        key: String,
+        value: String,
+    }
+    impl tilo_actions::Action for Write {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, self.key.as_str(), self.value.as_str())?;
+            Ok(())
+        }
+    }
+    edits
+        .apply(
+            &mut tilo_ui::action_host::ActionHost::new(),
+            "test.fixture.write",
+            &Write {
+                key: key.into(),
+                value: value.into(),
+            },
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
+}
+
+pub fn write_fixture_flag(edits: &mut tilo_ui::widget::Edits<'_>, key: &str) {
+    #[derive(Debug, serde::Serialize)]
+    struct Flag {
+        key: String,
+    }
+    impl tilo_actions::Action for Flag {
+        fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+            use automerge::transaction::Transactable;
+            doc.put(automerge::ROOT, self.key.as_str(), true)?;
+            Ok(())
+        }
+    }
+    edits
+        .apply(
+            &mut tilo_ui::action_host::ActionHost::new(),
+            "test.fixture.flag",
+            &Flag { key: key.into() },
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
 }

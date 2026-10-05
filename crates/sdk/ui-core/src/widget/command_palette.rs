@@ -2494,9 +2494,7 @@ impl Widget for CommandPalette {
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let path = path
-            .downcast_ref::<automerge::ObjId>()
-            .expect("document path");
+        let (state, path) = crate::doc::document(state, path);
 
         if target == "command-palette:query" {
             return match action {
@@ -2786,7 +2784,7 @@ mod tests {
             assert_eq!(p.visible_entries().len(), total);
 
             let event = key_press(Key::Character(SmolStr::new("h")));
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let doc_root = automerge::ROOT.clone();
             let modifiers = Modifiers::default();
             let mut handled = false;
@@ -2868,7 +2866,7 @@ mod tests {
             p.set_rect(Rect::new(0.0, 0.0, 360.0, 280.0));
             let row = p.row_rect(1).expect("second result is painted");
             let modifiers = Modifiers::default();
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
 
             assert!(p.handle_overlay_key(
                 &WindowEvent::CursorMoved {
@@ -2876,7 +2874,7 @@ mod tests {
                     position: winit::dpi::PhysicalPosition::new(row.center().x, row.center().y),
                 },
                 &modifiers,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.cursor(), 1, "hover highlights the hit-tested row");
@@ -2891,7 +2889,7 @@ mod tests {
                     button: MouseButton::Left,
                 },
                 &modifiers,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -2913,13 +2911,13 @@ mod tests {
                 .action_target
                 .clone()
                 .expect("result has a stable semantic target");
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
 
             assert!(Widget::perform_semantic_action(
                 &mut p,
                 &target,
                 &crate::a11y::Action::Focus,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.selected_id(), Some("bravo"));
@@ -2927,7 +2925,7 @@ mod tests {
                 &mut p,
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -2965,7 +2963,10 @@ mod tests {
             let mut palette = CommandPalette::commands();
             palette.set_entries(vec![CommandEntry::from_flat_action(&flat[0])]);
             palette.open();
-            palette.activate_selected(&mut AutoCommit::new(), &automerge::ROOT);
+            palette.activate_selected(
+                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+                &automerge::ROOT,
+            );
 
             assert!(palette.take_outcome().is_none());
             let invocation =
@@ -3210,7 +3211,7 @@ mod tests {
             palette.push(CommandEntry::new("en", "London"));
             palette.set_focus(true);
             palette.rect = Rect::new(0.0, 0.0, 420.0, 260.0);
-            let mut document = AutoCommit::new();
+            let mut document = automerge::AutoCommit::new();
             let modifiers = Modifiers::default();
 
             assert!(palette.handle_overlay_key(
@@ -3219,7 +3220,7 @@ mod tests {
                     Some(("東".len(), "東".len())),
                 )),
                 &modifiers,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(palette.query(), "", "preedit is not committed query state");
@@ -3245,7 +3246,7 @@ mod tests {
             assert!(palette.handle_overlay_key(
                 &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
                 &modifiers,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(palette.query(), "東京");
@@ -3343,7 +3344,7 @@ mod tests {
     }
 
     fn dispatch(p: &mut CommandPalette, event: &WindowEvent, modifiers: Modifiers) {
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let doc_root = automerge::ROOT.clone();
         let mut handled = false;
         let mut focus: Option<NodeId> = None;
@@ -3502,7 +3503,7 @@ mod tests {
             let mut p = seeded_command_palette();
             assert_eq!(p.selected_id(), Some("goto"));
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let root = automerge::ROOT.clone();
             for _ in 0..2 {
                 let mut handled = false;
@@ -3867,7 +3868,7 @@ mod tests {
         modifiers: Modifiers,
         handled: &mut bool,
     ) {
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT.clone();
         let mut focus: Option<NodeId> = None;
         let mut taffy: TaffyTree<()> = TaffyTree::new();

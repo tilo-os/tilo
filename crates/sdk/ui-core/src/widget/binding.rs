@@ -91,7 +91,11 @@ mod tests {
         let before = super::super::settle_mark(&doc);
         for (control, action) in &mut controls {
             control.sync(&doc, &ROOT);
-            assert!(control.perform_action(action, &mut doc, &ROOT));
+            assert!(control.perform_action(
+                action,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert_eq!(
                 super::super::settle_mark(&doc),
                 before,

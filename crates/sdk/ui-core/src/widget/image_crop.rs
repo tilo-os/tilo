@@ -512,14 +512,14 @@ mod tests {
             assert!(editor.perform_semantic_action(
                 "crop.left",
                 &Action::SetValue("40%".into()),
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert_eq!(state.get().left, 0.4);
             assert!(editor.perform_semantic_action(
                 "crop.right",
                 &Action::Decrement,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(state.get().right < 1.0);

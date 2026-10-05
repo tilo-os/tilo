@@ -2653,9 +2653,7 @@ impl Widget for ActionPalette {
                     self.focus_part(index + 1);
                 }
                 let handled = self.controls.children_mut()[index].perform_action(action, doc, path);
-                let path = path
-                    .downcast_ref::<automerge::ObjId>()
-                    .expect("document path");
+                let (doc, path) = crate::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;
             }
@@ -3011,11 +3009,15 @@ mod tests {
             p.set_cursor(idx);
             p.activate_selected();
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             assert!(doc.get(&ROOT, "marked").unwrap().is_none());
             let mut tx = LocalTransport::new();
             let d = p
-                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx,
+                )
                 .expect("an action was pending")
                 .expect("dispatch ok");
             assert!(matches!(d, Dispatched::AppliedLocal(_)));
@@ -3056,10 +3058,14 @@ mod tests {
             p.open();
             p.activate_selected();
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let mut tx = LocalTransport::new();
             let dispatched = p
-                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx,
+                )
                 .expect("action pending")
                 .expect("dispatch succeeds");
             let context = dispatched.envelope().context.as_ref().expect("context");
@@ -3097,10 +3103,15 @@ mod tests {
             p.set_cursor(idx);
             p.activate_selected();
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let mut tx = LocalTransport::new();
             assert!(
-                p.take_dispatch(&mut doc, &registry(), &mut tx).is_none(),
+                p.take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx
+                )
+                .is_none(),
                 "a content row is not a dispatch"
             );
             assert_eq!(
@@ -3176,14 +3187,23 @@ mod tests {
 
             // Type the argument into the field and confirm.
             p.field.set_query("Sprocket");
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let root = ROOT;
             let mods = Modifiers::default();
-            p.handle_key(&enter(), &mods, &mut doc, &root);
+            p.handle_key(
+                &enter(),
+                &mods,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &root,
+            );
 
             let mut tx = LocalTransport::new();
             let d = p
-                .take_dispatch(&mut doc, &registry(), &mut tx)
+                .take_dispatch(
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &registry(),
+                    &mut tx,
+                )
                 .expect("prompted action pending")
                 .expect("dispatch ok");
             assert!(matches!(d, Dispatched::AppliedLocal(_)));
@@ -3296,26 +3316,44 @@ mod tests {
             palette.activate_selected();
             assert!(palette.in_argument_mode());
 
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             let mut transport = LocalTransport::new();
             assert!(
                 palette
-                    .take_dispatch(&mut doc, &registry(), &mut transport)
+                    .take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut transport
+                    )
                     .is_none(),
                 "activation alone must not queue the operation"
             );
 
             palette.field.set_query("mark thing");
-            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            palette.handle_key(
+                &enter(),
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             assert!(
                 palette
-                    .take_dispatch(&mut doc, &registry(), &mut transport)
+                    .take_dispatch(
+                        &mut crate::widget::Edits::lend(&mut doc),
+                        &registry(),
+                        &mut transport
+                    )
                     .is_none(),
                 "confirmation is exact and case-sensitive"
             );
 
             palette.field.set_query("MARK THING");
-            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            palette.handle_key(
+                &enter(),
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             let pending = palette
                 .take_operation()
                 .expect("exact confirmation queues the operation");
@@ -3325,7 +3363,7 @@ mod tests {
                 "the broker receives the exact evidence the palette verified"
             );
             ActionPalette::dispatch_encoded(
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 pending.encoded().expect("fixed encoding"),
                 &registry(),
                 &mut transport,
@@ -3401,9 +3439,14 @@ mod tests {
                 palette.take_operation().is_none(),
                 "a destructive value waits for confirmation"
             );
-            let mut doc = AutoCommit::new();
+            let mut doc = automerge::AutoCommit::new();
             palette.field.set_query("CONFIRM");
-            palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+            palette.handle_key(
+                &enter(),
+                &Modifiers::default(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT,
+            );
             let pending = palette
                 .take_operation()
                 .expect("the confirmed destructive value queues");
@@ -3469,8 +3512,13 @@ mod tests {
             palette.take_operation().is_none(),
             "Back to live keeps ready work behind explicit continuation"
         );
-        let mut doc = AutoCommit::new();
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        let mut doc = automerge::AutoCommit::new();
+        palette.handle_key(
+            &enter(),
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT,
+        );
         let pending = palette
             .take_operation()
             .expect("ready work remains in the same palette");
@@ -3503,9 +3551,14 @@ mod tests {
             .unwrap();
         palette.set_cursor(idx);
         palette.activate_selected();
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         palette.field.set_query("MARK THING");
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        palette.handle_key(
+            &enter(),
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT,
+        );
         assert!(palette.pending_dispatch.is_some());
 
         palette.suspend_for_history();
@@ -3514,7 +3567,12 @@ mod tests {
         assert!(palette.in_argument_mode());
         assert!(palette.query().is_empty(), "old affirmative is not reused");
         palette.field.set_query("MARK THING");
-        palette.handle_key(&enter(), &Modifiers::default(), &mut doc, &ROOT);
+        palette.handle_key(
+            &enter(),
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT,
+        );
         assert_eq!(
             palette.take_operation().unwrap().confirmation_evidence(),
             &serde_json::json!({ "confirmation_phrase": "MARK THING" })
@@ -3573,11 +3631,16 @@ mod tests {
         palette.open();
         palette.activate_selected();
         palette.field.set_query("{\"rows\":\"bad\"}");
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         let enter =
             crate::synthetic_input::key_event(&Key::Named(NamedKey::Enter), ElementState::Pressed);
-        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        palette.handle_key(
+            &enter,
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        );
         assert!(palette.confirm.is_none());
         assert!(palette.arg.is_some());
         assert!(palette.is_open());
@@ -3588,11 +3651,21 @@ mod tests {
                 .contains("Invalid arguments")
         );
         palette.field.set_query("{\"rows\":2}");
-        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        palette.handle_key(
+            &enter,
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        );
         assert!(palette.confirm.is_some());
         assert!(palette.take_operation().is_none());
         palette.field.set_query("CONFIRM");
-        palette.handle_key(&enter, &Modifiers::default(), &mut doc, &root);
+        palette.handle_key(
+            &enter,
+            &Modifiers::default(),
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        );
         assert_eq!(
             palette.take_operation().unwrap().confirmation_evidence(),
             &serde_json::json!({"confirm":true})
