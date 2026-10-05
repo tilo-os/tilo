@@ -123,6 +123,14 @@ pub enum WorkspaceTaskCommand {
         run_epoch: u64,
         reason: String,
     },
+    /// A person steers the exact run and instruction frontier they observed.
+    /// Appended to preserve the existing encoded command variant indices.
+    DirectionForRun {
+        task_id: String,
+        run_epoch: u64,
+        after_revision: u64,
+        text: String,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -302,6 +310,19 @@ fn dispatch(
             reason,
             context.now,
         ),
+        WorkspaceTaskCommand::DirectionForRun {
+            task_id,
+            run_epoch,
+            after_revision,
+            text,
+        } => direct_for_run(
+            tasks,
+            controls,
+            context,
+            task_id,
+            text,
+            (*run_epoch, *after_revision),
+        ),
     }
 }
 
@@ -336,8 +357,18 @@ fn queue(
             MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
             "task instruction",
         )?;
-        if request.invocation.0 != context.invocation {
-            return Err("task source invocation differs from owner command".into());
+        if request.invocation.0.is_nil()
+            || request.chat_record.is_empty()
+            || request.channel_id.is_empty()
+            || request.message_id != format!("m_{}", request.invocation.0)
+        {
+            return Err("task source lacks its canonical Chat parent".into());
+        }
+        if let Some(task_id) = existing_chat_task(tasks, author, assigned_agent, route, request)? {
+            return Ok((
+                task_id.clone(),
+                WorkspaceTaskMutationResult::Queued { task_id },
+            ));
         }
     }
     let task_id = deterministic_task_id(*device, context.invocation);
@@ -365,6 +396,40 @@ fn queue(
         task_id.clone(),
         WorkspaceTaskMutationResult::Queued { task_id },
     ))
+}
+
+// The downstream command UUID is deliberately not the parent message UUID.
+// A retry may come from another admitted device, so device-scoped invocation
+// receipts alone cannot prevent a second executable task for the same message.
+// This runs inside the owner's serialized mutation, before creating a task.
+fn existing_chat_task(
+    tasks: &[WorkspaceTask],
+    author: &str,
+    assigned_agent: &str,
+    route: WorkspaceTaskRoute,
+    request: &tilo_desktop_model::WorkspaceAgentRequest,
+) -> Result<Option<String>, String> {
+    for task in tasks {
+        let Some(prior) = task
+            .resource
+            .as_ref()
+            .and_then(|value| value.agent_request.as_ref())
+        else {
+            continue;
+        };
+        if prior.chat_record != request.chat_record || prior.message_id != request.message_id {
+            continue;
+        }
+        if prior != request
+            || task.created_by != author
+            || task.assigned_agent.as_deref() != Some(assigned_agent)
+            || task.route != route
+        {
+            return Err("canonical Chat parent is already bound to another task request".into());
+        }
+        return Ok(Some(task.id.clone()));
+    }
+    Ok(None)
 }
 
 fn start_run(
@@ -414,6 +479,40 @@ fn start_run(
             epoch,
         },
     ))
+}
+
+fn direct_for_run(
+    tasks: &mut [WorkspaceTask],
+    controls: &mut std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    text: &str,
+    fence: (u64, u64),
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let control = controls
+        .get(task_id)
+        .ok_or("task has no execution control")?;
+    if control
+        .active_run
+        .as_ref()
+        .is_none_or(|run| run.epoch != fence.0)
+        || control
+            .directions
+            .last()
+            .map_or(0, |direction| direction.revision)
+            != fence.1
+    {
+        return Err("task run or instruction frontier changed; review before steering".into());
+    }
+    direct(
+        tasks,
+        controls,
+        context.invocation,
+        context.actor,
+        task_id,
+        text,
+        context.now,
+    )
 }
 
 fn direct(
@@ -746,6 +845,67 @@ mod tests {
     }
 
     #[test]
+    fn canonical_chat_parent_converges_across_devices_and_survives_reopen() {
+        let mut doc = AutoCommit::new();
+        let parent = uuid::Uuid::from_u128(900);
+        let mut command = queue_command();
+        if let WorkspaceTaskCommand::Queue { resource, .. } = &mut command {
+            *resource = Some(Box::new(WorkspaceTaskResource {
+                app_id: Some("so.tilo.chat".into()),
+                app_label: Some("Chat".into()),
+                id: format!("chat.message:m_{parent}"),
+                kind: "chat.message".into(),
+                label: "Agent request".into(),
+                agent_request: Some(tilo_desktop_model::WorkspaceAgentRequest {
+                    chat_record: "chat-record".into(),
+                    channel_id: "agent-dm".into(),
+                    message_id: format!("m_{parent}"),
+                    instruction: "Prepare the complete release notes".into(),
+                    invocation: serde_json::from_value(serde_json::json!(parent)).unwrap(),
+                }),
+            }));
+        }
+        let first = run(&mut doc, 1, 7, &person(), &command).unwrap();
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        let second_device = AdmittedTaskActor::Person {
+            id: "person-1".into(),
+            device: [3; 32],
+        };
+        let retry = run(&mut reopened, 2, 8, &second_device, &command).unwrap();
+        assert_eq!(retry.result, first.result);
+        let state = snapshot(&reopened).unwrap();
+        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.controls.values().next().unwrap().receipts.len(), 2);
+        assert!(
+            !run(&mut reopened, 2, 8, &second_device, &command)
+                .unwrap()
+                .changed
+        );
+        let before = reopened.save();
+        let other_person = AdmittedTaskActor::Person {
+            id: "person-2".into(),
+            device: [4; 32],
+        };
+        assert!(run(&mut reopened, 3, 9, &other_person, &command).is_err());
+        assert_eq!(reopened.save(), before);
+        if let WorkspaceTaskCommand::Queue {
+            resource: Some(resource),
+            ..
+        } = &mut command
+        {
+            resource
+                .agent_request
+                .as_mut()
+                .unwrap()
+                .instruction
+                .push_str(" changed");
+        }
+        assert!(run(&mut reopened, 3, 9, &second_device, &command).is_err());
+        assert_eq!(reopened.save(), before);
+        assert_eq!(snapshot(&reopened).unwrap().tasks.len(), 1);
+    }
+
+    #[test]
     fn exact_queue_replay_is_stable_and_conflicting_reuse_is_refused() {
         let mut doc = AutoCommit::new();
         let command = queue_command();
@@ -764,6 +924,74 @@ mod tests {
         );
         assert_eq!(snapshot(&reopened).unwrap().tasks.len(), 1);
         assert!(run(&mut reopened, 1, 8, &person(), &command).is_err());
+    }
+
+    #[test]
+    fn steering_requires_the_observed_run_and_instruction_frontier() {
+        let mut doc = AutoCommit::new();
+        let queued = run(&mut doc, 1, 1, &person(), &queue_command()).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
+            panic!("queue result")
+        };
+        run(
+            &mut doc,
+            2,
+            2,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        let direction = |epoch, revision| WorkspaceTaskCommand::DirectionForRun {
+            task_id: task_id.clone(),
+            run_epoch: epoch,
+            after_revision: revision,
+            text: "Focus on the compatibility changes".into(),
+        };
+        assert_eq!(postcard::to_allocvec(&direction(1, 0)).unwrap()[0], 6);
+        assert_eq!(
+            postcard::to_allocvec(&WorkspaceTaskCommand::Direction {
+                task_id: task_id.clone(),
+                text: "Earlier command".into(),
+            })
+            .unwrap()[0],
+            2
+        );
+        let before = doc.save();
+        assert!(run(&mut doc, 3, 3, &person(), &direction(2, 0)).is_err());
+        assert_eq!(doc.save(), before);
+        let saved = run(&mut doc, 4, 4, &person(), &direction(1, 0)).unwrap();
+        assert_eq!(
+            saved.result,
+            WorkspaceTaskMutationResult::DirectionAdded {
+                task_id: task_id.clone(),
+                revision: 1,
+            }
+        );
+        let after = doc.save();
+        assert!(run(&mut doc, 5, 5, &person(), &direction(1, 0)).is_err());
+        assert_eq!(doc.save(), after);
+        let mut reopened = AutoCommit::load(&after).unwrap();
+        run(&mut reopened, 6, 6, &person(), &direction(1, 1)).unwrap();
+        let state = snapshot(&reopened).unwrap();
+        let control = state.controls.get(&task_id).unwrap();
+        assert_eq!(control.directions.len(), 2);
+        assert_eq!(control.directions[1].revision, 2);
+        assert_eq!(
+            control
+                .active_run
+                .as_ref()
+                .unwrap()
+                .applied_direction_revision,
+            0
+        );
+        assert!(
+            !run(&mut reopened, 4, 4, &person(), &direction(1, 0))
+                .unwrap()
+                .changed
+        );
     }
 
     #[test]
