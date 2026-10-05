@@ -183,6 +183,44 @@ fn the_snippet_menus_set_the_language_and_duplicate() {
     assert_eq!(app.state().len(), 2);
 }
 
+/// A synthetic row is operated by its measured list owner; a removed row's
+/// exported handle must never operate the replacement row.
+#[test]
+fn exported_list_rows_activate_and_refuse_removed_handles() {
+    let mut app = launched(vec![
+        snippet("First", "first body"),
+        snippet("Second", "second body"),
+    ]);
+    let second = by_title(&app, "Second");
+    let row = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| {
+            node.label() == Some("Second") && node.role() == ui::accesskit::Role::ListItem
+        })
+        .map(|(id, _)| id)
+        .expect("the exported Second list row");
+    app.harness()
+        .perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .expect("the measured list owner handles its row");
+    app.settle();
+    assert_eq!(body_shown(&mut app), "second body");
+    assert_eq!(app.state().len(), 2, "opening a row preserves the library");
+
+    app.invoke(Invoke::apply(&actions::delete_snippet_action(second.id)).unwrap())
+        .unwrap();
+    app.settle();
+    assert!(
+        app.harness()
+            .perform_a11y_action(row, &ui::a11y::Action::Activate)
+            .is_err(),
+        "a removed row's exported handle is refused"
+    );
+    assert_eq!(app.state().len(), 1);
+    assert_eq!(body_shown(&mut app), "first body");
+}
+
 /// Copying a templated snippet fills its variables first.
 #[test]
 fn copying_a_templated_snippet_opens_the_variables_dialog() {
