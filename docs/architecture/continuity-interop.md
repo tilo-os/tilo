@@ -16,8 +16,9 @@ a claim that every receiver or phone works.
 
 The UI crate split should consume these existing broker surfaces; it should not
 move pairing, replication or helper-process ownership into widgets. This work
-changes only the projection broker and this document. Music's active Spotify
-implementation remains the owner of Spotify sessions and playback.
+changes the projection broker, the existing Nearby receive-decision path and
+Files' semantic decline contract. Music's active Spotify implementation remains
+the owner of Spotify sessions and playback.
 
 ## First slice: private AirPlay authentication failure and retry
 
@@ -48,8 +49,9 @@ lab run.
 Files exposes the `decline` action on a recovered incoming transfer in
 `AwaitingDestination`, including when no writable destination is available. The
 action is now declared destructive, so semantic callers confirm deletion of
-retained partial bytes through the normal action system. The runtime now resolves that decision against the durable inbox
-instead of requiring the vanished in-memory offer. It removes only the selected
+retained partial bytes through the normal action system. The runtime now resolves
+that decision against the durable inbox instead of requiring the vanished
+in-memory offer. It removes only the selected
 checkpoint and metadata, records cancellation, and uses the existing exact-peer,
 request-and-transfer-bound cancellation message. Notification is best-effort:
 a sender being offline cannot block deletion of unwanted local bytes.
