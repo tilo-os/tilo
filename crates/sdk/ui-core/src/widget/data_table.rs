@@ -86,12 +86,22 @@ pub enum ColumnWidth {
     Auto,
 }
 
+/// What a cell's row is doing when the cell paints.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CellState {
+    /// The row is selected.
+    pub selected: bool,
+    /// The row is under the pointer.
+    pub hovered: bool,
+}
+
 /// Register one per column via [`ColumnDef::with_text_render`]; columns
 /// without one render nothing (header + chrome still draw). Gets the
 /// table's transform (the cell rect is in the table's coordinates) and
-/// whether the row is selected, so text colour can flip for contrast.
+/// the row's [`CellState`], so a cell can change with its row: its ink
+/// when selected, a glyph that shows under the pointer.
 pub type CellTextRender<Row> =
-    Box<dyn Fn(&Row, &mut Scene, Affine, &mut TextRenderer, Rect, &Theme, bool) + Send + Sync>;
+    Box<dyn Fn(&Row, &mut Scene, Affine, &mut TextRenderer, Rect, &Theme, CellState) + Send + Sync>;
 
 /// A cell painter: the cell rect is in the table's coordinates, and the
 /// transform is the one the table paints with (an outer scroll's offset
@@ -183,6 +193,9 @@ pub struct ColumnDef<Row> {
     pub render_cell: CellRender<Row>,
     /// `None` by default; set via [`ColumnDef::with_widget`].
     pub widget: Option<CellWidgetBuilder<Row>>,
+    /// The column's widgets are a row's actions: mounted only for the row
+    /// under the pointer (see [`ColumnDef::revealed_on_hover`]).
+    pub reveal_on_hover: bool,
     /// Value exposed for ready rows; set directly or by [`ColumnDef::with_text`].
     pub accessible_value: Option<CellAccessibleValue<Row>>,
     /// The cell text the table paints itself (set by [`ColumnDef::with_text`]
@@ -222,6 +235,7 @@ impl<Row> ColumnDef<Row> {
             text_render: None,
             render_cell: Box::new(|_, _, _, _, _, _| {}),
             widget: None,
+            reveal_on_hover: false,
             accessible_value: None,
             text: None,
             kind: TextKind::Prose,
@@ -430,6 +444,17 @@ impl<Row> ColumnDef<Row> {
     #[must_use]
     pub fn with_widget(mut self, builder: impl FnMut(&Row, usize) -> Element + 'static) -> Self {
         self.widget = Some(Box::new(builder));
+        self
+    }
+
+    /// Make this column's widgets a row's actions: they are mounted only for
+    /// the row under the pointer, or for the selected row where nothing
+    /// hovers (touch). At rest the column paints what
+    /// [`Self::with_text_render`] draws: a row's quiet state (a liked mark,
+    /// a progress figure), with the controls taking its place on approach.
+    #[must_use]
+    pub fn revealed_on_hover(mut self) -> Self {
+        self.reveal_on_hover = true;
         self
     }
 }
@@ -724,6 +749,14 @@ pub struct DataTable<Row> {
     add_row: Option<AddRow>,
     /// `(display_index, checked)` when a checkbox cell is toggled.
     on_check: Option<Box<dyn FnMut(usize, bool)>>,
+    /// The display row under the pointer.
+    hover_row: Option<usize>,
+    /// No header band: the table continues one headed above it, or has a
+    /// single self-evident column.
+    headerless: bool,
+    /// The rows are windowed by a scroll the host owns
+    /// ([`Self::host_scrolled`]).
+    host_scrolled: bool,
 }
 
 impl<Row> DataTable<Row> {
@@ -802,6 +835,108 @@ impl<Row> DataTable<Row> {
             sort_state: None,
             add_row: None,
             on_check: None,
+            hover_row: None,
+            headerless: false,
+            host_scrolled: false,
+        }
+    }
+
+    /// Leave out the header band: for a table that continues one headed
+    /// above it, or whose one column needs no name.
+    #[must_use]
+    pub fn without_header(mut self) -> Self {
+        self.headerless = true;
+        self.header_h = 0.0;
+        self.layout_dirty = true;
+        self
+    }
+
+    /// The estimated height of a row, for rows taller than one line of text
+    /// (a title over its artist) in a table that sets no viewport.
+    #[must_use]
+    pub fn with_row_height(mut self, row_height_px: f32) -> Self {
+        self.authored_row_height = Some(f64::from(row_height_px));
+        self.refresh_row_estimate();
+        self
+    }
+
+    /// The table stands in a page its host scrolls as a whole (a painted
+    /// page with a hero above the table and more below it). The host keeps
+    /// the table's rect on the part of it in view and tells it which rows
+    /// that is with [`Self::set_host_window`]; the table mounts and paints
+    /// only those, keeps its header at the top of that part, draws no scroll
+    /// bar of its own and leaves the wheel to the host.
+    #[must_use]
+    pub fn host_scrolled(mut self) -> Self {
+        self.host_scrolled = true;
+        self
+    }
+
+    /// For a [`Self::host_scrolled`] table: `body_height` of rows is in
+    /// view, `offset` below the first row's top.
+    pub fn set_host_window(&mut self, offset: f64, body_height: f64) {
+        let body_height = body_height.max(1.0);
+        if (self.viewport.viewport() - body_height).abs() > 0.5 {
+            self.viewport.set_viewport(body_height);
+            self.viewport
+                .set_overscan(self.viewport.estimated_height() * 2.0);
+            self.visible_window_changed();
+        }
+        if (self.viewport.offset() - offset.max(0.0)).abs() > f64::EPSILON {
+            self.momentum.stop();
+            self.set_scroll_offset(offset.max(0.0));
+        }
+    }
+
+    /// The height of the header and every row together: what a
+    /// [`Self::host_scrolled`] table takes of its host's page.
+    #[must_use]
+    pub fn content_height(&self) -> f64 {
+        self.header_h + self.viewport.content_extent()
+    }
+
+    /// The row under the pointer, as an index into the rows the host set.
+    #[must_use]
+    pub fn hovered_row(&self) -> Option<usize> {
+        self.hover_row
+            .filter(|row| *row < self.display_len())
+            .map(|row| self.source_row(row))
+    }
+
+    /// Whether a press on a row does something, so the row lifts under the
+    /// pointer as a list row does.
+    fn rows_pressable(&self) -> bool {
+        self.selectable || self.on_row_click.is_some() || self.on_activate.is_some()
+    }
+
+    /// The row whose revealed-on-hover cells are mounted: the one under the
+    /// pointer, or the selected one where nothing hovers.
+    fn revealed_row(&self) -> Option<usize> {
+        if self.interaction.supports_hover() {
+            self.hover_row
+        } else {
+            self.primary_index()
+        }
+    }
+
+    fn reveals_on_hover(&self) -> bool {
+        self.columns
+            .iter()
+            .any(|column| column.reveal_on_hover && column.widget.is_some())
+    }
+
+    /// Track the row under `pt`; a change remounts the revealed cells.
+    fn track_hover(&mut self, pt: Option<Point>) {
+        let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();
+        let row = pt
+            .filter(|pt| pt.y < body_bottom)
+            .and_then(|pt| self.row_at(pt));
+        if row != self.hover_row {
+            self.hover_row = row;
+            if self.reveals_on_hover() {
+                self.structure_dirty = true;
+                self.layout_dirty = true;
+            }
         }
     }
 
@@ -1624,6 +1759,8 @@ impl<Row> DataTable<Row> {
         }
         self.layout_dirty = true;
         self.last_anchor = self.capture_view_anchor();
+        // The rows moved under a pointer that did not.
+        self.track_hover(self.last_cursor);
     }
 
     #[must_use]
@@ -1678,11 +1815,15 @@ impl<Row> DataTable<Row> {
     fn apply_type_metrics(&mut self, theme: &Theme) {
         let tokens = &theme.tokens;
         let line = type_line_height(&tokens.typography, TextRole::Caption);
-        self.header_h = text_band(
-            f64::from(tokens.metrics.min_pointer_target),
-            line,
-            f64::from(tokens.spacing.s3),
-        );
+        self.header_h = if self.headerless {
+            0.0
+        } else {
+            text_band(
+                f64::from(tokens.metrics.min_pointer_target),
+                line,
+                f64::from(tokens.spacing.s3),
+            )
+        };
         self.row_type = Some(RowType {
             line,
             default_pad: f64::from(tokens.spacing.s2),
@@ -1723,12 +1864,20 @@ impl<Row> DataTable<Row> {
             .enumerate()
             .filter_map(|(index, column)| column.widget.as_ref().map(|_| index))
             .collect::<Vec<_>>();
+        let revealed = self.revealed_row();
         let mut desired = Vec::with_capacity(range.len().saturating_mul(widget_columns.len()));
         for row_index in range {
             let Some(row_key) = self.row_identity_at(row_index) else {
                 continue;
             };
             for &column_index in &widget_columns {
+                let actions = self
+                    .columns
+                    .get(column_index)
+                    .is_some_and(|column| column.reveal_on_hover);
+                if actions && revealed != Some(row_index) {
+                    continue;
+                }
                 desired.push((row_index, row_key, column_index));
             }
         }
@@ -1826,7 +1975,7 @@ impl<Row> DataTable<Row> {
 
     /// Live when an explicit viewport was set and the rows overflow it.
     fn internal_scroll(&self) -> bool {
-        self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
+        !self.host_scrolled && self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
     }
 
     /// The band the columns share, by the one content edge (HIG §9.3): the
@@ -2115,6 +2264,9 @@ impl<Row> DataTable<Row> {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        if self.headerless {
+            return;
+        }
         let tokens = &theme.tokens;
         let band = self.columns_band();
         let header_rect = Rect::new(band.x0, self.rect.y0, band.x1, self.rect.y0 + self.header_h);
@@ -2204,6 +2356,7 @@ impl<Row> DataTable<Row> {
         let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();
         let band = self.columns_band();
         let ground = tokens.colors.surfaces.content;
+        let pressable = self.rows_pressable();
         for ri in vis_start..vis_end {
             let Some(row_state) = self.row_state_at(ri) else {
                 continue;
@@ -2226,6 +2379,7 @@ impl<Row> DataTable<Row> {
                 break;
             }
             let selected = self.selectable && self.is_row_selected(ri);
+            let hovered = pressable && self.hover_row == Some(ri);
             // Whole-row geometry: the caller's body clip layer trims the part
             // that scrolls past the viewport, so cells see their real row.
             // The lift and the stripe share one shape: the columns' band
@@ -2234,12 +2388,14 @@ impl<Row> DataTable<Row> {
             // Selection is a lift (HIG §9.3), never an accent wash, and
             // takes precedence over the zebra stripe; the stripe is a
             // fraction of the same lift, so selection always reads past it.
-            if selected {
+            if selected || hovered {
+                // A pressable row lifts under the pointer, as a list row
+                // and the painted table face do.
                 crate::chrome::paint_row_selection(
                     scene,
                     transform,
                     row_band,
-                    crate::chrome::SelectionState::active(true),
+                    crate::chrome::SelectionState::new(selected, hovered, false),
                     ground,
                     theme,
                 );
@@ -2330,7 +2486,7 @@ impl<Row> DataTable<Row> {
                                 text_renderer,
                                 cell_rect,
                                 theme,
-                                selected,
+                                CellState { selected, hovered },
                             );
                         }
                     }
@@ -3416,6 +3572,16 @@ impl<Row: 'static> Widget for DataTable<Row> {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        // The row under the pointer, before a control in it takes the move.
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.last_cursor = Some(pt);
+                self.track_hover(Some(pt));
+            }
+            WindowEvent::CursorLeft { .. } => self.track_hover(None),
+            _ => {}
+        }
         if self.resize.is_none() && !self.vbar.is_dragging() && !self.drag_scroll.is_tracking() {
             self.route_to_cell_widgets(event, ctx);
         }
@@ -5626,6 +5792,114 @@ mod tests {
             ),
             ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)),
         ]
+    }
+
+    /// Row actions mount for the row under the pointer only; a table its
+    /// host scrolls windows its rows, keeps no bar and leaves the wheel.
+    #[test]
+    fn row_actions_reveal_under_the_pointer_and_a_host_scrolls_the_rows() {
+        let modifiers = winit::event::Modifiers::default();
+        let move_to = |table: &mut DataTable<R>, tree: &TaffyTree<()>, node, y: f64| {
+            dispatch(
+                table,
+                tree,
+                node,
+                &WindowEvent::CursorMoved {
+                    device_id: device(),
+                    position: (150.0, y).into(),
+                },
+                modifiers,
+            );
+        };
+        // Case `actions_mount_for_the_hovered_row_only`.
+        {
+            let builds = Rc::new(Cell::new(0));
+            let mut columns = interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds));
+            let actions = columns.remove(0).revealed_on_hover();
+            columns.push(actions);
+            let mut table = DataTable::new(columns).selectable(true);
+            table.set_rows(rows4());
+            let (tree, node) = lay_out(&mut table);
+            assert_eq!(
+                table.mounted_cell_count(),
+                0,
+                "at rest no row shows actions"
+            );
+            assert_eq!(table.hovered_row(), None);
+
+            move_to(&mut table, &tree, node, HEADER_HEIGHT + ROW_HEIGHT * 2.5);
+            assert_eq!(table.hovered_row(), Some(2));
+            assert!(
+                table.take_structure_dirty(),
+                "the hovered row asks for its actions"
+            );
+            let (tree, node) = lay_out(&mut table);
+            assert_eq!(table.mounted_cell_count(), 1);
+            assert_eq!(builds.get(), 1);
+
+            move_to(&mut table, &tree, node, HEADER_HEIGHT + ROW_HEIGHT * 0.5);
+            let _ = lay_out(&mut table);
+            assert_eq!(table.hovered_row(), Some(0));
+            assert_eq!(
+                table.mounted_cell_count(),
+                1,
+                "the actions follow the pointer"
+            );
+        }
+        // Case `a_host_scrolled_table_windows_rows_without_a_bar_or_header`.
+        {
+            let mut table = DataTable::new(sample_cols())
+                .selectable(true)
+                .without_header()
+                .host_scrolled();
+            table.set_rows(
+                (0..200)
+                    .map(|i| R {
+                        name: i.to_string(),
+                    })
+                    .collect(),
+            );
+            assert!((table.content_height() - 200.0 * ROW_HEIGHT).abs() < 0.5);
+            table.set_host_window(ROW_HEIGHT * 100.0, ROW_HEIGHT * 5.0);
+            let (tree, node) = lay_out(&mut table);
+            assert!(
+                (table.get_rect().height() - ROW_HEIGHT * 5.0).abs() < 0.5,
+                "the table is as tall as the part of it in view, with no header band"
+            );
+            let (first, last) = table.visible_row_range();
+            assert!(
+                first <= 100 && last >= 105 && last - first < 20,
+                "{first}..{last}"
+            );
+            assert!(table.scrollbar_thumb().is_none(), "the host owns the bar");
+            move_to(&mut table, &tree, node, ROW_HEIGHT * 0.5);
+            assert_eq!(
+                table.hovered_row(),
+                Some(100),
+                "rows hit where they are painted"
+            );
+            let mut handled = false;
+            let mut doc = AutoCommit::new();
+            let mut focus = None;
+            table.handle_event(
+                &WindowEvent::MouseWheel {
+                    device_id: device(),
+                    delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                    phase: TouchPhase::Moved,
+                },
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &tree,
+                },
+            );
+            assert!(!handled, "the wheel is the host's");
+        }
     }
 
     #[test]

@@ -1523,7 +1523,17 @@ widgets use, so it behaves like them:
   `.on_row_drag_begin(f)` and `row_rect` / `row_at_point` find drop targets.
   Edit rows in place with `rows_mut()` and `apply_changes(&changes)` so cell
   controls stay mounted by row key. `set_sort_indicator(key, ascending)` shows
-  a sort the host applied. A painted host draws `data_table::DataTableFace`.
+  a sort the host applied. A pressable row lifts under the pointer;
+  `with_text_render` gets the row's `CellState { selected, hovered }`, and a
+  widget column `.revealed_on_hover()` is a row's actions, mounted only for
+  the row under the pointer (the selected row on touch) over the quiet state
+  its text render paints. `.without_header()` leaves the header band out and
+  `.with_row_height(px)` sets a taller row. A painted host draws
+  `data_table::DataTableFace`, or embeds the table itself (`Embedded`) in a
+  page it scrolls as a whole: `.host_scrolled()`, the table's rect on the part
+  of it in view, `set_host_window(offset, body_height)` for the rows that
+  is, `content_height()` for the room it takes of the page; the header then
+  stays at the top of the part in view.
 
 ### What to delete in an app
 
