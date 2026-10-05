@@ -106,9 +106,11 @@ containerfile="$repo/os/Containerfile"
 # The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
 # publisher.hex), which the launcher trusts for runtimes the Store installs,
 # is a deliberate addition.
+# /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
+# deliberate removals: those apps ship only as packages in the app store.
 # The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
 # which says what app builds this OS can run, is a deliberate addition.
-expected_contract=b3abd828ad2a89e6290795335b99fc94c2a0a12cab2bc1b93c6df983e94dc5b2
+expected_contract=1bc647b84344453fca7941751d821e0998ef390e21528730cb373890a9c08755
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
