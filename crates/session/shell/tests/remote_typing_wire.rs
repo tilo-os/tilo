@@ -15,7 +15,7 @@
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
-use shell::network::{InputEvent, ShellView, StreamingShare};
+use shell::network::{Denial, InputEvent, ShellView, StreamingShare};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use vello::kurbo::Rect;
@@ -433,6 +433,7 @@ fn headless_workspace_host_focus_reaches_the_requested_wayland_window() {
             focused: false
         }
     ));
+    assert_hover_keeps_explicit_focus(&mut h, host, old);
     let text = "MiXeD aaBB1122,!?";
     for c in text.chars() {
         let (code, shift) = stroke(c);
@@ -450,7 +451,72 @@ fn headless_workspace_host_focus_reaches_the_requested_wayland_window() {
         h.client.text, text,
         "the new window receives each stroke exactly"
     );
+    assert_blur_and_legacy_hover(&mut h, host, current, text);
     assert_host_focus_permissions(&mut h, [old, current], &windows[1].0, host);
+}
+
+fn assert_hover_keeps_explicit_focus(h: &mut Harness, host: u64, old: u64) {
+    // A layout shift can move an unfocused streamed window under the
+    // stationary pointer. Hover must not replace an explicit keyboard target.
+    assert!(
+        h.state
+            .apply_remote_input(host, old, InputEvent::PointerEnter { surface: old })
+    );
+    assert!(
+        h.state
+            .apply_remote_input(host, old, InputEvent::PointerMotion { x: 5.0, y: 6.0 })
+    );
+    assert!(
+        h.state
+            .apply_remote_input(host, old, InputEvent::PointerLeave { surface: old })
+    );
+    assert_eq!(
+        h.state.review_remote_input(host, old, key(30, true)),
+        Err(Denial::FocusMuted)
+    );
+}
+
+fn assert_blur_and_legacy_hover(h: &mut Harness, host: u64, current: u64, text: &str) {
+    assert!(h.state.apply_remote_input(
+        host,
+        current,
+        InputEvent::KeyboardFocus {
+            surface: current,
+            focused: false
+        }
+    ));
+    assert!(h.state.apply_remote_input(
+        host,
+        current,
+        InputEvent::PointerEnter { surface: current }
+    ));
+    assert_eq!(
+        h.state.review_remote_input(host, current, key(30, true)),
+        Err(Denial::FocusMuted),
+        "hover cannot reactivate an explicitly blurred keyboard"
+    );
+    assert!(h.state.apply_remote_input(
+        host,
+        current,
+        InputEvent::KeyboardFocus {
+            surface: current,
+            focused: true
+        }
+    ));
+    // A viewer predating KeyboardFocus still uses its original handshake.
+    let legacy = 12;
+    h.state
+        .share_registry
+        .insert(legacy, current, StreamingShare::new());
+    assert!(h.state.apply_remote_input(
+        legacy,
+        current,
+        InputEvent::PointerEnter { surface: current }
+    ));
+    assert!(h.state.apply_remote_input(legacy, current, key(30, true)));
+    assert!(h.state.apply_remote_input(legacy, current, key(30, false)));
+    h.pump();
+    assert_eq!(h.client.text, format!("{text}a"));
 }
 
 fn assert_host_focus_permissions(
