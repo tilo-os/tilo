@@ -260,6 +260,7 @@ user_units = ["tilo-app-host.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-app-host", to = "/usr/libexec/tilo-app-host", mode = "0755" },
+  { from = "@manifest/usr/lib/systemd/user/tilo-app-host.service", to = "/usr/lib/systemd/user/tilo-app-host.service", mode = "0644" },
 ]
 
 [[component]]
