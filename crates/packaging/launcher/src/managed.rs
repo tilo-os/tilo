@@ -25,6 +25,37 @@ pub struct PackageTrust {
     pub revoked: tilo_app_package::trust::RevocationList,
 }
 
+impl PackageTrust {
+    /// Load the same independently configured app trust used by the installer.
+    /// This never adds the installed package's self-declared publisher.
+    ///
+    /// # Errors
+    /// Refuses unavailable configuration roots or malformed trust/revocation files.
+    pub fn from_user_config() -> Result<Self, String> {
+        let attestors = tilo_app_package::default_trusted_attestors_path()
+            .ok_or("application trust configuration directory is unavailable")?;
+        let revoked = tilo_app_package::default_revoked_keys_path()
+            .ok_or("application revocation configuration directory is unavailable")?;
+        Self::from_config_paths(&attestors, &revoked)
+    }
+
+    /// Load explicit host-owned paths; absent files mean no additional trust.
+    ///
+    /// # Errors
+    /// Refuses malformed or unreadable files, including a broken revocation file.
+    pub fn from_config_paths(attestors: &Path, revoked: &Path) -> Result<Self, String> {
+        Ok(Self {
+            publishers: Vec::new(),
+            attestors: tilo_app_package::trust::TrustedAttestors::load(attestors)
+                .map_err(|error| format!("application attestor configuration: {error}"))?
+                .as_slice()
+                .to_vec(),
+            revoked: tilo_app_package::trust::RevocationList::load(revoked)
+                .map_err(|error| format!("application revocation configuration: {error}"))?,
+        })
+    }
+}
+
 /// The registry row for the workspace agent installed at `payload_root`
 /// with `manifest_path` under the signed package root `package_id_hex`, as an
 /// enrolled host configures it outside the package store.
