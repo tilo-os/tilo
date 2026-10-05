@@ -503,7 +503,7 @@ fn editor_line_style(
 /// person presses to bring the page tree back.
 /// Whether the note says it cannot be saved.
 fn save_failure_shown(driver: &FrameHarness) -> bool {
-    let title = ui::i18n::I18nManager::lookup("notes-save-failed", None);
+    let title = ui::i18n::I18nManager::lookup("save-status-failed", None);
     semantic_observed(driver, |node| node.name.as_deref() == Some(title.as_str()))
 }
 

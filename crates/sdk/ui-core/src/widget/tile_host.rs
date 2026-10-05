@@ -1853,6 +1853,12 @@ impl Widget for TileHost {
         // durable while History hides the live widget.
         if let Some(binding) = &self.binding {
             binding.store.schedule_committed_history(&binding.live);
+            if let TileContent::App(app) = &mut self.content
+                && app.take_save_retry()
+                && let Err(error) = binding.store.try_flush_record(&binding.live)
+            {
+                tracing::warn!(%error, "retrying a failed record save");
+            }
             if self.history_lifetime.active.get()
                 && let (Ok(status), TileContent::App(app)) =
                     (binding.store.save_status(&binding.live), &mut self.content)

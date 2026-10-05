@@ -54,7 +54,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{Banner, BlockEditor, EditOutcome, EditableLabel, EmptyState, EmptyStateContent};
+use ui::widget::{BlockEditor, EditOutcome, EditableLabel, EmptyState, EmptyStateContent};
 use ui::widget::{PressOutcome, ScrollMetrics, Scrollbar};
 
 use crate::model::PageId;
@@ -277,12 +277,6 @@ pub struct MainPanel {
     /// intent; the app drains it into the canonical operation.
     header: NoteHeader,
     header_node: Option<NodeId>,
-    /// Shown under the title while the note cannot be saved, until it can.
-    save_failure: Option<Banner>,
-    banner_node: Option<NodeId>,
-    /// The height the banner (and the gap under it) takes between the title
-    /// and the scrolling document.
-    banner_height: f64,
     /// The height the whole header (tags, captions, incoming links and the
     /// gap to the body) takes in the scrolling document. It is recalculated
     /// whenever width, text scale, or membership changes, so large text and
@@ -367,9 +361,6 @@ impl MainPanel {
             pending_rename: None,
             header: NoteHeader::default(),
             header_node: None,
-            save_failure: None,
-            banner_node: None,
-            banner_height: 0.0,
             metadata_height: 0.0,
             tag_layout_dirty: false,
             editor: notes_editor(None, None, None),
@@ -600,8 +591,6 @@ impl MainPanel {
         self.header.set_tags(Vec::new());
         self.header.set_backlinks(Vec::new());
         self.header.set_captions(Vec::new());
-        self.save_failure = None;
-        self.banner_height = 0.0;
         self.metadata_height = 0.0;
         self.editor = self.fresh_editor(None);
         self.body = String::new();
@@ -654,19 +643,6 @@ impl MainPanel {
         if self.header.set_backlinks(backlinks) {
             self.header_changed();
         }
-    }
-
-    /// Say whether the note cannot be saved. A failure stays in view, under
-    /// the title, until the note saves again.
-    pub fn set_save_failed(&mut self, failed: bool) {
-        if failed == self.save_failure.is_some() {
-            return;
-        }
-        self.save_failure = failed.then(|| {
-            Banner::error(ui::i18n!("notes-save-failed"))
-                .with_message(ui::i18n!("notes-save-failed-detail"))
-        });
-        self.header_changed();
     }
 
     /// The header's content changed: its widgets are rebuilt, and the body
@@ -882,24 +858,6 @@ impl MainPanel {
         }
     }
 
-    /// How much room the save failure takes under the title, from the layout
-    /// the toolkit solved for it, and where it stands.
-    fn measure_banner(&mut self, taffy: &TaffyTree<()>) {
-        let height = self
-            .banner_node
-            .filter(|_| self.page_id.is_some())
-            .and_then(|node| taffy.layout(node).ok())
-            .map_or(0.0, |layout| f64::from(layout.size.height));
-        self.banner_height = if height > 0.0 {
-            height + f64::from(self.layout_theme.tokens.spacing.rhythm.related)
-        } else {
-            0.0
-        };
-        if let (Some(node), Some(banner)) = (self.banner_node, self.save_failure.as_mut()) {
-            banner.apply_layout(taffy, node, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
     /// Where the header stands, from the layout the toolkit solved for it:
     /// `metadata_height` is what the body is inset by.
     fn measure_header(&mut self, taffy: &TaffyTree<()>) {
@@ -918,7 +876,7 @@ impl MainPanel {
 
     /// The document starts under the pinned title.
     fn scroll_top_inset(&self) -> f64 {
-        self.metrics.gutter + self.title_height() + self.banner_height
+        self.metrics.gutter + self.title_height()
     }
 
     fn scroll_viewport(&self) -> Rect {
@@ -1105,12 +1063,6 @@ impl MainPanel {
         out
     }
 
-    /// Test hook: whether the save failure is showing under the title.
-    #[doc(hidden)]
-    pub fn save_failure_shown_for_test(&self) -> bool {
-        self.save_failure.is_some()
-    }
-
     /// Test hook: where the document starts under the title and header.
     #[doc(hidden)]
     pub fn body_top_for_test(&self) -> f64 {
@@ -1188,9 +1140,6 @@ impl Widget for MainPanel {
             return Vec::new();
         }
         let mut children: Vec<&dyn Widget> = vec![&self.title_label];
-        if let Some(banner) = &self.save_failure {
-            children.push(banner);
-        }
         if let Some(header) = self.header.built() {
             children.push(header);
         }
@@ -1203,9 +1152,6 @@ impl Widget for MainPanel {
             return Vec::new();
         }
         let mut children: Vec<&mut dyn Widget> = vec![&mut self.title_label];
-        if let Some(banner) = self.save_failure.as_mut() {
-            children.push(banner);
-        }
         if let Some(header) = self.header.built_mut() {
             children.push(header);
         }
@@ -1306,14 +1252,6 @@ impl Widget for MainPanel {
         // place in the scrolling document is the panel's: under the pinned
         // title, on the text edge.
         let top_inset = self.scroll_top_inset();
-        let banner_top = self.metrics.gutter + self.title_height();
-        self.banner_node = self
-            .save_failure
-            .as_mut()
-            .map(|banner| banner.build_layout(taffy, theme, node_map));
-        if let Some(node) = self.banner_node {
-            pin_under_gutter(taffy, node, &self.metrics, banner_top);
-        }
         self.header_node = self
             .header
             .column(theme)
@@ -1328,7 +1266,6 @@ impl Widget for MainPanel {
         }
         let children = if self.page_id.is_some() {
             let mut nodes = vec![title_node];
-            nodes.extend(self.banner_node);
             nodes.extend(self.header_node);
             nodes.push(editor_node);
             nodes
@@ -1412,14 +1349,8 @@ impl Widget for MainPanel {
             self.rect.y0 + gutter + self.title_height(),
         );
         self.title_label.apply_layout_external(self.title_rect);
-        let prior_banner = self.banner_height;
-        self.measure_banner(taffy);
         let prior_metadata = self.metadata_height;
         self.measure_header(taffy);
-        if (self.banner_height - prior_banner).abs() > f64::EPSILON {
-            self.tag_layout_dirty = true;
-            self.dirty = true;
-        }
         if (self.metadata_height - prior_metadata).abs() > f64::EPSILON {
             self.tag_layout_dirty = true;
             self.dirty = true;
@@ -1546,9 +1477,6 @@ impl Widget for MainPanel {
             self.title_label.apply_layout_external(self.title_rect);
             self.title_label
                 .draw(scene, transform, text_renderer, theme, presence);
-            if let Some(banner) = self.save_failure.as_mut() {
-                banner.draw(scene, transform, text_renderer, theme, presence);
-            }
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
             if self.scroll_y > f64::EPSILON {

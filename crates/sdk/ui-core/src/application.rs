@@ -832,6 +832,11 @@ impl AppComponent {
     pub(crate) fn project_record_save_status(&mut self) {
         let captured = self.callback_binding();
         let _ = self.with_live_component(&captured, |binding, root, _registry| {
+            if root.take_save_retry()
+                && let Err(error) = binding.records.try_flush_record(&binding.checkout.id)
+            {
+                tracing::warn!(%error, "retrying a failed record save");
+            }
             if let Ok(status) = binding.records.save_status(&binding.checkout.id) {
                 root.record_save_status(status);
             }
