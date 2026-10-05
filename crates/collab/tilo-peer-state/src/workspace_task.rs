@@ -336,8 +336,18 @@ fn queue(
             MAX_WORKSPACE_TASK_INSTRUCTION_BYTES,
             "task instruction",
         )?;
-        if request.invocation.0 != context.invocation {
-            return Err("task source invocation differs from owner command".into());
+        if request.invocation.0.is_nil()
+            || request.chat_record.is_empty()
+            || request.channel_id.is_empty()
+            || request.message_id != format!("m_{}", request.invocation.0)
+        {
+            return Err("task source lacks its canonical Chat parent".into());
+        }
+        if let Some(task_id) = existing_chat_task(tasks, author, assigned_agent, route, request)? {
+            return Ok((
+                task_id.clone(),
+                WorkspaceTaskMutationResult::Queued { task_id },
+            ));
         }
     }
     let task_id = deterministic_task_id(*device, context.invocation);
@@ -365,6 +375,40 @@ fn queue(
         task_id.clone(),
         WorkspaceTaskMutationResult::Queued { task_id },
     ))
+}
+
+// The downstream command UUID is deliberately not the parent message UUID.
+// A retry may come from another admitted device, so device-scoped invocation
+// receipts alone cannot prevent a second executable task for the same message.
+// This runs inside the owner's serialized mutation, before creating a task.
+fn existing_chat_task(
+    tasks: &[WorkspaceTask],
+    author: &str,
+    assigned_agent: &str,
+    route: WorkspaceTaskRoute,
+    request: &tilo_desktop_model::WorkspaceAgentRequest,
+) -> Result<Option<String>, String> {
+    for task in tasks {
+        let Some(prior) = task
+            .resource
+            .as_ref()
+            .and_then(|value| value.agent_request.as_ref())
+        else {
+            continue;
+        };
+        if prior.chat_record != request.chat_record || prior.message_id != request.message_id {
+            continue;
+        }
+        if prior != request
+            || task.created_by != author
+            || task.assigned_agent.as_deref() != Some(assigned_agent)
+            || task.route != route
+        {
+            return Err("canonical Chat parent is already bound to another task request".into());
+        }
+        return Ok(Some(task.id.clone()));
+    }
+    Ok(None)
 }
 
 fn start_run(
@@ -743,6 +787,67 @@ mod tests {
             command,
             i64::try_from(invocation).unwrap(),
         )
+    }
+
+    #[test]
+    fn canonical_chat_parent_converges_across_devices_and_survives_reopen() {
+        let mut doc = AutoCommit::new();
+        let parent = uuid::Uuid::from_u128(900);
+        let mut command = queue_command();
+        if let WorkspaceTaskCommand::Queue { resource, .. } = &mut command {
+            *resource = Some(Box::new(WorkspaceTaskResource {
+                app_id: Some("so.tilo.chat".into()),
+                app_label: Some("Chat".into()),
+                id: format!("chat.message:m_{parent}"),
+                kind: "chat.message".into(),
+                label: "Agent request".into(),
+                agent_request: Some(tilo_desktop_model::WorkspaceAgentRequest {
+                    chat_record: "chat-record".into(),
+                    channel_id: "agent-dm".into(),
+                    message_id: format!("m_{parent}"),
+                    instruction: "Prepare the complete release notes".into(),
+                    invocation: serde_json::from_value(serde_json::json!(parent)).unwrap(),
+                }),
+            }));
+        }
+        let first = run(&mut doc, 1, 7, &person(), &command).unwrap();
+        let mut reopened = AutoCommit::load(&doc.save()).unwrap();
+        let second_device = AdmittedTaskActor::Person {
+            id: "person-1".into(),
+            device: [3; 32],
+        };
+        let retry = run(&mut reopened, 2, 8, &second_device, &command).unwrap();
+        assert_eq!(retry.result, first.result);
+        let state = snapshot(&reopened).unwrap();
+        assert_eq!(state.tasks.len(), 1);
+        assert_eq!(state.controls.values().next().unwrap().receipts.len(), 2);
+        assert!(
+            !run(&mut reopened, 2, 8, &second_device, &command)
+                .unwrap()
+                .changed
+        );
+        let before = reopened.save();
+        let other_person = AdmittedTaskActor::Person {
+            id: "person-2".into(),
+            device: [4; 32],
+        };
+        assert!(run(&mut reopened, 3, 9, &other_person, &command).is_err());
+        assert_eq!(reopened.save(), before);
+        if let WorkspaceTaskCommand::Queue {
+            resource: Some(resource),
+            ..
+        } = &mut command
+        {
+            resource
+                .agent_request
+                .as_mut()
+                .unwrap()
+                .instruction
+                .push_str(" changed");
+        }
+        assert!(run(&mut reopened, 3, 9, &second_device, &command).is_err());
+        assert_eq!(reopened.save(), before);
+        assert_eq!(snapshot(&reopened).unwrap().tasks.len(), 1);
     }
 
     #[test]
