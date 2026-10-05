@@ -180,6 +180,7 @@ enum Command {
         provider: String,
         id: String,
         args_json: Option<String>,
+        args_stdin: bool,
         device: Option<String>,
     },
     ActionsStatus {
@@ -605,6 +606,69 @@ fn parse_gesture<'a>(
     })
 }
 
+fn parse_action_invocation<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let provider = iter.next().ok_or_else(|| {
+        ParseError::Usage("actions invoke PROVIDER ID requires a provider".to_string())
+    })?;
+    let id = iter.next().ok_or_else(|| {
+        ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
+    })?;
+    let mut args_json = None;
+    let mut args_stdin = false;
+    let mut device = None;
+    while let Some(flag) = iter.next() {
+        match flag.as_str() {
+            "--device" => {
+                let id = iter.next().ok_or_else(|| {
+                    ParseError::Usage("--device requires an enrolled device id".to_string())
+                })?;
+                device = Some(id.clone());
+            }
+            "--args-stdin" => {
+                if args_stdin || args_json.is_some() {
+                    return Err(ParseError::Usage(
+                        "action arguments require exactly one source".into(),
+                    ));
+                }
+                args_stdin = true;
+            }
+            "--args-json" => {
+                if args_stdin || args_json.is_some() {
+                    return Err(ParseError::Usage(
+                        "action arguments require exactly one source".into(),
+                    ));
+                }
+                let json = iter.next().ok_or_else(|| {
+                    ParseError::Usage("--args-json requires a JSON object".to_string())
+                })?;
+                let parsed: serde_json::Value = serde_json::from_str(json).map_err(|error| {
+                    ParseError::Usage(format!("--args-json is not valid JSON: {error}"))
+                })?;
+                if !parsed.is_object() {
+                    return Err(ParseError::Usage(
+                        "--args-json must contain a JSON object".to_string(),
+                    ));
+                }
+                args_json = Some(json.clone());
+            }
+            other => {
+                return Err(ParseError::Usage(format!(
+                    "actions invoke: unknown option `{other}`"
+                )));
+            }
+        }
+    }
+    Ok(Command::ActionsInvoke {
+        provider: provider.clone(),
+        id: id.clone(),
+        args_json,
+        args_stdin,
+        device,
+    })
+}
+
 fn parse_actions_command<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
@@ -632,52 +696,7 @@ fn parse_actions_command<'a>(
                 json,
             })
         }
-        "invoke" => {
-            let provider = iter.next().ok_or_else(|| {
-                ParseError::Usage("actions invoke PROVIDER ID requires a provider".to_string())
-            })?;
-            let id = iter.next().ok_or_else(|| {
-                ParseError::Usage("actions invoke PROVIDER ID requires an id".to_string())
-            })?;
-            let mut args_json = None;
-            let mut device = None;
-            while let Some(flag) = iter.next() {
-                match flag.as_str() {
-                    "--device" => {
-                        let id = iter.next().ok_or_else(|| {
-                            ParseError::Usage("--device requires an enrolled device id".to_string())
-                        })?;
-                        device = Some(id.clone());
-                    }
-                    "--args-json" => {
-                        let json = iter.next().ok_or_else(|| {
-                            ParseError::Usage("--args-json requires a JSON object".to_string())
-                        })?;
-                        let parsed: serde_json::Value =
-                            serde_json::from_str(json).map_err(|error| {
-                                ParseError::Usage(format!("--args-json is not valid JSON: {error}"))
-                            })?;
-                        if !parsed.is_object() {
-                            return Err(ParseError::Usage(
-                                "--args-json must contain a JSON object".to_string(),
-                            ));
-                        }
-                        args_json = Some(json.clone());
-                    }
-                    other => {
-                        return Err(ParseError::Usage(format!(
-                            "actions invoke: unknown option `{other}`"
-                        )));
-                    }
-                }
-            }
-            Ok(Command::ActionsInvoke {
-                provider: provider.clone(),
-                id: id.clone(),
-                args_json,
-                device,
-            })
-        }
+        "invoke" => parse_action_invocation(iter),
         "status" | "cancel" => {
             let raw = iter.next().ok_or_else(|| {
                 ParseError::Usage(format!("actions {verb} requires an invocation id"))
@@ -768,6 +787,21 @@ fn parse_modifier_flags(s: &str) -> Result<(bool, bool, bool, bool), ParseError>
 /// Build the JSON wire payload for a parsed [`Command`]. For `raw`
 /// the caller's JSON is used verbatim; every other variant serialises
 /// through `serde_json::to_string`.
+fn action_arguments(
+    text: Option<&str>,
+    stdin_pending: bool,
+) -> Result<serde_json::Value, ParseError> {
+    if stdin_pending {
+        return Err(ParseError::Usage(
+            "stdin action arguments have not been read".into(),
+        ));
+    }
+    text.map(serde_json::from_str)
+        .transpose()
+        .map_err(|_| ParseError::Usage("invalid action arguments JSON".into()))
+        .map(|value| value.unwrap_or_else(|| serde_json::json!({})))
+}
+
 fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
     use serde_json::json;
     let value = match cmd {
@@ -831,14 +865,10 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             provider,
             id,
             args_json,
+            args_stdin,
             device,
         } => {
-            let args = args_json
-                .as_deref()
-                .map(serde_json::from_str)
-                .transpose()
-                .map_err(|error| ParseError::Usage(format!("invalid action arguments: {error}")))?
-                .unwrap_or_else(|| serde_json::json!({}));
+            let args = action_arguments(args_json.as_deref(), *args_stdin)?;
             let mut value =
                 json!({ "op": "actions_invoke", "provider": provider, "id": id, "args": args });
             if let Some(device) = device {
@@ -1173,7 +1203,7 @@ fn print_usage() {
          \x20 actions list [QUERY] [--json] search: list actions as `PROVIDER:ID  KIND  TITLE`\n\
          \x20                               (read-only; empty QUERY lists everything;\n\
          \x20                               --json adds params, contract and hierarchy)\n\
-         \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT]\n\
+         \x20 actions invoke PROVIDER ID [--device DEVICE] [--args-json OBJECT | --args-stdin]\n\
          \x20                               run one action by its address; answers the\n\
          \x20                               typed receipt. --device sends it to that\n\
          \x20                               enrolled device\n\
@@ -1210,6 +1240,48 @@ fn print_usage() {
     );
 }
 
+/// Read only the opt-in source; malformed input is never quoted in diagnostics.
+fn read_action_arguments(
+    command: &mut Command,
+    reader: impl std::io::Read,
+) -> Result<(), ParseError> {
+    use std::io::Read as _;
+    const LIMIT: u64 = 65_536;
+    let Command::ActionsInvoke {
+        args_json,
+        args_stdin: true,
+        ..
+    } = command
+    else {
+        return Ok(());
+    };
+    let mut bytes = Vec::new();
+    reader
+        .take(LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| ParseError::Usage("could not read action arguments from stdin".into()))?;
+    if bytes.len() as u64 > LIMIT {
+        return Err(ParseError::Usage(
+            "stdin action arguments exceed 65536 bytes".into(),
+        ));
+    }
+    let text = String::from_utf8(bytes)
+        .map_err(|_| ParseError::Usage("stdin action arguments must be valid UTF-8".into()))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|_| {
+        ParseError::Usage("stdin action arguments must be a valid JSON object".into())
+    })?;
+    if !value.is_object() {
+        return Err(ParseError::Usage(
+            "stdin action arguments must be a JSON object".into(),
+        ));
+    }
+    *args_json = Some(text);
+    if let Command::ActionsInvoke { args_stdin, .. } = command {
+        *args_stdin = false;
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     // A downstream `head -5` closes its read end before we finish writing,
     // and Rust's default panic-on-EPIPE turns that routine pipe into a
@@ -1225,7 +1297,7 @@ fn main() -> ExitCode {
     }
 
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    let invocation = match parse_args(&argv) {
+    let mut invocation = match parse_args(&argv) {
         Ok(inv) => inv,
         Err(ParseError::Help) => {
             print_usage();
@@ -1236,6 +1308,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+
+    if let Err(ParseError::Usage(message)) =
+        read_action_arguments(&mut invocation.command, std::io::stdin().lock())
+    {
+        eprintln!("tilo-control: {message}");
+        return ExitCode::from(2);
+    }
 
     let cmd_json = match command_to_wire(&invocation.command) {
         Ok(j) => j,
@@ -1308,6 +1387,88 @@ mod tests {
     //! socket protocol itself is covered in
     //! `compositor::test_control::tests` and `tests/control_socket_test.rs`.
     use super::*;
+
+    #[test]
+    fn stdin_arguments_use_the_normal_wire_and_redact_local_failures() {
+        struct Broken;
+        impl std::io::Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("synthetic-private-reader-error"))
+            }
+        }
+        let mut invocation = parse(&[
+            "actions",
+            "invoke",
+            "greeter",
+            "sign-in@greeter",
+            "--args-stdin",
+        ])
+        .unwrap();
+        let supplied = br#"{"password":"synthetic-private-value"}"#;
+        read_action_arguments(&mut invocation.command, supplied.as_slice()).unwrap();
+        let wire = wire(&invocation.command);
+        assert_eq!(wire["op"], "actions_invoke");
+        assert_eq!(wire["provider"], "greeter");
+        assert_eq!(wire["id"], "sign-in@greeter");
+        assert_eq!(wire["args"]["password"], "synthetic-private-value");
+        for flags in [
+            vec!["--args-stdin", "--args-json", "{}"],
+            vec!["--args-json", "{}", "--args-stdin"],
+            vec!["--args-stdin", "--args-stdin"],
+        ] {
+            let mut words = vec!["actions", "invoke", "greeter", "sign-in@greeter"];
+            words.extend(flags);
+            assert!(parse(&words).is_err());
+        }
+        for invalid in [
+            b"{\"synthetic-private-value\":NaN}".as_slice(),
+            b"{\"synthetic-private-value\":\xff}".as_slice(),
+            b"[]".as_slice(),
+        ] {
+            let mut command = parse(&[
+                "actions",
+                "invoke",
+                "greeter",
+                "sign-in@greeter",
+                "--args-stdin",
+            ])
+            .unwrap()
+            .command;
+            let error = read_action_arguments(&mut command, invalid).unwrap_err();
+            assert!(!format!("{error:?}").contains("synthetic-private-value"));
+        }
+        let mut command = parse(&[
+            "actions",
+            "invoke",
+            "greeter",
+            "sign-in@greeter",
+            "--args-stdin",
+        ])
+        .unwrap()
+        .command;
+        assert!(
+            !format!(
+                "{:?}",
+                read_action_arguments(&mut command, Broken).unwrap_err()
+            )
+            .contains("synthetic-private")
+        );
+        let exact = format!("{{\"value\":\"{}\"}}", "a".repeat(65_524));
+        assert_eq!(exact.len(), 65_536);
+        read_action_arguments(&mut command, exact.as_bytes()).unwrap();
+        let mut command = parse(&[
+            "actions",
+            "invoke",
+            "greeter",
+            "sign-in@greeter",
+            "--args-stdin",
+        ])
+        .unwrap()
+        .command;
+        let too_large = format!("{exact} ");
+        assert!(read_action_arguments(&mut command, too_large.as_bytes()).is_err());
+        assert!(command_to_wire(&command).is_err());
+    }
 
     fn parse(args: &[&str]) -> Result<Invocation, ParseError> {
         let owned: Vec<String> = args.iter().map(std::string::ToString::to_string).collect();
@@ -1420,6 +1581,7 @@ mod tests {
                 Command::ActionsInvoke {
                     provider: "app-actions".into(),
                     id: "peer-address".into(),
+                    args_stdin: false,
                     args_json: Some(r#"{"count":2,"force":true}"#.into()),
                     device: None,
                 },
@@ -1728,6 +1890,7 @@ mod tests {
         let value = wire(&Command::ActionsInvoke {
             provider: "app-actions".into(),
             id: "7-resource-action".into(),
+            args_stdin: false,
             args_json: Some(r#"{"resource":"notes.note:42","at":"2026-09-01T12:00:00Z"}"#.into()),
             device: None,
         });
