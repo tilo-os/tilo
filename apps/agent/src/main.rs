@@ -175,7 +175,6 @@ fn main() -> anyhow::Result<()> {
 /// content addresses the room's apps hand it resolve. An agent started
 /// without one reads only what it stores itself, in memory.
 fn device_content() -> tilo_content::ContentStore {
-    #[cfg(unix)]
     if let Some(device) = tilo_content::ContentStore::device() {
         return device;
     }

@@ -727,7 +727,7 @@ fn run_with_args_with_attachment(
     // Take the content-store capability the launcher handed this process
     // before anything else can, in every mode that was handed one (live,
     // headless drives, captures); the app's store is that device store.
-    #[cfg(all(unix, feature = "native"))]
+    #[cfg(feature = "native")]
     let _ = tilo_content::ContentStore::device();
     let args = parse_args_extended(
         raw_args,

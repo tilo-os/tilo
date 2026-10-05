@@ -32,6 +32,14 @@ pub use transport::{
 /// why the app did not open.
 pub const ROUTE_JOIN_FAILED: &str = "joining collaboration route failed";
 
+/// Whether this host supports the local session runtime transport.
+/// This describes transport availability, not an inherited capability or permission.
+#[cfg(feature = "local-daemons")]
+pub const SESSION_RUNTIME_SUPPORTED: bool = runtime_portal::local_socket::SUPPORTED;
+/// No local session runtime transport was included in this host.
+#[cfg(not(feature = "local-daemons"))]
+pub const SESSION_RUNTIME_SUPPORTED: bool = false;
+
 #[cfg(feature = "broker-transport")]
 mod broker;
 pub mod channel_live_activity;
