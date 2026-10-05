@@ -123,6 +123,10 @@ impl FloatingSurfaceService {
         self.events.try_iter().collect()
     }
 
+    pub fn reply_writer(&self, connection: u64) -> Option<mpsc::Sender<Vec<u8>>> {
+        self.writers.lock().ok()?.get(&connection).cloned()
+    }
+
     pub fn send(&self, connection: u64, message: &FloatingSurfaceHostMessage) {
         let Ok(mut frame) = serde_json::to_vec(message) else {
             return;
