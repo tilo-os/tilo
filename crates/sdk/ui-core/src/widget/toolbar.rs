@@ -1468,7 +1468,7 @@ impl Widget for Toolbar {
         &mut self,
         op: &super::ResourceOperation<'_>,
         _doc: &mut crate::widget::Edits<'_>,
-        _path: &ModelPath,
+        _path: &automerge::ObjId,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
         for item in &mut self.items {
             if let ToolbarItem::Button(command) = item
