@@ -179,6 +179,53 @@ fn selected_contact(app: &ContactsApp) -> Contact {
         .expect("a contact is selected")
 }
 
+/// A real host chooser kept open until the test supplies its destination.
+/// Recording's pre-answered picker would race the in-flight/no-write proof.
+struct DeferredPicker {
+    recorder: ui::host::HostRecorder,
+    answer: std::sync::Mutex<Option<std::sync::mpsc::Sender<ui::portal::PortalOutcome>>>,
+}
+
+impl DeferredPicker {
+    fn new(recorder: ui::host::HostRecorder) -> Self {
+        Self {
+            recorder,
+            answer: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn choose(&self, path: std::path::PathBuf) {
+        self.answer
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the actual Save chooser is awaiting a destination")
+            .send(ui::portal::PortalOutcome::Opened(path))
+            .unwrap();
+    }
+}
+
+impl ui::host::FilePicker for DeferredPicker {
+    fn pick(&self, request: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        let _ = ui::host::FilePicker::pick(&self.recorder, request);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        assert!(self.answer.lock().unwrap().replace(sender).is_none());
+        receiver
+    }
+
+    fn pick_multiple(&self, request: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        ui::host::FilePicker::pick_multiple(&self.recorder, request)
+    }
+
+    fn open_file(&self, request: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        ui::host::FilePicker::open_file(&self.recorder, request)
+    }
+
+    fn launch(&self, request: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        ui::host::FilePicker::launch(&self.recorder, request)
+    }
+}
+
 fn id_named(app: &ContactsApp, name: &str) -> ContactId {
     app.store
         .contacts
@@ -684,9 +731,14 @@ fn retained_forms_preserve_persistence_and_refusals() {
         app.app
             .merge_peer_edit(|doc| ContactsDoc::delete_contact(doc, contact.id));
         app.settle();
-
+        // A control can still have the last rendered contact when the peer's
+        // tombstone reaches the door. Submit that real stale view request;
+        // a helper looking up the already-reconciled store would do nothing.
+        app.store.upsert(contact.clone());
+        app.selected = Some(contact.id);
+        app.request(Request::ToggleFavorite);
         assert!(
-            !app.toggle_favorite(contact.id),
+            !app.book().iter().any(|row| row.id == contact.id),
             "a tombstoned toggle is rejected"
         );
         assert!(
@@ -696,7 +748,7 @@ fn retained_forms_preserve_persistence_and_refusals() {
         assert!(
             toast(&app)
                 .unwrap()
-                .starts_with("Couldn't update favorite:")
+                .starts_with("Couldn't change the address book:")
         );
 
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
@@ -769,11 +821,11 @@ fn retained_forms_preserve_persistence_and_refusals() {
         let menu = target(&h.app, "contacts.form.type.phone-0");
         assert!(h.press_left(menu.center()));
         assert!(
-            h.app
-                .harness_mut()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.role() == ui::accesskit::Role::ListBox),
+            h.app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::ComboBox
+                    && node.label() == Some("Phone 1 type")
+                    && node.is_expanded() == Some(true)
+            }),
             "the shared type selector opens"
         );
     }
@@ -928,9 +980,12 @@ fn search_and_open_operations_reveal_their_target() {
             .find(|group| group == "Work")
             .expect("samples expose Work");
         app.app
-            .effect(&crate::actions::ContactsEffect::OpenGroup {
-                name: group.clone(),
-            })
+            .effect_on(
+                &crate::actions::group_resource_id(&group),
+                &crate::actions::ContactsEffect::OpenGroup {
+                    name: group.clone(),
+                },
+            )
             .expect("group open succeeds");
         app.settle();
         assert_eq!(app.group_filter.as_deref(), Some(group.as_str()));
@@ -1158,13 +1213,17 @@ fn single_pane_push_navigation_follows_width() {
 /// 200% text reflows and scales interaction geometry and full names fit the detail row.
 #[test]
 fn text_scale_reflows_geometry_and_names_fit() {
-    let mut app = Live::sample(1440, 900);
+    let mut app = Live::sample(1280, 900);
     app.request(Request::EditSelected);
+    assert!(
+        app.shell.geometry().side_by_side,
+        "normal text fits both panes"
+    );
     let first_1x = form_widget(&app, Slot::First).unwrap().get_rect();
     let row_1x = app.shared.borrow().painted[0].1.height();
     let theme = Theme::dark().with_text_scale(2.0);
     app.harness_mut()
-        .relayout_themed((1440, 900), theme.clone())
+        .relayout_themed((1280, 900), theme.clone())
         .unwrap();
     assert!(
         !app.shell.geometry().side_by_side,
@@ -1320,7 +1379,14 @@ fn saves_persist_and_refusals_never_claim_success() {
         app.store.upsert(contact.clone());
         app.selected = Some(contact.id);
 
-        assert!(app.toggle_favorite(contact.id), "the toggle is submitted");
+        assert!(
+            app.submit(&crate::actions::set_favorite_action(
+                contact.id.to_string(),
+                !contact.favorite,
+            ))
+            .is_ok(),
+            "the stale control submits the typed favorite action"
+        );
         app.settle();
         assert!(
             app.store.get(contact.id).is_none(),
@@ -2277,7 +2343,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
             app.toast_expired(),
             "the back-dated toast is past its lifetime"
         );
-        drive_frame(&mut app, 1280, 800);
+        app.harness_mut().relayout();
         assert!(
             app.toast.is_none(),
             "the toast auto-dismisses once its lifetime elapses"
@@ -2710,7 +2776,7 @@ fn search_field_focus_and_typing_narrow_the_list() {
         query.role() == ui::accesskit::Role::TextInput,
         "the host owns the query input"
     );
-    h.press_named(NamedKey::Escape);
+    h.app.harness_mut().key("Escape");
     h.app
         .harness_mut()
         .open_search(&ui::search::SearchRequest::this_app())
@@ -2750,11 +2816,11 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
             "the sort chip is clickable"
         );
         assert!(
-            h.app
-                .harness_mut()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.role() == ui::accesskit::Role::ListBox),
+            h.app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::ComboBox
+                    && node.label() == Some("Sort contacts")
+                    && node.is_expanded() == Some(true)
+            }),
             "the shared selector is expanded"
         );
         act_named(
@@ -3135,11 +3201,11 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         let chip = target(&h.app, "contacts.form.type.phone-0");
         h.press_left(chip.center());
         assert!(
-            h.app
-                .harness_mut()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.role() == ui::accesskit::Role::ListBox),
+            h.app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::ComboBox
+                    && node.label() == Some("Phone 1 type")
+                    && node.is_expanded() == Some(true)
+            }),
             "shared type selector opens"
         );
         let pick = TYPE_OPTIONS
@@ -3219,11 +3285,11 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
             "keyboard activation uses the same draft choice as the pointer"
         );
         assert!(
-            !h.app
-                .harness_mut()
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.role() == ui::accesskit::Role::ListBox),
+            h.app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::ComboBox
+                    && node.label() == Some("Phone 1 type")
+                    && node.is_expanded() == Some(false)
+            }),
             "activation dismisses the shared selector"
         );
     }
@@ -3271,11 +3337,11 @@ fn vcf_export_writes_the_selected_book() {
             .a11y_nodes()
             .into_iter()
             .find(|(_, node)| node.role() == ui::accesskit::Role::CheckBox)
-            .expect("actual virtualized contact checkbox")
-            .0;
+            .expect("actual virtualized contact checkbox");
+        assert_eq!(checked.1.toggled(), Some(ui::accesskit::Toggled::False));
         h.app
             .harness_mut()
-            .perform_a11y_action(checked, &ui::a11y::Action::Activate)
+            .perform_a11y_action(checked.0, &ui::a11y::Action::Activate)
             .expect("select one contact");
         h.app.settle();
         assert_eq!(
@@ -3299,8 +3365,9 @@ fn vcf_export_writes_the_selected_book() {
             "Format",
             &ui::a11y::Action::SetValue("3.0".into()),
         );
-        let (services, recorder) = ui::host::HostServices::recording();
-        recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(vcf.clone()));
+        let (mut services, recorder) = ui::host::HostServices::recording();
+        let chooser = std::sync::Arc::new(DeferredPicker::new(recorder.clone()));
+        services.files = chooser.clone();
         let _host = ui::host::enter(&services);
         act_named(&mut h.app, "Export", &ui::a11y::Action::Activate);
         assert!(
@@ -3312,6 +3379,8 @@ fn vcf_export_writes_the_selected_book() {
         let picks = recorder.pick_requests();
         assert_eq!(picks.len(), 1, "exactly one Save dialog was requested");
         assert_eq!(picks[0].title(), "Export contacts");
+        assert!(!vcf.exists(), "no file exists while the chooser is open");
+        chooser.choose(vcf.clone());
 
         // The file is written off the UI thread; the export ends on the
         // frame after.
@@ -3424,11 +3493,30 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     assert!(matches!(app.dialog, Some((DialogKey::Export, _))));
     draft.format.set("3.0".into());
 
-    let (services, recorder) = ui::host::HostServices::recording();
-    recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(vcf.clone()));
+    let (mut services, recorder) = ui::host::HostServices::recording();
+    let chooser = std::sync::Arc::new(DeferredPicker::new(recorder.clone()));
+    services.files = chooser.clone();
     let _host = ui::host::enter(&services);
     ask(&mut app, Request::Dialog(DialogChoice::Primary));
     assert!(app.export.is_none(), "choosing Export closes the dialog");
+    assert!(app.portal_in_flight());
+    assert!(
+        !vcf.exists(),
+        "nothing is written until a destination is chosen"
+    );
+    let picks = recorder.pick_requests();
+    assert_eq!(picks.len(), 1);
+    assert_eq!(picks[0].title(), "Export contacts");
+    chooser.choose(vcf.clone());
+    let deadline = ui::time::now() + Duration::from_secs(30);
+    while app.portal_in_flight() && ui::time::now() < deadline {
+        app.settle();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(!app.portal_in_flight(), "the real export finishes");
+    let body = std::fs::read_to_string(&vcf).expect("the chosen file is written");
+    assert_eq!(body.matches("BEGIN:VCARD").count(), 2);
+    assert!(body.contains("VERSION:3.0"));
     {
         // The live app must NOT invent sample contacts on an empty store.
         let (dir, _path) = scratch_book();
@@ -3448,12 +3536,6 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
         drive_frame(&mut app, 560, 720);
         let _ = std::fs::remove_dir_all(&dir);
     }
-    assert!(app.portal_in_flight());
-    assert!(
-        !vcf.exists(),
-        "nothing is written until a destination is chosen"
-    );
-    assert_eq!(recorder.pick_requests()[0].title(), "Export contacts");
 
     // --- phase: first_run_state_is_actionable_by_pointer_keyboard_and_assistive_tech ---
     {

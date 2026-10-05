@@ -185,30 +185,13 @@ fn grid_columns(ui: Ui<'_>) -> (usize, f64) {
     (columns, card_column_width(width, columns, gap))
 }
 
-/// The width `count` cards take in a row of the page's grid.
-fn cards_width(ui: Ui<'_>, count: usize) -> f32 {
-    let (_, column) = grid_columns(ui);
-    let gap = f64::from(ui.theme.tokens.spacing.rhythm.section);
-    let count = count.max(1) as f64;
-    (count * column + (count - 1.0) * gap) as f32
-}
-
 /// Videos as media cards. A grid shorter than one row keeps the card size of
 /// a full one instead of stretching its few cards across the page.
 fn video_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> Element {
     let cards: Vec<MediaCard> = videos.into_iter().map(|v| video_card(ui, v)).collect();
-    let count = cards.len();
-    let grid = MediaGrid::new(cards);
-    let (columns, _) = grid_columns(ui);
-    if count == 0 || count >= columns || ui.content_width <= 0.0 {
-        return Box::new(grid);
-    }
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_width(cards_width(ui, count))
-            .with_child(Box::new(grid)),
-    )
+    // The shared grid chooses tracks from the full page width even when some
+    // are empty. Shrinking its parent would make it choose fewer, wider tracks.
+    Box::new(MediaGrid::new(cards))
 }
 
 /// The loading state of a video grid: two rows of card-shaped placeholders

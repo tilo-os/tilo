@@ -98,6 +98,40 @@ fn image_draws(framed: &Framed<TubeApp>) -> usize {
         .count()
 }
 
+/// Paint the actual persistent player mounted by the watch page, including
+/// its shared controls. Window and poster material caches are outside this
+/// measurement, so only the timeline's additional segment fills differ.
+fn player_draws(app: TubeApp) -> usize {
+    fn paint_player(widget: &mut dyn Widget, scene: &mut vello::Scene) -> bool {
+        if widget.name() == "PlayerHost" {
+            widget.draw(
+                scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut ui::TextRenderer::new(),
+                &Theme::dark(),
+                &ui::presence::PresenceCtx::default(),
+            );
+            return true;
+        }
+        widget
+            .children_mut()
+            .into_iter()
+            .any(|child| paint_player(child, scene))
+    }
+    let mut framed = mount(app);
+    let player = find(&*framed, tube::widgets::player_host::PLAYER_HOST_ID)
+        .expect("the production watch page mounts its player")
+        .get_rect();
+    assert!(player.width() > 0.0 && player.height() > 0.0);
+    Framed::harness_mut(&mut framed).send(&winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(player.center().x, player.center().y),
+    });
+    let mut scene = vello::Scene::new();
+    assert!(paint_player(&mut *framed, &mut scene));
+    scene.encoding().draw_tags.len()
+}
+
 struct Harness {
     app: Framed<TubeApp>,
 }
@@ -646,9 +680,24 @@ fn watch_page_lays_out_player_pills_and_timeline() {
             h.has_id("tube-dislikes"),
             "the watch page lays out the shared Return YouTube Dislike count"
         );
+        let mut model = watch_app().model_for_test().clone();
+        let segments = model
+            .video(WATCH_ID)
+            .unwrap()
+            .sponsor
+            .iter()
+            .filter(|segment| model.settings.category_enabled(segment.category))
+            .count();
         assert!(
-            h.has_id("sb_timeline"),
-            "the watch page lays out the SponsorBlock segment timeline"
+            segments > 0,
+            "the actual video has enabled sponsor segments"
+        );
+        let with_marks = player_draws(watch_app());
+        model.settings.sponsorblock_enabled = false;
+        let without_marks = player_draws(TubeApp::new().with_model_for_test(model));
+        assert!(
+            with_marks >= without_marks + segments,
+            "the shared player paints each SponsorBlock segment on its timeline: {with_marks} vs {without_marks}, {segments} segments"
         );
     }
 }
@@ -683,7 +732,7 @@ fn share_copies_a_link_through_a_real_click() {
             .unwrap(),
         "not liked to start"
     );
-    click(&mut app, "share_btn");
+    click(&mut app, "watch_copy_link");
     app.with_surface::<TubeApp, _>(|viewer| {
         assert!(
             !viewer.model_for_test().is_liked(WATCH_ID),
