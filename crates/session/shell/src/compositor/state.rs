@@ -527,6 +527,10 @@ pub struct State {
     /// retaining this short bounded history lets us reject fabricated and
     /// stale serials instead of treating the opaque integer as authority.
     pub activation_serials: VecDeque<(Serial, u64, std::time::Instant)>,
+    /// Wayland clients (by connection index) the person has sent input to.
+    /// A window of one of these may have been closed from inside the app;
+    /// a window of any other that goes away unasked was lost.
+    pub(crate) clients_given_input: std::collections::HashSet<u32>,
     /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
     /// Per-peer virtual-seat attribution. Click focus scopes which shared
@@ -1168,6 +1172,7 @@ impl State {
             seat,
             serial_counter: 0,
             activation_serials: VecDeque::new(),
+            clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             personal_fabric_input: PersonalFabricInputHolders::default(),
@@ -3862,6 +3867,12 @@ pub(crate) fn is_privileged_client(client: &Client) -> bool {
 /// registry, frame tracker — keys off one flat `SurfaceId`, avoiding a
 /// second client's window overwriting the first's. The id is the client's
 /// connection index in the high 32 bits, protocol id in the low 32 — both stable, so it can be recomputed rather than remembered, staying a plain `u64` for the peer-sync wire protocol.
+/// The connection index a [`surface_id`] was minted under.
+#[must_use]
+pub fn client_index_of(surface_id: u64) -> u32 {
+    u32::try_from(surface_id >> 32).unwrap_or(u32::MAX)
+}
+
 pub fn surface_id(surface: &WlSurface) -> u64 {
     let protocol_id = u64::from(surface.id().protocol_id());
     if let Some(client) = surface.client() {
@@ -5145,8 +5156,11 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::note_client_pump();
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        crate::shell::launcher::forget_surface_launch(surface_id);
-        self.closing_toplevels.remove(&surface_id);
+        let asked_to_close = self.closing_toplevels.remove(&surface_id).is_some();
+        let person_reached_it = self
+            .clients_given_input
+            .contains(&client_index_of(surface_id));
+        crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
