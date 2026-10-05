@@ -56,6 +56,7 @@ mod tests {
             "chat-call-reconnecting",
             "chat-call-joining",
             "chat-call-unavailable",
+            "chat-call-voice-unavailable",
             "chat-call-open",
             "chat-call-join",
             "chat-call-leave-action",

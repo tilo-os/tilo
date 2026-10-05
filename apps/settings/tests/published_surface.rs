@@ -44,7 +44,14 @@ fn a_model_link_opens_agent_models() {
         .wait_until(ui::time::Duration::from_secs(20), |harness| {
             harness
                 .inspection_json()
-                .is_ok_and(|frame| frame.contains("Private by design"))
+                .is_ok_and(|frame| frame.contains("Privacy"))
         });
     assert!(shown, "the link opens Agent Models");
+    let category = Category::AgentModels.label();
+    assert!(
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some(category.as_str()) && node.is_selected() == Some(true)
+        }),
+        "the model link selects the canonical Agent Models category"
+    );
 }

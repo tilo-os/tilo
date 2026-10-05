@@ -54,7 +54,7 @@ chat-call-input-hint = Input from call status
 chat-call-connected = Connected
 chat-call-reconnecting = Reconnecting
 chat-call-joining = Joining
-chat-call-unavailable = Voice unavailable
+chat-call-voice-unavailable = Voice unavailable
 
 # An attachment the reader has no access to: the card says why it cannot open.
 chat-attachment-no-access = You don't have access to this file

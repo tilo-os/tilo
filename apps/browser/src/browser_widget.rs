@@ -9628,12 +9628,22 @@ mod tests {
                     .any(|action| action.id == "show-history"),
                 "the library publishes its sections"
             );
-            assert!(
-                library
+            for action_id in ["set-filter", "clear-filter"] {
+                let action = library
                     .actions
                     .iter()
-                    .all(|action| action.id != "set-filter"),
-                "searching the library is the platform search, not a library action"
+                    .find(|action| action.id == action_id)
+                    .expect("canonical device-local filtering remains available");
+                assert_eq!(action.kind, OperationKind::View);
+                assert!(action.contract.validate_declaration().is_empty());
+            }
+            w.debug_show_library("history");
+            layout_at(&mut w, 800.0, 600.0);
+            assert!(
+                ui::widget::controls::control_action_bindings(&w)
+                    .iter()
+                    .any(|binding| binding.control_id == "search-open-browser.history"),
+                "the Library header routes search through the platform scope"
             );
             assert_eq!(
                 settings

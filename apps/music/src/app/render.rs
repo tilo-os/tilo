@@ -756,11 +756,30 @@ impl Widget for MusicApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.open_file_button, &self.search_button]
+        let mut children: Vec<&dyn Widget> = vec![&self.open_file_button, &self.search_button];
+        children.extend(self.history.button().map(|button| button as &dyn Widget));
+        children.extend(
+            self.track_tables
+                .iter()
+                .filter_map(|slot| slot.table.visible_widget()),
+        );
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.open_file_button, &mut self.search_button]
+        let mut children: Vec<&mut (dyn Widget + '_)> =
+            vec![&mut self.open_file_button, &mut self.search_button];
+        children.extend(
+            self.history
+                .button_mut()
+                .map(|button| button as &mut (dyn Widget + '_)),
+        );
+        children.extend(
+            self.track_tables
+                .iter_mut()
+                .filter_map(|slot| slot.table.visible_widget_mut()),
+        );
+        children
     }
 
     /// The context menu and the name prompt paint in the window's top
@@ -800,6 +819,11 @@ impl Widget for MusicApp {
             self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
             self.playback_loaded = true;
         }
+        // The host admits row control effects after delivering input. Their
+        // callbacks queue requests; apply them at the next sync through the
+        // same canonical actions as the palette, without waiting for another
+        // pointer event.
+        self.drain_table_requests(state);
         // Progress in-flight downloads and re-apply their device-local cache
         // projection on top of the just-reloaded shared library.
         self.advance_downloads(state);
@@ -3555,6 +3579,26 @@ impl MusicApp {
             }
         }
         took
+    }
+
+    fn drain_table_requests(&mut self, state: &mut AutoCommit) {
+        let requests: Vec<_> = self
+            .track_tables
+            .iter()
+            .enumerate()
+            .flat_map(|(index, slot)| {
+                slot.table
+                    .take_events()
+                    .into_iter()
+                    .map(move |ask| (index, ask))
+            })
+            .collect();
+        for (index, ask) in requests {
+            if let Some(action) = self.row_action(index, ask) {
+                self.dispatch(action, state);
+                self.dirty = true;
+            }
+        }
     }
 
     /// The action a row of track table `index` asked for.

@@ -86,7 +86,7 @@ impl TemplatePicker {
         presence: &PresenceCtx,
     ) {
         if self.is_open() {
-            Widget::draw(
+            Widget::draw_overlay(
                 &mut self.menu,
                 scene,
                 transform,

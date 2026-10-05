@@ -1212,6 +1212,7 @@ impl GreeterApp {
                 .with_external_buffer(Arc::clone(&self.password_buffer))
                 .with_accessible_name(t("greeter-passcode"))
                 .with_secret(true)
+                .control_size(ControlSize::Large)
                 .with_placeholder(&t("greeter-passcode-placeholder"))
                 .disabled(busy)
         };
@@ -2687,7 +2688,6 @@ mod tests {
                 vec![
                     "greeter.username",
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.larger-text",
@@ -2993,19 +2993,32 @@ mod tests {
         {
             let mut app = GreeterApp::with_sessions(test_sessions());
             let base = focus_shape(&app);
+            let card = card_of(&app);
+            let reveal = find(card.as_ref(), "greeter.password_reveal")
+                .expect("the shared field retains an addressable reveal control");
+            let accessible = reveal.accessibility().expect("reveal is accessible");
+            assert_eq!(accessible.role, ui::a11y::Role::Button);
+            assert_eq!(accessible.name.as_deref(), Some("Show password"));
+            assert!(
+                accessible.value.is_none(),
+                "the reveal control exposes no passcode"
+            );
+            assert!(
+                !reveal.is_focusable(),
+                "Tab continues from field to sign-in"
+            );
             assert_eq!(
                 base,
                 vec![
-                    "TextInput",      // username
-                    "TextInput",      // passcode
-                    "PasswordReveal", // show/hide passcode
-                    "Button",         // sign in
-                    "Button",         // fingerprint
-                    "Button",         // larger text
-                    "Button",         // high contrast
-                    "Button",         // screen reader
-                    "Dropdown",       // session
-                    "Dropdown",       // power
+                    "TextInput", // username
+                    "TextInput", // passcode
+                    "Button",    // sign in
+                    "Button",    // fingerprint
+                    "Button",    // larger text
+                    "Button",    // high contrast
+                    "Button",    // screen reader
+                    "Dropdown",  // session
+                    "Dropdown",  // power
                 ]
             );
             app.selected_session = 1;
@@ -3042,7 +3055,6 @@ mod tests {
                 focusables(&app),
                 vec![
                     "greeter.password",
-                    "greeter.password_reveal",
                     "greeter.login",
                     "greeter.fingerprint",
                     "greeter.larger-text",

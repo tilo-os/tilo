@@ -15,6 +15,7 @@ pub mod header;
 pub mod history;
 pub mod inspector;
 pub mod layers;
+mod layout;
 pub mod pane;
 pub mod picture;
 pub mod shortcuts;

@@ -44,7 +44,10 @@ fn click(app: &mut TestApp<BackupsShell>, name: &str) {
 fn the_retention_steppers_edit_the_document_as_one_undo_step() {
     let mut app = TestApp::<BackupsShell>::capture(Some("schedules")).unwrap();
     assert_eq!(app.state().policy.daily, 7);
-    click(&mut app, "Daily retention increase");
+    app.harness()
+        .perform_semantic_named("backups-keep-ret_daily", None, &ui::a11y::Action::Increment)
+        .expect("the daily retention spinbutton exposes increase");
+    app.settle();
     assert_eq!(app.state().policy.daily, 8);
     // The palette's increment on the same class is the same action.
     let surface = app.agent_surface();
@@ -160,10 +163,10 @@ fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
 #[test]
 fn every_scenario_stages_its_screen() {
     for (scenario, shown) in [
-        (Some("empty"), "Set up backups"),
-        (Some("restore"), "Choose an empty folder for recovery"),
-        (Some("unavailable"), "Choose another backup location"),
-        (Some("schedules"), "Daily retention increase"),
+        (Some("empty"), "Protect your important files"),
+        (Some("restore"), "Choose folder…"),
+        (Some("unavailable"), "Choose another location…"),
+        (Some("schedules"), "Daily snapshots to keep"),
         (None, "Back up now"),
     ] {
         let mut app = TestApp::<BackupsShell>::capture(scenario).unwrap();

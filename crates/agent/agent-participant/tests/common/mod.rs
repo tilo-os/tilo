@@ -143,6 +143,16 @@ pub fn sample_arguments(
     for param in descriptor.params.iter().filter(|param| param.required) {
         let value = if let Some(choice) = param.choices.first() {
             serde_json::Value::from(choice.as_ref())
+        } else if let Some(example) = param
+            .schema
+            .as_ref()
+            .and_then(|schema| schema.get("examples"))
+            .and_then(serde_json::Value::as_array)
+            .and_then(|examples| examples.first())
+        {
+            // A caller reads constrained input from the published contract,
+            // just as a person follows the palette's parameter guidance.
+            example.clone()
         } else {
             match param.ty {
                 ParamType::Text => WRITTEN.into(),

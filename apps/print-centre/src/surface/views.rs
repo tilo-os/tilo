@@ -472,11 +472,15 @@ pub(super) fn live_view(
             let refresh = command_button("print-centre.refresh", "Refresh", tx, UiCommand::Refresh)
                 .with_icon(Icon::Refresh);
             Box::new(
-                Section::new(vec![Box::new(
-                    CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
-                        .with_card_width(CardWidth::Wide),
-                )])
-                .with_header(SectionHeader::heading("Your printers").action(refresh)),
+                bare_column()
+                    .with_rhythm(ui::tokens::Rhythm::Section)
+                    .push(Box::new(Section::new(Vec::new()).with_header(
+                        SectionHeader::heading("Your printers").action(refresh),
+                    )))
+                    .push(Box::new(
+                        CardGrid::new(queues.iter().map(|queue| printer_card(queue, tx)).collect())
+                            .with_card_width(CardWidth::Wide),
+                    )),
             )
         });
     }

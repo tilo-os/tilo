@@ -771,15 +771,18 @@ fn modal_control_inventory_hides_backdrop_action_emitters() {
             h.root_mut::<NavShell>().close_sidebar();
         }
         settle(&mut h, 560, 800);
-        let inventory = crate::widget::controls::control_action_bindings(h.root::<NavShell>())
+        let bindings = crate::widget::controls::control_action_bindings(h.root::<NavShell>());
+        let inventory = bindings
             .iter()
             .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)));
+        let backdrop = bindings.iter().any(|binding| matches!(&binding.kind,
+            crate::widget::ControlBindingKind::Action(address) if address.resource == "test-pane" && address.action == "go"));
         assert_eq!(
             crate::widget::controls::has_action_control_bindings(h.root::<NavShell>()),
             inventory
         );
         assert_eq!(
-            inventory, !open,
+            backdrop, !open,
             "modal drawer hides the backdrop action emitter"
         );
     }
@@ -825,6 +828,7 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
         .content(Box::new(content));
     let mut h = harness(shell, 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
+    h.root_mut::<NavShell>().mark_drawn();
     let before = h
         .root_mut::<NavShell>()
         .content_mut::<crate::widget::Scrollable>()
@@ -950,4 +954,47 @@ fn retained_panes_remeasure_theme_resize_replacement_and_modal_backdrop_edits() 
     h.relayout_at((560, 800))
         .expect("clean replacement measured");
     assert!(text_rect(&mut h).height() > changed.height());
+}
+
+#[test]
+fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_content() {
+    let changes = SharedRc::new(Cell::new(0));
+    let seen = SharedRc::clone(&changes);
+    let list = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
+        "places",
+        vec![crate::widget::NavItem::new("inbox", "Inbox")],
+    )])
+    .selected("inbox")
+    .on_select(move |_| seen.set(seen.get() + 1));
+    assert!(
+        Widget::as_any(&list)
+            .unwrap()
+            .is::<crate::widget::NavList>()
+    );
+    let shell = NavShell::new()
+        .mode(NavMode::Push)
+        .sidebar(Box::new(list))
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 560, 800, Theme::dark());
+    settle(&mut h, 560, 800);
+    assert_eq!(
+        h.root_mut::<NavShell>()
+            .sidebar_mut::<crate::widget::NavList>()
+            .expect("typed NavList access through the shared decorator")
+            .selected_id()
+            .as_deref(),
+        Some("inbox")
+    );
+    let inbox = h
+        .a11y_node_named("Inbox")
+        .expect("published navigation row");
+    h.perform_a11y_action(inbox, &crate::a11y::Action::Activate)
+        .expect("activating the already-selected destination");
+    settle(&mut h, 560, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    assert_eq!(
+        changes.get(),
+        0,
+        "activation does not invent a selection change"
+    );
 }

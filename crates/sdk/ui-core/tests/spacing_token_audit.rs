@@ -34,7 +34,7 @@
 
 use regex::Captures;
 
-use crate::support::ratchet::{Pattern, Ratchet, no_exemptions};
+use crate::support::ratchet::{Pattern, Ratchet};
 
 /// `"12"`, `"12.0"`, `"12.00"` → a whole pixel count of at least one.
 /// `"0"`, `"0.0"`, `"0.5"`, `"1.25"` → not a pixel constant.
@@ -54,6 +54,13 @@ fn whole_pixel(c: &Captures<'_>) -> bool {
 
 fn nonzero(c: &Captures<'_>) -> bool {
     is_nonzero_literal(&c[1])
+}
+
+/// Canvas raster export, simulation sampling and authored selection coverage
+/// are picture data, not UI spacing. Keep this exemption restricted to the
+/// content-only module; the mixed canvas renderers and panels remain audited.
+fn is_authored_geometry(path: &std::path::Path) -> bool {
+    path.ends_with("apps/canvas/src/content_geometry.rs")
 }
 
 /// Spacing and geometry literals in widget, chrome, shell and app
@@ -93,7 +100,7 @@ pub fn spacing_ratchet() -> Ratchet {
                 "fixed literal spacer — space comes from the composition or a spacing token",
             ),
         ],
-        exempt: no_exemptions,
+        exempt: is_authored_geometry,
         advice: "Read the value from theme.tokens.spacing or theme.tokens.metrics (insets_all / \
                  insets_xy build a padding Rect from one), or let the composition own it.",
     }
@@ -105,6 +112,19 @@ pub fn spacing_ratchet() -> Ratchet {
 )]
 #[test]
 fn spacing_audit_sees_what_it_polices_and_literals_do_not_grow() {
+    // A content exemption must not grow to hide chrome or application layout.
+    assert!(is_authored_geometry(std::path::Path::new(
+        "apps/canvas/src/content_geometry.rs"
+    )));
+    for path in [
+        "apps/canvas/src/panels/start.rs",
+        "apps/canvas/src/panels/header.rs",
+        "apps/canvas/src/render.rs",
+        "apps/canvas/src/surface.rs",
+        "apps/canvas/src/thumb.rs",
+    ] {
+        assert!(!is_authored_geometry(std::path::Path::new(path)));
+    }
     // Case `spacing_patterns_match_the_shapes_they_claim`.
     // The scanner must be able to see what it polices. Each rule is exercised
     // on a line that must count and one that must not, so a regex edit that

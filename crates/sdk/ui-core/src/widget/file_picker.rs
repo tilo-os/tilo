@@ -113,8 +113,6 @@ const REPLACE_CARD_HEIGHT: f64 = 140.0; // a dialog card's size, not spacing
 /// What Replace does, under the replace prompt's question.
 const REPLACE_PROMPT_DETAIL: &str = "Replacing it overwrites its contents.";
 const BUTTON_GAP: f64 = 8.0;
-const HEADER_ICON_PX: f64 = 18.0;
-const ROW_ICON_PX: f64 = 16.0;
 
 /// The file chooser is an immediate-mode modal, so its controls do not each
 /// have a retained Taffy node.  Keep their keyboard order in the toolkit's
@@ -1825,9 +1823,16 @@ impl FilePicker {
                     &s,
                 );
             }
-            let ix = self.up_rect.x0 + (self.up_rect.width() - HEADER_ICON_PX) / 2.0;
-            let iy = self.up_rect.y0 + (self.up_rect.height() - HEADER_ICON_PX) / 2.0;
-            let icon_rect = Rect::new(ix, iy, ix + HEADER_ICON_PX, iy + HEADER_ICON_PX);
+            let ix =
+                self.up_rect.x0 + (self.up_rect.width() - f64::from(tokens.metrics.icon_md)) / 2.0;
+            let iy =
+                self.up_rect.y0 + (self.up_rect.height() - f64::from(tokens.metrics.icon_md)) / 2.0;
+            let icon_rect = Rect::new(
+                ix,
+                iy,
+                ix + f64::from(tokens.metrics.icon_md),
+                iy + f64::from(tokens.metrics.icon_md),
+            );
             draw_icon(
                 scene,
                 transform,
@@ -1861,7 +1866,7 @@ impl FilePicker {
                     r.x1 - self.metrics.crumb_separator_w,
                     r.y0,
                     r.x1,
-                    r.y0 + ROW_ICON_PX,
+                    r.y0 + f64::from(tokens.metrics.icon_sm),
                 );
                 draw_icon(
                     scene,
@@ -1931,12 +1936,12 @@ impl FilePicker {
             if let Some(entry) = self.entries.get(i) {
                 let fg = tokens.colors.text_primary;
                 let inset_x = self.metrics.inset_x;
-                let icon_y = rect.y0 + (ROW_HEIGHT - ROW_ICON_PX) / 2.0;
+                let icon_y = rect.y0 + (ROW_HEIGHT - f64::from(tokens.metrics.icon_sm)) / 2.0;
                 let icon_rect = Rect::new(
                     rect.x0 + inset_x,
                     icon_y,
-                    rect.x0 + inset_x + ROW_ICON_PX,
-                    icon_y + ROW_ICON_PX,
+                    rect.x0 + inset_x + f64::from(tokens.metrics.icon_sm),
+                    icon_y + f64::from(tokens.metrics.icon_sm),
                 );
                 draw_icon(
                     scene,
@@ -1954,7 +1959,7 @@ impl FilePicker {
                     &entry.name,
                     fg,
                     transform.pre_translate(Vec2::new(
-                        rect.x0 + inset_x + ROW_ICON_PX + inset_x,
+                        rect.x0 + inset_x + f64::from(tokens.metrics.icon_sm) + inset_x,
                         rect.y0 + (ROW_HEIGHT - f64::from(name_h)) / 2.0,
                     )),
                     None,

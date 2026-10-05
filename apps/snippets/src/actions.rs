@@ -293,7 +293,7 @@ pub fn parse_tags(raw: &str) -> Vec<String> {
 fn snippet_label(s: &Snippet) -> String {
     let t = s.title.trim();
     let base = if t.is_empty() { "Untitled snippet" } else { t };
-    format!("{} · {}", base, s.language.label())
+    format!("{} ({})", base, s.language.label())
 }
 
 /// Document-derived children: folders, tags and snippets.

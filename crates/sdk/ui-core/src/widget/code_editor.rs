@@ -811,7 +811,7 @@ impl CodeEditor {
             for row in self.inner.selection_rects(theme, start, end) {
                 let x0 = row.x0.max(rect.x0 + gutter);
                 let x1 = row.x1.max(x0 + 4.0).min(rect.x1);
-                squiggle(scene, transform, x0, x1, row.y1 - 1.0, color);
+                paint_diagnostic_underline(scene, transform, x0, x1, row.y1 - 1.0, color);
             }
             if gutter > 0.0 {
                 let caret = self.inner.caret_rect(theme, start);
@@ -885,7 +885,7 @@ impl CodeEditor {
 
 /// A wavy underline from `x0` to `x1` along `y`: the mark of a problem in
 /// text, as spelling marks one.
-fn squiggle(
+pub fn paint_diagnostic_underline(
     scene: &mut Scene,
     transform: Affine,
     x0: f64,

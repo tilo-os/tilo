@@ -204,6 +204,18 @@ impl TrackTableHost {
         self.placed = false;
     }
 
+    pub(super) fn visible_widget(&self) -> Option<&dyn Widget> {
+        self.placed.then_some(self.host.widget())
+    }
+
+    pub(super) fn visible_widget_mut(&mut self) -> Option<&mut (dyn Widget + '_)> {
+        if self.placed {
+            Some(self.host.widget_mut())
+        } else {
+            None
+        }
+    }
+
     pub(super) fn rows(&self) -> &[TrackCell] {
         &self.rows
     }

@@ -303,7 +303,7 @@ fn source_rows(catalog: &Catalog) -> LiveRow {
             format!("backups.schedule:{}", source.id),
             "backups.schedule",
             format!(
-                "{} cadence · {} (observed)",
+                "Observed {} cadence: {}.",
                 source.kind.label(),
                 crate::view::schedule_label(source.schedule)
             ),
@@ -320,7 +320,7 @@ fn source_rows(catalog: &Catalog) -> LiveRow {
                 format!("backups.source:{}", source.id),
                 "backups.source",
                 format!(
-                    "{} · {}",
+                    "{} with {}.",
                     source.kind.label(),
                     crate::view::schedule_label(source.schedule)
                 ),
@@ -349,7 +349,11 @@ fn destination_rows(catalog: &Catalog) -> LiveRow {
             LiveRow::new(
                 format!("backups.destination:{}", destination.id),
                 "backups.destination",
-                format!("{} · {}", destination.name, destination.kind.label()),
+                format!(
+                    "{} is a {} backup destination.",
+                    destination.name,
+                    destination.kind.label()
+                ),
             )
             .operation(offer(
                 "open",
@@ -374,7 +378,7 @@ pub(crate) fn live_rows(catalog: &Catalog, blocked: Option<&Blocked>) -> Vec<Liv
     let mut snapshots = LiveRow::new(
         "backups.snapshots",
         "backups.snapshot-set",
-        "Snapshot versions and runs · recent page",
+        "Recent snapshot versions and backup runs",
     );
     for snapshot in catalog.snapshots.iter().take(SNAPSHOT_PAGE) {
         snapshots = snapshots.row(snapshot_row(snapshot, blocked));
@@ -414,7 +418,7 @@ fn snapshot_row(snapshot: &Snapshot, blocked: Option<&Blocked>) -> LiveRow {
         format!("backups.snapshot:{}", snapshot.id),
         "backups.snapshot",
         format!(
-            "{} · {} · {}",
+            "{} {} snapshot containing {}.",
             taken_label(snapshot),
             snapshot.kind.label(),
             ui::format::bytes(snapshot.size_bytes)
@@ -448,7 +452,7 @@ fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow
         format!("backups.run:{}", snapshot.id),
         "backups.run",
         format!(
-            "Completed {} run · {}",
+            "Completed {} run on {}.",
             snapshot.kind.label(),
             taken_label(snapshot)
         ),
@@ -466,7 +470,7 @@ fn snapshot_children(snapshot: &Snapshot, blocked: Option<&Blocked>) -> (LiveRow
     let target = LiveRow::new(
         format!("backups.restore-target:{}", snapshot.id),
         "backups.restore-target",
-        "Restore target · choose a new or empty local folder",
+        "Restore into a new or empty local folder",
     )
     .operation(labelled(
         offer(

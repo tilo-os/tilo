@@ -574,7 +574,7 @@ impl BackupsApp {
                 let created = crate::engine::create_snapshot(&source, &destination, |step| {
                     report(
                         &shown,
-                        format!("{} files · {}", step.files, ui::format::bytes(step.bytes)),
+                        format!("{} files totaling {}", step.files, ui::format::bytes(step.bytes)),
                     );
                     progress.report("copying", Some(step.files), None);
                 })
@@ -597,7 +597,7 @@ impl BackupsApp {
                 }
                 match &pruned {
                     Ok(_) => app.toast_now(format!(
-                        "Backup complete · {} files · {}",
+                        "Backup complete: {} files totaling {}.",
                         manifest.files,
                         ui::format::bytes(manifest.bytes)
                     )),
@@ -629,7 +629,7 @@ impl BackupsApp {
                     error.to_string()
                 })?;
                 app.toast_now(format!(
-                    "Verified {} files · {}",
+                    "Verified {} files totaling {}.",
                     result.files,
                     ui::format::bytes(result.bytes)
                 ));
@@ -681,7 +681,11 @@ impl BackupsApp {
                 crate::engine::restore_snapshot(&destination, &id, &restore_to, false, |step| {
                     report(
                         &shown,
-                        format!("{} files · {}", step.files, ui::format::bytes(step.bytes)),
+                        format!(
+                            "{} files totaling {}",
+                            step.files,
+                            ui::format::bytes(step.bytes)
+                        ),
                     );
                     progress.report("restoring", Some(step.files), None);
                 })
@@ -693,7 +697,7 @@ impl BackupsApp {
                     error.to_string()
                 })?;
                 app.toast_now(format!(
-                    "Restored {} files · {}",
+                    "Restored {} files totaling {}.",
                     result.files,
                     ui::format::bytes(result.bytes)
                 ));
@@ -771,7 +775,7 @@ impl BackupsApp {
                 self.status_bubble.poke(ui::time::now());
             }
             "progress" => {
-                self.operation_status = Some("642 files · 3.8 GB verified so far".into());
+                self.operation_status = Some("642 files totaling 3.8 GB verified so far".into());
                 self.job_kind = Some(JobKind::Verify);
             }
             "failure" => self.toast_error(
@@ -781,7 +785,8 @@ impl BackupsApp {
                 self.keep_selection();
                 self.open_restore();
             }
-            "sources" | "schedules" => {
+            "schedules" => self.page = Page::Retention,
+            "sources" => {
                 if let Some(source) = self.catalog.sources.first() {
                     self.page = Page::Source(source.id.clone());
                 }
@@ -941,9 +946,10 @@ impl BackupsApp {
         if self.built.as_ref() == Some(&key) {
             return;
         }
-        let sidebar_stale = self.built.as_ref().is_none_or(|built| {
-            built.catalog != key.catalog || built.page != key.page || built.setup != key.setup
-        });
+        let sidebar_stale = self
+            .built
+            .as_ref()
+            .is_none_or(|built| built.catalog != key.catalog || built.setup != key.setup);
         self.built = Some(key.clone());
         self.dirty = true;
         if let Some(setup) = &key.setup {
@@ -965,6 +971,11 @@ impl BackupsApp {
                 &self.page,
                 &self.intents,
             ))));
+        } else if let Some(sidebar) = self.shell.sidebar_mut::<ui::widget::NavList>() {
+            let selected = self.page.nav_id();
+            if sidebar.selected_id().as_deref() != Some(selected.as_str()) {
+                sidebar.set_selected(Some(&selected));
+            }
         }
         let actions = view::header_actions(key.job, key.can_act, &self.intents);
         self.set_content_header(view::page_title(&self.catalog, &self.page), actions);
@@ -1142,26 +1153,27 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut children = self.shell.children();
         if let Some(dialog) = &self.restore {
-            children.push(dialog);
+            vec![dialog]
+        } else {
+            self.shell.children()
         }
-        children
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        self.shell.for_each_child(visitor);
         if let Some(dialog) = &self.restore {
             visitor(dialog);
+        } else {
+            self.shell.for_each_child(visitor);
         }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children = self.shell.children_mut();
         if let Some(dialog) = &mut self.restore {
-            children.push(dialog);
+            vec![dialog]
+        } else {
+            self.shell.children_mut()
         }
-        children
     }
 
     fn draw_overlay(
@@ -1268,6 +1280,10 @@ mod tests {
             .unwrap()
             .center();
         click(app, at);
+        // Opening and closing drawers animate on the live path. Geometry
+        // assertions inspect the settled destination, as the opening above does.
+        app.shell.snap();
+        Framed::harness_mut(app).relayout();
     }
     fn live_constructor_starts_with_an_empty_catalog() {
         // The live app must not fabricate sources / snapshots / destinations.
@@ -1597,13 +1613,20 @@ mod tests {
         assert!((primary.y1 - secondary.y1).abs() < f64::EPSILON);
         assert!(secondary.x1 <= primary.x0);
         assert!(primary.height() >= 32.0);
-        let before = app.page.clone();
-        click(&mut app, behind.center());
-        assert_eq!(app.page, before);
         let text = Framed::harness(&app).inspection_json().unwrap();
         assert!(text.contains("Choose folder"));
         assert!(!text.contains("Choose files"));
-        click(&mut app, secondary.center());
+        let before = app.page.clone();
+        click(&mut app, behind.center());
+        assert_eq!(app.page, before);
+        assert!(
+            app.restore.is_none(),
+            "a scrim click dismisses without navigating behind it"
+        );
+        app.open_restore();
+        Framed::harness_mut(&mut app).relayout();
+        let cancel = app.restore.as_ref().unwrap().secondary_rect();
+        click(&mut app, cancel.center());
         assert!(app.restore.is_none());
         let rows = crate::actions::live_rows(app.resource_catalog(), None)
             .into_iter()

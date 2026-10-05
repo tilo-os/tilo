@@ -739,7 +739,8 @@ pub struct PhotosApp {
     notice: Option<String>,
     status_bubble: ui::StatusBubble,
     /// The empty state's one action, where it was painted.
-    empty_action_rect: Option<Rect>,
+    empty_state: Option<EmptyState>,
+    empty_state_key: Option<(String, String, bool)>,
     rect: Rect,
     canvas_rect: Rect,
     status_rect: Rect,
@@ -1585,7 +1586,8 @@ impl PhotosApp {
             pending,
             notice: None,
             status_bubble: ui::StatusBubble::new(),
-            empty_action_rect: None,
+            empty_state: None,
+            empty_state_key: None,
             rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             status_rect: Rect::ZERO,
@@ -5454,6 +5456,7 @@ impl PhotosApp {
                 .with_hashed_key("photos:canvas")
         };
         let mut children = vec![canvas];
+        children.extend(self.empty_state.as_ref().and_then(Widget::accessibility));
         children.extend(self.chrome_semantics());
         if let Some(notice) = self.notice.as_deref() {
             children.push(
@@ -6772,6 +6775,50 @@ impl PhotosApp {
         )
     }
 
+    /// Keep the actual shared empty-state control mounted before painting,
+    /// so keyboard, accessibility and automation reach the same import door.
+    fn refresh_empty_state(&mut self, doc: &mut AutoCommit) {
+        let key = self.content_offers_open().then(|| {
+            let (title, body) = if self.library_mode {
+                Self::library_empty_state_text()
+            } else {
+                self.empty_state_text()
+            };
+            (
+                title,
+                body,
+                self.canvas_state == CanvasState::Error && !self.library_mode,
+            )
+        });
+        if key != self.empty_state_key {
+            self.empty_state = key.as_ref().map(|(title, body, error)| {
+                let resource = ui::tilo_resource::publish::<crate::resource::Photos>(
+                    "photos.library",
+                    &tr("photos-act-photo-library"),
+                    &<crate::resource::Photos as ui::tilo_resource::Resource>::read(doc)
+                        .unwrap_or_default(),
+                );
+                let empty = if *error {
+                    EmptyState::error(title, body)
+                } else {
+                    EmptyState::new(title).with_message(body)
+                }
+                .with_icon(Icon::Image)
+                .with_action(tr("photos-open"))
+                .with_action_id("photos-empty-open");
+                match tilo_actions::ActionBinding::unit_for(&resource, "import") {
+                    Ok(binding) => empty.on_action(binding),
+                    Err(_) => empty,
+                }
+            });
+            self.empty_state_key = key;
+            self.structure_dirty = true;
+        }
+        if let Some(empty) = &mut self.empty_state {
+            empty.sync(doc, &automerge::ROOT);
+        }
+    }
+
     /// Nothing to show in the content column: the shared empty state, with
     /// one action to open a photograph where that is the way forward.
     fn draw_empty_state(
@@ -6783,9 +6830,17 @@ impl PhotosApp {
         title: &str,
         body: &str,
     ) {
-        let action = tr("photos-open-photo");
-        let offer_open = self.content_offers_open();
-        self.empty_action_rect = EmptyState::paint(
+        if let Some(empty) = &mut self.empty_state {
+            empty.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &PresenceCtx::empty(),
+            );
+            return;
+        }
+        EmptyState::paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.canvas_rect,
             &EmptyStateContent {
@@ -6793,7 +6848,7 @@ impl PhotosApp {
                 illustration: None,
                 title,
                 message: Some(body),
-                action_label: offer_open.then_some(action.as_str()),
+                action_label: None,
                 error: self.canvas_state == CanvasState::Error && !self.library_mode,
             },
             self.pointer,
@@ -7128,6 +7183,8 @@ impl PhotosApp {
                     &children,
                 )
                 .unwrap()
+        } else if let Some(empty) = &mut self.empty_state {
+            empty.build_layout(taffy, theme, node_map)
         } else {
             match self.viewer.as_mut() {
                 Some(v) => v.build_layout(taffy, theme, node_map),
@@ -10414,25 +10471,41 @@ impl Widget for PhotosApp {
         dyn ui::widget::WindowHeader
     );
 
-    /// The window's History button is the one retained child: the host
-    /// finds, focuses and announces it like the same control in a
-    /// `NavShell` header. Photos places, paints and routes it itself.
+    /// Shared controls remain retained children even in the painted media
+    /// surface, with their own focus, action custody and accessibility.
     fn children(&self) -> Vec<&dyn Widget> {
-        self.chrome
-            .history
-            .button()
-            .map(|button| button as &dyn Widget)
-            .into_iter()
-            .collect()
+        let mut children: Vec<&dyn Widget> = vec![&self.chrome.search];
+        if self.header_back_visible() {
+            children.push(&self.chrome.back);
+        }
+        children.extend(
+            self.chrome
+                .history
+                .button()
+                .map(|button| button as &dyn Widget),
+        );
+        children.extend(self.empty_state.as_ref().map(|empty| empty as &dyn Widget));
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.chrome
-            .history
-            .button_mut()
-            .map(|button| button as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        let back_visible = self.header_back_visible();
+        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.chrome.search];
+        if back_visible {
+            children.push(&mut self.chrome.back);
+        }
+        children.extend(
+            self.chrome
+                .history
+                .button_mut()
+                .map(|button| button as &mut (dyn Widget + '_)),
+        );
+        children.extend(
+            self.empty_state
+                .as_mut()
+                .map(|empty| empty as &mut (dyn Widget + '_)),
+        );
+        children
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -10928,6 +11001,7 @@ impl Widget for PhotosApp {
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
         self.refresh_chrome_text(doc);
         self.refresh_toolbar();
+        self.refresh_empty_state(doc);
     }
 
     #[allow(
@@ -11061,6 +11135,8 @@ impl Widget for PhotosApp {
                     };
                     control.button.apply_layout_external(bounds);
                 }
+            } else if let Some(empty) = &mut self.empty_state {
+                empty.apply_layout(taffy, canvas, here);
             } else if let Some(v) = self.viewer.as_mut() {
                 v.apply_layout(taffy, canvas, here);
             }
@@ -11085,7 +11161,6 @@ impl Widget for PhotosApp {
         self.chrome.inspector.tick(theme);
         self.chrome.inspector.resolve(self.rect);
         self.place_chrome(text_renderer, theme);
-        self.empty_action_rect = None;
 
         if self.library_mode {
             if self.library_destination == LibraryDestination::Albums {
@@ -11247,21 +11322,11 @@ impl Widget for PhotosApp {
             self.drain_pending(ctx.state);
             return;
         }
-        if matches!(
-            event,
-            winit::event::WindowEvent::MouseInput {
-                state: winit::event::ElementState::Released,
-                button: winit::event::MouseButton::Left,
-                ..
+        if let Some(empty) = &mut self.empty_state {
+            empty.handle_event(event, ctx);
+            if *ctx.handled {
+                return;
             }
-        ) && self
-            .empty_action_rect
-            .is_some_and(|rect| rect.contains(self.pointer))
-        {
-            self.pending.set(Some(Hit::Open));
-            self.drain_pending(ctx.state);
-            *ctx.handled = true;
-            return;
         }
         for (_, button) in &mut self.directory_import_buttons {
             let mut sink = None;
@@ -11993,6 +12058,13 @@ impl Widget for PhotosApp {
         state: &mut AppModel,
         path: &ModelPath,
     ) -> bool {
+        if self
+            .empty_state
+            .as_mut()
+            .is_some_and(|empty| empty.perform_semantic_action(target, action, state, path))
+        {
+            return true;
+        }
         if self.perform_chrome_semantic_action(target, action, state, path) {
             return true;
         }
@@ -12041,9 +12113,20 @@ impl ui::resources::PublishesResources for PhotosApp {
         } else {
             crate::actions::PhotosResources.publish_resources(doc)
         };
+        // Ordinary retained children publish through the host traversal.
+        // Only detached controls on the painted media surfaces belong here.
         resources.extend(
             self.retained_buttons()
                 .into_iter()
+                .filter(|button| {
+                    !std::ptr::eq(*button, &self.chrome.back)
+                        && !std::ptr::eq(*button, &self.chrome.search)
+                        && !self
+                            .chrome
+                            .history
+                            .button()
+                            .is_some_and(|history| std::ptr::eq(*button, history))
+                })
                 .flat_map(|button| button.resources(doc)),
         );
         if let Some(error) = &self.search_refresh_error {
@@ -12075,11 +12158,19 @@ impl ui::resources::PublishesResources for PhotosApp {
 
 impl ui::widget::controls::ActionControls for PhotosApp {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.chrome.search_opener.take().or_else(|| {
-            self.retained_buttons_mut()
-                .into_iter()
-                .find_map(|button| ui::widget::controls::take_control_invocation(button))
-        })
+        self.chrome
+            .search_opener
+            .take()
+            .or_else(|| {
+                self.empty_state
+                    .as_mut()
+                    .and_then(|empty| ui::widget::controls::take_control_invocation(empty))
+            })
+            .or_else(|| {
+                self.retained_buttons_mut()
+                    .into_iter()
+                    .find_map(|button| ui::widget::controls::take_control_invocation(button))
+            })
     }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         // Photos projects its custom media surfaces and retained buttons into
@@ -12089,7 +12180,19 @@ impl ui::widget::controls::ActionControls for PhotosApp {
         // producing orphan automation bindings with no matching UI target.
         // The buttons' canonical resources remain published by `resources`
         // and are dispatched through the same retained widgets.
-        ui::widget::semantic_action_bindings(self.accessibility())
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        if self.header_back_visible() {
+            bindings.extend(ui::widget::controls::control_action_bindings(
+                &self.chrome.back,
+            ));
+        }
+        bindings.extend(ui::widget::controls::control_action_bindings(
+            &self.chrome.search,
+        ));
+        if let Some(empty) = &self.empty_state {
+            bindings.extend(ui::widget::controls::control_action_bindings(empty));
+        }
+        bindings
     }
     fn refresh_control_action_availability(
         &mut self,
@@ -12097,6 +12200,9 @@ impl ui::widget::controls::ActionControls for PhotosApp {
     ) {
         for button in self.retained_buttons_mut() {
             button.refresh_control_action_availability(allowed);
+        }
+        if let Some(empty) = &mut self.empty_state {
+            ui::widget::controls::refresh_control_action_availability(empty, allowed);
         }
     }
 }

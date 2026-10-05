@@ -125,6 +125,7 @@ impl Chrome {
         let document = Text::dynamic(move || source.borrow().clone())
             .with_id("typst.document")
             .with_role(TextRole::Heading)
+            .with_heading_level(1)
             .with_kind(ui::TextKind::Identifier);
         let view_queue = Rc::clone(&queue);
         let view = ToggleGroup::new(vec![Segment::new("Edit"), Segment::new("Preview")], 0)
@@ -151,7 +152,7 @@ impl Chrome {
                 .on_click(command(&queue, Command::ToggleProblems)),
             history: ui::widget::HistoryOpener::new(),
             history_rect: Rect::ZERO,
-            structure_dirty: false,
+            structure_dirty: true,
             toolbar_rect: Rect::ZERO,
             visible: Visible::default(),
             queue,

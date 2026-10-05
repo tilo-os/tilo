@@ -1442,13 +1442,14 @@ mod tests {
             dispatch(&mut slider, &mouse_press());
             let start = slider.value;
             dispatch_with(&mut slider, &cursor_moved(105.0, 15.0), shift);
-            dispatch_with(&mut slider, &cursor_moved(205.0, 15.0), shift);
+            let half_track = SliderFace::new(slider.rect, 0.0).track_rect().width() / 2.0;
+            dispatch_with(&mut slider, &cursor_moved(105.0 + half_track, 15.0), shift);
             assert!(
                 (slider.value - start - 0.05).abs() < 1e-6,
                 "{start} -> {}",
                 slider.value
             );
-            dispatch(&mut slider, &cursor_moved(205.0, 15.0));
+            dispatch(&mut slider, &cursor_moved(105.0 + half_track, 15.0));
             assert!(
                 (slider.value - 1.0).abs() < 1e-6,
                 "without Shift it follows again"

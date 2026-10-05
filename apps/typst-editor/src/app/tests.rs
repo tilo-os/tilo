@@ -392,8 +392,8 @@ fn controls_stay_in_the_bar_and_never_overlap_at_any_width() {
             render_once(&mut app);
             let rects = control_rects(&app);
             assert!(
-                rects.len() >= 3,
-                "the picker, switch or arrows, and toolbar show at {width}px"
+                rects.len() >= if app.compact { 3 } else { 2 },
+                "the document heading, toolbar and compact view switch show at {width}px"
             );
             for (index, (left_name, left)) in rects.iter().enumerate() {
                 assert!(
@@ -525,7 +525,7 @@ fn the_problems_toggle_counts_errors_and_warnings() {
     );
     assert!(
         app.take_structure_dirty(),
-        "the first placement shows the document arrows"
+        "the first placement registers the document heading and toolbar"
     );
     assert!(!app.take_structure_dirty());
 
@@ -979,12 +979,18 @@ fn accessibility_exposes_editor_state_and_toolbar_controls() {
             .filter_map(|child| child.accessibility())
             .filter_map(|node| node.name)
             .collect();
-        for expected in ["Previous document", "Next document", "Document"] {
-            assert!(
-                named.iter().any(|name| name == expected),
-                "{expected} is named: {named:?}"
-            );
-        }
+        assert!(
+            named.iter().any(|name| name == &app.document.name),
+            "the document heading names the current file: {named:?}"
+        );
+        assert!(
+            app.chrome
+                .children()
+                .iter()
+                .filter_map(|child| child.accessibility())
+                .any(|node| node.role == ui::a11y::Role::Heading { level: 1 }
+                    && node.name.as_deref() == Some(app.document.name.as_str()))
+        );
         assert!(
             app.chrome.toolbar_names().iter().any(|name| name == "Save"),
             "the toolbar names its commands"

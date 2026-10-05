@@ -210,16 +210,25 @@ mod tests {
         let mut detail = TestApp::<SnippetsShell>::capture(Some("detail")).unwrap();
         assert_eq!(detail.harness().inspection().viewport, [420, 760]);
         assert!(detail.state().len() >= 10);
+        assert!(has_control(&mut detail, "Back"), "the detail is pushed in");
+        detail.harness().click_named("nav-shell-back").unwrap();
+        detail.settle();
         assert!(
-            has_control(&mut detail, "Back to snippet list"),
-            "the detail is pushed in"
+            !has_control(&mut detail, "Back"),
+            "Back returns to the snippet list"
         );
 
         let mut narrow = TestApp::<SnippetsShell>::capture(Some("narrow")).unwrap();
         assert_eq!(narrow.harness().inspection().viewport, [720, 720]);
         assert!(
-            has_control(&mut narrow, "Close folders and tags"),
+            has_control(&mut narrow, "Hide sidebar"),
             "the overlay sidebar is open"
+        );
+        narrow.harness().click_named("nav-shell-sidebar").unwrap();
+        narrow.settle();
+        assert!(
+            has_control(&mut narrow, "Show sidebar"),
+            "the sidebar closes through its control"
         );
     }
 
@@ -317,7 +326,7 @@ mod tests {
         snippet.body = "kubectl rollout".into();
         let entries = Snippets::search(&vec![snippet.clone()]);
         let hit = entries.iter().find(|e| e.title == "Deploy").unwrap();
-        for field in ["Ops", "k8s", "kubectl rollout", "Plain Text"] {
+        for field in ["Ops", "k8s", "kubectl rollout", snippet.language.label()] {
             assert!(hit.text.contains(field), "{field} in {:?}", hit.text);
         }
         assert_eq!(hit.action, Some(open_snippet_address(snippet.id)));

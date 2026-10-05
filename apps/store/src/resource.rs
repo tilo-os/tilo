@@ -703,18 +703,30 @@ mod tests {
                 app.effect(&effect).unwrap();
                 app.settle();
             }
-            let resources = app.harness().resources();
+            // The production audit resolves each binding against both the
+            // mounted app and the real window-owned search/History doors.
+            let audit = app.harness().native_app_audit();
             let bindings =
                 ui::widget::controls::control_action_bindings(app.harness().root_widget());
             assert!(!bindings.is_empty(), "{page}");
             for binding in bindings {
                 if let ui::widget::ControlBindingKind::Action(address) = &binding.kind {
                     assert!(
-                        ui::tilo_actions::door::resolve(&resources, address).is_some(),
-                        "{page}: control {} binds {address:?}, which is not published",
+                        !audit.issues.iter().any(|issue| {
+                            issue.control == binding.control_id
+                                && issue.code == "stale-action-binding"
+                        }),
+                        "{page}: control {} binds {address:?}, which the host cannot resolve: {:?}",
                         binding.control_id,
+                        audit.issues,
                     );
                 }
+            }
+            if page == "catalogue" {
+                app.harness().click_named("search-open").unwrap();
+                let targets = app.harness().targets();
+                assert!(targets.contains_key("action-palette"), "{targets:?}");
+                app.harness().key("Escape");
             }
         }
     }

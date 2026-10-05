@@ -401,13 +401,13 @@ mod tests {
         session
             .update_section(
                 "appearance",
-                object(json!({"theme": "Light", "wallpaper_path": "/home/ada/sea.png"})),
+                object(json!({"mode": "light", "wallpaper_path": "/home/ada/sea.png"})),
             )
             .unwrap();
         assert!(session.revision() > before);
 
         let expected =
-            json!({"appearance": {"theme": "Light", "wallpaper_path": "/home/ada/sea.png"}});
+            json!({"appearance": {"mode": "light", "wallpaper_path": "/home/ada/sea.png"}});
         assert_eq!(Value::Object(session.load()), expected);
         assert_eq!(
             Value::Object(load_at(&paths.copy)),
@@ -416,7 +416,7 @@ mod tests {
         );
         assert_eq!(
             Value::Object(load_at(&paths.person)),
-            json!({"appearance": {"theme": "Light"}}),
+            json!({"appearance": {"mode": "light"}}),
             "only personal leaves are the person's"
         );
         assert_eq!(
@@ -435,7 +435,7 @@ mod tests {
         let session = open(dir.path());
         let paths = session.paths().clone();
         session
-            .update_section("appearance", object(json!({"theme": "Dark"})))
+            .update_section("appearance", object(json!({"mode": "dark"})))
             .unwrap();
         let before = session.revision();
 
@@ -453,14 +453,14 @@ mod tests {
             "a reader polling the revision notices"
         );
         let expected = json!({
-            "appearance": {"theme": "Dark"},
+            "appearance": {"mode": "dark"},
             "notifications": {"do_not_disturb": true},
             "power": {"auto_suspend": false}
         });
         assert_eq!(Value::Object(session.load()), expected);
         assert_eq!(
             Value::Object(load_at(&paths.person)),
-            json!({"appearance": {"theme": "Dark"}, "notifications": {"do_not_disturb": true}})
+            json!({"appearance": {"mode": "dark"}, "notifications": {"do_not_disturb": true}})
         );
         assert_eq!(
             Value::Object(load_at(&paths.device)),
@@ -469,13 +469,13 @@ mod tests {
 
         // The session's next write keeps what the other process wrote.
         session
-            .update_section("appearance", object(json!({"theme": "Light"})))
+            .update_section("appearance", object(json!({"mode": "light"})))
             .unwrap();
         assert_eq!(
             load_at(&paths.copy)["notifications"]["do_not_disturb"],
             true
         );
-        assert_eq!(load_at(&paths.copy)["appearance"]["theme"], "Light");
+        assert_eq!(load_at(&paths.copy)["appearance"]["mode"], "light");
 
         drop(session);
         assert_eq!(
@@ -506,19 +506,19 @@ mod tests {
             json!({"input": {"touchpad_enabled": false}})
         );
         session
-            .update_section("appearance", object(json!({"theme": "Dark"})))
+            .update_section("appearance", object(json!({"mode": "dark"})))
             .unwrap();
         drop(session);
 
         // While the session is down the copy is edited, and then lost.
-        crate::update_section_at(&copy, "appearance", object(json!({"theme": "Light"}))).unwrap();
+        crate::update_section_at(&copy, "appearance", object(json!({"mode": "light"}))).unwrap();
         let session = open(dir.path());
-        assert_eq!(session.load()["appearance"]["theme"], "Light");
+        assert_eq!(session.load()["appearance"]["mode"], "light");
         drop(session);
         std::fs::remove_file(&copy).unwrap();
         let session = open(dir.path());
         let expected = json!({
-            "appearance": {"theme": "Light"},
+            "appearance": {"mode": "light"},
             "input": {"natural_scroll": true, "touchpad_enabled": false}
         });
         assert_eq!(Value::Object(session.load()), expected);

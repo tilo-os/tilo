@@ -1929,14 +1929,18 @@ mod tests {
                 .expect("the reported service failure offers a working retry");
             assert!(matches!(rx.try_recv(), Ok(UiCommand::Refresh)));
 
-            let empty_frame = ui::headless::FrameHarness::new(
+            let mut empty_frame = ui::headless::FrameHarness::new(
                 ui::State::new(),
                 live_view(&empty, &tx, None),
                 (1280, 800),
             );
             let report = empty_frame.inspection_json().unwrap();
             assert!(!report.contains("print-centre.service"), "{report}");
-            assert!(report.contains("Set up your first printer"), "{report}");
+            assert!(report.contains("No printers added yet"), "{report}");
+            empty_frame
+                .click_named("print-centre.discover.empty")
+                .expect("a legitimately empty printer list offers discovery");
+            assert!(matches!(rx.try_recv(), Ok(UiCommand::Discover)));
         }
     }
 

@@ -750,7 +750,7 @@ fn retention_page(states: &[LocalState<f64>; 4]) -> Container {
     let mut keep = FormSection::new("Snapshots to keep").grouped();
     for (field, state) in PolicyField::ALL.iter().zip(states) {
         keep = keep.field(Field::new(
-            field.label(),
+            format!("{} snapshots to keep", field.label()),
             NumberInput::from_state(state)
                 .with_range(0.0, 999.0)
                 .with_id(&format!("backups-keep-{}", field.key()))

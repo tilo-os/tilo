@@ -592,7 +592,7 @@ impl ChatApp {
             ui::native_media::State::Preparing | ui::native_media::State::Joining => {
                 "chat-call-joining"
             }
-            _ => "chat-call-unavailable",
+            _ => "chat-call-voice-unavailable",
         });
         line_in(
             &mut PaintCtx::new(scene, tf, tr, theme),

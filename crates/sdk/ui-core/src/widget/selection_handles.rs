@@ -27,6 +27,43 @@ use vello::peniko::Fill;
 use crate::theme::Theme;
 use crate::tokens::Metrics;
 
+/// Feedback over authored canvas content. The contrasting under-stroke keeps
+/// a brush footprint or erased boundary visible over either light or dark paint.
+#[derive(Clone, Copy, Debug)]
+pub enum ToolFeedback {
+    /// A previously erased region, emphasized when hovered or selected.
+    Erased { marked: bool },
+    /// The region the current brush or eraser will affect.
+    Footprint,
+}
+
+impl ToolFeedback {
+    /// Paint a screen-space boundary without changing the authored artwork.
+    pub fn draw(self, scene: &mut Scene, path: &BezPath, theme: &Theme) {
+        let colors = &theme.tokens.colors;
+        let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
+        let (outline, ink) = match self {
+            Self::Erased { marked } => (
+                Stroke::new(rule).with_dashes(0.0, if marked { [6.0, 3.0] } else { [2.0, 3.0] }),
+                if marked {
+                    colors.intent.you
+                } else {
+                    colors.text_dim
+                },
+            ),
+            Self::Footprint => (Stroke::new(rule), colors.text_primary),
+        };
+        scene.stroke(
+            &Stroke::new(rule * 3.0),
+            Affine::IDENTITY,
+            colors.surfaces.base,
+            None,
+            path,
+        );
+        scene.stroke(&outline, Affine::IDENTITY, ink, None, path);
+    }
+}
+
 /// A grip on the selection frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Handle {

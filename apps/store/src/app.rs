@@ -414,6 +414,7 @@ pub struct StoreApp {
     /// Remote and moderation jobs waiting on the worker.
     pending_jobs: usize,
     pending_search: Option<String>,
+    search_opener: ui::search::SearchOpener,
     pending_detail: Option<String>,
     remotes: Vec<crate::flathub_client::Remote>,
     remotes_open: bool,
@@ -469,6 +470,7 @@ impl StoreApp {
             back_requested: Rc::new(Cell::new(false)),
             pending_jobs: 0,
             pending_search: None,
+            search_opener: ui::search::SearchOpener::new(),
             pending_detail: None,
             remotes: Vec::new(),
             remotes_open: false,
@@ -1094,12 +1096,24 @@ impl ui::search::capability::SearchSource for StoreApp {
 
 impl ui::widget::controls::ActionControls for StoreApp {
     fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.root
-            .as_mut()
-            .and_then(|root| ui::widget::controls::take_control_invocation(root.as_mut()))
+        self.search_opener
+            .take()
+            .or_else(|| {
+                self.root
+                    .as_mut()
+                    .and_then(|root| ui::widget::controls::take_control_invocation(root.as_mut()))
+            })
             .or_else(|| {
                 let mut queue = self.queued_invocations.borrow_mut();
                 (!queue.is_empty()).then(|| queue.remove(0))
+            })
+    }
+
+    fn has_pending_control_invocation(&self) -> bool {
+        self.search_opener.is_pending()
+            || !self.queued_invocations.borrow().is_empty()
+            || self.root.as_ref().is_some_and(|root| {
+                ui::widget::controls::has_pending_control_invocation(root.as_ref())
             })
     }
 }
@@ -1229,6 +1243,8 @@ impl StoreApp {
                 if query.chars().count() > 512 {
                     return Err("search query is too long".into());
                 }
+                self.search_opener
+                    .open(ui::search::SearchRequest::this_app().with_query(query.clone()));
                 self.set_query(query);
             }
             StoreEffect::SetSource { source } => {
