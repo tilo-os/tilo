@@ -223,6 +223,13 @@ impl super::App {
             return false;
         }
         self.root_widget.sync(&self.state.doc, &self.state.root);
+        // A sync reads the document only; what it submitted (a worker's or a
+        // chooser's answer) is applied now and shown in this same frame.
+        if crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref())
+            && self.dispatch_control_invocations() != 0
+        {
+            self.root_widget.sync(&self.state.doc, &self.state.root);
+        }
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();
