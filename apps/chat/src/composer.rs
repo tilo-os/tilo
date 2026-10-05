@@ -314,7 +314,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
     }
 
     /// Bring the editor up to date with the document.
-    pub fn sync(&mut self, doc: &mut AutoCommit) {
+    pub fn sync(&mut self, doc: &AutoCommit) {
         self.host.sync(doc, &automerge::ROOT);
     }
 

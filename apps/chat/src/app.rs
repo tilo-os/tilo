@@ -739,9 +739,6 @@ pub struct ChatApp {
     /// True while either flap is mid-slide — drives `needs_animation_frame`
     /// so the loop keeps ticking only during the transition, then idles.
     flap_animating: bool,
-    /// A screenshot's mid-compose draft, typed into the main composer on the
-    /// next sync exactly as keystrokes are.
-    staged_draft: Option<String>,
     /// This window's person still has to be announced into the shared
     /// roster under the name this device knows them by.
     announce: Option<crate::identity::LocalIdentity>,
@@ -936,7 +933,6 @@ impl ChatApp {
             tooltips: TooltipHost::new(),
             relayout: false,
             flap_animating: false,
-            staged_draft: None,
             announce: None,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -988,6 +984,17 @@ impl ChatApp {
         }
     }
 
+    /// Submit one [`ChatAction`] through the resource's dispatcher, applied
+    /// after this pass: from a pass that only reads the document (a frame's
+    /// sync, a worker's answer). A refusal is reported by the dispatcher.
+    pub(crate) fn submit_action(&self, action: &ChatAction) {
+        #[cfg(test)]
+        self.dispatched.borrow_mut().push(action.clone());
+        if let Some(dispatch) = &self.dispatch {
+            dispatch.apply(action);
+        }
+    }
+
     pub(crate) fn ensure_composer_draft(&self, doc: &mut AutoCommit, key: &str) {
         if key.is_empty() || ChatDoc::rich_draft_is_settled(doc, key) {
             return;
@@ -1005,6 +1012,15 @@ impl ChatApp {
     #[cfg(test)]
     pub(crate) fn last_dispatched(&self) -> Option<tilo_actions::EncodedAction> {
         self.dispatched.borrow().last().map(actions::encode)
+    }
+
+    /// Test-only: apply what this window submitted to `doc`, as the host
+    /// applies it after a pass.
+    #[cfg(test)]
+    pub(crate) fn land(&self, doc: &mut AutoCommit) {
+        if let Some(dispatch) = &self.dispatch {
+            ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
+        }
     }
 
     /// Edit through `dispatcher` from now on.
@@ -1241,12 +1257,7 @@ impl ChatApp {
                 self.thread_open = None;
                 self.call = CallState::default();
                 self.focus = Focus::Main;
-                self.staged_draft = Some(
-                    "Shipping the composer on the shared TextInput — real caret, \
-                     selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line."
-                        .to_string()
-                        + "\nPlease check teh adress",
-                );
+                // The draft itself is the scenario's (`ChatShell::scenario`).
             }
             "msgmenu" => {
                 // The right-click action menu over one of your own messages,
@@ -1847,12 +1858,7 @@ impl ChatApp {
 
     /// Bring both composers up to date with their drafts. `--shots` stages
     /// its mid-compose draft here.
-    pub(crate) fn sync_composers(&mut self, doc: &mut AutoCommit) {
-        if let Some(draft) = self.staged_draft.take() {
-            let key = self.active_channel.clone();
-            self.ensure_composer_draft(doc, &key);
-            self.composer_main.insert_text(doc, &draft);
-        }
+    pub(crate) fn sync_composers(&mut self, doc: &AutoCommit) {
         for composer in [&mut self.composer_main, &mut self.composer_thread] {
             composer.sync(doc);
         }
@@ -1917,7 +1923,7 @@ impl ChatApp {
     /// Announce this window's person into the shared roster once, under the
     /// name this device knows them by: what every member shows for them
     /// until the room names them. A repeat writes nothing.
-    fn announce_me(&mut self, doc: &mut AutoCommit) {
+    fn announce_me(&mut self, doc: &AutoCommit) {
         let Some(me) = self.announce.take() else {
             return;
         };
@@ -1927,8 +1933,7 @@ impl ChatApp {
         {
             return;
         }
-        self.apply_action(
-            doc,
+        self.submit_action(
             &actions::ChatAction::EnsureUser {
                 name: me.name,
                 initials: me.initials,
@@ -1942,7 +1947,7 @@ impl ChatApp {
     /// its unread badge stays cleared and doesn't reappear once the user
     /// navigates away. Idempotent (a no-op when nothing new arrived), so it is
     /// safe to call every frame.
-    pub(crate) fn mark_active_read(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn mark_active_read(&mut self, doc: &AutoCommit) {
         if self.active_channel.is_empty() || !self.timeline_at_end {
             return;
         }
@@ -1955,7 +1960,7 @@ impl ChatApp {
         // that peers/history cannot account for.  The carried count makes the
         // replay independent of messages arriving after the person viewed it.
         let action = actions::mark_read_action(&self.active_channel, count);
-        self.apply_action(doc, &action);
+        self.submit_action(&action);
         if let Some(channel) = self
             .channels
             .iter_mut()
@@ -2904,7 +2909,7 @@ impl Widget for ChatApp {
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document_ref(doc, path);
-        self.apply_realtime_stop(doc);
+        self.apply_realtime_stop();
         self.establish_realtime_target();
         self.announce_me(doc);
         // A fold made on another of this person's devices.
@@ -2916,7 +2921,7 @@ impl Widget for ChatApp {
             }
         }
         self.settle_attachment_picker();
-        self.settle_attachment_import(doc);
+        self.settle_attachment_import();
         {
             use automerge::transaction::Transactable as _;
             // Reload and repaint only when the document moved: committed heads
@@ -3671,6 +3676,7 @@ mod identity_on_screen {
         let mut state = ui::State::new();
         ChatDoc::seed_starter(&mut state.doc, "owner", "Owner", "OW");
         Widget::sync(&mut app, &mut state.doc, &state.root);
+        app.land(&mut state.doc);
         let recorded = app
             .last_dispatched()
             .expect("the live peer is submitted as EnsureUser");

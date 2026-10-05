@@ -304,6 +304,10 @@ const SCENARIOS: &[&str] = &[
     "floating-call-returned",
 ];
 
+/// The draft the `composer` scenario shows mid-compose.
+const COMPOSER_DRAFT: &str = "Shipping the composer on the shared TextInput — real caret, \
+     selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line.\nPlease check teh adress";
+
 impl ResourceApp for ChatShell {
     type Resource = Chat;
     const ID: &'static str = "so.tilo.chat";
@@ -358,7 +362,19 @@ impl ResourceApp for ChatShell {
             }
             _ => ChatAction::SeedDemo {},
         };
-        Invoke::apply(&seed).into_iter().collect()
+        let mut invokes: Vec<Invoke<Chat>> = Invoke::apply(&seed).into_iter().collect();
+        if name == Some("composer") {
+            // The composer mid-compose: a multi-line draft in the channel shown.
+            let key = "c_crit".to_owned();
+            let draft = std::iter::once(ChatAction::EnsureRichDraft { key: key.clone() }).chain(
+                COMPOSER_DRAFT.lines().map(|line| ChatAction::EditDraft {
+                    key: key.clone(),
+                    edit: tilo_document::RichTextAction::AppendParagraph { text: line.to_owned() },
+                }),
+            );
+            invokes.extend(draft.filter_map(|action| Invoke::apply(&action).ok()));
+        }
+        invokes
     }
 
     /// A new record's first workspace, owned by its creator. A capture's

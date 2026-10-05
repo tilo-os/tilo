@@ -246,7 +246,7 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Bring the widget up to date with the document.
-    pub fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    pub fn sync(&mut self, state: &AutoCommit, path: &ObjId) {
         self.widget.sync(state, path);
     }
 }

@@ -1670,7 +1670,7 @@ impl ChatApp {
     /// Drain at most one bounded worker result and settle it exactly once. A
     /// stale result, permission downgrade, I/O failure, or content-store failure
     /// becomes a visible terminal outcome; only `Ready` creates the message.
-    pub(crate) fn settle_attachment_import(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn settle_attachment_import(&mut self) {
         let Ok(result) = self.attachment_result_rx.try_recv() else {
             return;
         };
@@ -1729,8 +1729,7 @@ impl ChatApp {
         } else {
             crate::model::Attachment::File { name, blob, size }
         };
-        self.apply_action(
-            doc,
+        self.submit_action(
             &actions::send_message_action(
                 &pending.channel,
                 &new_message_id(),
@@ -2539,7 +2538,8 @@ mod tests {
                 })
                 .unwrap();
 
-            app.settle_attachment_import(&mut doc);
+            app.settle_attachment_import();
+            app.land(&mut doc);
             assert_eq!(
                 app.attachment_pending.as_ref().map(|pending| pending.token),
                 Some(7)
@@ -2557,6 +2557,8 @@ mod tests {
         let (mut app, mut doc) = app_with_doc();
         let before = doc.save();
         app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        app.land(&mut doc);
+        app.reload(&doc);
         assert!(app.call.active && app.call.muted && app.call.audio_only);
         assert_eq!(app.call.channel, "c_standup");
         assert_eq!(
@@ -2570,6 +2572,8 @@ mod tests {
     fn expanding_a_call_preserves_verified_streams_without_rewriting_legacy_history() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.land(&mut doc);
+        app.reload(&doc);
         service_streams(&mut app, "c_huddle", 3);
         let before = doc.save();
         app.on_hit(Hit::CallExpand, &mut doc);
@@ -2589,6 +2593,8 @@ mod tests {
             use vello::kurbo::Rect;
             let (mut app, mut doc) = app_with_doc();
             app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+            app.land(&mut doc);
+            app.reload(&doc);
             service_streams(&mut app, "c_huddle", 3);
             app.on_hit(Hit::CallExpand, &mut doc);
             assert!(app.call.active && app.call.expanded);
@@ -2677,6 +2683,8 @@ mod tests {
     fn leaving_a_call_clears_local_service_state_without_rewriting_history() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        app.land(&mut doc);
+        app.reload(&doc);
         service_streams(&mut app, "c_standup", 2);
         let before = doc.save();
         assert_eq!(app.voice_in("c_standup").len(), 2);
@@ -2949,7 +2957,8 @@ mod tests {
         expected_count: usize,
     ) {
         tilo_test_env::wait_until("the attachment worker", || {
-            app.settle_attachment_import(doc);
+            app.settle_attachment_import();
+            app.land(doc);
             ChatDoc::list_messages(doc, channel).len() == expected_count
         });
     }
@@ -4021,6 +4030,7 @@ mod tests {
             "first presentation re-runs sync"
         );
         app.sync(&mut doc, &automerge::ROOT);
+        app.land(&mut doc);
         assert!(
             ChatDoc::read_watermark(&doc, &channel, &app.me.id) > watermark,
             "the presented channel is marked read"
@@ -4042,6 +4052,7 @@ mod tests {
             let (mut app, mut doc) = app_with_doc();
             // Simulate having viewed the initial channel (as each sync frame does).
             app.mark_active_read(&mut doc);
+            app.land(&mut doc);
             app.reload(&doc);
             let unread =
                 |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
@@ -4051,6 +4062,8 @@ mod tests {
                 "an unseen welcome message shows as unread"
             );
             app.on_hit(Hit::Channel("c_general".into()), &mut doc);
+            app.land(&mut doc);
+            app.reload(&doc);
             assert_eq!(app.active_channel, "c_general");
             assert_eq!(
                 unread(&app, "c_general"),
@@ -4059,6 +4072,8 @@ mod tests {
             );
             // Leaving it keeps it read — the watermark persisted through the mutation.
             app.on_hit(Hit::Channel("c_crit".into()), &mut doc);
+            app.land(&mut doc);
+            app.reload(&doc);
             assert_eq!(
                 unread(&app, "c_general"),
                 0,
@@ -4070,6 +4085,7 @@ mod tests {
         {
             let (mut app, mut doc) = app_with_doc();
             app.mark_active_read(&mut doc);
+            app.land(&mut doc);
             app.reload(&doc);
             let unread =
                 |app: &ChatApp, id: &str| app.channels.iter().find(|c| c.id == id).unwrap().unread;
@@ -4112,6 +4128,7 @@ mod tests {
         {
             let (mut app, mut doc) = app_with_doc();
             app.mark_active_read(&mut doc);
+            app.land(&mut doc);
             let watermark = ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id);
 
             // A remote message arrives after the current read boundary. Being in
@@ -4129,6 +4146,7 @@ mod tests {
             );
             app.timeline_at_end = false;
             app.mark_active_read(&mut doc);
+            app.land(&mut doc);
             assert_eq!(
                 ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id),
                 watermark,
@@ -4137,6 +4155,7 @@ mod tests {
 
             app.jump_to_latest();
             app.mark_active_read(&mut doc);
+            app.land(&mut doc);
             assert!(
                 ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id) > watermark,
                 "the same message is acknowledged once the reader returns to it"
@@ -4276,6 +4295,8 @@ mod tests {
             );
             // Join a call → the sidebar identity bar now offers real toggles.
             app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+            app.land(&mut doc);
+            app.reload(&doc);
             assert!(app.call.active);
             render_frame(&mut app, 1280.0, 720.0);
             let side = app.sidebar_rect();
@@ -4429,6 +4450,8 @@ mod tests {
         {
             let (mut app, mut doc) = app_with_doc();
             app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+            app.land(&mut doc);
+            app.reload(&doc);
             assert!(
                 app.native_voice.channel.is_some(),
                 "opening a voice channel joins it"
@@ -4443,6 +4466,8 @@ mod tests {
     fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+        app.land(&mut doc);
+        app.reload(&doc);
         service_streams(&mut app, "c_standup", 0);
         let before = doc.save();
         assert!(app.call.muted);
@@ -4478,6 +4503,8 @@ mod tests {
     fn voice_profile_rejects_screen_share_even_with_a_portal_source() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.land(&mut doc);
+        app.reload(&doc);
         let before = doc.save();
         // The host is deliberately ready to grant a source, so only the voice
         // profile can be responsible for refusing capture.
@@ -4499,6 +4526,8 @@ mod tests {
         use ui::permissions::{Actor, PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.land(&mut doc);
+        app.reload(&doc);
         app.on_hit(Hit::CallExpand, &mut doc);
         app.perms = crate::permissions::ChatPermissions::from_context(
             PermissionContext::from_capabilities(
@@ -4522,6 +4551,8 @@ mod tests {
     fn expanded_controls_do_not_advertise_screen_capture() {
         let (mut app, mut doc) = app_with_doc();
         app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.land(&mut doc);
+        app.reload(&doc);
         app.on_hit(Hit::CallExpand, &mut doc);
         let (_, buttons) = app.overlay_controls_layout();
         assert!(
