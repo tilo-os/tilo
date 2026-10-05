@@ -59,12 +59,18 @@ fn words(name: &str) -> String {
 /// The inspector.
 pub fn panel(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let tools = tools.clone();
-    cx.switch(&tools.selection.clone(), move |cx, ids| {
-        if ids.is_empty() {
-            brush_and_artwork(cx, &tools)
-        } else {
-            selection(cx, ids.clone(), &tools)
+    cx.switch(&tools.tool.clone(), move |cx, tool| {
+        if matches!(tool, Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand) {
+            return brush_and_artwork(cx, &tools);
         }
+        let tools = tools.clone();
+        cx.switch(&tools.selection.clone(), move |cx, ids| {
+            if ids.is_empty() {
+                brush_and_artwork(cx, &tools)
+            } else {
+                selection(cx, ids.clone(), &tools)
+            }
+        })
     })
 }
 
