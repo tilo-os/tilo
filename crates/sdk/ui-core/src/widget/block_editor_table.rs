@@ -1215,12 +1215,7 @@ impl Widget for Table {
             // Header band and zebra stripe are derived tiers on the body
             // surface (HIG §9.5), so they flip polarity on a light palette
             // instead of laying a white veneer over a white table.
-            let fill = if is_header {
-                crate::widget::data_table::tier_on(
-                    tk.colors.surfaces.raised,
-                    crate::chrome::HAIRLINE_ALPHA,
-                )
-            } else if r % 2 == 1 {
+            let fill = if is_header || r % 2 == 1 {
                 crate::widget::data_table::tier_on(
                     tk.colors.surfaces.raised,
                     crate::chrome::HAIRLINE_ALPHA,

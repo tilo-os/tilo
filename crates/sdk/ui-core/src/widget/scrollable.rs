@@ -1662,7 +1662,6 @@ impl Widget for Scrollable {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 match self.on_cursor_moved(*position, ctx.scale_factor) {
-                    CursorMoveOutcome::Forward => {}
                     CursorMoveOutcome::DragConsumed => {
                         *ctx.handled = true;
                         return;
@@ -1670,7 +1669,7 @@ impl Widget for Scrollable {
                     // Only the scrollbar bookkeeping is coalesced. Descendants
                     // may have lost hover on CursorLeft, or changed their own
                     // interaction state without moving this pointer.
-                    CursorMoveOutcome::Coalesced => {}
+                    CursorMoveOutcome::Forward | CursorMoveOutcome::Coalesced => {}
                 }
             }
             WindowEvent::MouseInput {

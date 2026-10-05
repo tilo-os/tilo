@@ -194,7 +194,7 @@ impl FlapState {
         let target = if self.is_open(layout) { 1.0 } else { 0.0 };
         // Keep scheduling until tick has snapped the final fraction. A
         // threshold here could stop the host before that last tick runs.
-        self.progress != target
+        !self.progress.total_cmp(&target).is_eq()
     }
 }
 
