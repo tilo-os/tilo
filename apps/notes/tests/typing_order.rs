@@ -73,9 +73,7 @@ fn physical_observer_matches_real_note_dispatch_to_the_drawn_body_without_text_l
         .native_input_snapshot()
         .expect("Notes observer");
     let event = WindowEvent::Ime(Ime::Commit("é".into()));
-    let input = trace
-        .begin(&event, Some(before.clone()))
-        .expect("input identity");
+    let input = trace.begin(&event, Some(before)).expect("input identity");
     app.harness().send(&event);
     let effect = ui::NativePhysicalInputTrace::effect(input, app.harness().native_input_snapshot());
     let _ = app.harness().poll_frame();

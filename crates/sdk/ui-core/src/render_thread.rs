@@ -1363,14 +1363,11 @@ fn render_one_frame(
         observer.arm(&surface.surface, frame_ix, cpu_frame_id);
     }
     let ((), present_bounds) = timing::around(presentation.is_some() && timing::enabled(), || {
-        #[cfg(target_os = "linux")]
         if let Some(observer) = presentation {
             observer.present_wayland(frame_ix, cpu_frame_id, || surface_texture.present());
         } else {
             surface_texture.present();
         }
-        #[cfg(not(target_os = "linux"))]
-        surface_texture.present();
     });
     if frame_ix == 0 {
         tilo_startup_metrics::mark("render-worker-first-present-done");

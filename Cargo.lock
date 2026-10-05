@@ -16286,6 +16286,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-presentation"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tilo-clock",
+ "tilo-winit",
+]
+
+[[package]]
 name = "tilo-process"
 version = "0.1.0"
 dependencies = [
@@ -16927,6 +16936,7 @@ dependencies = [
  "tilo-media",
  "tilo-paint-stream",
  "tilo-paths",
+ "tilo-presentation",
  "tilo-process",
  "tilo-resource",
  "tilo-rt",
