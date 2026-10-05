@@ -115,6 +115,7 @@ pub struct Scrollable {
     /// in one flow and should not reserve a large empty viewport for the
     /// short page.
     max_height: Option<f32>,
+    height_limit_dirty: bool,
     /// Absorbs the parent's remaining flex height instead of claiming
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
@@ -217,6 +218,7 @@ impl Scrollable {
             child_node: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
+            height_limit_dirty: false,
             show_scrollbar: true,
             sequential_focus: true,
             last_cursor: Point::ZERO,
@@ -329,6 +331,17 @@ impl Scrollable {
     pub fn with_max_height(mut self, px: f32) -> Self {
         self.max_height = Some(px.max(0.0));
         self
+    }
+
+    /// Resize a content-sized viewport without replacing its child/editor.
+    /// The shared measured solver updates the retained node's constraint.
+    pub fn set_max_height(&mut self, px: f32) {
+        let height = Some(px.max(0.0));
+        if self.max_height != height {
+            self.max_height = height;
+            self.height_limit_dirty = true;
+            self.scroll_dirty = true;
+        }
     }
 
     #[must_use]
@@ -1218,6 +1231,7 @@ impl Widget for Scrollable {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.height_limit_dirty = false;
         self.child_node = self
             .child
             .as_mut()
@@ -1269,15 +1283,32 @@ impl Widget for Scrollable {
     }
 
     fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let mut changed = false;
+        if self.height_limit_dirty {
+            let Ok(mut style) = taffy.style(node).cloned() else {
+                return false;
+            };
+            style.max_size.height = self.max_height.map_or(Dimension::auto(), Dimension::length);
+            style.size.height = match self.fixed_height {
+                Some(px) => Dimension::length(px),
+                None if self.fill_parent_height => Dimension::length(0.0),
+                None => Dimension::auto(),
+            };
+            if taffy.set_style(node, style).is_err() {
+                return false;
+            }
+            self.height_limit_dirty = false;
+            changed = true;
+        }
         let Some(minimum) = &self.content_min_viewport_height else {
-            return false;
+            return changed;
         };
         let Ok(layout) = taffy.layout(node) else {
-            return false;
+            return changed;
         };
         let height = layout.size.height.max(0.0);
         if (minimum.get() - height).abs() < f32::EPSILON {
-            return false;
+            return changed;
         }
         // Inherited decision only. The wrapper's hook changes its OWN style,
         // regardless of the host's node visitation order.
@@ -2588,6 +2619,57 @@ mod tests {
 
     use crate::widget::{Column, Text};
     use std::collections::HashMap;
+
+    #[test]
+    fn changing_max_height_relayouts_the_retained_scroll_tree() {
+        let mut scroll = Box::new(
+            Scrollable::new_vertical()
+                .with_child(tall_child())
+                .with_max_height(300.0),
+        );
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let mut text = TextRenderer::new();
+        let node = scroll.build_layout(&mut taffy, &theme, &mut nodes);
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the boxed tree owns this exact stable node map.
+        unsafe { bindings.rebuild(scroll.as_ref(), &taffy, node, &nodes) };
+        let child_node = scroll.child_node;
+        let child = scroll.child.as_deref().unwrap() as *const dyn Widget;
+        for height in [300.0, 120.0, 240.0] {
+            scroll.set_max_height(height);
+            // SAFETY: boxed retained widgets remain alive and uniquely owned
+            // for both the measurement and style-settling passes.
+            unsafe {
+                crate::widget::layout::compute_widget_layout(
+                    &mut taffy,
+                    node,
+                    Size {
+                        width: taffy::AvailableSpace::Definite(400.0),
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                    &nodes,
+                    &bindings,
+                    &mut text,
+                )
+            }
+            .unwrap();
+            scroll.apply_layout(&taffy, node, Point::ZERO);
+            assert!(
+                (scroll.get_rect().height() - f64::from(height)).abs() < 0.5,
+                "retained maximum {height} produced viewport {}, style {:?}",
+                scroll.get_rect().height(),
+                taffy.style(node).unwrap(),
+            );
+            assert_eq!(scroll.child_node, child_node);
+            assert!(std::ptr::addr_eq(
+                child,
+                scroll.child.as_deref().unwrap() as *const dyn Widget
+            ));
+            assert!(scroll.content_h > scroll.viewport_h);
+        }
+    }
 
     fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
         let theme = Theme::dark();
