@@ -842,14 +842,15 @@ fn platform_search_opens_finds_and_activates_places() {
 
     // Phase `the_provider_finds_saved_places_pois_and_recents`.
     {
+        use ui::search::SearchProvider as _;
         use ui::search::SearchQuery;
+
         let mut a = app_at(1280.0, 720.0);
         a.pois = vec![crate::model::Poi {
             category: Category::Bar,
             ..demo_poi("bar1", a.model.center.lat, a.model.center.lon)
         }];
         let provider = a.place_search.provider(a.local_places());
-        use ui::search::SearchProvider as _;
         let recents = provider.search_page(&SearchQuery::new(""), None, 10, 10);
         assert!(
             recents

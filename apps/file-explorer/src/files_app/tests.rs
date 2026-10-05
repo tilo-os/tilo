@@ -4814,6 +4814,23 @@ mod responsive_body_tests {
     /// no Remove. Drives the real right-press path end to end.
     #[test]
     fn right_clicking_a_favourite_opens_its_menu() {
+        fn row(w: &dyn Widget, label: &str) -> Option<vello::kurbo::Point> {
+            fn node(n: &ui::a11y::AccessNode, label: &str) -> Option<vello::kurbo::Point> {
+                if n.name.as_deref() == Some(label) && n.role == ui::a11y::Role::TreeItem {
+                    return n.bounds.map(|bounds| {
+                        vello::kurbo::Point::new(
+                            f64::midpoint(bounds.x0, bounds.x1),
+                            f64::midpoint(bounds.y0, bounds.y1),
+                        )
+                    });
+                }
+                n.children.iter().find_map(|child| node(child, label))
+            }
+            w.accessibility()
+                .as_ref()
+                .and_then(|n| node(n, label))
+                .or_else(|| w.children().iter().find_map(|child| row(*child, label)))
+        }
         let cfg = tempfile::tempdir().unwrap();
         let w = FileExplorerWidget::with_persistence(
             Some(cfg.path()),
@@ -4826,23 +4843,6 @@ mod responsive_body_tests {
             "wide docks the sidebar"
         );
 
-        fn row(w: &dyn Widget, label: &str) -> Option<vello::kurbo::Point> {
-            fn node(n: &ui::a11y::AccessNode, label: &str) -> Option<vello::kurbo::Point> {
-                if n.name.as_deref() == Some(label) && n.role == ui::a11y::Role::TreeItem {
-                    return n.bounds.map(|bounds| {
-                        vello::kurbo::Point::new(
-                            (bounds.x0 + bounds.x1) / 2.0,
-                            (bounds.y0 + bounds.y1) / 2.0,
-                        )
-                    });
-                }
-                n.children.iter().find_map(|child| node(child, label))
-            }
-            w.accessibility()
-                .as_ref()
-                .and_then(|n| node(n, label))
-                .or_else(|| w.children().iter().find_map(|child| row(*child, label)))
-        }
         let favorites = h.w.favorites_store().borrow().favorites.clone();
         let removable = row(&h.w, &favorites[1].label).expect("the removable favorite is laid out");
         let home_row = row(&h.w, &favorites[0].label).expect("the Home favorite is laid out");

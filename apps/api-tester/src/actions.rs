@@ -1521,6 +1521,10 @@ mod tests {
         );
         assert!(state(&doc).request.params.is_empty());
 
+        check_history_variables_and_saved_request_updates(&mut doc);
+    }
+
+    fn check_history_variables_and_saved_request_updates(doc: &mut AutoCommit) {
         let entry = HistoryEntry {
             id: Uuid::from_u128(7),
             method: HttpMethod::Patch,
@@ -1530,50 +1534,50 @@ mod tests {
             when: "just now".into(),
         };
         apply(
-            &mut doc,
+            doc,
             &ApiTesterAction::RecordHistory {
                 entry: entry.clone(),
             },
         );
         apply(
-            &mut doc,
+            doc,
             &ApiTesterAction::OpenHistory {
                 history_id: entry.id.to_string(),
             },
         );
-        let request = state(&doc).request;
+        let request = state(doc).request;
         assert_eq!(
             (request.method, request.url.as_str()),
             (HttpMethod::Patch, entry.url.as_str())
         );
 
         // A variable rename keeps its value in its own field.
-        let environment = environment_id(&doc);
-        let variable = variable_id(&doc);
+        let environment = environment_id(doc);
+        let variable = variable_id(doc);
         apply(
-            &mut doc,
+            doc,
             &rename_variable_action(environment, variable, "api_url"),
         );
-        let renamed = &state(&doc).environments[0].variables[0];
+        let renamed = &state(doc).environments[0].variables[0];
         assert_eq!(renamed.key, "api_url");
         assert_eq!(renamed.value, "https://api.example.com");
 
         // Saving a request whose id exists edits it in place.
-        let mut edited = request_of(&doc);
+        let mut edited = request_of(doc);
         edited.method = HttpMethod::Put;
-        let collection = collection_id(&doc);
-        apply(&mut doc, &save_request_action(collection, edited));
-        let requests = &state(&doc).collections[0].requests;
+        let collection = collection_id(doc);
+        apply(doc, &save_request_action(collection, edited));
+        let requests = &state(doc).collections[0].requests;
         assert_eq!(requests.len(), 1, "same id replaces, not appends");
         assert_eq!(requests[0].method, HttpMethod::Put);
 
         // The current request is saved under a new id and the given name.
         let id = Uuid::from_u128(9);
         apply(
-            &mut doc,
+            doc,
             &save_current_request_action(collection, id, "Saved copy"),
         );
-        let saved = state(&doc).collections[0]
+        let saved = state(doc).collections[0]
             .requests
             .iter()
             .find(|request| request.id == id)

@@ -3927,6 +3927,28 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
     Rect::new(x0, y0, x0 + width, y0 + height)
 }
 
+fn choice_row_height(theme: &Theme) -> f32 {
+    let spacing = &theme.tokens.spacing;
+    let text = theme
+        .text(ui::tokens::typography::TextRole::Body)
+        .line_height_px()
+        + theme
+            .text(ui::tokens::typography::TextRole::Caption)
+            .line_height_px();
+    (text + 2.0 * spacing.s2)
+        .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
+        .ceil()
+}
+
+struct Choice {
+    id: &'static str,
+    icon: ui::icons::Icon,
+    title: &'static str,
+    detail: &'static str,
+    /// The model key the row sets, read by sync like a button's.
+    key: &'static str,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -6864,26 +6886,4 @@ mod tests {
             }
         }
     }
-}
-
-fn choice_row_height(theme: &Theme) -> f32 {
-    let spacing = &theme.tokens.spacing;
-    let text = theme
-        .text(ui::tokens::typography::TextRole::Body)
-        .line_height_px()
-        + theme
-            .text(ui::tokens::typography::TextRole::Caption)
-            .line_height_px();
-    (text + 2.0 * spacing.s2)
-        .max(theme.tokens.metrics.min_pointer_target + spacing.s2)
-        .ceil()
-}
-
-struct Choice {
-    id: &'static str,
-    icon: ui::icons::Icon,
-    title: &'static str,
-    detail: &'static str,
-    /// The model key the row sets, read by sync like a button's.
-    key: &'static str,
 }

@@ -3247,6 +3247,430 @@ impl ui::widget::controls::ActionControls for GitClientApp {
     }
 }
 
+impl GitClientApp {
+    fn submit(&self, action: &crate::actions::GitClientAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
+        }
+    }
+}
+
+impl GitClientApp {
+    fn switch_diff_layout(&mut self) -> Result<(), String> {
+        self.diff_scroll = 0.0;
+        self.change_preferences(Settings::toggle_layout)
+    }
+}
+
+impl GitClientApp {
+    fn change_preferences(&mut self, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        change(&mut self.settings);
+        if let Some(preferences) = &self.preferences {
+            preferences
+                .set(self.settings)
+                .map_err(|error| format!("Couldn't save the diff preferences: {error}"))?;
+        }
+        Ok(())
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn follow_preferences(&mut self, preferences: ui::framework::Setting<Settings>) {
+        self.settings = preferences.get();
+        self.preferences = Some(preferences);
+    }
+}
+
+impl GitClientApp {
+    fn adopt_preferences(&mut self) {
+        if let Some(preferences) = &self.preferences {
+            self.settings = preferences.state().with(|stored| *stored);
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn preference_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        use ui::framework::EffectStatus;
+        let s = self.settings;
+        vec![
+            EffectStatus::labelled(
+                GitClientEffect::DIFF_LAYOUT,
+                match s.diff_layout {
+                    DiffLayout::Unified => "Diff layout: side-by-side",
+                    DiffLayout::SideBySide => "Diff layout: unified",
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SYNTAX_HIGHLIGHT,
+                if s.syntax_highlight {
+                    "Turn off syntax highlighting"
+                } else {
+                    "Turn on syntax highlighting"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SHOW_WHITESPACE,
+                if s.show_whitespace {
+                    "Hide whitespace"
+                } else {
+                    "Show whitespace"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::WRAP_LINES,
+                if s.wrap_lines {
+                    "Stop wrapping long lines"
+                } else {
+                    "Wrap long lines"
+                },
+            ),
+        ]
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn attach_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
+        mode: RunMode,
+        sample: Option<&crate::resource::SampleRepository>,
+    ) {
+        self.dispatcher = Some(dispatcher);
+        self.mode = mode;
+        if let Some(sample) = sample {
+            self.show_model(sample.model.clone(), sample.diffs.clone());
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn present_state(&mut self, state: &crate::doc::GitClientState) {
+        match self.mode {
+            RunMode::Live => {
+                let first = !std::mem::replace(&mut self.presented, true);
+                if !first && self.opened == state.repository {
+                    return;
+                }
+                self.opened.clone_from(&state.repository);
+                match &state.repository {
+                    Some(path) => {
+                        if !self.bind_repository(std::path::Path::new(path)) {
+                            self.last_error = Some(format!("No git repository at {path}"));
+                            self.open_input.set_text(path);
+                        }
+                    }
+                    None if first => {
+                        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                        if !self.bind_repository(&cwd) {
+                            self.open_input.set_text(&cwd.to_string_lossy());
+                        }
+                    }
+                    None => {}
+                }
+            }
+            RunMode::Past => self.show_model(state.repo.clone(), DiffMap::new()),
+            RunMode::Capture => {}
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn working_tree_rows(&self) -> Vec<LiveRow> {
+        let mut rows = Vec::new();
+        if !self.awaiting_repo {
+            rows.push(crate::actions::working_tree_rows(&self.model));
+        }
+        if let Some(job) = &self.remote_job {
+            rows.push(LiveRow::new(
+                "git_client.remote-job",
+                "git_client.job",
+                job.label.clone(),
+            ));
+        }
+        rows
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn working_tree_row(&self, id: &str) -> Option<LiveRow> {
+        (!self.awaiting_repo)
+            .then(|| crate::actions::working_tree_row(&self.model, id))
+            .flatten()
+    }
+}
+
+impl GitClientApp {
+    /// Resolve a navigation target against the current repository projection.
+    fn open_effect_view(&mut self, effect: GitClientEffect) -> Result<(), String> {
+        match effect {
+            GitClientEffect::ShowChanges => self.switch_screen(Screen::Changes),
+            GitClientEffect::ShowHistory => self.switch_screen(Screen::History),
+            GitClientEffect::ShowBranches => self.switch_screen(Screen::Panels),
+            GitClientEffect::OpenChange { area, path } => {
+                let area = match area.as_str() {
+                    "staged" => ChangeArea::Staged,
+                    "unstaged" => ChangeArea::Unstaged,
+                    "untracked" => ChangeArea::Untracked,
+                    _ => return Err("unknown change area".into()),
+                };
+                let list = match area {
+                    ChangeArea::Staged => &self.model.staged,
+                    ChangeArea::Unstaged => &self.model.unstaged,
+                    ChangeArea::Untracked => &self.model.untracked,
+                };
+                let index = list
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "changed file no longer exists".to_string())?;
+                self.switch_screen(Screen::Changes);
+                self.selected_change = Some((area, index));
+                self.diff_scroll = 0.0;
+            }
+            GitClientEffect::OpenCommit { id } => {
+                let index = self
+                    .model
+                    .commits
+                    .iter()
+                    .position(|commit| commit.id == id)
+                    .ok_or_else(|| "commit is outside the current history window".to_string())?;
+                self.switch_screen(Screen::History);
+                self.selected_commit = index;
+                self.detail_scroll = 0.0;
+            }
+            _ => return Ok(()),
+        }
+        Ok(())
+    }
+
+    /// Local diff preferences touch neither the repository nor the document.
+    fn apply_diff_preference(&mut self, effect: &GitClientEffect) -> Option<Result<(), String>> {
+        match effect {
+            GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
+            GitClientEffect::SyntaxHighlight => {
+                Some(self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight))
+            }
+            GitClientEffect::ShowWhitespace => {
+                Some(self.change_preferences(|s| s.show_whitespace = !s.show_whitespace))
+            }
+            GitClientEffect::WrapLines => {
+                Some(self.change_preferences(|s| s.wrap_lines = !s.wrap_lines))
+            }
+            _ => None,
+        }
+    }
+
+    fn save_stash(&mut self, message: &str) -> Result<(), String> {
+        let path = self
+            .repo()
+            .ok_or_else(|| "stashing requires a real repository".to_string())?;
+        crate::repo::stash_save(&path, message).map_err(|error| error.to_string())?;
+        self.last_error = None;
+        self.reload();
+        Ok(())
+    }
+
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: GitClientEffect,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let preference = self.apply_diff_preference(&effect);
+        if let Some(kept) = preference {
+            return kept.map(|()| Effected::done());
+        }
+        let view = matches!(
+            effect,
+            GitClientEffect::ShowChanges
+                | GitClientEffect::ShowHistory
+                | GitClientEffect::ShowBranches
+                | GitClientEffect::OpenChange { .. }
+                | GitClientEffect::OpenCommit { .. }
+        );
+        if !view && self.repository_busy() {
+            return Err(ui::i18n!("git-remote-busy"));
+        }
+        match effect {
+            effect @ (GitClientEffect::ShowChanges
+            | GitClientEffect::ShowHistory
+            | GitClientEffect::ShowBranches
+            | GitClientEffect::OpenChange { .. }
+            | GitClientEffect::OpenCommit { .. }) => self.open_effect_view(effect)?,
+            GitClientEffect::StageAll => self.stage_all(),
+            GitClientEffect::UnstageAll => self.unstage_all(),
+            GitClientEffect::StageFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
+                    .ok_or_else(|| "file is no longer unstaged".to_string())?;
+                self.toggle_stage(area, index);
+            }
+            GitClientEffect::UnstageFile { path } => {
+                let index = self
+                    .model
+                    .staged
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "file is no longer staged".to_string())?;
+                self.toggle_stage(ChangeArea::Staged, index);
+            }
+            GitClientEffect::DiscardFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
+                    .ok_or_else(|| "file has no worktree changes".to_string())?;
+                if self.repo_path.is_none() {
+                    return Err("discard is unavailable in the demonstration repository".into());
+                }
+                self.discard_file(area, index);
+            }
+            GitClientEffect::Commit { message } => {
+                if self.model.staged.is_empty() {
+                    return Err("there are no staged changes to commit".into());
+                }
+                if message.trim().is_empty() {
+                    return Err("commit message cannot be empty".into());
+                }
+                self.commit_input.set_text(&message);
+                self.do_commit();
+            }
+            GitClientEffect::CreateBranch { name } => {
+                if name.trim().is_empty() {
+                    return Err("branch name cannot be empty".into());
+                }
+                if self.repo_path.is_none() {
+                    return Err("branch creation requires a real repository".into());
+                }
+                self.branch_input.set_text(&name);
+                self.create_new_branch();
+            }
+            GitClientEffect::CheckoutBranch { name } => {
+                self.apply_branch_action(BranchAction::Checkout(name));
+            }
+            GitClientEffect::DeleteBranch { name } => {
+                self.apply_branch_action(BranchAction::Delete(name));
+            }
+            GitClientEffect::ApplyStash { index } => {
+                self.apply_branch_action(BranchAction::StashApply(index));
+            }
+            GitClientEffect::SaveStash { message } => self.save_stash(&message)?,
+            GitClientEffect::Fetch { remote } => {
+                return self.start_effect_remote(RemoteAction::Fetch, remote, cx);
+            }
+            GitClientEffect::Pull { remote } => {
+                return self.start_effect_remote(RemoteAction::Pull, remote, cx);
+            }
+            GitClientEffect::Push { remote } => {
+                return self.start_effect_remote(RemoteAction::Push, remote, cx);
+            }
+            GitClientEffect::DiffLayout
+            | GitClientEffect::SyntaxHighlight
+            | GitClientEffect::ShowWhitespace
+            | GitClientEffect::WrapLines => {}
+        }
+        match &self.last_error {
+            Some(error) if !view => Err(error.clone()),
+            _ => Ok(Effected::done()),
+        }
+    }
+}
+
+impl GitClientApp {
+    fn start_effect_remote(
+        &mut self,
+        action: RemoteAction,
+        remote: String,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let reply = cx.reply();
+        reply
+            .progress()
+            .report(ui::i18n!("git-remote-running"), None, None);
+        self.start_remote(action, Some(remote), Some(reply))?;
+        Ok(Effected::Pending)
+    }
+}
+
+impl GitClientApp {
+    fn worktree_change(&self, path: &str) -> Option<(ChangeArea, usize)> {
+        self.model
+            .unstaged
+            .iter()
+            .position(|change| change.path == path)
+            .map(|index| (ChangeArea::Unstaged, index))
+            .or_else(|| {
+                self.model
+                    .untracked
+                    .iter()
+                    .position(|change| change.path == path)
+                    .map(|index| (ChangeArea::Untracked, index))
+            })
+    }
+}
+
+impl GitClientApp {
+    fn bind_repository(&mut self, path: &std::path::Path) -> bool {
+        let Some((model, diffs)) = crate::repo::load(path) else {
+            return false;
+        };
+        // Anchor actions on the working directory so later opens are stable
+        // even if the CWD changes; fall back to the given path when bare.
+        let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
+        self.show_model(model, diffs);
+        self.repo_path = Some(anchor);
+        true
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        match scenario {
+            // The side-by-side diff layout.
+            Some("split") => {
+                if let Err(error) =
+                    self.change_preferences(|s| s.diff_layout = DiffLayout::SideBySide)
+                {
+                    self.last_error = Some(error);
+                }
+            }
+            Some("history") => self.switch_screen(Screen::History),
+            Some("branches") => self.switch_screen(Screen::Panels),
+            // A typed commit summary, so the commit box and its primary
+            // action render enabled.
+            Some("commit") => self
+                .commit_input
+                .set_text("Flush the blur pass before presenting"),
+            // A changed file in the worktree, whose "Discard file" the
+            // scenario's input then presses.
+            Some("discard") => {
+                if !self.model.unstaged.is_empty() {
+                    self.selected_change = Some((ChangeArea::Unstaged, 0));
+                } else if !self.model.untracked.is_empty() {
+                    self.selected_change = Some((ChangeArea::Untracked, 0));
+                }
+                self.diff_scroll = 0.0;
+            }
+            // The narrow window's list column, revealed over its scrim
+            // rather than the closed default a fresh narrow window opens to.
+            Some("narrow") => self.drawer.snap(true),
+            _ => {}
+        }
+    }
+}
+
+impl GitClientApp {
+    fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
+        self.model = model;
+        self.diffs = diffs;
+        self.graph_layout = graph::layout(&mut self.model.commits);
+        self.model.graph_width = self.graph_layout.lanes;
+        self.selected_change = first_change(&self.model);
+        if self.selected_commit >= self.model.commits.len() {
+            self.selected_commit = 0;
+        }
+        self.diff_scroll = 0.0;
+        self.awaiting_repo = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3618,426 +4042,5 @@ mod tests {
                 );
             }
         }
-    }
-}
-
-impl GitClientApp {
-    fn submit(&self, action: &crate::actions::GitClientAction) {
-        if let Some(dispatcher) = &self.dispatcher {
-            dispatcher.apply(action);
-        }
-    }
-}
-
-impl GitClientApp {
-    fn switch_diff_layout(&mut self) -> Result<(), String> {
-        self.diff_scroll = 0.0;
-        self.change_preferences(Settings::toggle_layout)
-    }
-}
-
-impl GitClientApp {
-    fn change_preferences(&mut self, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
-        change(&mut self.settings);
-        if let Some(preferences) = &self.preferences {
-            preferences
-                .set(self.settings)
-                .map_err(|error| format!("Couldn't save the diff preferences: {error}"))?;
-        }
-        Ok(())
-    }
-}
-
-impl GitClientApp {
-    pub(crate) fn follow_preferences(&mut self, preferences: ui::framework::Setting<Settings>) {
-        self.settings = preferences.get();
-        self.preferences = Some(preferences);
-    }
-}
-
-impl GitClientApp {
-    fn adopt_preferences(&mut self) {
-        if let Some(preferences) = &self.preferences {
-            self.settings = preferences.state().with(|stored| *stored);
-        }
-    }
-}
-
-impl GitClientApp {
-    pub(crate) fn preference_statuses(&self) -> Vec<ui::framework::EffectStatus> {
-        use ui::framework::EffectStatus;
-        let s = self.settings;
-        vec![
-            EffectStatus::labelled(
-                GitClientEffect::DIFF_LAYOUT,
-                match s.diff_layout {
-                    DiffLayout::Unified => "Diff layout: side-by-side",
-                    DiffLayout::SideBySide => "Diff layout: unified",
-                },
-            ),
-            EffectStatus::labelled(
-                GitClientEffect::SYNTAX_HIGHLIGHT,
-                if s.syntax_highlight {
-                    "Turn off syntax highlighting"
-                } else {
-                    "Turn on syntax highlighting"
-                },
-            ),
-            EffectStatus::labelled(
-                GitClientEffect::SHOW_WHITESPACE,
-                if s.show_whitespace {
-                    "Hide whitespace"
-                } else {
-                    "Show whitespace"
-                },
-            ),
-            EffectStatus::labelled(
-                GitClientEffect::WRAP_LINES,
-                if s.wrap_lines {
-                    "Stop wrapping long lines"
-                } else {
-                    "Wrap long lines"
-                },
-            ),
-        ]
-    }
-}
-
-impl GitClientApp {
-    pub(crate) fn attach_dispatcher(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
-        mode: RunMode,
-        sample: Option<&crate::resource::SampleRepository>,
-    ) {
-        self.dispatcher = Some(dispatcher);
-        self.mode = mode;
-        if let Some(sample) = sample {
-            self.show_model(sample.model.clone(), sample.diffs.clone());
-        }
-    }
-}
-
-impl GitClientApp {
-    pub(crate) fn present_state(&mut self, state: &crate::doc::GitClientState) {
-        match self.mode {
-            RunMode::Live => {
-                let first = !std::mem::replace(&mut self.presented, true);
-                if !first && self.opened == state.repository {
-                    return;
-                }
-                self.opened.clone_from(&state.repository);
-                match &state.repository {
-                    Some(path) => {
-                        if !self.bind_repository(std::path::Path::new(path)) {
-                            self.last_error = Some(format!("No git repository at {path}"));
-                            self.open_input.set_text(path);
-                        }
-                    }
-                    None if first => {
-                        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-                        if !self.bind_repository(&cwd) {
-                            self.open_input.set_text(&cwd.to_string_lossy());
-                        }
-                    }
-                    None => {}
-                }
-            }
-            RunMode::Past => self.show_model(state.repo.clone(), DiffMap::new()),
-            RunMode::Capture => {}
-        }
-    }
-}
-
-impl GitClientApp {
-    pub(crate) fn working_tree_rows(&self) -> Vec<LiveRow> {
-        let mut rows = Vec::new();
-        if !self.awaiting_repo {
-            rows.push(crate::actions::working_tree_rows(&self.model));
-        }
-        if let Some(job) = &self.remote_job {
-            rows.push(LiveRow::new(
-                "git_client.remote-job",
-                "git_client.job",
-                job.label.clone(),
-            ));
-        }
-        rows
-    }
-}
-
-impl GitClientApp {
-    pub(crate) fn working_tree_row(&self, id: &str) -> Option<LiveRow> {
-        (!self.awaiting_repo)
-            .then(|| crate::actions::working_tree_row(&self.model, id))
-            .flatten()
-    }
-}
-
-impl GitClientApp {
-    /// Resolve a navigation target against the current repository projection.
-    fn open_effect_view(&mut self, effect: GitClientEffect) -> Result<(), String> {
-        match effect {
-            GitClientEffect::ShowChanges => self.switch_screen(Screen::Changes),
-            GitClientEffect::ShowHistory => self.switch_screen(Screen::History),
-            GitClientEffect::ShowBranches => self.switch_screen(Screen::Panels),
-            GitClientEffect::OpenChange { area, path } => {
-                let area = match area.as_str() {
-                    "staged" => ChangeArea::Staged,
-                    "unstaged" => ChangeArea::Unstaged,
-                    "untracked" => ChangeArea::Untracked,
-                    _ => return Err("unknown change area".into()),
-                };
-                let list = match area {
-                    ChangeArea::Staged => &self.model.staged,
-                    ChangeArea::Unstaged => &self.model.unstaged,
-                    ChangeArea::Untracked => &self.model.untracked,
-                };
-                let index = list
-                    .iter()
-                    .position(|change| change.path == path)
-                    .ok_or_else(|| "changed file no longer exists".to_string())?;
-                self.switch_screen(Screen::Changes);
-                self.selected_change = Some((area, index));
-                self.diff_scroll = 0.0;
-            }
-            GitClientEffect::OpenCommit { id } => {
-                let index = self
-                    .model
-                    .commits
-                    .iter()
-                    .position(|commit| commit.id == id)
-                    .ok_or_else(|| "commit is outside the current history window".to_string())?;
-                self.switch_screen(Screen::History);
-                self.selected_commit = index;
-                self.detail_scroll = 0.0;
-            }
-            _ => return Ok(()),
-        }
-        Ok(())
-    }
-
-    /// Local diff preferences touch neither the repository nor the document.
-    fn apply_diff_preference(&mut self, effect: &GitClientEffect) -> Option<Result<(), String>> {
-        match effect {
-            GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
-            GitClientEffect::SyntaxHighlight => {
-                Some(self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight))
-            }
-            GitClientEffect::ShowWhitespace => {
-                Some(self.change_preferences(|s| s.show_whitespace = !s.show_whitespace))
-            }
-            GitClientEffect::WrapLines => {
-                Some(self.change_preferences(|s| s.wrap_lines = !s.wrap_lines))
-            }
-            _ => None,
-        }
-    }
-
-    pub(crate) fn answer_effect(
-        &mut self,
-        effect: GitClientEffect,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
-    ) -> EffectAnswer {
-        let preference = self.apply_diff_preference(&effect);
-        if let Some(kept) = preference {
-            return kept.map(|()| Effected::done());
-        }
-        let view = matches!(
-            effect,
-            GitClientEffect::ShowChanges
-                | GitClientEffect::ShowHistory
-                | GitClientEffect::ShowBranches
-                | GitClientEffect::OpenChange { .. }
-                | GitClientEffect::OpenCommit { .. }
-        );
-        if !view && self.repository_busy() {
-            return Err(ui::i18n!("git-remote-busy"));
-        }
-        match effect {
-            effect @ (GitClientEffect::ShowChanges
-            | GitClientEffect::ShowHistory
-            | GitClientEffect::ShowBranches
-            | GitClientEffect::OpenChange { .. }
-            | GitClientEffect::OpenCommit { .. }) => self.open_effect_view(effect)?,
-            GitClientEffect::StageAll => self.stage_all(),
-            GitClientEffect::UnstageAll => self.unstage_all(),
-            GitClientEffect::StageFile { path } => {
-                let (area, index) = self
-                    .worktree_change(&path)
-                    .ok_or_else(|| "file is no longer unstaged".to_string())?;
-                self.toggle_stage(area, index);
-            }
-            GitClientEffect::UnstageFile { path } => {
-                let index = self
-                    .model
-                    .staged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .ok_or_else(|| "file is no longer staged".to_string())?;
-                self.toggle_stage(ChangeArea::Staged, index);
-            }
-            GitClientEffect::DiscardFile { path } => {
-                let (area, index) = self
-                    .worktree_change(&path)
-                    .ok_or_else(|| "file has no worktree changes".to_string())?;
-                if self.repo_path.is_none() {
-                    return Err("discard is unavailable in the demonstration repository".into());
-                }
-                self.discard_file(area, index);
-            }
-            GitClientEffect::Commit { message } => {
-                if self.model.staged.is_empty() {
-                    return Err("there are no staged changes to commit".into());
-                }
-                if message.trim().is_empty() {
-                    return Err("commit message cannot be empty".into());
-                }
-                self.commit_input.set_text(&message);
-                self.do_commit();
-            }
-            GitClientEffect::CreateBranch { name } => {
-                if name.trim().is_empty() {
-                    return Err("branch name cannot be empty".into());
-                }
-                if self.repo_path.is_none() {
-                    return Err("branch creation requires a real repository".into());
-                }
-                self.branch_input.set_text(&name);
-                self.create_new_branch();
-            }
-            GitClientEffect::CheckoutBranch { name } => {
-                self.apply_branch_action(BranchAction::Checkout(name));
-            }
-            GitClientEffect::DeleteBranch { name } => {
-                self.apply_branch_action(BranchAction::Delete(name));
-            }
-            GitClientEffect::ApplyStash { index } => {
-                self.apply_branch_action(BranchAction::StashApply(index));
-            }
-            GitClientEffect::SaveStash { message } => {
-                let path = self
-                    .repo()
-                    .ok_or_else(|| "stashing requires a real repository".to_string())?;
-                crate::repo::stash_save(&path, &message).map_err(|error| error.to_string())?;
-                self.last_error = None;
-                self.reload();
-            }
-            GitClientEffect::Fetch { remote } => {
-                return self.start_effect_remote(RemoteAction::Fetch, remote, cx);
-            }
-            GitClientEffect::Pull { remote } => {
-                return self.start_effect_remote(RemoteAction::Pull, remote, cx);
-            }
-            GitClientEffect::Push { remote } => {
-                return self.start_effect_remote(RemoteAction::Push, remote, cx);
-            }
-            GitClientEffect::DiffLayout
-            | GitClientEffect::SyntaxHighlight
-            | GitClientEffect::ShowWhitespace
-            | GitClientEffect::WrapLines => {}
-        }
-        match &self.last_error {
-            Some(error) if !view => Err(error.clone()),
-            _ => Ok(Effected::done()),
-        }
-    }
-}
-
-impl GitClientApp {
-    fn start_effect_remote(
-        &mut self,
-        action: RemoteAction,
-        remote: String,
-        cx: &mut EffectCx<crate::resource::GitClient, Self>,
-    ) -> EffectAnswer {
-        let reply = cx.reply();
-        reply
-            .progress()
-            .report(ui::i18n!("git-remote-running"), None, None);
-        self.start_remote(action, Some(remote), Some(reply))?;
-        Ok(Effected::Pending)
-    }
-}
-
-impl GitClientApp {
-    fn worktree_change(&self, path: &str) -> Option<(ChangeArea, usize)> {
-        self.model
-            .unstaged
-            .iter()
-            .position(|change| change.path == path)
-            .map(|index| (ChangeArea::Unstaged, index))
-            .or_else(|| {
-                self.model
-                    .untracked
-                    .iter()
-                    .position(|change| change.path == path)
-                    .map(|index| (ChangeArea::Untracked, index))
-            })
-    }
-}
-
-impl GitClientApp {
-    fn bind_repository(&mut self, path: &std::path::Path) -> bool {
-        let Some((model, diffs)) = crate::repo::load(path) else {
-            return false;
-        };
-        // Anchor actions on the working directory so later opens are stable
-        // even if the CWD changes; fall back to the given path when bare.
-        let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
-        self.show_model(model, diffs);
-        self.repo_path = Some(anchor);
-        true
-    }
-}
-
-impl GitClientApp {
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        match scenario {
-            // The side-by-side diff layout.
-            Some("split") => {
-                if let Err(error) =
-                    self.change_preferences(|s| s.diff_layout = DiffLayout::SideBySide)
-                {
-                    self.last_error = Some(error);
-                }
-            }
-            Some("history") => self.switch_screen(Screen::History),
-            Some("branches") => self.switch_screen(Screen::Panels),
-            // A typed commit summary, so the commit box and its primary
-            // action render enabled.
-            Some("commit") => self
-                .commit_input
-                .set_text("Flush the blur pass before presenting"),
-            // A changed file in the worktree, whose "Discard file" the
-            // scenario's input then presses.
-            Some("discard") => {
-                if !self.model.unstaged.is_empty() {
-                    self.selected_change = Some((ChangeArea::Unstaged, 0));
-                } else if !self.model.untracked.is_empty() {
-                    self.selected_change = Some((ChangeArea::Untracked, 0));
-                }
-                self.diff_scroll = 0.0;
-            }
-            // The narrow window's list column, revealed over its scrim
-            // rather than the closed default a fresh narrow window opens to.
-            Some("narrow") => self.drawer.snap(true),
-            _ => {}
-        }
-    }
-}
-
-impl GitClientApp {
-    fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
-        self.model = model;
-        self.diffs = diffs;
-        self.graph_layout = graph::layout(&mut self.model.commits);
-        self.model.graph_width = self.graph_layout.lanes;
-        self.selected_change = first_change(&self.model);
-        if self.selected_commit >= self.model.commits.len() {
-            self.selected_commit = 0;
-        }
-        self.diff_scroll = 0.0;
-        self.awaiting_repo = false;
     }
 }

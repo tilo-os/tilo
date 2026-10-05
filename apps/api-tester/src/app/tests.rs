@@ -12,7 +12,6 @@ use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Invoke, Resource as _};
 
 /// A demo app whose workspace has been seeded into a fresh document.
-
 fn demo() -> (ApiTesterApp, AutoCommit) {
     let dispatcher = ui::framework::testing::dispatcher::<ApiTester>("so.tilo.api-tester");
     let mut doc = AutoCommit::new();
@@ -592,7 +591,6 @@ fn resource_provider_sends_for_real_and_resolves_exact_records() {
     clippy::too_many_lines,
     reason = "end-to-end scenario that reads top-to-bottom"
 )]
-
 fn resource_send_performs_a_real_http_round_trip() {
     use std::io::{Read, Write};
     use std::net::TcpListener;
@@ -773,7 +771,6 @@ fn resource_send_performs_a_real_http_round_trip() {
 }
 
 /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
-
 fn resource_send_reports_worker_completion_instead_of_queue_success() {
     // The real hosted HTTP scenario asserts admission, worker completion and exactly one terminal delivery.
     resource_send_performs_a_real_http_round_trip();

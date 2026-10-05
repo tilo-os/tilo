@@ -697,7 +697,7 @@ mod tests {
     #[test]
     fn the_speed_scale_is_monotonic_and_bounded() {
         let mut app = SpeedTestApp::new();
-        assert_eq!(app.dial_target(), 0.0);
+        assert!(app.dial_target().total_cmp(&0.0).is_eq());
         for phase in [Phase::Download, Phase::Upload] {
             app.phase = phase;
             let values: Vec<_> = [0.0, 10.0, 100.0, 500.0, 50_000.0]
@@ -725,7 +725,7 @@ mod tests {
         app.settle();
         app.with_widget(|surface: &mut SpeedTestApp| {
             assert!(matches!(surface.phase, Phase::Ping));
-            assert_eq!(surface.display_value, 13.0);
+            assert!(surface.display_value.total_cmp(&13.0).is_eq());
             assert_eq!(surface.shared.borrow().readings.ping, None);
         })
         .expect("the surface remains mounted");
@@ -737,7 +737,7 @@ mod tests {
         app.settle();
         app.with_widget(|surface: &mut SpeedTestApp| {
             assert!(matches!(surface.phase, Phase::Download));
-            assert_eq!(surface.display_value, 300.0);
+            assert!(surface.display_value.total_cmp(&300.0).is_eq());
             assert_eq!(surface.transferred, 10_000_000);
             assert_eq!(surface.shared.borrow().stage(), 1);
         })
@@ -747,7 +747,7 @@ mod tests {
         assert!(signal.stop.load(Ordering::Acquire));
         app.with_widget(|surface: &mut SpeedTestApp| {
             assert!(matches!(surface.phase, Phase::Idle));
-            assert_eq!(surface.display_value, 0.0);
+            assert!(surface.display_value.total_cmp(&0.0).is_eq());
             assert_eq!(surface.transferred, 0);
         })
         .expect("the stopped surface remains mounted");
@@ -856,9 +856,8 @@ mod tests {
             let facts =
                 bounds(harness.root_widget(), "PropertyList").expect("the actual metadata rows");
             assert!(action.width() > 0.0 && dial.width() > 0.0 && facts.width() > 0.0);
-            assert_eq!(
-                action.intersect(facts).area(),
-                0.0,
+            assert!(
+                action.intersect(facts).area().total_cmp(&0.0).is_eq(),
                 "metadata and primary action overlap at {viewport:?}"
             );
             assert!(

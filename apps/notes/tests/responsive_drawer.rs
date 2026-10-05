@@ -103,6 +103,10 @@ fn narrow_windows_collapse_the_sidebar_into_a_bounded_drawer() {
         );
     }
 
+    check_scaled_drawer_stays_inside_a_narrow_window();
+}
+
+fn check_scaled_drawer_stays_inside_a_narrow_window() {
     // At 2× text the scaled 264px drawer would be 528px wide — wider than a
     // 480px phone window. The drawer must clamp to the window and keep a scrim
     // band of the page visible, so its own trailing "+" button stays reachable.

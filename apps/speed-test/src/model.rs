@@ -262,7 +262,7 @@ pub(crate) fn age_label(now: i64, at: i64) -> String {
 mod tests {
     use super::*;
 
-    fn project<'a>(phase: Phase, history: &'a [crate::resource::Measurement]) -> Projection<'a> {
+    fn project(phase: Phase, history: &[crate::resource::Measurement]) -> Projection<'_> {
         Projection {
             phase,
             result: None,

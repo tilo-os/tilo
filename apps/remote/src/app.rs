@@ -1992,7 +1992,6 @@ impl Widget for RemoteApp {
         clippy::too_many_lines,
         reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
     )]
-
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The saved connections arrive through the resource
         // ([`Self::adopt_resource_state`]); here the window catches up on
@@ -2237,7 +2236,6 @@ impl RemoteApp {
         clippy::too_many_lines,
         reason = "one arm per published Remote operation keeps the effect boundary auditable"
     )]
-
     /// Answer `effect`. Opening a session and sending text answer once the
     /// transport says how it went ([`Self::settle_pending_effect`]).
     pub(crate) fn answer_effect(

@@ -361,7 +361,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
     // --- phase: progress finishes when every feed reported back ---
     {
         let mut a = app();
-        let mut doc = synced(&mut a);
+        let doc = synced(&mut a);
         let (worker, tx) = FetchWorker::for_test();
         a.core_mut().worker = Some(worker);
         a.core_mut().refresh_all();
@@ -392,7 +392,7 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
             "{}",
             a.core().refresh.status()
         );
-        a.sync(&mut doc, &automerge::ROOT);
+        a.sync(&doc, &automerge::ROOT);
         assert!(a.core().next_wake_deadline().is_none());
     }
 
@@ -531,138 +531,13 @@ fn accessibility_mirrors_and_operates_the_reader() {
 /// the footer submits a real subscription.
 #[test]
 fn the_add_dialog_field_is_native_and_submits_a_subscription() {
-    // --- phase: native accessibility sets the field ---
-    {
-        let mut reader = FeedsApp::new();
-        reader.core_mut().open_add_subscription();
-        reader.take_pending_modal();
-        let mut app = ui::App::new(ui::State::new(), Box::new(reader));
-        app.init_layout();
-        let field = app
-            .build_a11y_tree_update(1.0)
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("Feed URL"))
-            .map(|(id, _)| *id)
-            .expect("the field is exported");
-        app.dispatch_a11y_action(
-            field,
-            &A11yAction::SetValue("https://example.invalid/rss.xml".into()),
-        );
-        let after = app.build_a11y_tree_update(1.0);
-        let field = after
-            .nodes
-            .iter()
-            .find(|(_, node)| node.label() == Some("Feed URL"))
-            .expect("still exported");
-        assert_eq!(field.1.value(), Some("https://example.invalid/rss.xml"));
-    }
+    check_add_dialog_native_accessibility_sets_the_field();
 
-    // --- phase: typing goes to the field; Escape cancels ---
-    {
-        let mut mounted = framed(FeedsApp::new());
-        mounted.core_mut().open_add_subscription();
-        settle(&mut mounted);
-        assert!(mounted.modal.is_some());
-        let harness = Framed::harness_mut(&mut mounted);
-        harness.type_text("hi");
-        harness.relayout();
-        assert_eq!(
-            mounted.modal.as_ref().unwrap().dialog.content().value(),
-            "hi"
-        );
-        let harness = Framed::harness_mut(&mut mounted);
-        harness.key("Escape");
-        harness.relayout();
-        assert!(mounted.modal.is_none(), "Escape closes the dialog");
-        assert!(
-            mounted.core().store.feeds.is_empty(),
-            "and subscribes to nothing"
-        );
-    }
+    check_add_dialog_typing_goes_to_the_field_escape_cancels();
 
-    // --- phase: Enter subscribes ---
-    {
-        let mut a = FeedsApp::new();
-        let mut doc = synced(&mut a);
-        let (worker, _tx) = FetchWorker::for_test();
-        a.core_mut().worker = Some(worker);
-        a.core_mut().open_add_subscription();
-        a.take_pending_modal();
-        assert!(a.take_structure_dirty(), "opening rebuilds the tree");
-        let url = "https://example.invalid/feeds.xml";
-        a.modal
-            .as_mut()
-            .unwrap()
-            .dialog
-            .content_mut()
-            .set_value(url);
-        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
-        assert!(a.modal.is_none());
-        assert!(FeedsDoc::load(&doc).feeds.iter().any(|f| f.url == url));
-        assert_eq!(
-            a.core().toast_visible(),
-            Some(format!("Subscribing to {url}").as_str())
-        );
-    }
+    check_add_dialog_enter_subscribes();
 
-    // --- phase: an empty required field keeps the dialog open ---
-    {
-        let mut a = FeedsApp::new();
-        let mut doc = synced(&mut a);
-        a.core_mut().open_add_folder();
-        a.take_pending_modal();
-        a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
-        assert!(a.modal.is_some(), "nothing to create yet");
-        a.modal
-            .as_mut()
-            .unwrap()
-            .dialog
-            .content_mut()
-            .set_value("Later");
-        a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
-        assert!(a.modal.is_none());
-        let folder = a
-            .core()
-            .store
-            .folders
-            .iter()
-            .find(|f| f.name == "Later")
-            .map(|f| f.id)
-            .expect("created folder");
-        assert_eq!(a.active_filter(), Filter::Folder(folder));
-        // The managed record owns Undo; a detached view has no writer history.
-        let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
-        let versions_before = host.versions().len();
-        host.with_widget(|app: &mut FeedsApp| {
-            app.core_mut().open_add_folder();
-            app.take_pending_modal();
-        })
-        .unwrap();
-        let field = host.harness().a11y_node_named("Folder name").unwrap();
-        host.harness()
-            .perform_a11y_action(field, &A11yAction::SetValue("Later".into()))
-            .unwrap();
-        let create = host.harness().a11y_node_named("Create folder").unwrap();
-        host.harness()
-            .perform_a11y_action(create, &A11yAction::Activate)
-            .unwrap();
-        host.settle();
-        assert!(
-            host.state()
-                .store
-                .folders
-                .iter()
-                .any(|folder| folder.name == "Later")
-        );
-        assert_eq!(
-            host.versions().len(),
-            versions_before + 1,
-            "the dialog submits one canonical action"
-        );
-        assert!(host.undo(), "the record owns the undo step");
-        assert!(host.state().store.folders.is_empty());
-    }
+    check_add_dialog_an_empty_required_field_keeps_the_dialog_open();
 }
 
 /// Tags are edited through the canonical action and may be cleared.
@@ -795,14 +670,14 @@ fn opml_portal_import_and_export_report_honestly() {
     // --- phase: export writes the snapshot to the chosen path ---
     {
         let mut a = app();
-        let mut doc = synced(&mut a);
+        let doc = synced(&mut a);
         let directory = std::env::temp_dir().join(format!("feeds-export-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("Subscriptions Grün 🌍.opml");
         let xml = opml::export(&a.core().store);
         export_with(&a, PortalOutcome::Opened(path.clone()));
         assert!(a.next_wake_deadline().is_some());
-        a.sync(&mut doc, &automerge::ROOT);
+        a.sync(&doc, &automerge::ROOT);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
         assert!(a.core().export_rx.is_none());
         assert!(
@@ -819,9 +694,9 @@ fn opml_portal_import_and_export_report_honestly() {
         PortalOutcome::Failed("test denial".into()),
     ] {
         let mut a = app();
-        let mut doc = synced(&mut a);
+        let doc = synced(&mut a);
         export_with(&a, outcome.clone());
-        a.sync(&mut doc, &automerge::ROOT);
+        a.sync(&doc, &automerge::ROOT);
         let message = a.core().toast_visible().map(str::to_owned).unwrap();
         match outcome {
             PortalOutcome::Cancelled => assert_eq!(message, "Export cancelled"),
@@ -853,7 +728,7 @@ fn opml_portal_import_and_export_report_honestly() {
         let before = a.core().store.feeds.len();
         import_with(&a, PortalOutcome::Opened(path));
         a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        a.sync(&mut doc, &automerge::ROOT);
+        a.sync(&doc, &automerge::ROOT);
         assert!(a.core().import_rx.is_none());
         assert_eq!(a.core().store.feeds.len(), before + 3);
         std::fs::remove_dir_all(&dir).ok();
@@ -868,7 +743,7 @@ fn opml_portal_import_and_export_report_honestly() {
             "an open chooser wakes the loop"
         );
         a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
-        a.sync(&mut doc, &automerge::ROOT);
+        a.sync(&doc, &automerge::ROOT);
         assert!(a.core().import_rx.is_none());
         assert_eq!(a.core().store.feeds.len(), before);
         assert!(a.core().next_wake_deadline().is_none());
@@ -1126,4 +1001,133 @@ fn article_links_reject_local_files() {
         reader.core().toast_visible(),
         Some(ui::i18n!("feeds-open-link-invalid").as_str())
     );
+}
+
+fn check_add_dialog_native_accessibility_sets_the_field() {
+    let mut reader = FeedsApp::new();
+    reader.core_mut().open_add_subscription();
+    reader.take_pending_modal();
+    let mut app = ui::App::new(ui::State::new(), Box::new(reader));
+    app.init_layout();
+    let field = app
+        .build_a11y_tree_update(1.0)
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Feed URL"))
+        .map(|(id, _)| *id)
+        .expect("the field is exported");
+    app.dispatch_a11y_action(
+        field,
+        &A11yAction::SetValue("https://example.invalid/rss.xml".into()),
+    );
+    let after = app.build_a11y_tree_update(1.0);
+    let field = after
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Feed URL"))
+        .expect("still exported");
+    assert_eq!(field.1.value(), Some("https://example.invalid/rss.xml"));
+}
+
+fn check_add_dialog_typing_goes_to_the_field_escape_cancels() {
+    let mut mounted = framed(FeedsApp::new());
+    mounted.core_mut().open_add_subscription();
+    settle(&mut mounted);
+    assert!(mounted.modal.is_some());
+    let harness = Framed::harness_mut(&mut mounted);
+    harness.type_text("hi");
+    harness.relayout();
+    assert_eq!(
+        mounted.modal.as_ref().unwrap().dialog.content().value(),
+        "hi"
+    );
+    let harness = Framed::harness_mut(&mut mounted);
+    harness.key("Escape");
+    harness.relayout();
+    assert!(mounted.modal.is_none(), "Escape closes the dialog");
+    assert!(
+        mounted.core().store.feeds.is_empty(),
+        "and subscribes to nothing"
+    );
+}
+
+fn check_add_dialog_enter_subscribes() {
+    let mut a = FeedsApp::new();
+    let mut doc = synced(&mut a);
+    let (worker, _tx) = FetchWorker::for_test();
+    a.core_mut().worker = Some(worker);
+    a.core_mut().open_add_subscription();
+    a.take_pending_modal();
+    assert!(a.take_structure_dirty(), "opening rebuilds the tree");
+    let url = "https://example.invalid/feeds.xml";
+    a.modal
+        .as_mut()
+        .unwrap()
+        .dialog
+        .content_mut()
+        .set_value(url);
+    assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
+    assert!(a.modal.is_none());
+    assert!(FeedsDoc::load(&doc).feeds.iter().any(|f| f.url == url));
+    assert_eq!(
+        a.core().toast_visible(),
+        Some(format!("Subscribing to {url}").as_str())
+    );
+}
+
+fn check_add_dialog_an_empty_required_field_keeps_the_dialog_open() {
+    let mut a = FeedsApp::new();
+    let mut doc = synced(&mut a);
+    a.core_mut().open_add_folder();
+    a.take_pending_modal();
+    a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
+    assert!(a.modal.is_some(), "nothing to create yet");
+    a.modal
+        .as_mut()
+        .unwrap()
+        .dialog
+        .content_mut()
+        .set_value("Later");
+    a.submit_modal(&mut ui::widget::Edits::lend(&mut doc));
+    assert!(a.modal.is_none());
+    let folder = a
+        .core()
+        .store
+        .folders
+        .iter()
+        .find(|f| f.name == "Later")
+        .map(|f| f.id)
+        .expect("created folder");
+    assert_eq!(a.active_filter(), Filter::Folder(folder));
+    // The managed record owns Undo; a detached view has no writer history.
+    let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+    let versions_before = host.versions().len();
+    host.with_widget(|app: &mut FeedsApp| {
+        app.core_mut().open_add_folder();
+        app.take_pending_modal();
+    })
+    .unwrap();
+    let field = host.harness().a11y_node_named("Folder name").unwrap();
+    host.harness()
+        .perform_a11y_action(field, &A11yAction::SetValue("Later".into()))
+        .unwrap();
+    let create = host.harness().a11y_node_named("Create folder").unwrap();
+    host.harness()
+        .perform_a11y_action(create, &A11yAction::Activate)
+        .unwrap();
+    host.settle();
+    assert!(
+        host.state()
+            .store
+            .folders
+            .iter()
+            .any(|folder| folder.name == "Later")
+    );
+    assert_eq!(
+        host.versions().len(),
+        versions_before + 1,
+        "the dialog submits one canonical action"
+    );
+    assert!(host.undo(), "the record owns the undo step");
+    assert!(host.state().store.folders.is_empty());
 }

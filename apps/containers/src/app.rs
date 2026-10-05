@@ -1898,6 +1898,166 @@ impl ContainersApp {
     }
 }
 
+const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
+
+/// `effect`, as a row offers it: an engine effect only while the engine
+/// answers.
+fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> ActionSpec {
+    let spec = effect.bound();
+    if engine_live || effect.engine_operation().is_none() {
+        spec
+    } else {
+        spec.unavailable("engine_offline", offline)
+    }
+}
+
+const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
+
+pub(crate) fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
+    let id = || container.id.clone();
+    let mut row = LiveRow::new(
+        format!("container:{}", container.id),
+        "containers.container",
+        container.name.clone(),
+    )
+    .operation({
+        let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
+        open.label = format!("Open {}", container.name);
+        open
+    });
+    let effects = match container.status {
+        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => vec![
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::Restart { container: id() },
+            ContainersEffect::Pause { container: id() },
+            ContainersEffect::Shell { container: id() },
+        ],
+        crate::model::ContainerStatus::Paused => vec![
+            ContainersEffect::Unpause { container: id() },
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+            ContainersEffect::Shell { container: id() },
+        ],
+        _ => vec![
+            ContainersEffect::Start { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+        ],
+    };
+    for effect in &effects {
+        row = row.operation(offered(effect, engine_live, ENGINE_OFFLINE));
+    }
+    row.row(logs_row(container))
+}
+
+fn logs_row(container: &crate::model::Container) -> LiveRow {
+    LiveRow::new(
+        format!("container:{}:logs", container.id),
+        "containers.logs",
+        format!("{} logs", container.name),
+    )
+    .effect(&ContainersEffect::OpenLogs {
+        container: container.id.clone(),
+    })
+}
+
+fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
+    let reference = image.reference();
+    LiveRow::new(
+        format!("image:{reference}"),
+        "containers.image",
+        reference.clone(),
+    )
+    .effect(&ContainersEffect::ShowImage {
+        image: reference.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveImage { image: reference },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
+}
+
+fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
+    LiveRow::new(
+        format!("volume:{}", volume.name),
+        "containers.volume",
+        volume.name.clone(),
+    )
+    .effect(&ContainersEffect::ShowVolume {
+        volume: volume.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveVolume {
+            volume: volume.name.clone(),
+        },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
+}
+
+fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> LiveRow {
+    LiveRow::new(
+        format!("distrobox:{}", distrobox.name),
+        "containers.distrobox",
+        distrobox.name.clone(),
+    )
+    .effect(&ContainersEffect::ShowDistrobox {
+        distrobox: distrobox.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::EnterDistrobox {
+            distrobox: distrobox.name.clone(),
+        },
+        engine_live,
+        "Distrobox actions are unavailable in demo mode",
+    ))
+}
+
+impl ContainersApp {
+    /// Ask the engine to `verb` the `kind` of thing named `target`.
+    pub(crate) fn run_engine_operation(
+        &mut self,
+        kind: &str,
+        verb: &str,
+        target: &str,
+    ) -> Result<(), String> {
+        if !self.engine.live {
+            return Err("container engine actions are unavailable while Podman is offline".into());
+        }
+        #[cfg(test)]
+        if let Some(result) = self.controlled_immediate(
+            format!("{kind}.{verb}"),
+            target.to_string(),
+            vec![verb.to_string(), target.to_string()],
+        ) {
+            result?;
+            self.spawn_refresh();
+            self.show_toast(format!("{verb} accepted for {target}"), false);
+            return Ok(());
+        }
+        match (kind, verb) {
+            ("containers.container", "start") => podman::run_action(Action::Start, target)?,
+            ("containers.container", "stop") => podman::run_action(Action::Stop, target)?,
+            ("containers.container", "restart") => podman::run_action(Action::Restart, target)?,
+            ("containers.container", "pause") => podman::run_action(Action::Pause, target)?,
+            ("containers.container", "unpause") => podman::run_action(Action::Unpause, target)?,
+            ("containers.container", "remove") => podman::run_action(Action::Remove, target)?,
+            ("containers.container", "shell") => {
+                crate::terminal::open(crate::terminal::exec_attach_intent(target))?;
+            }
+            ("containers.image", "remove") => podman::remove_image(target, true)?,
+            ("containers.volume", "remove") => podman::remove_volume(target, false)?,
+            ("containers.distrobox", "enter") => {
+                crate::terminal::open(crate::terminal::distrobox_enter_intent(target))?;
+            }
+            _ => return Err(format!("`{verb}` is not a container engine operation")),
+        }
+        self.spawn_refresh();
+        self.show_toast(format!("{verb} accepted for {target}"), false);
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2224,8 +2384,8 @@ mod tests {
         app.last_refresh = Instant::now()
             .checked_sub(crate::podman::REFRESH_INTERVAL + std::time::Duration::from_millis(1))
             .expect("refresh interval fits below Instant::now");
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
         assert!(
             requests.try_recv().is_err(),
             "controlled fixtures own refresh; wall-clock must not enqueue Refresh"
@@ -2327,9 +2487,9 @@ mod tests {
     fn pending_control_intent_keeps_exact_target_until_host_take() {
         let (mut app, requests, _results) = ContainersApp::controlled_runtime_root();
         app.apply_action(Action::Restart, "retained-target");
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        app.sync(&doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let intent =
             ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
         assert_eq!(intent.address.resource, "container:retained-target");
@@ -2356,165 +2516,5 @@ mod tests {
             requests.try_recv().is_err(),
             "a hydrated container is not asked again"
         );
-    }
-}
-
-const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
-
-/// `effect`, as a row offers it: an engine effect only while the engine
-/// answers.
-fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> ActionSpec {
-    let spec = effect.bound();
-    if engine_live || effect.engine_operation().is_none() {
-        spec
-    } else {
-        spec.unavailable("engine_offline", offline)
-    }
-}
-
-const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
-
-pub(crate) fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
-    let id = || container.id.clone();
-    let mut row = LiveRow::new(
-        format!("container:{}", container.id),
-        "containers.container",
-        container.name.clone(),
-    )
-    .operation({
-        let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
-        open.label = format!("Open {}", container.name);
-        open
-    });
-    let effects = match container.status {
-        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => vec![
-            ContainersEffect::Stop { container: id() },
-            ContainersEffect::Restart { container: id() },
-            ContainersEffect::Pause { container: id() },
-            ContainersEffect::Shell { container: id() },
-        ],
-        crate::model::ContainerStatus::Paused => vec![
-            ContainersEffect::Unpause { container: id() },
-            ContainersEffect::Stop { container: id() },
-            ContainersEffect::RemoveContainer { container: id() },
-            ContainersEffect::Shell { container: id() },
-        ],
-        _ => vec![
-            ContainersEffect::Start { container: id() },
-            ContainersEffect::RemoveContainer { container: id() },
-        ],
-    };
-    for effect in &effects {
-        row = row.operation(offered(effect, engine_live, ENGINE_OFFLINE));
-    }
-    row.row(logs_row(container))
-}
-
-fn logs_row(container: &crate::model::Container) -> LiveRow {
-    LiveRow::new(
-        format!("container:{}:logs", container.id),
-        "containers.logs",
-        format!("{} logs", container.name),
-    )
-    .effect(&ContainersEffect::OpenLogs {
-        container: container.id.clone(),
-    })
-}
-
-fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
-    let reference = image.reference();
-    LiveRow::new(
-        format!("image:{reference}"),
-        "containers.image",
-        reference.clone(),
-    )
-    .effect(&ContainersEffect::ShowImage {
-        image: reference.clone(),
-    })
-    .operation(offered(
-        &ContainersEffect::RemoveImage { image: reference },
-        engine_live,
-        ENGINE_OFFLINE,
-    ))
-}
-
-fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
-    LiveRow::new(
-        format!("volume:{}", volume.name),
-        "containers.volume",
-        volume.name.clone(),
-    )
-    .effect(&ContainersEffect::ShowVolume {
-        volume: volume.name.clone(),
-    })
-    .operation(offered(
-        &ContainersEffect::RemoveVolume {
-            volume: volume.name.clone(),
-        },
-        engine_live,
-        ENGINE_OFFLINE,
-    ))
-}
-
-fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> LiveRow {
-    LiveRow::new(
-        format!("distrobox:{}", distrobox.name),
-        "containers.distrobox",
-        distrobox.name.clone(),
-    )
-    .effect(&ContainersEffect::ShowDistrobox {
-        distrobox: distrobox.name.clone(),
-    })
-    .operation(offered(
-        &ContainersEffect::EnterDistrobox {
-            distrobox: distrobox.name.clone(),
-        },
-        engine_live,
-        "Distrobox actions are unavailable in demo mode",
-    ))
-}
-
-impl ContainersApp {
-    /// Ask the engine to `verb` the `kind` of thing named `target`.
-    pub(crate) fn run_engine_operation(
-        &mut self,
-        kind: &str,
-        verb: &str,
-        target: &str,
-    ) -> Result<(), String> {
-        if !self.engine.live {
-            return Err("container engine actions are unavailable while Podman is offline".into());
-        }
-        #[cfg(test)]
-        if let Some(result) = self.controlled_immediate(
-            format!("{kind}.{verb}"),
-            target.to_string(),
-            vec![verb.to_string(), target.to_string()],
-        ) {
-            result?;
-            self.spawn_refresh();
-            self.show_toast(format!("{verb} accepted for {target}"), false);
-            return Ok(());
-        }
-        match (kind, verb) {
-            ("containers.container", "start") => podman::run_action(Action::Start, target)?,
-            ("containers.container", "stop") => podman::run_action(Action::Stop, target)?,
-            ("containers.container", "restart") => podman::run_action(Action::Restart, target)?,
-            ("containers.container", "pause") => podman::run_action(Action::Pause, target)?,
-            ("containers.container", "unpause") => podman::run_action(Action::Unpause, target)?,
-            ("containers.container", "remove") => podman::run_action(Action::Remove, target)?,
-            ("containers.container", "shell") => {
-                crate::terminal::open(crate::terminal::exec_attach_intent(target))?;
-            }
-            ("containers.image", "remove") => podman::remove_image(target, true)?,
-            ("containers.volume", "remove") => podman::remove_volume(target, false)?,
-            ("containers.distrobox", "enter") => {
-                crate::terminal::open(crate::terminal::distrobox_enter_intent(target))?;
-            }
-            _ => return Err(format!("`{verb}` is not a container engine operation")),
-        }
-        self.spawn_refresh();
-        self.show_toast(format!("{verb} accepted for {target}"), false);
-        Ok(())
     }
 }

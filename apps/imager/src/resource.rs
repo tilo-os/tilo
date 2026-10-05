@@ -417,7 +417,7 @@ mod tests {
         assert!(app.redo(), "the grouped field edit can be redone");
         assert_eq!(app.state().profile.hostname, "lab01");
 
-        let previous_name = app.state().profile.user.full_name.clone();
+        let previous_name = app.state().profile.user.full_name;
         app.invoke(
             ui::tilo_resource::Invoke::apply(&ImagerAction::SetFullName {
                 value: "Second field".into(),

@@ -989,6 +989,14 @@ struct StagedOverlays {
     toolbar_overflow: bool,
 }
 
+/// The revision and preview state represented by the materialized body views.
+#[derive(Default)]
+struct MaterializedBody {
+    heads: Vec<ChangeHash>,
+    pending_ops: usize,
+    preview: bool,
+}
+
 pub struct WordProcessorWidget {
     inner: WordProcessor,
     rect: Rect,
@@ -1023,15 +1031,10 @@ pub struct WordProcessorWidget {
     body_order: std::rc::Rc<tilo_document::BodyOrder>,
     /// Start offset into `body_order` represented by `blocks`.
     body_window_start: usize,
-    /// Heads for which the body order and non-body snapshot data were loaded.
-    /// Avoids re-materializing on every paint of an unchanged document.
-    materialized_heads: Vec<ChangeHash>,
-    /// Ruler previews can change cached attributes without changing CRDT heads.
-    block_views_have_preview: bool,
+    /// Committed/pending revision and ruler previews represented by the body.
+    materialized: MaterializedBody,
     #[cfg(test)]
     reference_text_rendering: bool,
-    /// A pending transaction has no committed head and may later be rolled back.
-    materialized_pending_ops: usize,
     /// Page-header block sequence (drawn in every page's top-margin band). A
     /// `page-number` field marker is substituted with the page number per page.
     header: Vec<BlockView>,
@@ -1371,11 +1374,9 @@ impl WordProcessorWidget {
             blocks: Vec::new(),
             body_order: std::rc::Rc::default(),
             body_window_start: 0,
-            materialized_heads: Vec::new(),
-            block_views_have_preview: false,
+            materialized: MaterializedBody::default(),
             #[cfg(test)]
             reference_text_rendering: false,
-            materialized_pending_ops: 0,
             header: Vec::new(),
             footer: Vec::new(),
             laid: Vec::new(),
@@ -3663,11 +3664,11 @@ impl WordProcessorWidget {
         let (start, end) = self.body_window_bounds();
         let window_changed =
             self.body_window_start != start || self.blocks.len() != end.saturating_sub(start);
-        if !moved && !window_changed && !self.block_views_have_preview {
+        if !moved && !window_changed && !self.materialized.preview {
             return;
         }
         self.demand_live(state, ui::tilo_resource::Demand::range(start..end));
-        let preview = std::mem::take(&mut self.block_views_have_preview);
+        let preview = std::mem::take(&mut self.materialized.preview);
         let copied = &mut self.copied;
         let blocks = &mut self.blocks;
         let mut parts = PartsUpdate::default();
@@ -3733,8 +3734,8 @@ impl WordProcessorWidget {
         if let Some((comments, changes)) = parts.review {
             self.review.replace(comments, changes);
         }
-        self.materialized_heads = state.base_heads();
-        self.materialized_pending_ops = state.pending_ops();
+        self.materialized.heads = state.base_heads();
+        self.materialized.pending_ops = state.pending_ops();
         self.body_window_start = start;
         // The spell cache deliberately follows the materialized render window:
         // no offscreen import can retain shaped/checker text indefinitely.
@@ -4555,7 +4556,7 @@ impl WordProcessorWidget {
     fn set_caret_block_indent_view(&mut self, v: f64) {
         let id = self.inner.caret.block.clone();
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
-            self.block_views_have_preview = true;
+            self.materialized.preview = true;
             b.attrs
                 .insert("indent".to_string(), AttrVal::Float(v.max(0.0)));
         }
@@ -4565,7 +4566,7 @@ impl WordProcessorWidget {
     fn set_caret_block_first_line_view(&mut self, v: f64) {
         let id = self.inner.caret.block.clone();
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
-            self.block_views_have_preview = true;
+            self.materialized.preview = true;
             b.attrs
                 .insert("first_line_indent".to_string(), AttrVal::Float(v));
         }
@@ -4584,7 +4585,7 @@ impl WordProcessorWidget {
             .collect::<Vec<_>>()
             .join(",");
         if let Some(b) = self.blocks.iter_mut().find(|b| b.id == id) {
-            self.block_views_have_preview = true;
+            self.materialized.preview = true;
             b.attrs
                 .insert("tab_stops".to_string(), AttrVal::Str(encoded));
         }
@@ -9214,8 +9215,8 @@ impl WordProcessorWidget {
         if !matches!(logical_key, Key::Named(NamedKey::Backspace)) {
             self.last_autocorrection = None;
         }
-        let cached_revision_current = self.materialized_heads == state.base_heads()
-            && self.materialized_pending_ops == state.pending_ops();
+        let cached_revision_current = self.materialized.heads == state.base_heads()
+            && self.materialized.pending_ops == state.pending_ops();
         let text_block = (cached_revision_current
             && !self.inner.has_selection()
             && matches!(self.inner.region(), Region::Body)

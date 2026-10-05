@@ -201,9 +201,7 @@ fn live_app() -> ui::framework::testing::TestApp<tube::TubeShell> {
         clippy::cast_sign_loss,
         reason = "a fixed viewport"
     )]
-    app.harness()
-        .resize((VIEWPORT.0 as u32, VIEWPORT.1 as u32))
-        .unwrap();
+    app.harness().resize(VIEWPORT).unwrap();
     app.harness().relayout();
     app
 }
@@ -815,7 +813,6 @@ fn share_copies_a_link_through_a_real_click() {
     clippy::too_many_lines,
     reason = "merged scenario: each former test is a labelled case block with its own fixture"
 )]
-
 fn home_grid_fills_rows_renders_avatars_and_stays_laid_out() {
     // Case `home_grid_fills_the_row_with_no_right_gutter_across_widths`:
     // The responsive grid fills each row edge-to-edge — no blank gutter on the
@@ -1257,6 +1254,24 @@ fn shared_settings_toggle_exposes_state_and_applies_the_preference() {
     );
 }
 
+fn draw_cards(
+    widget: &mut dyn Widget,
+    scene: &mut vello::Scene,
+    text: &mut ui::text_render::TextRenderer,
+    theme: &Theme,
+    presence: &ui::presence::PresenceCtx,
+) -> usize {
+    if widget.name() == "MediaCard" {
+        widget.draw(scene, vello::kurbo::Affine::IDENTITY, text, theme, presence);
+        return 1;
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .map(|child| draw_cards(child, scene, text, theme, presence))
+        .sum()
+}
+
 /// Missing fetched media still paints the actual shared card and banner
 /// placeholders, without submitting any decoded IMAGE draw.
 #[test]
@@ -1267,23 +1282,6 @@ fn unfetched_media_paints_shared_placeholders() {
         let mut scene = vello::Scene::new();
         let mut text = ui::text_render::TextRenderer::new();
         let presence = ui::presence::PresenceCtx::empty();
-        fn draw_cards(
-            widget: &mut dyn Widget,
-            scene: &mut vello::Scene,
-            text: &mut ui::text_render::TextRenderer,
-            theme: &Theme,
-            presence: &ui::presence::PresenceCtx,
-        ) -> usize {
-            if widget.name() == "MediaCard" {
-                widget.draw(scene, vello::kurbo::Affine::IDENTITY, text, theme, presence);
-                return 1;
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .map(|child| draw_cards(child, scene, text, theme, presence))
-                .sum()
-        }
         let observed = draw_cards(&mut *framed, &mut scene, &mut text, &theme, &presence);
         assert!(
             observed > 0,
