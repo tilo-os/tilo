@@ -2001,6 +2001,67 @@ impl EditorView {
         }
     }
 
+    /// The pointer over the open completion popup: a row lifts under it, a
+    /// click accepts that row, the wheel scrolls the list. A press anywhere
+    /// else dismisses the popup and goes on to the editor. Returns `true`
+    /// when the event was the popup's.
+    fn handle_completion_pointer(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) -> bool {
+        if !self.completion_active() {
+            return false;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                if self.completion_list.hover_at(point) {
+                    self.dirty = true;
+                }
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(index) = self.completion_list.row_at(self.last_cursor) else {
+                    self.hide_completions();
+                    return false;
+                };
+                self.completion_index = index;
+                self.accept_completion(state);
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            WindowEvent::MouseWheel { delta, .. }
+                if self
+                    .completion_list
+                    .rect()
+                    .is_some_and(|r| r.contains(self.last_cursor)) =>
+            {
+                let rows = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => -f64::from(*y),
+                    MouseScrollDelta::PixelDelta(p) => -p.y / self.line_h,
+                };
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a wheel step is a handful of rows"
+                )]
+                let rows = rows.round() as i32;
+                self.completion_list.scroll_by(rows);
+                self.dirty = true;
+                *handled = true;
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// F12 (go to definition) and F1 (hover — instant for an on-caret
     /// diagnostic, plus an LSP request). Returns `true` when consumed.
     fn handle_lsp_trigger_keys(&mut self, logical_key: &Key, handled: &mut bool) -> bool {
@@ -2317,6 +2378,17 @@ impl Widget for EditorView {
         self.draw_carets(scene, transform, theme, &rows);
         self.draw_horizontal_scroll_recovery(scene, transform, text_renderer, theme, code_x0);
         scene.pop_layer();
+        // Scrolled, the code continues past the top edge: it fades out
+        // there, so a line the edge cuts mid-scroll reads as going on.
+        if self.scroll_y > 0.0 {
+            ui::surface::content_edge_fade(
+                scene,
+                transform,
+                self.whole_line_rect(),
+                ui::surface::ContentEdge::Top,
+                theme.tokens.colors.surfaces.content,
+            );
+        }
 
         // Caret pixel, reused by the completion popup + hover tooltip.
         let (caret_line, caret_col) = self.primary_caret();
@@ -2342,6 +2414,9 @@ impl Widget for EditorView {
             return;
         }
         let mods = ctx.modifiers.state();
+        if self.handle_completion_pointer(event, ctx.scale_factor, ctx.state, ctx.handled) {
+            return;
+        }
         match event {
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2540,6 +2615,46 @@ mod tests {
         let root = automerge::ROOT;
         ev.sync(&mut doc, &root);
         (ev, doc)
+    }
+
+    #[test]
+    fn a_completion_row_is_chosen_with_the_pointer() {
+        let (mut ev, mut doc) = bound_editor("pri");
+        ev.set_caret_for_test(0, 3);
+        let item = |label: &str| CompletionItem {
+            label: label.into(),
+            kind: Some(3),
+            detail: None,
+            insert_text: label.into(),
+        };
+        ev.show_completions(vec![item("primes_below"), item("println")]);
+        ev.completion_list.set_suggestions(
+            ev.completions
+                .iter()
+                .map(|item| Suggestion::new(&item.insert_text))
+                .collect(),
+        );
+        ev.completion_list
+            .set_anchor(Rect::new(10.0, 10.0, 210.0, 30.0));
+        let row = ev.completion_list.row_rect(1).expect("second row in view");
+        ev.last_cursor = row.center();
+        let mut handled = false;
+        let press = WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        assert!(ev.handle_completion_pointer(&press, 1.0, &mut doc, &mut handled));
+        assert!(handled);
+        assert!(!ev.completion_active(), "accepting closes the popup");
+        assert_eq!(ev.text_for_test(), "println");
+
+        // A press outside the popup dismisses it and reaches the editor.
+        ev.show_completions(vec![item("primes_below")]);
+        ev.last_cursor = Point::new(500.0, 500.0);
+        let mut handled = false;
+        assert!(!ev.handle_completion_pointer(&press, 1.0, &mut doc, &mut handled));
+        assert!(!ev.completion_active());
     }
 
     #[test]
