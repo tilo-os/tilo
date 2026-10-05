@@ -144,7 +144,7 @@ impl PersonalAppsPane {
             let picker_path = Self::draft_key(&Self::key(resource));
             let picker = Dropdown::new(options, &picker_path)
                 .with_id(&format!("personal-default.{}", resource.as_str()))
-                .with_placeholder(&current);
+                .with_selected(&current);
             let row = (label.clone(), choice_row(&label, Box::new(picker)));
             if resource.scheme_name().is_some() {
                 link_rows.push(row);

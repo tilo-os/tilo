@@ -218,7 +218,7 @@ impl AccessibilityPane {
                             "colour-filter",
                         )
                         .with_id("a11y.color_filter")
-                        .with_placeholder(self.access.color_filter.label()),
+                        .with_selected(self.access.color_filter.label()),
                     ),
                 ),
                 choice_row(
@@ -233,7 +233,7 @@ impl AccessibilityPane {
                             "magnifier",
                         )
                         .with_id("a11y.magnifier")
-                        .with_placeholder(magnifier::zoom_label(self.access.magnifier_zoom)),
+                        .with_selected(magnifier::zoom_label(self.access.magnifier_zoom)),
                     ),
                 ),
                 choice_row(
@@ -248,7 +248,7 @@ impl AccessibilityPane {
                             "magnifier-view",
                         )
                         .with_id("a11y.magnifier_view")
-                        .with_placeholder(self.access.magnifier_view.label()),
+                        .with_selected(self.access.magnifier_view.label()),
                     ),
                 ),
             ]),
@@ -263,7 +263,7 @@ impl AccessibilityPane {
             .collect();
         let cursor = Self::choice(cursor_opts, CURSOR_SIZE_KEY, "cursor-size")
             .with_id("a11y.cursor_size")
-            .with_placeholder(AccessibilityPrefs::cursor_size_label(
+            .with_selected(AccessibilityPrefs::cursor_size_label(
                 self.access.cursor_size,
             ));
         card(
@@ -318,7 +318,7 @@ impl AccessibilityPane {
                         "on-screen-keyboard",
                     )
                     .with_id("a11y.on_screen_keyboard")
-                    .with_placeholder(self.access.on_screen_keyboard.label()),
+                    .with_selected(self.access.on_screen_keyboard.label()),
                 ),
             )
         } else {
@@ -354,7 +354,7 @@ impl AccessibilityPane {
                             "bounce-delay",
                         )
                         .with_id("a11y.bounce_delay")
-                        .with_placeholder(
+                        .with_selected(
                             AccessibilityPrefs::bounce_delay_label(
                                 self.access.bounce_keys_delay_ms,
                             ),
@@ -388,7 +388,7 @@ impl AccessibilityPane {
                             "switch-keys",
                         )
                         .with_id("a11y.switch_keys")
-                        .with_placeholder(self.access.switch_key_pair.label()),
+                        .with_selected(self.access.switch_key_pair.label()),
                     ),
                 ),
                 choice_row(
@@ -405,14 +405,12 @@ impl AccessibilityPane {
                             "switch-scan",
                         )
                         .with_id("a11y.switch_scan")
-                        .with_placeholder(
-                            match self.access.switch_scan_ms {
-                                1000 => "1 second",
-                                2000 => "2 seconds",
-                                3000 => "3 seconds",
-                                _ => "Manual",
-                            },
-                        ),
+                        .with_selected(match self.access.switch_scan_ms {
+                            1000 => "1 second",
+                            2000 => "2 seconds",
+                            3000 => "3 seconds",
+                            _ => "Manual",
+                        }),
                     ),
                 ),
             ]),
@@ -445,7 +443,7 @@ impl AccessibilityPane {
                             "speech-rate",
                         )
                         .with_id("a11y.reader_rate")
-                        .with_placeholder(
+                        .with_selected(
                             match self.access.screen_reader_rate {
                                 0..=75 => "Slow",
                                 76..=115 => "Default",
@@ -467,7 +465,7 @@ impl AccessibilityPane {
                             "speech-voice",
                         )
                         .with_id("a11y.reader_voice")
-                        .with_placeholder(self.access.screen_reader_voice.label()),
+                        .with_selected(self.access.screen_reader_voice.label()),
                     ),
                 ),
             ]

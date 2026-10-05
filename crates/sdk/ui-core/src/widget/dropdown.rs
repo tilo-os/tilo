@@ -507,6 +507,18 @@ impl Dropdown {
         &self.selected
     }
 
+    /// Start on `selected`: the value the field shows, in the value's ink,
+    /// until its binding reads a stored value. Use this, not a placeholder,
+    /// for a setting's current or default value; a placeholder is a prompt
+    /// for a field with no value.
+    #[must_use]
+    pub fn with_selected(mut self, selected: impl Into<String>) -> Self {
+        // Shown, not published: the binding's stored value still wins, and
+        // starting on the current value is not an edit.
+        self.selected = selected.into();
+        self
+    }
+
     /// Set the selected model value programmatically.
     ///
     /// A bound [`crate::LocalState`] is updated immediately; this does not

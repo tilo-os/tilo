@@ -635,7 +635,7 @@ impl PowerPane {
                                 "charge-cap resource exists when the hardware control is visible",
                             ),
                         )
-                        .with_placeholder(&format!("{}%", capability.current)),
+                        .with_selected(format!("{}%", capability.current)),
                 ),
             ));
         } else {
@@ -672,7 +672,7 @@ impl PowerPane {
                             .on_action(crate::actions::power_text_binding("profile").expect(
                                 "power profile action is part of the static resource contract",
                             ))
-                            .with_placeholder(&current),
+                            .with_selected(&current),
                     ),
                 )]
             };
@@ -715,7 +715,7 @@ impl PowerPane {
                                 crate::actions::power_text_binding("suspend-after")
                                     .expect("suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(&suspend_now),
+                            .with_selected(&suspend_now),
                     ),
                 ),
                 choice_row(
@@ -727,7 +727,7 @@ impl PowerPane {
                                 crate::actions::power_text_binding("blank-after")
                                     .expect("blank action is part of the static resource contract"),
                             )
-                            .with_placeholder(&blank_now),
+                            .with_selected(&blank_now),
                     ),
                 ),
                 choice_row(
@@ -739,7 +739,7 @@ impl PowerPane {
                                 crate::actions::power_text_binding("lock-after")
                                     .expect("lock action is part of the static resource contract"),
                             )
-                            .with_placeholder(&lock_now),
+                            .with_selected(&lock_now),
                     ),
                 ),
                 choice_row(
@@ -750,7 +750,7 @@ impl PowerPane {
                                 crate::actions::power_text_binding("saver-suspend")
                                     .expect("saver suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(&saver_now),
+                            .with_selected(&saver_now),
                     ),
                 ),
                 choice_row(
@@ -761,7 +761,7 @@ impl PowerPane {
                                 crate::actions::power_text_binding("balanced-suspend")
                                     .expect("balanced suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(&balanced_now),
+                            .with_selected(&balanced_now),
                     ),
                 ),
                 choice_row(
@@ -772,7 +772,7 @@ impl PowerPane {
                                 crate::actions::power_text_binding("performance-suspend")
                                     .expect("performance suspend action is part of the static resource contract"),
                             )
-                            .with_placeholder(&performance_now),
+                            .with_selected(&performance_now),
                     ),
                 ),
             ]),
@@ -808,7 +808,7 @@ impl PowerPane {
                                 crate::actions::power_text_binding("lid")
                                     .expect("lid action is part of the static resource contract"),
                             )
-                            .with_placeholder(&lid),
+                            .with_selected(&lid),
                     ),
                 ),
                 choice_row(
@@ -821,7 +821,7 @@ impl PowerPane {
                                     "power-key action is part of the static resource contract",
                                 ),
                             )
-                            .with_placeholder(&power_key),
+                            .with_selected(&power_key),
                     ),
                 ),
                 choice_row(
@@ -834,7 +834,7 @@ impl PowerPane {
                                     "critical action is part of the static resource contract",
                                 ),
                             )
-                            .with_placeholder(&critical),
+                            .with_selected(&critical),
                     ),
                 ),
                 caption(&warn),
