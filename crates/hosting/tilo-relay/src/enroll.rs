@@ -332,8 +332,14 @@ struct FleetProjection {
 #[derive(Clone, Serialize, Deserialize)]
 struct PersonalEnrollmentMarker {
     schema_version: u32,
+    /// The account the enrollment was staged for: the one whose home and
+    /// peers it publishes into.
+    person_uid: u32,
     identity_dir: PathBuf,
+    /// `personal-<token>`, with a token from the system's random source, so
+    /// nobody can know the name before the join creates it.
     stage_name: String,
+    /// The identity being enrolled.
     user_public_key: [u8; 32],
     device_public_key: [u8; 32],
     /// The exact compositor lifetime that received and confirmed this
@@ -345,7 +351,7 @@ struct PersonalEnrollmentMarker {
     commit_ready: bool,
 }
 
-const PERSONAL_ENROLLMENT_SCHEMA: u32 = 2;
+const PERSONAL_ENROLLMENT_SCHEMA: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersonalCommitCheckpoint {
@@ -367,8 +373,29 @@ fn enrollment_stage_dir(identity_root: &std::path::Path) -> PathBuf {
     identity_root.join("enrollment-staging")
 }
 
-fn personal_marker_path(identity_root: &std::path::Path, nonce: [u8; 16]) -> PathBuf {
-    enrollment_commit_dir(identity_root).join(format!("personal-{}.json", hex::encode(nonce)))
+/// The commit marker of the enrollment staged as `stage_name`: named by the
+/// same unpredictable token.
+fn personal_marker_path(identity_root: &std::path::Path, stage_name: &str) -> PathBuf {
+    enrollment_commit_dir(identity_root).join(format!("{stage_name}.json"))
+}
+
+/// Whether `name` is a stage name [`create_stage_dir`] gives.
+fn valid_stage_name(name: &str) -> bool {
+    name.strip_prefix("personal-").is_some_and(|token| {
+        token.len() == 32
+            && token
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
+/// The account a join publishes for: the person a root join acts for, else
+/// this process's own.
+fn enrolled_uid(home: &PersonHome) -> u32 {
+    match home {
+        PersonHome::Direct => person_home::local::own_uid(),
+        PersonHome::Delegated { person, .. } => person.uid,
+    }
 }
 
 #[cfg(test)]
@@ -958,6 +985,49 @@ fn open_stage_dir(
     Ok((staging, stage))
 }
 
+/// Create a new private staging directory for one enrollment under a name
+/// from the system's random source, owned by this process's account and
+/// `0700`. A name anything already holds is never used, nor is the name of
+/// an existing commit marker; another is drawn instead.
+fn create_stage_dir(
+    identity_root: &std::path::Path,
+) -> anyhow::Result<(String, std::os::fd::OwnedFd)> {
+    create_stage_dir_drawing(identity_root, || {
+        let mut token = [0_u8; 16];
+        UnwrapErr(SysRng).fill_bytes(&mut token);
+        Ok(token)
+    })
+}
+
+fn create_stage_dir_drawing(
+    identity_root: &std::path::Path,
+    mut draw: impl FnMut() -> anyhow::Result<[u8; 16]>,
+) -> anyhow::Result<(String, std::os::fd::OwnedFd)> {
+    let staging = enrollment_stage_dir(identity_root);
+    std::fs::create_dir_all(&staging)?;
+    std::fs::create_dir_all(enrollment_commit_dir(identity_root))?;
+    let staging = person_home::local::open_dir(&staging)
+        .with_context(|| format!("open {}", staging.display()))?;
+    for _ in 0..16 {
+        let name = format!("personal-{}", hex::encode(draw()?));
+        if std::fs::symlink_metadata(personal_marker_path(identity_root, &name)).is_ok() {
+            continue;
+        }
+        if let Some(stage) = person_home::local::create_fresh_subdir(
+            &staging,
+            &name,
+            person_home::local::own_uid(),
+            0o700,
+        )? {
+            return Ok((name, stage));
+        }
+    }
+    bail!(
+        "no free staging name in {}",
+        enrollment_stage_dir(identity_root).display()
+    )
+}
+
 /// Every file an enrollment stages.
 const STAGED_FILES: [&str; 9] = [
     "record.json",
@@ -1050,12 +1120,7 @@ fn stage_personal_enrollment(
     } = *stage;
     let projection =
         checked_personal_projection(identity_root, identity_dir, home, payload, approver_device)?;
-    let stage_name = format!(
-        "personal-{}-{}",
-        hex::encode(payload.nonce),
-        hex::encode(payload.cert.device_public_key)
-    );
-    let (_, stage_dir) = open_stage_dir(identity_root, &stage_name, true)?;
+    let (stage_name, stage_dir) = create_stage_dir(identity_root)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
     write_staged(&stage_dir, "record.json", &projection.identity, 0o600)?;
     write_staged(&stage_dir, "registry.json", &projection.registry, 0o600)?;
@@ -1078,6 +1143,7 @@ fn stage_personal_enrollment(
     write_staged(&stage_dir, "default-cert.bin", &cert, 0o600)?;
     let marker = PersonalEnrollmentMarker {
         schema_version: PERSONAL_ENROLLMENT_SCHEMA,
+        person_uid: enrolled_uid(home),
         identity_dir: identity_dir.to_path_buf(),
         stage_name,
         user_public_key: payload.cert.user_public_key,
@@ -1085,7 +1151,7 @@ fn stage_personal_enrollment(
         requester_lease,
         commit_ready: false,
     };
-    let marker_path = personal_marker_path(identity_root, payload.nonce);
+    let marker_path = personal_marker_path(identity_root, &marker.stage_name);
     write_marker(&marker_path, &marker)?;
     let _ = paths; // binds staging to the active device layout at the call site.
     Ok((marker_path, marker))
@@ -1142,13 +1208,10 @@ fn commit_staged_personal_enrollment(
     marker: &PersonalEnrollmentMarker,
     mut checkpoint: impl FnMut(PersonalCommitCheckpoint) -> anyhow::Result<()>,
 ) -> anyhow::Result<PathBuf> {
-    if marker.schema_version != PERSONAL_ENROLLMENT_SCHEMA
-        || !marker.commit_ready
-        || marker.stage_name.contains('/')
-        || marker.stage_name.contains('\\')
-    {
+    if !marker.commit_ready {
         bail!("personal enrollment marker is invalid");
     }
+    check_marker_person(identity_root, marker_path, marker, home)?;
     let (staging, stage_dir) = open_stage_dir(identity_root, &marker.stage_name, false)?;
     let cert_bytes = read_staged(&stage_dir, "default-cert.bin")?;
     let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&cert_bytes)?;
@@ -1247,6 +1310,42 @@ fn commit_staged_personal_enrollment(
     Ok(record)
 }
 
+/// Refuse `marker` unless it names its own staging, was staged for the
+/// account `home` publishes for, and its staging enrolls the identity it
+/// records. Nothing is written before this holds.
+fn check_marker_person(
+    identity_root: &std::path::Path,
+    marker_path: &std::path::Path,
+    marker: &PersonalEnrollmentMarker,
+    home: &PersonHome,
+) -> anyhow::Result<()> {
+    let expected_name = format!("{}.json", marker.stage_name);
+    if marker.schema_version != PERSONAL_ENROLLMENT_SCHEMA
+        || !valid_stage_name(&marker.stage_name)
+        || marker_path.file_name() != Some(std::ffi::OsStr::new(&expected_name))
+    {
+        bail!("personal enrollment marker is invalid");
+    }
+    let account = enrolled_uid(home);
+    if marker.person_uid != account {
+        bail!(
+            "this enrollment was staged for account {}, not {account}",
+            marker.person_uid
+        );
+    }
+    let (_, stage_dir) = open_stage_dir(identity_root, &marker.stage_name, false)?;
+    let cert: DeviceCert = tilo_user_identity::canonical::from_canonical_bytes(&read_staged(
+        &stage_dir,
+        "default-cert.bin",
+    )?)?;
+    if cert.user_public_key != marker.user_public_key
+        || read_staged(&stage_dir, "user-pubkey.bin")? != marker.user_public_key
+    {
+        bail!("this enrollment's staging enrolls another identity than its marker records");
+    }
+    Ok(())
+}
+
 fn recover_personal_enrollments(
     identity_root: &std::path::Path,
     identity_dir: &std::path::Path,
@@ -1291,9 +1390,10 @@ fn recover_personal_enrollments(
             continue;
         };
         if marker.identity_dir == identity_dir && marker.commit_ready {
-            // A confirmed enrollment whose staging is gone or is no longer
-            // this account's cannot be finished; it must not block this join.
-            if let Err(error) = open_stage_dir(identity_root, &marker.stage_name, false) {
+            // A confirmed enrollment whose staging is gone or no longer this
+            // account's, or that was staged for another account or identity,
+            // cannot be finished here; it must not block this join.
+            if let Err(error) = check_marker_person(identity_root, &entry.path(), &marker, home) {
                 eprintln!("warning: abandoning enrollment marker {name}: {error:#}");
                 continue;
             }
@@ -3394,6 +3494,85 @@ mod tests {
         enrollment_stage_dir(identity_root).join(&marker.stage_name)
     }
 
+    #[test]
+    fn a_staging_name_anything_already_holds_is_never_used() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let scope = tempfile::tempdir().unwrap();
+        let identity_root = scope.path().join("root");
+        let staging = enrollment_stage_dir(&identity_root);
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::create_dir_all(enrollment_commit_dir(&identity_root)).unwrap();
+        // The first name drawn is a directory someone planted; the second
+        // is free in staging but already a marker's name.
+        let planted = staging.join(format!("personal-{}", hex::encode([1_u8; 16])));
+        std::fs::create_dir(&planted).unwrap();
+        std::fs::write(planted.join("record.json"), b"planted").unwrap();
+        std::fs::write(
+            personal_marker_path(
+                &identity_root,
+                &format!("personal-{}", hex::encode([2_u8; 16])),
+            ),
+            b"planted",
+        )
+        .unwrap();
+        let mut draws = [[1_u8; 16], [2; 16], [3; 16]].into_iter();
+        let (name, stage) =
+            create_stage_dir_drawing(&identity_root, || Ok(draws.next().unwrap())).unwrap();
+        assert_eq!(name, format!("personal-{}", hex::encode([3_u8; 16])));
+        assert!(valid_stage_name(&name));
+        assert_eq!(
+            std::fs::read(planted.join("record.json")).unwrap(),
+            b"planted"
+        );
+        assert_eq!(
+            std::fs::metadata(staging.join(&name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            person_home::local::fstat(&stage).unwrap().st_uid,
+            person_home::local::own_uid()
+        );
+        // Nothing free at all: refused, never reused.
+        assert!(create_stage_dir_drawing(&identity_root, || Ok([1; 16])).is_err());
+    }
+
+    #[test]
+    fn a_marker_for_another_person_or_identity_is_refused_and_skipped() {
+        for tamper in [
+            (|marker: &mut PersonalEnrollmentMarker| {
+                marker.person_uid = marker.person_uid.wrapping_add(1);
+            }) as fn(&mut PersonalEnrollmentMarker),
+            |marker: &mut PersonalEnrollmentMarker| marker.user_public_key = [9; 32],
+        ] {
+            let scope = tempfile::tempdir().unwrap();
+            let identity_root = scope.path().join("root");
+            let identity_dir = scope.path().join("identities");
+            std::fs::create_dir(&identity_dir).unwrap();
+            let (paths, marker_path, mut marker) =
+                staged_ready(&identity_root, &identity_dir, [51; 16]);
+            tamper(&mut marker);
+            write_marker(&marker_path, &marker).unwrap();
+            assert!(commit(&identity_root, &paths, &marker_path, &marker).is_err());
+            assert_eq!(std::fs::read_dir(&identity_dir).unwrap().count(), 0);
+            assert!(!paths.device_cert.exists(), "nothing is published");
+            recover_personal_enrollments(
+                &identity_root,
+                &identity_dir,
+                &paths,
+                &PersonHome::Direct,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(std::fs::read_dir(&identity_dir).unwrap().count(), 0);
+            assert!(!paths.device_cert.exists(), "recovery skips it too");
+            assert!(marker_path.exists());
+        }
+    }
+
     /// Hand everything below `path` to `uid`, except `keep` (left as it is).
     fn hand_tree_to(path: &std::path::Path, uid: u32, keep: &[PathBuf]) {
         if keep.iter().any(|kept| kept == path) {
@@ -3621,7 +3800,9 @@ mod tests {
             assert_eq!(std::fs::read_dir(&identity_dir).unwrap().count(), 0);
             assert!(!paths.device_cert.exists());
         }
-        // A link planted where the next enrollment stages.
+        // A group member who knows the one-time code pre-creates every name
+        // a join used to derive from it: a link where it staged, a marker
+        // where it committed. The join neither uses them nor stops.
         {
             let scope = tempfile::tempdir().unwrap();
             let identity_root = scope.path().join("root");
@@ -3630,7 +3811,7 @@ mod tests {
             let root = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
             let member = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
             let payload = personal_payload(&root, &member, [34; 16]);
-            let stage_name = format!(
+            let old_stage = format!(
                 "personal-{}-{}",
                 hex::encode(payload.nonce),
                 hex::encode(payload.cert.device_public_key)
@@ -3638,28 +3819,37 @@ mod tests {
             let elsewhere = scope.path().join("etc");
             std::fs::create_dir(&elsewhere).unwrap();
             std::fs::create_dir_all(enrollment_stage_dir(&identity_root)).unwrap();
+            std::fs::create_dir_all(enrollment_commit_dir(&identity_root)).unwrap();
             std::os::unix::fs::symlink(
                 &elsewhere,
-                enrollment_stage_dir(&identity_root).join(&stage_name),
+                enrollment_stage_dir(&identity_root).join(&old_stage),
             )
             .unwrap();
+            let old_marker = enrollment_commit_dir(&identity_root)
+                .join(format!("personal-{}.json", hex::encode(payload.nonce)));
+            std::fs::write(&old_marker, b"planted").unwrap();
             let paths = IdentityPaths::under(&identity_root);
             paths.ensure_directories().unwrap();
-            assert!(
-                stage_personal_enrollment(
-                    &PersonalStage {
-                        identity_root: &identity_root,
-                        identity_dir: &identity_dir,
-                        home: &PersonHome::Direct,
-                        paths: &paths,
-                        approver_device: None,
-                        requester_lease: None,
-                    },
-                    &payload,
-                )
-                .is_err()
-            );
+            let (marker_path, marker) = stage_personal_enrollment(
+                &PersonalStage {
+                    identity_root: &identity_root,
+                    identity_dir: &identity_dir,
+                    home: &PersonHome::Direct,
+                    paths: &paths,
+                    approver_device: None,
+                    requester_lease: None,
+                },
+                &payload,
+            )
+            .unwrap();
+            assert!(valid_stage_name(&marker.stage_name));
+            assert_ne!(marker.stage_name, old_stage);
+            assert_ne!(marker_path, old_marker);
             assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+            assert_eq!(std::fs::read(&old_marker).unwrap(), b"planted");
+            let marker = authorize_personal_commit(&marker_path, &marker, None).unwrap();
+            commit(&identity_root, &paths, &marker_path, &marker).unwrap();
+            assert!(paths.device_cert.exists(), "the join completed");
         }
         // A commit marker that is a link is never recovered.
         {

@@ -774,6 +774,36 @@ pub mod local {
         }
     }
 
+    /// Create `name` inside `dir` as a new directory of this account with
+    /// exactly `mode`, and open it without following a link. `None` when
+    /// anything already holds the name: an existing entry is never taken
+    /// over.
+    pub fn create_fresh_subdir(
+        dir: &OwnedFd,
+        name: &str,
+        owner: libc::uid_t,
+        mode: libc::mode_t,
+    ) -> io::Result<Option<OwnedFd>> {
+        let c = c_name(name)?;
+        // SAFETY: `dir` is open and `c` is NUL-terminated.
+        if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), mode) } != 0 {
+            let error = io::Error::last_os_error();
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                return Ok(None);
+            }
+            return Err(error);
+        }
+        // SAFETY: `dir` is open and `c` is NUL-terminated.
+        let fd = from_raw(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), DIR_FLAGS) })?;
+        let fd = checked(fd, libc::S_IFDIR, owner, name)?;
+        // The umask may have narrowed it; nothing may have widened it.
+        // SAFETY: `fd` is open.
+        if unsafe { libc::fchmod(fd.as_raw_fd(), mode) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Some(fd))
+    }
+
     /// Read `name` inside `dir`: a regular file belonging to `owner`, opened
     /// without following a link or blocking on a FIFO, at most `limit`
     /// bytes. `None` when it does not exist.
