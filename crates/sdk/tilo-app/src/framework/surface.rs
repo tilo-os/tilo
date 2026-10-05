@@ -201,10 +201,10 @@ pub trait ResourceSurface<R: Resource, E: Effect = NoEffect>: Widget {
 /// it makes outside its dispatcher out of the document
 /// ([`refuse_raw_writes`]).
 fn only_through_actions(
-    state: &mut AppModel,
+    state: &mut ui_core::widget::Edits<'_>,
     path: &ModelPath,
     pass: &str,
-    forward: impl FnOnce(&mut AppModel, &ModelPath),
+    forward: impl FnOnce(&mut ui_core::widget::Edits<'_>, &ModelPath),
 ) {
     let before = ui_core::doc::document(state, path).0.pending_ops();
     forward(state, path);
@@ -213,18 +213,17 @@ fn only_through_actions(
 
 /// A surface changes its resource only through its dispatcher: every action
 /// it applies is committed as one change, attributed and undoable. Anything
-/// else it wrote into the document during `pass` is left uncommitted; it is
-/// rolled back here, so no surface edits the document outside an action. A
-/// debug build stops at it.
-fn refuse_raw_writes(doc: &mut AutoCommit, before: usize, pass: &str) {
+/// else would remain uncommitted; the typed loan prevents such a write.
+/// A debug build also checks this invariant at the callback boundary.
+fn refuse_raw_writes(doc: &AutoCommit, before: usize, pass: &str) {
     if before != 0 || doc.pending_ops() == 0 {
         return;
     }
-    let dropped = doc.rollback();
+    let dropped = doc.pending_ops();
     tracing::error!(
         pass,
         dropped,
-        "a surface wrote the document outside an action; the write was rolled back"
+        "a surface wrote the document outside an action; the write was refused"
     );
     debug_assert_eq!(
         dropped, 0,
@@ -681,12 +680,12 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut ui_core::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         if let Some(runner) = self.effects.as_mut()
             && let Some(started) =
-                runner.start(op, &mut self.surface, Some(&mut *doc), S::effect)?
+                runner.start(op, &mut self.surface, Some(doc.doc()), S::effect)?
         {
             return Ok(Some(started));
         }
@@ -710,14 +709,14 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
     ) {
         let before = ctx.state.pending_ops();
         self.surface.handle_event(event, ctx);
-        refuse_raw_writes(ctx.state, before, "handle_event");
+        refuse_raw_writes(ctx.state.doc(), before, "handle_event");
     }
 
     fn perform_semantic_action(
         &mut self,
         target: &str,
         action: &ui_core::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let surface = &mut self.surface;
