@@ -485,6 +485,16 @@ pub(super) fn live_view(
         });
     }
 
+    items.push(live_tools(scanners, jobs, snapshot.jobs.is_ok(), tx));
+    page(groups(items))
+}
+
+fn live_tools(
+    scanners: &[os_actions::printing::Scanner],
+    jobs: &[os_actions::printing::PrintJob],
+    jobs_available: bool,
+    tx: &mpsc::Sender<UiCommand>,
+) -> El {
     let mut tools: Vec<El> = Vec::new();
     if let Some(scanner) = scanners.first() {
         tools.push(tool_row(
@@ -496,7 +506,7 @@ pub(super) fn live_view(
             UiCommand::ScanSetup,
         ));
     }
-    if snapshot.jobs.is_ok() {
+    if jobs_available {
         let history = if jobs
             .iter()
             .any(|job| matches!(job.state, Some(os_actions::printing::JobState::Completed)))
@@ -522,14 +532,13 @@ pub(super) fn live_view(
         tx,
         UiCommand::Diagnostics,
     ));
-    items.push(Box::new(Section::titled(
+    Box::new(Section::titled(
         "Tools",
         vec![Box::new(tools.into_iter().fold(
             bare_column().with_rhythm(ui::tokens::Rhythm::Section),
             Column::push,
         ))],
-    )));
-    page(groups(items))
+    ))
 }
 
 fn history_status(job: &os_actions::printing::PrintJob) -> &'static str {
