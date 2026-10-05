@@ -3289,7 +3289,7 @@ mod tests {
             );
             assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
             (page.results[0].on_open)(
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),

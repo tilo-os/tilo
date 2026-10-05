@@ -384,7 +384,7 @@ impl SelectedAction<'_> {
 
     fn invoke_bound(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         bound: &ActionArgs,
@@ -436,7 +436,7 @@ impl SelectedAction<'_> {
     /// provider's own callback found nothing to act on.
     pub fn invoke(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
@@ -455,7 +455,7 @@ impl SelectedAction<'_> {
     /// poll a pending disposition rather than treating it as success.
     pub fn invoke_disposition(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: impl IntoIterator<Item = (String, ArgValue)>,
@@ -475,7 +475,7 @@ impl SelectedAction<'_> {
     /// cannot perform the bound action.
     pub fn invoke_json(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -495,7 +495,7 @@ impl SelectedAction<'_> {
     /// falling back to a different invocation callback.
     pub fn invoke_json_disposition(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
         args: &serde_json::Map<String, serde_json::Value>,
@@ -513,7 +513,7 @@ impl SelectedAction<'_> {
     /// parameters.
     pub fn invoke_nullary(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         root: &ObjId,
         chrome: &Chrome,
     ) -> Result<InvocationDisposition, ActionError> {
@@ -601,7 +601,7 @@ mod tests {
 
             // INVOKE — run the side-effect. No scene is ever constructed.
             selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("a nullary action invoked with no arguments must run");
 
             assert!(
@@ -818,7 +818,7 @@ mod tests {
                 .expect("addressable");
 
             let err = selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect_err("a required parameter must not be skippable");
             assert!(matches!(
                 err,
@@ -831,7 +831,12 @@ mod tests {
 
             // …and with the argument it declared, it runs.
             selected
-                .invoke(&mut doc, &root, &chrome, [("text".to_string(), text("ok"))])
+                .invoke(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    [("text".to_string(), text("ok"))],
+                )
                 .expect("the declared argument must be accepted");
             assert!(ran.get(), "a satisfied invocation reaches the action");
         }
@@ -862,7 +867,7 @@ mod tests {
                 "a chrome toggle declares no parameters"
             );
             selected
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("a nullary action takes no arguments");
             assert!(chrome.borrow().overlays.ws_settings);
         }
@@ -978,7 +983,7 @@ mod tests {
             let disposition = catalog
                 .select(&ResourceRef::new("receipts", "broker.action"))
                 .expect("the broker action is addressable")
-                .invoke_nullary(&mut doc, &root, &chrome)
+                .invoke_nullary(&mut ui::widget::Edits::lend(&mut doc), &root, &chrome)
                 .expect("the provider admits the action");
             let InvocationDisposition::Accepted(receipt) = disposition else {
                 panic!("the synchronous provider must return its receipt immediately");
@@ -1018,7 +1023,12 @@ mod tests {
                 .select(&ResourceRef::new("async-json", "wait-for-admission"))
                 .expect("async action is addressable");
             let InvocationDisposition::Pending(ticket) = selected
-                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .invoke_json(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    &serde_json::Map::new(),
+                )
                 .expect("begin returns a pending ticket")
             else {
                 panic!("admission must remain pending")
@@ -1064,7 +1074,12 @@ mod tests {
             let error = catalog
                 .select(&ResourceRef::new("async-json", "wait-for-admission"))
                 .expect("async action is addressable")
-                .invoke_json(&mut doc, &root, &chrome, &serde_json::Map::new())
+                .invoke_json(
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &chrome,
+                    &serde_json::Map::new(),
+                )
                 .expect_err("rejected admission must be returned");
             assert_eq!(begins.get(), 1);
             assert!(

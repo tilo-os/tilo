@@ -2086,7 +2086,12 @@ mod tests {
         catalog
             .select(&ResourceRef::new(CONTINUE_PROVIDER_ID, CONTINUE_ID))
             .expect("continue row")
-            .invoke(&mut doc, &automerge::ROOT, &chrome, [])
+            .invoke(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &chrome,
+                [],
+            )
             .expect("accepted");
         let focused_group = chrome
             .borrow()

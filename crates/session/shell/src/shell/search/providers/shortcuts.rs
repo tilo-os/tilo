@@ -90,7 +90,7 @@ impl ShortcutsProvider {
             ),
         };
         let invoke = Rc::new(
-            move |_doc: &mut automerge::AutoCommit,
+            move |_doc: &mut ui::widget::Edits<'_>,
                   _root: &automerge::ObjId,
                   _chrome: &crate::shell::chrome_state::Chrome,
                   args: &tilo_actions::ActionArgs|
@@ -394,7 +394,7 @@ mod tests {
         let invoke = row.on_invoke.clone().expect("the row runs");
         let mut doc = AutoCommit::new();
         let receipt = invoke(
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &chrome,
             &tilo_actions::ActionArgs::none(),
