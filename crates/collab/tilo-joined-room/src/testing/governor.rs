@@ -30,7 +30,7 @@ pub struct TestGovernor {
     governor_key: SigningKey,
     host: DeviceCert,
     host_key: SigningKey,
-    delegation: WorkspaceDelegation,
+    delegation: Option<WorkspaceDelegation>,
     workspace_id: u64,
     generation: u64,
     outgoing: Vec<Vec<u8>>,
@@ -128,7 +128,7 @@ impl TestGovernor {
             governor_key,
             host,
             host_key,
-            delegation,
+            delegation: Some(delegation),
             workspace_id,
             generation: 0,
             outgoing: Vec::new(),
@@ -138,6 +138,61 @@ impl TestGovernor {
         };
         governor.refresh_checkpoint().unwrap();
         governor
+    }
+
+    /// Empty interactive room governed by the fixture session's actual
+    /// root-certified device custody. Unlike `new`, this installs no app
+    /// records, messages, agents or separately pinned delivery host.
+    ///
+    /// # Errors
+    /// The certificate does not verify, the key does not match, or the
+    /// canonical room seed/checkpoint cannot be admitted.
+    pub fn empty_interactive(
+        governor: DeviceCert,
+        governor_key: SigningKey,
+        room: &str,
+    ) -> Result<Self, String> {
+        tilo_user_identity::verify_device_cert(&governor).map_err(|error| error.to_string())?;
+        if governor.device_public_key != governor_key.verifying_key().to_bytes()
+            || !governor.capabilities.can_own_workspaces
+        {
+            return Err("interactive fixture custody cannot govern this room".into());
+        }
+        let now = SystemTime::now();
+        let workspace_id =
+            tilo_relay_protocol::room_workspace_id(room).map_err(|error| error.to_string())?;
+        let mut peer = StatePeer::new(
+            room,
+            governor.clone(),
+            vec![governor.clone()],
+            tilo_user_identity::RevocationList::new(),
+            now,
+        )?;
+        peer.install_seed(
+            SeedState {
+                room_changes: seed_room(room, &governor, std::slice::from_ref(&governor))?,
+                documents: Vec::new(),
+            },
+            &governor_key,
+            now,
+        )?;
+        peer.select_admission_v5()
+            .map_err(|error| error.to_string())?;
+        let mut fixture = Self {
+            peer,
+            host: governor,
+            host_key: governor_key.clone(),
+            governor_key,
+            delegation: None,
+            workspace_id,
+            generation: 0,
+            outgoing: Vec::new(),
+            invitations: Vec::new(),
+            challenges: Vec::new(),
+            completions: BTreeMap::new(),
+        };
+        fixture.refresh_checkpoint()?;
+        Ok(fixture)
     }
 
     #[must_use]
@@ -174,7 +229,11 @@ impl TestGovernor {
     pub fn hint(&self, endpoint_addr: iroh_base::EndpointAddr) -> TransportHint {
         IrohWorkspaceHostHintV1 {
             version: 1,
-            mode: WorkspaceHostMode::CertifiedHost,
+            mode: if self.delegation.is_some() {
+                WorkspaceHostMode::CertifiedHost
+            } else {
+                WorkspaceHostMode::NativeInteractiveWorkspaceOwner
+            },
             room: self.room().into(),
             workspace_id: self.workspace_id,
             governing_authority: self.governor().clone(),
@@ -203,7 +262,7 @@ impl TestGovernor {
                 room: self.room().into(),
                 authority: self.governor().clone(),
                 issuer: self.host.clone(),
-                delegation: Some(self.delegation.clone()),
+                delegation: self.delegation.clone(),
                 role,
                 nonce: random(),
                 recipient_user_public_key,
@@ -229,6 +288,33 @@ impl TestGovernor {
     /// The room's governance is missing.
     pub fn governed_access(&self, now: SystemTime) -> Result<GovernedAccess, String> {
         self.peer.governed_access(now)
+    }
+
+    /// The canonical role of an admitted agent in this governor's room.
+    ///
+    /// # Errors
+    /// The governor has no admitted room policy or the clock is invalid.
+    pub fn agent_role(
+        &self,
+        agent: &str,
+        now: SystemTime,
+    ) -> Result<Option<collab_types::Role>, String> {
+        let room = self
+            .peer
+            .admitted_room()
+            .ok_or("governor room policy is absent")?;
+        let (_, owner, capabilities) = tilo_peer_state::room::extract_governed_fields(room);
+        let mut workspace = tilo_desktop_model::Workspace::new(
+            tilo_desktop_model::WorkspaceId(1),
+            "governor membership test",
+        );
+        workspace.owner = owner;
+        workspace.capabilities = capabilities;
+        let seconds = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_| "governor clock is before the Unix epoch")?
+            .as_secs();
+        Ok(workspace.role_of_agent_at(agent, seconds))
     }
 
     /// Re-sign the room's full checkpoint at the next generation.
@@ -404,5 +490,92 @@ impl TestGovernor {
         };
         self.completions.insert(request_id, bootstrap.clone());
         Ok(bootstrap)
+    }
+}
+
+#[cfg(test)]
+mod empty_interactive_tests {
+    use super::{TestGovernor, certificate};
+    use ed25519_dalek::SigningKey;
+    use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
+
+    #[test]
+    fn empty_interactive_preserves_certified_custody_without_seeding_apps_or_host_bits() {
+        let signing_identity = SigningKey::from_bytes(&[91; 32]);
+        let key = SigningKey::from_bytes(&[92; 32]);
+        let cert = certificate(&signing_identity, &key, "Fixture session");
+        let room = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa".to_string();
+        let governor = TestGovernor::empty_interactive(cert.clone(), key, &room).unwrap();
+        assert_eq!(governor.governor(), &cert);
+        assert!(!governor.governor().capabilities.can_act_as_host);
+        assert!(governor.peer().rows().is_empty());
+        let endpoint = iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(
+                &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+            )
+            .unwrap(),
+        );
+        let hint = governor.hint(endpoint);
+        let (payload, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(&hint).unwrap();
+        assert_eq!(
+            payload.mode,
+            WorkspaceHostMode::NativeInteractiveWorkspaceOwner
+        );
+        assert_eq!(payload.governing_authority, cert);
+        assert!(
+            TestGovernor::empty_interactive(cert, SigningKey::from_bytes(&[94; 32]), &room)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn empty_interactive_governor_redeems_its_actual_session_custody_without_app_seed() {
+        use tilo_peer_state::join::{
+            self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest,
+            JoinTransportResponse, MemberRole,
+        };
+        let key = SigningKey::from_bytes(&[92; 32]);
+        let cert = certificate(&SigningKey::from_bytes(&[91; 32]), &key, "Fixture session");
+        let mut governor =
+            TestGovernor::empty_interactive(cert.clone(), key.clone(), super::super::ROOM).unwrap();
+        let endpoint = iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(
+                &SigningKey::from_bytes(&[93; 32]).verifying_key().to_bytes(),
+            )
+            .unwrap(),
+        );
+        let expiry = super::ns(std::time::SystemTime::now())
+            .checked_add(60_000_000_000)
+            .unwrap();
+        let invitation = governor.issue(
+            vec![governor.hint(endpoint)],
+            MemberRole::Editor,
+            Some(cert.user_public_key),
+            Some("Fixture session".into()),
+            expiry,
+        );
+        let response = governor.handle(
+            cert.device_public_key,
+            JoinTransportRequest::Challenge(JoinChallengeRequest {
+                signed_invitation: invitation,
+                device_cert: cert.clone(),
+                request_id: [95; 32],
+            }),
+        );
+        let JoinTransportResponse::Challenge(response) = response else {
+            panic!("actual session challenge refused: {response:?}");
+        };
+        let proof = join::sign_join_proof(response.challenge, &key).unwrap();
+        let response = governor.handle(
+            cert.device_public_key,
+            JoinTransportRequest::Complete(JoinCompleteRequest { proof }),
+        );
+        let JoinTransportResponse::Complete(bootstrap) = response else {
+            panic!("actual session completion refused: {response:?}");
+        };
+        assert_eq!(bootstrap.authority, cert);
+        assert_eq!(bootstrap.device_cert, cert);
+        assert!(bootstrap.records.is_empty());
+        assert!(!bootstrap.authority.capabilities.can_act_as_host);
     }
 }

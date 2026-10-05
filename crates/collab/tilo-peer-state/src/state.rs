@@ -30,6 +30,7 @@ use backend::{LegacyNative, PeerCore, PeerDocument};
 mod local_admission;
 mod local_outbox;
 mod owner_membership;
+mod workspace_membership;
 mod workspace_tasks;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;

@@ -9,6 +9,7 @@
 //! standalone runtime keeps it in a file of its own ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
+mod application_record;
 mod bootstrap;
 mod certified;
 mod document_read;
@@ -24,9 +25,11 @@ pub mod testing;
 #[cfg(test)]
 mod tests;
 pub mod voice;
+mod workspace_membership;
 #[cfg(test)]
 tilo_automerge_isolate::test_worker!();
 
+pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use bootstrap::NativeBootstrap;
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use document_read::{CommittedDocument, DocumentRead};
@@ -499,6 +502,7 @@ impl NativeWorkspaceOwner {
         mut candidate: NativeCommittedView,
         enrollment: Option<&StoredPendingEnrollment>,
     ) -> Result<(), String> {
+        publication::refresh_governance_checkpoint(&mut candidate)?;
         let candidate_security = candidate.security_digest()?;
         let changed = {
             let current = self.0.current.read();

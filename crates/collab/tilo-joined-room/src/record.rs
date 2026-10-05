@@ -54,6 +54,10 @@ pub(crate) struct StoredRoom {
     /// Outgoing publication state; required on every committed room record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<crate::publication::StoredPublication>,
+    /// Original person membership command outcomes, private to the owning host.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workspace_memberships:
+        BTreeMap<String, crate::workspace_membership::StoredMembershipReceipt>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct DescriptorFloor {
