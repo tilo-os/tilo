@@ -1396,7 +1396,7 @@ impl CameraApp {
         };
         dispatcher
             .apply_now_with(
-                doc,
+                &mut ui::widget::Edits::lend(doc),
                 action,
                 tilo_actions::ActionContext::for_action("so.tilo.camera", "Camera", action),
             )

@@ -1302,7 +1302,8 @@ pub fn resolve<R: Resource>(
         };
         let mut refused = None;
         for action in &actions {
-            if let Err(error) = dispatcher.apply_now(doc, action) {
+            if let Err(error) = dispatcher.apply_now(&mut ui_core::widget::Edits::lend(doc), action)
+            {
                 refused = Some(error.to_string());
                 break;
             }

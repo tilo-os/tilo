@@ -800,6 +800,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.sync(state, path);
     }
 
+    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+        self.content.settle(edits, path);
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,

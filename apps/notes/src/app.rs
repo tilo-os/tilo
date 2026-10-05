@@ -788,7 +788,7 @@ impl NotesApp {
 
     /// Keep each image pasted into the open note with the notebook and put it
     /// after the caret, as a chosen image is.
-    fn drain_pasted_images(&mut self, doc: &mut AutoCommit) {
+    fn drain_pasted_images(&mut self, edits: &mut ui::widget::Edits<'_>) {
         for request in self.main.take_pasted_images() {
             let Some(page) = self.main.page_id() else {
                 continue;
@@ -800,9 +800,13 @@ impl NotesApp {
                 let edit = self
                     .main
                     .body_editor_mut()
-                    .image_paste_action(doc, &request.target, format!("![Pasted image]({source})"))
+                    .image_paste_action(
+                        edits.doc(),
+                        &request.target,
+                        format!("![Pasted image]({source})"),
+                    )
                     .map_err(|error| error.to_string())?;
-                self.dispatch(doc, &actions::add_image_asset_action(page, bytes, edit))
+                self.dispatch(edits, &actions::add_image_asset_action(page, bytes, edit))
             });
             match result {
                 Ok(()) => {
@@ -818,12 +822,12 @@ impl NotesApp {
     }
 
     /// Insert the image `bytes`, described as `alt`, into the open note.
-    fn insert_image_bytes(&mut self, doc: &mut AutoCommit, alt: &str, bytes: Vec<u8>) {
+    fn insert_image_bytes(&mut self, edits: &mut ui::widget::Edits<'_>, alt: &str, bytes: Vec<u8>) {
         let Some(page) = self.main.page_id() else {
             return;
         };
         let inserted = fit_image_asset(bytes)
-            .and_then(|bytes| self.dispatch(doc, &self.image_insertion(page, alt, bytes)));
+            .and_then(|bytes| self.dispatch(edits, &self.image_insertion(page, alt, bytes)));
         match inserted {
             Ok(()) => {
                 self.bound_page = None;
@@ -861,7 +865,7 @@ impl NotesApp {
                     .and_then(|stem| stem.to_str())
                     .unwrap_or("Image")
                     .replace([']', '[', '(', ')'], " ");
-                self.insert_image_bytes(ctx.state, alt.trim(), bytes);
+                self.insert_image_bytes(&mut ctx.edits(), alt.trim(), bytes);
             }
             Err(error) => self.transfer_toasts.push(
                 format!("Image import failed: {error}"),
@@ -1093,20 +1097,24 @@ impl NotesApp {
     /// door every affordance, the palette and agents share: checked against
     /// the participant's permissions, applied by the replayable executor,
     /// attributed, one undo step and named in history.
-    fn dispatch(&self, doc: &mut AutoCommit, action: &NotesAction) -> Result<(), String> {
+    fn dispatch(
+        &self,
+        edits: &mut ui::widget::Edits<'_>,
+        action: &NotesAction,
+    ) -> Result<(), String> {
         let dispatcher = self
             .dispatcher
             .as_ref()
             .ok_or("this notebook is open to view only")?;
         dispatcher
-            .apply_now_with(doc, action, actions::history_context(action))
+            .apply_now_with(edits, action, actions::history_context(action))
             .map_err(|error| error.to_string())
     }
 
     /// [`Self::dispatch`] for an affordance that has nothing to show for a
     /// refusal but the unchanged notebook.
-    fn apply_action(&self, doc: &mut AutoCommit, action: &NotesAction) {
-        if let Err(error) = self.dispatch(doc, action) {
+    fn apply_action(&self, edits: &mut ui::widget::Edits<'_>, action: &NotesAction) {
+        if let Err(error) = self.dispatch(edits, action) {
             tracing::warn!(%error, "notes: action refused");
         }
     }
@@ -1324,10 +1332,10 @@ impl NotesApp {
 
     fn apply_canonical_event(
         &mut self,
-        doc: &mut AutoCommit,
+        edits: &mut ui::widget::Edits<'_>,
         event: OutEvent,
     ) -> Result<(), String> {
-        self.reconcile_canonical(doc)?;
+        self.reconcile_canonical(edits.doc())?;
         let before = self.meta_map();
         let tree_move = matches!(event, OutEvent::Reparent { .. });
         match event {
@@ -1355,8 +1363,8 @@ impl NotesApp {
                     return Err("page no longer exists".into());
                 }
                 let action = actions::delete_page_action(id);
-                self.dispatch(doc, &action)?;
-                self.reconcile_canonical(doc)?;
+                self.dispatch(edits, &action)?;
+                self.reconcile_canonical(edits.doc())?;
                 self.record_current_route();
                 return Ok(());
             }
@@ -1373,7 +1381,7 @@ impl NotesApp {
                 self.workspace.move_to(id, new_parent, before);
             }
             OutEvent::Duplicate(source) => {
-                let action = actions::duplicate_subtree_action(doc, source)?;
+                let action = actions::duplicate_subtree_action(edits.doc(), source)?;
                 let NotesAction::DuplicateSubtree { pages, .. } = &action else {
                     return Err("invalid duplicate action".into());
                 };
@@ -1384,9 +1392,9 @@ impl NotesApp {
                     .destination
                     .parse::<PageId>()
                     .map_err(|e| e.to_string())?;
-                self.dispatch(doc, &action)?;
+                self.dispatch(edits, &action)?;
                 self.workspace.set_selected(Some(destination));
-                self.reconcile_canonical(doc)?;
+                self.reconcile_canonical(edits.doc())?;
                 self.record_current_route();
                 return Ok(());
             }
@@ -1404,12 +1412,12 @@ impl NotesApp {
             before.sort_by(|a, b| a.id.cmp(&b.id));
             after.sort_by(|a, b| a.id.cmp(&b.id));
             let action = NotesAction::UpdatePageTree { before, after };
-            self.dispatch(doc, &action)?;
+            self.dispatch(edits, &action)?;
         } else {
-            self.dispatch_tree_diff(doc, &before, &after);
+            self.dispatch_tree_diff(edits, &before, &after);
         }
         // Rejected optimistic metadata is always discarded, including New.
-        self.reconcile_canonical(doc)?;
+        self.reconcile_canonical(edits.doc())?;
         self.record_current_route();
         self.refresh_status();
         Ok(())
@@ -1418,10 +1426,10 @@ impl NotesApp {
     /// Apply one sidebar [`OutEvent`] to the workspace, then dispatch the
     /// matching [`NotesAction`](crate::actions) so the change lands in the shared
     /// document on the same replayable path the Ctrl+K palette uses.
-    fn apply_and_dispatch(&mut self, doc: &mut AutoCommit, ev: OutEvent) {
-        if let Err(error) = self.apply_canonical_event(doc, ev) {
+    fn apply_and_dispatch(&mut self, edits: &mut ui::widget::Edits<'_>, ev: OutEvent) {
+        if let Err(error) = self.apply_canonical_event(edits, ev) {
             tracing::warn!(%error, "notes: rejected page action; reconciling");
-            let _ = self.reconcile_canonical(doc);
+            let _ = self.reconcile_canonical(edits.doc());
             self.self_dirty = true;
         }
     }
@@ -1431,7 +1439,7 @@ impl NotesApp {
     /// renumber (which `apply` recomputes in the document) doesn't double-write.
     fn dispatch_tree_diff(
         &self,
-        doc: &mut AutoCommit,
+        edits: &mut ui::widget::Edits<'_>,
         before: &HashMap<PageId, crate::model::PageMeta>,
         after: &HashMap<PageId, crate::model::PageMeta>,
     ) {
@@ -1449,7 +1457,7 @@ impl NotesApp {
                 .parent
                 .is_some_and(|p| before.contains_key(&p) && !after.contains_key(&p));
             if !parent_also_removed {
-                self.apply_action(doc, &actions::delete_page_action(*id));
+                self.apply_action(edits, &actions::delete_page_action(*id));
             }
         }
         // Creates + edits: a page new in `after`, or one whose metadata changed
@@ -1459,7 +1467,7 @@ impl NotesApp {
         for (id, meta) in next {
             match before.get(id) {
                 Some(old) if old == meta => {}
-                _ => self.apply_action(doc, &actions::upsert_page_action(meta)),
+                _ => self.apply_action(edits, &actions::upsert_page_action(meta)),
             }
         }
     }
@@ -1595,11 +1603,11 @@ impl NotesApp {
     /// from both the normal event path and `sync`, because an accessibility
     /// activation reaches the child widget directly and then asks the host for
     /// a sync. Either route creates the same root page and shared action.
-    fn drain_empty_note_request(&mut self, state: &mut AutoCommit) -> bool {
+    fn drain_empty_note_request(&mut self, edits: &mut ui::widget::Edits<'_>) -> bool {
         if !self.main.take_empty_action() {
             return false;
         }
-        self.apply_and_dispatch(state, OutEvent::CreateChild { parent: None });
+        self.apply_and_dispatch(edits, OutEvent::CreateChild { parent: None });
         self.sidebar.sync_from_workspace(&self.workspace);
         true
     }
@@ -1643,7 +1651,7 @@ impl NotesApp {
         }
     }
 
-    fn drain_title_rename(&mut self, state: &mut AutoCommit) {
+    fn drain_title_rename(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(new_title) = self.main.take_title_rename() else {
             return;
         };
@@ -1657,7 +1665,7 @@ impl NotesApp {
             .is_some_and(|meta| meta.title != trimmed);
         if !trimmed.is_empty() && changed {
             self.apply_and_dispatch(
-                state,
+                edits,
                 OutEvent::Rename {
                     id,
                     new_title: trimmed.to_string(),
@@ -1704,7 +1712,7 @@ impl NotesApp {
     /// Drain the sidebar's outbound event queue and apply each, dispatching the
     /// matching page-tree action against the shared document. Called after every
     /// `handle_event` call.
-    fn drain_sidebar_events(&mut self, doc: &mut AutoCommit) {
+    fn drain_sidebar_events(&mut self, edits: &mut ui::widget::Edits<'_>) {
         if let Some(transfer) = self.sidebar.take_transfer() {
             self.request(&match transfer {
                 SidebarTransfer::ImportMarkdown => NotesEffect::ImportMarkdown,
@@ -1718,7 +1726,7 @@ impl NotesApp {
             return;
         }
         for ev in events {
-            self.apply_and_dispatch(doc, ev);
+            self.apply_and_dispatch(edits, ev);
         }
         // After mutation, push the new workspace snapshot back into
         // the sidebar so the tree shape reflects.
@@ -1782,8 +1790,8 @@ impl NotesApp {
     /// Test hook: apply one [`OutEvent`] and dispatch its page-tree action against
     /// `doc`, as the live sidebar-event path does.
     #[doc(hidden)]
-    pub fn dispatch_event_for_test(&mut self, doc: &mut AutoCommit, ev: OutEvent) {
-        self.apply_and_dispatch(doc, ev);
+    pub fn dispatch_event_for_test(&mut self, edits: &mut ui::widget::Edits<'_>, ev: OutEvent) {
+        self.apply_and_dispatch(edits, ev);
     }
 
     /// Test hook: whether the current tree is the narrow (drawer) layout.
@@ -2073,6 +2081,19 @@ impl Widget for NotesApp {
         self.main.apply_primary_vertical_scroll(action)
     }
 
+    /// What the sidebar, the title field, a paste or the empty state asked
+    /// for since the last frame, applied through the notebook's actions.
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.drain_title_rename(edits);
+        for event in std::mem::take(&mut self.pending_events) {
+            self.apply_and_dispatch(edits, event);
+        }
+        self.drain_sidebar_events(edits);
+        self.drain_pasted_images(edits);
+        self.drain_empty_note_request(edits);
+        self.main.settle(edits, path);
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document_ref(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
@@ -2082,15 +2103,8 @@ impl Widget for NotesApp {
             self.refresh_status();
         }
         self.refresh_canonical_assets(state);
-        self.drain_title_rename(state);
-        for event in std::mem::take(&mut self.pending_events) {
-            self.apply_and_dispatch(state, event);
-        }
-        self.drain_sidebar_events(state);
-        self.drain_pasted_images(state);
-        self.drain_empty_note_request(state);
         // Project the workspace only when its inputs moved: committed
-        // heads, an open transaction (the drains above may have written),
+        // heads, an open transaction (a settle pass may have written),
         // the selected page or the tag filter. Re-projecting every frame
         // re-listed every page and tag on each pointer move.
         let heads = state.base_heads();
@@ -2455,7 +2469,12 @@ impl Widget for NotesApp {
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
             return;
         }
-        if self.handle_new_child_shortcut(event, *ctx.modifiers, ctx.state, ctx.handled) {
+        if self.handle_new_child_shortcut(
+            event,
+            *ctx.modifiers,
+            &mut ui::widget::Edits::lend(ctx.state),
+            ctx.handled,
+        ) {
             return;
         }
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
@@ -2846,7 +2865,7 @@ impl NotesApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        edits: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let WindowEvent::KeyboardInput {
@@ -2866,7 +2885,7 @@ impl NotesApp {
             return false;
         }
         let parent = self.workspace.selected();
-        self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
+        self.apply_and_dispatch(edits, OutEvent::CreateChild { parent });
         self.sidebar.sync_from_workspace(&self.workspace);
         *handled = true;
         true
@@ -2892,7 +2911,7 @@ impl NotesApp {
                     .handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 self.claim_sidebar_focus(*ctx.focus_target);
             }
-            self.drain_sidebar_events(ctx.state);
+            self.drain_sidebar_events(&mut ctx.edits());
             if self.workspace.selected() != selected && !self.sidebar.menu_is_open() {
                 self.set_drawer_open(false);
             }
@@ -2948,7 +2967,7 @@ impl NotesApp {
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             self.claim_sidebar_focus(*ctx.focus_target);
         }
-        self.drain_sidebar_events(ctx.state);
+        self.drain_sidebar_events(&mut ctx.edits());
         if self.workspace.selected() != sel_before && !self.sidebar.menu_is_open() {
             self.set_drawer_open(false);
         }
@@ -3168,13 +3187,21 @@ impl NotesApp {
             index
         };
         match index {
-            0 => self.apply_and_dispatch(state, OutEvent::CreateChild { parent: Some(page) }),
+            0 => self.apply_and_dispatch(
+                &mut ui::widget::Edits::lend(state),
+                OutEvent::CreateChild { parent: Some(page) },
+            ),
             1 => self.main.begin_title_edit(),
-            2 => self.apply_and_dispatch(state, OutEvent::Duplicate(page)),
+            2 => self.apply_and_dispatch(
+                &mut ui::widget::Edits::lend(state),
+                OutEvent::Duplicate(page),
+            ),
             3 => self.request(&NotesEffect::CopyLink { page }),
             4 => self.request(&NotesEffect::ExportMarkdown { page }),
             5 => self.request(&NotesEffect::InsertImage { page }),
-            7 => self.apply_and_dispatch(state, OutEvent::Delete(page)),
+            7 => {
+                self.apply_and_dispatch(&mut ui::widget::Edits::lend(state), OutEvent::Delete(page))
+            }
             _ => {}
         }
         self.sidebar.sync_from_workspace(&self.workspace);
@@ -3202,7 +3229,7 @@ impl NotesApp {
                 self.claim_sidebar_focus(*ctx.focus_target);
             }
             // Drain any commands the sidebar produced.
-            self.drain_sidebar_events(ctx.state);
+            self.drain_sidebar_events(&mut ctx.edits());
         }
         // The editor never sees keystrokes the sidebar is capturing — its
         // right-click menu OR an in-progress inline rename — so a rename
@@ -3217,12 +3244,12 @@ impl NotesApp {
         // A committed edit of the note's in-page title renames the current
         // page on the same replayable action path the sidebar's inline rename
         // uses, then re-syncs the sidebar so the new name shows in the tree.
-        self.drain_title_rename(ctx.state);
+        self.drain_title_rename(&mut ctx.edits());
         // A fresh workspace has no selected page, so its central first-use
         // action creates a root note. Route it through the same replayable
         // action path as the sidebar + and Cmd/Ctrl-N; a first note must be
         // just as collaborative and undoable as every later one.
-        self.drain_empty_note_request(ctx.state);
+        self.drain_empty_note_request(&mut ctx.edits());
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -3373,7 +3400,7 @@ mod tests {
         {
             let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
             app.dispatch_event_for_test(
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 OutEvent::CreateChild { parent: Some(root) },
             );
             let children = app.workspace.children_of(Some(root));
@@ -3385,12 +3412,15 @@ mod tests {
         {
             let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
             app.dispatch_event_for_test(
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 OutEvent::CreateChild { parent: Some(root) },
             );
             let child = app.workspace.selected().unwrap();
             assert!(NotesDoc::page_body(&state.doc, child).is_some());
-            app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(child));
+            app.dispatch_event_for_test(
+                &mut ui::widget::Edits::lend(&mut state.doc),
+                OutEvent::Delete(child),
+            );
             app.sync(&mut state.doc, &state.root);
             assert!(NotesDoc::page_body(&state.doc, child).is_none());
             // Selection falls back to a remaining root page.
@@ -3401,7 +3431,7 @@ mod tests {
         {
             let (mut app, mut state, _tmp, root) = app_seeded_into_doc();
             app.dispatch_event_for_test(
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 OutEvent::Rename {
                     id: root,
                     new_title: "Index".into(),
@@ -3434,7 +3464,10 @@ mod tests {
             // Affordance side: the sidebar's Delete event through the app path,
             // as the change it recorded names it.
             let before = state.doc.get_heads();
-            app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
+            app.dispatch_event_for_test(
+                &mut ui::widget::Edits::lend(&mut state.doc),
+                OutEvent::Delete(welcome),
+            );
             let change = state.doc.get_changes(&before).into_iter().last().unwrap();
             let context =
                 tilo_actions::ActionContext::from_change_message(change.message().unwrap())
@@ -3454,7 +3487,10 @@ mod tests {
             let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
             let before = NotesDoc::list_pages(&state.doc).len();
 
-            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+            app.dispatch_event_for_test(
+                &mut ui::widget::Edits::lend(&mut state.doc),
+                OutEvent::CreateChild { parent: None },
+            );
 
             assert_eq!(
                 NotesDoc::list_pages(&state.doc).len(),
@@ -3564,10 +3600,13 @@ mod tests {
         eprintln!("phase canonical_links_produce_sorted_backlinks_for_the_target_note");
         {
             let (mut app, mut state, _tmp, target) = app_seeded_into_doc();
-            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+            app.dispatch_event_for_test(
+                &mut ui::widget::Edits::lend(&mut state.doc),
+                OutEvent::CreateChild { parent: None },
+            );
             let source = app.selected_for_test().expect("new source page selected");
             app.dispatch_event_for_test(
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 OutEvent::Rename {
                     id: source,
                     new_title: "Project index".into(),
@@ -3577,7 +3616,7 @@ mod tests {
                 .0
                 .clone();
             app.apply_action(
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &actions::edit_body_action(
                     source,
                     tilo_document::RichTextAction::SpliceText {
@@ -3590,7 +3629,7 @@ mod tests {
                 ),
             );
             app.apply_action(
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &actions::set_mark_action(source, &block, 0..7, &ui::widget::Mark::Link(target)),
             );
             let backlinks = actions::canonical_backlinks(
@@ -3613,7 +3652,10 @@ mod tests {
             // attach a real native link mark to an existing source block. This is
             // intentionally not a Markdown-parser test: incoming links must be
             // derived from the same canonical mark data collaborators receive.
-            app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+            app.dispatch_event_for_test(
+                &mut ui::widget::Edits::lend(&mut state.doc),
+                OutEvent::CreateChild { parent: None },
+            );
             let target = app
                 .selected_for_test()
                 .expect("new page becomes the backlink destination");
@@ -3625,7 +3667,7 @@ mod tests {
                 0..4,
                 &ui::widget::Mark::Link(target),
             );
-            app.apply_action(&mut state.doc, &action);
+            app.apply_action(&mut ui::widget::Edits::lend(&mut state.doc), &action);
 
             app.navigate_to(target);
             app.sync(&mut state.doc, &state.root);
@@ -3734,7 +3776,7 @@ mod tests {
                 0..4,
                 &ui::widget::marks::Mark::Underline,
             );
-            app.apply_action(&mut state.doc, &action);
+            app.apply_action(&mut ui::widget::Edits::lend(&mut state.doc), &action);
 
             // Simulate a remote structural refresh. The widget rebuilds plain
             // text/kinds, then Notes hydrates the native mark state back into the

@@ -662,6 +662,65 @@ pub trait CompleteContentProvider {
     ) -> bool;
 }
 
+/// The document as a host lends it to one pass that may change it: read
+/// freely, changed only through a typed action the action host applies (a
+/// resource's dispatcher applies it), so every change is an action that is
+/// attributed, recorded in history and undone like any other.
+pub struct Edits<'a> {
+    doc: &'a mut AutoCommit,
+}
+
+impl<'a> Edits<'a> {
+    /// Lend `doc` to one pass.
+    #[doc(hidden)]
+    pub fn lend(doc: &'a mut AutoCommit) -> Self {
+        Self { doc }
+    }
+
+    /// The document as it stands, with what this pass applied.
+    pub fn doc(&self) -> &AutoCommit {
+        self.doc
+    }
+
+    /// The same document, lent on to a part of the pass.
+    pub fn reborrow(&mut self) -> Edits<'_> {
+        Edits {
+            doc: &mut *self.doc,
+        }
+    }
+
+    /// Apply `action` of the action type `type_id` now, through `host`, under
+    /// `context`.
+    ///
+    /// # Errors
+    /// Returns the action's refusal; nothing is written then.
+    #[doc(hidden)]
+    pub fn apply<A>(
+        &mut self,
+        host: &mut crate::action_host::ActionHost,
+        type_id: &str,
+        action: &A,
+        context: tilo_actions::ActionContext,
+    ) -> Result<(), tilo_actions::ActionError>
+    where
+        A: tilo_actions::Action + serde::Serialize,
+    {
+        host.try_dispatch_with_context(self.doc, type_id, action, context)
+    }
+
+    /// The lent document, for the hosts that pass it on to a record of
+    /// their own.
+    pub(crate) fn document_mut(&mut self) -> &mut AutoCommit {
+        self.doc
+    }
+}
+
+/// Where `doc` stands, to tell whether a settle pass changed it.
+pub(crate) fn settle_mark(doc: &AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+    use automerge::transaction::Transactable as _;
+    (doc.base_heads(), doc.pending_ops())
+}
+
 /// Host services associated with one retained widget event dispatch.
 pub struct EventCtx<'a> {
     pub scale_factor: f64,
@@ -687,6 +746,11 @@ impl EventCtx<'_> {
             node_id,
             taffy: self.taffy,
         }
+    }
+
+    /// The document this event may change, through typed actions only.
+    pub fn edits(&mut self) -> Edits<'_> {
+        Edits::lend(self.state)
     }
 
     /// The stylus that made the `CursorMoved` or `MouseInput` being
@@ -925,6 +989,18 @@ pub trait Widget {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         false
     }
+
+    /// Apply, after the sync pass, what the widget took up there and must
+    /// write: a worker's answer, a chooser's file, an event a child queued.
+    /// Writes go only through typed actions on `edits` (a resource's
+    /// dispatcher); the host syncs again when the document changed. The
+    /// default settles the children [`Widget::children_mut`] returns.
+    fn settle(&mut self, edits: &mut Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

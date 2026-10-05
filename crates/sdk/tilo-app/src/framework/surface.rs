@@ -650,6 +650,10 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         Some(&mut self.surface)
     }
 
+    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ObjId) {
+        self.surface.settle(edits, path);
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let read_only = self.dispatch.read_only();
         if read_only != self.read_only {

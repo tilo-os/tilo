@@ -488,9 +488,11 @@ impl SnippetsApp {
         };
         let stored = SnippetsDoc::get(doc, id).map(|snippet| snippet.body);
         let applied = match (&self.body_edits, &stored) {
-            (Some(edits), Some(stored)) => {
-                splice_between(stored, &text).is_none_or(|edit| edits.apply_now(doc, &edit).is_ok())
-            }
+            (Some(edits), Some(stored)) => splice_between(stored, &text).is_none_or(|edit| {
+                edits
+                    .apply_now(&mut ui::widget::Edits::lend(doc), &edit)
+                    .is_ok()
+            }),
             _ => false,
         };
         if !applied {

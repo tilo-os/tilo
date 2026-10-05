@@ -2068,6 +2068,41 @@ impl Widget for TileHost {
         }
     }
 
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
+        let _running = self.running();
+        if !self.history_lifetime.active.get()
+            || crate::history_mode::frame::FrameworkInputFrame::active()
+            || self.record_error.is_some()
+        {
+            return;
+        }
+        let live = self.binding.as_ref().map(|binding| binding.live.clone());
+        match (
+            live,
+            self.binding.as_ref().map(|binding| binding.store.clone()),
+        ) {
+            (Some(id), Some(store)) => {
+                let _ = store.with(&id, |doc| {
+                    if let TileContent::App(app) = &mut self.content {
+                        let before = crate::widget::settle_mark(doc);
+                        app.settle(&mut crate::widget::Edits::lend(doc), &ROOT);
+                        // What it wrote shows in this same frame.
+                        if crate::widget::settle_mark(doc) != before {
+                            app.update(doc, &ROOT);
+                            app.sync(doc, &ROOT);
+                        }
+                    }
+                });
+                let _ = self.record_owner_step_to_current_record();
+            }
+            _ => {
+                if let TileContent::App(app) = &mut self.content {
+                    app.settle(edits, path);
+                }
+            }
+        }
+    }
+
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let _running = self.running();
         // This custody is independent of the outer App State and remains

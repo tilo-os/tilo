@@ -379,7 +379,10 @@ impl HexView {
         }
         for edit in edits {
             if dispatch
-                .apply_now(doc, &HexEditorAction::from_edit(edit))
+                .apply_now(
+                    &mut ui::widget::Edits::lend(doc),
+                    &HexEditorAction::from_edit(edit),
+                )
                 .is_err()
             {
                 if let Some(live) = &self.live {

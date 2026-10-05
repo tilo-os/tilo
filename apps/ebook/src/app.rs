@@ -3362,7 +3362,7 @@ impl BooksApp {
     /// nothing, and the dispatcher says why.
     fn edit(&self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
         let _ = self.dispatch.apply_now_with(
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             action,
             tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
         );

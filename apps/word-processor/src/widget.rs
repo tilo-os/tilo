@@ -1947,7 +1947,7 @@ impl WordProcessorWidget {
         let Some(dispatch) = self.dispatch.clone() else {
             return false;
         };
-        match dispatch.apply_now_with(state, action, context) {
+        match dispatch.apply_now_with(&mut ui::widget::Edits::lend(state), action, context) {
             Ok(()) => {
                 #[cfg(test)]
                 {
@@ -2752,7 +2752,7 @@ impl WordProcessorWidget {
         for action in &envelopes {
             dispatch
                 .apply_now_with(
-                    state,
+                    &mut ui::widget::Edits::lend(state),
                     action,
                     tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action)
                         .with_invoker(invoker.clone()),

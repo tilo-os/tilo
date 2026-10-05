@@ -447,7 +447,7 @@ impl ThemesApp {
         };
         match doc {
             Some(doc) => {
-                let _ = dispatch.apply_now(doc, action);
+                let _ = dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action);
             }
             None => dispatch.apply(action),
         }

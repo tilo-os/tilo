@@ -980,7 +980,11 @@ impl ChatApp {
         self.dispatched.borrow_mut().push(action.clone());
         if let Some(dispatch) = &self.dispatch {
             // A refusal changes nothing; the dispatcher reports it.
-            let _ = dispatch.apply_now_with(doc, action, actions::history_context(action));
+            let _ = dispatch.apply_now_with(
+                &mut ui::widget::Edits::lend(doc),
+                action,
+                actions::history_context(action),
+            );
         }
     }
 
@@ -1933,14 +1937,12 @@ impl ChatApp {
         {
             return;
         }
-        self.submit_action(
-            &actions::ChatAction::EnsureUser {
-                name: me.name,
-                initials: me.initials,
-                color_idx: me.color_idx,
-                status: status.as_str().to_string(),
-            },
-        );
+        self.submit_action(&actions::ChatAction::EnsureUser {
+            name: me.name,
+            initials: me.initials,
+            color_idx: me.color_idx,
+            status: status.as_str().to_string(),
+        });
     }
 
     /// Advance the local read watermark for the channel currently in view so
