@@ -253,6 +253,7 @@ impl ResourceSurface<Monitor, MonitorEffect> for MonitorApp {
     fn attach(&mut self, cx: SurfaceCx<Monitor>) {
         self.follow_preferences(cx.settings());
         self.attach_framework(cx.dispatcher());
+        self.attach_actions(cx.actions());
     }
 
     fn stage(&mut self, scenario: Option<&str>) {
@@ -669,6 +670,26 @@ mod tests {
             0,
             "the sample machine and past versions are drawn without probing this one"
         );
+    }
+
+    /// The real summary, shared layout and window-local tabs all enter
+    /// through admitted controls in a live process window.
+    #[test]
+    fn live_monitor_controls_are_certified() {
+        let mut app = TestApp::<MonitorShell>::new().unwrap();
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "processes: {audit:?}");
+        click(&mut app, "Tree view");
+        assert!(!app.state().tree_mode);
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "flat processes: {audit:?}");
+        app.harness()
+            .perform_named("monitor.tabs:segment:1", &ui::a11y::Action::Activate)
+            .unwrap();
+        app.settle();
+        assert_eq!(tab_shown(&mut app, 1), Some(true));
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "resources: {audit:?}");
     }
 
     ui::action_contract_tests! {

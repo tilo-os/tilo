@@ -962,3 +962,60 @@ fn exported_section_and_row_buttons_keep_their_keyboard_identity() {
     assert_eq!(sections_called.borrow().len(), 1);
     assert!(h.a11y_node_named("Rename row One").is_none());
 }
+
+#[test]
+fn bound_navigation_inventory_follows_the_visible_semantic_window() {
+    fn targets(node: &crate::a11y::AccessNode, result: &mut HashSet<String>) {
+        if let Some(target) = &node.action_target {
+            result.insert(target.clone());
+        }
+        for child in &node.children {
+            targets(child, result);
+        }
+    }
+    let resource = tilo_actions::Resource::new("navigation", "test", "Navigation").with_action(
+        tilo_actions::ActionSpec::operation(
+            "open",
+            "Open destination",
+            tilo_actions::OperationKind::View,
+            "test.open",
+            &(),
+        )
+        .unwrap(),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").unwrap();
+    let items = (0..40)
+        .map(|index| NavItem::new(format!("item-{index}"), format!("Item {index}")))
+        .collect();
+    let list = NavList::new(vec![NavSection::new("items", "", items).filterable()])
+        .selection_actions((0..40).map(|index| (format!("item-{index}"), binding.clone())));
+    let mut frame = harness(list, Theme::dark());
+    for filtered in [false, true] {
+        if filtered {
+            frame.root_mut::<NavList>().set_filter("Item 39");
+            frame.relayout_at((280, 360)).unwrap();
+        }
+        let list = frame.root::<NavList>();
+        let mut exported = HashSet::new();
+        targets(&Widget::accessibility(list).unwrap(), &mut exported);
+        let bindings = crate::widget::controls::control_action_bindings(list);
+        assert!(!bindings.is_empty());
+        assert!(
+            bindings.len() < 40,
+            "the inventory must follow viewport/filter bounds"
+        );
+        for binding in &bindings {
+            assert!(
+                exported.contains(&binding.control_id),
+                "orphan: {binding:?}"
+            );
+        }
+        if filtered {
+            assert_eq!(
+                bindings.len(),
+                1,
+                "the filtered destination alone is mounted"
+            );
+        }
+    }
+}

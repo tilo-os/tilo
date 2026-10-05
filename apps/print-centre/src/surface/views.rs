@@ -386,7 +386,7 @@ fn tool_row(id: &str, icon: Icon, title: &str, detail: &str, tx: &Door, command:
             .icon(icon)
             .secondary(detail)
             .disclosure()
-            .on_activate(move || {
+            .on_view(move || {
                 let _ = tx.send(command.clone());
             }),
     )

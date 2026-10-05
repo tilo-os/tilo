@@ -65,6 +65,7 @@ pub struct ToolbarCommand {
     pub joined: bool,
     pub on_click: Box<dyn FnMut()>,
     action: Option<super::ActionEmitter<()>>,
+    native: Option<(String, super::activation::NativeControl)>,
 }
 
 impl ToolbarCommand {
@@ -82,6 +83,7 @@ impl ToolbarCommand {
             joined: false,
             on_click,
             action: None,
+            native: None,
         }
     }
 
@@ -282,6 +284,30 @@ impl Toolbar {
     #[must_use]
     pub fn with_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         if let Some(command) = self.last_command() {
+            command.action = Some(super::ActionEmitter::new(binding));
+            command.native = None;
+        }
+        self
+    }
+
+    /// Publish the last command's callback as an admitted transient view action.
+    #[must_use]
+    pub fn with_view(self, id: &str) -> Self {
+        self.with_native(id, tilo_actions::OperationKind::View)
+    }
+
+    /// Publish the last command's callback as an admitted local effect.
+    #[must_use]
+    pub fn with_effect(self, id: &str) -> Self {
+        self.with_native(id, tilo_actions::OperationKind::Effect)
+    }
+
+    fn with_native(mut self, id: &str, kind: tilo_actions::OperationKind) -> Self {
+        if let Some(command) = self.last_command() {
+            let callback = std::mem::replace(&mut command.on_click, Box::new(|| {}));
+            let (native, binding) =
+                super::activation::NativeControl::new(id, command.name(), kind, callback);
+            command.native = Some((id.to_owned(), native));
             command.action = Some(super::ActionEmitter::new(binding));
         }
         self
@@ -1406,8 +1432,54 @@ impl crate::widget::controls::ActionControls for Toolbar {
     }
 }
 
+impl crate::resources::PublishesResources for Toolbar {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.items
+            .iter()
+            .filter_map(|item| match item {
+                ToolbarItem::Button(command) => {
+                    command.native.as_ref().map(|(_, native)| native.resource())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+}
+
 impl Widget for Toolbar {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
+
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        if self
+            .items
+            .iter()
+            .any(|item| matches!(item, ToolbarItem::Button(command) if command.native.is_some()))
+        {
+            std::iter::once(super::activation::NATIVE_INVOKE.to_owned()).collect()
+        } else {
+            std::collections::HashSet::new()
+        }
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &super::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) -> Result<Option<super::ResourceOperationStart>, String> {
+        for item in &mut self.items {
+            if let ToolbarItem::Button(command) = item
+                && let Some((id, native)) = &mut command.native
+                && let Some(started) = native.start(id, op)?
+            {
+                return Ok(Some(started));
+            }
+        }
+        Ok(None)
+    }
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         Widget::set_platform_conventions(&mut self.menu, conventions);
         for item in &mut self.items {
@@ -2227,6 +2299,60 @@ mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
     use vello_encoding::DrawTag;
+
+    #[test]
+    fn native_commands_are_admitted_and_operate_in_the_row_and_overflow() {
+        use crate::headless::Framed;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        for width in [800, 100] {
+            let calls = Rc::new(Cell::new(0));
+            let callback = Rc::clone(&calls);
+            let toolbar = Toolbar::new(Orientation::Horizontal)
+                .push_toggle("Include children in process totals", false, move || {
+                    callback.set(callback.get() + 1);
+                })
+                .with_view("test.include-children");
+            let mut frame = Framed::new(crate::State::new(), toolbar, (width, 200), Theme::dark());
+            let audit = Framed::harness(&frame).native_app_audit();
+            assert!(audit.is_certified(), "{width}: {audit:?}");
+            if width == 100 {
+                Framed::harness_mut(&mut frame)
+                    .perform_named("toolbar.overflow", &Action::Activate)
+                    .unwrap();
+                Framed::harness_mut(&mut frame).poll_frame();
+            }
+            let command = Framed::harness(&frame)
+                .controls()
+                .into_iter()
+                .find(|control| {
+                    control.name.as_deref() == Some("Include children in process totals")
+                })
+                .and_then(|control| control.bounds)
+                .expect("the actual row or overflow command is laid out");
+            Framed::harness_mut(&mut frame).click_at(command.center().x, command.center().y);
+            Framed::harness_mut(&mut frame).poll_frame();
+            assert_eq!(calls.get(), 1, "{width}: physical activation invokes once");
+            if width == 100 {
+                Framed::harness_mut(&mut frame)
+                    .perform_named("toolbar.overflow", &Action::Activate)
+                    .unwrap();
+                Framed::harness_mut(&mut frame).poll_frame();
+            }
+            Framed::harness_mut(&mut frame)
+                .perform_named("toolbar.item.0", &Action::Activate)
+                .unwrap();
+            Framed::harness_mut(&mut frame).poll_frame();
+            assert_eq!(
+                calls.get(),
+                2,
+                "{width}: assistive activation uses the same handler"
+            );
+            let audit = Framed::harness(&frame).native_app_audit();
+            assert!(audit.is_certified(), "{width}: {audit:?}");
+        }
+    }
 
     #[test]
     fn bound_commands_queue_the_same_action_in_the_row_and_overflow_and_obey_availability() {

@@ -368,7 +368,7 @@ fn filesystem(index: usize, part: &Partition, selected: bool, intents: &Intents)
         .icon(Icon::Layers)
         .secondary(secondary)
         .selected(selected)
-        .on_activate(move || pick.push(Intent::SelectPartition(Some(index))));
+        .on_view(move || pick.push(Intent::SelectPartition(Some(index))));
     if let Some(used) = part.used {
         row = row.meta(format!("{} free", bytes_si(part.size.saturating_sub(used))));
     }
@@ -575,7 +575,7 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
                 .secondary(summary)
                 .meta(bytes_si(part.size))
                 .selected(model.partition == Some(index))
-                .on_activate(move || pick.push(Intent::SelectPartition(Some(index)))),
+                .on_view(move || pick.push(Intent::SelectPartition(Some(index)))),
             )
         })
         .collect();

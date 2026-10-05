@@ -823,6 +823,12 @@ impl MonitorApp {
 
     // ---- framework hosting ------------------------------------------------
 
+    pub(crate) fn attach_actions(&mut self, actions: ui::framework::Actions<Monitor>) {
+        let mut shared = self.shared.borrow_mut();
+        shared.actions = Some(actions);
+        shared.revision += 1;
+    }
+
     pub(crate) fn attach_framework(&mut self, dispatcher: Dispatcher<Monitor>) {
         self.dispatcher = Some(dispatcher);
     }
@@ -1333,7 +1339,7 @@ impl MonitorApp {
             )
             .with_id("monitor.tabs")
             .control_size(ControlSize::Small)
-            .on_change(move |index| {
+            .on_view("monitor.tabs", move |index| {
                 if let Some(tab) = Tab::ALL.get(index) {
                     requests.borrow_mut().push(Request::Tab(*tab));
                 }

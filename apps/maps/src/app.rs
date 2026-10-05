@@ -88,6 +88,8 @@ enum Hit {
     Consume,
     /// Open the platform search over this app.
     OpenSearch,
+    /// The separate search action in the empty places panel.
+    OpenEmptySearch,
     /// Collapse / expand the side panel (docked layouts).
     ToggleCollapse,
     /// Return from the Directions view to the plain places list.
@@ -2077,7 +2079,7 @@ impl MapsApp {
     fn dispatch(&mut self, hit: &Hit) {
         match hit {
             Hit::Consume => {}
-            Hit::OpenSearch => {
+            Hit::OpenSearch | Hit::OpenEmptySearch => {
                 self.search_opener
                     .open(ui::search::SearchRequest::this_app());
             }
@@ -3343,7 +3345,7 @@ impl MapsApp {
             };
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
             if let Some(action) = EmptyState::paint(&mut ctx, rect, &empty_state, self.last_mouse) {
-                self.click_targets.push((action, Hit::OpenSearch));
+                self.click_targets.push((action, Hit::OpenEmptySearch));
             }
             return content.y1;
         }
@@ -4161,6 +4163,12 @@ impl MapsApp {
             Hit::OpenSearch => (
                 "Search places".to_string(),
                 "maps.search".to_string(),
+                Role::Button,
+                AccessState::new().focusable(true),
+            ),
+            Hit::OpenEmptySearch => (
+                "Search places".to_string(),
+                "maps.empty-search".to_string(),
                 Role::Button,
                 AccessState::new().focusable(true),
             ),

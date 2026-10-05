@@ -176,7 +176,7 @@ impl ResourceSurface<DiskUsage, DiskUsageEffect> for DiskUsageApp {
     fn attach(&mut self, cx: SurfaceCx<DiskUsage>) {
         self.immediate = cx.mode() == RunMode::Capture;
         self.dispatcher = Some(cx.dispatcher());
-        self.actions = Some(cx.actions());
+        self.actions = (cx.mode() == RunMode::Live).then(|| cx.actions());
         match cx.mode() {
             RunMode::Capture => {
                 if let Some(recent) = cx.fixture::<RecentFolders>() {
@@ -368,29 +368,46 @@ mod tests {
     #[test]
     fn folder_controls_are_certified_and_analyze_through_the_resource() {
         for scenario in ["home", "analysis"] {
-            let mut app = TestApp::<DiskUsageShell>::capture(Some(scenario)).unwrap();
-            let audit = app.harness().native_app_audit();
-            assert!(audit.is_certified(), "{scenario}: {audit:?}");
+            let mut capture = TestApp::<DiskUsageShell>::capture(Some(scenario)).unwrap();
             let bindings =
-                ui::widget::controls::control_action_bindings(app.harness().root_widget());
-            let folders: Vec<_> = bindings
-                .iter()
-                .filter(|binding| {
-                    binding.control_id.starts_with("disk-usage.place:")
-                        || binding.control_id.starts_with("disk-usage.folder-row:")
-                })
+                ui::widget::controls::control_action_bindings(capture.harness().root_widget());
+            assert!(
+                bindings.iter().all(|binding| {
+                    !binding.control_id.starts_with("disk-usage.place:")
+                        && !binding.control_id.starts_with("disk-usage.folder-row:")
+                }),
+                "{scenario}: a capture must not bind unavailable device effects: {bindings:?}",
+            );
+            let folders: Vec<_> = capture
+                .harness()
+                .controls()
+                .into_iter()
+                .filter(|control| control.role == ui::accesskit::Role::ListItem)
                 .collect();
-            assert!(!folders.is_empty(), "{scenario}: no folder controls");
-            for binding in folders {
-                let ui::widget::ControlBindingKind::Action(address) = &binding.kind else {
-                    panic!("{scenario}: folder is not action-bound: {binding:?}");
-                };
-                assert_eq!(address.action, "analyze");
-            }
+            assert!(
+                !folders.is_empty(),
+                "{scenario}: folder rows must remain visible"
+            );
+            let audit = capture.harness().native_app_audit();
+            assert!(audit.is_certified(), "{scenario}: {audit:?}");
         }
 
         let folder = scratch_folder("folder-control");
         let mut app = TestApp::<DiskUsageShell>::new().unwrap();
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "live home: {audit:?}");
+        let bindings = ui::widget::controls::control_action_bindings(app.harness().root_widget());
+        let folders: Vec<_> = bindings
+            .iter()
+            .filter(|binding| binding.control_id.starts_with("disk-usage.place:"))
+            .collect();
+        assert!(!folders.is_empty(), "live home: no folder controls");
+        for binding in folders {
+            let ui::widget::ControlBindingKind::Action(address) = &binding.kind else {
+                panic!("live home: folder is not action-bound: {binding:?}");
+            };
+            assert_eq!(address.action, "analyze");
+        }
         app.settings::<RecentFolders>()
             .update(|recent| recent.remember(folder.clone()))
             .unwrap();

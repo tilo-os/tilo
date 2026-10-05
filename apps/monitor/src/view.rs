@@ -207,6 +207,7 @@ pub(crate) struct Bridge {
     /// The selected row, as an index into `rows`.
     pub selected: Option<usize>,
     pub options: Option<ListOptions>,
+    pub actions: Option<ui::framework::Actions<crate::resource::Monitor>>,
     pub filter: String,
     /// How many processes the list could show, filtered or not.
     pub total: usize,
@@ -291,7 +292,7 @@ fn summary_tiles(metrics: &Metrics, shared: &Shared) -> StatGroup {
             let requests = Rc::clone(shared);
             let mut tile = StatTile::new(stat.label(), value)
                 .sparkline(samples)
-                .on_activate(format!("monitor.summary.{}", stat.id()), move || {
+                .on_view(format!("monitor.summary.{}", stat.id()), move || {
                     requests.borrow_mut().push(Request::ShowStat(stat));
                 });
             if !unit.is_empty() {
@@ -425,11 +426,27 @@ fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
         Toolbar::new(Orientation::Horizontal).push_toggle("Tree view", options.tree, move || {
             tree.borrow_mut().push(Request::TreeMode(!options.tree));
         });
+    let tree_mode = !options.tree;
+    let binding = shared.borrow().actions.as_ref().and_then(|actions| {
+        actions.binding(
+            ui::tilo_resource::ActionRef::<crate::resource::Monitor, bool>::new(
+                "set-tree-mode",
+                &["tree"],
+            )
+            .map(move |()| tree_mode),
+        )
+    });
+    toolbar = match binding {
+        Some(binding) => toolbar.with_action(binding),
+        None => toolbar.with_view("monitor.tree-mode"),
+    };
     if options.tree {
         let summing = options.sum == SumMode::SumSubtree;
-        toolbar = toolbar.push_toggle("Include children", summing, move || {
-            sum.borrow_mut().push(Request::SumChildren(!summing));
-        });
+        toolbar = toolbar
+            .push_toggle("Include children", summing, move || {
+                sum.borrow_mut().push(Request::SumChildren(!summing));
+            })
+            .with_view("monitor.sum-children");
     }
     toolbar
         .push_separator()
@@ -438,6 +455,7 @@ fn view_toolbar(options: ListOptions, shared: &Shared) -> Toolbar {
                 .borrow_mut()
                 .push(Request::KernelThreads(!options.kernel_threads));
         })
+        .with_effect("monitor.kernel-threads")
 }
 
 /// One sentence and at most one action for each way the list is empty.

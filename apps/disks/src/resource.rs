@@ -591,6 +591,8 @@ mod tests {
             let resources = app.harness().resources();
             let sample = find(&resources, "disk:nvme0n1").is_some();
             assert_eq!(sample, scenario != Some("empty"), "{scenario:?}");
+            let audit = app.harness().native_app_audit();
+            assert!(audit.is_certified(), "{scenario:?}: {audit:#?}");
         }
         let mut named = TestApp::<DisksShell>::capture(Some("named")).unwrap();
         assert!(

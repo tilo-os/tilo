@@ -568,6 +568,15 @@ impl StatTile {
         self
     }
 
+    /// Publish opening this tile's detail as a transient presentation action.
+    #[must_use]
+    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut() + 'static) -> Self {
+        self.activation = Activation::new(id);
+        self.activation
+            .set_native(tilo_actions::OperationKind::View, &self.label, Box::new(f));
+        self
+    }
+
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
         self.selected = selected;
@@ -610,7 +619,10 @@ impl StatTile {
 }
 
 impl Widget for StatTile {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
 
     fn build_layout(
         &mut self,
@@ -731,6 +743,19 @@ impl Widget for StatTile {
         matches!(action, crate::a11y::Action::Activate) && self.activation.activate()
     }
 
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        self.activation.native_handlers()
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.activation.start_native(op)
+    }
+
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -771,6 +796,12 @@ impl Widget for StatTile {
 }
 
 activation_controls!(StatTile, activation);
+
+impl crate::resources::PublishesResources for StatTile {
+    fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        self.activation.native_resources()
+    }
+}
 
 /// A set of stat tiles that reflows by width: all in one row when they fit,
 /// then half per row (a 2×2 for four), then one per row. Tiles are separated
@@ -1074,6 +1105,26 @@ mod tests {
             &automerge::ROOT
         ));
         assert_eq!(hits.get(), 1);
+    }
+
+    #[test]
+    fn a_detail_tile_is_admitted_for_pointer_and_assistive_activation() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = calls.clone();
+        let tile = StatTile::new("CPU", "42").on_view("cpu.detail", move || {
+            count.set(count.get() + 1);
+        });
+        let mut harness =
+            FrameHarness::for_root(crate::State::new(), tile, (280, 140), Theme::dark());
+        let audit = harness.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        let target = harness.targets()["cpu.detail"];
+        harness.click_at(target.center().x, target.center().y);
+        assert_eq!(calls.get(), 1);
+        harness
+            .perform_named("cpu.detail", &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]
