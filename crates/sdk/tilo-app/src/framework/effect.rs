@@ -258,6 +258,9 @@ pub struct EffectCx<R: Resource, H = ()> {
     document: Option<Rc<RefCell<tilo_resource::Doc>>>,
     /// The lent document's heads, taken when it was lent.
     heads: Vec<ui_core::automerge::ChangeHash>,
+    /// Scoped immediate views carry no document loan or worker authority.
+    scoped_immediate_view: bool,
+    refused_scoped_job: bool,
 }
 
 /// The resource as it was at a past version a view asked for: its
@@ -277,6 +280,8 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             started: None,
             document: None,
             heads: Vec::new(),
+            scoped_immediate_view: false,
+            refused_scoped_job: false,
         }
     }
 
@@ -351,6 +356,15 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         self.env.wake.clone()
     }
 
+    fn refuse_scoped_job(&mut self) -> bool {
+        if self.scoped_immediate_view {
+            self.refused_scoped_job = true;
+            true
+        } else {
+            false
+        }
+    }
+
     fn track(&mut self, then: Option<Then<R, H>>) -> (Progress, Arc<AtomicBool>) {
         let (events, receiver) = channel();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -393,6 +407,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         T: Send + 'static,
         F: std::future::Future<Output = T> + Send + 'static,
     {
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
+        }
         let (progress, _) = self.track(Some(Self::then(then)));
         let future = work(progress.clone());
         let task = ui_core::rt::app().spawn(async move {
@@ -416,6 +433,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     where
         T: Send + 'static,
     {
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
+        }
         let (progress, _) = self.track(Some(Self::then(then)));
         let task = ui_core::rt::app().spawn_blocking(move || {
             let value = work(progress.clone());
@@ -430,7 +450,11 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// Answer later, from wherever the work settles. Return
     /// [`Effected::Pending`] and keep the reply until then.
     pub fn reply(&mut self) -> EffectReply {
+        let refused = self.refuse_scoped_job();
         let (progress, _) = self.track(None);
+        if refused && let Some(started) = self.started.take() {
+            started.stop();
+        }
         EffectReply { progress }
     }
 
@@ -443,6 +467,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         receiver: Receiver<T>,
         then: impl FnOnce(&mut H, Option<T>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
+        }
         let (progress, _) = self.track(Some(Self::then(then)));
         if let Some(started) = self.started.as_mut() {
             started.source = Some(Box::new(move || {
@@ -467,6 +494,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         request: PickRequest,
         then: impl FnOnce(&mut H, Option<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
+        }
         let chosen = request.send_contents();
         self.wait_for(chosen, move |host, outcome, cx| match outcome {
             Some(ContentsOutcome::Picked(files)) => {
@@ -486,6 +516,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         request: PickRequest,
         then: impl FnOnce(&mut H, Vec<ChosenFile>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
+        }
         let chosen = request.send_contents();
         self.wait_for(chosen, move |host, outcome, cx| match outcome {
             Some(ContentsOutcome::Picked(files)) => {
@@ -508,6 +541,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         request: PickRequest,
         then: impl FnOnce(&mut H, Option<std::path::PathBuf>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
+        }
         let chosen = request.send();
         self.wait_for(chosen, move |host, outcome, cx| match outcome {
             Some(PortalOutcome::Opened(path)) => then(host, Some(path), cx),
@@ -528,6 +564,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
         bytes: Vec<u8>,
         then: impl FnOnce(&mut H, bool, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
+        }
         let saved = request.send_save_contents(bytes);
         self.wait_for(saved, move |host, outcome, cx| match outcome {
             Some(SaveOutcome::Saved) => then(host, true, cx),
@@ -556,6 +595,9 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
             fn drop(&mut self) {
                 self.0.withdraw();
             }
+        }
+        if self.refuse_scoped_job() {
+            return Effected::Pending;
         }
         let asked = Asked(opener.open(arguments));
         let (progress, _) = self.track(Some(Self::then(then)));
@@ -1053,11 +1095,13 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
         doc: Option<&tilo_resource::Doc>,
         handle: impl FnOnce(&mut H, E, &mut EffectCx<R, H>) -> EffectAnswer,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        // An invocation in a caller's custody stays with handlers that
-        // carry it.
-        let Some(request) = op.unscoped() else {
+        let (request, scope) = op.with_custody();
+        // Only synchronous caller-local views are supported in custody here.
+        // Device effects and jobs require a handler retaining checked custody
+        // through their actual execution and every delayed callback.
+        if scope.is_some() && request.kind != tilo_actions::OperationKind::View {
             return Ok(None);
-        };
+        }
         if request.type_id != E::OPERATION {
             return Ok(None);
         }
@@ -1070,19 +1114,32 @@ impl<R: Resource, H: 'static, E: Effect> EffectRunner<R, H, E> {
             return Err(format!("`{id}` was invoked as another kind of operation"));
         }
         let job = declaration.is_some_and(|decl| decl.is_job());
+        if scope.is_some() && job {
+            return Ok(None);
+        }
         let mut cx = EffectCx::new(self.env.clone(), Some(request.invocation));
-        // Keep an immutable snapshot for this effect invocation, including any
-        // pending edits. The effect may also read a historical version; neither
-        // read borrows the author's document mutably.
-        cx.document = doc.map(|doc| {
+        cx.scoped_immediate_view = scope.is_some();
+        // Unscoped effects keep an immutable snapshot, including pending
+        // edits. Scoped immediate views get no raw record or version loan;
+        // their handler uses the surface's admitted presentation state.
+        cx.document = doc.filter(|_| scope.is_none()).map(|doc| {
             cx.heads = doc.base_heads();
             Rc::new(RefCell::new(doc.clone()))
         });
-        let answer = {
+        let run = || {
             let _acting = ActingFor::enter(Some(request.invocation));
             handle(host, effect, &mut cx)
         };
+        let answer = match scope {
+            Some(scope) => scope.with_effect(run),
+            None => run(),
+        };
         cx.document = None;
+        if cx.refused_scoped_job {
+            return Err(format!(
+                "`{id}` is a scoped immediate view and cannot start a job"
+            ));
+        }
         let started = cx.started.take();
         match (answer?, started, job) {
             (Effected::Done(output), started, false) => {
