@@ -667,9 +667,7 @@ fn resource_send_performs_a_real_http_round_trip() {
     app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
         .unwrap();
     assert!(app.state().history.is_empty());
-    eprintln!("HTTP milestone: before start_effect");
     let admitted = app.start_effect(&ApiTesterEffect::Send).unwrap();
-    eprintln!("HTTP {admitted:?}: admitted, before progress/pending surface inspection");
     assert!(
         !app.effect_progress().iter().any(|update| matches!(
             update,
@@ -688,7 +686,6 @@ fn resource_send_performs_a_real_http_round_trip() {
         app.state().history.is_empty(),
         "admission is not a completed request record"
     );
-    eprintln!("HTTP {admitted:?}: pending surface/history proved, before URL edit");
     // A later edit cannot change the history record of the request already sent.
     app.invoke(
         Invoke::apply(&ApiTesterAction::EditUrl(
@@ -699,7 +696,6 @@ fn resource_send_performs_a_real_http_round_trip() {
         .unwrap(),
     )
     .unwrap();
-    eprintln!("HTTP {admitted:?}: URL edit finished, before method edit");
     app.invoke(
         Invoke::apply(&ApiTesterAction::SetMethod {
             method: HttpMethod::Post,
@@ -707,18 +703,11 @@ fn resource_send_performs_a_real_http_round_trip() {
         .unwrap(),
     )
     .unwrap();
-    eprintln!("HTTP {admitted:?}: method edit finished, releasing held response");
     release_response
         .send(())
         .expect("release the held HTTP backend");
-    eprintln!("HTTP {admitted:?}: response released, before terminal wait");
-    let mut first_settle = true;
     tilo_test_env::wait_until("the HTTP worker to answer the request", || {
         app.settle();
-        if first_settle {
-            first_settle = false;
-            eprintln!("HTTP {admitted:?}: first terminal-wait settle returned");
-        }
         app.effect_progress().iter().any(|update| {
             matches!(
                 update,
@@ -729,7 +718,6 @@ fn resource_send_performs_a_real_http_round_trip() {
         })
     });
     let updates = app.effect_progress();
-    eprintln!("HTTP {admitted:?}: terminal updates {updates:?}");
     assert!(
         updates
             .iter()
@@ -835,30 +823,20 @@ fn a_failed_request_is_shown_in_the_response_pane() {
 
 /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
 fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
-    let (mut a, mut doc) = demo();
+    let mut doc = AutoCommit::new();
+    ApiTester::initialize(&mut doc).unwrap();
     let mut collection = Collection::new("Load test");
     collection.requests = (0..5_000)
         .map(|index| Request::new(format!("Request {index}")))
         .collect();
     let request = collection.requests.last().expect("late request").id;
-    a.collections = vec![collection];
-    a.environments.clear();
-    let dispatcher = a.dispatcher.as_ref().unwrap();
-    dispatcher
-        .apply_now(
-            &mut ui::widget::Edits::lend(&mut doc),
-            &actions::create_collection_action(a.collections[0].id, &a.collections[0].name),
-        )
-        .unwrap();
-    for request in &a.collections[0].requests {
-        dispatcher
-            .apply_now(
-                &mut ui::widget::Edits::lend(&mut doc),
-                &actions::save_request_action(a.collections[0].id, request.clone()),
-            )
-            .unwrap();
-    }
+    // Load the large fixture with the document's canonical keyed-record
+    // writer. Replaying SaveRequest would scan the growing workspace for
+    // each setup action, obscuring the indexed lookup this test measures.
+    ApiDoc::set_collections(&mut doc, &ROOT, &[collection]);
     let state = ApiTester::read(&doc).unwrap();
+    assert_eq!(state.collections.len(), 1);
+    assert_eq!(state.collections[0].requests.len(), 5_000);
     let id = format!("api_tester.request:{request}");
     let resource = actions::resolve_child(&state, &id).expect("late exact address resolves");
     assert_eq!(resource.id.0, id);
