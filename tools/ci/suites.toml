@@ -931,6 +931,11 @@ reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nea
 workflow = "build-image.yml"
 
 [[unrequired]]
+suite = "os/dev/test-device-admin-reach.sh"
+reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs"
+workflow = "build-image.yml"
+
+[[unrequired]]
 suite = "os/dev/test-slow-frame-launch.sh"
 reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
 workflow = "build-image.yml"
