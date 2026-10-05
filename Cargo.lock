@@ -13301,6 +13301,7 @@ dependencies = [
  "collab-fixtures",
  "collab-types",
  "compat-service",
+ "console-control",
  "desktop-policy",
  "durable-store",
  "ed25519-dalek 3.0.0",
