@@ -272,6 +272,7 @@ user_units = ["tilo-ush.service"]
 layer = "desktop-binaries"
 files = [
   { from = "tilo-ush", to = "/usr/libexec/tilo-ush", mode = "0755" },
+  { link = "../libexec/tilo-ush", to = "/usr/bin/ush" },
   # A Terminal environment on a relay: the pty's far end, and what tells
   # the relay picker which relays run environments.
   { from = "tilo-relay-environment", to = "/usr/libexec/tilo-relay-environment", mode = "0755" },
