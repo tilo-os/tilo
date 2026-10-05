@@ -1713,7 +1713,7 @@ mod tests {
         };
         let before = (doc.base_heads(), doc.pending_ops());
         let answered = runner
-            .start(&op, &mut (), Some(&mut doc), |(), _, cx| {
+            .start(&op, &mut (), Some(&doc), |(), _, cx| {
                 let now = count(&cx.document().expect("lent to the handler"));
                 let past = cx.version(&first.to_string())?;
                 assert_eq!(past.heads, vec![first]);

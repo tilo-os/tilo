@@ -52,14 +52,14 @@ fn stamp(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     theme: &Theme,
-    state: &mut tilo_ui::State,
+    state: &tilo_ui::State,
     widget: &mut dyn Widget,
     origin: Point,
     permissions: &PermissionContext,
 ) -> Result<(), String> {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    widget.sync(&mut state.doc, &state.root);
+    widget.sync(&state.doc, &state.root);
     let node = widget.build_layout(&mut taffy, theme, &mut node_map);
     taffy
         .compute_layout_with_measure(
@@ -88,7 +88,7 @@ fn stamp(
 }
 
 fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
-    let mut state = tilo_ui::State::new();
+    let state = tilo_ui::State::new();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let c = &theme.tokens.colors;
@@ -120,7 +120,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
             &mut scene,
             &mut tr,
             theme,
-            &mut state,
+            &state,
             &mut primary,
             Point::new(x, 44.0),
             ctx,
@@ -133,7 +133,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
             &mut scene,
             &mut tr,
             theme,
-            &mut state,
+            &state,
             &mut secondary,
             Point::new(x, 108.0),
             ctx,
@@ -145,7 +145,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
             &mut scene,
             &mut tr,
             theme,
-            &mut state,
+            &state,
             &mut check,
             Point::new(x, 172.0),
             ctx,
@@ -156,7 +156,7 @@ fn shoot(theme: &Theme, out: &Path) -> Result<(), String> {
             &mut scene,
             &mut tr,
             theme,
-            &mut state,
+            &state,
             &mut toggle,
             Point::new(x, 228.0),
             ctx,

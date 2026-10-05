@@ -384,7 +384,7 @@ pub fn run(_args: &[String]) {
         },
     );
     root.apply_layout(&taffy, root_node, Point::ORIGIN);
-    root.sync(&mut doc, &automerge::ObjId::Root);
+    root.sync(&doc, &automerge::ObjId::Root);
     let presence = PresenceCtx::default();
     root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     renderer.render_png(&scene, theme.tokens.colors.surfaces.base, &out_top);
@@ -409,7 +409,7 @@ pub fn run(_args: &[String]) {
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: &mut doc,
+            state: tilo_ui::widget::Edits::lend(&mut doc),
             path: &automerge::ObjId::Root,
             handled: &mut handled,
             focus_target: &mut focus_target,

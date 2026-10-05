@@ -981,7 +981,7 @@ fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEven
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &modifiers,
-            state: doc,
+            state: tilo_ui::widget::Edits::lend(doc),
             path: &automerge::ObjId::Root,
             handled: &mut handled,
             focus_target: &mut focus_target,

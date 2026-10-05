@@ -875,7 +875,7 @@ mod tests {
         // The executor commits every action it applies.
         doc.commit();
         let heads = doc.get_heads();
-        refuse_raw_writes(&mut doc, 0, "sync");
+        refuse_raw_writes(&doc, 0, "sync");
         assert_eq!(doc.get_heads(), heads);
     }
 
@@ -884,6 +884,6 @@ mod tests {
     fn a_surface_writing_around_its_dispatcher_is_stopped() {
         let mut doc = AutoCommit::new();
         doc.put(ROOT, "title", "raw").unwrap();
-        refuse_raw_writes(&mut doc, 0, "sync");
+        refuse_raw_writes(&doc, 0, "sync");
     }
 }

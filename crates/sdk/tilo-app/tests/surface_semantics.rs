@@ -132,7 +132,7 @@ impl Widget for Booth {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _: &mut tilo_app::widget::AppModel,
+        _: &mut tilo_app::widget::Edits<'_>,
         _: &tilo_app::widget::ModelPath,
     ) -> bool {
         matches!(action, A11yAction::Activate) && self.vote(target)

@@ -52,7 +52,7 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     // sync pulls the seeded control state out of the CRDT.
-    root.sync(&mut state.doc, &state.root);
+    root.sync(&state.doc, &state.root);
 
     // Layout is solved in LOGICAL space (the same WIDTH/HEIGHT regardless
     // of scale) — HiDPI must not change the logical layout, only how many
