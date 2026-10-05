@@ -376,9 +376,43 @@ fn form_page_edges_and_resize_match_fresh_layout() {
         }
     }
 
+    /// In a plain form a chooser keeps its own width but starts where the
+    /// fields around it start: on the control column's leading edge.
+    fn a_plain_forms_chooser_starts_on_the_fields_edge() {
+        use crate::widget::{Dropdown, TextInput};
+        let form: Element = Box::new(
+            Form::new().section(
+                FormSection::new("Machine")
+                    .field(Field::new("Host", TextInput::local().with_id("host")))
+                    .field(
+                        Field::new(
+                            "Protocol",
+                            Dropdown::new(vec!["SSH".into(), "VNC".into()], "protocol")
+                                .with_id("protocol"),
+                        )
+                        .with_trailing_control(),
+                    ),
+            ),
+        );
+        let wide =
+            FrameHarness::new_with_theme(crate::State::new(), form, (1000, 400), Theme::dark());
+        let snapshot = wide.inspection();
+        let host = named(&snapshot.root, "host").rect;
+        let protocol = named(&snapshot.root, "protocol").rect;
+        assert!(
+            (protocol[0] - host[0]).abs() < 0.5,
+            "the chooser starts on the field's edge: {host:?} {protocol:?}"
+        );
+        assert!(
+            protocol[2] < host[2] / 2.0,
+            "and keeps its own width: {protocol:?}"
+        );
+    }
+
     page_readable_width_and_single_gutter_leave_common_content_edges();
     resized_layout_matches_fresh_and_retains_focus_order();
     trailing_controls_switch_with_their_section_and_share_the_trailing_edge();
+    a_plain_forms_chooser_starts_on_the_fields_edge();
 }
 fn solve(widget: &mut dyn Widget, width: f32, theme: &Theme) {
     let mut tree = TaffyTree::new();
@@ -589,6 +623,7 @@ fn trailing_fixture() -> Element {
     Box::new(
         Form::new().section(
             FormSection::new("Formats")
+                .grouped()
                 .field(
                     Field::new(
                         "Currency",
