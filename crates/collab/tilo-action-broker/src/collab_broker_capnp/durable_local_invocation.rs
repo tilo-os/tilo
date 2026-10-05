@@ -189,6 +189,7 @@ impl<'a> DurableContext<'a> {
         state.authorize_invocation_permission(
             &offered.0.route.cluster_id,
             &offered.0.app_id,
+            &offered.1.resource,
             &offered.1.action,
             offered.1.contract.permission,
             &current.broker_actor(),
@@ -204,6 +205,7 @@ impl CapnpBrokerState {
         &self,
         room: &str,
         app: &str,
+        resource: &str,
         action: &str,
         permission: tilo_actions::PermissionRequirement,
         actor: &BrokerActor,
@@ -235,6 +237,7 @@ impl CapnpBrokerState {
                 &caller,
                 &ResourceRef::Action {
                     app: app.into(),
+                    resource: resource.into(),
                     action: action.into(),
                 },
                 verb,
@@ -314,6 +317,11 @@ impl CapnpBrokerState {
                 .get("app_id")
                 .and_then(serde_json::Value::as_str)
                 .ok_or("journal app invalid")?;
+            let resource = record
+                .intent
+                .get("resource")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("journal resource invalid")?;
             let action = record
                 .intent
                 .get("action")
@@ -323,6 +331,7 @@ impl CapnpBrokerState {
             self.authorize_invocation_permission(
                 &caller.route.cluster_id,
                 app,
+                resource,
                 action,
                 contract.permission,
                 &current.broker_actor(),
