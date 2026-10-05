@@ -42,6 +42,46 @@ pub fn no_disk_help(local_build: Option<&str>) -> String {
     )
 }
 
+/// How a dial over the peer network failed, from `tilo-device-admin dial`'s
+/// exit status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerFailure {
+    /// No answer: offline, asleep, or no relay in common (2).
+    Unreachable,
+    /// The device refused this machine (3).
+    Refused,
+    /// Another device answered at the recorded endpoint (4).
+    OtherDevice,
+    /// This machine is not enrolled (5).
+    NotEnrolled,
+    /// Anything else.
+    Failed,
+}
+
+impl PeerFailure {
+    pub fn from_exit(code: Option<i32>) -> Self {
+        match code {
+            Some(2) => Self::Unreachable,
+            Some(3) => Self::Refused,
+            Some(4) => Self::OtherDevice,
+            Some(5) => Self::NotEnrolled,
+            _ => Self::Failed,
+        }
+    }
+}
+
+impl std::fmt::Display for PeerFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Unreachable => "it did not answer",
+            Self::Refused => "it refused this machine",
+            Self::OtherDevice => "another device answered for it",
+            Self::NotEnrolled => "this machine cannot dial it",
+            Self::Failed => "the dial failed",
+        })
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error("no VM selected")]
@@ -68,6 +108,15 @@ pub enum CliError {
         /// Whether a MAC is recorded, so `vm wake` can send its magic packet.
         wakeable: bool,
     },
+    #[error("device '{vm}' is not on this network, and {failure} over the peer network: {detail}")]
+    PeerRoute {
+        vm: String,
+        failure: PeerFailure,
+        /// What `tilo-device-admin dial` said.
+        detail: String,
+    },
+    #[error("this machine is not enrolled to administer devices: {detail}")]
+    NotEnrolledAdmin { detail: String },
     #[error("sent {vm}'s magic packet ({sent}), but it did not answer within {seconds}s")]
     WakeTimeout {
         vm: String,
@@ -299,6 +348,21 @@ impl CliError {
             Self::DeviceAsleep { vm, wakeable: false, .. } => format!(
                 "wake it at its power button or keyboard, then tilo-vm vm status {vm}: that records its MAC and hostname, so a new address is found by name. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
             ),
+            Self::PeerRoute { vm, failure: PeerFailure::Unreachable, .. } => format!(
+                "it is asleep, offline, or cannot reach a relay: wake it (at the machine, or tilo-vm vm wake {vm} from its LAN), check its network, then rerun. Next time keep it from sleeping: tilo-vm vm awake {vm} --for 2h"
+            ),
+            Self::PeerRoute { failure: PeerFailure::Refused, .. } => {
+                "the device said why above; fix that, then rerun (enrolling this machine is tilo-vm vm enrol-admin)".into()
+            }
+            Self::PeerRoute { vm, failure: PeerFailure::OtherDevice, .. } => format!(
+                "the recorded route is stale: on its LAN, tilo-vm vm status {vm} records it again"
+            ),
+            Self::PeerRoute { failure: PeerFailure::NotEnrolled, .. } | Self::NotEnrolledAdmin { .. } => {
+                "enrol this machine as one of the owner's devices: tilo-vm vm enrol-admin --via <the device that holds the identity>   (tilo-vm guide devices, \"Beyond the LAN\")".into()
+            }
+            Self::PeerRoute { vm, failure: PeerFailure::Failed, .. } => format!(
+                "rerun with the device on its LAN (tilo-vm vm status {vm}); tilo-device-admin dial --help shows the route by hand"
+            ),
             Self::WakeTimeout { vm, wake: Some(wake), .. } => format!(
                 "it reported: {wake}. Someone has to wake it at the machine; tilo-vm vm status {vm} tells when it answers, and tilo-vm vm awake {vm} --for 2h keeps it from sleeping again"
             ),
@@ -507,9 +571,11 @@ impl CliError {
             | Self::ChecksumMismatch { .. }
             | Self::DownloadFailed { .. }
             | Self::RootKeyRefused { .. } => "platforms",
-            Self::SudoRefused { .. } | Self::DeviceAsleep { .. } | Self::WakeTimeout { .. } => {
-                "devices"
-            }
+            Self::SudoRefused { .. }
+            | Self::DeviceAsleep { .. }
+            | Self::WakeTimeout { .. }
+            | Self::PeerRoute { .. }
+            | Self::NotEnrolledAdmin { .. } => "devices",
             Self::NotInWorktree | Self::SlotName { .. } => "concepts",
             Self::Remote(error) => return error.see.clone(),
             Self::NoManifest { .. }
@@ -837,6 +903,34 @@ mod tests {
                 lookup: ", and no hostname is recorded to look it up by".into(),
                 wakeable: false,
             },
+            CliError::NotEnrolledAdmin {
+                detail: "no device key".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::Unreachable,
+                detail: "no answer within 15s".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::Refused,
+                detail: "NotAdministrator: ...".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::OtherDevice,
+                detail: "device ab answered instead".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::NotEnrolled,
+                detail: "no certificate".into(),
+            },
+            CliError::PeerRoute {
+                vm: "yoga".into(),
+                failure: PeerFailure::Failed,
+                detail: "?".into(),
+            },
             CliError::WakeTimeout {
                 vm: "yoga".into(),
                 sent: "for 02:11:22:33:44:55 to 255.255.255.255:9".into(),
@@ -927,6 +1021,8 @@ mod tests {
                 | CliError::SlotName { .. }
                 | CliError::Unreachable { .. }
                 | CliError::DeviceAsleep { .. }
+                | CliError::PeerRoute { .. }
+                | CliError::NotEnrolledAdmin { .. }
                 | CliError::WakeTimeout { .. }
                 | CliError::DaemonMissing { .. }
                 | CliError::NotBootc { .. }
