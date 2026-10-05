@@ -9536,14 +9536,28 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
         // pane that is missing its cursor instead of only the first.
         let mut wrong: Vec<String> = Vec::new();
         for (what, place) in cases {
-            let render = |focused: bool| -> (Vec<u8>, Rect, Rect) {
-                let (mut app, _doc) = app_and_doc();
-                let (on, off) = place(&mut app);
+            // Compare one retained app on one rendering context. Constructing
+            // each frame independently also changes the sample's resource IDs,
+            // font-system caches and GPU renderer, so focus is no longer the
+            // only input to this exact pixel comparison.
+            let (mut app, _doc) = app_and_doc();
+            let (on, off) = place(&mut app);
+            let mut text = TextRenderer::new();
+            let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
+            let mut render = |focused: bool| {
                 app.presentation.keyboard_focus = focused;
-                (render_pixels(&mut app, w, h, &theme), on, off)
+                let mut scene = Scene::new();
+                app.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                renderer.render_rgba(&scene)
             };
-            let (dark, on, off) = render(false);
-            let (lit, _, _) = render(true);
+            let dark = render(false);
+            let lit = render(true);
             let painted = region_diff(&dark, &lit, w, h, on);
             if painted <= 100 {
                 wrong.push(format!(
@@ -9556,7 +9570,7 @@ fn keyboard_and_reader_walks_follow_what_is_painted() {
             let spilled = region_diff(&dark, &lit, w, h, off);
             if spilled != 0 {
                 wrong.push(format!(
-                    "{what} also marked a control the cursor is not on ({spilled} px): \
+                    "{what} also marked a control the cursor is not on ({spilled} px in {off:?}): \
                      the ring has to name one stop, not light the whole pane"
                 ));
             }
