@@ -117,6 +117,26 @@ fn a_look_job_keeps_its_snapshot_while_another_edit_is_applied() {
             _ => None,
         })
         .unwrap_or_else(|| panic!("{updates:?}"));
+    let contract = app
+        .harness()
+        .resources()
+        .iter()
+        .find(|resource| resource.kind == "canvas.artwork")
+        .unwrap()
+        .actions
+        .iter()
+        .find(|action| action.id == "look")
+        .unwrap()
+        .contract
+        .clone();
+    assert!(matches!(
+        contract.execution,
+        ui::tilo_actions::ExecutionMode::Background { .. }
+    ));
+    contract
+        .result
+        .validate(output)
+        .expect("the broker accepts the published terminal result");
     let hash = ui::tilo_actions::content_hash(&output.resources[0]).unwrap();
     let png = app.content().read(hash).unwrap();
     let picture = image::load_from_memory(&png).unwrap().to_rgba8();
