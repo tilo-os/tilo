@@ -2,7 +2,7 @@
 //! Ctrl+K palette and system search, and activating one of its hits.
 
 use crate::widget::capability::{capability, capability_mut};
-use crate::widget::{AppModel, ModelPath, Widget};
+use crate::widget::{ModelPath, Widget};
 
 /// A widget whose content is searchable.
 pub trait SearchSource: Widget {
@@ -13,7 +13,12 @@ pub trait SearchSource: Widget {
 
     /// Activate a hit: presentation (navigation), not a document action;
     /// mutate the model only if selecting changes shared state.
-    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AppModel, _path: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        _action_id: &str,
+        _doc: &mut crate::widget::Edits<'_>,
+        _path: &ModelPath,
+    ) {
     }
 }
 
@@ -26,7 +31,7 @@ pub fn search_providers(widget: &(impl Widget + ?Sized)) -> Vec<Box<dyn super::S
 pub fn activate_search_result(
     widget: &mut (impl Widget + ?Sized),
     action_id: &str,
-    doc: &mut AppModel,
+    doc: &mut crate::widget::Edits<'_>,
     path: &ModelPath,
 ) {
     if let Some(source) = capability_mut::<dyn SearchSource>(widget) {

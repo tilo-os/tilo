@@ -14,14 +14,18 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use themes::ThemesApp;
+use std::rc::Rc;
+
 use themes::app::{NARROW_CONTENT_GUTTER, TOPBAR_H};
 use themes::customizer::{
     chip_grid_height, chip_rows_for_width, intrinsic_height_for_width,
     intrinsic_height_for_width_scaled,
 };
-use themes::model::default_catalog;
+use themes::model::{default_catalog, demo_catalog};
+use themes::resource::{ThemesState, scenario};
 use themes::widgets::{ROW_H, ThemeRow};
+use themes::{Themes, ThemesApp, ThemesEffect};
+use ui::framework::ResourceSurface;
 use ui::headless::{FrameOptions, Framed};
 use ui::widget::Widget;
 use vello::kurbo::Rect;
@@ -91,10 +95,23 @@ fn close(a: f64, b: f64, what: &str) {
     );
 }
 
-fn narrow_customize_app() -> ThemesApp {
-    let mut app = ThemesApp::new_demo();
-    app.seed_shot(480.0, "customize");
+/// The surface over the presets and one custom theme, staged as the
+/// screenshot `scenario` shows it.
+fn staged(scenario: Option<&str>) -> ThemesApp {
+    let mut app = ThemesApp::new();
+    ResourceSurface::<Themes, ThemesEffect>::present(
+        &mut app,
+        &Rc::new(ThemesState {
+            catalog: demo_catalog(),
+            active: None,
+        }),
+    );
+    ResourceSurface::<Themes, ThemesEffect>::stage(&mut app, scenario);
     app
+}
+
+fn narrow_customize_app() -> ThemesApp {
+    staged(Some(scenario::CUSTOMIZE))
 }
 
 /// Narrow selector gutter, chip wrapping, action heights and the shared gallery toggle.
@@ -229,8 +246,7 @@ fn narrow_selector_and_customizer_controls_align_to_shared_metrics() {
         assert_eq!(spoken(&app), "Show themes");
         // …and hiding a shown one. The "menu" shot opens the gallery flap, so
         // the toggle in that tree is the close control.
-        let mut open = ThemesApp::new_demo();
-        open.seed_shot(480.0, "menu");
+        let open = staged(Some(scenario::MENU));
         let open = lay_out(open, (480, 900));
         assert_eq!(spoken(&open), "Hide themes");
         let close_toggle = by_test_id(&*open, "themes.gallery_toggle");
@@ -331,13 +347,11 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
             "1× is exactly the unscaled height",
         );
 
-        let mut one = ThemesApp::new_demo();
-        one.seed_shot(480.0, "preview");
+        let one = staged(Some(scenario::PREVIEW));
         let one = lay_out_widget_scaled(one, (480, 900), 1.0);
         let specimen_1x = by_widget_name(&*one, "PreviewPane")[0];
 
-        let mut two = ThemesApp::new_demo();
-        two.seed_shot(480.0, "preview");
+        let two = staged(Some(scenario::PREVIEW));
         let two = lay_out_widget_scaled(two, (480, 900), 2.0);
         let specimen_2x = by_widget_name(&*two, "PreviewPane")[0];
         assert!(
@@ -355,8 +369,7 @@ fn large_text_reflows_the_bar_gallery_and_specimen() {
     // bar). Measured on the real docked layout, not on the constants.
     {
         let sp = ui::tokens::Spacing::BASE;
-        let mut app = ThemesApp::new_demo();
-        app.seed_shot(1280.0, "");
+        let app = staged(None);
         let app = lay_out(app, (1280, 1500));
         let mut rows = by_widget_name(&*app, "ThemeRow");
         rows.retain(|r| r.width() > 0.0 && r.height() > 0.0);

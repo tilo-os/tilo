@@ -21,23 +21,26 @@ each one can still change.
 
 ## Your publisher key
 
-`tilo-app keys new` writes a new Ed25519 key to
-`$XDG_CONFIG_HOME/tilo/publisher-key.json` (`--key PATH` elsewhere), readable
-only by you, and prints its public half. It never replaces an existing key.
-Back the file up: the key is your identity as a publisher, and an update
+`tilo-app keys new` creates a new Ed25519 key in your secret store (the Secret
+Service on Linux, the login Keychain on macOS, or sealed files in
+`$TILO_SECRETS_DIR` on a machine without one) and prints its public half. It
+never replaces an existing key. Back it up with `tilo-app keys export`, which
+prints the secret seed: the key is your identity as a publisher, and an update
 signed by any other key is refused.
 
 The same key signs your packages and the registry requests `tilo-app publish`
 sends: `tilo-app package` uses it whenever it can find it, and a throwaway key
 otherwise (`--identity FILE` picks another). `tilo-app keys show` prints the
 public key and the proof line described below. Every command that needs the
-key reads `--key`, then `$TILO_PUBLISHER_KEY` (the file's contents or its bare
-hex seed, which is how CI passes it), then the default path.
+key reads `--key FILE` (a `{"secret_key_hex": ...}` identity file or the bare
+hex seed), then `$TILO_PUBLISHER_KEY` (the hex seed, which is how CI passes
+it), then the secret store.
 
 On Tilo OS, the App Publisher app does the same with buttons and actions:
 it creates the key, shows the public key and proof line, copies the key for a
 CI secret, applies for namespaces and checks the application. It uses the
-same file, which the sandbox keeps private to App Publisher.
+same key: the secret store holds it under App Publisher's app id, which
+`tilo-app` reads too.
 
 ## Your namespace
 
@@ -129,8 +132,8 @@ the app's directory. Every push and pull request runs `tilo-app check`, then
 packages each platform and uploads the packages as build artifacts. Pushing a
 tag named `v*` also runs one `tilo-app publish` over all of them.
 
-Add one secret, `TILO_PUBLISHER_KEY`, holding the contents of your
-`publisher-key.json`. Builds without it, such as pull requests from forks, are
+Add one secret, `TILO_PUBLISHER_KEY`, holding what `tilo-app keys export`
+prints. Builds without it, such as pull requests from forks, are
 signed with a throwaway key and are never published. Set the variable
 `TILO_REGISTRY` to publish to another registry.
 
@@ -168,7 +171,7 @@ constraint of the design, and may change before Tilo leaves alpha.
    `https://apps.tilo.so/artifacts/<blake3>.tapp`. An upload stays private
    until review approves the entry that names it.
 5. **One key per publisher.** The same Ed25519 key signs packages and registry
-   requests, kept in `publisher-key.json` or, in CI, in
+   requests, kept in your secret store or, in CI, in
    `$TILO_PUBLISHER_KEY`. The App Publisher app manages keys on Tilo OS.
 6. **Desktop builds are self-contained.** A Windows or macOS build is one
    static executable with the toolkit linked in, up to 64 MiB, using the

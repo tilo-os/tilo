@@ -3,12 +3,11 @@
 //! for the records it has open, through the same door its own steps use.
 //!
 //! - A catalogue lists one provider per open record (`record:<app>:<record>`)
-//!   with every action the record publishes (declared and projected
-//!   controls), and the room's provider (`workspace:<room>`) offering
+//!   with every operation the record publishes, and the room's provider (`workspace:<room>`) offering
 //!   `app.<app>#open` for each delegated app.
 //! - An invocation runs through the app's door with the caller's arguments;
 //!   an explicit `Confirmed` from the caller satisfies a confirmation step.
-//!   The change is committed through the agent's session and its cursor
+//!   The change is committed through the agent's session and its presence
 //!   moves there, exactly as for its own steps.
 //! - Invocation ids are idempotent: a retry reports the original receipt, a
 //!   different request under a used id is a conflict.
@@ -111,7 +110,7 @@ impl AgentParticipant {
         self.generation.to_string()
     }
 
-    fn catalogue(&mut self, query: &CatalogueQuery) -> CataloguePage {
+    fn catalogue(&self, query: &CatalogueQuery) -> CataloguePage {
         let room = self.room.clone();
         let mut rows = Vec::new();
         let mut providers = Vec::new();

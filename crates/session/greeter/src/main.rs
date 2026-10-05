@@ -69,16 +69,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
         let credentials = shot_credentials(scenario);
-        if let Some((_, password)) = credentials {
+        if let Some((username, password)) = credentials {
+            widget.seed_shot_username(username);
             widget.seed_shot_password(password);
         }
-        render_shot_to_png(
-            Box::new(widget),
-            viewport,
-            text_scale,
-            &out,
-            credentials.map(|(username, _)| username),
-        )?;
+        render_shot_to_png(Box::new(widget), viewport, text_scale, &out);
         return Ok(());
     }
 
@@ -279,20 +274,16 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG.
 ///
-/// `username` pre-populates the non-secret username CRDT object. The caller
-/// seeds representative passcode text through `GreeterApp`'s process-local
-/// buffer, never the document. The headless harness runs the live App's
-/// per-frame sync, so children composed inside `build_layout` (the
-/// `TextInputs`) pull their values from the document before they paint.
+/// The caller seeds representative credentials through `GreeterApp`'s view
+/// state and process-local passcode buffer, never the document. The headless
+/// harness runs the live App's per-frame sync, so children composed inside
+/// `build_layout` (the `TextInputs`) pull their values before they paint.
 fn render_shot_to_png(
     widget: Box<dyn Widget>,
     viewport: (u32, u32),
     text_scale: Option<f32>,
     out: &std::path::Path,
-    username: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use automerge::{ObjType, transaction::Transactable};
-
+) {
     let theme = ui::launch::capture_theme(text_scale);
     // `--theme` names the palette on hosts that do not pass the environment
     // through to the renderer.
@@ -304,19 +295,12 @@ fn render_shot_to_png(
         },
         None => theme,
     };
-    let mut state = ui::State::new();
-    if let Some(username) = username {
-        let uobj = state
-            .doc
-            .put_object(&state.root, "greeter.username", ObjType::Text)?;
-        state.doc.splice_text(&uobj, 0, 0, username)?;
-    }
+    let state = ui::State::new();
     // The same bounded sync/layout/paint lifecycle as the live host handles
     // responsive composition and applies accessibility scaling to text too.
     let frame = ui::headless::FrameHarness::new_with_theme(state, widget, viewport, theme);
     frame.render_png(out);
     println!("tilo-greeter: wrote shot to {}", out.display());
-    Ok(())
 }
 
 #[cfg(test)]

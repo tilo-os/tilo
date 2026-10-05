@@ -535,6 +535,14 @@ pub fn local_user_id() -> UserId {
     std::env::var("USER").unwrap_or_else(|_| "local".to_string())
 }
 
+/// Whether `room` is the local person's own room. It is never a workspace:
+/// it has no roster to invite anyone into, and its records travel only
+/// between that person's devices, so no invite, enrollment or continuation
+/// may turn it into a room collaborators share.
+pub fn is_local_person_room(room: RoomId) -> bool {
+    collab_types::person_room_of(&local_user_id()) == Some(room.as_uuid())
+}
+
 /// Identity acting in a specific durable room.
 ///
 /// Registry errors fail back to the session identity for compatibility, but
@@ -2817,7 +2825,7 @@ impl WorkspaceTree {
     /// Existing join semantics for an unpublished owner candidate. No state,
     /// filesystem authority, relay export or publisher side effects occur here.
     pub(crate) fn set_room_in_memory(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
-        if room.is_nil() {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         // Joining a room some other local workspace is already in is not a
@@ -3860,6 +3868,7 @@ impl WorkspaceTree {
     /// The room's authenticated sync response supplies its real name/layout.
     pub fn adopt_continuation_room(&mut self, room: RoomId, _source_device: &str) -> bool {
         if room.is_nil()
+            || is_local_person_room(room)
             || self
                 .desktop
                 .workspaces
@@ -3886,11 +3895,12 @@ impl WorkspaceTree {
     /// This is membership, not a continuation offer, so turning app
     /// continuations off does not remove it.
     pub fn join_enrolled_room(&mut self, room: RoomId) -> bool {
-        if self
-            .desktop
-            .workspaces
-            .iter()
-            .any(|workspace| workspace.room == room)
+        if is_local_person_room(room)
+            || self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room == room)
         {
             return false;
         }
@@ -3913,7 +3923,7 @@ impl WorkspaceTree {
         person: &UserId,
         governor: Option<&PeerOrigin>,
     ) -> bool {
-        if room.is_nil() {
+        if room.is_nil() || is_local_person_room(room) {
             return false;
         }
         if let Some(index) = self

@@ -40,7 +40,7 @@ fn deferred_fixture() -> (
     let binding = ActionBinding::unit(&resource, &resource.actions[0]).unwrap();
     let widget = Fixture {
         child: Box::new(
-            crate::widget::Button::new("ordinary-emitter", "Emit request", None).on_action(binding),
+            crate::widget::Button::new("ordinary-emitter", "Emit request").on_action(binding),
         ),
         resources: Rc::new(RefCell::new(vec![resource])),
         ledger: Rc::new(RefCell::new(vec![])),

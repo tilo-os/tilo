@@ -156,7 +156,7 @@ impl DailyControls {
         // As tall as the address field and the find field these sit beside,
         // so the toolbar row and the find bar each keep one top and one
         // bottom edge. The 32px face left a step down on either side of them.
-        Button::new(id, label, None)
+        Button::new(id, label)
             .with_size(
                 crate::browser_widget::labelled_width(72.0, text_scale),
                 crate::browser_widget::toolbar_control_height(text_scale),

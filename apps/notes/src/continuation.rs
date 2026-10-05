@@ -7,8 +7,6 @@ use tilo_actions::{
 
 #[derive(Clone)]
 pub(crate) enum BuilderDomain {
-    File(Option<PageId>),
-    ImportContent,
     RenamePage(PageMeta),
     CreatePage {
         parent: Option<PageId>,
@@ -29,9 +27,6 @@ pub(crate) enum BuilderDomain {
         source: PageId,
         pages: Vec<PageId>,
     },
-    DailyCreate {
-        title: String,
-    },
     /// Generic published doors (`apply` / `group` / rich-text catalogue
     /// builders) that mint from arguments and therefore need a Draft domain.
     PublishedDoor {
@@ -51,11 +46,6 @@ pub(crate) fn optional_page(page: Option<PageId>) -> Vec<u8> {
 impl BuilderDomain {
     fn identity(&self) -> (&'static str, Vec<Vec<u8>>) {
         match self {
-            Self::File(page) => (
-                "file-picker-import-or-export/v1",
-                vec![optional_page(*page)],
-            ),
-            Self::ImportContent => ("markdown-content-import/v1", vec![]),
             Self::RenamePage(page) => (
                 "rename-page-trim-upsert/v1",
                 vec![
@@ -102,9 +92,6 @@ impl BuilderDomain {
                     parts.push(page.as_bytes().to_vec());
                 }
                 ("duplicate-exact-source-map-fresh-ids/v2", parts)
-            }
-            Self::DailyCreate { title } => {
-                ("daily-append-v4-uuid/v1", vec![title.as_bytes().to_vec()])
             }
             Self::PublishedDoor { action, scope } => (
                 "published-dynamic-door/v1",
@@ -157,35 +144,6 @@ pub(crate) fn builder(
                     }
                 })
             }
-        }
-    }
-}
-
-pub(crate) fn fixed_target(
-    version: &'static str,
-    parts: Vec<Vec<u8>>,
-) -> impl for<'a> Fn(ContinuationQuery<'a>) -> Option<ContinuationEvidence> + Send + Sync {
-    move |query| {
-        let handler = ContinuationKey::new("notes.continuation.handler.v1", [version.as_bytes()]);
-        let key = || ContinuationKey::new("notes.continuation.target.v1", parts.clone());
-        match query {
-            ContinuationQuery::Draft => Some(ContinuationEvidence::Draft {
-                resolution_domain: key(),
-                handler,
-            }),
-            ContinuationQuery::Exact(ContinuationArguments::Immediate) => {
-                Some(ContinuationEvidence::Exact {
-                    target: key(),
-                    handler,
-                })
-            }
-            ContinuationQuery::Exact(ContinuationArguments::Json(args)) if args.is_empty() => {
-                Some(ContinuationEvidence::Exact {
-                    target: key(),
-                    handler,
-                })
-            }
-            ContinuationQuery::Exact(_) => None,
         }
     }
 }
@@ -256,10 +214,6 @@ mod tests {
             })
         );
         assert_ne!(
-            draft(BuilderDomain::File(None)),
-            draft(BuilderDomain::File(Some(page)))
-        );
-        assert_ne!(
             draft(BuilderDomain::Duplicate {
                 source: page,
                 pages: vec![page]
@@ -269,32 +223,18 @@ mod tests {
                 pages: vec![page, Uuid::from_u128(2)]
             })
         );
-        assert_ne!(
-            draft(BuilderDomain::DailyCreate {
-                title: "2026-09-22".into(),
-            }),
-            draft(BuilderDomain::DailyCreate {
-                title: "2026-09-23".into(),
-            })
-        );
     }
 
     #[test]
-    fn continuation_creation_and_chooser_domains_do_not_invent_exact_targets() {
+    fn continuation_creation_domains_do_not_invent_exact_targets() {
         let page = Uuid::from_u128(1);
         for domain in [
-            BuilderDomain::File(None),
-            BuilderDomain::File(Some(page)),
-            BuilderDomain::ImportContent,
             BuilderDomain::CreatePage { parent: Some(page) },
             BuilderDomain::CreateTag,
             BuilderDomain::CreateAssignedTag(page),
             BuilderDomain::Duplicate {
                 source: page,
                 pages: vec![],
-            },
-            BuilderDomain::DailyCreate {
-                title: "2026-09-22".into(),
             },
         ] {
             let resolver = builder(domain);

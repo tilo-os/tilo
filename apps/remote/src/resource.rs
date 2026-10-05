@@ -4,19 +4,26 @@
 
 use std::rc::Rc;
 
-use ui::framework::{Fixture, LiveRow, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Fixture, LiveRow, ResourceApp, ResourceSurface,
+    SurfaceCx, ViewCx,
+};
+use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::items::{ItemAction, ItemCollection, item_children, item_resource_id};
 use ui::tilo_resource::{ActionDecl, Doc, Id, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 use uuid::Uuid;
 
 use crate::actions::{
-    REMOTE_ACTION_TYPE, RemoteAction, delete_action, register, rename_action, set_favorite_action,
+    REMOTE_ACTION_TYPE, RemoteAction, RemoteEffect, delete_action, register, rename_action,
+    set_favorite_action,
 };
 use crate::app::RemoteApp;
 use crate::doc::{CONNECTIONS, RemoteDoc};
 use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind};
+
+/// The app's id, which its settings are kept under.
+pub const REMOTE_APP_ID: &str = "so.tilo.remote";
 
 /// The remote connections list resource.
 pub struct Remote;
@@ -138,13 +145,6 @@ impl Resource for Remote {
         ]
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::list_view_specs()
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
-    }
-
     /// Every saved connection, with its settings view, its connect effect
     /// and the actions bound to it.
     fn children(state: &Vec<Connection>) -> Vec<tilo_actions::Resource> {
@@ -188,6 +188,7 @@ impl Resource for Remote {
                 title: connection.name.clone(),
                 text: connection.host.clone(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }
@@ -215,7 +216,7 @@ const SCENARIOS: &[&str] = &[
 
 impl ResourceApp for RemoteShell {
     type Resource = Remote;
-    const ID: &'static str = "so.tilo.remote";
+    const ID: &'static str = REMOTE_APP_ID;
     const TITLE: &'static str = "Remote Desktop";
     const ICON: Option<&'static str> = Some("remote");
 
@@ -261,7 +262,7 @@ impl ResourceApp for RemoteShell {
     }
 }
 
-impl ResourceSurface<Remote> for RemoteApp {
+impl ResourceSurface<Remote, RemoteEffect> for RemoteApp {
     fn present(&mut self, state: &Rc<Vec<Connection>>) {
         self.adopt_resource_state(state);
     }
@@ -272,6 +273,22 @@ impl ResourceSurface<Remote> for RemoteApp {
 
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario);
+    }
+
+    fn effect(&mut self, effect: RemoteEffect, cx: &mut EffectCx<Remote, Self>) -> EffectAnswer {
+        self.answer_effect(effect, cx)
+    }
+
+    /// Text reaches only a connected SSH terminal.
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.can_send_text() {
+            return Vec::new();
+        }
+        vec![EffectStatus::unavailable(
+            RemoteEffect::SEND_TEXT,
+            "terminal_not_connected",
+            "Text input requires a connected SSH terminal",
+        )]
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

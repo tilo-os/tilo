@@ -77,7 +77,7 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: &
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
-    root.sync(&mut state.doc, &state.root);
+    root.sync(&state.doc, &state.root);
     let node = root.build_layout(&mut taffy, &theme, &mut node_map);
 
     // Layout in LOGICAL px — device scale never enters the solver.

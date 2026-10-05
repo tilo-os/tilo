@@ -20,8 +20,6 @@ thin = ["dep:runtime-dylib"]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
-serde.workspace = true
-serde_json.workspace = true
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }

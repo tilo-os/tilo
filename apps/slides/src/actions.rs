@@ -68,25 +68,24 @@
     reason = "the operation builder deliberately owns a serializable value; enum serialization cannot fail for these derived primitive payloads"
 )]
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 
 use tilo_actions::{
-    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
-    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec, RetryPolicy, RiskLevel,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ParamType, Resource, ResultSpec, RiskLevel,
 };
 use ui::tilo_resource::{ActionCx, ActionDecl};
 
 use crate::doc::SlidesDoc;
+use crate::effects::SlidesEffect;
 use crate::model::{
     Background, Element, ElementKind, FILL_ROLES, Layout, PaletteKind, SLIDE_H, SLIDE_W,
     STROKE_ROLES, Slide, TextAlign, new_id,
 };
+use ui::tilo_resource::Effect as _;
 
 /// Registry `type_id` for every Slides action.
 pub const SLIDES_ACTION_TYPE: &str = "slides.action";
-pub const SLIDES_OPERATION_TYPE: &str = "slides.operation";
 
 pub fn slide_resource_id(slide: &str) -> String {
     format!("slides.slide:{slide}")
@@ -124,161 +123,38 @@ pub fn notes_resource_id(slide: &str) -> String {
     format!("slides.notes:{slide}")
 }
 
+/// The speaker notes of slide `slide_id` as the deck's child plain-text
+/// resource: its id, and the deck action each of its edits is. The notes
+/// editor's dispatcher and the published child both come from here.
+pub fn notes_child(
+    slide_id: &str,
+) -> (
+    String,
+    impl Fn(ui::tilo_resource::TextEdit) -> SlidesAction + Send + Sync + 'static,
+) {
+    let slide_id = slide_id.to_owned();
+    (notes_resource_id(&slide_id), move |edit| {
+        SlidesAction::EditNotes {
+            slide_id: slide_id.clone(),
+            edit,
+        }
+    })
+}
+
 pub fn open_slide_address(slide: &str) -> ActionAddress {
-    ActionAddress::new(slide_resource_id(slide), "open")
+    ActionAddress::new(slide_resource_id(slide), "open-slide")
 }
 
 pub fn open_element_address(element: &str) -> ActionAddress {
-    ActionAddress::new(element_resource_id(element), "open")
+    ActionAddress::new(element_resource_id(element), "open-element")
 }
 
 pub fn open_text_address(element: &str) -> ActionAddress {
-    ActionAddress::new(text_resource_id(element), "open")
+    ActionAddress::new(text_resource_id(element), "edit-text")
 }
 
 pub fn open_notes_address(slide: &str) -> ActionAddress {
-    ActionAddress::new(notes_resource_id(slide), "open")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SlidesOperation {
-    ShowEditor,
-    ShowOverview,
-    StartPresentation,
-    /// Starts presenting with an explicit local output policy. This is view
-    /// state, not a CRDT mutation: each collaborator keeps control of their
-    /// own physical displays.
-    StartPresentationOn {
-        output: PresentationOutput,
-    },
-    EndPresentation,
-    RevealSlide {
-        slide: String,
-    },
-    RevealElement {
-        slide: String,
-        element: String,
-        edit_text: bool,
-    },
-    RevealNotes {
-        slide: String,
-    },
-    Open {
-        path: Option<String>,
-    },
-    SaveAs {
-        path: Option<String>,
-    },
-    /// The deck's [outline](crate::outline).
-    Read,
-}
-
-/// User-visible audience-output policies. Kept serializable at the action
-/// boundary instead of leaking host monitor indices into documents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PresentationOutput {
-    LargestExternal,
-    PrimaryExternal,
-}
-
-#[cfg(test)]
-mod file_action_tests {
-    use super::*;
-    #[test]
-    fn path_argument_binds_into_background_save() {
-        let spec = file_operation("save-as", "Save presentation", true);
-        let encoded = spec
-            .build_json(
-                serde_json::json!({"path":"/tmp/a.odp"})
-                    .as_object()
-                    .unwrap(),
-            )
-            .unwrap();
-        assert_eq!(
-            decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-            Some(SlidesOperation::SaveAs {
-                path: Some("/tmp/a.odp".into())
-            })
-        );
-        assert!(matches!(
-            spec.contract.execution,
-            ExecutionMode::Background { .. }
-        ));
-        assert_eq!(spec.contract.result, ResultSpec::Job);
-    }
-}
-
-pub fn decode_operation(type_id: &str, payload: &[u8]) -> Result<Option<SlidesOperation>, String> {
-    if type_id != SLIDES_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, SLIDES_OPERATION_TYPE, &value)
-        .expect("SlidesOperation is always serializable");
-    match value {
-        SlidesOperation::ShowEditor
-        | SlidesOperation::ShowOverview
-        | SlidesOperation::RevealSlide { .. }
-        | SlidesOperation::RevealElement { .. }
-        | SlidesOperation::RevealNotes { .. } => spec
-            .with_contract(ActionContract::view())
-            .retry_policy(RetryPolicy::Idempotent),
-        SlidesOperation::StartPresentation
-        | SlidesOperation::StartPresentationOn { .. }
-        | SlidesOperation::EndPresentation => spec.with_contract(ActionContract::view()),
-        SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => spec.destructive(),
-        SlidesOperation::Read => spec
-            .with_contract(ActionContract {
-                result: ResultSpec::Json {
-                    schema: crate::outline::result_schema(),
-                },
-                ..ActionContract::view()
-            })
-            .reads_document(),
-    }
-}
-
-fn file_operation(id: &str, label: &str, save: bool) -> ActionSpec {
-    ActionSpec::typed_operation(
-        id,
-        label,
-        "optional absolute path",
-        OperationKind::Effect,
-        SLIDES_OPERATION_TYPE,
-        vec![ActionParam::optional(
-            "path",
-            ParamType::Text,
-            "ODP path; omit to use the system picker",
-        )],
-        move |args: &ActionArgs| {
-            let path = args
-                .text("path")
-                .filter(|p| !p.trim().is_empty())
-                .map(str::to_string);
-            let operation = if save {
-                SlidesOperation::SaveAs { path }
-            } else {
-                SlidesOperation::Open { path }
-            };
-            EncodedAction {
-                type_id: SLIDES_OPERATION_TYPE.into(),
-                payload: serde_json::to_vec(&operation).expect("SlidesOperation serializes"),
-            }
-        },
-    )
-    .with_contract(ActionContract {
-        risk: tilo_actions::RiskLevel::Destructive,
-        confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-        execution: ExecutionMode::Background { cancellable: true },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    })
+    ActionAddress::new(notes_resource_id(slide), "open-notes")
 }
 
 // ===========================================================================
@@ -581,9 +457,20 @@ pub enum SlidesAction {
         title: Option<String>,
         body: Option<String>,
     },
-    /// Rewrite the deck's first-format text elements as rich text, in place
-    /// and once (see [`SlidesDoc::upgrade`]).
-    UpgradeText,
+    /// Edit the speaker notes of slide `slide_id`: one splice of their text.
+    EditNotes {
+        slide_id: String,
+        edit: ui::tilo_resource::TextEdit,
+    },
+    /// Replace the whole deck — its title, theme and every slide — with
+    /// another: a presentation file opened into it. One change, so one undo
+    /// puts the previous deck back. Imported geometry is kept as the file
+    /// has it; only the deck's aggregate limits bound it.
+    ReplaceDeck {
+        title: String,
+        palette: String,
+        slides: Vec<SlideData>,
+    },
 }
 
 const MAX_DECK_SLIDES: usize = 10_000;
@@ -610,6 +497,44 @@ pub fn deck_within_aggregate_limits(deck: &crate::model::Deck) -> bool {
         }
     }
     elements <= MAX_TOTAL_ELEMENTS && text <= MAX_TOTAL_TEXT_CHARS && assets <= MAX_TOTAL_ASSET_REFS
+}
+
+/// The deck a [`SlidesAction::ReplaceDeck`] writes, refused when it has no
+/// slide, names a slide or element twice, or exceeds the deck's limits.
+fn replacement_deck(
+    title: &str,
+    palette: &str,
+    slides: &[SlideData],
+) -> Result<crate::model::Deck, ActionError> {
+    if slides.is_empty() {
+        return Err(refused("a deck needs at least one slide"));
+    }
+    if !exact_palette(palette) {
+        return Err(refused("the deck theme is invalid"));
+    }
+    let mut slide_ids = std::collections::BTreeSet::new();
+    let mut element_ids = std::collections::BTreeSet::new();
+    for slide in slides {
+        if !valid_id(&slide.id) || !slide_ids.insert(slide.id.as_str()) {
+            return Err(refused("the deck names a slide twice"));
+        }
+        if slide
+            .elements
+            .iter()
+            .any(|element| !valid_id(&element.id) || !element_ids.insert(element.id.as_str()))
+        {
+            return Err(refused("the deck names an element twice"));
+        }
+    }
+    let deck = crate::model::Deck {
+        title: title.to_owned(),
+        palette: PaletteKind::from_str(palette),
+        slides: slides.iter().map(SlideData::to_slide).collect(),
+    };
+    if !deck_within_aggregate_limits(&deck) {
+        return Err(refused("the deck exceeds the deck limits"));
+    }
+    Ok(deck)
 }
 
 fn refused(reason: &str) -> ActionError {
@@ -981,14 +906,22 @@ impl Action for SlidesAction {
                     .ok_or_else(|| refused("the text element no longer exists"))?;
                 return edit.apply_under(doc, &body);
             }
-            SlidesAction::UpgradeText => {
-                if !SlidesDoc::upgrade(doc) {
-                    return Err(refused("the deck's text is already rich text"));
-                }
-                return Ok(());
+            SlidesAction::EditNotes { slide_id, edit } => {
+                let notes = SlidesDoc::notes_text_for_edit(doc, slide_id)
+                    .ok_or_else(|| refused("the slide no longer exists"))?;
+                return edit.apply_under(doc, &notes);
             }
             SlidesAction::SetSlideText { slide, title, body } => {
                 return set_slide_text(doc, slide, [title.as_deref(), body.as_deref()]);
+            }
+            SlidesAction::ReplaceDeck {
+                title,
+                palette,
+                slides,
+            } => {
+                let deck = replacement_deck(title, palette, slides)?;
+                SlidesDoc::seed(doc, &deck);
+                return Ok(());
             }
             _ => {}
         }
@@ -996,7 +929,8 @@ impl Action for SlidesAction {
         match self {
             SlidesAction::EditElementText { .. }
             | SlidesAction::SetSlideText { .. }
-            | SlidesAction::UpgradeText => {}
+            | SlidesAction::EditNotes { .. }
+            | SlidesAction::ReplaceDeck { .. } => {}
             SlidesAction::InsertSlide { at, slide } => {
                 if *at > deck.slides.len() || deck.slides.len() >= MAX_DECK_SLIDES {
                     return Err(refused("slide insertion position or deck size is invalid"));
@@ -1260,12 +1194,11 @@ fn restack_z(doc: &Doc, slide: usize, front: bool) -> Option<i64> {
 /// Compute a z scalar once at the authoring replica, resolving the durable
 /// slide and element ids before serializing the absolute arrange action.
 pub fn restack_z_for_author(
-    doc: &AutoCommit,
+    deck: &crate::model::Deck,
     slide_id: &str,
     element_id: &str,
     front: bool,
 ) -> Option<i64> {
-    let deck = SlidesDoc::load(doc)?;
     let slide = deck.slides.iter().find(|slide| slide.id == slide_id)?;
     slide.element(element_id)?;
     let edge = if front {
@@ -1323,6 +1256,15 @@ pub fn insert_slide_with_order_action(slide: &Slide, rank: i64) -> SlidesAction 
     SlidesAction::InsertSlideWithOrder {
         slide: SlideData::from_slide(slide),
         rank,
+    }
+}
+
+/// Replace the whole deck with `deck`.
+pub fn replace_deck_action(deck: &crate::model::Deck) -> SlidesAction {
+    SlidesAction::ReplaceDeck {
+        title: deck.title.clone(),
+        palette: deck.palette.as_str().to_owned(),
+        slides: deck.slides.iter().map(SlideData::from_slide).collect(),
     }
 }
 
@@ -1586,36 +1528,42 @@ pub struct SlideResource {
     pub elements: Vec<ElementResource>,
 }
 
-/// The current live selection. Published beside the framework root when hosted
-/// — never a second copy of the deck document door. Its actions are bound to
-/// the peer's selected element (or current slide when nothing is selected).
-#[derive(Clone)]
-pub struct SelectionResourceCtx {
-    pub slide_id: String,
-    pub element_id: Option<String>,
-    pub label: String,
-    pub actions: Vec<ActionSpec>,
-}
-
-/// The presentation context Slides hands [`provide_resources`]: the deck title,
-/// the slides it currently has open (each with its elements), and the peer's
-/// live selection. Deck rows come from the document; selection is local.
+/// The deck as its resource reads it: the title and theme, each slide with
+/// its elements, and the slides' order keys.
 #[derive(Clone)]
 pub struct SlidesResourceCtx {
     pub deck_title: String,
+    pub palette: PaletteKind,
     pub slides: Vec<SlideResource>,
-    /// Per-peer current slide / selected element. Not collaborative document
-    /// state — rides [`live_presentation_resources`] when hosted.
-    pub selection: Option<SelectionResourceCtx>,
+    /// The slides' order keys, in deck order: what the key of a slide
+    /// inserted or moved by an author is computed from.
+    pub ranks: Vec<i64>,
 }
 
 impl SlidesResourceCtx {
+    /// The deck as it stands.
+    pub fn deck(&self) -> crate::model::Deck {
+        crate::model::Deck {
+            title: self.deck_title.clone(),
+            palette: self.palette,
+            slides: self
+                .slides
+                .iter()
+                .map(|slide| slide.data.to_slide())
+                .collect(),
+        }
+    }
+
     /// The context for `deck` as it stands: each slide in deck order, each
     /// slide's elements back to front. Selection is left unset — callers that
     /// know the peer's focus fill it in (see [`crate::app::SlidesApp::slides_resource_ctx`]).
     pub fn from_deck(deck: &crate::model::Deck) -> Self {
         Self {
             deck_title: deck.title.clone(),
+            palette: deck.palette,
+            ranks: (0..deck.slides.len())
+                .map(|index| (index as i64).saturating_mul(1_i64 << 32))
+                .collect(),
             slides: deck
                 .slides
                 .iter()
@@ -1635,7 +1583,6 @@ impl SlidesResourceCtx {
                         .collect(),
                 })
                 .collect(),
-            selection: None,
         }
     }
 }
@@ -1672,19 +1619,18 @@ impl ui::tilo_resource::Resource for SlidesDeck {
 
     fn read(doc: &Doc) -> Result<SlidesResourceCtx, ui::tilo_resource::ModelError> {
         SlidesDoc::load(doc)
-            .map(|deck| SlidesResourceCtx::from_deck(&deck))
+            .map(|deck| SlidesResourceCtx {
+                ranks: SlidesDoc::slide_ranks(doc),
+                ..SlidesResourceCtx::from_deck(&deck)
+            })
             .ok_or_else(|| ui::tilo_resource::ModelError::invalid("the document holds no deck"))
     }
 
     fn initialize(doc: &mut Doc) -> Result<(), ui::tilo_resource::ModelError> {
         if SlidesDoc::is_uninitialized(doc) {
-            SlidesDoc::seed(doc, &crate::model::starter_deck());
+            SlidesDoc::seed(doc, &genesis_deck());
         }
         Ok(())
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        deck_local_operations()
     }
 
     fn bound_actions(state: &SlidesResourceCtx) -> Vec<ActionSpec> {
@@ -1736,7 +1682,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
                 "Add a text box, shape, line or image to a slide, above everything on it. \
                  The new element's id is chosen when the edit applies; read the deck again to \
                  find it.",
-            ),
+            )
+            .returns(outline_result()),
             ActionDecl::new(
                 MOVE_ELEMENT,
                 "Move or resize element",
@@ -1746,7 +1693,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .describe(
                 "Move an element so its top-left corner is at (x, y); give w and h as well to \
                  resize it. Slide units: the slide is 1280 × 720.",
-            ),
+            )
+            .returns(outline_result()),
             ActionDecl::new(
                 RESTYLE_ELEMENT,
                 "Restyle element",
@@ -1763,7 +1711,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .describe(
                 "Change an element's colours (fill, text colour, outline), font size, \
                  alignment, weight, slant or corner radius. Only the styles given change.",
-            ),
+            )
+            .returns(outline_result()),
             ActionDecl::new(
                 DELETE_ELEMENT,
                 "Delete element",
@@ -1771,6 +1720,7 @@ impl ui::tilo_resource::Resource for SlidesDeck {
                 |args, _| Ok(delete_element_action(0, element_id_arg(args)?)),
             )
             .describe("Delete an element from its slide.")
+            .returns(outline_result())
             .destructive(),
             ActionDecl::new(
                 MOVE_SLIDE,
@@ -1792,7 +1742,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
                     Ok(move_slide_action(0, position, id))
                 },
             )
-            .describe("Reorder the deck: move a slide to another position."),
+            .describe("Reorder the deck: move a slide to another position.")
+            .returns(outline_result()),
             ActionDecl::new(
                 SET_SLIDE_TEXT,
                 "Set slide text",
@@ -1827,7 +1778,8 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .describe(
                 "Replace the words of a slide's title (its first text box) and/or body (its \
                  second) as plain text, keeping their place and style.",
-            ),
+            )
+            .returns(outline_result()),
         ]
     }
 
@@ -1841,6 +1793,75 @@ impl ui::tilo_resource::Resource for SlidesDeck {
             .map(|slide| slide_resource(slide, true, state))
             .collect()
     }
+
+    fn child(state: &SlidesResourceCtx, id: &str) -> Option<Resource> {
+        deck_child(state, id)
+    }
+
+    /// Every slide, element, text box and set of speaker notes, each hit
+    /// revealing it in the editor.
+    fn search(state: &SlidesResourceCtx) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search::entries(state)
+    }
+}
+
+/// The published resource `id` — the deck, a slide, an element, its words or
+/// a slide's notes — resolved from the deck as it stands, however far past
+/// the eagerly published page it is. A deleted or replaced id resolves to
+/// nothing, so a stale request is refused rather than rebound by position.
+fn deck_child(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
+    if let Some(slide_id) = id.strip_prefix("slides.slide:") {
+        return ctx
+            .slides
+            .iter()
+            .find(|slide| slide.data.id == slide_id)
+            .map(|slide| slide_resource(slide, false, ctx));
+    }
+    if let Some(element_id) = id.strip_prefix("slides.element:") {
+        return ctx.slides.iter().find_map(|slide| {
+            slide
+                .elements
+                .iter()
+                .find(|element| element.id == element_id)
+                .map(|element| element_resource(slide, element, false))
+        });
+    }
+    if let Some(element_id) = id.strip_prefix("slides.text:") {
+        return ctx.slides.iter().find_map(|slide| {
+            slide
+                .elements
+                .iter()
+                .find(|element| element.id == element_id && element.kind == ElementKind::Text)
+                .map(|element| text_resource(slide, element))
+        });
+    }
+    if let Some(slide_id) = id.strip_prefix("slides.notes:") {
+        return ctx
+            .slides
+            .iter()
+            .find(|slide| slide.data.id == slide_id)
+            .map(notes_resource);
+    }
+    None
+}
+
+/// The starter deck every new record begins with, under fixed identities:
+/// the genesis is the same change on every device, so two people creating
+/// the room's deck before they sync converge on one first slide.
+fn genesis_deck() -> crate::model::Deck {
+    let mut deck = crate::model::starter_deck();
+    let mut serial = 0_u32;
+    let mut next = || {
+        serial += 1;
+        format!("00000000-0000-4000-8000-{serial:012}")
+    };
+    for slide in &mut deck.slides {
+        slide.id = next();
+        for element in &mut slide.elements {
+            element.id = next();
+        }
+    }
+    deck
 }
 
 // The positional fields of the element and slide actions a declaration
@@ -2047,7 +2068,7 @@ fn immediate_spec(id: &str, label: &str, action: &SlidesAction) -> ActionSpec {
 
 /// A one-line label for an element in the palette: a text element shows its
 /// first line (trimmed / capped), a shape shows its kind.
-fn element_label(kind: ElementKind, text: &str) -> String {
+pub fn element_label(kind: ElementKind, text: &str) -> String {
     if kind == ElementKind::Text {
         let line = text.lines().next().unwrap_or("").trim();
         if line.is_empty() {
@@ -2070,61 +2091,23 @@ fn element_label(kind: ElementKind, text: &str) -> String {
 /// send-back). Every operation is the same action the on-screen affordance
 /// dispatches.
 fn resource_rank_for_slot(ctx: &SlidesResourceCtx, at: usize) -> i64 {
-    // Search/resource providers hold a stable deck snapshot rather than a
-    // mutable Automerge handle. Derive one wide sparse key *here at authoring
-    // time* from that snapshot; receivers apply this scalar verbatim.
-    (at.min(ctx.slides.len()) as i64).saturating_mul(1_i64 << 32)
+    crate::doc::rank_for_insert(&ctx.ranks, at)
 }
 
-/// View and Effect operations published via [`SlidesDeck::local_operations`].
-fn deck_local_operations() -> Vec<ActionSpec> {
-    let mut specs = vec![
-        operation(
-            "editor",
-            "Show editor",
-            OperationKind::View,
-            SlidesOperation::ShowEditor,
-        ),
-        operation(
-            "overview",
-            "Show slide overview",
-            OperationKind::View,
-            SlidesOperation::ShowOverview,
-        ),
-        operation(
-            "present",
-            "Start presentation",
-            OperationKind::View,
-            SlidesOperation::StartPresentation,
-        ),
-        operation(
-            "present-largest-external",
-            "Present on largest external display",
-            OperationKind::View,
-            SlidesOperation::StartPresentationOn {
-                output: PresentationOutput::LargestExternal,
-            },
-        ),
-        operation(
-            "present-primary-external",
-            "Present on primary external display",
-            OperationKind::View,
-            SlidesOperation::StartPresentationOn {
-                output: PresentationOutput::PrimaryExternal,
-            },
-        ),
-        operation(
-            "end-presentation",
-            "End presentation",
-            OperationKind::View,
-            SlidesOperation::EndPresentation,
-        ),
-    ];
-    // System file picker with no document delta may stay an Effect.
-    specs.push(file_operation("open", "Open presentation", false));
-    specs.push(file_operation("save-as", "Save presentation", true));
-    specs.push(read_operation());
-    specs
+/// What the deck's own edits answer their caller with: the deck's
+/// [outline](crate::outline) as they left it, so an agent sees the result
+/// without reading the deck again. Only the edits an agent composes a deck
+/// with declare it: every declared result grows the catalogue the deck
+/// publishes, whose reply is capped.
+fn outline_result() -> ResultSpec {
+    ResultSpec::Json {
+        schema: crate::outline::result_schema(),
+    }
+}
+
+fn returning_outline(mut spec: ActionSpec) -> ActionSpec {
+    spec.contract.result = outline_result();
+    spec
 }
 
 /// Document ops whose payload needs the live deck: append a slide (rank after
@@ -2136,7 +2119,7 @@ fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
     let rank = resource_rank_for_slot(ctx, ctx.slides.len());
-    let mut specs = vec![
+    let mut specs = vec![returning_outline(
         ActionSpec::typed(
             ADD_SLIDE,
             "Add slide",
@@ -2160,7 +2143,7 @@ fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
             },
         )
         .reversible(),
-    ];
+    )];
 
     // Deck-level: set the accent theme, one row per palette. Collaborative
     // document state (not a per-peer View) — same CRDT path as the inspector.
@@ -2174,14 +2157,6 @@ fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
     specs
 }
 
-fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
-    let title = ctx.deck_title.trim();
-    let deck_label = if title.is_empty() { "Deck" } else { title };
-    // Declared ops, bound add-slide/theme, apply, group, View/Effect
-    // local_operations, and slides beneath — all from publish, no bolt-on.
-    ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx)
-}
-
 fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResourceCtx) -> Resource {
     let idx = sr.idx;
     let mut slide = Resource::new(
@@ -2193,14 +2168,12 @@ fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResource
             Layout::from_str(&sr.data.layout).label()
         ),
     )
-    .with_action(operation(
-        "open",
-        "Open slide",
-        OperationKind::View,
-        SlidesOperation::RevealSlide {
+    .with_action(
+        SlidesEffect::OpenSlide {
             slide: sr.data.id.clone(),
-        },
-    ))
+        }
+        .bound(),
+    )
     .with_action(immediate_spec(
         "duplicate",
         "Duplicate slide",
@@ -2233,9 +2206,7 @@ fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResource
         for er in sr.elements.iter().take(MAX_EAGER_ELEMENTS_PER_SLIDE) {
             slide = slide.with_child(element_resource(sr, er, true));
         }
-        if !sr.data.notes.trim().is_empty() {
-            slide = slide.with_child(notes_resource(sr));
-        }
+        slide = slide.with_child(notes_resource(sr));
     }
     slide
 }
@@ -2260,16 +2231,13 @@ fn element_resource(sr: &SlideResource, er: &ElementResource, eager_text: bool) 
         "slides.element",
         element_label(er.kind, &er.text),
     )
-    .with_action(operation(
-        "open",
-        "Reveal element",
-        OperationKind::View,
-        SlidesOperation::RevealElement {
+    .with_action(
+        SlidesEffect::OpenElement {
             slide: sr.data.id.clone(),
             element: er.id.clone(),
-            edit_text: false,
-        },
-    ))
+        }
+        .bound(),
+    )
     .with_action(immediate_spec(
         "delete",
         "Delete element",
@@ -2309,256 +2277,44 @@ fn text_resource(sr: &SlideResource, er: &ElementResource) -> Resource {
         None,
         wrap,
     )
-    .with_action(operation(
-        "open",
-        "Edit text",
-        OperationKind::View,
-        SlidesOperation::RevealElement {
+    .with_action(
+        SlidesEffect::EditText {
             slide: sr.data.id.clone(),
             element: er.id.clone(),
-            edit_text: true,
-        },
-    ))
+        }
+        .bound(),
+    )
 }
 
+/// A slide's speaker notes: plain text of their own whose edits are the
+/// deck's [`SlidesAction::EditNotes`], plus revealing them.
 fn notes_resource(sr: &SlideResource) -> Resource {
-    Resource::new(
-        notes_resource_id(&sr.data.id),
-        "slides.notes",
-        element_label(ElementKind::Text, &sr.data.notes),
-    )
-    .with_action(operation(
-        "open",
-        "Open speaker notes",
-        OperationKind::View,
-        SlidesOperation::RevealNotes {
-            slide: sr.data.id.clone(),
-        },
-    ))
-}
-
-/// The deck's own edits answer with its [outline](crate::outline), so their
-/// caller sees the result without reading the deck again. Only these: every
-/// declared result grows the catalogue the deck publishes to the broker,
-/// whose reply is capped, and a slide or element resolved by id keeps the
-/// contract the catalogue listed.
-const RETURNING_OUTLINE: &[&str] = &[
-    "add-slide",
-    ADD_ELEMENT,
-    MOVE_ELEMENT,
-    RESTYLE_ELEMENT,
-    DELETE_ELEMENT,
-    MOVE_SLIDE,
-    SET_SLIDE_TEXT,
-];
-
-fn returning_outline(mut resource: Resource) -> Resource {
-    if resource.id.as_str() != "slides.deck" {
-        return resource;
-    }
-    for action in &mut resource.actions {
-        if RETURNING_OUTLINE.contains(&action.id.as_str()) && action.kind == OperationKind::Document
-        {
-            action.contract.result = ResultSpec::Json {
-                schema: crate::outline::result_schema(),
-            };
-        }
-    }
-    resource
-}
-
-fn read_operation() -> ActionSpec {
-    operation(
-        "read",
-        "Read deck as text",
-        OperationKind::Effect,
-        SlidesOperation::Read,
-    )
-    .with_description(
-        "The deck as text: each slide's number, layout and {#id}, its title (# line), body and other elements each ending in its {#id}, then its speaker notes. add-slide, set-slide-text, move-slide and the element edits return this too",
-    )
-}
-
-/// Build the peer's live selection from a slide snapshot and optional element id.
-/// Element-bound delete / restack / reveal ride here; slide document ops stay on
-/// the durable `slides.slide:<id>` child published via [`SlidesDeck::children`].
-pub fn selection_ctx_for(slide: &SlideResource, element_id: Option<&str>) -> SelectionResourceCtx {
-    let (label, actions) = if let Some(element_id) = element_id {
-        match slide
-            .elements
-            .iter()
-            .find(|element| element.id == element_id)
-        {
-            Some(element) => {
-                let resource = element_resource(slide, element, false);
-                (resource.label, resource.actions)
-            }
-            None => (
-                format!("Slide {}", slide.idx + 1),
-                vec![operation(
-                    "open",
-                    "Open slide",
-                    OperationKind::View,
-                    SlidesOperation::RevealSlide {
-                        slide: slide.data.id.clone(),
-                    },
-                )],
-            ),
-        }
+    let (id, wrap) = notes_child(&sr.data.id);
+    let label = if sr.data.notes.trim().is_empty() {
+        format!("Speaker notes · Slide {}", sr.idx + 1)
     } else {
-        (
-            format!("Slide {}", slide.idx + 1),
-            vec![operation(
-                "open",
-                "Open slide",
-                OperationKind::View,
-                SlidesOperation::RevealSlide {
-                    slide: slide.data.id.clone(),
-                },
-            )],
-        )
+        element_label(ElementKind::Text, &sr.data.notes)
     };
-    SelectionResourceCtx {
-        slide_id: slide.data.id.clone(),
-        element_id: element_id
-            .filter(|id| slide.elements.iter().any(|element| element.id == *id))
-            .map(str::to_owned),
-        label,
-        actions,
-    }
-}
-
-/// Live selection. Published beside the framework root when hosted — never a
-/// second copy of the deck document door. Selection-bound palette rows (delete /
-/// restack / reveal on the peer's focus) stay addressable without republishing
-/// every slide already on [`tilo_resource::publish`].
-pub fn live_presentation_resources(ctx: &SlidesResourceCtx) -> Vec<Resource> {
-    let Some(selection) = &ctx.selection else {
-        return Vec::new();
-    };
-    vec![selection_resource(selection)]
-}
-
-fn selection_resource(selection: &SelectionResourceCtx) -> Resource {
-    let id = match &selection.element_id {
-        Some(element) => format!("slides.selection:{}:{}", selection.slide_id, element),
-        None => format!("slides.selection:{}", selection.slide_id),
-    };
-    let mut resource = Resource::new(id, "slides.selection", selection.label.clone());
-    resource.actions.extend(selection.actions.clone());
-    resource
-}
-
-fn attach_live_selection(deck: &mut Resource, ctx: &SlidesResourceCtx) {
-    let Some(selection) = &ctx.selection else {
-        return;
-    };
-    let wanted = slide_resource_id(&selection.slide_id);
-    let Some(slide) = deck.children.iter_mut().find(|slide| slide.id.0 == wanted) else {
-        return;
-    };
-    slide.children.insert(0, selection_resource(selection));
-}
-
-/// Build the bounded contextual resource tree shown by the palette. Search and
-/// agents resolve everything beyond this window by stable id through
-/// [`resolve_resource`], which always rebuilds from the current deck mirror.
-/// Standalone / `--shots` / unit tests nest the live selection under its slide;
-/// when hosted, [`live_presentation_resources`] returns that slice alone.
-pub fn provide_resources(ctx: &SlidesResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    // The document is the deck once it holds one. Selection stays the peer's
-    // live focus and is attached beside that deck. A caller that has not
-    // written a deck yet still publishes the context it passed.
-    let state =
-        <SlidesDeck as ui::tilo_resource::Resource>::read(doc).unwrap_or_else(|_| ctx.clone());
-    let mut deck = returning_outline(deck_resource(&state));
-    attach_live_selection(&mut deck, ctx);
-    vec![deck]
-}
-
-/// Resolve exactly one current durable deck resource without growing the
-/// eager snapshot.  A deleted or replaced id returns `None`, so stale search,
-/// agent and collaboration requests are refused instead of being rebound by
-/// position.
-pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
-    resolve_unannotated(ctx, id).map(returning_outline)
-}
-
-fn resolve_unannotated(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
-    if id == "slides.deck" {
-        return Some(deck_resource(ctx));
-    }
-    if let Some(slide_id) = id.strip_prefix("slides.slide:") {
-        return ctx
-            .slides
-            .iter()
-            .find(|slide| slide.data.id == slide_id)
-            .map(|slide| slide_resource(slide, false, ctx));
-    }
-    if let Some(element_id) = id.strip_prefix("slides.element:") {
-        return ctx.slides.iter().find_map(|slide| {
-            slide
-                .elements
-                .iter()
-                .find(|element| element.id == element_id)
-                .map(|element| element_resource(slide, element, false))
-        });
-    }
-    if let Some(element_id) = id.strip_prefix("slides.text:") {
-        return ctx.slides.iter().find_map(|slide| {
-            slide
-                .elements
-                .iter()
-                .find(|element| element.id == element_id && element.kind == ElementKind::Text)
-                .map(|element| text_resource(slide, element))
-        });
-    }
-    if let Some(slide_id) = id.strip_prefix("slides.notes:") {
-        return ctx
-            .slides
-            .iter()
-            .find(|slide| slide.data.id == slide_id && !slide.data.notes.trim().is_empty())
-            .map(notes_resource);
-    }
-    None
-}
-
-fn find_slides(resources: &[Resource], id: &str) -> Option<Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
+    ui::tilo_resource::publish_child::<ui::tilo_resource::PlainText, SlidesDeck>(
+        &id,
+        &label,
+        Some(&sr.data.notes),
+        wrap,
+    )
+    .with_action(
+        SlidesEffect::OpenNotes {
+            slide: sr.data.id.clone(),
         }
-        if let Some(found) = find_slides(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::SlidesApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        provide_resources(&self.slides_resource_ctx(), doc)
-    }
-
-    pub fn publish_resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        let published = provide_resources(&self.slides_resource_ctx(), doc);
-        if let Some(found) = find_slides(&published, id) {
-            return Some(found);
-        }
-        // A slide or element outside the eager page is still addressable.
-        resolve_resource(&self.slides_resource_ctx(), id)
-    }
+        .bound(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::SlidesApp;
     use crate::model::seed_deck;
-    use automerge::{AutoCommit, ROOT};
+    use automerge::AutoCommit;
     use tilo_automerge::ApplyIncoming;
-    use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
@@ -2566,23 +2322,22 @@ mod tests {
         r
     }
 
-    /// The demo deck synced into a fresh document, plus the app that owns it.
-    /// After `sync`, the app's in-memory deck and the document carry the
-    /// identical slide/element ids (the document was seeded from the deck).
-    fn seeded() -> (SlidesApp, AutoCommit) {
-        let mut app = SlidesApp::demo(None);
+    /// A document holding the sample deck.
+    fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &ROOT);
-        (app, doc)
+        SlidesDoc::seed(&mut doc, &seed_deck());
+        doc.commit();
+        doc
     }
 
-    /// A demo app mirroring `doc`, exactly as the live app is once `sync`
-    /// has reloaded the shared deck.
-    fn app_for(doc: &AutoCommit) -> SlidesApp {
-        let mut app = SlidesApp::demo(None);
-        let mut mirror = doc.clone();
-        app.sync(&mut mirror, &ROOT);
-        app
+    /// The tree the deck publishes for `doc`.
+    fn published(doc: &AutoCommit) -> Vec<Resource> {
+        let state = <SlidesDeck as ui::tilo_resource::Resource>::read(doc).expect("the deck reads");
+        vec![ui::tilo_resource::publish::<SlidesDeck>(
+            "slides.deck",
+            "Deck",
+            &state,
+        )]
     }
 
     fn deck(doc: &AutoCommit) -> crate::model::Deck {
@@ -2592,7 +2347,7 @@ mod tests {
     /// What the door builds for a declared deck operation, from the tree the
     /// app publishes for `doc`.
     fn through_door(doc: &AutoCommit, action: &str, args: serde_json::Value) -> EncodedAction {
-        let resources = ui::resources::resources(&app_for(doc), doc);
+        let resources = published(doc);
         tilo_actions::door::encode_json(
             &resources,
             &ActionAddress::new("slides.deck", action),
@@ -2647,18 +2402,17 @@ mod tests {
         serde_json::json!({"slide": "2", "title": "Agenda", "body": "Goals\nTimeline"})
     }
 
-    /// `read` and every deck edit declare the outline, and the app answers
-    /// an edit with the deck it left, titled and with its handles.
+    /// The deck's edits declare the outline, and the app answers an edit
+    /// with the deck it left, titled and with its handles.
     #[test]
-    fn deck_edits_and_read_answer_with_the_outline() {
-        let (_, mut doc) = seeded();
-        let app = app_for(&doc);
-        let resources = ui::resources::resources(&app, &doc);
+    fn deck_edits_answer_with_the_outline() {
+        let mut doc = seeded();
+        let resources = published(&doc);
         let published = resources
             .iter()
             .find(|resource| resource.id.as_str() == "slides.deck")
             .expect("the deck is published");
-        for id in [SET_SLIDE_TEXT, ADD_ELEMENT, MOVE_SLIDE, "read"] {
+        for id in [SET_SLIDE_TEXT, ADD_ELEMENT, MOVE_SLIDE, ADD_SLIDE] {
             let action = published
                 .actions
                 .iter()
@@ -2672,36 +2426,21 @@ mod tests {
                 "{id}"
             );
         }
-        let readers: Vec<_> = published
-            .actions
-            .iter()
-            .filter(|action| action.contract.reads_document())
-            .map(|action| action.id.as_str())
-            .collect();
-        assert_eq!(readers, ["read"], "an open answers the deck through `read`");
-
         let encoded = through_door(&doc, SET_SLIDE_TEXT, set_text_args());
         let action: SlidesAction = serde_json::from_slice(&encoded.payload).expect("decodes");
         action.apply(&mut doc).expect("set-slide-text applies");
         let second = deck(&doc).slides[1].id.clone();
-        let outline = ui::resources::document_action_result(
-            &app_for(&doc),
-            &doc,
-            &ActionAddress::new("slides.deck", SET_SLIDE_TEXT),
-            &[],
-        )
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .expect("the edit answers with the outline");
+        let outline = crate::outline::of_document(&doc).expect("the deck has an outline");
         let slide = format!("\nSlide 2 (title-content) {{#{second}}}\n# Agenda {{#");
         assert!(outline.contains(&slide), "{outline}");
         assert!(outline.contains("\nGoals↵Timeline {#"), "{outline}");
     }
 
     ui::action_contract_tests! {
-        seed: seeded().1,
+        seed: seeded(),
         registry: registry(),
-        resources: |doc| ui::resources::resources(&app_for(doc), doc),
-        palette: ["Add slide", "Delete slide", "Delete element", "Start presentation"],
+        resources: |doc| published(doc),
+        palette: ["Add slide", "Delete slide", "Delete element"],
         replay: [
             set_background => |doc| encode(&set_slide_background_action(
                 1,
@@ -2776,19 +2515,14 @@ mod tests {
         // layout / background), and a `slides.element:<id>` per element (delete /
         // bring-front / send-back). Drives the real resource hook.
         {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let doc = seeded();
+            let resources = published(&doc);
             assert_eq!(resources.len(), 1, "one deck root");
             let deck = &resources[0];
             assert_eq!(deck.kind, "slides.deck");
             let deck_actions: Vec<&str> = deck.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(deck_actions.contains(&"add-slide"), "{deck_actions:?}");
             assert!(deck_actions.contains(&"theme-emerald"), "{deck_actions:?}");
-            assert!(
-                deck_actions.contains(&"present-largest-external")
-                    && deck_actions.contains(&"present-primary-external"),
-                "presentation output policies must be available through the same resource surface: {deck_actions:?}"
-            );
 
             assert_eq!(
                 deck.children.len(),
@@ -2816,16 +2550,16 @@ mod tests {
 
         // Case `nested_view_resources_export_stable_broker_addresses`.
         {
-            let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let doc = seeded();
+            let resources = published(&doc);
             let slide = &resources[0].children[0];
             let slide_id = slide.id.0.strip_prefix("slides.slide:").unwrap();
             let open_slide = slide
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
+                .find(|action| action.id == "open-slide")
                 .unwrap();
-            assert_eq!(open_slide.kind, OperationKind::View);
+            assert_eq!(open_slide.kind, tilo_actions::OperationKind::View);
             assert_eq!(
                 open_slide_address(slide_id),
                 tilo_actions::ActionAddress::new(&slide.id.0, &open_slide.id)
@@ -2845,12 +2579,15 @@ mod tests {
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("text address resolves through the published resource tree");
             assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).unwrap(),
-                Some(SlidesOperation::RevealElement {
+                encoded,
+                SlidesEffect::EditText {
                     slide: slide_id.to_string(),
                     element: element_id.to_string(),
-                    edit_text: true,
-                })
+                }
+                .bound()
+                .build_json(&serde_json::Map::new())
+                .unwrap(),
+                "the text resource reveals its words through the editor's effect"
             );
         }
     }
@@ -2860,7 +2597,7 @@ mod tests {
     fn hostile_or_over_limit_actions_are_refused_atomically() {
         // Case `stale_and_hostile_actions_are_refused_without_a_partial_write`.
         {
-            let (_app, mut doc) = seeded();
+            let mut doc = seeded();
             let before = doc.get_heads();
             let live = SlidesDoc::load(&doc).unwrap();
             let element = live.slides[0].elements[0].id.clone();
@@ -2911,7 +2648,7 @@ mod tests {
 
         // Case `duplicate_element_insert_is_refused_before_document_mutation`.
         {
-            let (_app, mut doc) = seeded();
+            let mut doc = seeded();
             let before = doc.get_heads();
             let duplicate = SlidesDoc::load(&doc).unwrap().slides[0].elements[0].clone();
             let slide_id = SlidesDoc::load(&doc).unwrap().slides[0].id.clone();
@@ -2933,7 +2670,7 @@ mod tests {
     fn absolute_orders_replay_identically_after_divergence() {
         // Case `stable_ids_keep_an_element_action_on_its_original_slide_after_an_insert`.
         {
-            let (_app, mut doc) = seeded();
+            let mut doc = seeded();
             let before = SlidesDoc::load(&doc).expect("seeded deck");
             let target_slide = before.slides[1].id.clone();
             let element = before.slides[1].elements[0].id.clone();
@@ -2962,14 +2699,15 @@ mod tests {
 
         // Case `absolute_slide_order_replays_identically_after_divergent_inserts`.
         {
-            let (_app, mut a) = seeded();
+            let mut a = seeded();
             a.commit();
             let bytes = a.save();
             let mut b = AutoCommit::load(&bytes).expect("replica loads");
 
             let base = SlidesDoc::load(&a).expect("seeded deck");
             let moved = base.slides[1].id.clone();
-            let rank = SlidesDoc::rank_for_move(&a, 1, 3).expect("valid authored reorder");
+            let rank = crate::doc::rank_for_move(&SlidesDoc::slide_ranks(&a), 1, 3)
+                .expect("valid authored reorder");
             let encoded = encode(&set_slide_order_action(moved.clone(), rank));
             assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
             let action: SlidesAction =
@@ -2997,14 +2735,14 @@ mod tests {
 
         // Case `absolute_slide_insert_replays_identically_after_divergent_inserts`.
         {
-            let (_app, mut a) = seeded();
+            let mut a = seeded();
             a.commit();
             let bytes = a.save();
             let mut b = AutoCommit::load(&bytes).expect("replica loads");
 
             let inserted = crate::model::Slide::new(Layout::Blank);
             let inserted_id = inserted.id.clone();
-            let rank = SlidesDoc::rank_for_insert(&a, 1);
+            let rank = crate::doc::rank_for_insert(&SlidesDoc::slide_ranks(&a), 1);
             let encoded = encode(&insert_slide_with_order_action(&inserted, rank));
             assert_eq!(encoded.type_id, SLIDES_ACTION_TYPE);
             let action: SlidesAction =
@@ -3031,7 +2769,7 @@ mod tests {
 
         // Case `absolute_element_z_replays_identically_after_divergent_arrangement`.
         {
-            let (_app, mut a) = seeded();
+            let mut a = seeded();
             a.commit();
             let bytes = a.save();
             let mut b = AutoCommit::load(&bytes).expect("replica loads");
@@ -3041,7 +2779,8 @@ mod tests {
             let target = deck.slides[0].elements[0].id.clone();
             let other_a = deck.slides[0].elements[1].id.clone();
             let other_b = deck.slides[0].elements[2].id.clone();
-            let z = restack_z_for_author(&a, &slide_id, &target, true).expect("front z");
+            let z = restack_z_for_author(&SlidesDoc::load(&a).unwrap(), &slide_id, &target, true)
+                .expect("front z");
             let encoded = encode(&set_element_z_action(slide_id, target.clone(), z));
             let action: SlidesAction =
                 serde_json::from_slice(&encoded.payload).expect("encoded action decodes");

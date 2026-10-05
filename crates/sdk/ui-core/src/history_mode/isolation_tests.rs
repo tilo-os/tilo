@@ -228,7 +228,7 @@ impl Widget for LiveOwner {
             self.resource_id
         })
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -266,10 +266,10 @@ impl Widget for LiveOwner {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        _: &mut AutoCommit,
+        _: &mut crate::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let Some(crate::widget::OperationRequest {
+        let Some(crate::host_operation::OperationRequest {
             invocation,
             type_id,
             ..

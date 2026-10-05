@@ -226,6 +226,13 @@ impl FanoutState {
             .filter(|state| state.is_accepting())
     }
 
+    /// Ask the local apps holding records in `cluster_id` to publish their
+    /// snapshots; see [`CapnpBrokerState::request_room_snapshots`].
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        self.capnp_state()
+            .map_or(0, |state| state.request_room_snapshots(cluster_id))
+    }
+
     /// Deliver `event` to every typed or in-process subscriber addressed by
     /// `route`, skipping the originating typed peer id.
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
