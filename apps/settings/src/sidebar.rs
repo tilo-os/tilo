@@ -191,6 +191,7 @@ pub struct SidebarRow {
     is_hovered: bool,
     is_pressed: bool,
     is_focused: bool,
+    drawn_interaction: Option<(bool, bool, bool)>,
     /// The label's type size as the theme resolves it (`scale.base`, already
     /// text-scaled), captured in `build_layout` so `measure` and `draw` shape
     /// the label identically. Handed to the renderer through
@@ -218,6 +219,7 @@ impl SidebarRow {
             is_hovered: false,
             is_pressed: false,
             is_focused: false,
+            drawn_interaction: None,
             label_size: ui::tokens::TypeScale::default().base,
         }
     }
@@ -342,6 +344,7 @@ impl Widget for SidebarRow {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.drawn_interaction = Some((self.is_hovered, self.is_pressed, self.is_focused));
         // Active row: the shared selection lift — a raised fill with a derived
         // hairline and inner glow (HIG §9.3), never an accent wash. Hover: the
         // half lift. Otherwise nothing, so inactive rows read flat against the
@@ -454,16 +457,19 @@ impl Widget for SidebarRow {
         );
     }
 
+    fn needs_redraw(&self) -> bool {
+        self.drawn_interaction != Some((self.is_hovered, self.is_pressed, self.is_focused))
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
-                if hover != self.is_hovered {
-                    self.is_hovered = hover;
-                    *ctx.handled = true;
-                }
+                // Like the shared Button, hover changes demand repaint but
+                // never consume motion: siblings must receive the new position.
+                self.is_hovered = hover;
             }
             WindowEvent::MouseInput {
                 state: element_state,
@@ -594,6 +600,16 @@ pub fn build(
     query: &str,
     selection_request: &ui::LocalState<Option<Category>>,
 ) -> Box<dyn Widget> {
+    build_with_scroll(selected, query, selection_request, std::rc::Rc::default())
+}
+
+/// Rebuild the navigation with the same local scroll position as its predecessor.
+pub(crate) fn build_with_scroll(
+    selected: Category,
+    query: &str,
+    selection_request: &ui::LocalState<Option<Category>>,
+    scroll_offset: std::rc::Rc<std::cell::Cell<(f32, f32)>>,
+) -> Box<dyn Widget> {
     // Three explicit steps of the spacing scale carry the whole rhythm, so
     // the eye reads groups rather than a list of equally spaced lines:
     //
@@ -649,7 +665,9 @@ pub fn build(
         col = col.push(section_block("Results", body));
     }
 
-    let scroll = Scrollable::new_vertical().with_child(Box::new(col));
+    let scroll = Scrollable::new_vertical()
+        .with_persisted_offset(scroll_offset)
+        .with_child(Box::new(col));
     // No surface tint or border here: the enclosing `AppShell` draws the one
     // cohesive sidebar panel (header + this list) as a single flat surface, so
     // the nav is just the transparent, scrollable list of rows that sits on it.
