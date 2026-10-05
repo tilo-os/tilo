@@ -3639,7 +3639,7 @@ mod tests {
         use ui::Widget;
         let (mut app, mut doc) = app_with_doc();
         stage_agent_work(&mut app, &mut doc);
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         let work = AgentWork::new(AgentWorkState::Done { did: "Reviewed all operations".into() }, crate::doc::NOW)
             .with_trace((0..60).map(|index| AgentStep::authored("calculator.workspace",
                 format!("Operation {index}: preserve graph bounds and add the requested revenue curve"),
@@ -3650,7 +3650,7 @@ mod tests {
             &crate::actions::set_agent_work_action("c_crit", "m_agent_reply", work, None),
         )
         .unwrap();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         render_frame(&mut app, 800.0, 600.0);
         let region = app.primary_vertical_scroll().unwrap();
         assert_eq!(region.key, "thread");
