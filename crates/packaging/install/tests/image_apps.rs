@@ -24,10 +24,6 @@ use tilo_app_package::{Manifest, SigningIdentity, pack};
 
 const APP: &str = "so.tilo.settings";
 
-fn manifest_src(version: &str, pub_hex: &str) -> String {
-    manifest_requiring(version, pub_hex, None)
-}
-
 /// A manifest that, given `system`, requires that version of the system
 /// interface.
 fn manifest_requiring(version: &str, pub_hex: &str, system: Option<u32>) -> String {
