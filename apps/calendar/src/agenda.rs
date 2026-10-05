@@ -177,7 +177,7 @@ impl AgendaView {
                     y = row.y1;
                 }
                 Item::Task(task) => {
-                    let face = task_face(task);
+                    let face = task_face(task, source, theme);
                     let h = face.height(ctx.text, theme);
                     let row = Rect::new(x0, y, x1, y + h);
                     if row.y1 > area.y0 && row.y0 < area.y1 {
@@ -262,9 +262,14 @@ fn event_face<'a>(event: &'a Event, time: &'a str, theme: &Theme) -> ListRowFace
     }
 }
 
-/// A task row: its checkbox leads and completes it.
-fn task_face(task: &Task) -> ListRowFace<'_> {
-    let face = ListRowFace::new(&task.title).leading(RowLeading::Checkbox { checked: task.done });
+/// A task row: its checkbox leads and completes it; its project's colour
+/// follows the title as a swatch mark.
+fn task_face<'a>(task: &'a Task, source: &AgendaSource<'_>, theme: &Theme) -> ListRowFace<'a> {
+    let mut face =
+        ListRowFace::new(&task.title).leading(RowLeading::Checkbox { checked: task.done });
+    if let Some(project) = task.project.and_then(|id| source.model.project(id)) {
+        face = face.swatch_mark(project.color.color(theme));
+    }
     if task.done {
         face.meta("Done")
     } else if task.priority == Priority::None {
@@ -402,7 +407,7 @@ fn content_height(source: &AgendaSource<'_>, text: &mut TextRenderer, theme: &Th
                 let time = event_time(event);
                 event_face(event, &time, theme).height(text, theme)
             }
-            Item::Task(task) => task_face(task).height(text, theme),
+            Item::Task(task) => task_face(task, source, theme).height(text, theme),
         };
     }
     height
