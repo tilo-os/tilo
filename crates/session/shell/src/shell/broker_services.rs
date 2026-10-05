@@ -353,12 +353,16 @@ const GOVERNED_OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 
 impl NativeLauncher {
     /// Open `app` through the governor of `workspace`'s room, when another
-    /// device governs it. `None` when this session opens it itself.
+    /// device governs it and opens its apps. `None` when this session opens
+    /// it itself.
     ///
     /// Such a room only holds records its governor created, so a local
     /// launch would open an app whose document the room does not hold. The
     /// governor's open places the window in the room; the session then opens
-    /// its own instance of that window through [`super::peer_windows`].
+    /// its own instance of that window through [`super::peer_windows`]. A
+    /// host governing the room (a node's relay) runs no apps: the session
+    /// runs the app and publishes its window as its own, as it does a legacy
+    /// window, for the room's members to watch.
     fn open_through_governor(
         &self,
         app: &str,
@@ -371,7 +375,7 @@ impl NativeLauncher {
         let answer = self
             .1
             .as_ref()
-            .filter(|network| network.governed_elsewhere(workspace.room))?
+            .filter(|network| network.governor_opens_apps(workspace.room))?
             .invoke_governor(
                 workspace.room,
                 tilo_desktop_model::commands::APP_ID,
