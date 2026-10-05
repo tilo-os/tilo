@@ -169,13 +169,13 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
                 CardGrid::new(vec![Box::new(Card::new(Box::new(body)))]).with_card_height(180.0),
             ),
         );
-        app.root_widget.update(&mut app.state.doc, &app.state.root);
+        app.root_widget.update(&app.state.doc, &app.state.root);
         app.init_layout();
         layout(&mut app, 300);
         assert_eq!(app.focusable_order.len(), 1);
         app.root_widget.take_structure_dirty();
         requested.set(2);
-        assert!(app.root_widget.update(&mut app.state.doc, &app.state.root));
+        assert!(app.root_widget.update(&app.state.doc, &app.state.root));
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
         let root = app.layout.root_node.unwrap();
@@ -387,8 +387,8 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         app.root_widget.take_structure_dirty();
         keys.borrow_mut().push(3);
         changed.set(true);
-        assert!(app.root_widget.update(&mut app.state.doc, &app.state.root));
-        app.root_widget.sync(&mut app.state.doc, &app.state.root);
+        assert!(app.root_widget.update(&app.state.doc, &app.state.root));
+        app.root_widget.sync(&app.state.doc, &app.state.root);
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
         let root = app.layout.root_node.unwrap();

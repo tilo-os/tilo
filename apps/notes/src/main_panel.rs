@@ -122,7 +122,7 @@ impl RichTextSource for PageBody {
         self.field.read_only()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit) {
+    fn sync(&mut self, doc: &AutoCommit) {
         self.field.sync(doc);
     }
 
@@ -1267,7 +1267,7 @@ impl Widget for MainPanel {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         self.date_index.sync(state);
         let dates = self
             .page_id

@@ -450,7 +450,7 @@ impl App {
     pub(super) fn build_history_presentation(&mut self) {
         if let Some(dialog) = self.close_admission.dialog.as_mut() {
             self.layout.taffy = taffy::TaffyTree::new();
-            dialog.sync(&mut self.state.doc, &self.state.root);
+            dialog.sync(&self.state.doc, &self.state.root);
             let root = dialog.build_layout(
                 &mut self.layout.taffy,
                 &self.theme,
@@ -546,7 +546,7 @@ impl App {
 
         let _ = self.history_local_resources();
         self.document_history
-            .sync(&mut self.state.doc, &self.state.root);
+            .sync(&self.state.doc, &self.state.root);
         let layout = self.document_history.build_layout(
             app,
             &mut self.layout.taffy,

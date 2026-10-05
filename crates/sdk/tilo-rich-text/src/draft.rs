@@ -58,7 +58,7 @@ impl Draft {
         }
         doc.commit();
         self.revision = self.revision.wrapping_add(1);
-        self.field = FieldState::read(&mut doc, ROOT, self.revision).ok();
+        self.field = FieldState::read(&doc, ROOT, self.revision).ok();
         self.doc = doc;
     }
 

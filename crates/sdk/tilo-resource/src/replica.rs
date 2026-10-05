@@ -180,7 +180,7 @@ impl<R: Resource> Replica<R> {
     /// Returns [`ModelError`] when the document does not hold the resource.
     pub fn live(&mut self) -> Result<&R::State, ModelError> {
         if let Some(reader) = &mut self.reader {
-            reader.sync(&mut self.doc)?;
+            reader.sync(&self.doc)?;
         } else {
             self.reader = Some(Reader::open(&mut self.doc)?);
         }

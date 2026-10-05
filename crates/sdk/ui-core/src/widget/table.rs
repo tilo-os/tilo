@@ -1567,7 +1567,7 @@ mod tests {
         reason = "test-only layout size is a small pixel value; f32 precision loss is \
                   immaterial"
     )]
-    fn layout(table: &mut Table, doc: &mut AutoCommit, root: &ObjId) -> (TaffyTree<()>, NodeId) {
+    fn layout(table: &mut Table, doc: &AutoCommit, root: &ObjId) -> (TaffyTree<()>, NodeId) {
         table.sync(doc, root);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -1682,7 +1682,7 @@ mod tests {
             set_cell_text(&mut doc, &t, 0, 1, "B");
 
             let mut table = Table::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Boundary between col 0 and col 1: xs[1] = LEFT_GUTTER + DEFAULT_COL_W.
             let bx = LEFT_GUTTER + DEFAULT_COL_W;
@@ -1722,7 +1722,7 @@ mod tests {
                 set_cell_text(&mut doc, &t, i, 0, &format!("R{i}"));
             }
             let mut table = Table::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Delete handle for row 1 sits in the left gutter at that row's centre.
             let cy = TOP_GUTTER + 1.5 * ROW_H;
@@ -1750,7 +1750,7 @@ mod tests {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 1, 2);
             let mut table = Table::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             let cid0 = col_ids(&doc, &t)[0].clone();
             let before = col_width(&doc, &t, &cid0);
@@ -1811,7 +1811,7 @@ mod tests {
         {
             let (mut doc, t) = doc_with_table();
             let mut table = Table::new("t"); // no seed → empty
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let (taffy, node) = layout(&mut table, &doc, &t);
             assert!(table.is_empty());
 
             let mods = Modifiers::default();
@@ -1843,7 +1843,7 @@ mod tests {
             set_cell_text(&mut doc, &t, 0, 0, "");
 
             let mut table = Table::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Focus the only cell (emulating the App's focus dispatch).
             table.cells[0].set_focus(true);
@@ -1864,7 +1864,7 @@ mod tests {
             let (mut doc, t) = doc_with_table();
             seed(&mut doc, &t, 2, 2);
             let mut table = Table::new("t");
-            let (taffy, node) = layout(&mut table, &mut doc, &t);
+            let (taffy, node) = layout(&mut table, &doc, &t);
 
             // Focus the top-left cell (index 0). Cell below is index n_cols == 2.
             table.cells[0].set_focus(true);

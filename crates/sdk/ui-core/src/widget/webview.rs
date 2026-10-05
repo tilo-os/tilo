@@ -1361,10 +1361,10 @@ mod tests {
             use crate::gesture::NavDirection;
             let engine = TestEngine::new();
             let mut w = WebView::new(engine.clone());
-            let mut state = AutoCommit::new();
+            let state = AutoCommit::new();
             let root = automerge::ROOT;
-            assert!(w.on_nav_gesture(NavDirection::Back, &mut state, &root));
-            assert!(w.on_nav_gesture(NavDirection::Forward, &mut state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Back, &state, &root));
+            assert!(w.on_nav_gesture(NavDirection::Forward, &state, &root));
             let cmds = engine.commands();
             assert!(cmds.contains(&WebViewCommand::GoBack));
             assert!(cmds.contains(&WebViewCommand::GoForward));

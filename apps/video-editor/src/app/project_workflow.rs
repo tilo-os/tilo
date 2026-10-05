@@ -302,7 +302,7 @@ impl VideoEditorApp {
     /// and Ctrl+Z puts the old project back. `Save` writes first and then
     /// continues into the open on its own, so the user does not have to
     /// remember what they were doing.
-    pub(super) fn resolve_pending_open(&mut self, doc: &mut AutoCommit, choice: DiscardChoice) {
+    pub(super) fn resolve_pending_open(&mut self, doc: &AutoCommit, choice: DiscardChoice) {
         let Some(pending) = self.pending_open.take() else {
             return;
         };

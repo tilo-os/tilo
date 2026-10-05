@@ -443,7 +443,7 @@ impl FrameHarness {
             crate::widget::controls::refresh_control_action_availability(pane, &allowed);
         }
         self.document_history
-            .sync(&mut self.state.doc, &self.state.root);
+            .sync(&self.state.doc, &self.state.root);
         let reshaped = self.document_history.take_structure_dirty();
         (
             revision != self.document_history.revision(),

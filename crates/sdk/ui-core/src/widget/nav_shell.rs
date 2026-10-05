@@ -1933,7 +1933,7 @@ mod tests {
                 Box::new(Text::new("places")),
                 Box::new(Text::from_document_string("label")),
             );
-            ns.sync(&mut doc, &automerge::ROOT);
+            ns.sync(&doc, &automerge::ROOT);
             lay_out(&mut ns, 420.0, 500.0);
             ns.snap_sidebar(true);
             let theme = Theme::dark();
@@ -1958,7 +1958,7 @@ mod tests {
                 "first line\nsecond line\nthird line",
             )
             .unwrap();
-            ns.sync(&mut doc, &automerge::ROOT);
+            ns.sync(&doc, &automerge::ROOT);
             assert!(ns.overlay_sidebar_is_modal());
             assert!(ns.overview.layout_needs_measure());
             assert!(

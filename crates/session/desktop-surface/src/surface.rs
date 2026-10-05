@@ -2023,7 +2023,7 @@ mod tests {
                     "g",
                 )
                 .unwrap();
-            surface.update(&mut state, &ui::automerge::ROOT);
+            surface.update(&state, &ui::automerge::ROOT);
             let snapshot = handle.snapshot("g", vec![]);
             let activity = snapshot.workspace_activity.unwrap();
             assert_eq!(activity.view, view);
@@ -2041,7 +2041,7 @@ mod tests {
             "Ada",
             3_000,
         ));
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 2);
         handle
             .dispatch(
@@ -2052,7 +2052,7 @@ mod tests {
                 "g",
             )
             .unwrap();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(surface.activity.is_none());
         assert!(handle.snapshot("g", vec![]).workspace_activity.is_none());
     }
@@ -2098,7 +2098,7 @@ mod tests {
                 label: "Clocks".into(),
             });
         let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(handle.focus_app("so.tilo.clocks"));
         assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
         assert_eq!(notifications.counts(), (0, 1));
@@ -2125,7 +2125,7 @@ mod tests {
             )
             .unwrap();
         let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         let snapshot = handle.snapshot("g", vec![]);
         assert_eq!(
             snapshot.notifications,
@@ -2145,7 +2145,7 @@ mod tests {
                 "g",
             )
             .unwrap();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(
             !handle
                 .snapshot("g", vec![])
@@ -2158,7 +2158,7 @@ mod tests {
 
     fn focused(surface: &mut DesktopSurface, handle: &DesktopHandle) -> usize {
         let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         handle.read(|tree| {
             let active = navigation::active_route(tree).unwrap();
             tree.workspaces[0].strips[0]

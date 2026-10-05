@@ -1037,8 +1037,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(true);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert!(second.is_checked());
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1052,12 +1052,12 @@ mod tests {
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(!second.is_checked(), "sibling follows the shared model");
 
             second.set_checked(true);
             assert!(state.get(), "programmatic mutation publishes typed state");
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert_eq!(
                 &*changes.borrow(),
@@ -1072,15 +1072,15 @@ mod tests {
             let root = automerge::ROOT;
             let mut toggle = Toggle::new("any", "enabled");
             doc.put(&root, "enabled", true).unwrap();
-            Widget::sync(&mut toggle, &mut doc, &root);
+            Widget::sync(&mut toggle, &doc, &root);
             assert!(toggle.is_checked());
 
             doc.delete(&root, "enabled").unwrap();
-            Widget::sync(&mut toggle, &mut doc, &root);
+            Widget::sync(&mut toggle, &doc, &root);
             assert!(!toggle.is_checked(), "a removed path means off");
 
             doc.put(&root, "enabled", "not-a-boolean").unwrap();
-            Widget::sync(&mut toggle, &mut doc, &root);
+            Widget::sync(&mut toggle, &doc, &root);
             assert!(!toggle.is_checked(), "a mistyped path cannot stay stale");
         }
 

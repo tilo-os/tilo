@@ -1017,8 +1017,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(0.5);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.5);
             assert_eq!(second.value(), 0.5);
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1031,12 +1031,12 @@ mod tests {
             ));
             assert_eq!(state.get(), 0.55);
             assert_eq!(&*changes.borrow(), &[0.55]);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.value(), 0.55);
 
             second.set_value(0.8);
             assert_eq!(state.get(), 0.8);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.8);
             assert_eq!(&*changes.borrow(), &[0.55]);
         }

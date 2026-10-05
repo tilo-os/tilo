@@ -3034,7 +3034,7 @@ mod tests {
             changed.set(true);
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let after = Widget::accessibility(&table).expect("loaded semantics");
@@ -3117,7 +3117,7 @@ mod tests {
                 .push(TableModelChange::RowsChanged { keys: vec![2] });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -3148,7 +3148,7 @@ mod tests {
                 .push(TableModelChange::RowsInserted { index: 0, count: 1 });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -3162,7 +3162,7 @@ mod tests {
             });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -3909,7 +3909,7 @@ mod tests {
             );
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             assert!(

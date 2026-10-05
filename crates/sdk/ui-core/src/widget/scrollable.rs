@@ -3083,15 +3083,15 @@ mod tests {
                 s.needs_animation_frame(),
                 "momentum must not depend on scrollbar opacity"
             );
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             // Match the admitted primary-frame lifecycle: update runs even when
             // the prior frame consumed all ordinary dirty flags.
             for _ in 0..240 {
                 if !s.needs_animation_frame() {
                     break;
                 }
-                s.update(&mut doc, &automerge::ROOT);
-                s.sync(&mut doc, &automerge::ROOT);
+                s.update(&doc, &automerge::ROOT);
+                s.sync(&doc, &automerge::ROOT);
                 s.mark_drawn();
             }
             assert!(s.offset_y() > 0.0, "the demanded frames advance content");

@@ -56,7 +56,7 @@ fn history_now_ms() -> u64 {
 /// Pull the frames the player's engine decoded into its surface, as the
 /// player's own `sync` does every frame; it reads no document.
 fn pump_player(player: &mut VideoPlayer) {
-    player.sync(&mut (), &());
+    player.sync(&(), &());
 }
 
 /// Below this allocated width (logical px) the navigation rail stops sitting

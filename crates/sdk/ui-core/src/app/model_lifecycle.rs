@@ -208,7 +208,7 @@ impl super::App {
     pub(super) fn update_model(&mut self) -> bool {
         if !self
             .root_widget
-            .update(&mut self.state.doc, &self.state.root)
+            .update(&self.state.doc, &self.state.root)
         {
             return false;
         }
@@ -222,7 +222,7 @@ impl super::App {
         if !force && !self.needs_sync {
             return false;
         }
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        self.root_widget.sync(&self.state.doc, &self.state.root);
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();

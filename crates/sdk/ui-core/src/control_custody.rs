@@ -1007,7 +1007,7 @@ mod tests {
         let (lease, saved) = domain.suspend();
         assert!(saved.is_empty());
         let mut doc = automerge::AutoCommit::new();
-        view.sync(&mut doc, &automerge::ROOT);
+        view.sync(&doc, &automerge::ROOT);
         drop(lease);
         assert!(domain.drain_live().is_empty());
         assert!(view.children_mut()[0].perform_action(
@@ -1059,11 +1059,11 @@ mod lifecycle_tests {
             CustodyAttachment::Initial,
         );
         let c = domain.producer(ControlProducerDiscipline::ReplaceOne);
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         for revision in 0..128 {
             let want = if revision == 0 { "B0" } else { "B1" };
             *key.borrow_mut() = revision;
-            model.sync(&mut doc, &automerge::ROOT);
+            model.sync(&doc, &automerge::ROOT);
             let scope = domain.children().into_iter().next().unwrap();
             assert_eq!(domain.0.borrow().order.len(), 3, "stable A/subtree/C slots");
             assert_eq!(

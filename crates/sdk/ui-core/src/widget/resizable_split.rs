@@ -689,11 +689,11 @@ mod tests {
     #[test]
     fn both_panes_receive_the_update_pass() {
         let mut s = split_at(0.0, 0.0, 400.0, 300.0, SplitOrientation::Horizontal);
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
-        assert!(!s.update(&mut doc, &root), "nothing changed");
+        assert!(!s.update(&doc, &root), "nothing changed");
         s.right.changes = true;
-        assert!(s.update(&mut doc, &root), "a pane's change is the split's");
+        assert!(s.update(&doc, &root), "a pane's change is the split's");
         assert_eq!((s.left.updates, s.right.updates), (2, 2));
     }
 

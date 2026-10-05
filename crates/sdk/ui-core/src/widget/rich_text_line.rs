@@ -1803,7 +1803,7 @@ mod tests {
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
             // The root arg is unused once a Text is bound.
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert_eq!(line.value(), "hello");
         }
 
@@ -1863,7 +1863,7 @@ mod tests {
 
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert!(
                 line.author_runs().iter().any(|(_, _, a)| a == "alice"),
                 "expected an alice author run, got {:?}",

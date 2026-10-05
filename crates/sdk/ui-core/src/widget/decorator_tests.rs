@@ -78,7 +78,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
 
         assert_eq!(widget.name(), "Named");
         assert_eq!(widget.get_rect(), Rect::new(1.0, 2.0, 3.0, 4.0));
-        widget.sync(&mut doc, &automerge::ROOT);
+        widget.sync(&doc, &automerge::ROOT);
         let node = widget.build_layout(&mut taffy, &theme, &mut nodes);
         widget.apply_layout(&taffy, node, Point::ORIGIN);
         widget.draw(

@@ -134,7 +134,7 @@ impl ShotFrame {
 
     /// Pull the widget's visual state from [`ShotFrame::state`].
     pub fn sync(&mut self, widget: &mut dyn Widget) {
-        widget.sync(&mut self.state.doc, &self.state.root);
+        widget.sync(&self.state.doc, &self.state.root);
     }
 
     /// Build a fresh layout tree for the widget inside a viewport-sized root,
