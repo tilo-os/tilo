@@ -3643,19 +3643,28 @@ fn keyboard_and_pointer_transport_controls_drive_playback() {
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
+        // The second frame lays the page out beside the scroll bar's lane.
+        draw_once(&mut app, &mut doc);
         draw_once(&mut app, &mut doc);
         let max = (app.content_height - app.body_rect.height()).max(0.0);
         assert!(
             max > 0.0,
             "the songs list overflows, so there is room to scroll"
         );
+        // The wheel scrolls what is under the pointer.
+        let over_body = app.body_rect.center();
+        send(&mut app, &cursor_at(over_body), &mut doc);
         send(&mut app, &wheel(-3.0), &mut doc);
-        assert!(app.scroll > 0.0, "wheel down scrolls the content");
-        assert!(app.scroll <= max);
+        assert!(app.scroll_y() > 0.0, "wheel down scrolls the content");
+        assert!(app.scroll_y() <= max);
         send(&mut app, &wheel(-1000.0), &mut doc);
-        assert_eq!(app.scroll, max, "a big scroll clamps at the content bottom");
+        assert_eq!(
+            app.scroll_y(),
+            max,
+            "a big scroll clamps at the content bottom"
+        );
         send(&mut app, &wheel(1000.0), &mut doc);
-        assert_eq!(app.scroll, 0.0, "scrolling back up clamps at the top");
+        assert_eq!(app.scroll_y(), 0.0, "scrolling back up clamps at the top");
     }
 
     // Phase `toggle_mute_silences_and_restores_volume`.
@@ -3734,11 +3743,11 @@ fn queue_view_and_volume_controls_are_responsive() {
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Albums;
-        app.scroll = 137.0;
+        app.set_scroll_y(137.0);
 
         app.dispatch(Action::ToggleQueue, &mut doc);
         assert_eq!(app.view, View::Queue, "toggling opens the queue view");
-        assert_eq!(app.scroll, 0.0, "the queue view starts at the top");
+        assert_eq!(app.scroll_y(), 0.0, "the queue view starts at the top");
 
         app.dispatch(Action::ToggleQueue, &mut doc);
         assert_eq!(
@@ -3746,7 +3755,11 @@ fn queue_view_and_volume_controls_are_responsive() {
             View::Albums,
             "toggling off returns to the prior view"
         );
-        assert_eq!(app.scroll, 137.0, "and restores the prior scroll position");
+        assert_eq!(
+            app.scroll_y(),
+            137.0,
+            "and restores the prior scroll position"
+        );
     }
 
     // Phase `queue_button_hover_opens_preview`.

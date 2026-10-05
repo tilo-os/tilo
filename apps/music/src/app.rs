@@ -382,7 +382,15 @@ pub struct MusicApp {
 
     rect: Rect,
     body_rect: Rect,
-    scroll: f64,
+    /// The body's scrolling: the toolkit's region, with its wheel, bar,
+    /// keys and assistive scrolling.
+    body_scroll: ui::widget::ScrollRegion,
+    /// An offset asked for before this frame's content height is known
+    /// (a view change, a restored position); applied after the body is
+    /// laid out.
+    scroll_target: Option<f64>,
+    /// The theme of the last painted frame, for the event path.
+    frame_theme: Option<Theme>,
     content_height: f64,
 
     /// Adaptive navigation sidebar: the shared [`ui::widget::sidebar::SidebarDrawer`]
@@ -726,7 +734,14 @@ impl MusicApp {
             new_playlist_track: None,
             rect: Rect::ZERO,
             body_rect: Rect::ZERO,
-            scroll: 0.0,
+            body_scroll: {
+                let mut region = ui::widget::ScrollRegion::vertical();
+                // The page is the window's content: its keys scroll it.
+                region.set_focused(true);
+                region
+            },
+            scroll_target: None,
+            frame_theme: None,
             content_height: 0.0,
             drawer: SidebarDrawer::new().left(),
             history: ui::widget::HistoryOpener::new(),
@@ -2405,7 +2420,7 @@ impl MusicApp {
         if v != self.view {
             self.nav_back.push(self.view.clone());
             self.view = v;
-            self.scroll = 0.0;
+            self.set_scroll_y(0.0);
         }
         // Picking a destination dismisses the overlay sidebar so the
         // chosen screen takes the full width (Adwaita flap behaviour).
@@ -2417,7 +2432,7 @@ impl MusicApp {
     fn on_back(&mut self) {
         if let Some(v) = self.nav_back.pop() {
             self.view = v;
-            self.scroll = 0.0;
+            self.set_scroll_y(0.0);
         }
     }
 
@@ -2668,7 +2683,7 @@ impl MusicApp {
         self.name_dialog = None;
         self.nav_back.push(self.view.clone());
         self.view = View::Playlist(id);
-        self.scroll = 0.0;
+        self.set_scroll_y(0.0);
         self.notify(
             ToastKind::Success,
             if added_track.is_some() {
@@ -2706,7 +2721,7 @@ impl MusicApp {
         // Leave the now-deleted detail page.
         if self.view == View::Playlist(id) {
             self.view = View::Playlists;
-            self.scroll = 0.0;
+            self.set_scroll_y(0.0);
         }
         self.notify(ToastKind::Success, "Playlist deleted");
     }
@@ -2718,17 +2733,17 @@ impl MusicApp {
             // was reached some other way.
             if let Some((v, s)) = self.queue_return.take() {
                 self.view = v;
-                self.scroll = s;
+                self.set_scroll_y(s);
             } else if let Some(v) = self.nav_back.pop() {
                 self.view = v;
-                self.scroll = 0.0;
+                self.set_scroll_y(0.0);
             }
         } else {
             // Toggle on: remember the current view + scroll so the next
             // toggle returns here.
-            self.queue_return = Some((self.view.clone(), self.scroll));
+            self.queue_return = Some((self.view.clone(), self.scroll_y()));
             self.view = View::Queue;
-            self.scroll = 0.0;
+            self.set_scroll_y(0.0);
         }
         if self.drawer.is_overlay() {
             self.drawer.close();
@@ -3782,6 +3797,18 @@ impl MusicApp {
                 }
             }
         }
+    }
+
+    /// How far the body is scrolled.
+    fn scroll_y(&self) -> f64 {
+        self.scroll_target
+            .unwrap_or_else(|| self.body_scroll.offset().y)
+    }
+
+    /// Scroll the body to `y`; the next frame clamps it to its content.
+    fn set_scroll_y(&mut self, y: f64) {
+        self.scroll_target = Some(y.max(0.0));
+        self.dirty = true;
     }
 
     fn push_hit(&mut self, rect: Rect, action: Action) -> bool {
