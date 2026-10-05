@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::Receiver;
 use ui::time::{Duration, Instant};
 
+use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use base64::Engine as _;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -284,9 +285,9 @@ struct PendingMediaHandoff {
 )]
 pub struct MusicApp {
     lib: Library,
-    /// The document heads that produced `lib`. A sync with unchanged heads
-    /// reuses the projection and avoids even decoding the library document.
-    library_heads: Option<Vec<ChangeHash>>,
+    /// The committed heads and pending operation count that produced `lib`.
+    /// Reuse the projection without committing a pending transaction to read it.
+    library_heads: Option<(Vec<ChangeHash>, usize)>,
     /// Shared, preindexed Ctrl+K catalog. Cloning the provider is O(1), so
     /// host/provider retrieval never walks the whole music corpus.
     /// Monotonic diagnostic used by tests to prove provider retrieval does not
@@ -846,7 +847,7 @@ impl MusicApp {
     /// playing the track, or navigating to the album / artist / playlist page
     /// (the view's own `sync` then loads a live page on demand). Returns
     /// whether the link was recognised and routed.
-    pub fn open_deep_link(&mut self, link: &str, state: &mut AutoCommit) -> bool {
+    pub fn open_deep_link(&mut self, link: &str, state: &mut ui::widget::Edits<'_>) -> bool {
         let Some(dl) = crate::search_type::DeepLink::parse(link) else {
             return false;
         };
@@ -897,8 +898,11 @@ impl MusicApp {
     /// Refresh just the catalog/playlists/cache from the document. Runs
     /// every `sync` so remote library edits (a playlist gaining a track on
     /// another device) appear without disturbing local playback.
-    fn reload_library(&mut self, state: &mut AutoCommit) {
-        let heads = state.get_heads();
+    fn reload_library(&mut self, state: &AutoCommit) {
+        let heads = (
+            state.base_heads(),
+            automerge::transaction::Transactable::pending_ops(state),
+        );
         if self.library_heads.as_ref() == Some(&heads) {
             return;
         }
@@ -910,7 +914,7 @@ impl MusicApp {
 
     /// Retire the old simulated-download seam. The render loop still invokes
     /// this, but it can never manufacture a false "cached" completion state.
-    fn advance_downloads(&mut self, _state: &mut AutoCommit) {
+    fn advance_downloads(&mut self, _state: &mut ui::widget::Edits<'_>) {
         let mut complete = Vec::new();
         let mut progress = Vec::new();
         for (track_id, download) in &self.downloads {
@@ -976,13 +980,13 @@ impl MusicApp {
 
     /// Adopt the shared library snapshot. Playback intentionally starts from
     /// this device's local state rather than a peer's transport settings.
-    fn reload(&mut self, state: &mut AutoCommit) {
+    fn reload(&mut self, state: &AutoCommit) {
         self.reload_library(state);
         self.bound_track = self.pb.current.clone();
         self.playhead_ms = self.pb.position_ms as f64;
     }
 
-    fn persist_playback(&mut self, _state: &mut AutoCommit) {
+    fn persist_playback(&mut self, _state: &mut ui::widget::Edits<'_>) {
         // Reducers such as a media-key play/pause can receive an already loaded
         // track before a queue has been materialised. Canonicalise that local
         // convenience state before it reaches the local audio boundary.
@@ -1047,15 +1051,17 @@ impl MusicApp {
     /// permissions, attributed, undoable and replayed byte-identically on
     /// peers. Callers reload the in-memory library from the document
     /// afterward for immediate feedback.
-    fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::MusicAction) {
+    fn perform_action(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        action: &crate::actions::MusicAction,
+    ) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
-        if let Err(error) = dispatcher.apply_now_with(
-            &mut ui::widget::Edits::lend(state),
-            action,
-            crate::actions::history_context(action),
-        ) {
+        if let Err(error) =
+            dispatcher.apply_now_with(state, action, crate::actions::history_context(action))
+        {
             self.toast = Some((error.to_string(), ui::time::now()));
         }
     }
@@ -1435,7 +1441,7 @@ impl MusicApp {
         });
     }
 
-    fn apply_pending_media_handoff(&mut self, state: &mut AutoCommit) {
+    fn apply_pending_media_handoff(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(pending) = self.pending_media_handoff.take() else {
             return;
         };
@@ -1476,7 +1482,7 @@ impl MusicApp {
     /// Drain external MPRIS control commands (media keys, the desktop media
     /// widget, `playerctl`) and dispatch each through the normal `Action`
     /// pipeline — external and in-app controls share one code path.
-    fn drain_mpris(&mut self, state: &mut AutoCommit) {
+    fn drain_mpris(&mut self, state: &mut ui::widget::Edits<'_>) {
         for cmd in self.mpris.drain_commands() {
             match cmd {
                 MprisCommand::Play => {
@@ -1518,7 +1524,7 @@ impl MusicApp {
     /// Apply a completed playlist-cover pick from the file portal (if any
     /// arrived this frame). The selected local file is converted off-thread
     /// before a portable cover value is persisted onto the playlist.
-    fn drain_cover_pick(&mut self, _state: &mut AutoCommit) {
+    fn drain_cover_pick(&mut self, _state: &mut ui::widget::Edits<'_>) {
         let Some(rx) = &self.cover_pick else { return };
         let outcome = match rx.try_recv() {
             Ok(o) => o,
@@ -1553,7 +1559,7 @@ impl MusicApp {
         }
     }
 
-    fn drain_cover_embed(&mut self, state: &mut AutoCommit) {
+    fn drain_cover_embed(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(receiver) = &self.cover_embed else {
             return;
         };
@@ -1967,7 +1973,7 @@ impl MusicApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let enter = matches!(
@@ -2005,7 +2011,7 @@ impl MusicApp {
                 &mut ui::widget::EventCtx {
                     scale_factor,
                     modifiers: &modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: &automerge::ROOT,
                     handled,
                     focus_target: &mut ft,
@@ -2025,7 +2031,7 @@ impl MusicApp {
     }
 
     /// Copy the field value into `name_input` and dispatch the commit action.
-    fn submit_name_prompt(&mut self, state: &mut AutoCommit) {
+    fn submit_name_prompt(&mut self, state: &mut ui::widget::Edits<'_>) {
         let value = self
             .name_dialog
             .as_ref()
@@ -2040,7 +2046,7 @@ impl MusicApp {
         self.dispatch(commit, state);
     }
 
-    fn dispatch(&mut self, action: Action, state: &mut AutoCommit) {
+    fn dispatch(&mut self, action: Action, state: &mut ui::widget::Edits<'_>) {
         self.dirty = true;
         match action {
             Action::Nav(v) => self.on_nav(v),
@@ -2120,12 +2126,12 @@ impl MusicApp {
         }
     }
 
-    fn on_cycle_repeat(&mut self, state: &mut AutoCommit) {
+    fn on_cycle_repeat(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.pb.repeat = self.pb.repeat.next();
         self.persist_playback(state);
     }
 
-    fn on_remove_from_queue(&mut self, index: usize, state: &mut AutoCommit) {
+    fn on_remove_from_queue(&mut self, index: usize, state: &mut ui::widget::Edits<'_>) {
         let Some(track) = self.pb.queue.get(index).cloned() else {
             return;
         };
@@ -2135,7 +2141,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_move_queue_item(&mut self, from: usize, to: usize, state: &mut AutoCommit) {
+    fn on_move_queue_item(&mut self, from: usize, to: usize, state: &mut ui::widget::Edits<'_>) {
         self.queue_move(from, to);
         self.persist_playback(state);
     }
@@ -2148,7 +2154,12 @@ impl MusicApp {
         self.request_search_more(tab);
     }
 
-    fn on_remove_from_playlist(&mut self, playlist: &str, track: &str, state: &mut AutoCommit) {
+    fn on_remove_from_playlist(
+        &mut self,
+        playlist: &str,
+        track: &str,
+        state: &mut ui::widget::Edits<'_>,
+    ) {
         self.perform_action(state, &crate::actions::remove_track_action(playlist, track));
         self.reload_library(state);
     }
@@ -2158,7 +2169,7 @@ impl MusicApp {
         playlist: &str,
         from: usize,
         to: usize,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         let Some(track) = self
             .lib
@@ -2239,7 +2250,12 @@ impl MusicApp {
         }
     }
 
-    fn on_play(&mut self, queue: Arc<Vec<String>>, index: usize, state: &mut AutoCommit) {
+    fn on_play(
+        &mut self,
+        queue: Arc<Vec<String>>,
+        index: usize,
+        state: &mut ui::widget::Edits<'_>,
+    ) {
         self.pb.queue = Arc::unwrap_or_clone(queue);
         // A fresh queue invalidates any prior shuffle permutation; it's
         // rebuilt (current-first) on the next shuffled advance.
@@ -2252,7 +2268,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_toggle_play(&mut self, state: &mut AutoCommit) {
+    fn on_toggle_play(&mut self, state: &mut ui::widget::Edits<'_>) {
         // Play/pause is a no-op with nothing loaded: never flip the
         // transport to a fake "playing" state when there's no current
         // track. The button simply does nothing until a song is queued.
@@ -2272,7 +2288,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_next(&mut self, state: &mut AutoCommit) {
+    fn on_next(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.advance(false);
         if let Some(id) = self.pb.current.clone() {
             self.import_live_track(&id, state);
@@ -2281,7 +2297,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_prev(&mut self, state: &mut AutoCommit) {
+    fn on_prev(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.previous();
         if let Some(id) = self.pb.current.clone() {
             self.import_live_track(&id, state);
@@ -2290,7 +2306,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_toggle_shuffle(&mut self, state: &mut AutoCommit) {
+    fn on_toggle_shuffle(&mut self, state: &mut ui::widget::Edits<'_>) {
         self.pb.shuffle = !self.pb.shuffle;
         if self.pb.shuffle {
             // Randomise the upcoming order now so the next/auto-advance
@@ -2303,14 +2319,14 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_seek_frac(&mut self, f: f64, state: &mut AutoCommit) {
+    fn on_seek_frac(&mut self, f: f64, state: &mut ui::widget::Edits<'_>) {
         let dur = self.current_duration_ms();
         self.playhead_ms = (f.clamp(0.0, 1.0) * dur as f64).max(0.0);
         self.audio.seek_ms(self.playhead_ms as u64);
         self.persist_playback(state);
     }
 
-    fn on_volume_frac(&mut self, f: f64, state: &mut AutoCommit) {
+    fn on_volume_frac(&mut self, f: f64, state: &mut ui::widget::Edits<'_>) {
         self.pb.volume = (f.clamp(0.0, 1.0) * 100.0).round() as u8;
         // Dragging the volume above zero clears a mute.
         if self.pb.volume > 0 {
@@ -2320,7 +2336,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_toggle_mute(&mut self, state: &mut AutoCommit) {
+    fn on_toggle_mute(&mut self, state: &mut ui::widget::Edits<'_>) {
         if self.pb.volume > 0 {
             self.premute_volume = Some(self.pb.volume);
             self.pb.volume = 0;
@@ -2342,7 +2358,7 @@ impl MusicApp {
         self.toast = Some(("Choose a cover image\u{2026}".to_string(), ui::time::now()));
     }
 
-    fn on_add_to_queue(&mut self, id: &str, state: &mut AutoCommit) {
+    fn on_add_to_queue(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         self.pb.queue.push(id.to_string());
         let label = self
             .playback_track(id)
@@ -2355,7 +2371,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_play_next(&mut self, id: &str, state: &mut AutoCommit) {
+    fn on_play_next(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         self.queue_play_next(id.to_string());
         let label = self
             .playback_track(id)
@@ -2371,7 +2387,7 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
-    fn on_toggle_like(&mut self, id: &str, state: &mut AutoCommit) {
+    fn on_toggle_like(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let liked = !self.lib.is_liked(id);
         self.perform_action(state, &crate::actions::set_liked_action(id, liked));
         self.reload_library(state);
@@ -2391,7 +2407,7 @@ impl MusicApp {
         ));
     }
 
-    fn on_toggle_save_album(&mut self, id: &str, state: &mut AutoCommit) {
+    fn on_toggle_save_album(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let saved = !self.lib.is_album_saved(id);
         self.perform_action(state, &crate::actions::set_saved_album_action(id, saved));
         self.reload_library(state);
@@ -2407,7 +2423,7 @@ impl MusicApp {
         ));
     }
 
-    fn on_toggle_follow(&mut self, id: &str, state: &mut AutoCommit) {
+    fn on_toggle_follow(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let followed = !self.lib.is_artist_followed(id);
         self.perform_action(
             state,
@@ -2432,7 +2448,12 @@ impl MusicApp {
         ));
     }
 
-    fn on_add_to_playlist(&mut self, playlist: &str, track: &str, state: &mut AutoCommit) {
+    fn on_add_to_playlist(
+        &mut self,
+        playlist: &str,
+        track: &str,
+        state: &mut ui::widget::Edits<'_>,
+    ) {
         let Some(rank) = self
             .lib
             .playlist(playlist)
@@ -2463,7 +2484,7 @@ impl MusicApp {
         self.search_input.set_focus(false);
     }
 
-    fn on_create_playlist(&mut self, state: &mut AutoCommit) {
+    fn on_create_playlist(&mut self, state: &mut ui::widget::Edits<'_>) {
         let name = if self.name_input.trim().is_empty() {
             "New Playlist".to_string()
         } else {
@@ -2508,7 +2529,7 @@ impl MusicApp {
         self.search_input.set_focus(false);
     }
 
-    fn on_commit_rename(&mut self, id: &str, state: &mut AutoCommit) {
+    fn on_commit_rename(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         let name = self.name_input.trim().to_string();
         if !name.is_empty() {
             self.perform_action(state, &crate::actions::rename_playlist_action(id, &name));
@@ -2519,7 +2540,7 @@ impl MusicApp {
         self.name_dialog = None;
     }
 
-    fn on_delete_playlist(&mut self, id: String, state: &mut AutoCommit) {
+    fn on_delete_playlist(&mut self, id: String, state: &mut ui::widget::Edits<'_>) {
         self.perform_action(state, &crate::actions::delete_playlist_action(&id));
         self.reload_library(state);
         // Leave the now-deleted detail page.
@@ -3090,7 +3111,7 @@ impl MusicApp {
     /// Import a streamed track (and its artist/album) into the library when it
     /// is actually played, so it joins the user's library permanently and
     /// syncs across devices. No-op for tracks already in the library.
-    fn import_live_track(&mut self, track_id: &str, state: &mut AutoCommit) {
+    fn import_live_track(&mut self, track_id: &str, state: &mut ui::widget::Edits<'_>) {
         if !is_live_track(track_id) || doc::has_track(state, track_id) {
             return;
         }
@@ -4506,7 +4527,7 @@ impl MusicApp {
 
     /// Drain a context-menu selection (set by a row callback) and dispatch the
     /// parallel [`Action`]. Returns whether something was handled.
-    fn drain_menu_selection(&mut self, state: &mut AutoCommit) -> bool {
+    fn drain_menu_selection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let idx = self.pending.swap(-1, Ordering::SeqCst);
         if idx >= 0 {
             if let Some(action) = self.menu_actions.get(idx as usize).cloned() {
