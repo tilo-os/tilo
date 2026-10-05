@@ -654,3 +654,23 @@ fn a_window_that_goes_away_unasked_is_lost_and_a_closed_one_is_not() {
         "a window the compositor asked to close was closed, not lost"
     );
 }
+
+/// An agent or another device drives an app through its actions. A window
+/// the app closes after being handed one was closed on request, even though
+/// no key or click ever reached it.
+#[test]
+fn a_window_closed_after_an_action_reached_its_app_is_not_lost() {
+    let mut h = Harness::new();
+    let (_, surface, xdg, toplevel) = launched_window(&mut h, "org.example.Acted");
+    // What the collaboration broker reports when it hands the app an
+    // invocation, such as an agent's close.
+    shell::shell::launcher::note_launch_acted_on("org.example.Acted");
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        !shell::shell::launcher::take_launch_vanished("org.example.Acted"),
+        "a window its app closed after an action reached it was closed, not lost"
+    );
+}

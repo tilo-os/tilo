@@ -5405,7 +5405,7 @@ impl ShellOverlayHost {
                     crate::shell::launcher::take_launch_vanished(&event.package_id)
                 }
                 LaunchEventKind::Started { .. } => {
-                    let _ = crate::shell::launcher::take_launch_vanished(&event.package_id);
+                    crate::shell::launcher::note_launch_restarted(&event.package_id);
                     false
                 }
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::WindowLost { .. } => false,
