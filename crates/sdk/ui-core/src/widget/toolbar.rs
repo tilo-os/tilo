@@ -2356,13 +2356,15 @@ mod tests {
             .push_button("Second toolbar long command", || {})
             .with_view("test.second-command");
         let root = crate::widget::Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
             .push(Box::new(first))
             .push(Box::new(second));
         let mut frame = Framed::new(crate::State::new(), root, (100, 300), Theme::dark());
         let resources = Framed::harness(&frame).resources();
         let overflow_ids: Vec<_> = resources
             .iter()
-            .filter(|resource| resource.id.0.starts_with("tilo.control:toolbar.overflow:"))
+            .filter(|resource| resource.kind == "tilo.control" && resource.label == "More")
             .map(|resource| resource.id.as_str())
             .collect();
         assert_eq!(overflow_ids.len(), 2);
@@ -2983,7 +2985,9 @@ mod lifecycle_tests {
     fn drain_native_controls(widget: &mut dyn Widget) {
         let mut doc = AutoCommit::new();
         while let Some(invocation) = crate::widget::controls::take_control_invocation(widget) {
-            let resource = crate::resources::resources(widget, &doc)
+            let mut resources = Vec::new();
+            crate::widget::collect_widget_resources(widget, &doc, &mut resources);
+            let resource = resources
                 .into_iter()
                 .find(|resource| resource.id.0 == invocation.address.resource)
                 .expect("the emitted operation has a real published resource");

@@ -250,6 +250,7 @@ impl ui::widget::Decorator for SliceChart {
             .iter_mut()
             .zip(self.rows.iter().filter(|row| row.bytes > 0))
         {
+            child.key = Some(ui::a11y::hash_key(&row.id));
             child.semantic_key = Some(row.id.clone());
         }
         Some(node)

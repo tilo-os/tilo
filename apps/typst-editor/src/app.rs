@@ -1026,6 +1026,12 @@ impl Widget for TypstApp {
     }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        // Retained controls settle their admitted operations on sync (notably
+        // opening the toolbar overflow); Chrome's presentation sync only
+        // updates the document label and current toggle state.
+        for child in self.chrome.children_mut() {
+            child.sync(doc, path);
+        }
         let (doc, _) = ui::doc::document_ref(doc, path);
         self.background_poll_deadline.set(None);
         if let Some(operation) = self.pending_resource_io.take() {

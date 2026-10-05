@@ -109,6 +109,20 @@ impl BottomPanelToggle {
         Button::icon_only(Self::ID, icon, Self::name(expanded)).on_action(binding.clone())
     }
 
+    /// Captures and past versions have no executor for the panel effect.
+    /// Publish the actual control as unavailable rather than retaining an
+    /// action binding to a door that this host does not offer.
+    fn suspend(&mut self) {
+        let icon = if self.expanded {
+            ui::icons::Icon::ChevronDown
+        } else {
+            ui::icons::Icon::ChevronUp
+        };
+        self.button =
+            Button::icon_only(Self::ID, icon, Self::name(self.expanded)).with_enabled(false);
+        self.dirty = true;
+    }
+
     fn set_expanded(&mut self, expanded: bool) {
         if self.expanded == expanded {
             return;
@@ -1259,6 +1273,9 @@ impl CodeApp {
         self.dispatch = Some(dispatcher);
         self.live_state = Some(state);
         self.live = live;
+        if !live {
+            self.panel_toggle.suspend();
+        }
         self.settings = Some(settings);
     }
 
