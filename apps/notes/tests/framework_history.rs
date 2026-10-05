@@ -2,12 +2,13 @@ use crate::component_support::*;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use notes::{actions, doc::NotesDoc};
 
-/// Open History from the window's own bar: a headless component host serves
-/// that button, not a click on the glyph the notebook's header row carries.
+/// Open the component's admitted History host while the notebook's shell is
+/// hidden. This is the shared History control route; the component host does
+/// not mount the standalone window's toolbar.
 fn open_history(driver: &mut ui::headless::Driver) {
     notes::app::present_history_in_shell_for_test(false);
     driver.relayout();
-    driver.click_named("history-open").unwrap();
+    driver.open_history().unwrap();
     driver.relayout();
 }
 
@@ -287,7 +288,10 @@ fn production_preparation_imports_once_and_reopens_the_same_graph() {
         let selected = records
             .read(&checkout.id, |doc| doc.base_heads()[0])
             .unwrap();
-        open_history(&mut d);
+        // Production preparation embeds the admitted History host in its
+        // TileHost, rather than installing a second host in the frame runner.
+        d.click_named("nav-shell-history").unwrap();
+        d.relayout();
         select(&mut d, selected);
         let pinned = format!("{:?}", d.a11y_nodes());
         assert!(pinned.contains("Saved production change"));

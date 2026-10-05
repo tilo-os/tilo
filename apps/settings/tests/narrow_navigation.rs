@@ -65,10 +65,46 @@ fn choosing_the_open_category_from_the_narrow_list_shows_it() {
     );
 
     activate(&mut app, "Network", AkRole::TreeItem);
+    let back = clickable(&mut app, "Back", AkRole::Button);
+    let network = clickable(&mut app, "Network", AkRole::TreeItem);
+    let diagnostics = if back && !network {
+        String::new()
+    } else {
+        // Capture the failing admitted frame before any diagnostic reads that
+        // themselves pump frames. The assertion still uses this exact frame.
+        let nodes: Vec<_> = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| matches!(node.label(), Some("Back" | "Network")))
+            .map(|(id, node)| {
+                format!(
+                    "{id:?}: {:?} Click={} selected={:?} bounds={:?}",
+                    node.role(),
+                    node.supports_action(AkAction::Click),
+                    node.is_selected(),
+                    node.bounds()
+                )
+            })
+            .collect();
+        let shell = app
+            .harness()
+            .with_widget_mut::<ui::widget::NavShell, _>(|shell| {
+                let selected = shell
+                    .sidebar_mut::<ui::widget::NavList>()
+                    .and_then(|list| list.selected_id());
+                format!(
+                    "front={:?} sidebar_open={} selected={selected:?} geometry={:?}",
+                    shell.front_pane(),
+                    shell.is_sidebar_open(),
+                    shell.geometry()
+                )
+            });
+        format!("Back={back} Network={network} nodes={nodes:?} shell={shell:?}")
+    };
     assert!(
-        clickable(&mut app, "Back", AkRole::Button)
-            && !clickable(&mut app, "Network", AkRole::TreeItem),
-        "choosing the selected category opens its pane instead of leaving the list on screen"
+        back && !network,
+        "choosing the selected category opens its pane instead of leaving the list on screen: {diagnostics}"
     );
 }
 

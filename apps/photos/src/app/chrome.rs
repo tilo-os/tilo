@@ -632,16 +632,15 @@ impl PhotosApp {
         self.chrome.status_right = right;
     }
 
-    /// Whether the header leads with a back button: from an open photograph
-    /// (or one still loading or unreadable) to the library, and from one
-    /// person to People. With no photograph at all there is nothing to go
-    /// back from.
+    /// The viewer always offers Library navigation, including before a
+    /// photograph is opened. In the library, a selected person offers the
+    /// same back control to return to People.
     pub(super) fn header_back_visible(&self) -> bool {
         if self.library_mode {
             self.people_selection.is_some()
                 && (self.people_mode || self.library_destination == LibraryDestination::People)
         } else {
-            !self.chrome.title.is_empty()
+            true
         }
     }
 

@@ -283,7 +283,8 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             .app()
             .with_category(Category::RegionFormats)
             .with_width_hint(NARROW.0)
-            .with_deterministic_hardware_for_shot();
+            .with_deterministic_hardware_for_shot()
+            .with_narrow_content_shot();
         let narrow = lay_out(narrow, NARROW);
         let control = by_test_id(&*narrow, "region.currency");
         assert!(
@@ -313,7 +314,8 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             .app()
             .with_category(Category::RegionFormats)
             .with_width_hint(phone.0)
-            .with_deterministic_hardware_for_shot();
+            .with_deterministic_hardware_for_shot()
+            .with_narrow_content_shot();
         let app = lay_out_scaled(app, phone, 2.0);
         let sp = spacing();
         for (id, label) in rows {
@@ -347,7 +349,8 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             .app()
             .with_category(Category::RegionFormats)
             .with_width_hint(medium.0)
-            .with_deterministic_hardware_for_shot();
+            .with_deterministic_hardware_for_shot()
+            .with_narrow_content_shot();
         let app = lay_out(app, medium);
         for (id, label) in rows {
             let control = by_test_id(&*app, id);
