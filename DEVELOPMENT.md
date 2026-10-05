@@ -187,7 +187,12 @@ The explicit native pipeline proof uses no release credentials:
 cargo run --locked -p runtime-bundle --example browser_runtime_release
 ```
 
-Use `rcargo --on-builder run` for this proof on a configured native remote builder.
+Use `python3 tools/apps/browser_runtime_release.py proof-rcargo` on a configured
+native remote builder. rcargo intentionally omits Git metadata; this launcher
+admits only a clean local commit and passes its actual commit object. The builder
+recomputes the Git tree from mirrored bytes, executable modes and symlink targets
+before compiling and sealing. The snapshot proof refuses CI events, publication
+and signing identity variables; production release jobs retain their Git guards.
 Its output is `target/browser-runtime-release-proof`; archive/blob verification uses
 the same canonical tools as publication. The source must be clean and committed.
 

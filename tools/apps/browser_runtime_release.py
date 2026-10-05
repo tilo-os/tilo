@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Build and seal only the Browser's pinned engine through normal release tools."""
 import argparse
+import base64
+from dataclasses import dataclass
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tomllib
@@ -91,8 +94,79 @@ def native_payload(root, architecture):
     require(files > 0, 'engine payload contains no native ELF')
 
 
+@dataclass(frozen=True)
+class Source:
+    commit: str
+    snapshot_commit: bytes | None = None
+
+
+def git_object(kind, contents):
+    return hashlib.sha1(kind + b' ' + str(len(contents)).encode() + b'\0' + contents).digest()
+
+
+def snapshot_tree(root, top=True):
+    entries = []
+    for path in root.iterdir():
+        if path.name == '.git' or (top and path.name == 'target'):
+            continue
+        mode = path.lstat().st_mode
+        name = os.fsencode(path.name)
+        if stat.S_ISLNK(mode):
+            entry_mode, contents = b'120000', os.fsencode(os.readlink(path))
+            hash_value = git_object(b'blob', contents)
+        elif stat.S_ISREG(mode):
+            entry_mode = b'100755' if mode & stat.S_IXUSR else b'100644'
+            hash_value = git_object(b'blob', path.read_bytes())
+        elif stat.S_ISDIR(mode):
+            hash_value = snapshot_tree(path, False)
+            if hash_value is None:
+                continue  # Git tracks no empty directories.
+            entry_mode = b'40000'
+        else:
+            raise ValueError('unsupported source snapshot file type')
+        entries.append((name + (b'/' if entry_mode == b'40000' else b''),
+                        entry_mode + b' ' + name + b'\0' + hash_value))
+    if not entries and not top:
+        return None
+    return git_object(b'tree', b''.join(value for _, value in sorted(entries)))
+
+
+def verify_source(source, root=ROOT):
+    source = source if isinstance(source, Source) else Source(source)
+    require(re.fullmatch('[0-9a-f]{40}', source.commit), 'invalid source commit')
+    if source.snapshot_commit is None:
+        require(source.commit == head(), 'engine source commit differs')
+        return source.commit
+    require(os.environ.get('REQUESTED_PUBLISH') == 'false', 'snapshot proof cannot publish')
+    for variable in ('GITHUB_EVENT_NAME', 'GITEA_EVENT_NAME', 'FORGEJO_EVENT_NAME',
+                     'RUNTIME_BUNDLE_IDENTITY_FILE', 'TAPP_PUBLISHER_IDENTITY_FILE',
+                     'RUNTIME_BUNDLE_SIGNING_KEY', 'TAPP_PUBLISHER_IDENTITY', 'TILO_ENGINE_VERIFIER_BIN_DIR'):
+        require(not os.environ.get(variable), 'snapshot proof refuses ' + variable)
+    for variable in ('GITHUB_ACTIONS', 'GITEA_ACTIONS', 'FORGEJO_ACTIONS'):
+        require(os.environ.get(variable, '') in ('', 'false', '0'), 'snapshot proof refuses CI')
+    require(0 < len(source.snapshot_commit) <= 65536, 'bounded source commit required')
+    require(git_object(b'commit', source.snapshot_commit).hex() == source.commit,
+            'snapshot commit object differs')
+    first_line = source.snapshot_commit.split(b'\n', 1)[0]
+    require(re.fullmatch(b'tree [0-9a-f]{40}', first_line), 'source commit has no declared tree')
+    require(snapshot_tree(root).hex() == first_line[5:].decode(), 'snapshot source tree differs')
+    return source.commit
+
+
+def source_proof():
+    revision = head()
+    require(not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'],
+                                        cwd=ROOT, text=True).strip(),
+            'snapshot admission requires a clean committed source')
+    commit = subprocess.check_output(['git', 'cat-file', 'commit', revision], cwd=ROOT)
+    require(git_object(b'commit', commit).hex() == revision, 'local commit object differs')
+    require(snapshot_tree(ROOT).hex() == commit.split(b'\n', 1)[0][5:].decode(),
+            'local snapshot source tree differs')
+    return revision, base64.b64encode(commit).decode()
+
+
 def provenance(architecture, source):
-    require(source == head() and re.fullmatch('[0-9a-f]{40}', source), 'engine source commit differs')
+    source = verify_source(source)
     lock = json.loads((ROOT / 'scripts/browser/cef-lock.json').read_text())
     platform = {'aarch64': 'linuxarm64', 'x86_64': 'linux64'}[architecture]
     cef = lock['platforms'][platform]
@@ -123,9 +197,10 @@ def cargo_tools():
 
 def compile_engine(out, architecture, source):
     proof = provenance(architecture, source)
-    require(not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'],
-                                        cwd=ROOT, text=True).strip(),
-            'engine compilation requires a clean committed source')
+    if not isinstance(source, Source) or source.snapshot_commit is None:
+        require(not subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal'],
+                                            cwd=ROOT, text=True).strip(),
+                'engine compilation requires a clean committed source')
     subprocess.run(['bash', 'os/dev/assert-native-arch.sh', architecture], cwd=ROOT, check=True)
     require(not out.exists(), 'engine release output already exists')
     out.mkdir(parents=True)
@@ -157,7 +232,7 @@ def seal_engine(out, architecture, source, sequence):
             'compiled release tools changed')
     native_payload(out / 'engine', architecture)
     require(re.fullmatch('[1-9][0-9]*', sequence), 'positive release sequence required')
-    version = '0.1.' + sequence + '+g' + source
+    version = '0.1.' + sequence + '+g' + expected['source']
     binary = out / 'bin/tilo-runtime-bundle'
     identities = []
     for variable, name in (('RUNTIME_BUNDLE_IDENTITY_FILE', 'runtime'), ('TAPP_PUBLISHER_IDENTITY_FILE', 'app')):
@@ -200,7 +275,7 @@ def verify_package(out, architecture, source, sequence, trusted_key):
     proof = json.loads((package / 'provenance.json').read_text())
     expected = provenance(architecture, source)
     require({key: proof.get(key) for key in expected} == expected, 'published engine provenance differs')
-    require(proof['package_version'] == '0.1.' + sequence + '+g' + source, 'package source/version differs')
+    require(proof['package_version'] == '0.1.' + sequence + '+g' + expected['source'], 'package source/version differs')
     require(proof['app_publisher'] == trusted_key, 'engine publisher differs from CI identity')
     inventory = {path.name: digest(path) for path in package.iterdir() if path.is_file() and path.name != 'provenance.json'}
     require(inventory == proof['files'], 'engine package inventory differs')
@@ -222,14 +297,17 @@ def verify_package(out, architecture, source, sequence, trusted_key):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('mode', choices=('plan', 'compile', 'seal', 'verify'))
+    parser.add_argument('mode', choices=('plan', 'compile', 'seal', 'verify', 'native-proof', 'source-proof', 'proof-rcargo'))
     parser.add_argument('--out', type=Path, default=ROOT / 'dist/browser-runtime-release')
     parser.add_argument('--arch', choices=MACHINES)
     parser.add_argument('--source')
     parser.add_argument('--sequence')
     parser.add_argument('--trusted-key')
+    parser.add_argument('--source-commit')
     arguments = parser.parse_args()
-    if arguments.mode != 'plan':
+    require(not arguments.source_commit or arguments.mode == 'native-proof',
+            'snapshot commits are exclusive to the nonpublishing native proof')
+    if arguments.mode not in ('plan', 'source-proof', 'proof-rcargo'):
         require(arguments.arch and arguments.source, 'architecture and source are required')
         if arguments.mode in ('seal', 'verify'):
             require(arguments.sequence and re.fullmatch('[1-9][0-9]*', arguments.sequence),
@@ -237,7 +315,22 @@ def main():
         if arguments.mode == 'verify':
             require(arguments.trusted_key and re.fullmatch('[0-9a-f]{64}', arguments.trusted_key),
                     'trusted publisher key required')
-    if arguments.mode == 'plan':
+    if arguments.mode in ('source-proof', 'proof-rcargo'):
+        revision, commit = source_proof()
+        if arguments.mode == 'source-proof':
+            print(json.dumps({'source': revision, 'commit': commit}))
+        else:
+            subprocess.run(['rcargo', '--on-builder', 'run', '--locked', '-p', 'runtime-bundle',
+                            '--example', 'browser_runtime_release', '--', revision, commit], check=True)
+    elif arguments.mode == 'native-proof':
+        require(arguments.out.resolve().is_relative_to((ROOT / 'target').resolve()),
+                'snapshot proof output must stay inside target')
+        require(arguments.source_commit, 'actual source commit object required')
+        source = Source(arguments.source, base64.b64decode(arguments.source_commit, validate=True))
+        verify_source(source)  # Verify bytes, modes and symlinks before compiler children.
+        compile_engine(arguments.out, arguments.arch, source)
+        seal_engine(arguments.out, arguments.arch, source, '1')
+    elif arguments.mode == 'plan':
         enabled = engine_mode(os.environ, head())
         if enabled:
             runtime_version()
