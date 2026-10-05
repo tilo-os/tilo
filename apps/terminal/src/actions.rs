@@ -194,7 +194,10 @@ mod tests {
         let specs = TerminalEffect::specs();
         assert!(specs.iter().all(|spec| spec.kind == OperationKind::Effect));
         for spec in &specs {
-            let reads = matches!(spec.id.as_str(), "history-top" | "history-live");
+            let reads = matches!(
+                spec.id.as_str(),
+                "history-top" | "history-live" | "inspect-session"
+            );
             assert_eq!(
                 spec.contract.confirmation == ConfirmationPolicy::Confirm,
                 !reads,
@@ -204,6 +207,7 @@ mod tests {
             let views = matches!(
                 spec.id.as_str(),
                 "history-top"
+                    | "inspect-session"
                     | "history-live"
                     | "copy-visible"
                     | "copy-selection"
