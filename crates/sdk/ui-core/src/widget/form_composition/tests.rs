@@ -29,9 +29,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
             let name = format!("Detail {index}");
             section = section.field(Field::new(
                 name.clone(),
-                TextInput::local()
-                    .with_id(name.clone())
-                    .with_accessible_name(name),
+                TextInput::local().with_id(&name).with_accessible_name(name),
             ));
         }
         let page = FormPage::new("Long form", Form::new().section(section))
