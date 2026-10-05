@@ -371,7 +371,7 @@ struct LineWrap {
     lines: Vec<VisualLine>,
 }
 
-pub(crate) const AUTHOR_MARK: &str = "author";
+pub(crate) use tilo_resource::text::AUTHOR_MARK;
 
 /// Which logical line each multiline-body visual row belongs to, which rows
 /// start one, and the logical line holding the caret.

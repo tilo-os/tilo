@@ -22,6 +22,43 @@ use crate::resource::{ActionDecl, Resource, SearchEntry};
 /// The root key a record's own [`PlainText`] is stored under.
 pub const TEXT_KEY: &str = "text";
 
+/// The mark naming who wrote a run of text: the author of the action that
+/// inserted it. Collaborators' views highlight what each person wrote.
+pub const AUTHOR_MARK: &str = "author";
+
+/// Mark `inserted`, just written at the document text index `at` of the text
+/// object `obj`, as written by the author of the action applying now. Nothing
+/// is marked outside an action or for an action with no invoker.
+///
+/// # Errors
+/// Returns the document's error when the mark cannot be written.
+pub fn mark_authored(
+    doc: &mut impl Transactable,
+    obj: &ObjId,
+    at: usize,
+    inserted: &str,
+) -> Result<(), automerge::AutomergeError> {
+    let Some(author) = tilo_actions::invoking_context()
+        .and_then(|context| context.invoker)
+        .map(|invoker| invoker.actor)
+    else {
+        return Ok(());
+    };
+    if inserted.is_empty() {
+        return Ok(());
+    }
+    let len = match doc.text_encoding() {
+        automerge::TextEncoding::Utf8CodeUnit => inserted.len(),
+        automerge::TextEncoding::Utf16CodeUnit => inserted.encode_utf16().count(),
+        _ => inserted.chars().count(),
+    };
+    doc.mark(
+        obj,
+        automerge::marks::Mark::new(AUTHOR_MARK.to_owned(), author, at, at.saturating_add(len)),
+        automerge::marks::ExpandMark::None,
+    )
+}
+
 /// The registry type id [`TextEdit`]s replay under.
 pub const TEXT_ACTION_TYPE: &str = "tilo.text";
 
@@ -141,6 +178,7 @@ impl TextEdit {
         let removed = isize::try_from(end.saturating_sub(start))
             .map_err(|_| ActionError::Refused("the edit is too large".into()))?;
         doc.splice_text(obj, start, removed, &insert)?;
+        mark_authored(doc, obj, start, &insert)?;
         Ok(())
     }
 }
@@ -283,6 +321,74 @@ mod tests {
         doc.splice_text(&obj, 0, 0, text).unwrap();
         edit.apply_under(&mut doc, &obj).unwrap();
         doc.text(&obj).unwrap()
+    }
+
+    #[test]
+    fn each_authors_typing_is_marked_with_its_author() {
+        use automerge::marks::Mark;
+        let typed_by = |doc: &mut Doc, who: &str, edit: TextEdit| {
+            let encoded = tilo_actions::EncodedAction::encode(TEXT_ACTION_TYPE, &edit).unwrap();
+            let context =
+                tilo_actions::ActionContext::for_resource("Type", "text", "tilo.text", "Text")
+                    .with_invoker(tilo_actions::ActionInvoker::actor(who));
+            tilo_actions::apply_local_with_context(doc, &edit, encoded, None, context).unwrap();
+        };
+        let mut doc = Doc::new();
+        typed_by(
+            &mut doc,
+            "alice",
+            TextEdit::Splice {
+                at: 0,
+                delete: 0,
+                insert: "héllo".into(),
+            },
+        );
+        typed_by(
+            &mut doc,
+            "bob",
+            TextEdit::Splice {
+                at: 5,
+                delete: 0,
+                insert: " wörld".into(),
+            },
+        );
+        let obj = PlainText::root_text(&doc).unwrap();
+        let text = doc.text(&obj).unwrap();
+        assert_eq!(text, "héllo wörld");
+        let runs: Vec<(String, String)> = doc
+            .marks(&obj)
+            .unwrap()
+            .into_iter()
+            .filter(|mark: &Mark| mark.name() == AUTHOR_MARK)
+            .map(|mark| {
+                let run: String = text
+                    .chars()
+                    .skip(mark.start)
+                    .take(mark.end.saturating_sub(mark.start))
+                    .collect();
+                (mark.value().as_str().unwrap_or_default().to_owned(), run)
+            })
+            .collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("alice".to_owned(), "héllo".to_owned()),
+                ("bob".to_owned(), " wörld".to_owned()),
+            ],
+            "each person's typing carries their name"
+        );
+
+        // An edit applied outside an invoked action marks nothing.
+        let mut plain = Doc::new();
+        let obj = plain.put_object(ROOT, "body", ObjType::Text).unwrap();
+        TextEdit::Splice {
+            at: 0,
+            delete: 0,
+            insert: "x".into(),
+        }
+        .apply_under(&mut plain, &obj)
+        .unwrap();
+        assert!(plain.marks(&obj).unwrap().is_empty());
     }
 
     #[test]
