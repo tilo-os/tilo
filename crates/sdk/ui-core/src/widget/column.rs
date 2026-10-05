@@ -489,7 +489,19 @@ impl Widget for Column {
         // events exclusively for the frame, so the drag survives the
         // cursor crossing a peer widget's rect — otherwise the peer's
         // CursorMoved handler could set `handled` first.
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture()) {
+        // A child holding an open modal owns the input the same way: what
+        // stands behind the sheet never sees the event, so a table under a
+        // dialog cannot take the press meant for the dialog's button.
+        let owner = self
+            .children
+            .iter()
+            .position(|c| c.wants_pointer_capture())
+            .or_else(|| {
+                self.children
+                    .iter()
+                    .position(|c| c.modal_capture().is_some())
+            });
+        if let Some(idx) = owner {
             let Some(&cnode) = self.child_nodes.get(idx) else {
                 return;
             };

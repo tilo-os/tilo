@@ -463,7 +463,17 @@ impl Widget for Row {
         // Same pointer-capture short-circuit as `Column::handle_event` —
         // a dragging child gets exclusive event routing so the drag
         // survives the cursor wandering through peer widgets.
-        if let Some(idx) = self.children.iter().position(|c| c.wants_pointer_capture())
+        // A child holding an open modal owns the input the same way.
+        let owner = self
+            .children
+            .iter()
+            .position(|c| c.wants_pointer_capture())
+            .or_else(|| {
+                self.children
+                    .iter()
+                    .position(|c| c.modal_capture().is_some())
+            });
+        if let Some(idx) = owner
             && let Some(&cnode) = self.child_nodes.get(idx)
             && let Some(child) = self.children.get_mut(idx)
         {

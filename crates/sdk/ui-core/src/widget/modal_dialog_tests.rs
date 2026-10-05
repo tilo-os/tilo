@@ -1468,3 +1468,33 @@ fn an_unpainted_sheet_centres_on_the_window_not_its_parent() {
         "the pane's window is the root of its tree"
     );
 }
+
+#[test]
+fn what_stands_behind_an_open_sheet_never_takes_its_input() {
+    // A page lists its content before its dialog. A greedy sibling (a table
+    // that takes every press) must not see the press meant for the sheet.
+    use crate::headless::Framed;
+    use crate::widget::Column;
+    let behind = CountingContent {
+        consume: true,
+        height: 500.0,
+        ..CountingContent::default()
+    };
+    let seen = behind.events.clone();
+    let (confirmed, confirm) = counter();
+    let page = Column::new().push(Box::new(behind)).push(Box::new(
+        ModalDialog::new("Delete this rule?", TestContent)
+            .with_test_id("confirm")
+            .primary_action("Delete rule", confirm)
+            .secondary_action("Cancel", || {})
+            .open(true),
+    ));
+    let mut framed = Framed::new(crate::State::new(), page, (800, 600), Theme::dark());
+    let _ = Framed::harness_mut(&mut framed).poll_frame();
+    let before = seen.get();
+    Framed::harness_mut(&mut framed)
+        .click_named("confirm.primary")
+        .expect("the action has an address");
+    assert_eq!(confirmed.get(), 1, "the press reaches the sheet's action");
+    assert_eq!(seen.get(), before, "and nothing behind the sheet sees it");
+}
