@@ -89,6 +89,15 @@ impl CodeApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The tab strip is the content column's header row: one hairline
+        // parts it from the code, as under every other window's header.
+        let column = Rect::new(
+            self.editor.get_rect().x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        ui::chrome::HeaderRowFace::new(column, theme).paint_rule(scene, transform, theme);
         self.tabs
             .draw(scene, transform, text_renderer, theme, presence);
         self.search_button
