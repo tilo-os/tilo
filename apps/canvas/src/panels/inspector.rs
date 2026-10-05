@@ -161,10 +161,12 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand => {
                         area_tool(&tools, tool)
                     }
+                    // Where the fill comes from first: it decides what
+                    // the bucket fills.
                     Tool::Bucket => section(vec![
+                        sampling(&tools.fill_sampling, "canvas-fill-sample"),
                         brush(cx, &tools, layer, tool),
                         tolerance(&tools),
-                        sampling(&tools),
                     ]),
                     _ => brush(cx, &tools, layer, tool),
                 };
@@ -435,9 +437,9 @@ fn dynamics_sliders(tools: &Tools, preset: Preset) -> Element {
     section(rows)
 }
 
-/// Where the magic wand and the bucket find colour: in every layer as the
+/// Where the magic wand or the bucket find colour: in every layer as the
 /// artwork shows, or in the chosen layer alone.
-fn sampling(tools: &Tools) -> Element {
+fn sampling(choice: &LocalState<Sampling>, heading_id: &str) -> Element {
     let segment = |key: &str| {
         ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(key))
     };
@@ -446,11 +448,15 @@ fn sampling(tools: &Tools) -> Element {
         (Sampling::Layer, segment("canvas-sample-layer")),
     ];
     section(vec![
-        heading("canvas-sample"),
+        heading(heading_id),
         Box::new(
-            ui::widget::ToggleGroup::from_state(choices, &tools.sampling)
+            ui::widget::ToggleGroup::from_state(choices, choice)
                 .with_flexible_width()
-                .with_id("canvas-sampling"),
+                .with_id(if heading_id == "canvas-sample" {
+                    "canvas-sampling"
+                } else {
+                    "canvas-fill-sampling"
+                }),
         ),
     ])
 }
@@ -481,7 +487,7 @@ fn area_tool(tools: &Tools, tool: Tool) -> Element {
     ));
     if tool == Tool::Wand {
         parts.push(tolerance(tools));
-        parts.push(sampling(tools));
+        parts.push(sampling(&tools.sampling, "canvas-sample"));
     }
     parts.push(Box::new(
         Text::new(&lookup(if tool == Tool::Lasso {

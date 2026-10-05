@@ -746,6 +746,18 @@ fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
             .with_id("canvas-menu")
             .with_accessible_name(lookup("canvas-menu"));
         menu.set_value_options(options);
+        // Each command's keys at its row's end, from the table `?` shows.
+        menu.set_option_shortcuts(
+            [
+                ("open", "canvas-keys-open"),
+                ("save", "canvas-keys-save"),
+                ("save-as", "canvas-keys-save-as"),
+                ("export", "canvas-keys-export"),
+                ("keys", "canvas-keys-shortcuts"),
+            ]
+            .into_iter()
+            .filter_map(|(value, does)| Some((value, super::shortcuts::keys_for(does)?))),
+        );
         Box::new(menu) as Element
     })
 }
