@@ -15,7 +15,7 @@ pub const ITEM_PREFIX: &str = "passwords:item:";
 
 /// What Passwords does with the vault.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "passwords.effect")]
+#[effect(operation = "passwords.effect", device_only)]
 pub enum PasswordsEffect {
     /// New item.
     #[effect(permission = "read")]

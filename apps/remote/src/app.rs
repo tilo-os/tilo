@@ -15,6 +15,8 @@
 //! only through the resource's dispatcher; a connection's password or key
 //! passphrase lives in this device's secret store.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -24,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use iroh_base::{EndpointId, SecretKey};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
@@ -191,12 +193,13 @@ fn lock_recover<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 enum PendingResourceOperation {
     Connect {
-        invocation: tilo_actions::InvocationId,
+        /// The caller to answer; a test drives the settlement without one.
+        reply: Option<ui::framework::EffectReply>,
         connection_id: ConnectionId,
         session_generation: u64,
     },
     SshInput {
-        invocation: tilo_actions::InvocationId,
+        reply: Option<ui::framework::EffectReply>,
         connection_id: ConnectionId,
         session_generation: u64,
         acknowledgement: std::sync::mpsc::Receiver<Result<(), String>>,
@@ -526,6 +529,8 @@ pub struct RemoteApp {
     dispatch: Option<ui::framework::Dispatcher<crate::resource::Remote>>,
     /// This device's store for the connections' passwords and passphrases.
     secrets: Option<ui::secrets::SecretStore>,
+    /// This device's SSH host-key trust, in the app's device-local settings.
+    known_hosts: crate::ssh::KnownHostStore,
     /// Built for a screenshot: no transport starts.
     capture: bool,
     /// The time, in milliseconds since the Unix epoch, "last used" reads
@@ -584,6 +589,7 @@ impl RemoteApp {
             tilo_devices,
             next_tilo_session_id: 1,
             dispatch: None,
+            known_hosts: crate::ssh::KnownHostStore::of_session(),
             secrets: None,
             capture: false,
             now_override: None,
@@ -1165,17 +1171,8 @@ impl RemoteApp {
                     self.notify("The SSH host key changed before it was trusted. Review it again.");
                     return;
                 }
-                let path = match crate::ssh::default_known_hosts_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.notify(format!(
-                            "Couldn't open this device's SSH key store: {error}"
-                        ));
-                        return;
-                    }
-                };
                 match crate::ssh::trust_host_key(
-                    &path,
+                    &self.known_hosts,
                     &connection.host,
                     connection.port,
                     &observed,
@@ -1192,16 +1189,11 @@ impl RemoteApp {
                     self.notify("The SSH host key is no longer the one you chose to forget. Reconnect to review it again.");
                     return;
                 }
-                let path = match crate::ssh::default_known_hosts_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        self.notify(format!(
-                            "Couldn't open this device's SSH key store: {error}"
-                        ));
-                        return;
-                    }
-                };
-                match crate::ssh::forget_host_key(&path, &connection.host, connection.port) {
+                match crate::ssh::forget_host_key(
+                    &self.known_hosts,
+                    &connection.host,
+                    connection.port,
+                ) {
                     Ok(true) => {
                         self.notify("Forgot the saved SSH key. Reconnect to check the new one before you trust it.");
                         self.disconnect_session();
@@ -1305,14 +1297,6 @@ impl RemoteApp {
     fn start_live(&mut self, c: &Connection) -> LiveSession {
         match c.kind {
             ConnectionKind::Ssh => {
-                let known_hosts_path = match crate::ssh::default_known_hosts_path() {
-                    Ok(path) => path,
-                    Err(error) => {
-                        return LiveSession::Error(format!(
-                            "SSH host-key trust is unavailable: {error}"
-                        ));
-                    }
-                };
                 let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
                 let secret = self.saved_secret(secret_purpose(c.kind, c.auth), c.id);
                 let auth = match crate::ssh::resolve_auth(
@@ -1335,7 +1319,7 @@ impl RemoteApp {
                     auth,
                     cols: 80,
                     rows: 24,
-                    known_hosts_path,
+                    known_hosts: self.known_hosts.clone(),
                 }) {
                     Ok(s) => LiveSession::Ssh(Box::new(s)),
                     Err(e) => LiveSession::Error(e.to_string()),
@@ -1542,6 +1526,9 @@ impl RemoteApp {
     ) {
         self.dispatch = Some(cx.dispatcher());
         self.secrets = Some(cx.secrets());
+        self.known_hosts = crate::ssh::KnownHostStore::in_settings(
+            cx.storage().settings::<crate::ssh::KnownHostsSetting>(),
+        );
         self.capture = cx.mode() == ui::framework::RunMode::Capture;
         if let Some(sample) = cx.fixture::<Sample>() {
             self.workspace.presence.clone_from(&sample.presence);
@@ -2000,202 +1987,20 @@ impl Widget for RemoteApp {
         dyn ui::widget::controls::ActionControls
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::REMOTE_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        let started = if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-        )? {
-            Some(started)
-        } else {
-            self.answer_resource_operation(request.kind, request.type_id, request.payload)?
-                .then(|| {
-                    ui::widget::ResourceOperationStart::Completed(
-                        ui::tilo_actions::ActionOutput::default(),
-                    )
-                })
-        };
-        self.check_views();
-        Ok(started)
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     #[allow(
         clippy::too_many_lines,
         reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
     )]
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        let pending = self.pending_resource_operation.as_ref()?;
-        if cancellation_requested
-            && let PendingResourceOperation::Connect {
-                invocation: pending_invocation,
-                connection_id,
-                session_generation,
-            } = pending
-            && *pending_invocation == invocation
-        {
-            // Connect has not completed yet, so dropping its exact generation
-            // cancels the socket/relay attempt. Do not let a cancellation for
-            // an old invocation tear down a newer reconnect of the same saved
-            // profile.
-            if self.session_for == Some(*connection_id)
-                && self.session_generation == *session_generation
-            {
-                self.disconnect_session();
-                self.check_views();
-            }
-            self.pending_resource_operation = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("remote connection attempt cancelled".into()),
-            });
-        }
-        let update = match pending {
-            PendingResourceOperation::Connect {
-                invocation: pending,
-                connection_id,
-                session_generation,
-            } if *pending == invocation => {
-                if self.session_for != Some(*connection_id)
-                    || self.session_generation != *session_generation
-                {
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "remote.session_replaced".into(),
-                            message: "the connection attempt was superseded by a newer session"
-                                .into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    }
-                } else {
-                    match self.session.borrow().status() {
-                        Some(SessionStatus::Connecting) => return None,
-                        Some(SessionStatus::Connected) => {
-                            tilo_actions::InvocationUpdate::Succeeded {
-                                invocation,
-                                output: tilo_actions::ActionOutput::default(),
-                            }
-                        }
-                        Some(SessionStatus::Failed(message)) => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.connect_failed".into(),
-                                    message,
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                        Some(SessionStatus::Unavailable(message)) => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.transport_unavailable".into(),
-                                    message,
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                        Some(SessionStatus::Closed) | None => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.connection_closed".into(),
-                                    message: "remote connection closed before it became ready"
-                                        .into(),
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                    }
-                }
-            }
-            PendingResourceOperation::SshInput {
-                invocation: pending,
-                connection_id,
-                session_generation,
-                acknowledgement,
-            } if *pending == invocation => {
-                if self.session_for != Some(*connection_id)
-                    || self.session_generation != *session_generation
-                {
-                    tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "remote.session_replaced".into(),
-                            message: "the SSH session ended before input delivery was acknowledged"
-                                .into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    }
-                } else {
-                    match acknowledgement.try_recv() {
-                        Ok(Ok(())) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                        Ok(Err(message)) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "remote.input_failed".into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
-                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                            tilo_actions::InvocationUpdate::Failed {
-                                invocation,
-                                error: tilo_actions::ActionFailure {
-                                    code: "remote.input_worker_lost".into(),
-                                    message: "remote input worker stopped before acknowledgement"
-                                        .into(),
-                                    details: None,
-                                    retryable: false,
-                                },
-                            }
-                        }
-                    }
-                }
-            }
-            _ => return None,
-        };
-        self.pending_resource_operation = None;
-        Some(update)
-    }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The saved connections arrive through the resource
         // ([`Self::adopt_resource_state`]); here the window catches up on
         // picked search hits and queued controls.
+        self.settle_pending_effect();
         self.open_found();
         self.apply_requests();
         self.revalidate();
@@ -2203,12 +2008,12 @@ impl Widget for RemoteApp {
         self.body_mut().sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.body_mut().update(state, path)
     }
 
     fn needs_idle_sync(&self) -> bool {
-        !self.opened.borrow().is_empty()
+        self.pending_resource_operation.is_some() || !self.opened.borrow().is_empty()
     }
 
     fn build_layout(
@@ -2301,8 +2106,13 @@ impl Widget for RemoteApp {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A confirmation is modal: nothing reaches the window behind it.
         if let Some(dialog) = self.dialog.as_mut() {
-            let (doc, path) = ui::doc::document(ctx.state, ctx.path);
-            dialog.handle_detached(event, ctx.scale_factor, *ctx.modifiers, doc, path);
+            dialog.handle_detached(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                &mut ctx.state,
+                ctx.path,
+            );
             *ctx.handled = true;
             self.apply_requests();
             self.dirty = true;
@@ -2427,7 +2237,6 @@ impl RemoteApp {
         let host_key_issue = self.ssh_host_key_issue(id);
         vec![crate::actions::session_row(
             connection,
-            can_send_text,
             host_key_issue.as_ref(),
         )]
     }
@@ -2436,164 +2245,62 @@ impl RemoteApp {
         clippy::too_many_lines,
         reason = "one arm per published Remote operation keeps the effect boundary auditable"
     )]
-    fn answer_resource_operation(
+
+    /// Answer `effect`. Opening a session and sending text answer once the
+    /// transport says how it went ([`Self::settle_pending_effect`]).
+    pub(crate) fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if kind != crate::actions::operation_kind(&operation) {
-            return Err("remote operation kind does not match its declared contract".into());
-        }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections => {
+        effect: crate::actions::RemoteEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::Remote, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::actions::RemoteEffect;
+        let done = || Ok(ui::framework::Effected::done());
+        match effect {
+            RemoteEffect::Open => {
                 self.apply(Action::Show(Destination::Connections));
+                done()
             }
-            crate::actions::RemoteOperation::NewConnectionForm => {
+            RemoteEffect::New => {
                 self.apply(Action::NewConnection);
+                done()
             }
-            crate::actions::RemoteOperation::EditConnection { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
+            RemoteEffect::EditConnection { connection } => {
+                if self.workspace.get(connection).is_none() {
                     return Err("saved connection no longer exists".into());
                 }
-                self.apply(Action::EditConnection(connection_id));
+                self.apply(Action::EditConnection(connection));
+                done()
             }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".to_string());
+            RemoteEffect::Connect { connection } => {
+                if self.pending_resource_operation.is_some() {
+                    return Err("another remote operation is still running".into());
                 }
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::Disconnect { connection_id } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                self.disconnect_session();
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                match &self.session.borrow().live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input(text.into_bytes())?;
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".to_string()),
-                }
-                self.dirty = true;
-            }
-            crate::actions::RemoteOperation::TrustSshHostKey {
-                connection_id,
-                observed,
-            } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?
-                    .clone();
-                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
-                {
-                    return Err(
-                        "the observed SSH host key is stale; reconnect to inspect the current key"
-                            .into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
-                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?
-                    .clone();
-                if !matches!(
-                    self.ssh_host_key_issue(connection_id),
-                    Some(crate::ssh::HostKeyIssue::Changed { .. })
-                ) {
-                    return Err(
-                        "only the currently observed changed SSH host key can be forgotten".into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
-                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
-                self.disconnect_session();
-            }
-        }
-        Ok(true)
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
-        };
-        if self.pending_resource_operation.is_some() {
-            return Err("another remote operation is still running".into());
-        }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections
-            | crate::actions::RemoteOperation::NewConnectionForm
-            | crate::actions::RemoteOperation::EditConnection { .. } => {
-                Err("view operations do not start background work".into())
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                let Some(connection) = self.workspace.get(connection_id) else {
+                let Some(saved) = self.workspace.get(connection) else {
                     return Err("saved connection no longer exists".into());
                 };
-                let readiness = connection_readiness(connection);
+                let readiness = connection_readiness(saved);
                 if !readiness.can_connect() {
                     let reason = if readiness == TransportReadiness::InvalidProfile {
-                        connection
+                        saved
                             .profile_issue()
-                            .unwrap_or_else(|| readiness.detail(connection.kind))
+                            .unwrap_or_else(|| readiness.detail(saved.kind))
                     } else {
-                        readiness.detail(connection.kind)
+                        readiness.detail(saved.kind)
                     };
                     return Err(reason.to_string());
                 }
-                self.open_session(connection_id);
+                self.open_session(connection);
                 let status = self.session.borrow().status();
                 match status {
                     Some(SessionStatus::Connecting) => {
                         self.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                            invocation,
-                            connection_id,
+                            reply: Some(cx.reply()),
+                            connection_id: connection,
                             session_generation: self.session_generation,
                         });
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                        Ok(ui::framework::Effected::Pending)
                     }
-                    Some(SessionStatus::Connected) => {
-                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )))
-                    }
+                    Some(SessionStatus::Connected) => done(),
                     Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
                         Err(message)
                     }
@@ -2602,11 +2309,11 @@ impl RemoteApp {
                     }
                 }
             }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
+            RemoteEffect::SendText { connection, text } => {
+                if self.pending_resource_operation.is_some() {
+                    return Err("another remote operation is still running".into());
+                }
+                if self.session_for != Some(connection) {
                     return Err("that remote session is no longer active".into());
                 }
                 let acknowledgement = match &self.session.borrow().live {
@@ -2618,24 +2325,175 @@ impl RemoteApp {
                     _ => return Err("text input requires a connected SSH terminal".into()),
                 };
                 self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
-                    invocation,
-                    connection_id,
+                    reply: Some(cx.reply()),
+                    connection_id: connection,
                     session_generation: self.session_generation,
                     acknowledgement,
                 });
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                Ok(ui::framework::Effected::Pending)
             }
-            crate::actions::RemoteOperation::Disconnect { .. }
-            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
-            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
-                if !self.answer_resource_operation(kind, type_id, payload)? {
-                    return Ok(None);
+            RemoteEffect::Disconnect { connection } => {
+                if self.session_for != Some(connection) {
+                    return Err("that remote session is no longer active".to_string());
                 }
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
+                self.disconnect_session();
+                done()
+            }
+            RemoteEffect::TrustHostKey {
+                connection,
+                observed,
+            } => self
+                .trust_host_key(connection, &observed)
+                .and_then(|()| done()),
+            RemoteEffect::ForgetHostKey { connection } => {
+                self.forget_host_key(connection).and_then(|()| done())
             }
         }
+    }
+
+    /// Trust the SSH host key `observed` on first contact with `connection_id`,
+    /// then connect.
+    fn trust_host_key(
+        &mut self,
+        connection_id: ConnectionId,
+        observed: &crate::ssh::HostKeyIdentity,
+    ) -> Result<(), String> {
+        let connection = self
+            .workspace
+            .get(connection_id)
+            .ok_or_else(|| "saved connection no longer exists".to_string())?;
+        if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == observed)
+        {
+            return Err(
+                "the observed SSH host key is stale; reconnect to inspect the current key".into(),
+            );
+        }
+        crate::ssh::trust_host_key(
+            &self.known_hosts,
+            &connection.host,
+            connection.port,
+            observed,
+        )
+        .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
+        self.open_session(connection_id);
+        Ok(())
+    }
+
+    /// Forget the changed SSH host key of `connection_id`, and disconnect.
+    fn forget_host_key(&mut self, connection_id: ConnectionId) -> Result<(), String> {
+        let connection = self
+            .workspace
+            .get(connection_id)
+            .ok_or_else(|| "saved connection no longer exists".to_string())?;
+        if !matches!(
+            self.ssh_host_key_issue(connection_id),
+            Some(crate::ssh::HostKeyIssue::Changed { .. })
+        ) {
+            return Err("only the currently observed changed SSH host key can be forgotten".into());
+        }
+        crate::ssh::forget_host_key(&self.known_hosts, &connection.host, connection.port)
+            .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
+        self.disconnect_session();
+        Ok(())
+    }
+
+    /// Answer the session effect still waiting, once its transport settled.
+    pub(crate) fn settle_pending_effect(&mut self) {
+        let cancelled = match &self.pending_resource_operation {
+            Some(
+                PendingResourceOperation::Connect { reply, .. }
+                | PendingResourceOperation::SshInput { reply, .. },
+            ) => reply
+                .as_ref()
+                .is_some_and(ui::framework::EffectReply::is_cancelled),
+            None => return,
+        };
+        let Some(outcome) = self.pending_outcome(cancelled) else {
+            return;
+        };
+        if let Some(
+            PendingResourceOperation::Connect {
+                reply: Some(reply), ..
+            }
+            | PendingResourceOperation::SshInput {
+                reply: Some(reply), ..
+            },
+        ) = self.pending_resource_operation.take()
+        {
+            reply.finish(outcome.map(|()| tilo_actions::ActionOutput::default()));
+        }
+    }
+
+    /// How the session effect still waiting ended, once it has; `cancelled`
+    /// when its caller gave up on it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each pending operation's exact terminal settlement is kept beside cancellation and generation validation"
+    )]
+    pub(crate) fn pending_outcome(&mut self, cancelled: bool) -> Option<Result<(), String>> {
+        let pending = self.pending_resource_operation.as_ref()?;
+        if cancelled
+            && let PendingResourceOperation::Connect {
+                connection_id,
+                session_generation,
+                ..
+            } = pending
+        {
+            // Connect has not completed yet, so dropping its exact generation
+            // cancels the socket/relay attempt. Do not let a cancellation for
+            // an old attempt tear down a newer reconnect of the same saved
+            // profile.
+            if self.session_for == Some(*connection_id)
+                && self.session_generation == *session_generation
+            {
+                self.disconnect_session();
+            }
+            return Some(Err("remote connection attempt cancelled".into()));
+        }
+        Some(match pending {
+            PendingResourceOperation::Connect {
+                connection_id,
+                session_generation,
+                ..
+            } => {
+                if self.session_for != Some(*connection_id)
+                    || self.session_generation != *session_generation
+                {
+                    Err("the connection attempt was superseded by a newer session".into())
+                } else {
+                    match self.session.borrow().status() {
+                        Some(SessionStatus::Connecting) => return None,
+                        Some(SessionStatus::Connected) => Ok(()),
+                        Some(
+                            SessionStatus::Failed(message) | SessionStatus::Unavailable(message),
+                        ) => Err(message),
+                        Some(SessionStatus::Closed) | None => {
+                            Err("remote connection closed before it became ready".into())
+                        }
+                    }
+                }
+            }
+            PendingResourceOperation::SshInput {
+                connection_id,
+                session_generation,
+                acknowledgement,
+                ..
+            } => {
+                if self.session_for != Some(*connection_id)
+                    || self.session_generation != *session_generation
+                {
+                    Err("the SSH session ended before input delivery was acknowledged".into())
+                } else {
+                    match acknowledgement.try_recv() {
+                        Ok(result) => result,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            Err("remote input worker stopped before acknowledgement".into())
+                        }
+                    }
+                }
+            }
+        })
     }
 }
 
@@ -3412,3 +3270,12 @@ fn sample_tilo_devices() -> Vec<TiloDevice> {
 
 #[cfg(test)]
 mod tests;
+
+impl RemoteApp {
+    pub(crate) fn can_send_text(&self) -> bool {
+        matches!(
+            &self.session.borrow().live,
+            Some(LiveSession::Ssh(session)) if session.status() == SessionStatus::Connected
+        )
+    }
+}

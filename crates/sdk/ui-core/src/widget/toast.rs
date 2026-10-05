@@ -1142,13 +1142,13 @@ impl Widget for ToastStack {
         node
     }
 
-    fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         self.advance(crate::time::now());
     }
 
     fn update(
         &mut self,
-        _state: &mut crate::widget::AppModel,
+        _state: &crate::widget::AppModel,
         _path: &crate::widget::ModelPath,
     ) -> bool {
         let before = self.toasts.len();
@@ -1328,7 +1328,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,

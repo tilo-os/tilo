@@ -2191,12 +2191,12 @@ impl Widget for WindowGroup {
         Ok(())
     }
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
         if let Some(h) = self.active_host_mut() {
             h.sync(s, p);
         }
     }
-    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         self.active_host_mut().is_some_and(|h| h.update(s, p))
     }
     fn build_layout(
@@ -3474,7 +3474,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state,
+                state: crate::widget::Edits::lend(state),
                 path: root_id,
                 handled: &mut handled,
                 focus_target,
@@ -3667,7 +3667,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3762,7 +3762,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3792,7 +3792,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -3890,7 +3890,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4031,7 +4031,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &mods,
-                        state: &mut state,
+                        state: crate::widget::Edits::lend(&mut state),
                         path: &root_id,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -4243,7 +4243,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -4337,7 +4337,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut state,
+                        state: crate::widget::Edits::lend(&mut state),
                         path: &root_id,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -4437,7 +4437,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4458,7 +4458,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4479,7 +4479,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &plain_mods,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5214,7 +5214,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5245,7 +5245,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled2,
                     focus_target: &mut focus_target,
@@ -5317,7 +5317,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5347,7 +5347,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled2,
                     focus_target: &mut focus_target,
@@ -5512,7 +5512,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5560,7 +5560,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled2,
                     focus_target: &mut focus_target,

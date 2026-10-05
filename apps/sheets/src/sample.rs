@@ -180,77 +180,63 @@ fn sales() -> ImportedSheet {
     }
 }
 
-/// Two charts over the budget — each category's Q1 total, and the monthly
-/// totals — and a resolved comment thread on its rent row.
-pub fn charts_and_comments() -> Vec<SheetsAction> {
-    let chart =
-        |chart_id: &str, title: &str, kind: ChartKind, (c0, r0), (c1, r1)| SheetsAction::PutChart {
-            sheet: 0,
-            sheet_id: BUDGET_SHEET_ID.into(),
-            chart_id: chart_id.into(),
-            title: title.into(),
-            kind: kind.code().into(),
-            c0,
-            r0,
-            c1,
-            r1,
-        };
+/// Two charts over the budget and a resolved comment thread on its rent row.
+pub fn charts() -> Vec<SheetsAction> {
+    let chart = |chart_id: &str, title: &str, kind: ChartKind, c1: u32| SheetsAction::PutChart {
+        sheet: 0,
+        sheet_id: BUDGET_SHEET_ID.into(),
+        chart_id: chart_id.into(),
+        title: title.into(),
+        kind: kind.code().into(),
+        c0: 1,
+        r0: 1,
+        c1,
+        r1: 6,
+    };
     vec![
-        // E2:E6, the Q1 total of each category.
-        chart(
-            COLUMN_CHART_ID,
-            "Q1 spend by category",
-            ChartKind::Column,
-            (4, 1),
-            (4, 5),
-        ),
-        // B7:D7, the monthly totals.
-        chart(
-            LINE_CHART_ID,
-            "Monthly total",
-            ChartKind::Line,
-            (1, 6),
-            (3, 6),
-        ),
-        SheetsAction::PutComment {
-            sheet: 0,
-            sheet_id: BUDGET_SHEET_ID.into(),
-            comment_id: COMMENT_ID.into(),
-            c0: 1,
-            r0: 1,
-            c1: 4,
-            r1: 1,
-            author: "Alex".into(),
-            body: "Check the rent increase before sending this budget.".into(),
-        },
-        SheetsAction::ReplyComment {
-            sheet: 0,
-            sheet_id: BUDGET_SHEET_ID.into(),
-            comment_id: COMMENT_ID.into(),
-            reply_id: REPLY_ID.into(),
-            author: "Sam".into(),
-            body: "I will verify the change.".into(),
-        },
-        SheetsAction::SetCommentResolved {
-            sheet: 0,
-            sheet_id: BUDGET_SHEET_ID.into(),
-            comment_id: COMMENT_ID.into(),
-            resolved: true,
-        },
+        chart(COLUMN_CHART_ID, "Quarterly spend", ChartKind::Column, 4),
+        chart(LINE_CHART_ID, "Monthly trend", ChartKind::Line, 3),
     ]
 }
 
-/// A colour on both sheet tabs, so the tab strip shows the colour dot on the
-/// active tab and on one that is not.
-pub fn tab_colours() -> Vec<SheetsAction> {
-    [(0, BUDGET_SHEET_ID, 0), (1, SALES_SHEET_ID, 2)]
-        .into_iter()
-        .map(|(idx, sheet_id, color)| SheetsAction::SetSheetColor {
-            idx,
-            sheet_id: sheet_id.into(),
-            color: Some(color),
-        })
-        .collect()
+/// A comment thread on the budget, each edit by the person who wrote it:
+/// Alex asks, Sam replies.
+pub fn comments() -> Vec<(&'static str, SheetsAction)> {
+    vec![
+        (
+            "Alex",
+            SheetsAction::PutComment {
+                sheet: 0,
+                sheet_id: BUDGET_SHEET_ID.into(),
+                comment_id: COMMENT_ID.into(),
+                c0: 1,
+                r0: 1,
+                c1: 4,
+                r1: 1,
+                body: "Check the rent increase before sending this budget.".into(),
+            },
+        ),
+        (
+            "Sam",
+            SheetsAction::ReplyComment {
+                sheet: 0,
+                sheet_id: BUDGET_SHEET_ID.into(),
+                comment_id: COMMENT_ID.into(),
+                reply_id: REPLY_ID.into(),
+                body: "I will verify the change.".into(),
+            },
+        ),
+    ]
+}
+
+/// Resolve the sample comment thread.
+pub fn resolve_comment() -> SheetsAction {
+    SheetsAction::SetCommentResolved {
+        sheet: 0,
+        sheet_id: BUDGET_SHEET_ID.into(),
+        comment_id: COMMENT_ID.into(),
+        resolved: true,
+    }
 }
 
 /// The seeds of the fill-series scenario: three patterns under the budget,

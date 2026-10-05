@@ -220,10 +220,6 @@ impl DiagnosticsPanel {
         self.scroll_y = self.scroll_y.clamp(0.0, self.max_scroll());
     }
 
-    pub(crate) fn scroll_y(&self) -> f64 {
-        self.scroll_y
-    }
-
     pub fn scroll_by(&mut self, dy: f64) {
         self.scroll_y = (self.scroll_y + dy).clamp(0.0, self.max_scroll());
     }

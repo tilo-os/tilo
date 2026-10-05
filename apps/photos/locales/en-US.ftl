@@ -614,3 +614,6 @@ photos-objects = Objects
 photos-pets = Pets
 photos-unavailable = Unavailable: { $reason }
 photos-history-scope = Photograph and photo library
+
+photos-a11y-previous-albums = Show previous albums
+photos-a11y-more-albums = Show next albums

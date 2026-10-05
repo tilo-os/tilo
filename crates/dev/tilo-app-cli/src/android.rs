@@ -1360,8 +1360,8 @@ fn release_keystore(tools: &Toolchain, explicit: Option<&Path>) -> Result<Keysto
             alias: env("TILO_ANDROID_KEY_ALIAS").unwrap_or_else(|| "tilo-release".to_owned()),
         });
     }
-    let dir = registry_client::key::default_path()
-        .and_then(|key| key.parent().map(Path::to_path_buf))
+    let dir = tilo_paths::config_dir()
+        .map(|config| config.join("tilo"))
         .ok_or_else(|| {
             anyhow::anyhow!("no configuration directory for the Android release keystore; set $TILO_ANDROID_KEYSTORE")
         })?;

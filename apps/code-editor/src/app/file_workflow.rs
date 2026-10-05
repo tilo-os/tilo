@@ -108,7 +108,7 @@ impl CodeApp {
     }
 
     /// Throw away this buffer's edits and take what is on disk.
-    pub(super) fn reload_buffer(&mut self, doc: &mut AutoCommit, node: TreeId) {
+    pub(super) fn reload_buffer(&mut self, doc: &mut ui::widget::Edits<'_>, node: TreeId) {
         if self.session.buffer_of(node).is_none() {
             return;
         }
@@ -122,7 +122,7 @@ impl CodeApp {
                 // same action-owned splice path as a keystroke or replace.
                 let file_id = self.buffer_key(node);
                 let base = EditorDoc::read_buffer_key(doc, &file_id).unwrap_or_default();
-                if let Err(error) = self.dispatch_text_action(doc, file_id, &name, &base, &text) {
+                if let Err(error) = self.dispatch_text_action(doc, file_id, &base, &text) {
                     self.editor.reconcile_from_doc(doc);
                     self.note(format!("Reload was refused: {error}"), true);
                     return;
@@ -158,7 +158,11 @@ impl CodeApp {
     }
 
     /// Answer an open conflict.
-    pub(super) fn resolve_conflict(&mut self, doc: &mut AutoCommit, choice: ConflictChoice) {
+    pub(super) fn resolve_conflict(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        choice: ConflictChoice,
+    ) {
         let Some(conflict) = self.conflict.take() else {
             return;
         };
@@ -232,7 +236,7 @@ impl CodeApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal = None;
                 self.portal_intent = None;
-                self.finish_resource_file(Err("file picker disconnected".into()));
+                self.finish_file_effect(Err("file picker disconnected".into()));
                 return;
             }
         };
@@ -253,17 +257,12 @@ impl CodeApp {
         let path = match outcome {
             PortalOutcome::Opened(p) => p,
             PortalOutcome::Cancelled => {
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("file selection cancelled".into()),
-                    });
-                }
+                self.finish_file_effect(Err("file selection cancelled".into()));
                 return;
             }
             PortalOutcome::Failed(e) => {
                 self.note(format!("File picker unavailable: {e}"), true);
-                self.finish_resource_file(Err(e));
+                self.finish_file_effect(Err(e));
                 return;
             }
         };
@@ -295,28 +294,15 @@ impl CodeApp {
             }
             None => Ok(()),
         };
-        self.finish_resource_file(result);
+        self.finish_file_effect(result);
     }
 
-    pub(super) fn finish_resource_file(&mut self, result: Result<(), String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
-            return;
-        };
-        self.resource_result = Some(match result {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "code_editor.io_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
+    /// Answer the effect that opened a picker or asked for a save, if one is
+    /// waiting.
+    pub(super) fn finish_file_effect(&mut self, result: Result<(), String>) {
+        if let Some(reply) = self.file_reply.take() {
+            reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+        }
     }
 
     /// Replace the project with the directory at `path`.
@@ -325,13 +311,14 @@ impl CodeApp {
             Ok(project) => {
                 let name = project.name.clone();
                 self.session = Session::new(project);
+                self.adopt_presented();
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
                 explorer::set_current(&mut self.sidebar, None);
                 self.bound_node = None;
                 self.editor.unbind();
                 self.reset_language_server();
-                self.text_search.set_root(None);
+                self.clear_search();
                 self.search_symbols.clear();
                 self.refresh_header();
                 self.note(format!("Opened {name}"), false);
@@ -357,6 +344,7 @@ impl CodeApp {
         match Project::open_single_file(&path) {
             Ok((project, node)) => {
                 self.session = Session::new(project);
+                self.adopt_presented();
                 self.invalidate_search_projection();
                 explorer::refresh(&mut self.sidebar, &self.session.project);
                 self.bound_node = None;

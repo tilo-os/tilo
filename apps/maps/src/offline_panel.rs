@@ -6,7 +6,6 @@
 
 use ui::time::{Duration, Instant};
 
-use automerge::AutoCommit;
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
@@ -201,7 +200,7 @@ impl OfflinePanel {
         scale: f64,
         modifiers: winit::event::Modifiers,
         mouse: Point,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let on_levels = self.levels_rect.is_some_and(|rect| rect.contains(mouse));
         if on_levels || self.levels.is_editing() {

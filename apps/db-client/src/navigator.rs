@@ -227,7 +227,7 @@ impl ui::widget::Decorator for Navigator {
         &mut self.list
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         self.refresh();
         ui::widget::Widget::sync(&mut self.list, state, path);
     }

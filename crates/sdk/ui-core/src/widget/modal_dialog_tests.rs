@@ -171,7 +171,7 @@ fn dispatch<C: Widget + 'static>(d: &mut ModalDialog<C>, event: &WindowEvent) ->
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: &mut doc,
+            state: crate::widget::Edits::lend(&mut doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -660,16 +660,36 @@ fn dialog_accessibility_exposes_open_content_and_real_actions() {
             .unwrap();
         let mut doc = AutoCommit::new();
         let activate = crate::a11y::Action::Activate;
-        assert!(dialog.perform_semantic_action(&target, &activate, &mut doc, &automerge::ROOT));
+        assert!(dialog.perform_semantic_action(
+            &target,
+            &activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
         assert_eq!(fired.get(), 1);
         dialog.set_open(false);
         assert!(dialog.accessibility().unwrap().children.is_empty());
-        assert!(!dialog.perform_semantic_action(&target, &activate, &mut doc, &automerge::ROOT));
+        assert!(!dialog.perform_semantic_action(
+            &target,
+            &activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
         dialog.set_open(true);
         dialog.primary_action = None;
-        assert!(!dialog.perform_semantic_action(&target, &activate, &mut doc, &automerge::ROOT));
+        assert!(!dialog.perform_semantic_action(
+            &target,
+            &activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT
+        ));
         assert!(
-            !dialog.perform_semantic_action("modal.primary", &activate, &mut doc, &automerge::ROOT),
+            !dialog.perform_semantic_action(
+                "modal.primary",
+                &activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ),
             "an absent action is not activatable"
         );
         assert_eq!(automerge::transaction::Transactable::pending_ops(&doc), 0);
@@ -701,11 +721,8 @@ fn dialog_accessibility_exposes_open_content_and_real_actions() {
         use crate::widget::Button;
         use accesskit::Role as AccessKitRole;
 
-        let mut d = ModalDialog::new(
-            "Confirm",
-            Button::new("modal-child", "Confirm action", None),
-        )
-        .open(true);
+        let mut d =
+            ModalDialog::new("Confirm", Button::new("modal-child", "Confirm action")).open(true);
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
@@ -750,7 +767,7 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
             &key_press_event(NamedKey::Escape),
             1.0,
             Modifiers::default(),
-            &mut AutoCommit::new(),
+            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(dismissed.get(), 4, "a painted host routes events too");

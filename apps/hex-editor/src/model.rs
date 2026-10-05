@@ -161,8 +161,8 @@ impl HexModel {
     /// marked changed; where the buffer is as long as `saved`, the bytes
     /// that differ from `saved` are exactly the changed ones (an undo
     /// clears its byte's mark).
-    pub fn show_bytes(&mut self, bytes: Vec<u8>, saved: &[u8]) {
-        if bytes == self.bytes {
+    pub fn show_bytes(&mut self, bytes: &[u8], saved: &[u8]) {
+        if bytes == self.bytes.as_slice() {
             return;
         }
         if bytes.len() == saved.len() {
@@ -176,7 +176,7 @@ impl HexModel {
             let prefix = self
                 .bytes
                 .iter()
-                .zip(&bytes)
+                .zip(bytes)
                 .take_while(|(a, b)| a == b)
                 .count();
             let suffix = common_suffix(
@@ -200,7 +200,9 @@ impl HexModel {
                 .chain(prefix..new_end)
                 .collect();
         }
-        self.bytes = bytes;
+        // Reuse the buffer: a large file is not reallocated per edit.
+        self.bytes.clear();
+        self.bytes.extend_from_slice(bytes);
         self.pending_nibble = None;
         self.clamp_cursor();
     }
@@ -786,16 +788,16 @@ mod tests {
         let mut m = HexModel::new(saved.clone());
         m.move_to(3, false);
         // An edit from elsewhere marks its byte; undoing it clears the mark.
-        m.show_bytes(vec![0x10, 0xFF, 0x30, 0x40], &saved);
+        m.show_bytes(&[0x10, 0xFF, 0x30, 0x40], &saved);
         assert!(m.is_dirty(1));
         assert_eq!(m.cursor(), 3);
-        m.show_bytes(saved.clone(), &saved);
+        m.show_bytes(&saved, &saved);
         assert_eq!(m.dirty_count(), 0);
         // A shorter buffer clamps the cursor and marks the changed span.
-        m.show_bytes(vec![0x10, 0x40], &saved);
+        m.show_bytes(&[0x10, 0x40], &saved);
         assert_eq!(m.cursor(), 1);
         assert_eq!(m.dirty_count(), 0, "a pure removal changes no byte left");
-        m.show_bytes(vec![0x10, 0x99, 0x40], &saved);
+        m.show_bytes(&[0x10, 0x99, 0x40], &saved);
         assert!(m.is_dirty(1));
         assert!(!m.is_dirty(2));
         // A load starts clean.

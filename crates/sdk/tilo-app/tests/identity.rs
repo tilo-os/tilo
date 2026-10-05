@@ -208,7 +208,7 @@ impl<R: Resource<Action = LevelAction>> Widget for LevelSlider<R> {
                         operation: BoardAction::SetLevel { level },
                         now_ms: 0,
                     };
-                    dispatch.apply_now(ctx.state, &action).unwrap();
+                    dispatch.apply_now(&mut ctx.edits(), &action).unwrap();
                     *ctx.handled = true;
                 }
             }

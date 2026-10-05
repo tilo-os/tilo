@@ -174,7 +174,7 @@ impl SheetsApp {
     }
 
     /// Run the row the open tab menu just reported, if any.
-    fn drain_tab_menu(&mut self, doc: &mut AutoCommit) {
+    fn drain_tab_menu(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(target) = self.tab_menu_target else {
             return;
         };
@@ -207,7 +207,7 @@ impl SheetsApp {
     }
 
     /// Run the colour the open popover just chose, if any.
-    fn drain_tab_colour(&mut self, doc: &mut AutoCommit) {
+    fn drain_tab_colour(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(target) = self.tab_menu_target else {
             return;
         };
@@ -284,14 +284,14 @@ impl SheetsApp {
         if self.tab_colour.is_open() {
             self.tab_colour
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-            self.drain_tab_colour(ctx.state);
+            self.drain_tab_colour(&mut ctx.state);
             *ctx.handled = true;
             return true;
         }
         if self.tab_menu.is_open() {
             self.tab_menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-            self.drain_tab_menu(ctx.state);
+            self.drain_tab_menu(&mut ctx.state);
             *ctx.handled = true;
             return true;
         }
@@ -538,7 +538,7 @@ impl SheetsApp {
     pub(super) fn try_settings_panel_click(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if self.settings_panel == SettingsPanel::None {

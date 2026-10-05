@@ -111,7 +111,9 @@ pub struct Category {
     pub name: String,
     pub order: u32,
     /// Collapsed categories hide their channels in the sidebar (the
-    /// active channel still shows so you never lose your place).
+    /// active channel still shows so you never lose your place). Each
+    /// person's own ([`crate::preferences::ChatPreferences`]), not the
+    /// document's.
     pub collapsed: bool,
 }
 
@@ -240,9 +242,8 @@ pub enum Attachment {
     },
     /// A video addressed by its content hash. Rendered inline as a
     /// poster/preview card with a play affordance and the real resolution; the
-    /// bytes are read from the content store on demand (a full
-    /// frame decode needs the media engine's decoder — see [`crate::media`] —
-    /// available only in the `live-media` build), never copied into the CRDT.
+    /// bytes are read from the content store on demand, never copied into
+    /// the CRDT.
     /// `w`/`h` are the pixel dimensions when known (0 when the container header
     /// wasn't probed).
     Video {

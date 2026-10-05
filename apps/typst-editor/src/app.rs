@@ -25,21 +25,22 @@
 //! band; a change worth noticing once ("Compiled in 42 ms") is the transient
 //! [`ui::StatusBubble`].
 //!
-//! State that belongs in the CRDT — the document source — lives in an
-//! Automerge `Text` object under `root["source"]`; the editor splices into it
-//! directly, so undo/redo and live collaboration come for free. Everything
-//! else here (caret, scroll, zoom, the split ratio, cached page bitmaps) is
-//! ephemeral view state.
+//! The workspace's files — names, paths and sources — are the resource's
+//! state ([`crate::resource::TypstEditor`]); every edit is one of its actions,
+//! so undo/redo and live collaboration come for free. Which file is open,
+//! the caret, scroll, zoom, the split ratio and cached page bitmaps are view
+//! state.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
+#[cfg(test)]
+use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -96,7 +97,6 @@ use crate::compile::{self, CompileOutput, WorldParts};
 use crate::diagnostics::DiagnosticsPanel;
 use crate::editor::SourceEditor;
 use crate::preview::PreviewPane;
-use crate::samples::{DEFAULT_INDEX, SAMPLES};
 use crate::worker::CompileWorker;
 
 /// Pixels-per-point the document is rasterised at. 2.0 keeps pages crisp on
@@ -111,20 +111,11 @@ enum CompactPane {
     Preview,
 }
 
-/// A document whose last line is a paragraph long enough to soft-wrap several
-/// times, used only by the `--shots long-line` scenario to capture how the
-/// source editor wraps it with the caret at the end of the line. The long line
-/// is last (no trailing newline) so placing the caret at the document end lands
-/// it there.
-const SCROLL_DEMO: &str = "= Meeting notes\n\nA paragraph in Typst is just lines of text, so this one is written as a single long line of source that runs well past the right edge of the editor pane. The editor wraps it onto continuation rows and keeps the caret in view as you type toward the end.\n\n- Agenda\n  - A nested point long enough to wrap: its continuation rows hang under the point's own indentation, not at the margin.";
-
-/// The document this window edits: a bundled sample or a `.typ` file the
-/// person opened. Another document is another editor in a desktop tab.
-#[derive(Clone)]
-struct Document {
-    name: String,
-    source: String,
-}
+/// A document whose final line is very long, used only by the `scrolled`
+/// capture to show the source editor scrolled sideways with the caret kept in
+/// view at the end of the line. The long line is last (no trailing newline)
+/// so placing the caret at the document end lands it there.
+pub(crate) const SCROLL_DEMO: &str = "= Horizontal scroll\n\n#let note = \"This is a single very long line of source text that runs well past the right edge of the editor pane, so the view must scroll sideways to keep the caret in view as you type toward the end.\"";
 
 /// The sizes of the window's own chrome, measured in the theme at paint: the
 /// band holding the controls, the status bar and the width under which one
@@ -171,17 +162,25 @@ pub struct TypstApp {
     preview: PreviewPane,
     diagnostics: DiagnosticsPanel,
 
-    // --- document / CRDT ---
-    source_id: Option<ObjId>,
-    document: Document,
+    // --- workspace ---
+    /// The workspace as last presented.
+    files: Rc<crate::resource::TypstState>,
+    /// The id of the file shown, shared with the editor, which reads its
+    /// source.
+    current: Rc<RefCell<Option<String>>>,
+    /// A file this window added, shown once it lands in the workspace.
+    pending_current: Option<String>,
+    actions: Option<ui::framework::Dispatcher<crate::resource::TypstEditor>>,
     /// An in-flight host file dialog: the operation and the channel its chosen
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
     /// when no Open / Save / Export chooser is open.
     io: Option<(PendingIo, PortalChannel)>,
     background_poll_deadline: Cell<Option<Instant>>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
-    pending_resource_io: Option<(tilo_actions::InvocationId, ResourceIo)>,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// The answer owed to the file effect still running, given when its
+    /// chooser or its write settles.
+    file_reply: Option<ui::framework::EffectReply>,
+    /// A file effect's read or write, done on the next sync.
+    pending_resource_io: Option<ResourceIo>,
     /// Whether the first (synchronous) compile + worker spawn has happened.
     initialized: bool,
     /// Last source text we highlighted / compiled — drives change detection.
@@ -190,9 +189,6 @@ pub struct TypstApp {
     /// doc access) for the caret readout and change detection. The editor body
     /// and its syntax highlighting live in the shared `SourceEditor` widget.
     source_cache: String,
-    /// A native source splice is committed by the widget host rather than an
-    /// action envelope; this rising edge supplies its durable provenance.
-    native_edit_pending: bool,
 
     // --- view state ---
     show_diagnostics: bool,
@@ -209,12 +205,9 @@ pub struct TypstApp {
     /// The renderer's accessibility text scale; width breakpoints designed at
     /// 1× are compared against `width / text_k`.
     text_k: f64,
-    /// Screenshot-only: replace the library with the bundled documents on
-    /// the next sync, so a capture never depends on the files on disk.
-    demo_reload: bool,
-    /// Screenshot-only: on the next layout pass, drop the caret at the end of
-    /// the source so the capture shows it wrapped and in view.
-    demo_caret_end: bool,
+    /// Capture only: on the next layout pass, drop the caret at the end of
+    /// the source and scroll it into view. Never set in a live window.
+    demo_scroll_caret_end: bool,
     /// Screenshot harness only: select a couple of editor lines for the capture.
     demo_editor_select: bool,
     /// Screenshot-only: on the next layout pass, zoom the preview in and scroll
@@ -266,68 +259,38 @@ pub struct TypstApp {
     dirty: bool,
     /// The pointer has moved over the window, so the bubble follows it.
     pointer_seen: bool,
-
-    /// Framework-hosted surfaces leave the palette tree to
-    /// `tilo_resource::publish`; standalone keeps the contextual builder.
-    framework_hosted: bool,
-    /// Present once [`ResourceSurface::attach`] has run. Source setup and
-    /// whole-source replacement go through it so history records the action.
-    document_actions: Option<ui::framework::Dispatcher<crate::resource::TypstEditor>>,
-    /// Local host for standalone, `--shots`, and tests. The framework
-    /// dispatcher replaces it once the surface is attached.
-    local_actions: ui::ActionHost,
 }
 
 impl TypstApp {
-    /// The live editor: a blank starter document. Open loads a `.typ` file
-    /// into this window; another file side by side is another window.
+    /// The editor over the workspace it is presented; it shows the first
+    /// file until another is chosen.
     pub fn new() -> Self {
-        Self::with_document(Document {
-            name: "untitled.typ".into(),
-            source: String::new(),
-        })
-    }
-
-    /// A hermetic instance seeded with the bundled example document. Used by
-    /// the offscreen `--shots` renderer and tests so the output never depends
-    /// on what happens to be on disk.
-    pub fn with_demo_document() -> Self {
-        let sample = SAMPLES
-            .get(DEFAULT_INDEX)
-            .or_else(|| SAMPLES.first())
-            .map_or_else(
-                || Document {
-                    name: "untitled.typ".into(),
-                    source: String::new(),
-                },
-                |sample| Document {
-                    name: sample.name.to_string(),
-                    source: sample.source.to_string(),
-                },
-            );
-        Self::with_document(sample)
-    }
-
-    fn with_document(document: Document) -> Self {
+        let current: Rc<RefCell<Option<String>>> = Rc::default();
+        let shown = Rc::clone(&current);
+        let editor = SourceEditor::new(move |doc| {
+            shown
+                .borrow()
+                .as_deref()
+                .and_then(|id| crate::resource::source_text(doc, id))
+        });
         let theme = Theme::dark();
         Self {
             parts: WorldParts::new(),
             worker: None,
             applied_seq: 0,
-            editor: SourceEditor::new(),
+            editor,
             preview: PreviewPane::new(),
             diagnostics: DiagnosticsPanel::new(),
-            source_id: None,
-            document,
+            files: Rc::default(),
+            current,
+            pending_current: None,
             io: None,
             background_poll_deadline: Cell::new(None),
-            resource_invocation: None,
+            file_reply: None,
             pending_resource_io: None,
-            resource_result: None,
             initialized: false,
             last_source: String::new(),
             source_cache: String::new(),
-            native_edit_pending: false,
             show_diagnostics: false,
             err_count: 0,
             warn_count: 0,
@@ -335,8 +298,7 @@ impl TypstApp {
             compact: false,
             compact_view: CompactPane::Editor,
             text_k: 1.0,
-            demo_reload: false,
-            demo_caret_end: false,
+            demo_scroll_caret_end: false,
             demo_editor_select: false,
             demo_preview_zoom: false,
             demo_preview_pan: false,
@@ -369,213 +331,149 @@ impl TypstApp {
             .with_label("Resize the source and the preview"),
             dirty: true,
             pointer_seen: false,
-            framework_hosted: false,
-            document_actions: None,
-            local_actions: ui::ActionHost::new(),
+            actions: None,
         }
     }
 
-    /// Mark this editor as a framework-hosted surface so
-    /// [`Widget::resources`] defers to `tilo_resource::publish`.
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
-        self.framework_hosted = hosted;
-    }
-
-    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
-    /// publishing only live diagnostics / preview-page extras beside the
-    /// framework door.
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn is_framework_hosted(&self) -> bool {
-        self.framework_hosted
-    }
-
-    pub(crate) fn attach_document_actions(
+    /// Attach the workspace's dispatcher; a capture's first file.
+    pub(crate) fn attach_surface(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::TypstEditor>,
+        cx: &ui::framework::SurfaceCx<crate::resource::TypstEditor>,
     ) {
-        self.document_actions = Some(dispatcher);
+        self.actions = Some(cx.dispatcher());
+        if let Some(file) = cx.fixture::<crate::resource::CaptureFile>() {
+            *self.current.borrow_mut() = Some(file.0.clone());
+        }
+        self.follow_current();
     }
 
-    /// Source setup and replacement go through the framework dispatcher when
-    /// the surface is attached, and through the local action host otherwise.
-    fn apply_source_action(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &crate::resource::TypstDocAction,
-    ) {
-        if let Some(dispatcher) = &self.document_actions {
-            let _ = dispatcher.apply_now(doc, action);
+    /// Show the workspace as it is now: the file shown stays open unless it
+    /// left the workspace; a file this window added opens once it lands.
+    pub(crate) fn present_state(&mut self, state: &Rc<crate::resource::TypstState>) {
+        self.files = Rc::clone(state);
+        let pending = self
+            .pending_current
+            .as_deref()
+            .filter(|id| state.file(id).is_some())
+            .map(str::to_owned);
+        if let Some(id) = pending {
+            self.pending_current = None;
+            self.open_file(&id);
             return;
         }
-        let _ = self.local_actions.try_dispatch_with_context(
-            doc,
-            <crate::resource::TypstEditor as ui::tilo_resource::Resource>::ACTION_TYPE,
-            action,
-            ui::tilo_actions::ActionContext::for_action("so.tilo.typst-editor", "Typst", action),
-        );
-    }
-
-    #[cfg(test)]
-    pub(crate) fn take_source_action_for_test(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local_actions.take_committed()
-    }
-
-    /// Live presentation inputs for the resource tree.
-    pub(crate) fn resource_ctx(&self) -> crate::actions::TypstResourceCtx<'_> {
-        crate::actions::TypstResourceCtx {
-            diagnostics: self.diagnostics.diags(),
-            page_count: self.preview.page_count(),
+        let shown = self.current.borrow().clone();
+        if shown.as_deref().is_none_or(|id| state.file(id).is_none()) {
+            let first = state.files.first().map(|file| file.id.clone());
+            *self.current.borrow_mut() = first;
+            self.follow_current();
         }
+        self.dirty = true;
     }
 
-    /// Test-only: stage Problems rows and preview pages for hosted extras.
-    #[cfg(test)]
-    pub(crate) fn stage_live_extras_for_test(
-        &mut self,
-        diags: Vec<crate::compile::Diagnostic>,
-        pages: &[crate::compile::PageImage],
-    ) {
-        self.diagnostics.set_diagnostics(diags);
-        self.preview.set_pages(pages);
+    /// The file shown, if the workspace has one.
+    pub(crate) fn current_file(&self) -> Option<&crate::resource::TypstFile> {
+        let current = self.current.borrow();
+        let id = current.as_deref()?;
+        self.files.files.iter().find(|file| file.id == id)
     }
 
-    /// Test-only: drop staged diagnostics and pages so hosted extras go empty.
-    #[cfg(test)]
-    pub(crate) fn clear_live_extras_for_test(&mut self) {
-        self.diagnostics.set_diagnostics(Vec::new());
-        self.preview.set_pages(&[]);
-    }
-
-    /// Test-only: live diagnostic count after staging.
-    #[cfg(test)]
-    pub(crate) fn live_diagnostic_count_for_test(&self) -> usize {
-        self.diagnostics.diags().len()
-    }
-
-    /// Test-only: live preview page count after staging.
-    #[cfg(test)]
-    pub(crate) fn live_page_count_for_test(&self) -> usize {
-        self.preview.page_count()
-    }
-
-    /// Test-only: replace the local document list with unpublished source.
-    #[cfg(test)]
-    pub(crate) fn seed_unpublished_source_for_test(&mut self, name: &str, source: &str) {
-        self.document = Document {
-            name: name.into(),
-            source: source.into(),
+    /// Submit the editor's edits to the file shown.
+    fn follow_current(&mut self) {
+        let (Some(actions), Some(id)) = (&self.actions, self.current.borrow().clone()) else {
+            return;
         };
-        self.initialized = false;
-        self.source_id = None;
+        let file = id.clone();
+        self.editor
+            .attach(actions.child::<ui::tilo_resource::PlainText>(
+                &crate::resource::source_resource_id(&id),
+                move |edit| crate::resource::TypstAction::EditSource {
+                    file: file.clone(),
+                    edit,
+                },
+            ));
     }
 
-    /// Test-only: local document names currently held on the surface.
-    #[cfg(test)]
-    pub(crate) fn local_document_names_for_test(&self) -> Vec<String> {
-        vec![self.document.name.clone()]
-    }
-
-    /// Test-only: current local source body held on the surface.
-    #[cfg(test)]
-    pub(crate) fn local_source_for_test(&self) -> String {
-        self.document.source.clone()
-    }
-
-    /// Stage the capture a `--shots` run asks for: the bundled documents in
-    /// place of whatever the library holds, then the named scenario. Never
-    /// called by the live event loop.
-    pub fn stage_capture(&mut self, scenario: Option<&str>) {
-        let demo = Self::with_demo_document();
-        self.document = demo.document;
-        self.demo_reload = true;
-        if let Some(name) = scenario {
-            self.apply_demo_scenario(name);
-        }
-    }
-
-    /// Screenshot-only: pre-arrange a demo instance into a named state so the
-    /// offscreen renderer can capture views that normally require interaction.
-    /// Never called by the live event loop.
-    pub fn apply_demo_scenario(&mut self, scenario: &str) {
-        match scenario {
-            "preview" => self.compact_view = CompactPane::Preview,
-            "menu" | "documents" => self.demo_documents = true,
-            // The report is two pages, so the thumbnail strip shows.
-            "pages" => {
-                if let Some(sample) = SAMPLES.get(1) {
-                    self.document = Document {
-                        name: sample.name.into(),
-                        source: sample.source.into(),
-                    };
-                }
-            }
-            "problems" => self.show_diagnostics = true,
-            "scrolled" | "long-line" => {
-                SCROLL_DEMO.clone_into(&mut self.document.source);
-                self.editor.focused = true;
-                self.demo_caret_end = true;
-            }
-            "errors" => {
-                self.show_diagnostics = true;
-                crate::samples::ERROR_WARNING.clone_into(&mut self.document.source);
-            }
-            "editor-select" => {
-                self.editor.focused = true;
-                self.demo_editor_select = true;
-            }
-            "preview-zoom" => self.demo_preview_zoom = true,
-            "preview-pan" => self.demo_preview_pan = true,
-            "select" => self.demo_preview_select = true,
-            "stale" => self.demo_stale = true,
-            "status" => {
-                let now = ui::time::now();
-                self.status.show("Compiled in 42 ms", now);
-                self.status.set_hover(true, now);
-            }
-            _ => {}
-        }
-    }
-
-    // ----- CRDT source plumbing -------------------------------------------
-
-    /// Get-or-create the `root["source"]` Text object, seeding it with the
-    /// current sample the first time it's created.
-    pub(crate) fn ensure_source_obj(&mut self, doc: &mut AutoCommit) -> ObjId {
-        let seed = self.document.source.clone();
-        self.apply_source_action(doc, &crate::resource::TypstDocAction::EnsureSource { seed });
-        match doc.get(&ROOT, "source") {
-            Ok(Some((Value::Object(ObjType::Text), id))) => id,
-            _ => ROOT,
-        }
-    }
-
-    fn read_source(&self, doc: &AutoCommit) -> String {
-        self.source_id
-            .as_ref()
-            .and_then(|id| doc.text(id).ok())
-            .unwrap_or_default()
-    }
-
-    /// Replace the entire CRDT source with this window's document and reset
-    /// the editor view. The recompile is picked up by the next `sync`.
-    fn load_document(&mut self, doc: &mut AutoCommit) {
-        let src = self.document.source.clone();
-        if self.source_id.is_some() {
-            self.apply_source_action(
-                doc,
-                &crate::resource::TypstDocAction::ReplaceSource { text: src },
-            );
-        }
+    /// Show file `id`, with the caret at its start.
+    fn open_file(&mut self, id: &str) {
+        *self.current.borrow_mut() = Some(id.to_owned());
+        self.follow_current();
         self.editor.reset_cursor();
         // Keep focus consistent with the visible pane in compact mode.
         self.editor.focused = !(self.compact && matches!(self.compact_view, CompactPane::Preview));
-        // The new document shows its own pages (or its own failure), never the
-        // last good render of the one it replaced.
-        self.preview.clear();
-        self.diagnostics.set_diagnostics(Vec::new());
-        self.err_count = 0;
-        self.warn_count = 0;
+        self.preview.fit_width();
+        let name = self.current_file().map(|file| file.name.clone());
+        if let Some(name) = name {
+            self.set_flash(format!("Opened {name}"));
+        }
+        self.dirty = true;
+    }
+
+    /// Submit `action` to the workspace.
+    fn apply(&self, action: &crate::resource::TypstAction) {
+        if let Some(actions) = &self.actions {
+            actions.apply(action);
+        }
+    }
+
+    /// Replace the source of the file shown with `text`, as one edit.
+    fn replace_source(&self, text: &str) {
+        if let Some(file) = self.current_file() {
+            self.apply(&crate::resource::TypstAction::EditSource {
+                file: file.id.clone(),
+                edit: ui::tilo_resource::TextEdit::ReplaceText {
+                    text: text.to_owned(),
+                },
+            });
+        }
+    }
+
+    /// Stage a capture: the view state each scenario shows once its files
+    /// are laid out.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        match scenario {
+            Some("preview") => self.compact_view = CompactPane::Preview,
+            Some("menu") => {
+                self.compact_view = CompactPane::Editor;
+                self.chrome.open_picker();
+            }
+            Some("problems" | "errors") => self.show_diagnostics = true,
+            Some("scrolled") => {
+                self.editor.focused = true;
+                self.demo_scroll_caret_end = true;
+            }
+            Some("editor-select") => {
+                self.editor.focused = true;
+                self.demo_editor_select = true;
+            }
+            Some("preview-zoom") => self.demo_preview_zoom = true,
+            Some("preview-pan") => self.demo_preview_pan = true,
+            Some("select") => self.demo_preview_select = true,
+            Some("stale") => self.demo_stale = true,
+            Some("status") => {
+                self.status.show(
+                    &format!(
+                        "{}; {}",
+                        self.status_left_label(),
+                        self.status_right_label()
+                    ),
+                    ui::time::now(),
+                );
+            }
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    /// Live Problems rows and preview pages, published beneath the
+    /// workspace.
+    pub(crate) fn live_rows(&self) -> Vec<ui::framework::LiveRow> {
+        crate::actions::live_extras(&crate::actions::TypstResourceCtx {
+            diagnostics: self.diagnostics.diags(),
+            page_count: self.preview.page_count(),
+        })
+        .into_iter()
+        .map(crate::actions::live_row)
+        .collect()
     }
 
     // ----- compile pipeline -----------------------------------------------
@@ -640,42 +538,52 @@ impl TypstApp {
         self.last_source = source.to_string();
     }
 
-    fn force_recompile(&mut self, doc: &AutoCommit) {
-        let src = self.read_source(doc);
-        self.source_cache.clone_from(&src);
+    fn force_recompile(&mut self) {
+        let src = self.source_cache.clone();
         self.request_compile(&src);
         self.compile_feedback = true;
     }
 
     // ----- file I/O -------------------------------------------------------
 
-    /// Open the host Save dialog to choose where to write the current source,
-    /// seeded with the document's name (unless a chooser is already in flight).
-    /// The chosen path is handled in [`Self::drain_io`].
-    fn save(&mut self, _doc: &AutoCommit) {
-        if self.io.is_some() {
-            return;
-        }
-        self.io = Some((
-            PendingIo::SaveTyp,
-            typ_save_request(&self.document.name).send(),
-        ));
-        self.set_flash("Choose where to save");
+    /// The name of the file shown, for a picker's suggestion.
+    fn current_name(&self) -> String {
+        self.current_file()
+            .map_or_else(|| "untitled.typ".into(), |file| file.name.clone())
     }
 
-    /// Core: write the current source to `path`. Split out so the portal drain
-    /// and tests drive it against a real file.
-    fn save_typ_to(&mut self, doc: &AutoCommit, path: &std::path::Path) -> Result<(), String> {
-        let src = self.read_source(doc);
-        self.save_path = Some(path.to_path_buf());
-        self.dirty = true;
-        match save_file(path, src.as_bytes()) {
+    /// Save the file shown: where it was opened from or last saved, else to
+    /// a path the host Save dialog asks for (unless a chooser is already in
+    /// flight). The chosen path is handled in [`Self::drain_io`].
+    fn save(&mut self) -> Result<bool, String> {
+        if let Some(path) = self.current_file().and_then(|file| file.path.clone()) {
+            return self.save_typ_to(std::path::Path::new(&path)).map(|()| true);
+        }
+        if self.io.is_some() {
+            return Ok(false);
+        }
+        let name = self.current_name();
+        self.io = Some((PendingIo::SaveTyp, typ_save_request(&name).send()));
+        self.set_flash("Choose where to save…");
+        Ok(false)
+    }
+
+    /// Core: write the source of the file shown to `path`, which the file
+    /// then lives at. Split out so the portal drain and tests drive it
+    /// against a real file.
+    fn save_typ_to(&mut self, path: &std::path::Path) -> Result<(), String> {
+        let Some(file) = self.current_file().cloned() else {
+            return Err("there is no file to save".into());
+        };
+        match save_file(path, file.source.as_bytes()) {
             Ok(()) => {
-                self.save_status.set(ui::SaveState::Saved, ui::time::now());
-                // Adopt the chosen filename for the current document so a later
-                // Save suggests it again.
-                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    name.clone_into(&mut self.document.name);
+                self.set_flash(format!("Saved {}", path.display()));
+                let path = path.to_string_lossy().into_owned();
+                if file.path.as_deref() != Some(path.as_str()) {
+                    self.apply(&crate::resource::TypstAction::SetPath {
+                        file: file.id,
+                        path,
+                    });
                 }
                 Ok(())
             }
@@ -688,14 +596,13 @@ impl TypstApp {
     }
 
     /// Open the host Save dialog to choose where to export the compiled PDF,
-    /// seeded with the document's name and a `.pdf` extension (unless a chooser
+    /// seeded with the file's name and a `.pdf` extension (unless a chooser
     /// is already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn export_pdf(&mut self, _doc: &AutoCommit) {
+    fn export_pdf(&mut self) {
         if self.io.is_some() {
             return;
         }
-        let stem = self.document.name.clone();
-        let pdf_name = std::path::Path::new(&stem)
+        let pdf_name = std::path::Path::new(&self.current_name())
             .with_extension("pdf")
             .to_string_lossy()
             .to_string();
@@ -703,11 +610,10 @@ impl TypstApp {
         self.set_flash("Choose where to export the PDF");
     }
 
-    /// Compile the current source to a PDF and write it to the exact `path`.
+    /// Compile the source shown to a PDF and write it to the exact `path`.
     /// Returns an error string on a compile failure or an I/O error.
-    fn export_pdf_to_path(&self, doc: &AutoCommit, path: &std::path::Path) -> Result<(), String> {
-        let src = self.read_source(doc);
-        let bytes = compile::compile_pdf(&self.parts, &src).map_err(|diags| {
+    fn export_pdf_to_path(&self, path: &std::path::Path) -> Result<(), String> {
+        let bytes = compile::compile_pdf(&self.parts, &self.source_cache).map_err(|diags| {
             let errs = diags
                 .iter()
                 .filter(|d| d.kind == compile::DiagKind::Error)
@@ -726,24 +632,9 @@ impl TypstApp {
             .map_err(|e| e.to_string())
     }
 
-    /// Compile the current source to a PDF and write it into `dir`, named after
-    /// the open document with a `.pdf` extension. Returns the written path.
-    /// Split out so a test can drive it against a scratch directory.
-    #[cfg(test)]
-    fn export_pdf_to(&self, doc: &AutoCommit, dir: &std::path::Path) -> Result<PathBuf, String> {
-        let stem = self.document.name.clone();
-        let pdf_name = std::path::Path::new(&stem)
-            .with_extension("pdf")
-            .to_string_lossy()
-            .to_string();
-        let path = dir.join(pdf_name);
-        self.export_pdf_to_path(doc, &path)?;
-        Ok(path)
-    }
-
     /// Open the host chooser to pick a `.typ` file to load (unless a chooser is
     /// already in flight). The chosen path is handled in [`Self::drain_io`].
-    fn open(&mut self, _doc: &AutoCommit) {
+    fn open(&mut self) {
         if self.io.is_some() {
             return;
         }
@@ -751,14 +642,10 @@ impl TypstApp {
         self.set_flash("Choose a .typ file to open");
     }
 
-    /// Core: load the `.typ` file at `path` into the editor as the current
-    /// document. Split out so the portal drain and tests drive it against a
-    /// real file.
-    fn open_typ_from(
-        &mut self,
-        doc: &mut AutoCommit,
-        path: &std::path::Path,
-    ) -> Result<(), String> {
+    /// Core: add the `.typ` file at `path` to the workspace and show it, or
+    /// show the workspace's copy of it again with what the file holds now.
+    /// Split out so the portal drain and tests drive it against a real file.
+    fn open_typ_from(&mut self, path: &std::path::Path) -> Result<(), String> {
         let src = match read_text(path) {
             Ok(s) => s,
             Err(e) => {
@@ -766,24 +653,28 @@ impl TypstApp {
                 return Err(e.to_string());
             }
         };
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("untitled.typ")
-            .to_string();
-        // The opened file becomes this window's document; its source is
-        // spliced into the CRDT via `load_document`.
-        self.document = Document { name, source: src };
-        self.load_document(doc);
-        let opened = self.document.name.clone();
-        self.set_flash(&format!("Opened {opened}"));
+        let path = path.to_string_lossy().into_owned();
+        // A window edits one document: the file opened replaces the one shown.
+        if let Some(id) = self.current_file().map(|file| file.id.clone()) {
+            self.replace_source(&src);
+            self.apply(&crate::resource::TypstAction::SetPath { file: id, path });
+            self.editor.reset_cursor();
+            self.preview.fit_width();
+            return Ok(());
+        }
+        let action =
+            crate::resource::new_file(&crate::resource::file_name(&path), Some(&path), &src);
+        if let crate::resource::TypstAction::AddFile { id, .. } = &action {
+            self.pending_current = Some(id.clone());
+        }
+        self.apply(&action);
         Ok(())
     }
 
     /// Drain a finished Open / Save / Export file dialog, if one landed since
     /// the last frame, and run it against the chosen path. The UI thread never
     /// blocks: the portal round-trip lives on its own worker.
-    fn drain_io(&mut self, doc: &mut AutoCommit) {
+    fn drain_io(&mut self) {
         let Some((op, rx)) = &self.io else { return };
         let op = *op;
         match rx.try_recv() {
@@ -791,11 +682,11 @@ impl TypstApp {
                 self.io = None;
                 let result = match outcome {
                     PortalOutcome::Opened(path) => match op {
-                        PendingIo::OpenTyp => self.open_typ_from(doc, &path),
-                        PendingIo::SaveTyp => self.save_typ_to(doc, &path),
-                        PendingIo::ExportPdf => self.export_pdf_to_path(doc, &path).inspect(|()| {
-                            self.set_flash(&format!("Exported {}", file_label(&path)));
-                        }),
+                        PendingIo::OpenTyp => self.open_typ_from(&path),
+                        PendingIo::SaveTyp => self.save_typ_to(&path),
+                        PendingIo::ExportPdf => self
+                            .export_pdf_to_path(&path)
+                            .inspect(|()| self.set_flash(format!("Exported {}", path.display()))),
                     },
                     PortalOutcome::Cancelled => Err("cancelled".into()),
                     PortalOutcome::Failed(e) => {
@@ -803,83 +694,32 @@ impl TypstApp {
                         Err(e)
                     }
                 };
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(match result {
-                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                            invocation,
-                            output: tilo_actions::ActionOutput::default(),
-                        },
-                        Err(message) if message == "cancelled" => {
-                            tilo_actions::InvocationUpdate::Cancelled {
-                                invocation,
-                                message: Some(message),
-                            }
-                        }
-                        Err(message) => tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "typst.io_failed".into(),
-                                message,
-                                details: None,
-                                retryable: false,
-                            },
-                        },
-                    });
-                }
+                self.finish_file_effect(result);
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.io = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "typst.portal_disconnected".into(),
-                            message: "file picker disconnected".into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    });
-                }
+                self.finish_file_effect(Err("file picker disconnected".into()));
             }
         }
     }
 
-    /// Carry out what a shared control asked for.
-    fn run_command(&mut self, command: Command, doc: &AutoCommit) {
-        use crate::actions::TypstOperation;
-        match command {
-            Command::Compile => self.perform_resource_operation(TypstOperation::Compile, doc),
-            Command::Save => {
-                self.perform_resource_operation(TypstOperation::Save { path: None }, doc);
-            }
-            Command::Open => {
-                self.perform_resource_operation(TypstOperation::Open { path: None }, doc);
-            }
-            Command::ExportPdf => {
-                self.perform_resource_operation(TypstOperation::ExportPdf { path: None }, doc);
-            }
-            Command::ZoomOut => {
-                self.perform_resource_operation(TypstOperation::ZoomOut, doc);
-                self.set_compact_view(CompactPane::Preview);
-            }
-            Command::ZoomIn => {
-                self.perform_resource_operation(TypstOperation::ZoomIn, doc);
-                self.set_compact_view(CompactPane::Preview);
-            }
-            Command::Fit => {
-                self.perform_resource_operation(TypstOperation::FitWidth, doc);
-                self.set_compact_view(CompactPane::Preview);
-            }
-            Command::ToggleProblems => {
-                self.perform_resource_operation(TypstOperation::ToggleProblems, doc);
-            }
-            Command::ShowEditor => {
-                self.perform_resource_operation(TypstOperation::ShowEditor, doc);
-            }
-            Command::ShowPreview => {
-                self.perform_resource_operation(TypstOperation::ShowPreview, doc);
-            }
+    fn run_command(&mut self, command: Command, _doc: &ui::automerge::AutoCommit) {
+        use crate::actions::TypstEffect;
+        let effect = match command {
+            Command::Compile => TypstEffect::Compile,
+            Command::Save => TypstEffect::Save { path: None },
+            Command::Open => TypstEffect::Open { path: None },
+            Command::ExportPdf => TypstEffect::ExportPdf { path: None },
+            Command::ZoomOut => TypstEffect::ZoomOut,
+            Command::ZoomIn => TypstEffect::ZoomIn,
+            Command::Fit => TypstEffect::FitWidth,
+            Command::ToggleProblems => TypstEffect::Problems,
+            Command::ShowEditor => TypstEffect::Editor,
+            Command::ShowPreview => TypstEffect::Preview,
+        };
+        if let Some(actions) = &self.actions {
+            actions.effect(&effect);
         }
     }
 
@@ -889,30 +729,28 @@ impl TypstApp {
         clippy::needless_pass_by_value,
         reason = "operations are decoded as owned values and dispatched immediately"
     )]
-    fn perform_resource_operation(
-        &mut self,
-        operation: crate::actions::TypstOperation,
-        doc: &AutoCommit,
-    ) {
-        use crate::actions::TypstOperation;
+    fn perform_resource_operation(&mut self, operation: crate::actions::TypstEffect) {
+        use crate::actions::TypstEffect;
         match operation {
-            TypstOperation::Compile => self.force_recompile(doc),
-            TypstOperation::Save { .. } => self.save(doc),
-            TypstOperation::Open { .. } => self.open(doc),
-            TypstOperation::ExportPdf { .. } => self.export_pdf(doc),
-            TypstOperation::ZoomOut => self.preview.zoom_out(),
-            TypstOperation::ZoomIn => self.preview.zoom_in(),
-            TypstOperation::FitWidth => self.preview.fit_width(),
-            TypstOperation::ToggleProblems => {
+            TypstEffect::Compile => self.force_recompile(),
+            TypstEffect::Save { .. } => {
+                let _ = self.save();
+            }
+            TypstEffect::Open { .. } => self.open(),
+            TypstEffect::ExportPdf { .. } => self.export_pdf(),
+            TypstEffect::ZoomOut => self.preview.zoom_out(),
+            TypstEffect::ZoomIn => self.preview.zoom_in(),
+            TypstEffect::FitWidth => self.preview.fit_width(),
+            TypstEffect::Problems => {
                 self.show_diagnostics = !self.show_diagnostics;
             }
-            TypstOperation::ShowEditor => self.set_compact_view(CompactPane::Editor),
-            TypstOperation::ShowPreview => self.set_compact_view(CompactPane::Preview),
-            TypstOperation::GoToDiagnostic { index } => {
+            TypstEffect::Editor => self.set_compact_view(CompactPane::Editor),
+            TypstEffect::Preview => self.set_compact_view(CompactPane::Preview),
+            TypstEffect::GoToDiagnostic { index } => {
                 if let Some(diag) = self.diagnostics.diags().get(index)
                     && let Some(line) = diag.line
                 {
-                    let text = self.read_source(doc);
+                    let text = self.source_cache.clone();
                     self.editor.goto_line(&text, line);
                     self.show_diagnostics = true;
                     if self.compact {
@@ -922,7 +760,7 @@ impl TypstApp {
                     }
                 }
             }
-            TypstOperation::GoToPage { page } => {
+            TypstEffect::GoToPage { page } => {
                 self.preview.scroll_to_page(page);
                 if self.compact {
                     self.set_compact_view(CompactPane::Preview);
@@ -940,8 +778,8 @@ impl TypstApp {
 
     /// Announce something worth noticing once: the transient bubble shows it
     /// and hides it again.
-    fn set_flash(&mut self, msg: &str) {
-        self.status.show(msg, ui::time::now());
+    fn set_flash(&mut self, msg: impl AsRef<str>) {
+        self.status.show(msg.as_ref(), ui::time::now());
         self.dirty = true;
     }
 
@@ -1030,8 +868,8 @@ impl TypstApp {
     /// preview has pages), arrange the caret, zoom, scroll or selection the
     /// capture is meant to show.
     fn stage_views(&mut self) {
-        if self.demo_caret_end && !self.source_cache.is_empty() {
-            self.demo_caret_end = false;
+        if self.demo_scroll_caret_end && !self.source_cache.is_empty() {
+            self.demo_scroll_caret_end = false;
             let src = self.source_cache.clone();
             self.editor.set_caret(src.len());
             self.editor.ensure_visible(&src);
@@ -1062,33 +900,6 @@ impl TypstApp {
 
     /// Screenshot-only: add an error to the source and compile it at once, so
     /// the capture shows a failed compile over the last good render.
-    fn stage_broken_source(&mut self, doc: &mut AutoCommit, src_id: &ObjId) {
-        if !std::mem::take(&mut self.demo_stale) || self.preview.page_count() == 0 {
-            return;
-        }
-        // The broken line goes right under the first heading, so the squiggle
-        // and the gutter marker are on screen beside the preview's last good
-        // render.
-        let source = self.read_source(doc);
-        let mut lines: Vec<&str> = source.lines().collect();
-        let at = lines
-            .iter()
-            .position(|line| line.starts_with("= "))
-            .map_or(lines.len(), |heading| heading + 1);
-        lines.splice(at..at, ["", "#undefined_value"]);
-        let broken = format!("{}\n", lines.join("\n"));
-        self.apply_source_action(
-            doc,
-            &crate::resource::TypstDocAction::ReplaceSource {
-                text: broken.clone(),
-            },
-        );
-        self.editor.bind(src_id.clone(), doc);
-        let out = compile::compile_source(&self.parts, &broken, PPP);
-        self.apply_output(out);
-        self.last_source.clone_from(&broken);
-        self.source_cache = broken;
-    }
 
     /// Carve the Problems panel out of the bottom of `col` when it is open
     /// and there is room: as tall as its rows need, at most half the column.
@@ -1133,7 +944,8 @@ impl TypstApp {
             self.layout_in(self.rect);
         }
 
-        let names = [self.document.name.as_str()];
+        let name = self.current_name();
+        let names = [name.as_str()];
         self.chrome.sync(
             &names,
             0,
@@ -1206,133 +1018,26 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 
 impl Widget for TypstApp {
     ui::provides!(
-        dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::widget::WindowHeader,
-        dyn ui::resources::PublishesResources,
-        dyn ui::undo::UndoPoints
+        dyn ui::widget::WindowHeader
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested {
-            if self
-                .pending_resource_io
-                .as_ref()
-                .is_some_and(|(id, _)| *id == invocation)
-            {
-                self.pending_resource_io = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("cancelled before file I/O".into()),
-                });
-            }
-            if self.resource_invocation == Some(invocation) {
-                self.resource_invocation = None;
-                self.io = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("file selection cancelled".into()),
-                });
-            }
-        }
-        self.resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-            .then(|| self.resource_result.take())
-            .flatten()
-    }
-
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(doc, path);
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document_ref(doc, path);
         self.background_poll_deadline.set(None);
-        if let Some((invocation, operation)) = self.pending_resource_io.take() {
+        if let Some(operation) = self.pending_resource_io.take() {
             let result = match operation {
-                ResourceIo::Open(path) => self.open_typ_from(doc, &path),
-                ResourceIo::Save(path) => self.save_typ_to(doc, &path),
-                ResourceIo::ExportPdf(path) => self.export_pdf_to_path(doc, &path),
+                ResourceIo::Open(path) => self.open_typ_from(&path),
+                ResourceIo::Save(path) => self.save_typ_to(&path),
+                ResourceIo::ExportPdf(path) => self.export_pdf_to_path(&path),
             };
-            self.resource_result = Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "typst.io_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
+            self.finish_file_effect(result);
         }
-        self.chrome.sync(
-            &[self.document.name.as_str()],
-            0,
-            self.err_count + self.warn_count,
-            self.show_diagnostics,
-            matches!(self.compact_view, CompactPane::Preview),
-        );
-        for child in self.chrome.children_mut() {
-            child.sync(doc, &automerge::ROOT);
-        }
-        let src_id = self.ensure_source_obj(doc);
-        self.source_id = Some(src_id.clone());
-        // Land a finished Open/Save/Export file dialog before reading the
-        // source, so a freshly-opened document is spliced in and compiles this
-        // frame.
-        self.drain_io(doc);
-        // A capture swaps in the bundled documents: load the one it shows and
-        // compile it before the frame is drawn.
-        if std::mem::take(&mut self.demo_reload) {
-            self.load_document(doc);
-            self.initialized = false;
-        }
-        // Bind the shared editor to the source object and pull its content.
-        self.editor.bind(src_id.clone(), doc);
-        let source = doc.text(&src_id).unwrap_or_default();
+        // Land a finished Open/Save/Export file dialog.
+        self.drain_io();
+        // Show the open file's source as the document holds it.
+        self.editor.pull(doc);
+        let source = self.editor.text().to_owned();
 
         // In the browser the fonts arrive after the editor opens; compile
         // once they have, with parts built from them.
@@ -1348,7 +1053,7 @@ impl Widget for TypstApp {
 
         if !self.initialized {
             // First frame: compile synchronously so the very first paint
-            // (including `--shots`) has rendered pages, then bring the async
+            // (a capture's included) has rendered pages, then bring the async
             // worker online for subsequent edits.
             let out = compile::compile_source(&self.parts, &source, PPP);
             self.apply_output(out);
@@ -1356,7 +1061,6 @@ impl Widget for TypstApp {
             self.last_source = source.clone();
             self.source_cache = source;
             self.initialized = true;
-            self.stage_broken_source(doc, &src_id);
             return;
         }
 
@@ -1528,11 +1232,6 @@ impl Widget for TypstApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let src_id = match &self.source_id {
-            Some(id) => id.clone(),
-            None => self.ensure_source_obj(ctx.state),
-        };
-
         // The controls see the event first. Keys reach them only while the
         // editor is not typing, or while one holds an open list.
         let already_handled = *ctx.handled;
@@ -1551,7 +1250,7 @@ impl Widget for TypstApp {
             }
         }
         for command in self.chrome.take() {
-            self.run_command(command, ctx.state);
+            self.run_command(command, ctx.state.doc());
             self.dirty = true;
         }
         let claimed = *ctx.handled && !already_handled;
@@ -1578,22 +1277,14 @@ impl Widget for TypstApp {
                 logical_key,
                 event,
                 *ctx.modifiers,
-                ctx.state,
-                &src_id,
+                &mut ctx.state,
                 ctx.handled,
             );
             return;
         }
 
         // --- pointer ---
-        self.handle_pointer_event(
-            event,
-            ctx.scale_factor,
-            *ctx.modifiers,
-            ctx.state,
-            &src_id,
-            ctx.handled,
-        );
+        self.handle_pointer_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled);
     }
 
     fn name(&self) -> &'static str {
@@ -1651,26 +1342,18 @@ impl Widget for TypstApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        doc: &mut AppModel,
-        path: &ModelPath,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &ui::widget::ModelPath,
     ) -> bool {
-        let (doc, _) = ui::doc::document(doc, path);
-        // A listed problem: activating it jumps to where it is.
-        if let Some(index) = target
-            .strip_prefix("typst.problem.")
-            .and_then(|index| index.parse::<usize>().ok())
-        {
-            return match action {
-                ui::a11y::Action::Focus => true,
-                ui::a11y::Action::Activate => {
-                    self.perform_resource_operation(
-                        crate::actions::TypstOperation::GoToDiagnostic { index },
-                        doc,
-                    );
-                    true
-                }
-                _ => false,
-            };
+        let mut handled = false;
+        for child in self.chrome.children_mut() {
+            handled |= child.perform_semantic_action(target, action, doc, path);
+        }
+        if handled {
+            for command in self.chrome.take() {
+                self.run_command(command, doc.doc());
+            }
+            return true;
         }
         if target != "typst.source" {
             return false;
@@ -1684,17 +1367,8 @@ impl Widget for TypstApp {
                 true
             }
             ui::a11y::Action::SetValue(source) => {
-                self.apply_source_action(
-                    doc,
-                    &crate::resource::TypstDocAction::ReplaceSource {
-                        text: source.clone(),
-                    },
-                );
-                let source_id = self.ensure_source_obj(doc);
-                self.source_id = Some(source_id);
-                self.source_cache.clone_from(source);
+                self.replace_source(source);
                 self.editor.set_caret(source.len());
-                self.native_edit_pending = true;
                 true
             }
             _ => false,
@@ -1750,55 +1424,6 @@ impl Widget for TypstApp {
     }
 }
 
-impl ui::undo::UndoPoints for TypstApp {
-    fn needs_commit(&self) -> bool {
-        self.native_edit_pending
-    }
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        self.native_edit_pending.then(|| {
-            let document = self.document.name.as_str();
-            ui::tilo_actions::ActionContext::for_resource(
-                "Edit source",
-                format!("typst.document:{document}"),
-                "typst.document",
-                document,
-            )
-            .with_app("so.tilo.typst-editor", "Typst")
-            .with_facet(ui::tilo_actions::ActionFacet::new("file-type", "Typst"))
-        })
-    }
-    fn on_commit(&mut self) {
-        self.native_edit_pending = false;
-    }
-}
-
-impl ui::resources::PublishesResources for TypstApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let ctx = self.resource_ctx();
-        // [`tilo_resource::publish`] owns the workspace door on every path.
-        // Diagnostics and preview pages are live presentation only — hosted
-        // returns that slice alone, never a second workspace root.
-        if self.framework_hosted {
-            return crate::actions::live_extras(&ctx);
-        }
-        crate::actions::resources(&ctx)
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.framework_hosted && id == "typst.workspace" {
-            return None;
-        }
-        let ctx = self.resource_ctx();
-        find_resource(&crate::actions::resources(&ctx), id).or_else(|| {
-            self.framework_hosted.then(|| {
-                crate::actions::live_extras(&ctx)
-                    .into_iter()
-                    .find(|resource| resource.id.as_str() == id)
-            })?
-        })
-    }
-}
-
 impl ui::widget::controls::ActionControls for TypstApp {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         ui::widget::semantic_action_bindings(self.accessibility())
@@ -1814,84 +1439,53 @@ impl ui::widget::WindowHeader for TypstApp {
     }
 }
 
-impl ui::history_mode::capability::DocumentHistory for TypstApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-}
-
 impl TypstApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
+    /// Answer the file effect's caller, if one is waiting.
+    fn finish_file_effect(&mut self, result: Result<(), String>) {
+        if let Some(reply) = self.file_reply.take() {
+            reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
         }
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.perform_resource_operation(operation, doc);
-        Ok(true)
     }
 
-    fn admit_resource_operation(
+    /// Answer `effect`: a file read or write with a path waits for the next
+    /// sync, one without asks the file chooser; the rest happen now.
+    pub(crate) fn answer_effect(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::TypstOperation;
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(None);
-        };
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+        effect: crate::actions::TypstEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::TypstEditor, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use crate::actions::TypstEffect;
+        let file = matches!(
+            effect,
+            TypstEffect::Open { .. } | TypstEffect::Save { .. } | TypstEffect::ExportPdf { .. }
+        );
+        if file && (self.file_reply.is_some() || self.pending_resource_io.is_some()) {
             return Err("another file operation is already running".into());
         }
-        let resource = match operation {
-            TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
-            TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
-            TypstOperation::ExportPdf { path: Some(path) } => {
-                Some(ResourceIo::ExportPdf(path.into()))
+        match effect {
+            TypstEffect::Open { path: Some(path) } => {
+                self.pending_resource_io = Some(ResourceIo::Open(path.into()));
             }
-            TypstOperation::Open { path: None } => {
-                self.open(doc);
-                None
+            TypstEffect::Save { path: Some(path) } => {
+                self.pending_resource_io = Some(ResourceIo::Save(path.into()));
             }
-            TypstOperation::Save { path: None } => {
-                self.save(doc);
-                None
+            TypstEffect::ExportPdf { path: Some(path) } => {
+                self.pending_resource_io = Some(ResourceIo::ExportPdf(path.into()));
             }
-            TypstOperation::ExportPdf { path: None } => {
-                self.export_pdf(doc);
-                None
+            TypstEffect::Open { path: None } => self.open(),
+            TypstEffect::Save { path: None } => {
+                if self.save()? {
+                    return Ok(ui::framework::Effected::done());
+                }
             }
+            TypstEffect::ExportPdf { path: None } => self.export_pdf(),
             other => {
-                return self
-                    .answer_resource_operation(
-                        kind,
-                        type_id,
-                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
-                        doc,
-                        path,
-                    )
-                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+                self.perform_resource_operation(other);
+                return Ok(ui::framework::Effected::done());
             }
-        };
-        if let Some(resource) = resource {
-            self.pending_resource_io = Some((invocation, resource));
-        } else {
-            self.resource_invocation = Some(invocation);
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        self.file_reply = Some(cx.reply());
+        Ok(ui::framework::Effected::Pending)
     }
 }
 
@@ -1906,32 +1500,32 @@ impl TypstApp {
         logical_key: &Key,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        src_id: &ObjId,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
         if ctrl {
             if matches!(logical_key, Key::Named(NamedKey::Enter)) {
-                self.force_recompile(doc);
+                self.force_recompile();
                 *handled = true;
                 return;
             }
             if let Key::Character(ch) = logical_key {
                 match ch.to_lowercase().as_str() {
                     "s" => {
-                        self.save(doc);
+                        // A failed save says so in the flash.
+                        let _ = self.save();
                         *handled = true;
                         return;
                     }
                     "o" => {
-                        self.open(doc);
+                        self.open();
                         *handled = true;
                         return;
                     }
                     "e" => {
-                        self.export_pdf(doc);
+                        self.export_pdf();
                         *handled = true;
                         return;
                     }
@@ -1982,12 +1576,8 @@ impl TypstApp {
             }
         }
         // Route remaining keys to the focused editor.
-        if self.editor.focused {
-            let before = doc.pending_ops();
-            if self.editor.handle_key(event, &modifiers, doc, src_id) {
-                *handled = true;
-                self.native_edit_pending |= doc.pending_ops() > before;
-            }
+        if self.editor.focused && self.editor.handle_key(event, &modifiers, doc) {
+            *handled = true;
         }
     }
 
@@ -1999,20 +1589,18 @@ impl TypstApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        doc: &AutoCommit,
-        src_id: &ObjId,
         handled: &mut bool,
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position, scale_factor, doc, src_id, handled);
+                self.handle_cursor_moved(position, scale_factor, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(modifiers, doc, src_id, handled);
+                self.handle_left_press(modifiers, handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -2048,7 +1636,7 @@ impl TypstApp {
                         dy = 0.0;
                     }
                     if self.editor_rect.contains(p) {
-                        let text = doc.text(src_id).unwrap_or_default();
+                        let text = self.source_cache.clone();
                         self.editor.scroll_by(dx as f32, dy as f32, &text);
                     } else if self.show_diagnostics && self.diag_rect.contains(p) {
                         self.diagnostics.scroll_by(dy);
@@ -2082,8 +1670,6 @@ impl TypstApp {
         &mut self,
         position: &winit::dpi::PhysicalPosition<f64>,
         scale_factor: f64,
-        doc: &AutoCommit,
-        src_id: &ObjId,
         handled: &mut bool,
     ) {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -2097,7 +1683,7 @@ impl TypstApp {
         if self.splitter.is_dragging() {
             *handled = true;
         } else if self.dragging_editor {
-            let text = doc.text(src_id).unwrap_or_default();
+            let text = self.source_cache.clone();
             self.editor.on_mouse_drag(p, &text);
             self.dirty = true;
             *handled = true;
@@ -2129,20 +1715,18 @@ impl TypstApp {
     /// A left-button press. Split out of `handle_pointer_event` to keep it
     /// within the line-count lint; operates on `self.mouse`, the position
     /// tracked by the most recent `CursorMoved`.
-    fn handle_left_press(
-        &mut self,
-        modifiers: Modifiers,
-        doc: &AutoCommit,
-        src_id: &ObjId,
-        handled: &mut bool,
-    ) {
+    fn handle_left_press(&mut self, modifiers: Modifiers, handled: &mut bool) {
         let p = self.mouse;
         // A failed save's card owns its clicks: try again, or dismiss it.
         if self.save_status.contains(p) {
             if self.save_status.click(p) == Some(ui::SaveAction::Retry)
                 && let Some(path) = self.save_path.clone()
             {
-                let _ = self.save_typ_to(doc, &path);
+                if let Some(dispatcher) = &self.actions {
+                    dispatcher.effect(&crate::actions::TypstEffect::Save {
+                        path: Some(path.to_string_lossy().into_owned()),
+                    });
+                }
             }
             self.dirty = true;
             *handled = true;
@@ -2156,7 +1740,7 @@ impl TypstApp {
         }
         if self.editor_rect.contains(p) {
             self.editor.focused = true;
-            let text = doc.text(src_id).unwrap_or_default();
+            let text = self.source_cache.clone();
             self.editor
                 .on_mouse_down(p, modifiers.state().shift_key(), &text);
             self.dragging_editor = true;
@@ -2165,7 +1749,7 @@ impl TypstApp {
         }
         if self.show_diagnostics && self.diag_rect.contains(p) {
             if let Some(line) = self.diagnostics.on_mouse_down(p) {
-                let text = doc.text(src_id).unwrap_or_default();
+                let text = self.source_cache.clone();
                 self.editor.goto_line(&text, line);
                 // In compact mode a diagnostic click brings the source into
                 // view so the jump is visible.
@@ -2192,7 +1776,7 @@ impl TypstApp {
 }
 
 /// A text file a chooser or the command line named.
-fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
+pub(crate) fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     String::from_utf8(tilo_files::blocking::read(&dir, &name)?)
         .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
@@ -2205,18 +1789,719 @@ fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsE
     tilo_files::blocking::save_document(&dir, &name, bytes)
 }
 
-fn find_resource(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-    for resource in resources {
-        if resource.id.as_str() == id {
-            return Some(resource.clone());
-        }
-        if let Some(found) = find_resource(&resource.children, id) {
-            return Some(found);
-        }
-    }
-    None
-}
-
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
-mod tests;
+mod tests {
+    use super::*;
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
+
+    use automerge::{ROOT, ReadDoc as _};
+    use ui::tilo_actions::Action as _;
+    use ui::tilo_resource::Resource as _;
+
+    /// A workspace of the bundled examples, presented to an editor showing
+    /// the first, synced once so it compiled.
+    fn fresh() -> (TypstApp, AutoCommit) {
+        workspace(None)
+    }
+
+    /// [`fresh`] with the examples a capture of `scenario` shows.
+    fn workspace(scenario: Option<&str>) -> (TypstApp, AutoCommit) {
+        let mut doc = AutoCommit::new();
+        crate::resource::TypstEditor::initialize(&mut doc).unwrap();
+        for action in crate::resource::sample_files(scenario) {
+            action.apply(&mut doc).unwrap();
+        }
+        doc.commit();
+        let mut app = TypstApp::new();
+        present(&mut app, &doc);
+        app.sync(&doc, &ROOT);
+        (app, doc)
+    }
+
+    fn present(app: &mut TypstApp, doc: &AutoCommit) {
+        app.present_state(&Rc::new(crate::resource::TypstEditor::read(doc).unwrap()));
+    }
+
+    /// The source of the file `app` shows, as `doc` holds it.
+    fn shown_source(app: &TypstApp, doc: &AutoCommit) -> String {
+        app.current_file()
+            .and_then(|file| crate::resource::source_text(doc, &file.id))
+            .and_then(|text| doc.text(&text).ok())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn file_effects_save_and_export_real_files() {
+        // Case `export_pdf_writes_a_real_pdf_file`:
+        // Exporting writes a real `.pdf` — the file on disk begins with the
+        // `%PDF` magic. Driven against a scratch dir so it never touches the
+        // user's documents folder.
+        {
+            let (app, _doc) = fresh();
+            let dir = unique_dir("pdf");
+            let path = dir.join("welcome.pdf");
+            app.export_pdf_to_path(&path)
+                .expect("the clean demo document exports");
+            let bytes = std::fs::read(&path).expect("the pdf was written to disk");
+            assert!(bytes.starts_with(b"%PDF"), "the written file is a real PDF");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+        // Case `portal_cancel_is_silent`:
+        // A cancelled chooser clears the in-flight dialog and changes nothing.
+        {
+            let (mut app, doc) = fresh();
+            let before = shown_source(&app, &doc);
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Cancelled);
+            ui::host::scoped(&services, || app.open());
+            app.sync(&doc, &ROOT);
+            assert!(app.io.is_none());
+            assert_eq!(shown_source(&app, &doc), before, "cancel loads nothing");
+        }
+    }
+
+    fn device_id() -> DeviceId {
+        // winit exposes no public DeviceId constructor; tests only need a value.
+        unsafe { std::mem::zeroed() }
+    }
+
+    fn cursor(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: device_id(),
+            position: PhysicalPosition::new(p.x, p.y),
+        }
+    }
+
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: device_id(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Pump one event through the production `Widget::handle_event`, returning
+    /// whether it was consumed.
+    fn send(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
+        let taffy = TaffyTree::<()>::new();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            ev,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: ui::widget::Edits::lend(doc),
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
+        );
+        handled
+    }
+
+    /// Run one real draw pass so retained control geometry is measured,
+    /// exactly as they are for the live pointer path.
+    fn render_once(app: &mut TypstApp) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::empty();
+        app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    fn center(r: Rect) -> Point {
+        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
+    }
+
+    #[test]
+    fn source_sync_and_one_document_per_window() {
+        // Case `first_sync_shows_the_first_file_and_compiles`.
+        {
+            let (app, doc) = fresh();
+            assert!(!shown_source(&app, &doc).is_empty(), "the welcome example");
+            assert_eq!(app.editor.text(), shown_source(&app, &doc));
+            assert!(app.initialized);
+            // Welcome demo compiles cleanly into at least one page.
+            assert!(app.preview.page_count() >= 1, "rendered a page");
+            assert_eq!(app.err_count, 0, "welcome demo has no errors");
+        }
+        // Case `there_is_no_document_switcher`: Ctrl+] and Ctrl+[ switch
+        // nothing — a window edits one document — and write nothing.
+        {
+            let (mut app, mut doc) = fresh();
+            doc.commit();
+            let heads = doc.get_heads();
+            let before = shown_source(&app, &doc);
+            for key in ["]", "["] {
+                let mut handled = false;
+                app.handle_keyboard_shortcut(
+                    &Key::Character(key.into()),
+                    &char_press(key),
+                    Modifiers::from(ModifiersState::CONTROL),
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &mut handled,
+                );
+            }
+            app.sync(&doc, &ROOT);
+            assert_eq!(shown_source(&app, &doc), before);
+            assert_eq!(doc.get_heads(), heads, "no switch, no write");
+        }
+        // Case `caret_line_col_tracks_newlines`.
+        {
+            let mut app = TypstApp::new();
+            app.source_cache = "abc\nde\nf".to_string();
+            app.editor.set_text("abc\nde\nf");
+            app.editor.set_caret(5); // byte 5 → line 2, col 2 (just after 'd')
+            assert_eq!(app.caret_line_col(), (2, 2));
+        }
+        // Case `without_a_dispatcher_the_source_cannot_change`.
+        {
+            use ui::widget::Widget as _;
+
+            let (mut app, mut doc) = fresh();
+            let before = shown_source(&app, &doc);
+            assert!(send(&mut app, &mut doc, &char_press("x")));
+            assert!(app.perform_semantic_action(
+                "typst.source",
+                &ui::a11y::Action::SetValue("= Accessible edit".into()),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT,
+            ));
+            app.sync(&doc, &ROOT);
+            assert_eq!(shown_source(&app, &doc), before);
+            assert_eq!(app.editor.text(), before);
+        }
+    }
+
+    #[test]
+    fn idle_and_pending_work_schedule_non_animation_deadlines() {
+        // Case `focused_idle_app_requests_no_animation_frame`:
+        // A focused editor that isn't compiling or flashing must report no need
+        // for animation frames, so the event loop stays idle (no per-vsync
+        // redraw just to blink a caret).
+        {
+            let (app, _doc) = fresh();
+            assert!(app.editor.focused, "editor focused by default");
+            assert!(
+                !app.compiling(),
+                "the initial compile ran synchronously; nothing in flight"
+            );
+            assert!(
+                !app.status.is_visible(ui::time::now()),
+                "no transient toast pending"
+            );
+            assert!(
+                !app.needs_animation_frame(),
+                "a focused-but-idle editor must not drive continuous redraws"
+            );
+        }
+        // Case `pending_native_dialog_has_a_stable_non_animation_deadline`.
+        {
+            let (mut app, doc) = fresh();
+            assert!(app.next_wake_deadline().is_none());
+            let (services, _recorder) = ui::host::HostServices::recording();
+            ui::host::scoped(&services, || app.open());
+            let deadline = app
+                .next_wake_deadline()
+                .expect("file dialogs must complete without animation or further input");
+            assert_eq!(
+                app.next_wake_deadline(),
+                Some(deadline),
+                "queries must not keep postponing polling"
+            );
+            app.sync(&doc, &ROOT);
+            assert!(app.io.is_none());
+            assert!(app.next_wake_deadline().is_none());
+        }
+        // Case `pending_compile_has_a_non_animation_deadline`.
+        {
+            let (mut app, _) = fresh();
+            app.request_compile("= Native compile wakeup");
+            assert!(app.compiling());
+            assert!(
+                app.next_wake_deadline().is_some(),
+                "compile completion must be observed with reduced motion"
+            );
+        }
+        // Caret/page metadata belongs to the semantic status strip; explicit
+        // compile/export feedback remains transient and fades after its linger.
+        {
+            let (mut app, _) = fresh();
+            app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+            assert_eq!(app.editor_rect.y1, app.status_rect.y0);
+            assert_eq!(app.preview_rect.y1, app.status_rect.y0);
+            assert_eq!(app.status_rect.y1, app.rect.y1);
+            assert!(!app.status_left_label().is_empty());
+            assert!(!app.status_right_label().is_empty());
+            let now = ui::time::now();
+            app.status = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
+            app.status.show("Compiled", now);
+            assert!(app.status.is_visible(now));
+            let past = now
+                .checked_sub(std::time::Duration::from_millis(10))
+                .unwrap();
+            app.status.poke(past);
+            render_once(&mut app);
+            assert!(
+                !app.status.is_visible(ui::time::now()),
+                "transient feedback fades"
+            );
+        }
+    }
+
+    // ---- helpers for the preview-interaction + diagnostics tests ----------
+
+    use crate::compile::DiagKind;
+    use winit::event::TouchPhase;
+    use winit::keyboard::{KeyLocation, ModifiersState, NativeKeyCode, PhysicalKey};
+
+    /// A character keypress through the real event path. winit's per-platform
+    /// `KeyEventExtra` is `pub(crate)`, so the struct is zeroed and only its
+    /// public fields set — the same trick the toolkit's own widget tests use.
+    fn char_press(c: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(c.into());
+        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(c.into());
+        WindowEvent::KeyboardInput {
+            device_id: device_id(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// A vertical wheel notch (`+` = up/away). A tilt component can be supplied
+    /// via `x` for the horizontal-pan path.
+    fn wheel(x: f32, y: f32) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: device_id(),
+            delta: MouseScrollDelta::LineDelta(x, y),
+            phase: TouchPhase::Moved,
+        }
+    }
+
+    /// Like [`send`] but with explicit modifiers held.
+    fn send_mods(
+        app: &mut TypstApp,
+        doc: &mut AutoCommit,
+        ev: &WindowEvent,
+        mods: Modifiers,
+    ) -> bool {
+        let taffy = TaffyTree::<()>::new();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            ev,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: ui::widget::Edits::lend(doc),
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
+        );
+        handled
+    }
+
+    fn unique_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "typst_editor_{tag}_{}_{}",
+            std::process::id(),
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn preview_zoom_and_diagnostics_respond_to_input() {
+        // Case `ctrl_plus_minus_keys_zoom_preview`:
+        // Ctrl+= zooms the rendered preview in and Ctrl+- zooms it back out, driven
+        // through the production keyboard-shortcut path.
+        {
+            let (mut app, mut doc) = fresh();
+            app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+            let base = app.preview.zoom();
+            assert!(
+                send_mods(&mut app, &mut doc, &char_press("="), ctrl),
+                "Ctrl+= consumed"
+            );
+            let zoomed_in = app.preview.zoom();
+            assert!(
+                zoomed_in > base,
+                "Ctrl+= zoomed the preview in ({base} -> {zoomed_in})"
+            );
+
+            assert!(
+                send_mods(&mut app, &mut doc, &char_press("-"), ctrl),
+                "Ctrl+- consumed"
+            );
+            assert!(
+                app.preview.zoom() < zoomed_in,
+                "Ctrl+- zoomed the preview back out ({zoomed_in} -> {})",
+                app.preview.zoom()
+            );
+        }
+        // Case `ctrl_wheel_over_preview_zooms`:
+        // Ctrl+mouse-wheel over the preview pane zooms it (cursor-anchored), routed
+        // through the real `MouseWheel` handler.
+        {
+            let (mut app, mut doc) = fresh();
+            app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+
+            let over = app.preview_rect.center();
+            send_mods(&mut app, &mut doc, &cursor(over), ctrl);
+            let base = app.preview.zoom();
+            assert!(
+                send_mods(&mut app, &mut doc, &wheel(0.0, 1.0), ctrl),
+                "Ctrl+wheel consumed"
+            );
+            assert!(
+                app.preview.zoom() > base,
+                "Ctrl+wheel over the preview zoomed in ({base} -> {})",
+                app.preview.zoom()
+            );
+        }
+        // Case `diagnostic_click_jumps_editor_for_both_severities`:
+        // The Problems panel shows both an error and a warning from the real
+        // compiler, and clicking a row jumps the editor caret to that diagnostic's
+        // line — proven for both severities through the production pointer path.
+        {
+            let (mut app, mut doc) = workspace(Some("errors"));
+            app.stage_scenario(Some("errors"));
+            app.sync(&doc, &ROOT);
+            app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+
+            let diags = app.diagnostics.diags().to_vec();
+            assert!(
+                diags.iter().any(|d| d.kind == DiagKind::Error),
+                "an error is listed"
+            );
+            assert!(
+                diags.iter().any(|d| d.kind == DiagKind::Warning),
+                "a warning is listed"
+            );
+            assert!(
+                app.show_diagnostics && app.diag_rect.area() > 0.0,
+                "Problems panel is open"
+            );
+            assert!(
+                diags.len() >= 2 && diags[0].line != diags[1].line,
+                "rows target distinct lines"
+            );
+
+            // HEADER_H (30) + ROW_H (26) mirror the diagnostics panel geometry.
+            let list_top = app.diag_rect.y0 + 30.0;
+            for (i, d) in diags.iter().enumerate() {
+                let Some(line) = d.line else { continue };
+                let y = list_top + (i as f64 + 0.5) * 26.0;
+                let p = Point::new(app.diag_rect.x0 + 40.0, y);
+                send(&mut app, &mut doc, &cursor(p));
+                assert!(
+                    send(&mut app, &mut doc, &press()),
+                    "diagnostic row click consumed"
+                );
+                assert_eq!(
+                    app.caret_line_col().0,
+                    line,
+                    "clicking the {:?} row jumped the editor to line {line}",
+                    d.kind
+                );
+            }
+        }
+        // Case `failed_recompile_keeps_last_good_preview`:
+        // A failed recompile keeps the last successful render on screen (flagged
+        // stale) instead of blanking the preview — so a transient typo doesn't
+        // throw away the reader's place. Drives the real compile → `apply_output`
+        // path the background worker feeds.
+        {
+            let (mut app, _doc) = fresh();
+            assert!(
+                app.preview.page_count() >= 1,
+                "the welcome demo rendered a page"
+            );
+            assert!(!app.preview.is_stale(), "a clean render is not stale");
+
+            // Compile a broken source (an undefined variable is a fatal error that
+            // stops layout), then feed the result exactly as the worker would.
+            let broken = compile::compile_source(&app.parts, "Body #undefined_var end.\n", PPP);
+            assert!(
+                broken.pages.is_empty(),
+                "the broken source produced no pages"
+            );
+            assert!(broken.error_count() >= 1, "and carries a blocking error");
+            app.apply_output(broken);
+
+            assert!(
+                app.preview.page_count() >= 1,
+                "the last good render is retained after a failed compile"
+            );
+            assert!(
+                app.preview.is_stale(),
+                "the retained render is flagged stale"
+            );
+            assert!(
+                app.err_count >= 1 && app.show_diagnostics,
+                "the error is surfaced"
+            );
+
+            // A subsequent clean compile clears the stale flag and refreshes pages.
+            let good = compile::compile_source(&app.parts, "= Fixed\n\nBody.\n", PPP);
+            assert!(!good.pages.is_empty());
+            app.apply_output(good);
+            assert!(
+                !app.preview.is_stale(),
+                "a clean recompile clears the stale flag"
+            );
+        }
+    }
+
+    #[test]
+    fn accessibility_exposes_editor_state_and_toolbar_controls() {
+        // Case `accessibility_exposes_source_and_preview_state`.
+        {
+            use ui::widget::Widget as _;
+
+            let (app, _doc) = fresh();
+            let tree = app.accessibility().expect("Typst semantics");
+            assert_eq!(tree.role, ui::a11y::Role::Document);
+            assert_eq!(tree.children[0].role, ui::a11y::Role::MultilineTextInput);
+            assert_eq!(tree.children[1].role, ui::a11y::Role::Canvas);
+            assert!(
+                tree.children[1]
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("Page"))
+            );
+            assert!(tree.children.iter().all(|node| node.semantic_key.is_some()));
+        }
+        // Case `native_toolbar_controls_are_exposed_without_focus_activation`.
+        {
+            let (mut app, mut doc) = fresh();
+            let tree = app.accessibility().expect("Typst semantics");
+            for target in [
+                "typst.open",
+                "typst.save",
+                "typst.export-pdf",
+                "typst.compile",
+                "typst.show-preview",
+            ] {
+                assert!(
+                    tree.children
+                        .iter()
+                        .any(|node| node.action_target.as_deref() == Some(target)),
+                    "missing control {target}"
+                );
+            }
+            app.compact = true;
+            assert!(matches!(app.compact_view, CompactPane::Editor));
+            assert!(app.perform_semantic_action(
+                "typst.show-preview",
+                &ui::a11y::Action::Focus,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
+            assert!(
+                matches!(app.compact_view, CompactPane::Editor),
+                "focusing a control must not activate it"
+            );
+            assert!(app.perform_semantic_action(
+                "typst.show-preview",
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
+            assert!(matches!(app.compact_view, CompactPane::Preview));
+        }
+    }
+    fn control_rects(app: &TypstApp) -> Vec<(String, Rect)> {
+        app.chrome
+            .children()
+            .iter()
+            .filter(|child| child.get_rect().area() > 0.0)
+            .map(|child| (child.name().to_string(), child.get_rect()))
+            .collect()
+    }
+    #[test]
+    fn controls_stay_in_the_bar_and_never_overlap_at_any_width() {
+        for width in [320.0, 360.0, 390.0, 480.0, 560.0, 720.0, 800.0, 1280.0] {
+            for (errors, warnings) in [(0, 0), (1, 1)] {
+                let (mut app, _) = fresh();
+                app.err_count = errors;
+                app.warn_count = warnings;
+                app.layout_in(Rect::new(0.0, 0.0, width, 760.0));
+                render_once(&mut app);
+                let rects = control_rects(&app);
+                assert!(
+                    rects.len() >= if app.compact { 3 } else { 2 },
+                    "the document heading, toolbar and compact view switch show at {width}px"
+                );
+                for (index, (left_name, left)) in rects.iter().enumerate() {
+                    assert!(
+                        left.x0 >= app.bar_rect.x0
+                            && left.x1 <= app.bar_rect.x1
+                            && left.y0 >= app.bar_rect.y0
+                            && left.y1 <= app.bar_rect.y1,
+                        "{left_name} {left:?} leaves the bar {:?} at {width}px",
+                        app.bar_rect
+                    );
+                    for (right_name, right) in rects.iter().skip(index + 1) {
+                        assert!(
+                            left.intersect(*right).area() <= 0.0,
+                            "{left_name} {left:?} overlaps {right_name} {right:?} at {width}px"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn resize_reflows_between_split_and_compact() {
+        // The responsive contract: layout is re-derived from the *current* width
+        // every pass, so resizing across the threshold reflows both ways — it is
+        // never frozen to the first frame's mode.
+        let (mut app, _doc) = fresh();
+
+        // Wide → split: both panes have area and the divider exists.
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        assert!(!app.compact);
+        assert!(app.editor_rect.area() > 0.0);
+        assert!(app.preview_rect.area() > 0.0);
+        assert!(app.splitter.hit_rect().area() > 0.0);
+
+        // Narrow → compact: a single pane, no divider.
+        app.layout_in(Rect::new(0.0, 0.0, 560.0, 720.0));
+        assert!(app.compact);
+        assert_eq!(app.splitter.hit_rect().area(), 0.0);
+        assert!(app.editor_rect.area() > 0.0, "editor pane shown");
+        assert_eq!(app.preview_rect.area(), 0.0, "preview hidden in compact");
+
+        // Resize back to wide → must reflow to split again (not frozen).
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        assert!(!app.compact, "reflowed back to split after widening");
+        assert!(app.preview_rect.area() > 0.0);
+    }
+    #[test]
+    fn text_scale_grows_the_bar_and_compacts_before_controls_collide() {
+        // Enlarged system text changes the geometry as well as glyph metrics:
+        // the taller controls stay in their own bar and a formerly cramped
+        // split switches to the compact single-pane layout.
+        let (mut app, _doc) = fresh();
+        app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        let normal = app.frame.bar_h;
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(2.0);
+        let mut theme = Theme::dark();
+        theme.text_scale = 2.0;
+        app.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+
+        assert!(
+            app.bar_rect.height() > normal,
+            "the bar grows with the text"
+        );
+        assert!(app.compact, "1280px is compact at 200% text scale");
+        assert_eq!(app.editor_rect.y0, app.bar_rect.y1);
+        for (_, rect) in control_rects(&app) {
+            assert!(
+                rect.y1 <= app.bar_rect.y1,
+                "every control fits the grown bar"
+            );
+        }
+    }
+
+    #[test]
+    fn compact_view_switch_and_overflow_menu_act_and_stay_reachable() {
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::TypstEditorShell>::capture_at(
+                None,
+                (560, 720),
+            )
+            .unwrap();
+        let switch = app.harness().targets()["typst.view"];
+        app.harness()
+            .click_at(switch.x1 - switch.width() / 4.0, switch.center().y);
+        assert!(
+            app.with_widget(|surface: &mut TypstApp| matches!(
+                surface.compact_view,
+                CompactPane::Preview
+            ) && surface.preview_rect.area() > 0.0
+                && surface.editor_rect.area() == 0.0)
+                .unwrap()
+        );
+        app.harness()
+            .click_at(switch.x0 + switch.width() / 4.0, switch.center().y);
+        assert!(
+            app.with_widget(|surface: &mut TypstApp| matches!(
+                surface.compact_view,
+                CompactPane::Editor
+            ))
+            .unwrap()
+        );
+        for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
+            app.harness().relayout_themed((390, 520), theme).unwrap();
+            let chip = app
+                .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_chip())
+                .unwrap()
+                .expect("commands fold into the shared More menu");
+            app.harness().click_at(chip.center().x, chip.center().y);
+            let names = app
+                .with_widget(|surface: &mut TypstApp| surface.chrome.toolbar_names())
+                .unwrap();
+            for wanted in [
+                "Compile",
+                "Save",
+                "Open",
+                "Export PDF",
+                "Zoom out",
+                "Zoom in",
+                "Fit width",
+                "Problems",
+            ] {
+                assert!(
+                    names.iter().any(|name| name == wanted),
+                    "{wanted} remains reachable in {names:?}"
+                );
+            }
+            let zoom = app
+                .harness()
+                .a11y_node_named("Zoom in")
+                .expect("the shared menu exposes Zoom in");
+            let before = app
+                .with_widget(|surface: &mut TypstApp| surface.preview.zoom())
+                .unwrap();
+            app.harness()
+                .perform_a11y_action(zoom, &ui::a11y::Action::Activate)
+                .unwrap();
+            app.settle();
+            assert!(
+                app.with_widget(|surface: &mut TypstApp| surface.preview.zoom() > before)
+                    .unwrap()
+            );
+        }
+    }
+}

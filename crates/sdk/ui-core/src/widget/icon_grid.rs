@@ -636,7 +636,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &mods,
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut h,
                         focus_target: &mut f,

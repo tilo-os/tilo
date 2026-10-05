@@ -17,7 +17,7 @@
 //! Composes the toolkit's own [`TextInput`] so caret, selection, IME, and
 //! CRDT binding are shared.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::style_helpers::{length, percent};
@@ -296,10 +296,9 @@ impl SearchField {
     /// local-only buffer.
     #[must_use]
     pub fn bound(mut self, path: &str) -> Self {
-        self.input = std::mem::replace(&mut self.input, TextInput::local())
+        self.input = TextInput::new(vec![crate::presence::PathSegment::Field(path.to_owned())])
             .with_plain_chrome()
-            .with_kind(TextInputKind::Search)
-            .with_on_change_path(path);
+            .with_kind(TextInputKind::Search);
         self
     }
 
@@ -540,11 +539,7 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
-    crate::provides!(
-        dyn crate::undo::UndoPoints,
-        dyn crate::widget::controls::ActionControls,
-        SearchField
-    );
+    crate::provides!(dyn crate::widget::controls::ActionControls, SearchField);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
@@ -853,20 +848,10 @@ impl Widget for SearchField {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, path) = crate::doc::document(state, path);
         Widget::perform_action(&mut self.input, action, state, path)
-    }
-}
-
-impl crate::undo::UndoPoints for SearchField {
-    fn needs_commit(&self) -> bool {
-        self.input.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.input.on_commit();
     }
 }
 
@@ -1120,7 +1105,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

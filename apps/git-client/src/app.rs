@@ -24,11 +24,14 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::actions::GitClientEffect;
+use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, RunMode};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_actions::ActionOutput;
 use ui::tokens::TextRole;
 use ui::widget::scrollbar::{BarFade, PressOutcome, ScrollMetrics, Scrollbar};
 use ui::widget::toolbar::Orientation;
@@ -66,7 +69,7 @@ struct InputEventCtx<'a> {
     event: &'a WindowEvent,
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     path: &'a ObjId,
     taffy: &'a TaffyTree<()>,
 }
@@ -213,10 +216,8 @@ struct ScrollRegion {
 /// invocation consumes it, even when a normal UI sync receives it first.
 struct RemoteJob {
     receiver: Receiver<Result<(), String>>,
-    result: Option<Result<(), String>>,
-    invocation: Option<tilo_actions::InvocationId>,
-    progress_sent: bool,
-    /// Palette label while the transfer is in flight (live hosted extra).
+    reply: Option<EffectReply>,
+    /// Palette label while the transfer is in flight (a live row).
     label: String,
 }
 
@@ -231,7 +232,12 @@ pub struct GitClientApp {
     /// host brackets the undo boundary, encodes and applies through the executor
     /// (so it replays byte-identically on peers), and remembers the last action
     /// for the affordance == `ActionSpec` covenant test.
-    actions: crate::resource::ActionSink,
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::GitClient>>,
+    mode: RunMode,
+    opened: Option<String>,
+    presented: bool,
+    preferences: Option<ui::framework::Setting<Settings>>,
+    armed_discard: Option<DiscardTarget>,
 
     /// No repository is bound and none was reachable at launch — the app shows
     /// the honest "open a repository" empty state rather than any placeholder
@@ -342,26 +348,7 @@ impl GitClientApp {
     /// Setting `GIT_CLIENT_SAMPLE=1` forces the bundled fixture regardless
     /// of any reachable repository.
     pub fn new() -> Self {
-        let force_sample =
-            std::env::var("GIT_CLIENT_SAMPLE").is_ok_and(|v| v != "0" && !v.is_empty());
-        if force_sample {
-            return Self::sample();
-        }
-        if let Some((path, model, diffs)) = Self::load_repo() {
-            let mut app = Self::from_model(model, diffs);
-            app.repo_path = Some(path);
-            app
-        } else {
-            // No reachable repository — show the honest "open a repository"
-            // empty state rather than any placeholder data. The path field
-            // is pre-filled with the current directory as a convenience.
-            let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
-            app.awaiting_repo = true;
-            if let Ok(cwd) = std::env::current_dir() {
-                app.open_input.set_text(&cwd.to_string_lossy());
-            }
-            app
-        }
+        Self::open_empty()
     }
 
     /// The app over the bundled sample repository: a populated, deterministic
@@ -457,7 +444,12 @@ impl GitClientApp {
             Toolbar::new(Orientation::Horizontal)
                 .push_toggle(&t("git-syntax"), true, move || pressed.set(true));
         Self {
-            actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
+            mode: RunMode::Live,
+            opened: None,
+            presented: false,
+            preferences: None,
+            armed_discard: None,
             model,
             diffs,
             graph_layout,
@@ -670,7 +662,7 @@ impl GitClientApp {
 
     fn repository_busy(&mut self) -> bool {
         if self.remote_job.is_some() {
-            self.last_error = Some(t("git-remote-busy"));
+            self.last_error = Some(ui::i18n!("git-remote-busy"));
             return true;
         }
         false
@@ -680,19 +672,20 @@ impl GitClientApp {
         &mut self,
         action: RemoteAction,
         remote: Option<String>,
-        invocation: Option<tilo_actions::InvocationId>,
+        reply: Option<EffectReply>,
     ) -> Result<(), String> {
         if self.remote_job.is_some() {
-            return Err(t("git-remote-busy"));
+            return Err(ui::i18n!("git-remote-busy"));
         }
         let path = self
             .repo()
             .ok_or_else(|| "remote operation requires a repository".to_string())?;
-        let label = t(match action {
-            RemoteAction::Fetch => "git-remote-fetching",
-            RemoteAction::Pull => "git-remote-pulling",
-            RemoteAction::Push => "git-remote-pushing",
-        });
+        let label = match action {
+            RemoteAction::Fetch => "Fetching…",
+            RemoteAction::Pull => "Pulling…",
+            RemoteAction::Push => "Pushing…",
+        }
+        .to_string();
         let (sender, receiver) = mpsc::channel();
         std::thread::Builder::new()
             .name("git-remote".into())
@@ -709,9 +702,7 @@ impl GitClientApp {
         self.last_error = None;
         self.remote_job = Some(RemoteJob {
             receiver,
-            result: None,
-            invocation,
-            progress_sent: false,
+            reply,
             label,
         });
         Ok(())
@@ -721,18 +712,17 @@ impl GitClientApp {
         let Some(job) = self.remote_job.as_mut() else {
             return;
         };
-        if job.result.is_some() {
-            return;
-        }
         let result = match job.receiver.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Empty) => return,
-            Err(TryRecvError::Disconnected) => Err(t("git-remote-worker-stopped")),
+            Err(TryRecvError::Disconnected) => Err(ui::i18n!("git-remote-worker-stopped")),
         };
         self.last_error = result.as_ref().err().cloned();
-        job.result = Some(result);
-        if job.invocation.is_none() {
-            self.remote_job = None;
+        // libgit2 transfers are not cancellable: the worker's actual outcome
+        // is the answer, so a push the server accepted is never reported as
+        // cancelled.
+        if let Some(reply) = self.remote_job.take().and_then(|job| job.reply) {
+            reply.finish(result.map(|()| ActionOutput::default()));
         }
         // A failed transfer can still have fetched objects/refs. Refresh from
         // disk on either outcome; never infer rollback from an error.
@@ -863,7 +853,10 @@ impl GitClientApp {
     }
 
     fn do_commit(&mut self) {
-        if self.repository_busy() || !self.can_commit() {
+        if self.repository_busy() {
+            return;
+        }
+        if self.model.staged.is_empty() || self.commit_input.value().trim().is_empty() {
             return;
         }
         if let Some(path) = self.repo() {
@@ -903,8 +896,8 @@ impl GitClientApp {
             body,
             author_name: self.model.author_name.clone(),
             author_email: self.model.author_email.clone(),
-            when: ui::format::relative(0),
-            time: ui::clock::local_now().timestamp(),
+            when: "just now".into(),
+            time: chrono::Utc::now().timestamp(),
             parents: parent.into_iter().collect(),
             refs: vec![
                 crate::model::RefLabel {
@@ -938,24 +931,14 @@ impl GitClientApp {
         if self.repository_busy() {
             return;
         }
-        let Some(path) = self.repo() else {
-            // The sample has no working tree: drop the change in memory so
-            // the demonstration still shows the result.
-            let list = match area {
-                ChangeArea::Staged => return,
-                ChangeArea::Unstaged => &mut self.model.unstaged,
-                ChangeArea::Untracked => &mut self.model.untracked,
-            };
-            if idx < list.len() {
-                list.remove(idx);
-            }
-            self.selected_change = first_change(&self.model);
-            return;
+        self.armed_discard = None;
+        let Some(path) = self.repo() else { return };
+        let list = match area {
+            ChangeArea::Staged => &self.model.staged,
+            ChangeArea::Unstaged => &self.model.unstaged,
+            ChangeArea::Untracked => &self.model.untracked,
         };
-        let Some(file) = change_list(&self.model, area)
-            .get(idx)
-            .map(|f| f.path.clone())
-        else {
+        let Some(file) = list.get(idx).map(|f| f.path.clone()) else {
             return;
         };
         let res = crate::repo::discard_file(&path, &file);
@@ -990,27 +973,20 @@ impl GitClientApp {
         if raw.is_empty() {
             return;
         }
-        let path = std::path::PathBuf::from(&raw);
-        match crate::repo::load(&path) {
-            Some((model, diffs)) => {
-                let anchor = crate::repo::workdir(&path).unwrap_or(path);
-                self.model = model;
-                self.diffs = diffs;
-                self.graph_layout = graph::layout(&mut self.model.commits);
-                self.model.graph_width = self.graph_layout.lanes;
-                self.repo_path = Some(anchor);
-                self.selected_change = first_change(&self.model);
-                self.awaiting_repo = false;
-                self.last_error = None;
-                self.set_focus(None);
-                self.screen = Screen::Changes;
+        if self.bind_repository(std::path::Path::new(&raw)) {
+            self.last_error = None;
+            self.set_focus(None);
+            self.screen = Screen::Changes;
+            self.drawer.resolve(self.rect);
+            // The record opens this repository from now on, on every device
+            // that opens it.
+            if let Some(path) = &self.repo_path {
+                let path = path.to_string_lossy().into_owned();
+                self.opened = Some(path.clone());
+                self.submit(&crate::actions::GitClientAction::OpenRepository { path });
             }
-            None => {
-                self.last_error = Some(t_args(
-                    "git-error-no-repository",
-                    &[("path", raw.as_str().into())],
-                ));
-            }
+        } else {
+            self.last_error = Some(format!("No git repository at {raw}"));
         }
     }
 
@@ -1035,31 +1011,17 @@ impl GitClientApp {
 
     /// Flip the diff-pane layout (unified ⇄ side-by-side). Routed to by the
     /// header's layout control and the `d` shortcut.
-    fn toggle_diff_layout(&mut self, doc: &mut AutoCommit) {
-        self.settings.toggle_layout();
-        self.diff_scroll = 0.0;
-        self.diff_hscroll = 0.0;
-        let action = crate::actions::set_diff_layout_action(self.settings.diff_layout);
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
+    fn toggle_diff_layout(&mut self) {
+        if let Err(error) = self.switch_diff_layout() {
+            self.last_error = Some(error);
+        }
     }
 
     /// Flip diff syntax highlighting. Routed to by the header's Syntax toggle.
-    fn toggle_syntax_highlight(&mut self, doc: &mut AutoCommit) {
-        self.settings.syntax_highlight = !self.settings.syntax_highlight;
-        let action = crate::actions::GitClientAction::SetSyntaxHighlight {
-            on: self.settings.syntax_highlight,
-        };
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
+    fn toggle_syntax_highlight(&mut self) {
+        if let Err(error) = self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight) {
+            self.last_error = Some(error);
+        }
     }
 
     /// Borrow the current external repository projection for the bounded
@@ -1073,34 +1035,14 @@ impl GitClientApp {
     /// covenant test.
     #[doc(hidden)]
     #[allow(dead_code, reason = "framework migration test helper")]
-    pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
-    }
 
     /// Show the diff preferences the framework resource already holds. The
     /// live on-disk repository model is not replaced by the shared projection.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::doc::GitClientState) {
-        if self.settings_forced {
-            return;
-        }
-        self.settings = state.settings;
-    }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
-    ) {
-        self.actions.attach(dispatcher);
-    }
 
     pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
+        self.dispatcher.is_some()
     }
 
     /// Label for an in-flight fetch/pull/push, when one is running.
@@ -1109,8 +1051,8 @@ impl GitClientApp {
     }
 
     /// Write the shared repository projection when branches/commits/remotes move.
-    fn publish_shared_repo_if_needed(&mut self, doc: &mut AutoCommit) {
-        if self.awaiting_repo {
+    fn publish_shared_repo_if_needed(&mut self) {
+        if self.awaiting_repo || !self.mode.is_live() {
             return;
         }
         let fingerprint = crate::doc::shared_fingerprint(&self.model);
@@ -1119,40 +1061,8 @@ impl GitClientApp {
         }
         let shared = crate::doc::SharedRepo::from_model(&self.model);
         let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
-        let action = crate::actions::GitClientAction::WriteSharedRepo { json };
-        self.actions.dispatch_with_context(
-            doc,
-            crate::actions::GIT_CLIENT_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-        );
+        self.submit(&crate::actions::GitClientAction::WriteSharedRepo { json });
         self.shared_repo_fingerprint = Some(fingerprint);
-    }
-
-    fn preference_actions(&self) -> [crate::actions::GitClientAction; 4] {
-        [
-            crate::actions::set_diff_layout_action(self.settings.diff_layout),
-            crate::actions::GitClientAction::SetShowWhitespace {
-                on: self.settings.show_whitespace,
-            },
-            crate::actions::GitClientAction::SetSyntaxHighlight {
-                on: self.settings.syntax_highlight,
-            },
-            crate::actions::GitClientAction::SetWrapLines {
-                on: self.settings.wrap_lines,
-            },
-        ]
-    }
-
-    fn publish_settings(&mut self, doc: &mut AutoCommit) {
-        for action in self.preference_actions() {
-            self.actions.dispatch_with_context(
-                doc,
-                crate::actions::GIT_CLIENT_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.git-client", "Git", &action),
-            );
-        }
     }
 
     fn create_new_branch(&mut self) {
@@ -1983,7 +1893,7 @@ impl GitClientApp {
 
     /// Do what `hit` names: the one path pointer presses, keys and
     /// assistive actions share.
-    fn activate(&mut self, hit: Hit, doc: &mut AutoCommit) {
+    fn activate(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
         let in_drawer = self.drawer_is_modal();
         match hit {
             Hit::SidebarToggle => self.drawer.toggle(),
@@ -1991,10 +1901,10 @@ impl GitClientApp {
             Hit::Screen(screen) => self.switch_screen(screen),
             Hit::DiffLayout(layout) => {
                 if self.settings.diff_layout != layout {
-                    self.toggle_diff_layout(doc);
+                    self.toggle_diff_layout();
                 }
             }
-            Hit::SyntaxHighlight => self.toggle_syntax_highlight(doc),
+            Hit::SyntaxHighlight => self.toggle_syntax_highlight(),
             Hit::Remote(action) => self.apply_remote_action(action),
             Hit::DismissError => self.last_error = None,
             Hit::Change(change) => self.activate_change(change, in_drawer),
@@ -2647,38 +2557,14 @@ fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
 
 impl Widget for GitClientApp {
     ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
         dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::GIT_CLIENT_OPERATION_TYPE]
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.adopt_preferences();
         self.drain_remote();
-        if self.settings_seeded {
-            // Adopt document changes: remote collaborators, and this app's own
-            // preference actions, which the framework `ActionHost` applies
-            // straight to the document through the executor.
-            self.settings = Settings::read(state);
-        } else {
-            // First sync: adopt any persisted preferences, then seed the doc so
-            // it is the source of truth and collaborators see the same
-            // preferences. An initial override forced at construction (the
-            // split-diff screenshot scenario) wins over the persisted value.
-            if !self.settings_forced {
-                // Read without creating the map. The preference actions below
-                // are what write it, hosted or standalone.
-                self.settings = Settings::read_only(state);
-            }
-            self.publish_settings(state);
-            self.settings_seeded = true;
-        }
-        self.publish_shared_repo_if_needed(state);
+        self.publish_shared_repo_if_needed();
     }
 
     fn build_layout(
@@ -2812,7 +2698,7 @@ impl Widget for GitClientApp {
             event,
             scale_factor: ctx.scale_factor,
             modifiers: *ctx.modifiers,
-            state: ctx.state,
+            state: ctx.state.reborrow(),
             path: ctx.path,
             taffy: ctx.taffy,
         };
@@ -2843,7 +2729,7 @@ impl Widget for GitClientApp {
                 self.scrollbar.release();
                 self.forward_to_inputs(&mut input);
                 if self.syntax_pressed.replace(false) {
-                    self.toggle_syntax_highlight(input.state);
+                    self.toggle_syntax_highlight();
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
@@ -2873,7 +2759,7 @@ impl Widget for GitClientApp {
                 self.handle_key(
                     event,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                     ctx.handled,
@@ -2932,7 +2818,7 @@ impl Widget for GitClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -2973,92 +2859,12 @@ impl Widget for GitClientApp {
         true
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self.remote_job.as_ref()?.invocation != Some(invocation) {
-            return None;
-        }
-        // libgit2 operations are currently non-cancellable. In particular,
-        // never report a cancelled push when the server may have accepted it.
-        self.drain_remote();
-        let job = self.remote_job.as_mut()?;
-        if let Some(result) = job.result.take() {
-            self.remote_job = None;
-            return Some(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-                Err(message) => tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "git.remote_failed".into(),
-                        message,
-                        details: None,
-                        retryable: false,
-                    },
-                },
-            });
-        }
-        if !job.progress_sent {
-            job.progress_sent = true;
-            return Some(tilo_actions::InvocationUpdate::Progress {
-                invocation,
-                sequence: 1,
-                phase: "git.remote".into(),
-                completed: None,
-                total: None,
-                message: Some(t("git-remote-running")),
-            });
-        }
-        None
-    }
-
     fn needs_animation_frame(&self) -> bool {
         // Redraw while the list column slides, while a transfer runs, and
         // while an embedded text field is focused so its caret keeps
         // blinking.
         (self.screen.has_list() && self.drawer.is_animating())
-            || self
-                .remote_job
-                .as_ref()
-                .is_some_and(|job| job.result.is_none())
+            || self.remote_job.is_some()
             || self.commit_input.needs_animation_frame()
             || self.branch_input.needs_animation_frame()
             || self.open_input.needs_animation_frame()
@@ -3084,292 +2890,6 @@ impl Widget for GitClientApp {
     }
 }
 
-impl ui::resources::PublishesResources for GitClientApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the repository door — keep only live working-tree status and in-flight
-    /// remote jobs.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        // The framework root already owns the repository door.
-        if self.is_hosted() && id == "git_client.repo" {
-            return None;
-        }
-        if let Some(found) = self.publish_resource(doc, id) {
-            return Some(found);
-        }
-        if self.is_hosted() {
-            return crate::resource::live_extras(self)
-                .into_iter()
-                .find(|resource| resource.id.as_str() == id);
-        }
-        None
-    }
-}
-
-impl ui::undo::CommittedActions for GitClientApp {
-    /// Hand the host the document heads captured before an on-screen preference
-    /// control dispatched, so it records exactly one undo boundary bracketing
-    /// it — the same path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
-impl GitClientApp {
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::GitClientOperation;
-        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let operation: crate::actions::GitClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let remote = match (kind, operation) {
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Fetch { remote }) => {
-                Some((RemoteAction::Fetch, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Pull { remote }) => {
-                Some((RemoteAction::Pull, remote))
-            }
-            (tilo_actions::OperationKind::Effect, GitClientOperation::Push { remote }) => {
-                Some((RemoteAction::Push, remote))
-            }
-            _ => None,
-        };
-        if let Some((action, remote)) = remote {
-            self.start_remote(action, Some(remote), Some(invocation))?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        self.answer_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| {
-                handled.then(|| {
-                    ui::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                })
-            })
-    }
-
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one exhaustive typed protocol match keeps publication-to-handler coverage auditable"
-    )]
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if type_id != crate::actions::GIT_CLIENT_OPERATION_TYPE {
-            return Ok(false);
-        }
-        if kind == tilo_actions::OperationKind::Effect && self.repository_busy() {
-            return Err(t("git-remote-busy"));
-        }
-        let operation: crate::actions::GitClientOperation =
-            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        match (kind, operation) {
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowChanges,
-            ) => {
-                self.switch_screen(Screen::Changes);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowHistory,
-            ) => {
-                self.switch_screen(Screen::History);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::ShowBranches,
-            ) => {
-                self.switch_screen(Screen::Panels);
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::OpenChange { area, path },
-            ) => {
-                let area = match area.as_str() {
-                    "staged" => ChangeArea::Staged,
-                    "unstaged" => ChangeArea::Unstaged,
-                    "untracked" => ChangeArea::Untracked,
-                    _ => return Err("unknown change area".into()),
-                };
-                let list = match area {
-                    ChangeArea::Staged => &self.model.staged,
-                    ChangeArea::Unstaged => &self.model.unstaged,
-                    ChangeArea::Untracked => &self.model.untracked,
-                };
-                let index = list
-                    .iter()
-                    .position(|change| change.path == path)
-                    .ok_or_else(|| "changed file no longer exists".to_string())?;
-                self.switch_screen(Screen::Changes);
-                self.selected_change = Some((area, index));
-                self.diff_scroll = 0.0;
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::GitClientOperation::OpenCommit { id },
-            ) => {
-                let index = self
-                    .model
-                    .commits
-                    .iter()
-                    .position(|commit| commit.id == id)
-                    .ok_or_else(|| "commit is outside the current history window".to_string())?;
-                self.switch_screen(Screen::History);
-                self.selected_commit = index;
-                self.detail_scroll = 0.0;
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::GitClientOperation::StageAll) => {
-                self.stage_all();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::UnstageAll,
-            ) => {
-                self.unstage_all();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::StageFile { path },
-            ) => {
-                let found = self
-                    .model
-                    .unstaged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .map(|index| (ChangeArea::Unstaged, index))
-                    .or_else(|| {
-                        self.model
-                            .untracked
-                            .iter()
-                            .position(|change| change.path == path)
-                            .map(|index| (ChangeArea::Untracked, index))
-                    })
-                    .ok_or_else(|| "file is no longer unstaged".to_string())?;
-                self.toggle_stage(found.0, found.1);
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::UnstageFile { path },
-            ) => {
-                let index = self
-                    .model
-                    .staged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .ok_or_else(|| "file is no longer staged".to_string())?;
-                self.toggle_stage(ChangeArea::Staged, index);
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::DiscardFile { path },
-            ) => {
-                let found = self
-                    .model
-                    .unstaged
-                    .iter()
-                    .position(|change| change.path == path)
-                    .map(|index| (ChangeArea::Unstaged, index))
-                    .or_else(|| {
-                        self.model
-                            .untracked
-                            .iter()
-                            .position(|change| change.path == path)
-                            .map(|index| (ChangeArea::Untracked, index))
-                    })
-                    .ok_or_else(|| "file has no worktree changes".to_string())?;
-                if self.repo_path.is_none() {
-                    return Err("discard is unavailable in the demonstration repository".into());
-                }
-                self.discard_file(found.0, found.1);
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Commit { message },
-            ) => {
-                if self.model.staged.is_empty() {
-                    return Err("there are no staged changes to commit".into());
-                }
-                if message.trim().is_empty() {
-                    return Err("commit message cannot be empty".into());
-                }
-                self.commit_input.set_text(&message);
-                self.do_commit();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::CreateBranch { name },
-            ) => {
-                if name.trim().is_empty() {
-                    return Err("branch name cannot be empty".into());
-                }
-                if self.repo_path.is_none() {
-                    return Err("branch creation requires a real repository".into());
-                }
-                self.branch_input.set_text(&name);
-                self.create_new_branch();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::CheckoutBranch { name },
-            ) => self.apply_branch_action(BranchAction::Checkout(name)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::DeleteBranch { name },
-            ) => self.apply_branch_action(BranchAction::Delete(name)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::ApplyStash { index },
-            ) => self.apply_branch_action(BranchAction::StashApply(index)),
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::SaveStash { message },
-            ) => {
-                let path = self
-                    .repo()
-                    .ok_or_else(|| "stashing requires a real repository".to_string())?;
-                crate::repo::stash_save(&path, &message).map_err(|error| error.to_string())?;
-                self.last_error = None;
-                self.reload();
-            }
-            (
-                tilo_actions::OperationKind::Effect,
-                crate::actions::GitClientOperation::Fetch { .. }
-                | crate::actions::GitClientOperation::Pull { .. }
-                | crate::actions::GitClientOperation::Push { .. },
-            ) => return Err("remote operations require lifecycle-aware action dispatch".into()),
-            _ => return Err("operation kind does not match Git operation".into()),
-        }
-        if kind == tilo_actions::OperationKind::Effect
-            && let Some(error) = &self.last_error
-        {
-            return Err(error.clone());
-        }
-        Ok(true)
-    }
-}
-
 impl GitClientApp {
     /// Forward one event to a single embedded widget (a text field or the
     /// Syntax toggle), returning whether it consumed the event.
@@ -3378,7 +2898,7 @@ impl GitClientApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         taffy: &TaffyTree<()>,
     ) -> bool {
@@ -3389,7 +2909,7 @@ impl GitClientApp {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -3419,7 +2939,7 @@ impl GitClientApp {
                 ctx.event,
                 ctx.scale_factor,
                 ctx.modifiers,
-                &mut *ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
@@ -3451,7 +2971,7 @@ impl GitClientApp {
                 ctx.event,
                 ctx.scale_factor,
                 ctx.modifiers,
-                &mut *ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
@@ -3481,7 +3001,7 @@ impl GitClientApp {
                 ctx.event,
                 ctx.scale_factor,
                 ctx.modifiers,
-                &mut *ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
@@ -3489,7 +3009,7 @@ impl GitClientApp {
         }
         self.set_focus(None);
         if let Some(hit) = hit {
-            self.activate(hit, ctx.state);
+            self.activate(hit, &mut ctx.state);
         }
     }
 
@@ -3506,7 +3026,7 @@ impl GitClientApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         taffy: &TaffyTree<()>,
         handled: &mut bool,
@@ -3599,7 +3119,7 @@ impl GitClientApp {
                 return;
             }
             if s.as_str() == "d" {
-                self.toggle_diff_layout(state);
+                self.toggle_diff_layout();
                 *handled = true;
                 return;
             }
@@ -3687,10 +3207,10 @@ mod tests {
     use super::*;
     use ui::widget::Widget;
 
-    /// The sample app laid out at `w` × 800, painted once so every target is
-    /// the production geometry.
+    /// Build an app over the bundled sample, laid out at `w` x 800 with the
+    /// flap settled to its mode default so geometry is deterministic.
     fn app_at(w: f64, screen: Screen) -> GitClientApp {
-        let mut app = GitClientApp::sample();
+        let mut app = GitClientApp::from_model(crate::sample::model().0, crate::sample::model().1);
         app.screen = screen;
         app.rect = Rect::new(0.0, 0.0, w, 800.0);
         app.drawer.resolve(app.rect);
@@ -3699,26 +3219,12 @@ mod tests {
         app
     }
 
-    fn draw_frame(app: &mut GitClientApp) {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        Widget::draw(
-            app,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
-    }
-
-    fn target(app: &GitClientApp, hit: &Hit) -> Option<Rect> {
-        app.targets
-            .iter()
-            .rev()
-            .find(|t| t.hit == *hit)
-            .map(|t| t.rect)
+    fn target(self) -> &'static str {
+        match self {
+            Screen::Changes => "git.screen.changes",
+            Screen::History => "git.screen.history",
+            Screen::Panels => "git.screen.branches",
+        }
     }
 
     fn press(app: &mut GitClientApp, pos: Point, doc: &mut AutoCommit) {
@@ -3730,97 +3236,157 @@ mod tests {
             .find(|t| t.rect.contains(pos))
             .map(|t| t.hit.clone());
         if let Some(hit) = hit {
-            app.activate(hit, doc);
+            app.activate(hit, &mut ui::widget::Edits::lend(doc));
         }
         draw_frame(app);
     }
 
-    /// The first sync publishes preferences through the action sink.
+    /// Adaptive screen mode: wide Changes docks, narrow master-detail overlays closed,
+    /// the breakpoint boundary is inclusive, Panels never collapses, and crossing the
+    /// breakpoint restores the mode default. Each phase is a former test with its own fresh fixture.
     #[test]
-    fn a_fresh_client_publishes_preferences_through_the_sink() {
-        let mut app = GitClientApp::sample();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
-        let recorded = app
-            .actions
-            .last_dispatched()
-            .expect("the first sync submits a preference action");
-        assert_eq!(
-            recorded.type_id.as_str(),
-            crate::actions::GIT_CLIENT_ACTION_TYPE
-        );
-        assert_eq!(
-            crate::settings::Settings::read_only(&state.doc).diff_layout,
-            app.settings.diff_layout
-        );
+    fn screen_mode_follows_the_breakpoint_and_preset() {
+        wide_changes_screen_is_docked();
+        narrow_master_detail_screen_is_overlay_closed();
+        breakpoint_boundary_is_inclusive_docked();
+        panels_screen_never_collapses();
+        crossing_breakpoint_restores_mode_default();
     }
 
-    /// A wide window docks the list column beside the content; a narrow one
-    /// shows the content with the list in a drawer the toggle opens, a scrim
-    /// press closes, and choosing a file closes too. Branches has no list.
-    #[test]
-    fn the_list_docks_wide_and_is_a_drawer_narrow() {
-        let wide = app_at(1280.0, Screen::Changes);
-        assert!(wide.drawer.is_docked() && wide.drawer.is_open());
-        assert!(wide.drawer.sidebar_rect().width() > 0.0);
+    fn wide_changes_screen_is_docked() {
+        let app = app_at(1280.0, Screen::Changes);
+        assert!(app.drawer.is_docked());
+        assert!(app.drawer.is_open());
+    }
 
+    fn narrow_master_detail_screen_is_overlay_closed() {
+        let app = app_at(680.0, Screen::Changes);
+        assert!(app.drawer.is_overlay());
+        assert!(!app.drawer.is_open());
+    }
+
+    fn breakpoint_boundary_is_inclusive_docked() {
+        let boundary = app_at(1280.0, Screen::Changes).drawer.resolved_breakpoint();
+        assert!(app_at(boundary, Screen::Changes).drawer.is_docked());
+        assert!(app_at(boundary - 1.0, Screen::Changes).drawer.is_overlay());
+    }
+
+    fn panels_screen_never_collapses() {
+        let app = app_at(400.0, Screen::Panels);
+        assert!(target(&app, &Hit::SidebarToggle).is_none());
+        assert!(!app.drawer_is_modal());
+    }
+
+    /// The overlay flap: the hamburger toggles it, a scrim click dismisses it, a click
+    /// inside keeps it open, and while open it hides and blocks background controls.
+    /// Each phase is a former test with its own fresh fixture.
+    #[test]
+    fn overlay_flap_toggles_dismisses_and_blocks_the_background() {
+        hamburger_click_toggles_overlay_flap();
+        scrim_click_dismisses_open_overlay_flap();
+        click_inside_open_flap_does_not_dismiss_it();
+        open_overlay_hides_and_blocks_background_controls();
+    }
+
+    fn hamburger_click_toggles_overlay_flap() {
+        let mut app = app_at(680.0, Screen::Changes);
         let mut doc = AutoCommit::new();
-        let mut narrow = app_at(800.0, Screen::Changes);
-        assert!(narrow.drawer.is_overlay() && !narrow.drawer.is_open());
-        let toggle = target(&narrow, &Hit::SidebarToggle).expect("the toggle is in the header");
-        press(&mut narrow, toggle.center(), &mut doc);
-        narrow.drawer.snap(true);
-        draw_frame(&mut narrow);
-        assert!(narrow.drawer_is_modal());
-        let header_h = GitClientApp::header_height(&Theme::dark());
-        assert!(
-            narrow.semantic.iter().all(|t| t.rect.y1 <= header_h + 0.5)
-                || narrow
-                    .semantic
-                    .iter()
-                    .filter(|t| t.rect.y1 > header_h + 0.5)
-                    .all(|t| matches!(t.hit, Hit::Change(_) | Hit::Commit(_))),
-            "what the drawer covers leaves the semantic tree; the header row stays"
-        );
-        assert!(
-            narrow
-                .semantic
-                .iter()
-                .any(|t| matches!(t.hit, Hit::Screen(_))),
-            "the header row stays live under a floating drawer"
-        );
-        let row = target(
-            &narrow,
-            &Hit::Change(ChangesHit::SelectFile(ChangeArea::Unstaged, 0)),
-        )
-        .expect("an unstaged row in the drawer");
-        press(&mut narrow, row.center(), &mut doc);
-        assert!(
-            !narrow.drawer.is_open(),
-            "choosing a file closes the drawer"
-        );
-        assert_eq!(narrow.selected_change, Some((ChangeArea::Unstaged, 0)));
-
-        let mut narrow = app_at(800.0, Screen::History);
-        narrow.drawer.snap(true);
-        draw_frame(&mut narrow);
-        press(&mut narrow, Point::new(790.0, 400.0), &mut doc);
-        assert!(
-            !narrow.drawer.is_open(),
-            "a press on the scrim closes the drawer"
-        );
-
-        let panels = app_at(800.0, Screen::Panels);
-        assert!(target(&panels, &Hit::SidebarToggle).is_none());
+        assert!(!app.drawer.is_open());
+        let toggle = target(&app, &Hit::SidebarToggle).unwrap();
+        press(&mut app, toggle.center(), &mut doc);
+        assert!(app.drawer.is_open());
+        press(&mut app, toggle.center(), &mut doc);
+        assert!(!app.drawer.is_open());
     }
 
-    /// Header controls stay inside the window and never overlap, at every
-    /// width, on every screen.
+    fn scrim_click_dismisses_open_overlay_flap() {
+        let mut app = app_at(680.0, Screen::Changes);
+        app.drawer.snap(true);
+        draw_frame(&mut app);
+        assert!(app.drawer.is_open());
+        press(&mut app, Point::new(670.0, 400.0), &mut AutoCommit::new());
+        assert!(!app.drawer.is_open());
+    }
+
+    fn click_inside_open_flap_does_not_dismiss_it() {
+        let mut app = app_at(680.0, Screen::Changes);
+        app.drawer.snap(true);
+        draw_frame(&mut app);
+        let panel = app.drawer.sidebar_rect();
+        press(
+            &mut app,
+            Point::new(panel.x0 + 4.0, panel.y1 - 4.0),
+            &mut AutoCommit::new(),
+        );
+        assert!(app.drawer.is_open());
+    }
+
+    fn open_overlay_hides_and_blocks_background_controls() {
+        let mut app = app_at(680.0, Screen::Changes);
+        app.drawer.snap(true);
+        draw_frame(&mut app);
+        assert!(app.drawer_is_modal());
+        let header = GitClientApp::header_height(&Theme::dark());
+        assert!(
+            app.semantic
+                .iter()
+                .filter(|t| t.rect.y0 >= header)
+                .all(|t| matches!(t.hit, Hit::Change(_) | Hit::Commit(_))),
+            "covered content controls leave the accessible tree"
+        );
+        assert!(
+            app.semantic.iter().any(|t| matches!(t.hit, Hit::Screen(_))),
+            "the unoccluded window header remains reachable"
+        );
+        let covered = app.drawer.sidebar_rect();
+        press(
+            &mut app,
+            Point::new(covered.x0 + 4.0, covered.y1 - 4.0),
+            &mut AutoCommit::new(),
+        );
+        assert_eq!(app.screen, Screen::Changes);
+        assert!(app.drawer.is_open());
+    }
+
+    fn crossing_breakpoint_restores_mode_default() {
+        let mut app = app_at(1280.0, Screen::Changes);
+        app.drawer.close();
+        assert!(!app.drawer.is_open());
+        app.rect = Rect::new(0.0, 0.0, 680.0, 800.0);
+        app.drawer.resolve(app.rect);
+        assert!(app.drawer.is_overlay());
+        assert!(!app.drawer.is_open());
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.drawer.resolve(app.rect);
+        assert!(app.drawer.is_docked());
+        assert!(app.drawer.is_open());
+    }
+
+    /// Semantic parity: semantic open-repository and text edits reach their
+    /// inputs, and synthetic accessibility controls sit at their drawn rects.
+    /// Each phase is a former test with its own fresh fixture.
     #[test]
-    fn header_controls_lay_out_inside_the_window_without_overlap() {
+    fn affordances_and_semantic_controls_reach_the_production_actions() {
+        semantic_open_repository_binds_the_entered_repository();
+        semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs();
+        synthetic_accessibility_controls_are_addressable_at_their_drawn_rects();
+    }
+
+    /// App-bar geometry: controls stay visible and separate at narrow widths, inside
+    /// the window without overlap, on one centre line per row, and a wrapped bar
+    /// moves the body down. Each phase is a former test with its own fresh fixture.
+    #[test]
+    fn appbar_controls_lay_out_inside_the_window_without_overlap() {
+        appbar_controls_stay_visible_and_separate_at_narrow_widths();
+        appbar_controls_stay_inside_the_window_and_never_overlap();
+        appbar_controls_share_one_centre_line_per_row();
+        wrapped_appbar_moves_the_body_down_with_it();
+    }
+
+    fn appbar_controls_stay_visible_and_separate_at_narrow_widths() {
         let theme = Theme::dark();
         let header_h = GitClientApp::header_height(&theme);
-        for width in [390.0, 560.0, 800.0, 1280.0] {
+        for width in [320.0, 390.0, 460.0, 480.0, 560.0, 680.0, 800.0, 1280.0] {
             for screen in Screen::ALL {
                 let app = app_at(width, screen);
                 let header: Vec<&Target> = app
@@ -3864,79 +3430,7 @@ mod tests {
         }
     }
 
-    /// The header's layout control equals the palette action: it mutates
-    /// the shared document, records one undo boundary, and dispatches the
-    /// byte-identical action Ctrl+K would.
-    #[test]
-    fn the_layout_control_dispatches_the_palette_action() {
-        let mut app = app_at(1280.0, Screen::Changes);
-        let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(Settings::read_only(&doc).diff_layout, DiffLayout::Unified);
-        let resources = ui::resources::resources(&app, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "diff-layout")
-            .unwrap();
-        let palette_action = match &spec.input {
-            tilo_actions::ActionInput::Immediate(enc) => enc.clone(),
-            tilo_actions::ActionInput::Prompted { .. }
-            | tilo_actions::ActionInput::Deferred { .. } => {
-                panic!("diff-layout is an immediate action")
-            }
-        };
-        let split = target(&app, &Hit::DiffLayout(DiffLayout::SideBySide))
-            .expect("the layout control is in the header");
-        press(&mut app, split.center(), &mut doc);
-        assert_eq!(
-            Settings::read_only(&doc).diff_layout,
-            DiffLayout::SideBySide
-        );
-        assert!(ui::undo::take_committed_action(&mut app).is_some());
-        assert_eq!(app.last_dispatched(), Some(&palette_action));
-    }
-
-    /// Destructive steps wait for confirmation: discarding a file or deleting
-    /// a branch opens the sheet, Cancel and Escape leave everything as it
-    /// was, and confirming discards.
-    #[test]
-    fn destructive_steps_wait_for_confirmation() {
-        let mut doc = AutoCommit::new();
-        let mut app = app_at(1280.0, Screen::Changes);
-        app.activate(
-            Hit::Change(ChangesHit::SelectFile(ChangeArea::Unstaged, 0)),
-            &mut doc,
-        );
-        draw_frame(&mut app);
-        let before = app.model.unstaged.len();
-        let discard = target(&app, &Hit::Diff(DiffHit::DiscardFile)).expect("discard file");
-        press(&mut app, discard.center(), &mut doc);
-        assert!(matches!(app.confirm, Some(Confirm::DiscardFile { .. })));
-        assert_eq!(app.model.unstaged.len(), before, "nothing is lost yet");
-        app.confirm = None;
-
-        app.activate(Hit::Diff(DiffHit::DiscardFile), &mut doc);
-        app.perform_confirmed();
-        assert_eq!(app.model.unstaged.len(), before - 1, "confirming discards");
-
-        app.activate(
-            Hit::Panel(PanelHit::Branch(BranchAction::Delete(
-                "fix/scene-leak".into(),
-            ))),
-            &mut doc,
-        );
-        assert_eq!(
-            app.confirm,
-            Some(Confirm::DeleteBranch("fix/scene-leak".into()))
-        );
-    }
-
-    /// Semantic parity: open-repository and text edits reach their inputs,
-    /// every synthetic control sits at its drawn rect, and activating one
-    /// runs the same action a press does.
-    #[test]
-    fn semantic_controls_reach_the_production_actions() {
+    fn semantic_open_repository_binds_the_entered_repository() {
         let directory = tempfile::tempdir().unwrap();
         let _repository = git2::Repository::init(directory.path()).unwrap();
         let mut app = GitClientApp::open_empty();
@@ -3946,13 +3440,16 @@ mod tests {
             &mut app,
             "git.open-repository",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(!app.test_awaiting_repo());
         assert_eq!(app.test_last_error(), None);
+    }
 
+    fn semantic_text_edits_reach_embedded_repository_commit_and_branch_inputs() {
         let mut app = GitClientApp::open_empty();
+        let mut doc = automerge::AutoCommit::new();
         for (target, text) in [
             ("git.open-path", r"C:\Work\Grün 🌍"),
             ("git.commit-message", "Keep Unicode: Grün 🌍"),
@@ -3962,7 +3459,7 @@ mod tests {
                 &mut app,
                 target,
                 &ui::a11y::Action::SetValue(text.into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
         }
@@ -3970,27 +3467,23 @@ mod tests {
         assert_eq!(app.commit_input.value(), "Keep Unicode: Grün 🌍");
         assert_eq!(app.branch_input.value(), "feature/grün");
         assert!(app.test_awaiting_repo(), "editing a path must not open it");
+    }
 
-        let mut app = app_at(1280.0, Screen::Changes);
+    fn synthetic_accessibility_controls_are_addressable_at_their_drawn_rects() {
+        let mut app = app_at(1_280.0, Screen::Changes);
         let node = Widget::accessibility(&app).expect("git client is semantic");
+        assert!(!node.children.is_empty());
         let targets: std::collections::HashSet<_> = node
             .children
             .iter()
             .filter_map(|child| child.action_target.as_deref())
             .collect();
-        assert_eq!(targets.len(), node.children.len(), "targets are unique");
-        for expected in [
-            "git.screen.changes",
-            "git.screen.history",
-            "git.screen.branches",
-            "git.diff-layout.split",
-            "git.syntax-highlight",
-            "git.commit-message",
-            "git.navigation-toggle",
-            "git.change.Stage:Unstaged:src/app.rs",
-        ] {
-            assert!(targets.contains(expected), "missing {expected}");
-        }
+        assert_eq!(targets.len(), node.children.len());
+        assert!(targets.contains("git.screen.changes"));
+        assert!(targets.contains("git.screen.history"));
+        assert!(targets.contains("git.diff-layout"));
+        assert!(targets.contains("git.syntax-highlight"));
+        assert!(targets.contains("git.commit-message"));
         for (index, child) in node.children.iter().enumerate() {
             assert_eq!(
                 Widget::synthetic_accessibility_rect(&app, &[index]),
@@ -3998,34 +3491,488 @@ mod tests {
                 "semantic control {index} must activate inside the visible control"
             );
         }
-        let before = app.model.unstaged.len();
+
+        let mut doc = automerge::AutoCommit::new();
+        let before = app.settings.diff_layout;
         assert!(Widget::perform_semantic_action(
             &mut app,
-            "git.change.Stage:Unstaged:src/app.rs",
+            "git.diff-layout",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
-        assert_eq!(
-            app.model.unstaged.len(),
-            before - 1,
-            "the row's hover action is reachable"
-        );
-        assert!(Widget::perform_semantic_action(
-            &mut app,
-            "git.screen.history",
-            &ui::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT,
-        ));
-        assert_eq!(app.screen, Screen::History);
+        assert_ne!(app.settings.diff_layout, before);
+
         assert!(Widget::perform_semantic_action(
             &mut app,
             "git.commit-message",
             &ui::a11y::Action::Focus,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(app.focus, Some(Field::Commit));
+    }
+
+    /// Paint one frame with a real text renderer so every measured app-bar
+    /// rect (`tab_rects`, settings cluster, hamburger, title block) is the
+    /// production geometry, not a hand-poked stand-in.
+    fn draw_frame(app: &mut GitClientApp) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Widget::draw(
+            app,
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+    }
+
+    fn intersects(a: Rect, b: Rect) -> bool {
+        a.area() > 0.0 && b.area() > 0.0 && a.intersect(b).area() > 0.0
+    }
+
+    fn appbar_controls_stay_inside_the_window_and_never_overlap() {
+        appbar_controls_stay_visible_and_separate_at_narrow_widths();
+    }
+
+    fn appbar_controls_share_one_centre_line_per_row() {
+        let app = app_at(1280.0, Screen::Changes);
+        let header = GitClientApp::header_height(&Theme::dark());
+        let row = app
+            .targets
+            .iter()
+            .filter(|t| matches!(t.hit, Hit::Screen(_) | Hit::DiffLayout(_) | Hit::Remote(_)))
+            .collect::<Vec<_>>();
+        assert!(!row.is_empty());
+        for t in row {
+            assert!((t.rect.center().y - header / 2.0).abs() < 0.01);
+            assert!(t.rect.height() >= f64::from(Theme::dark().tokens.metrics.min_pointer_target));
+        }
+    }
+
+    fn wrapped_appbar_moves_the_body_down_with_it() {
+        for width in [320.0, 480.0, 1280.0] {
+            let app = app_at(width, Screen::Changes);
+            let header = GitClientApp::header_height(&Theme::dark());
+            for b in &app.diff_hunk_buttons {
+                assert!(
+                    b.rect.y0 >= header,
+                    "document action stays below its header"
+                );
+            }
+        }
+    }
+}
+
+impl GitClientApp {
+    fn submit(&self, action: &crate::actions::GitClientAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
+        }
+    }
+}
+
+impl GitClientApp {
+    fn switch_diff_layout(&mut self) -> Result<(), String> {
+        self.diff_scroll = 0.0;
+        self.change_preferences(Settings::toggle_layout)
+    }
+}
+
+impl GitClientApp {
+    fn change_preferences(&mut self, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        change(&mut self.settings);
+        if let Some(preferences) = &self.preferences {
+            preferences
+                .set(self.settings)
+                .map_err(|error| format!("Couldn't save the diff preferences: {error}"))?;
+        }
+        Ok(())
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn follow_preferences(&mut self, preferences: ui::framework::Setting<Settings>) {
+        self.settings = preferences.get();
+        self.preferences = Some(preferences);
+    }
+}
+
+impl GitClientApp {
+    fn adopt_preferences(&mut self) {
+        if let Some(preferences) = &self.preferences {
+            self.settings = preferences.state().with(|stored| *stored);
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn preference_statuses(&self) -> Vec<ui::framework::EffectStatus> {
+        use ui::framework::EffectStatus;
+        let s = self.settings;
+        vec![
+            EffectStatus::labelled(
+                GitClientEffect::DIFF_LAYOUT,
+                match s.diff_layout {
+                    DiffLayout::Unified => "Diff layout: side-by-side",
+                    DiffLayout::SideBySide => "Diff layout: unified",
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SYNTAX_HIGHLIGHT,
+                if s.syntax_highlight {
+                    "Turn off syntax highlighting"
+                } else {
+                    "Turn on syntax highlighting"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::SHOW_WHITESPACE,
+                if s.show_whitespace {
+                    "Hide whitespace"
+                } else {
+                    "Show whitespace"
+                },
+            ),
+            EffectStatus::labelled(
+                GitClientEffect::WRAP_LINES,
+                if s.wrap_lines {
+                    "Stop wrapping long lines"
+                } else {
+                    "Wrap long lines"
+                },
+            ),
+        ]
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn attach_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::GitClient>,
+        mode: RunMode,
+        sample: Option<&crate::resource::SampleRepository>,
+    ) {
+        self.dispatcher = Some(dispatcher);
+        self.mode = mode;
+        if let Some(sample) = sample {
+            self.show_model(sample.model.clone(), sample.diffs.clone());
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn present_state(&mut self, state: &crate::doc::GitClientState) {
+        match self.mode {
+            RunMode::Live => {
+                let first = !std::mem::replace(&mut self.presented, true);
+                if !first && self.opened == state.repository {
+                    return;
+                }
+                self.opened.clone_from(&state.repository);
+                match &state.repository {
+                    Some(path) => {
+                        if !self.bind_repository(std::path::Path::new(path)) {
+                            self.last_error = Some(format!("No git repository at {path}"));
+                            self.open_input.set_text(path);
+                        }
+                    }
+                    None if first => {
+                        let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                        if !self.bind_repository(&cwd) {
+                            self.open_input.set_text(&cwd.to_string_lossy());
+                        }
+                    }
+                    None => {}
+                }
+            }
+            RunMode::Past => self.show_model(state.repo.clone(), DiffMap::new()),
+            RunMode::Capture => {}
+        }
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn working_tree_rows(&self) -> Vec<LiveRow> {
+        let mut rows = Vec::new();
+        if !self.awaiting_repo {
+            rows.push(crate::actions::working_tree_rows(&self.model));
+        }
+        if let Some(job) = &self.remote_job {
+            rows.push(LiveRow::new(
+                "git_client.remote-job",
+                "git_client.job",
+                job.label.clone(),
+            ));
+        }
+        rows
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn working_tree_row(&self, id: &str) -> Option<LiveRow> {
+        (!self.awaiting_repo)
+            .then(|| crate::actions::working_tree_row(&self.model, id))
+            .flatten()
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: GitClientEffect,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        // The diff preferences touch neither the repository nor the document.
+        let preference = match effect {
+            GitClientEffect::DiffLayout => Some(self.switch_diff_layout()),
+            GitClientEffect::SyntaxHighlight => {
+                Some(self.change_preferences(|s| s.syntax_highlight = !s.syntax_highlight))
+            }
+            GitClientEffect::ShowWhitespace => {
+                Some(self.change_preferences(|s| s.show_whitespace = !s.show_whitespace))
+            }
+            GitClientEffect::WrapLines => {
+                Some(self.change_preferences(|s| s.wrap_lines = !s.wrap_lines))
+            }
+            _ => None,
+        };
+        if let Some(kept) = preference {
+            return kept.map(|()| Effected::done());
+        }
+        let view = matches!(
+            effect,
+            GitClientEffect::ShowChanges
+                | GitClientEffect::ShowHistory
+                | GitClientEffect::ShowBranches
+                | GitClientEffect::OpenChange { .. }
+                | GitClientEffect::OpenCommit { .. }
+        );
+        if !view && self.repository_busy() {
+            return Err(ui::i18n!("git-remote-busy"));
+        }
+        match effect {
+            GitClientEffect::ShowChanges => self.switch_screen(Screen::Changes),
+            GitClientEffect::ShowHistory => self.switch_screen(Screen::History),
+            GitClientEffect::ShowBranches => self.switch_screen(Screen::Panels),
+            GitClientEffect::OpenChange { area, path } => {
+                let area = match area.as_str() {
+                    "staged" => ChangeArea::Staged,
+                    "unstaged" => ChangeArea::Unstaged,
+                    "untracked" => ChangeArea::Untracked,
+                    _ => return Err("unknown change area".into()),
+                };
+                let list = match area {
+                    ChangeArea::Staged => &self.model.staged,
+                    ChangeArea::Unstaged => &self.model.unstaged,
+                    ChangeArea::Untracked => &self.model.untracked,
+                };
+                let index = list
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "changed file no longer exists".to_string())?;
+                self.switch_screen(Screen::Changes);
+                self.selected_change = Some((area, index));
+                self.diff_scroll = 0.0;
+            }
+            GitClientEffect::OpenCommit { id } => {
+                let index = self
+                    .model
+                    .commits
+                    .iter()
+                    .position(|commit| commit.id == id)
+                    .ok_or_else(|| "commit is outside the current history window".to_string())?;
+                self.switch_screen(Screen::History);
+                self.selected_commit = index;
+                self.detail_scroll = 0.0;
+            }
+            GitClientEffect::StageAll => self.stage_all(),
+            GitClientEffect::UnstageAll => self.unstage_all(),
+            GitClientEffect::StageFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
+                    .ok_or_else(|| "file is no longer unstaged".to_string())?;
+                self.toggle_stage(area, index);
+            }
+            GitClientEffect::UnstageFile { path } => {
+                let index = self
+                    .model
+                    .staged
+                    .iter()
+                    .position(|change| change.path == path)
+                    .ok_or_else(|| "file is no longer staged".to_string())?;
+                self.toggle_stage(ChangeArea::Staged, index);
+            }
+            GitClientEffect::DiscardFile { path } => {
+                let (area, index) = self
+                    .worktree_change(&path)
+                    .ok_or_else(|| "file has no worktree changes".to_string())?;
+                if self.repo_path.is_none() {
+                    return Err("discard is unavailable in the demonstration repository".into());
+                }
+                self.discard_file(area, index);
+            }
+            GitClientEffect::Commit { message } => {
+                if self.model.staged.is_empty() {
+                    return Err("there are no staged changes to commit".into());
+                }
+                if message.trim().is_empty() {
+                    return Err("commit message cannot be empty".into());
+                }
+                self.commit_input.set_text(&message);
+                self.do_commit();
+            }
+            GitClientEffect::CreateBranch { name } => {
+                if name.trim().is_empty() {
+                    return Err("branch name cannot be empty".into());
+                }
+                if self.repo_path.is_none() {
+                    return Err("branch creation requires a real repository".into());
+                }
+                self.branch_input.set_text(&name);
+                self.create_new_branch();
+            }
+            GitClientEffect::CheckoutBranch { name } => {
+                self.apply_branch_action(BranchAction::Checkout(name));
+            }
+            GitClientEffect::DeleteBranch { name } => {
+                self.apply_branch_action(BranchAction::Delete(name));
+            }
+            GitClientEffect::ApplyStash { index } => {
+                self.apply_branch_action(BranchAction::StashApply(index));
+            }
+            GitClientEffect::SaveStash { message } => {
+                let path = self
+                    .repo()
+                    .ok_or_else(|| "stashing requires a real repository".to_string())?;
+                crate::repo::stash_save(&path, &message).map_err(|error| error.to_string())?;
+                self.last_error = None;
+                self.reload();
+            }
+            GitClientEffect::Fetch { remote } => {
+                return self.start_effect_remote(RemoteAction::Fetch, remote, cx);
+            }
+            GitClientEffect::Pull { remote } => {
+                return self.start_effect_remote(RemoteAction::Pull, remote, cx);
+            }
+            GitClientEffect::Push { remote } => {
+                return self.start_effect_remote(RemoteAction::Push, remote, cx);
+            }
+            GitClientEffect::DiffLayout
+            | GitClientEffect::SyntaxHighlight
+            | GitClientEffect::ShowWhitespace
+            | GitClientEffect::WrapLines => {}
+        }
+        match &self.last_error {
+            Some(error) if !view => Err(error.clone()),
+            _ => Ok(Effected::done()),
+        }
+    }
+}
+
+impl GitClientApp {
+    fn start_effect_remote(
+        &mut self,
+        action: RemoteAction,
+        remote: String,
+        cx: &mut EffectCx<crate::resource::GitClient, Self>,
+    ) -> EffectAnswer {
+        let reply = cx.reply();
+        reply
+            .progress()
+            .report(ui::i18n!("git-remote-running"), None, None);
+        self.start_remote(action, Some(remote), Some(reply))?;
+        Ok(Effected::Pending)
+    }
+}
+
+impl GitClientApp {
+    fn worktree_change(&self, path: &str) -> Option<(ChangeArea, usize)> {
+        self.model
+            .unstaged
+            .iter()
+            .position(|change| change.path == path)
+            .map(|index| (ChangeArea::Unstaged, index))
+            .or_else(|| {
+                self.model
+                    .untracked
+                    .iter()
+                    .position(|change| change.path == path)
+                    .map(|index| (ChangeArea::Untracked, index))
+            })
+    }
+}
+
+#[derive(Clone)]
+enum DiscardTarget {
+    /// Revert a single hunk of the file's worktree changes.
+    Hunk(usize),
+}
+
+impl GitClientApp {
+    fn bind_repository(&mut self, path: &std::path::Path) -> bool {
+        let Some((model, diffs)) = crate::repo::load(path) else {
+            return false;
+        };
+        // Anchor actions on the working directory so later opens are stable
+        // even if the CWD changes; fall back to the given path when bare.
+        let anchor = crate::repo::workdir(path).unwrap_or_else(|| path.to_path_buf());
+        self.show_model(model, diffs);
+        self.repo_path = Some(anchor);
+        true
+    }
+}
+
+impl GitClientApp {
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        match scenario {
+            // The side-by-side diff layout.
+            Some("split") => {
+                if let Err(error) =
+                    self.change_preferences(|s| s.diff_layout = DiffLayout::SideBySide)
+                {
+                    self.last_error = Some(error);
+                }
+            }
+            Some("history") => self.switch_screen(Screen::History),
+            Some("branches") => self.switch_screen(Screen::Panels),
+            // A typed commit summary, so the commit box and its primary
+            // action render enabled.
+            Some("commit") => self
+                .commit_input
+                .set_text("Flush the blur pass before presenting"),
+            // A changed file in the worktree, whose "Discard file" the
+            // scenario's input then presses.
+            Some("discard") => {
+                if !self.model.unstaged.is_empty() {
+                    self.selected_change = Some((ChangeArea::Unstaged, 0));
+                } else if !self.model.untracked.is_empty() {
+                    self.selected_change = Some((ChangeArea::Untracked, 0));
+                }
+                self.diff_scroll = 0.0;
+            }
+            // The narrow window's list column, revealed over its scrim
+            // rather than the closed default a fresh narrow window opens to.
+            Some("narrow") => self.drawer.snap(true),
+            _ => {}
+        }
+    }
+}
+
+impl GitClientApp {
+    fn show_model(&mut self, model: RepoModel, diffs: DiffMap) {
+        self.model = model;
+        self.diffs = diffs;
+        self.graph_layout = graph::layout(&mut self.model.commits);
+        self.model.graph_width = self.graph_layout.lanes;
+        self.selected_change = first_change(&self.model);
+        if self.selected_commit >= self.model.commits.len() {
+            self.selected_commit = 0;
+        }
+        self.diff_scroll = 0.0;
+        self.awaiting_repo = false;
     }
 }

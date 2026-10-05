@@ -130,7 +130,7 @@ impl SheetsDoc {
         }
     }
 
-    fn annotation_maps(doc: &mut AutoCommit, idx: usize, key: &str) -> Vec<ObjId> {
+    fn annotation_maps(doc: &AutoCommit, idx: usize, key: &str) -> Vec<ObjId> {
         let Some(sheet) = Self::sheet_map(doc, idx) else {
             return Vec::new();
         };
@@ -171,7 +171,23 @@ impl SheetsDoc {
             .expect("insert_object at a freshly-verified index never fails")
     }
 
-    /// Get-or-create the top-level `wb` Map.
+    /// The top-level `wb` Map, when the workbook has one.
+    fn wb(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&ROOT, "wb") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The `sheets` List under `wb`, when the workbook has one.
+    fn sheets(doc: &AutoCommit) -> Option<ObjId> {
+        match doc.get(&Self::wb(doc)?, "sheets") {
+            Ok(Some((Value::Object(ObjType::List), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Get-or-create the top-level `wb` Map, for an action writing it.
     pub fn wb_map(doc: &mut AutoCommit) -> ObjId {
         match doc.get(&ROOT, "wb") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -179,7 +195,7 @@ impl SheetsDoc {
         }
     }
 
-    /// Get-or-create the `sheets` List under `wb`.
+    /// Get-or-create the `sheets` List under `wb`, for an action writing it.
     pub fn sheets_list(doc: &mut AutoCommit) -> ObjId {
         let wb = Self::wb_map(doc);
         match doc.get(&wb, "sheets") {
@@ -188,23 +204,10 @@ impl SheetsDoc {
         }
     }
 
-    /// Number of sheets currently in the document.
-    pub fn sheet_count(doc: &mut AutoCommit) -> usize {
-        let sheets = Self::sheets_list(doc);
-        doc.length(&sheets)
-    }
-
-    /// Read the current sheet count without creating a malformed/missing
-    /// workbook subtree. Action preflight uses this so refusing a stale or
-    /// hostile envelope has no side effects.
-    pub fn sheet_count_readonly(doc: &AutoCommit) -> usize {
-        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
-            return 0;
-        };
-        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
-            return 0;
-        };
-        doc.length(&sheets)
+    /// Number of sheets currently in the document; none before the workbook
+    /// has arrived.
+    pub fn sheet_count(doc: &AutoCommit) -> usize {
+        Self::sheets(doc).map_or(0, |sheets| doc.length(&sheets))
     }
 
     /// Whether `idx` still identifies a concrete sheet map. This is the
@@ -223,14 +226,13 @@ impl SheetsDoc {
     }
 
     /// Whether the workbook has been seeded at all.
-    pub fn is_empty(doc: &mut AutoCommit) -> bool {
+    pub fn is_empty(doc: &AutoCommit) -> bool {
         Self::sheet_count(doc) == 0
     }
 
     /// The Map `ObjId` for sheet `idx`, if it exists.
-    fn sheet_map(doc: &mut AutoCommit, idx: usize) -> Option<ObjId> {
-        let sheets = Self::sheets_list(doc);
-        match doc.get(&sheets, idx) {
+    fn sheet_map(doc: &AutoCommit, idx: usize) -> Option<ObjId> {
+        match doc.get(&Self::sheets(doc)?, idx) {
             Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
             _ => None,
         }
@@ -333,7 +335,7 @@ impl SheetsDoc {
 
     /// The first sheet imported from `source`.
     pub fn sheet_index_by_source(doc: &AutoCommit, source: &str) -> Option<usize> {
-        (0..Self::sheet_count_readonly(doc))
+        (0..Self::sheet_count(doc))
             .find(|&idx| Self::sheet_source(doc, idx).as_deref() == Some(source))
     }
 
@@ -500,7 +502,7 @@ impl SheetsDoc {
     }
 
     /// A sheet's tab colour, stored as a palette index. `None` means no colour.
-    pub fn sheet_color(doc: &mut AutoCommit, idx: usize) -> Option<u32> {
+    pub fn sheet_color(doc: &AutoCommit, idx: usize) -> Option<u32> {
         let sheet = Self::sheet_map(doc, idx)?;
         read_i64_coerced(doc, &sheet, "color").map(|n| n as u32)
     }
@@ -520,40 +522,16 @@ impl SheetsDoc {
     }
 
     /// Every sheet's tab colour in order (parallel to [`Self::sheet_names`]).
-    pub fn sheet_colors(doc: &mut AutoCommit) -> Vec<Option<u32>> {
+    pub fn sheet_colors(doc: &AutoCommit) -> Vec<Option<u32>> {
         let n = Self::sheet_count(doc);
         (0..n).map(|i| Self::sheet_color(doc, i)).collect()
     }
 
-    /// All sheet names in order, without creating a missing workbook subtree.
-    pub fn sheet_names_readonly(doc: &AutoCommit) -> Vec<String> {
-        let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
-            return Vec::new();
-        };
-        let Ok(Some((Value::Object(ObjType::List), sheets))) = doc.get(&wb, "sheets") else {
-            return Vec::new();
-        };
-        let n = doc.length(&sheets);
-        let mut out = Vec::with_capacity(n);
-        for i in 0..n {
-            let name = match doc.get(&sheets, i) {
-                Ok(Some((Value::Object(ObjType::Map), sheet))) => {
-                    read_str(doc, &sheet, "name").unwrap_or_default()
-                }
-                _ => String::new(),
-            };
-            out.push(if name.is_empty() {
-                format!("Sheet{}", i + 1)
-            } else {
-                name
-            });
-        }
-        out
-    }
-
     /// All sheet names in order.
-    pub fn sheet_names(doc: &mut AutoCommit) -> Vec<String> {
-        let sheets = Self::sheets_list(doc);
+    pub fn sheet_names(doc: &AutoCommit) -> Vec<String> {
+        let Some(sheets) = Self::sheets(doc) else {
+            return Vec::new();
+        };
         let n = doc.length(&sheets);
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
@@ -650,8 +628,13 @@ impl SheetsDoc {
 
     /// Read the per-document locale overrides from the CRDT. Absent fields
     /// mean "inherit the global default".
-    pub fn doc_settings(doc: &mut AutoCommit) -> DocSettings {
-        let s = Self::settings_map(doc);
+    pub fn doc_settings(doc: &AutoCommit) -> DocSettings {
+        let Some(s) = Self::wb(doc).and_then(|wb| match doc.get(&wb, "settings") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => None,
+        }) else {
+            return DocSettings::default();
+        };
         DocSettings {
             currency: read_str(doc, &s, "currency").and_then(|c| Currency::from_code(&c)),
             date_format: read_str(doc, &s, "date_format").and_then(|v| parse_date_style(&v)),
@@ -690,8 +673,13 @@ impl SheetsDoc {
     }
 
     /// Read the raw input of a single cell.
-    pub fn cell_raw(doc: &mut AutoCommit, idx: usize, addr: Addr) -> String {
-        let Some(cells) = Self::cells_map(doc, idx) else {
+    pub fn cell_raw(doc: &AutoCommit, idx: usize, addr: Addr) -> String {
+        let Some(cells) =
+            Self::sheet_map(doc, idx).and_then(|sheet| match doc.get(&sheet, "cells") {
+                Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+                _ => None,
+            })
+        else {
             return String::new();
         };
         let key = Self::cell_key(addr);
@@ -727,7 +715,7 @@ impl SheetsDoc {
         }
     }
 
-    pub fn charts(doc: &mut AutoCommit, idx: usize) -> Vec<ChartSnapshot> {
+    pub fn charts(doc: &AutoCommit, idx: usize) -> Vec<ChartSnapshot> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for charts in Self::annotation_maps(doc, idx, "charts") {
@@ -851,7 +839,7 @@ impl SheetsDoc {
         }
     }
 
-    pub fn comments(doc: &mut AutoCommit, idx: usize) -> Vec<CommentThread> {
+    pub fn comments(doc: &AutoCommit, idx: usize) -> Vec<CommentThread> {
         let mut out = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for comments in Self::annotation_maps(doc, idx, "comments") {
@@ -972,7 +960,7 @@ impl SheetsDoc {
     /// `default_currency` seeds any stored currency format whose subtype is
     /// missing (legacy data) — fresh formats always carry their own.
     pub fn snapshot_sheet(
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         idx: usize,
         default_currency: Currency,
     ) -> SheetSnapshot {
@@ -981,33 +969,61 @@ impl SheetsDoc {
             return snap;
         };
         snap.name = read_str(doc, &sheet, "name").unwrap_or_default();
-        let Ok(Some((Value::Object(ObjType::Map), cells))) = doc.get(&sheet, "cells") else {
+        let Some(cells) = Self::cells_object(doc, &sheet) else {
             return snap;
         };
         for key in doc.keys(&cells) {
-            let Some(addr) = Self::parse_cell_key(&key) else {
-                continue;
-            };
-            let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str())
-            else {
-                continue;
-            };
-            if let Some(s) = read_str(doc, &cell, "raw")
-                && !s.is_empty()
-            {
-                snap.raw.insert(addr, s);
-            }
-            if let Some(s) = read_str(doc, &cell, "fmt") {
-                let f = CellFormat::from_str_with(&s, default_currency);
-                if f != CellFormat::General {
-                    snap.fmt.insert(addr, f);
-                }
-            }
-            if read_bool(doc, &cell, "b") == Some(true) {
-                snap.bold.insert(addr);
-            }
+            Self::read_cell_into(doc, &cells, &key, &mut snap, default_currency);
         }
         snap
+    }
+
+    /// The map of sheet `idx`, which a reader follows across changes.
+    pub fn sheet_object(doc: &AutoCommit, idx: usize) -> Option<ObjId> {
+        Self::sheet_map(doc, idx)
+    }
+
+    /// The `cells` map of the sheet map `sheet`.
+    pub fn cells_object(doc: &AutoCommit, sheet: &ObjId) -> Option<ObjId> {
+        match doc.get(sheet, "cells") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Read the cell at `key` of the `cells` map into `snap`, replacing what
+    /// `snap` held for it: a cell removed, cleared or restyled since `snap`
+    /// was taken reads as it is now.
+    pub fn read_cell_into(
+        doc: &AutoCommit,
+        cells: &ObjId,
+        key: &str,
+        snap: &mut SheetSnapshot,
+        default_currency: Currency,
+    ) {
+        let Some(addr) = Self::parse_cell_key(key) else {
+            return;
+        };
+        snap.raw.remove(&addr);
+        snap.fmt.remove(&addr);
+        snap.bold.remove(&addr);
+        let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(cells, key) else {
+            return;
+        };
+        if let Some(s) = read_str(doc, &cell, "raw")
+            && !s.is_empty()
+        {
+            snap.raw.insert(addr, s);
+        }
+        if let Some(s) = read_str(doc, &cell, "fmt") {
+            let f = CellFormat::from_str_with(&s, default_currency);
+            if f != CellFormat::General {
+                snap.fmt.insert(addr, f);
+            }
+        }
+        if read_bool(doc, &cell, "b") == Some(true) {
+            snap.bold.insert(addr);
+        }
     }
 }
 
@@ -1058,7 +1074,7 @@ mod tests {
             SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "Hello");
             SheetsDoc::set_cell_raw(&mut doc, idx, (1, 0), "=1+1");
             SheetsDoc::set_cell_format(&mut doc, idx, (1, 0), CellFormat::Currency(Currency::USD));
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
+            let snap = SheetsDoc::snapshot_sheet(&doc, idx, Currency::USD);
             assert_eq!(snap.name, "Budget");
             assert_eq!(snap.raw.get(&(0, 0)).unwrap(), "Hello");
             assert_eq!(snap.raw.get(&(1, 0)).unwrap(), "=1+1");
@@ -1074,7 +1090,7 @@ mod tests {
             let idx = SheetsDoc::add_sheet(&mut doc, "S");
             SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "x");
             SheetsDoc::set_cell_raw(&mut doc, idx, (0, 0), "");
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, idx, Currency::USD);
+            let snap = SheetsDoc::snapshot_sheet(&doc, idx, Currency::USD);
             assert!(snap.raw.is_empty());
         }
 
@@ -1083,7 +1099,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             SheetsDoc::add_sheet(&mut doc, "S");
             // Default: everything inherits.
-            assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
+            assert_eq!(SheetsDoc::doc_settings(&doc), DocSettings::default());
             // Set an override.
             SheetsDoc::set_doc_settings(
                 &mut doc,
@@ -1093,13 +1109,13 @@ mod tests {
                     time_format: None,
                 },
             );
-            let s = SheetsDoc::doc_settings(&mut doc);
+            let s = SheetsDoc::doc_settings(&doc);
             assert_eq!(s.currency, Some(Currency::EUR));
             assert_eq!(s.date_format, Some(DateStyle::Eu));
             assert_eq!(s.time_format, None);
             // Clearing returns to inherit.
             SheetsDoc::set_doc_settings(&mut doc, &DocSettings::default());
-            assert_eq!(SheetsDoc::doc_settings(&mut doc), DocSettings::default());
+            assert_eq!(SheetsDoc::doc_settings(&doc), DocSettings::default());
         }
     }
 
@@ -1111,8 +1127,8 @@ mod tests {
             let mut doc = AutoCommit::new();
             SheetsDoc::add_sheet(&mut doc, "One");
             SheetsDoc::add_sheet(&mut doc, "Two");
-            assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["One", "Two"]);
+            assert_eq!(SheetsDoc::sheet_count(&doc), 2);
+            assert_eq!(SheetsDoc::sheet_names(&doc), vec!["One", "Two"]);
         }
 
         // Case `insert_and_delete_sheets`.
@@ -1122,15 +1138,15 @@ mod tests {
             SheetsDoc::add_sheet(&mut doc, "C");
             // Insert "B" between A and C.
             SheetsDoc::insert_sheet(&mut doc, 1, "B");
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "B", "C"]);
+            assert_eq!(SheetsDoc::sheet_names(&doc), vec!["A", "B", "C"]);
             // Delete the middle one.
             assert!(SheetsDoc::delete_sheet(&mut doc, 1));
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["A", "C"]);
+            assert_eq!(SheetsDoc::sheet_names(&doc), vec!["A", "C"]);
             // The last remaining sheet cannot be deleted away.
             SheetsDoc::delete_sheet(&mut doc, 0);
-            assert!(!SheetsDoc::delete_sheet(&mut doc, 0) || SheetsDoc::sheet_count(&mut doc) >= 1);
+            assert!(!SheetsDoc::delete_sheet(&mut doc, 0) || SheetsDoc::sheet_count(&doc) >= 1);
             assert!(
-                SheetsDoc::sheet_count(&mut doc) >= 1,
+                SheetsDoc::sheet_count(&doc) >= 1,
                 "a workbook keeps one sheet"
             );
         }
@@ -1143,14 +1159,14 @@ mod tests {
             SheetsDoc::set_cell_format(&mut doc, a, (0, 0), CellFormat::Currency(Currency::EUR));
             SheetsDoc::set_sheet_color(&mut doc, a, Some(3));
             let dup = SheetsDoc::duplicate_sheet(&mut doc, a).expect("duplicated");
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["Data", "Data copy"]);
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, dup, (0, 0)), "=1+1");
-            let snap = SheetsDoc::snapshot_sheet(&mut doc, dup, Currency::USD);
+            assert_eq!(SheetsDoc::sheet_names(&doc), vec!["Data", "Data copy"]);
+            assert_eq!(SheetsDoc::cell_raw(&doc, dup, (0, 0)), "=1+1");
+            let snap = SheetsDoc::snapshot_sheet(&doc, dup, Currency::USD);
             assert_eq!(
                 snap.fmt.get(&(0, 0)).copied(),
                 Some(CellFormat::Currency(Currency::EUR))
             );
-            assert_eq!(SheetsDoc::sheet_color(&mut doc, dup), Some(3));
+            assert_eq!(SheetsDoc::sheet_color(&doc, dup), Some(3));
         }
 
         // Case `move_sheet_reorders_and_keeps_cells`.
@@ -1163,9 +1179,9 @@ mod tests {
             SheetsDoc::set_cell_raw(&mut doc, a, (0, 0), "keep");
             // Move A (idx 0) to the right (idx 1): order becomes B, A, C.
             SheetsDoc::move_sheet(&mut doc, 0, 1);
-            assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["B", "A", "C"]);
+            assert_eq!(SheetsDoc::sheet_names(&doc), vec!["B", "A", "C"]);
             // A's content survived the move.
-            assert_eq!(SheetsDoc::cell_raw(&mut doc, 1, (0, 0)), "keep");
+            assert_eq!(SheetsDoc::cell_raw(&doc, 1, (0, 0)), "keep");
             assert_eq!(SheetsDoc::sheet_resource_id(&doc, 1), Some(stable));
         }
     }
@@ -1189,7 +1205,7 @@ mod tests {
                 end: (2, 4),
             };
             SheetsDoc::put_chart(&mut doc, sheet, &chart);
-            assert_eq!(SheetsDoc::charts(&mut doc, sheet), vec![chart]);
+            assert_eq!(SheetsDoc::charts(&doc, sheet), vec![chart]);
             let thread = CommentThread {
                 id: "f9448d08-3b4a-4a7a-8e60-5259f8b67454".into(),
                 start: (1, 1),
@@ -1205,7 +1221,7 @@ mod tests {
             };
             SheetsDoc::put_comment(&mut doc, sheet, &thread);
             SheetsDoc::set_comment_resolved(&mut doc, sheet, &thread.id, true);
-            let threads = SheetsDoc::comments(&mut doc, sheet);
+            let threads = SheetsDoc::comments(&doc, sheet);
             assert_eq!(threads[0].replies, thread.replies);
             assert!(threads[0].resolved);
         }
@@ -1287,9 +1303,8 @@ mod tests {
             a.merge_incoming(&mut b)
                 .expect("merge concurrent first writes");
             let reloaded = AutoCommit::load(&a.save()).expect("final reload");
-            let mut reloaded = reloaded;
-            assert_eq!(SheetsDoc::charts(&mut reloaded, sheet).len(), 2);
-            let threads = SheetsDoc::comments(&mut reloaded, sheet);
+            assert_eq!(SheetsDoc::charts(&reloaded, sheet).len(), 2);
+            let threads = SheetsDoc::comments(&reloaded, sheet);
             assert_eq!(threads.len(), 3);
             assert_eq!(
                 threads
@@ -1332,9 +1347,9 @@ mod tests {
                 },
             );
             a.merge_incoming(&mut b).expect("merge");
-            let mut reloaded = AutoCommit::load(&a.save()).expect("reload");
+            let reloaded = AutoCommit::load(&a.save()).expect("reload");
             assert!(
-                SheetsDoc::comments(&mut reloaded, sheet).is_empty(),
+                SheetsDoc::comments(&reloaded, sheet).is_empty(),
                 "delete wins; orphan replies are never surfaced"
             );
         }
@@ -1362,27 +1377,27 @@ mod tests {
             SheetsDoc::put_chart(&mut doc, sheet, &chart);
             SheetsDoc::put_comment(&mut doc, sheet, &thread);
             SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::InsertRow(0));
-            assert_eq!(SheetsDoc::charts(&mut doc, sheet)[0].start, (1, 2));
-            assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 3));
+            assert_eq!(SheetsDoc::charts(&doc, sheet)[0].start, (1, 2));
+            assert_eq!(SheetsDoc::comments(&doc, sheet)[0].start, (2, 3));
             // The chart spans B3:D5 and the comment sits on C4. Deleting the
             // chart's first row, then its last, shrinks it instead of deleting it.
             SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(2));
-            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            let chart = &SheetsDoc::charts(&doc, sheet)[0];
             assert_eq!((chart.start, chart.end), ((1, 2), (3, 3)));
-            assert_eq!(SheetsDoc::comments(&mut doc, sheet)[0].start, (2, 2));
+            assert_eq!(SheetsDoc::comments(&doc, sheet)[0].start, (2, 2));
             SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(3));
-            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            let chart = &SheetsDoc::charts(&doc, sheet)[0];
             assert_eq!((chart.start, chart.end), ((1, 2), (3, 2)));
             SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteColumn(2));
             assert!(
-                SheetsDoc::comments(&mut doc, sheet).is_empty(),
+                SheetsDoc::comments(&doc, sheet).is_empty(),
                 "a fully deleted one-cell anchor removes its thread"
             );
             SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteColumn(1));
-            let chart = &SheetsDoc::charts(&mut doc, sheet)[0];
+            let chart = &SheetsDoc::charts(&doc, sheet)[0];
             assert_eq!((chart.start, chart.end), ((1, 2), (1, 2)));
             SheetsDoc::remap_annotation_anchors(&mut doc, sheet, GridEdit::DeleteRow(2));
-            assert!(SheetsDoc::charts(&mut doc, sheet).is_empty());
+            assert!(SheetsDoc::charts(&doc, sheet).is_empty());
         }
     }
 }

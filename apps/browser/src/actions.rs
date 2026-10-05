@@ -7,7 +7,7 @@
 use automerge::transaction::Transactable;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use tilo_actions::{Action, ActionContext, ActionError, ActionRegistry, Doc, ExecutionLocus};
+use tilo_actions::{Action, ActionError, ActionRegistry, Doc, ExecutionLocus};
 
 use crate::library::{Bookmark, Bookmarks};
 use crate::settings::{ADBLOCK_PATH, CLEAR_ON_EXIT_PATH, HOMEPAGE_PATH, SEARCH_ENGINE_PATH};
@@ -70,6 +70,25 @@ pub enum BrowserAction {
     SetSearchEngine {
         template: String,
     },
+    /// Turn tracker protection on or off for one exact origin
+    /// (`https://example.org`); off is a site exception.
+    SetSiteProtection {
+        origin: String,
+        enabled: bool,
+    },
+}
+
+/// Prefix of the root-level keys naming each origin protection is off for.
+const SITE_EXCEPTION_PREFIX: &str = "browser.site-exception:";
+/// The most site exceptions the document keeps.
+pub const MAX_SITE_EXCEPTIONS: usize = 1024;
+
+/// The origins protection is off for.
+pub fn site_exceptions_from_doc(doc: &Doc) -> std::collections::BTreeSet<String> {
+    doc.keys(&ROOT)
+        .filter_map(|key| key.strip_prefix(SITE_EXCEPTION_PREFIX).map(str::to_owned))
+        .take(MAX_SITE_EXCEPTIONS)
+        .collect()
 }
 
 pub fn normalized_bookmark_url(url: &str) -> Option<String> {
@@ -87,49 +106,6 @@ pub fn bookmark_resource_id(url: &str) -> String {
     format!(
         "{BOOKMARKS_SCOPE}/{}",
         blake3::hash(normalized.as_bytes()).to_hex()
-    )
-}
-
-/// Context attached to durable Browser actions in workspace history.
-pub fn history_context(action: &BrowserAction) -> ActionContext {
-    let mut context = ActionContext::for_action("so.tilo.browser", "Browser", action);
-    let (label, id, kind, resource_label) = match action {
-        BrowserAction::AddBookmark { url, title, .. } => (
-            "Add bookmark",
-            bookmark_resource_id(url),
-            "browser.bookmark",
-            if title.trim().is_empty() {
-                url.clone()
-            } else {
-                title.clone()
-            },
-        ),
-        BrowserAction::RemoveBookmark { url, .. } => (
-            "Remove bookmark",
-            bookmark_resource_id(url),
-            "browser.bookmark",
-            url.clone(),
-        ),
-        BrowserAction::SetAdblock { .. } => settings_context("Change ad blocking"),
-        BrowserAction::SetClearOnExit { .. } => settings_context("Change clear-on-exit"),
-        BrowserAction::SetHomepage { .. } => settings_context("Set homepage"),
-        BrowserAction::SetSearchEngine { .. } => settings_context("Set search engine"),
-    };
-    context.action_label = label.into();
-    context.resource = Some(tilo_actions::ActionResource {
-        id,
-        kind: kind.into(),
-        label: resource_label,
-    });
-    context
-}
-
-fn settings_context(label: &'static str) -> (&'static str, String, &'static str, String) {
-    (
-        label,
-        "browser.settings".into(),
-        "browser.settings",
-        "Settings".into(),
     )
 }
 
@@ -301,6 +277,25 @@ impl Action for BrowserAction {
                 valid_web_url(template, "search engine")?;
                 replace_text(doc, SEARCH_ENGINE_PATH, template)?;
             }
+            Self::SetSiteProtection { origin, enabled } => {
+                if crate::site_controls::origin(origin).as_deref() != Some(origin.as_str()) {
+                    return Err(ActionError::Refused(
+                        "a site exception names one exact http(s) origin".into(),
+                    ));
+                }
+                let key = format!("{SITE_EXCEPTION_PREFIX}{origin}");
+                if *enabled {
+                    if doc.get(&ROOT, &key)?.is_some() {
+                        doc.delete(&ROOT, key)?;
+                    }
+                } else if site_exceptions_from_doc(doc).len() < MAX_SITE_EXCEPTIONS {
+                    doc.put(&ROOT, key, true)?;
+                } else {
+                    return Err(ActionError::Refused(
+                        "too many site exceptions; turn protection back on for some".into(),
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -439,13 +434,42 @@ mod tests {
         doc
     }
 
-    /// The resource tree a headless browser window publishes once it has
-    /// synced `doc`.
+    /// The tree a headless browser window publishes over `doc`: the
+    /// resource's own publication, joined by the window's live rows.
     fn published(doc: &Doc) -> Vec<tilo_actions::Resource> {
-        use ui::widget::Widget;
+        use ui::tilo_resource::Resource as _;
+        fn join(into: &mut Vec<tilo_actions::Resource>, rows: Vec<tilo_actions::Resource>) {
+            for row in rows {
+                match into.iter_mut().find(|child| child.id == row.id) {
+                    Some(existing) => {
+                        for action in row.actions {
+                            if !existing.actions.iter().any(|have| have.id == action.id) {
+                                existing.actions.push(action);
+                            }
+                        }
+                        join(&mut existing.children, row.children);
+                    }
+                    None => into.push(row),
+                }
+            }
+        }
+        let state = crate::resource::Browser::read(doc).unwrap();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Browser>(
+            crate::resource::Browser::KIND,
+            "Browser",
+            &state,
+        );
         let mut widget = crate::browser_widget::BrowserWidget::new_headless();
-        widget.sync(&mut doc.clone(), &ROOT);
-        ui::resources::resources(&widget, doc)
+        widget.present_state(&state);
+        join(
+            &mut root.children,
+            widget
+                .live_rows()
+                .into_iter()
+                .map(ui::framework::LiveRow::into_resource)
+                .collect(),
+        );
+        vec![root]
     }
 
     fn removal(doc: &Doc, url: &str) -> BrowserAction {
@@ -459,7 +483,7 @@ mod tests {
         seed: seeded_library(),
         registry: registry(),
         resources: |doc| published(doc),
-        palette: ["Remove bookmark", "Set homepage", "Show history", "Bookmark this page"],
+        palette: ["Remove bookmark", "Set homepage", "Show history", "Open page"],
         replay: [
             remove_bookmark => |doc| encode(&removal(doc, RUST)),
             set_homepage => |_| encode(&BrowserAction::SetHomepage {

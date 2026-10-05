@@ -410,11 +410,18 @@ pub enum RichTextAction {
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
     /// Replace the body with `bytes` decoded as `format`. A decode failure
-    /// refuses the action so the open document stays as it was.
+    /// refuses the action so the open document stays as it was. The
+    /// document remembers the bytes' content address as the file it was
+    /// last read from ([`FILE_DIGEST`]).
     ReplaceFormatted {
         format: ImportFormat,
         bytes: Vec<u8>,
     },
+    /// The document was written to its file, whose bytes now have content
+    /// address `digest` ([`FILE_DIGEST`]): what a later open compares the
+    /// file with to tell whether it changed elsewhere. Content from outside:
+    /// it syncs, but no undo takes it back.
+    NoteFileWritten { digest: String },
     /// Accept one tracked change, or every change when `id` is absent.
     AcceptChanges { id: Option<String> },
     /// Reject one tracked change, or every change when `id` is absent.
@@ -485,6 +492,7 @@ impl RichTextAction {
             | Self::SetBlockAttr { .. }
             | Self::ClearBlockAttr { .. }
             | Self::SetPageMargins { .. }
+            | Self::NoteFileWritten { .. }
             | Self::SetStyleProperty { .. }
             | Self::DeleteStyle { .. } => ActionDomain::Formatting,
             Self::SetImageCrop { .. }
@@ -917,6 +925,11 @@ impl<'a> ActionValidator<'a> {
             blocks,
             key,
         } => self.unique_existing(*region, blocks) && Self::clearable_attr(key),
+        RichTextAction::NoteFileWritten { digest } => {
+            !digest.is_empty()
+                && digest.len() <= 128
+                && digest.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }
         RichTextAction::SetPageMargins { top, right, bottom, left } => [top, right, bottom, left]
             .into_iter()
             .all(|value| value.is_finite() && (4.0..=10_000.0).contains(value)),
@@ -1847,11 +1860,12 @@ fn apply_paste_fragment(
     }
 }
 
-fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) {
+fn apply_insert_paragraph(dm: &mut DocMut, after: &str, text: &str) -> Written {
     let new = dm.insert_block(Some(after), "paragraph");
     if !text.is_empty() {
         dm.splice_text(&new, 0, 0, text);
     }
+    Written::body(new, 0, text)
 }
 
 /// The last body block as `append-paragraph`/`continue-paragraph` resolve it
@@ -1889,20 +1903,21 @@ pub fn body_end_at(doc: &AutoCommit, c: &Containers, id: String) -> BodyEnd {
     }
 }
 
-fn apply_append_paragraph(dm: &mut DocMut, text: &str) {
+fn apply_append_paragraph(dm: &mut DocMut, text: &str) -> Written {
     let target = match body_end(dm.doc, dm.c) {
         Some(end) if end.chars == 0 && end.kind.as_deref() == Some("paragraph") => end.id,
         Some(end) => dm.insert_block(Some(&end.id), "paragraph"),
         None => dm.insert_block(None, "paragraph"),
     };
     dm.splice_text(&target, 0, 0, text);
+    Written::body(target, 0, text)
 }
 
-fn apply_continue_paragraph(dm: &mut DocMut, text: &str) {
+fn apply_continue_paragraph(dm: &mut DocMut, text: &str) -> Option<Written> {
     // Validated before the mutable view: the last body block is a text block.
-    if let Some(end) = body_end(dm.doc, dm.c).filter(|end| end.text_block) {
-        dm.splice_text(&end.id, end.chars, 0, text);
-    }
+    let end = body_end(dm.doc, dm.c).filter(|end| end.text_block)?;
+    dm.splice_text(&end.id, end.chars, 0, text);
+    Some(Written::body(end.id, end.chars, text))
 }
 
 fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
@@ -1927,26 +1942,109 @@ fn apply_remove_region_blocks(dm: &mut DocMut, region: Region, blocks: &[String]
 const MAX_IMPORT_BYTES: usize = 8 * 1024 * 1024;
 
 fn apply_replace_formatted(dm: &mut DocMut, format: ImportFormat, bytes: &[u8]) {
-    use tilo_doc_codecs::FormatProvider;
     let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
     for id in &existing {
         dm.tombstone_block_in(Region::Body, id);
     }
     let mut inputs = tilo_content::ContentInputs::new();
-    let imported = match format {
-        ImportFormat::Markdown => tilo_doc_codecs::MarkdownCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Html => tilo_doc_codecs::HtmlCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Rtf => tilo_doc_codecs::RtfCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Docx => tilo_doc_codecs::DocxCodec.import(bytes, dm, &mut inputs),
-        ImportFormat::Odt => tilo_doc_codecs::OdtCodec.import(bytes, dm, &mut inputs),
+    // The caller stages a successful import before this write. A replay
+    // that still fails keeps the cleared body rather than a half-written
+    // codec result mixed with the old one.
+    let _ = import_formatted(dm, format, bytes, &mut inputs);
+    keep_a_paragraph(dm);
+    dm.set_meta_str(FILE_DIGEST, &tilo_content::hash_bytes(bytes));
+}
+
+/// The document meta key holding the content address of the file the
+/// document was last read from or written to.
+pub const FILE_DIGEST: &str = "file_digest";
+
+fn import_formatted(
+    dm: &mut DocMut,
+    format: ImportFormat,
+    bytes: &[u8],
+    inputs: &mut tilo_content::ContentInputs,
+) -> Result<(), tilo_doc_codecs::CodecError> {
+    use tilo_doc_codecs::FormatProvider;
+    match format {
+        ImportFormat::Markdown => tilo_doc_codecs::MarkdownCodec.import(bytes, dm, inputs),
+        ImportFormat::Html => tilo_doc_codecs::HtmlCodec.import(bytes, dm, inputs),
+        ImportFormat::Rtf => tilo_doc_codecs::RtfCodec.import(bytes, dm, inputs),
+        ImportFormat::Docx => tilo_doc_codecs::DocxCodec.import(bytes, dm, inputs),
+        ImportFormat::Odt => tilo_doc_codecs::OdtCodec.import(bytes, dm, inputs),
         ImportFormat::Text => import_plain_text(dm, bytes),
-    };
-    if imported.is_err() {
-        // The caller stages a successful import before this write. A replay
-        // that still fails keeps the cleared body rather than a half-written
-        // codec result mixed with the old one.
-        let _ = imported;
     }
+}
+
+/// Stage a [`RichTextAction::ReplaceFormatted`] of `bytes` read as `format`:
+/// decode them once into a scratch document, so bytes the codec rejects
+/// never become an action, and return the images they embed, which the
+/// document only names and the caller keeps in its content store before
+/// submitting the action.
+///
+/// # Errors
+///
+/// Returns why the bytes do not import as `format`.
+pub fn stage_import(
+    format: ImportFormat,
+    bytes: &[u8],
+) -> Result<(RichTextAction, tilo_content::ContentInputs), String> {
+    if bytes.len() > MAX_IMPORT_BYTES {
+        return Err(format!(
+            "the file is larger than {} MiB",
+            MAX_IMPORT_BYTES / (1024 * 1024)
+        ));
+    }
+    let mut scratch = AutoCommit::new();
+    let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
+    let mut ids = tilo_doc::IdGen::new("staged-import".into());
+    let mut inputs = tilo_content::ContentInputs::new();
+    import_formatted(
+        &mut DocMut {
+            doc: &mut scratch,
+            c: &containers,
+            ids: &mut ids,
+        },
+        format,
+        bytes,
+        &mut inputs,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((
+        RichTextAction::ReplaceFormatted {
+            format,
+            bytes: bytes.to_vec(),
+        },
+        inputs,
+    ))
+}
+
+/// What `bytes` read as `format` hold, read from a scratch document without
+/// writing any other: a paste's paragraphs, a file compared with the
+/// document it was opened into.
+///
+/// # Errors
+///
+/// Returns why the bytes do not import as `format`.
+pub fn imported_snapshot(
+    format: ImportFormat,
+    bytes: &[u8],
+) -> Result<tilo_doc::DocSnapshot, String> {
+    let mut scratch = AutoCommit::new();
+    let containers = tilo_doc::model::init(&mut scratch, &automerge::ROOT);
+    let mut ids = tilo_doc::IdGen::new("imported-snapshot".into());
+    import_formatted(
+        &mut DocMut {
+            doc: &mut scratch,
+            c: &containers,
+            ids: &mut ids,
+        },
+        format,
+        bytes,
+        &mut tilo_content::ContentInputs::new(),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(tilo_doc::model::materialize(&scratch, &containers))
 }
 
 fn import_plain_text(dm: &mut DocMut, bytes: &[u8]) -> Result<(), tilo_doc_codecs::CodecError> {
@@ -1976,6 +2074,15 @@ fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
         dm,
         &mut tilo_content::ContentInputs::new(),
     );
+    keep_a_paragraph(dm);
+}
+
+/// A body replaced by nothing (an empty file, an empty template) still has
+/// a paragraph to write in, as a new document does.
+fn keep_a_paragraph(dm: &mut DocMut) {
+    if tilo_doc::model::blocks_in_order(dm.doc, dm.c).is_empty() {
+        dm.insert_block(None, "paragraph");
+    }
 }
 
 fn ordered_change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
@@ -2056,7 +2163,56 @@ fn apply_add_comment(
     }
 }
 
-fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
+/// The text an action typed in: `len` characters of `block` from `start`.
+struct Written {
+    region: Region,
+    block: String,
+    start: usize,
+    len: usize,
+}
+
+impl Written {
+    fn new(region: Region, block: &str, start: usize, text: &str) -> Self {
+        Self {
+            region,
+            block: block.to_owned(),
+            start,
+            len: text.chars().count(),
+        }
+    }
+
+    fn body(block: String, start: usize, text: &str) -> Self {
+        Self {
+            region: Region::Body,
+            block,
+            start,
+            len: text.chars().count(),
+        }
+    }
+
+    /// Mark the written text as `author`'s, as part of the edit that wrote it.
+    fn attribute(&self, dm: &mut DocMut<'_>, author: &str) {
+        if self.len == 0 || author.is_empty() {
+            return;
+        }
+        let span = Span {
+            block: self.block.clone(),
+            start: self.start,
+            end: self.start.saturating_add(self.len),
+        };
+        add_mark_region(
+            dm,
+            self.region,
+            &span,
+            tilo_doc::schema::MARK_AUTHOR,
+            &MarkVal::Str(author.to_owned()),
+        );
+    }
+}
+
+/// Apply a text action; what it typed in, when it typed text in one known
+/// place.
+fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) -> Option<Written> {
     match action {
         RichTextAction::ReplaceMatches { region, spans, ins } => {
             let mut sorted: Vec<_> = spans.iter().collect();
@@ -2071,6 +2227,8 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
                     ins,
                 );
             }
+            // Typed in many places at once: no one place to mark.
+            None
         }
         RichTextAction::SpliceText {
             region,
@@ -2078,7 +2236,10 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             at,
             del,
             ins,
-        } => apply_splice_text(dm, region.to_region(), block, *at, *del, ins),
+        } => {
+            apply_splice_text(dm, region.to_region(), block, *at, *del, ins);
+            Some(Written::new(region.to_region(), block, *at, ins))
+        }
         RichTextAction::ReplaceSelection {
             region,
             start_block,
@@ -2086,15 +2247,33 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             end_block,
             end,
             ins,
-        } => apply_replace_selection(
-            dm,
-            region.to_region(),
-            start_block,
-            *start,
-            end_block,
-            *end,
-            ins,
-        ),
+        } => {
+            apply_replace_selection(
+                dm,
+                region.to_region(),
+                start_block,
+                *start,
+                end_block,
+                *end,
+                ins,
+            );
+            Some(Written::new(region.to_region(), start_block, *start, ins))
+        }
+        RichTextAction::InsertParagraph { after, text } => {
+            Some(apply_insert_paragraph(dm, after, text))
+        }
+        RichTextAction::AppendParagraph { text } => Some(apply_append_paragraph(dm, text)),
+        RichTextAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
+        other => {
+            apply_block_text_action(dm, other);
+            None
+        }
+    }
+}
+
+/// The text actions that set marks, paste or replace blocks wholesale.
+fn apply_block_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
+    match action {
         RichTextAction::SetMark {
             region,
             spans,
@@ -2129,11 +2308,6 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             blocks,
             *adopt_first_style,
         ),
-        RichTextAction::InsertParagraph { after, text } => {
-            apply_insert_paragraph(dm, after, text);
-        }
-        RichTextAction::AppendParagraph { text } => apply_append_paragraph(dm, text),
-        RichTextAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
         RichTextAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
         RichTextAction::RemoveRegionBlocks { region, blocks } => {
             apply_remove_region_blocks(dm, region.to_region(), blocks);
@@ -2202,6 +2376,7 @@ fn apply_formatting_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             dm.set_meta_str("page_margin_bottom", &bottom.to_string());
             dm.set_meta_str("page_margin_left", &left.to_string());
         }
+        RichTextAction::NoteFileWritten { digest } => dm.set_meta_str(FILE_DIGEST, digest),
         RichTextAction::SetStyleProperty { style, key, value } => {
             let value = match value {
                 AttrVal::Bool(value) => tilo_doc::AttrVal::Bool(*value),
@@ -2418,6 +2593,9 @@ impl RichTextAction {
         // origin and replay, and minted without scanning the document.
         let payload = serde_json::to_vec(self).map_err(ActionError::Encode)?;
         let cx = tilo_resource::ActionCx::for_apply(doc, &payload, 0);
+        // Who typed the text in: the invoker the envelope pins, so a replay
+        // marks exactly what the origin marked.
+        let author = cx.author().map(str::to_owned);
         let mut ids = tilo_doc::model::IdGen::for_action(cx);
         let mut dm = DocMut {
             doc,
@@ -2426,7 +2604,13 @@ impl RichTextAction {
         };
 
         match self.domain() {
-            ActionDomain::Text => apply_text_action(&mut dm, self),
+            ActionDomain::Text => {
+                if let (Some(written), Some(author)) =
+                    (apply_text_action(&mut dm, self), author.as_deref())
+                {
+                    written.attribute(&mut dm, author);
+                }
+            }
             ActionDomain::Formatting => apply_formatting_action(&mut dm, self),
             ActionDomain::Media => apply_media_action(&mut dm, self),
             ActionDomain::Table => apply_table_action(&mut dm, self),
@@ -2450,6 +2634,13 @@ impl Action for RichTextAction {
 
     fn locus(&self) -> ExecutionLocus {
         ExecutionLocus::ClientLocal
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            Self::NoteFileWritten { .. } => tilo_actions::ChangeKind::External,
+            _ => tilo_actions::ChangeKind::Content,
+        }
     }
 }
 

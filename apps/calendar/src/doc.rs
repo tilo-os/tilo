@@ -121,10 +121,11 @@ impl CalDoc {
         )
     }
 
-    /// Mirror the whole in-memory model into the CRDT. Idempotent —
-    /// safe to call repeatedly (it overwrites scalar fields in place and
-    /// only starts `notes` when there are none yet, so live edits to notes
-    /// survive a re-mirror).
+    /// Mirror the whole in-memory model into the CRDT, for a test that
+    /// builds a document. Idempotent — safe to call repeatedly (it overwrites
+    /// scalar fields in place and only starts `notes` when there are none
+    /// yet, so live edits to notes survive a re-mirror).
+    #[cfg(test)]
     pub fn seed(doc: &mut AutoCommit, model: &Model) {
         let projects = Self::map_at(doc, "projects");
         for p in &model.projects {
@@ -1004,6 +1005,26 @@ impl CalDoc {
         Self::read_projects_into(doc, &mut model);
         Self::read_events_into(doc, &mut model);
         Self::read_tasks_into(doc, &mut model);
+        let owners = model
+            .events
+            .iter()
+            .map(|event| (true, event.id))
+            .chain(model.tasks.iter().map(|task| (false, task.id)));
+        model.push_queue = Self::outbox(doc);
+        model.delete_queue = Self::delete_outbox(doc);
+        model.bindings = model
+            .push_queue
+            .iter()
+            .copied()
+            .chain(model.delete_queue.iter().map(|(_, id)| *id))
+            .filter_map(|id| Self::remote_binding(doc, id).map(|binding| (id, binding)))
+            .collect();
+        model.notes = owners
+            .filter_map(|(event, id)| {
+                let text = Self::note_text(doc, event, id);
+                (!text.trim().is_empty()).then_some((id, text))
+            })
+            .collect();
         model
     }
 

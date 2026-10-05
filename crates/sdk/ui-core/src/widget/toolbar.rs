@@ -64,6 +64,7 @@ pub struct ToolbarCommand {
     /// to the More menu together, never one without the other.
     pub joined: bool,
     pub on_click: Box<dyn FnMut()>,
+    action: Option<super::ActionEmitter<()>>,
 }
 
 impl ToolbarCommand {
@@ -80,7 +81,16 @@ impl ToolbarCommand {
             menu: None,
             joined: false,
             on_click,
+            action: None,
         }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+            && self
+                .action
+                .as_ref()
+                .is_none_or(super::ActionEmitter::is_available)
     }
 
     /// The name it is announced and listed by.
@@ -264,6 +274,16 @@ impl Toolbar {
     pub fn push_element(mut self, element: Box<dyn Widget>) -> Self {
         self.items.push(ToolbarItem::Element(element));
         self.layout_dirty = true;
+        self
+    }
+
+    /// Bind the last pushed command to the same admitted action in the row
+    /// and overflow menu. The callback is not run for a bound command.
+    #[must_use]
+    pub fn with_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
+        if let Some(command) = self.last_command() {
+            command.action = Some(super::ActionEmitter::new(binding));
+        }
         self
     }
 
@@ -1004,7 +1024,7 @@ impl Toolbar {
                             if let Some(active) = command.active {
                                 row = row.with_checked(active);
                             }
-                            row.with_enabled(command.enabled)
+                            row.with_enabled(command.is_enabled())
                         }
                         None => MenuItem::separator(),
                     });
@@ -1064,11 +1084,17 @@ impl Toolbar {
 
     fn invoke(&mut self, index: usize) {
         let opens_menu = match self.items.get_mut(index) {
-            Some(ToolbarItem::Button(command)) if command.enabled => {
+            Some(ToolbarItem::Button(command)) if command.is_enabled() => {
                 if command.menu.is_some() {
                     true
                 } else {
-                    (command.on_click)();
+                    if let Some(action) = &mut command.action {
+                        if let Err(error) = action.emit(()) {
+                            tracing::warn!(%error, "toolbar command refused its arguments");
+                        }
+                    } else {
+                        (command.on_click)();
+                    }
                     self.activated = Some(index);
                     false
                 }
@@ -1147,7 +1173,7 @@ impl Toolbar {
     }
     fn target_enabled(&self, target: Target) -> bool {
         match target {
-            Target::Item(index) => self.command(index).is_some_and(|c| c.enabled),
+            Target::Item(index) => self.command(index).is_some_and(|c| c.is_enabled()),
             Target::Overflow => true,
         }
     }
@@ -1298,7 +1324,90 @@ fn to_f32(value: f64) -> f32 {
     value as f32
 }
 
+impl crate::widget::controls::ActionControls for Toolbar {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        for item in &mut self.items {
+            match item {
+                ToolbarItem::Button(command) => {
+                    if let Some(action) = &mut command.action {
+                        let _ = action.install_custody(domain, attachment);
+                    }
+                }
+                ToolbarItem::Element(element) => crate::widget::controls::install_control_custody(
+                    element.as_mut(),
+                    domain,
+                    attachment,
+                ),
+                _ => {}
+            }
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.items.iter_mut().find_map(|item| match item {
+            ToolbarItem::Button(command) => {
+                command.action.as_mut().and_then(super::ActionEmitter::take)
+            }
+            ToolbarItem::Element(element) => {
+                crate::widget::controls::take_control_invocation(element.as_mut())
+            }
+            _ => None,
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        for (index, item) in self.items.iter().enumerate() {
+            match item {
+                ToolbarItem::Button(command) => {
+                    if let Some(action) = &command.action {
+                        bindings.push(action.metadata(format!("toolbar.item.{index}")));
+                    }
+                }
+                ToolbarItem::Element(element) => bindings.extend(
+                    crate::widget::controls::control_action_bindings(element.as_ref()),
+                ),
+                _ => {}
+            }
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        let mut availability_changed = false;
+        for item in &mut self.items {
+            match item {
+                ToolbarItem::Button(command) => {
+                    if let Some(action) = &mut command.action {
+                        let before = action.is_available();
+                        action.refresh_availability(allowed);
+                        if before != action.is_available() {
+                            self.layout_dirty = true;
+                            availability_changed = true;
+                        }
+                    }
+                }
+                ToolbarItem::Element(element) => {
+                    crate::widget::controls::refresh_control_action_availability(
+                        element.as_mut(),
+                        allowed,
+                    )
+                }
+                _ => {}
+            }
+        }
+        if availability_changed {
+            self.menu_indices.clear();
+        }
+    }
+}
+
 impl Widget for Toolbar {
+    crate::provides!(dyn crate::widget::controls::ActionControls);
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         Widget::set_platform_conventions(&mut self.menu, conventions);
         for item in &mut self.items {
@@ -1308,7 +1417,7 @@ impl Widget for Toolbar {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         for item in &mut self.items {
             if let ToolbarItem::Element(element) = item {
                 element.sync(state, path);
@@ -1537,7 +1646,7 @@ impl Widget for Toolbar {
                         command.icon,
                         command.swatch,
                         command.active.unwrap_or(false),
-                        command.enabled,
+                        command.is_enabled(),
                         command.dot,
                         command.accessible_name.clone(),
                     );
@@ -1691,7 +1800,7 @@ impl Widget for Toolbar {
                     &mut crate::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: ctx.modifiers,
-                        state: &mut *ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: &mut *ctx.handled,
                         focus_target: &mut *ctx.focus_target,
@@ -1862,7 +1971,7 @@ impl Widget for Toolbar {
                             format!("toolbar.item.{index}"),
                             command.and_then(|c| c.menu.as_ref()).map(|_| open),
                             command.and_then(|c| c.active),
-                            command.is_none_or(|c| c.enabled),
+                            command.is_none_or(|c| c.is_enabled()),
                         )
                     }
                     Target::Overflow => (
@@ -1913,7 +2022,7 @@ impl Widget for Toolbar {
                                 focusable: true,
                                 focused: self.focused && self.menu.hovered() == Some(row),
                                 checked: command.active,
-                                disabled: !command.enabled,
+                                disabled: !command.is_enabled(),
                                 ..Default::default()
                             }),
                     )
@@ -1961,7 +2070,7 @@ impl Widget for Toolbar {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if let Some((_, menu)) = self.item_menu.as_mut()
@@ -2118,6 +2227,77 @@ mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
     use vello_encoding::DrawTag;
+
+    #[test]
+    fn bound_commands_queue_the_same_action_in_the_row_and_overflow_and_obey_availability() {
+        use crate::widget::controls::{
+            control_action_bindings, refresh_control_action_availability, take_control_invocation,
+        };
+        let resource = tilo_actions::Resource::new("doc:toolbar", "doc", "Document").with_action(
+            tilo_actions::ActionSpec::operation(
+                "save",
+                "Save",
+                tilo_actions::OperationKind::Effect,
+                "test.save",
+                &(),
+            )
+            .unwrap(),
+        );
+        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+        for width in [800.0, 45.0] {
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let callback = calls.clone();
+            let mut toolbar = Toolbar::new(Orientation::Horizontal)
+                .push_button("Save document", move || callback.set(callback.get() + 1))
+                .with_action(binding.clone())
+                .push_button("Another command", || {});
+            let mut text = TextRenderer::new();
+            let theme = Theme::dark();
+            let rect = Rect::new(0.0, 0.0, width, 40.0);
+            toolbar.lay_out_in(rect, &mut text, &theme);
+            if width < 100.0 {
+                assert!(toolbar.has_overflow());
+                assert!(!toolbar.is_shown(0));
+                toolbar.open_overflow();
+            }
+            let mut doc = automerge::AutoCommit::new();
+            assert!(toolbar.perform_semantic_action(
+                "toolbar.item.0",
+                &Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            let invocation =
+                take_control_invocation(&mut toolbar).expect("the canonical action is queued");
+            assert_eq!(
+                invocation.address,
+                tilo_actions::ActionAddress::new("doc:toolbar", "save")
+            );
+            assert_eq!(
+                calls.get(),
+                0,
+                "bound commands never run the imperative callback"
+            );
+            assert!(take_control_invocation(&mut toolbar).is_none());
+            assert_eq!(control_action_bindings(&toolbar).len(), 1);
+            refresh_control_action_availability(&mut toolbar, &std::collections::HashSet::new());
+            toolbar.lay_out_in(rect, &mut text, &theme);
+            if toolbar.has_overflow() {
+                toolbar.open_overflow();
+            }
+            assert!(!toolbar.perform_semantic_action(
+                "toolbar.item.0",
+                &Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
+            assert!(
+                take_control_invocation(&mut toolbar).is_none(),
+                "withdrawn actions cannot be queued from overflow"
+            );
+            assert_eq!(calls.get(), 0);
+        }
+    }
 
     /// A separator never stands first, last or beside another separator of
     /// what is shown: a row that starts after a group boundary, or ends at
@@ -2544,7 +2724,7 @@ mod lifecycle_tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Default::default(),
-                state: &mut AutoCommit::new(),
+                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -2653,7 +2833,7 @@ mod lifecycle_tests {
                                 assert!(tb.perform_semantic_action(
                                     &format!("toolbar.item.{index}"),
                                     &Action::Activate,
-                                    &mut AutoCommit::new(),
+                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                                     &automerge::ROOT
                                 ));
                             }
@@ -2684,7 +2864,7 @@ mod lifecycle_tests {
                                 assert!(tb.perform_semantic_action(
                                     &format!("toolbar.item.{index}"),
                                     &Action::Activate,
-                                    &mut AutoCommit::new(),
+                                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                                     &automerge::ROOT
                                 ));
                             }
@@ -2996,7 +3176,7 @@ mod lifecycle_tests {
                 assert!(host.children_mut()[0].perform_semantic_action(
                     "toolbar.overflow",
                     &Action::Activate,
-                    &mut AutoCommit::new(),
+                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT
                 ));
                 let send = |host: &mut crate::widget::Row, event: WindowEvent| {
@@ -3005,7 +3185,7 @@ mod lifecycle_tests {
                         &mut crate::widget::EventCtx {
                             scale_factor: 1.0,
                             modifiers: &Default::default(),
-                            state: &mut AutoCommit::new(),
+                            state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                             path: &automerge::ROOT,
                             handled: &mut false,
                             focus_target: &mut None,
@@ -3144,7 +3324,7 @@ mod command_state_tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Default::default(),
-                state: &mut AutoCommit::new(),
+                state: crate::widget::Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,

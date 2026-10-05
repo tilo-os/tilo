@@ -67,7 +67,9 @@ fn fixture() -> Element {
             Card::new(Box::new(Text::new("Short description")))
                 .with_title("Terminal")
                 .with_footer(Actions::new(
-                    Button::new("open", "Open", Some("opened")).role(ButtonRole::Primary),
+                    Button::new("open", "Open")
+                        .on_click(crate::testing::record_click("opened"))
+                        .role(ButtonRole::Primary),
                 )),
         ),
         Box::new(
@@ -76,7 +78,7 @@ fn fixture() -> Element {
             )))
             .with_title("Workspace")
             .with_footer(Actions::new(
-                Button::new("install", "Install", None).role(ButtonRole::Primary),
+                Button::new("install", "Install").role(ButtonRole::Primary),
             )),
         ),
     ]))
@@ -97,16 +99,11 @@ fn long_fixture() -> Element {
                             Button::new(
                                 &format!("primary-{index}"),
                                 "Refresh all remote connections",
-                                None,
                             )
                             .with_icon(crate::icons::Icon::Search)
                             .role(ButtonRole::Primary),
                         )
-                        .secondary(Button::new(
-                            &format!("secondary-{index}"),
-                            "View details",
-                            None,
-                        )),
+                        .secondary(Button::new(&format!("secondary-{index}"), "View details")),
                     ),
                 ) as Element
             })
@@ -214,14 +211,10 @@ fn content_rows_use_each_rows_largest_card_and_align_footers() {
     );
     let action = rect(&cards[0].children[2].children[0]);
     harness.click_at(action.center().x, action.center().y);
-    use automerge::ReadDoc;
-    assert!(
-        harness
-            .state_mut()
-            .doc
-            .get(automerge::ROOT, "opened")
-            .unwrap()
-            .is_some()
+    assert_eq!(
+        crate::testing::clicks("opened"),
+        1,
+        "the visible card footer invokes its published callback"
     );
 }
 
@@ -291,11 +284,7 @@ fn actions_trail_and_keep_manual_order() {
     let root = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .push(Box::new(Actions::new(Button::new(
-            "save",
-            "Save changes",
-            None,
-        ))));
+        .push(Box::new(Actions::new(Button::new("save", "Save changes"))));
     let harness = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(root),
@@ -306,11 +295,8 @@ fn actions_trail_and_keep_manual_order() {
     let action = &snapshot.root.children[0].children[0];
     assert!((rect(action).x1 - 600.0).abs() < 1.0);
 
-    let actions = Actions::new(Button::new("primary", "Primary", None)).secondary(Button::new(
-        "secondary",
-        "Secondary",
-        None,
-    ));
+    let actions = Actions::new(Button::new("primary", "Primary"))
+        .secondary(Button::new("secondary", "Secondary"));
     let harness = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(actions),
@@ -345,7 +331,6 @@ fn cards_in_a_scroll_stack_keep_their_content_height() {
             .with_footer(Actions::new(Button::new(
                 &format!("details-{index}"),
                 "View details",
-                None,
             ))),
         ));
     }
@@ -354,7 +339,7 @@ fn cards_in_a_scroll_stack_keep_their_content_height() {
             Text::new("All applications").with_id("trailing-heading"),
         ))
         .push(Box::new(
-            Button::new("final-action", "Open all applications", None).on_click(move || {
+            Button::new("final-action", "Open all applications").on_click(move || {
                 counter.set(counter.get() + 1);
             }),
         ));
@@ -434,7 +419,9 @@ fn a_pressable_card_activates_but_its_own_actions_do_not_open_it() {
     let counter = opened.clone();
     let card = Card::new(Box::new(Text::new("Quarterly report")))
         .with_title("Report.pdf")
-        .with_footer(Actions::new(Button::new("share", "Share", Some("shared"))))
+        .with_footer(Actions::new(
+            Button::new("share", "Share").on_click(crate::testing::record_click("shared")),
+        ))
         .on_activate("open-report", move || counter.set(counter.get() + 1));
     let mut harness = FrameHarness::new_with_theme(
         crate::State::new(),

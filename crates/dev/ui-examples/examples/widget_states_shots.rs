@@ -214,7 +214,7 @@ fn button(role: ButtonRole, label: &str, col: Col) -> Option<Element> {
     match col.st {
         St::Selected | St::Error => None,
         st => boxed(
-            Button::new("button", label, None)
+            Button::new("button", label)
                 .role(role)
                 .control_size(col.size)
                 .with_enabled(st != St::Disabled),
@@ -239,7 +239,7 @@ fn control_specs() -> Vec<Spec> {
         widget("Key", 56.0, |c, _| match c.st {
             St::Error => None,
             st => boxed(
-                Button::new("key", "7", None)
+                Button::new("key", "7")
                     .role(ButtonRole::Key)
                     .control_size(ControlSize::Large)
                     .toggled(st == St::Selected)
@@ -419,13 +419,11 @@ fn size_specs() -> Vec<Spec> {
                 Row::new()
                     .with_gap(8.0)
                     .push(Box::new(
-                        Button::new("a", "Save", None)
+                        Button::new("a", "Save")
                             .role(ButtonRole::Primary)
                             .control_size(c.size),
                     ))
-                    .push(Box::new(
-                        Button::new("b", "Discard", None).control_size(c.size),
-                    ))
+                    .push(Box::new(Button::new("b", "Discard").control_size(c.size)))
                     .push(Box::new(NumberInput::new(4.0).control_size(c.size)))
                     .push(Box::new(
                         ToggleGroup::new(vec![Segment::new("A"), Segment::new("B")], 0)
@@ -786,7 +784,7 @@ fn stamp(canvas: &mut Canvas<'_>, cell: Rect, widget: &mut dyn Widget, st: St, f
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1431,12 +1429,12 @@ fn content_blocks() -> Vec<Block> {
                         "Shared with 4 people. Last opened today.",
                     )))
                     .with_title("Atlas plan")
-                    .with_footer(Actions::new(Button::new("o", "Open", None))),
+                    .with_footer(Actions::new(Button::new("o", "Open"))),
                 ),
                 Box::new(
                     Card::new(Box::new(Text::new("Synced from your phone at 10:12.")))
                         .with_title("Field notes")
-                        .with_footer(Actions::new(Button::new("o2", "Open", None))),
+                        .with_footer(Actions::new(Button::new("o2", "Open"))),
                 ),
             ]))
         }),
@@ -1793,7 +1791,7 @@ fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
         .push(Box::new(
             Row::new()
                 .push(Box::new(dropdown))
-                .push(Box::new(Button::new("x", "Export", None))),
+                .push(Box::new(Button::new("x", "Export"))),
         ))
         .push(Box::new(chrome))
         .push(Box::new(menu))
@@ -2062,7 +2060,7 @@ fn list_blocks() -> Vec<Block> {
                     .with_header(
                         SectionHeader::group("Mailboxes")
                             .count(4)
-                            .action(Button::new("clear", "Clear all", None)),
+                            .action(Button::new("clear", "Clear all")),
                     ),
                 ),
                 Box::new(StatusLine::active("Synced a minute ago")),

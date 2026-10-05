@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use ui::widget::{AppModel, ModelPath};
 
-use crate::resource::{DiskUsage, DiskUsageAction, DiskUsageEffect, analyze, folder_row};
-use ui::framework::{Dispatcher, EffectCx, Effected, LiveRow};
+use crate::resource::{DiskUsage, DiskUsageEffect, RecentFolders, analyze, folder_row, recent_row};
+use ui::framework::{Dispatcher, EffectCx, Effected, LiveRow, Setting};
 use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -18,7 +18,6 @@ use ui::widget::{
     Scrollable, Section, SectionHeader, Text, Widget,
 };
 
-use crate::doc::DiskUsageDoc;
 use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{bytes_si, count};
 
@@ -206,7 +205,7 @@ impl ui::widget::Decorator for SliceChart {
         &mut self.chart
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         match self.chart.take_activated() {
             Some(id) => {
                 self.inbox
@@ -260,6 +259,7 @@ pub struct DiskUsageApp {
     inspected: Option<String>,
     history: Vec<PathBuf>,
     pub(crate) recent: Vec<PathBuf>,
+    pub(crate) recents: Option<Setting<RecentFolders>>,
     places: Vec<Place>,
     inbox: Inbox,
     scan_cancellation: Option<ScanCancellation>,
@@ -306,6 +306,7 @@ impl DiskUsageApp {
             inspected: None,
             history: Vec::new(),
             recent: Vec::new(),
+            recents: None,
             places,
             inbox,
             scan_cancellation: None,
@@ -319,6 +320,26 @@ impl DiskUsageApp {
     pub(crate) fn set_result(&mut self, result: ScanResult) {
         self.show(View::Analysis(result));
     }
+    pub(crate) fn recent_folders(&self) -> Vec<PathBuf> {
+        self.recents
+            .as_ref()
+            .map_or_else(|| self.recent.clone(), |recents| recents.get().folders)
+    }
+
+    fn remember(&mut self, folder: PathBuf) {
+        if let Some(recents) = &self.recents {
+            if let Err(error) = recents.update(|recent| recent.remember(folder)) {
+                tracing::warn!(%error, "could not remember the analyzed folder");
+            }
+        } else {
+            let mut recent = RecentFolders {
+                folders: std::mem::take(&mut self.recent),
+            };
+            recent.remember(folder);
+            self.recent = recent.folders;
+        }
+    }
+
     fn show(&mut self, view: View) {
         self.view = view;
         self.rebuild();
@@ -348,7 +369,7 @@ impl DiskUsageApp {
         let worker = cancellation.clone();
         cx.thread(
             move |_| crate::scan::scan_with_cancellation(path, &worker),
-            move |app: &mut Self, result: ScanResult, cx| {
+            move |app: &mut Self, result: ScanResult, _cx| {
                 if cancellation.is_cancelled() {
                     return Err("The scan was stopped".into());
                 }
@@ -357,9 +378,7 @@ impl DiskUsageApp {
                     app.show(View::Error(result.path, message.clone()));
                     return Err(message);
                 }
-                cx.apply(&DiskUsageAction::Remember {
-                    path: result.path.to_string_lossy().into_owned(),
-                });
+                app.remember(result.path.clone());
                 let answer = serde_json::json!({
                     "path": result.path,
                     "bytes": result.total,
@@ -473,7 +492,7 @@ impl DiskUsageApp {
     fn home_view(&self) -> Element {
         let (places, recent) = self.locations();
         let choose = self.bind(
-            Button::new("disk-usage.choose", "Choose folder", None).with_icon(Icon::FolderOpen),
+            Button::new("disk-usage.choose", "Choose folder").with_icon(Icon::FolderOpen),
             &CHOOSE,
         );
         let mut page = Column::new()
@@ -592,21 +611,16 @@ impl ui::widget::Decorator for DiskUsageApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let recent = {
-            let (doc, _) = ui::doc::document(state, path);
-            DiskUsageDoc::recent(doc)
-        };
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let recent = self.recent_folders();
         if recent != self.recent {
             self.recent = recent;
-            if matches!(self.view, View::Home) {
-                self.rebuild();
-            }
+            self.refresh_home();
         }
         self.content.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.content.update(state, path);
         let requests = std::mem::take(&mut *self.inbox.borrow_mut());
         for request in requests {
@@ -645,6 +659,7 @@ impl DiskUsageApp {
             .iter()
             .map(|place| folder_row(&place.label, &place.path))
             .collect();
+        rows.extend(self.recent_folders().iter().map(|path| recent_row(path)));
         if let View::Analysis(result) = &self.view {
             rows.extend(
                 result

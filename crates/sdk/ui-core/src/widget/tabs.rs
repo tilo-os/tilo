@@ -9,9 +9,9 @@ use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
 use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
+use crate::widget::ModelPath;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2811,7 +2811,7 @@ impl Widget for TabBar {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
@@ -4344,7 +4344,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4416,7 +4416,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -4630,7 +4630,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5043,7 +5043,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5072,7 +5072,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5092,7 +5092,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5141,7 +5141,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5169,7 +5169,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5783,7 +5783,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -5804,7 +5804,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -6279,7 +6279,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &root_id,
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -6344,7 +6344,7 @@ mod tests {
                 &mut b,
                 "tab-new",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(b.take_new_tab().is_some());
@@ -6352,7 +6352,7 @@ mod tests {
                 &mut b,
                 "tab-close:2",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(b.take_close(), Some(2));
@@ -6399,7 +6399,7 @@ mod tests {
                 &mut b,
                 "tab:3",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(b.active_id(), 3);
@@ -6408,7 +6408,7 @@ mod tests {
                 &mut b,
                 "tab:999",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
         }
@@ -6710,7 +6710,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &obj,
                 handled,
                 focus_target: &mut focus,
@@ -6744,7 +6744,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &obj,
                 handled,
                 focus_target: &mut focus,

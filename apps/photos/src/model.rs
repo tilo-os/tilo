@@ -282,6 +282,10 @@ pub struct LibraryPhoto {
     /// accepted through a canonical action.
     #[serde(default)]
     pub analysis: Option<ImageAnalysis>,
+    /// The crop and turn this photograph is shown with. Its own: editing one
+    /// photograph never touches another's.
+    #[serde(default)]
+    pub edits: Edits,
 }
 
 impl LibraryPhoto {
@@ -301,6 +305,7 @@ impl LibraryPhoto {
             captured_at: None,
             location: None,
             analysis: None,
+            edits: Edits::default(),
         }
     }
 
@@ -320,7 +325,7 @@ impl LibraryPhoto {
             parts.push(format!("Tags: {}", self.tags.join(", ")));
         }
         if let Some(captured_at) = &self.captured_at {
-            parts.push(format!("Captured: {captured_at}"));
+            parts.push(format!("Captured: {}", capture_label(captured_at)));
         }
         if let Some(location) = &self.location {
             parts.push(format!("Place: {}", location.display_name()));
@@ -526,7 +531,7 @@ impl Rect01 {
     }
 }
 
-/// What the user has done to the open photograph. Ordered `crop` then
+/// What the user has done to a photograph. Ordered `crop` then
 /// `rotate`; see [`crate::pixels`] for why that order is fixed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Edits {
@@ -658,8 +663,34 @@ impl OpenImage {
     }
 }
 
+/// A stored capture time as people read it: the ISO separator between the
+/// date and the time becomes a space (`2026-07-12 18:16`). Anything else is
+/// shown as stored.
+pub(crate) fn capture_label(captured_at: &str) -> String {
+    match (
+        captured_at.get(..10),
+        captured_at.get(10..11),
+        captured_at.get(11..),
+    ) {
+        (Some(day), Some("T"), Some(time))
+            if !time.is_empty()
+                && crate::actions::timeline_day_from_capture(captured_at).is_some() =>
+        {
+            format!("{day} {time}")
+        }
+        _ => captured_at.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capture_times_read_with_a_space_not_the_iso_separator() {
+        assert_eq!(capture_label("2026-07-12T18:16"), "2026-07-12 18:16");
+        assert_eq!(capture_label("2026-07-12"), "2026-07-12");
+        assert_eq!(capture_label("June 2026"), "June 2026");
+    }
+
     use super::*;
 
     #[test]

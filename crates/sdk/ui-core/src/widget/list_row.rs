@@ -24,6 +24,7 @@
 //!
 //! [`row_bleed`]: crate::chrome::row_bleed
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use taffy::style_helpers::{auto, length, percent};
@@ -2518,7 +2519,7 @@ impl Widget for ListRow {
         }
     }
 
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         if let Some(Leading::Media {
             source: MediaSource::Url { store, url },
             loaded,
@@ -2535,11 +2536,7 @@ impl Widget for ListRow {
         }
     }
 
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         self.trailing
             .as_mut()
             .is_some_and(|trailing| trailing.element.update(state, path))
@@ -2892,7 +2889,7 @@ impl Widget for ListRow {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -2917,7 +2914,7 @@ impl Widget for ListRow {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &crate::widget::ModelPath,
     ) -> bool {
         match key_path {
@@ -2940,7 +2937,7 @@ impl Widget for ListRow {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         if let Some(started) = self.activation.start_native(op)? {
@@ -3036,7 +3033,7 @@ impl Widget for ListRow {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &crate::widget::ModelPath,
     ) -> bool {
         let id = self.activation.id().to_owned();
@@ -3293,25 +3290,13 @@ impl crate::widget::Decorator for ControlRow {
         self.id.as_deref()
     }
 
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(choice) = &self.choice {
             let selected = (choice.is_chosen)();
             self.dirty |= selected != self.selected;
             self.selected = selected;
         }
         self.content.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = self.content.build_layout(taffy, theme, node_map);
-        // Accessibility actions on the row reach it through the node map.
-        crate::widget::decorator::register_node(node_map, node, self);
-        node
     }
 
     fn draw(
@@ -3401,8 +3386,8 @@ impl crate::widget::Decorator for ControlRow {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
         match action {
             crate::a11y::Action::Activate | crate::a11y::Action::SetSelection { .. } => {
@@ -3437,7 +3422,7 @@ mod control_row_tests {
         assert!(Widget::perform_action(
             &mut oil,
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &root
         ));
         assert_eq!(chosen.with(Clone::clone), "oil");
@@ -3449,7 +3434,12 @@ mod control_row_tests {
         chosen.set("oil-mask".to_owned());
         Widget::sync(&mut oil, &mut doc, &root);
         assert!(oil.is_selected());
-        Widget::perform_action(&mut oil, &crate::a11y::Action::Activate, &mut doc, &root);
+        Widget::perform_action(
+            &mut oil,
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &root,
+        );
         assert_eq!(chosen.with(Clone::clone), "oil-mask");
 
         let node = Widget::accessibility(&ink).expect("a list item");

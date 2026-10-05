@@ -15,7 +15,6 @@ use std::sync::mpsc::{Receiver, Sender};
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -4529,12 +4528,11 @@ impl FloatingSurfaceProvider for MapsApp {
 impl Widget for MapsApp {
     ui::provides!(
         dyn ui::widget::FloatingSurfaceProvider,
-        dyn ui::search::capability::SearchSource,
         dyn ui::widget::WindowHeader,
         dyn ui::widget::controls::ActionControls
     );
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // Pull any background network results into the model first.
         self.drain_net();
         // Fold in a device-location fix if the portal worker has one.
@@ -4691,7 +4689,7 @@ impl Widget for MapsApp {
         // Covered map controls must never observe the same event.
         if self
             .info_sheet
-            .handle_event(event, ctx.scale_factor, *ctx.modifiers, ctx.state)
+            .handle_event(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state)
         {
             *ctx.handled = true;
             return;
@@ -4736,11 +4734,11 @@ impl Widget for MapsApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                 );
                 // Track hover in the open overflow menu / offline city dropdown.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, ctx.state);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state);
                 }
                 if self.offline_panel.is_open() {
                     self.offline_panel.route_field_event(
@@ -4748,7 +4746,7 @@ impl Widget for MapsApp {
                         ctx.scale_factor,
                         *ctx.modifiers,
                         self.last_mouse,
-                        ctx.state,
+                        &mut ctx.state,
                     );
                 }
                 if self.dragging && self.left_down {
@@ -4812,7 +4810,7 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu owns the pointer: a row press selects,
                 // an outside press dismisses. Route to it before the map/chrome.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, ctx.state);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
@@ -4828,7 +4826,7 @@ impl Widget for MapsApp {
                         ctx.scale_factor,
                         *ctx.modifiers,
                         self.last_mouse,
-                        ctx.state,
+                        &mut ctx.state,
                     ) {
                         *ctx.handled = true;
                         return;
@@ -4845,7 +4843,7 @@ impl Widget for MapsApp {
                         event,
                         ctx.scale_factor,
                         *ctx.modifiers,
-                        ctx.state,
+                        &mut ctx.state,
                     )
                 {
                     self.apply_endpoint_effect(effect);
@@ -4930,7 +4928,7 @@ impl Widget for MapsApp {
                 // The open ⋯ overflow menu takes keyboard nav (arrows / Enter /
                 // Esc) via its own handling before the map shortcuts.
                 if self.overflow.is_open() {
-                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, ctx.state);
+                    self.drive_overflow(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state);
                     if let Some(idx) = self.overflow.take_selection() {
                         self.overflow_select(idx);
                     }
@@ -4948,7 +4946,7 @@ impl Widget for MapsApp {
                             ctx.scale_factor,
                             *ctx.modifiers,
                             self.last_mouse,
-                            ctx.state,
+                            &mut ctx.state,
                         );
                     }
                     *ctx.handled = true;
@@ -4959,7 +4957,8 @@ impl Widget for MapsApp {
                 // shortcuts apply.
                 let field_focused = self.endpoints.is_focused();
                 if field_focused {
-                    if self.route_field_key(event, ctx.scale_factor, *ctx.modifiers, ctx.state) {
+                    if self.route_field_key(event, ctx.scale_factor, *ctx.modifiers, &mut ctx.state)
+                    {
                         *ctx.handled = true;
                     }
                 } else if self.handle_key(&key_event.logical_key, *ctx.modifiers) {
@@ -5035,7 +5034,7 @@ impl Widget for MapsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if self.offline_panel.is_open() {
@@ -5149,14 +5148,6 @@ impl Widget for MapsApp {
     ) {
         // Root fills the window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
-    }
-}
-
-impl ui::search::capability::SearchSource for MapsApp {
-    /// The places the map knows, the points of interest around the view and
-    /// the recent searches answer at once; the geocoder answers later.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.place_search.provider(self.local_places()))]
     }
 }
 

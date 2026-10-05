@@ -118,7 +118,7 @@ impl CodeApp {
         question: Question,
         event: &WindowEvent,
         scale_factor: f64,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         match self.question_sheet.handle(event, scale_factor) {
@@ -133,7 +133,7 @@ impl CodeApp {
         &mut self,
         question: Question,
         index: usize,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         self.question_sheet.reset();
         match question {

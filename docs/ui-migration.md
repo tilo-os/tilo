@@ -898,7 +898,7 @@ open list, a focused button).
 | `.fill_width(h)` | `.fill_width()` |
 | `.with_min_height(h)` | delete; pick the `ControlSize` |
 | `ButtonFace::radius(r)`, `ButtonFace::wrap_label()` | delete |
-| `Button::new(id, "", None).with_icon(i).with_accessible_name(n)` (+ `.tooltip(n)`, `.ghost()`, `.with_size(s, s)`) | `Button::icon_only(id, i, n)` (square, named, tooltip, Plain) |
+| `Button::new(id, "").with_icon(i).with_accessible_name(n)` (+ `.tooltip(n)`, `.ghost()`, `.with_size(s, s)`) | `Button::icon_only(id, i, n)` (square, named, tooltip, Plain) |
 | `ButtonFace::new(r, "").icon(i).accessible_name(n)` | `ButtonFace::icon_only(r, i, n)` |
 | a label with a shortcut glued on ("Run ⌘↵", "Send (Ctrl+Enter)") | the label alone plus `.shortcut_hint(Shortcut::command("Enter"))`; the hint is spelled in the platform's keycaps, never `⌘` off macOS |
 | `UndoButton::with_style(s)`, `UndoButton::with_size(w, h)` | `UndoButton::role(r)`, `UndoButton::control_size(size)` |

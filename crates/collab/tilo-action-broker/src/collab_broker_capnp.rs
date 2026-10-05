@@ -69,7 +69,7 @@ use collab_types::{
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
 use runtime_collab::raw::{
-    OpKind, action_catalogue_stream, action_directory, action_input, channel_handle,
+    OpKind, action_catalogue_stream, action_directory, action_input, blob_stream, channel_handle,
     collab_service, context_stream, invocation_stream, presence_event, presence_handle,
     presence_payload, presence_stream, realtime_stream, scrollback_batch, stream, task_run_stream,
 };
@@ -89,7 +89,7 @@ use tilo_desktop_model::{DesktopTree, WorkspaceTaskStatus};
 struct AuthorizedDocumentRoute {
     artifact: ArtifactId,
     channel: collab_types::ChannelId,
-    payload: collab_types::WholeDocumentPayload,
+    payload: collab_types::RoutedDocumentPayload,
 }
 
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
@@ -432,6 +432,13 @@ impl VerifiedJoinIdentity {
             capped,
         }
     }
+
+    /// Whether `cluster_id` is this identity's own person room: the room
+    /// every device its root certified owns, and no other device enters.
+    fn owns_person_room(&self, cluster_id: &str) -> bool {
+        uuid::Uuid::parse_str(cluster_id)
+            .is_ok_and(|room| collab_types::is_person_room(&self.user_public_key, &room))
+    }
 }
 
 /// Whether a device is held to the foreign-device cap in `room`, as far as
@@ -579,6 +586,26 @@ impl AdmittedJoinIdentity {
         .from_foreign_device(foreign)
     }
 
+    /// The caller this certified identity is in `room`, from its own
+    /// device: foreign when it was held to the cap there or the host keeps
+    /// a stricter restriction for it.
+    fn certified_caller(&self, room: &str, restricted: bool) -> tilo_actions::remote::Caller {
+        let verified = &self.verified;
+        match &self.agent_id {
+            Some(agent) => tilo_actions::remote::Caller::delegated_agent(
+                agent.clone(),
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+            None => tilo_actions::remote::Caller::authenticated(
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+        }
+        .in_room(room)
+        .from_foreign_device(verified.capped || restricted)
+    }
+
     fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
         let room = workspace.room.to_string();
         if let Some(agent) = &self.agent_id {
@@ -651,12 +678,33 @@ fn admit_verified_join_at(
     verified: VerifiedJoinIdentity,
     now: u64,
 ) -> Result<AdmittedJoinIdentity, String> {
+    let principal_id = principal_id_for_root(verified.user_public_key);
+    // The person room has no roster to consult: its members are, by the
+    // room id's derivation, exactly the devices this root certified, each
+    // acting as the room's owner — a foreign device with the foreign-device
+    // cap's role, there as in any room. Any other room id is a workspace.
+    if verified.owns_person_room(&route.cluster_id) {
+        let role = if verified.capped {
+            foreign_device_role(CapRole::Owner, &[], now)
+        } else {
+            CapRole::Owner
+        };
+        return Ok(AdmittedJoinIdentity {
+            host_scope: None,
+            worker_registration: None,
+            certificate: None,
+            verified,
+            principal_id,
+            role,
+            display_handle: None,
+            agent_id: None,
+        });
+    }
     let workspace = tree
         .workspaces
         .iter()
         .find(|workspace| workspace.room.to_string() == route.cluster_id)
         .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
-    let principal_id = principal_id_for_root(verified.user_public_key);
     let mut role = workspace
         .role_of_at(&principal_id, now)
         .ok_or_else(|| "certified collaboration identity is not a workspace member".to_string())?;
@@ -1102,6 +1150,9 @@ pub struct InvocationJob {
 
 #[derive(Clone)]
 struct PendingInvocation {
+    /// Who it was admitted for, kept so an edit its effect submits is
+    /// admitted for them too.
+    caller: Option<ContinuingCaller>,
     activity: Option<ActivityTarget>,
     owner: InvocationOwner,
     network_evidence: Option<tilo_relay::client::CertifiedAction>,
@@ -1182,6 +1233,167 @@ impl CallerInvocation {
             }
         }
         intent
+    }
+}
+
+impl CapnpBrokerState {
+    /// The caller of the invocation `running` that this broker delivered to
+    /// the connection `peer_id` and that still runs: who an edit its effect
+    /// submits is admitted for. `None` when the connection runs no such
+    /// invocation, or its caller was known only by certificate.
+    /// Who an invoke continuing a running invocation is admitted for: that
+    /// invocation's own caller, with their grants. `None` for any other
+    /// request; the refusal to answer with when the connection runs no such
+    /// invocation.
+    fn continued_caller(
+        &self,
+        peer_id: u64,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<Result<tilo_actions::remote::Caller, Box<tilo_actions::remote::RemoteActionMessage>>>
+    {
+        let tilo_actions::remote::RemoteActionMessage::Invoke(invoke) = message else {
+            return None;
+        };
+        let running = invoke.on_behalf_of?;
+        Some(self.continuing_caller(peer_id, running).ok_or_else(|| {
+            Box::new(tilo_actions::remote::RemoteActionMessage::Receipt(
+                tilo_actions::remote::InvocationReceipt {
+                    invocation: invoke.invocation,
+                    status: tilo_actions::remote::ReceiptStatus::Rejected {
+                        error: tilo_actions::remote::ActionHostError::NotPermitted,
+                    },
+                },
+            ))
+        }))
+    }
+
+    pub(crate) fn continuing_caller(
+        &self,
+        peer_id: u64,
+        running: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::Caller> {
+        // Doors that take the caller's own invocation id can admit two
+        // callers' invocations under one id; such an id names nobody.
+        let mut matching = self
+            .pending_invocations
+            .lock()
+            .ok()?
+            .values()
+            .filter(|pending| pending.peer_id == peer_id && pending.update.invocation() == running)
+            .map(|pending| pending.caller.clone())
+            .take(2)
+            .collect::<Vec<_>>();
+        if matching.len() != 1 {
+            return None;
+        }
+        matching.pop()??.current(self)
+    }
+}
+
+/// Who a running invocation was admitted for, however the door knew them:
+/// the caller an edit its effect submits is admitted as.
+#[derive(Clone)]
+enum ContinuingCaller {
+    /// A caller the door knew directly.
+    Caller(tilo_actions::remote::Caller),
+    /// A certified caller, its certificate checked again each time.
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        /// A stricter foreign-device restriction the host kept for them.
+        foreign_restriction: bool,
+        /// The exact caller the door admitted, with its execution, when it
+        /// knew one; it continues only while that execution is live.
+        direct: Option<tilo_actions::remote::Caller>,
+    },
+    /// A person or agent on a connection this host admitted, in a room.
+    Admitted {
+        room: String,
+        admitted: Box<AdmittedJoinIdentity>,
+    },
+}
+
+impl ContinuingCaller {
+    fn from_durable(durable: DurableContext<'_>) -> Self {
+        match durable {
+            DurableContext::Peer(caller, _) => Self::Certified {
+                caller: Box::new(caller.clone()),
+                foreign_restriction: false,
+                direct: None,
+            },
+            DurableContext::Local { caller, .. } => {
+                let (room, admitted) = caller.admitted_in();
+                Self::Admitted {
+                    room,
+                    admitted: Box::new(admitted),
+                }
+            }
+        }
+    }
+
+    fn from_origin(origin: &InvocationCaller) -> Self {
+        match origin {
+            InvocationCaller::Certified {
+                caller,
+                foreign_restriction,
+            } => Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: None,
+            },
+            InvocationCaller::Local { route, admitted } => Self::Admitted {
+                room: route.cluster_id.clone(),
+                admitted: admitted.clone(),
+            },
+        }
+    }
+
+    /// Who `caller` was admitted as: certified, with the custody its door
+    /// holds, when it holds one.
+    fn admitted(
+        caller: Option<&tilo_actions::remote::Caller>,
+        durable: Option<DurableContext<'_>>,
+        origin: Option<&InvocationCaller>,
+    ) -> Option<Self> {
+        match (caller, origin) {
+            (
+                Some(direct),
+                Some(InvocationCaller::Certified {
+                    caller,
+                    foreign_restriction,
+                }),
+            ) => Some(Self::Certified {
+                caller: caller.clone(),
+                foreign_restriction: *foreign_restriction,
+                direct: Some(direct.clone()),
+            }),
+            (Some(caller), _) => Some(Self::Caller(caller.clone())),
+            (None, _) => durable
+                .map(Self::from_durable)
+                .or_else(|| origin.map(Self::from_origin)),
+        }
+    }
+
+    /// The caller as they stand now: a certified caller whose certificate
+    /// no longer verifies, who changed, or whose execution ended, is nobody.
+    /// A certified caller keeps their own device, so they stay held to the
+    /// foreign-device cap wherever that device does not govern the room.
+    fn current(&self, state: &CapnpBrokerState) -> Option<tilo_actions::remote::Caller> {
+        match self {
+            Self::Caller(caller) => Some(caller.clone()),
+            Self::Certified {
+                caller,
+                foreign_restriction,
+                direct,
+            } => {
+                let admitted = state.current_action_caller(caller).ok()?;
+                match direct {
+                    Some(direct) => (direct.execution_id().is_none() || direct.execution_is_live())
+                        .then(|| direct.clone()),
+                    None => Some(admitted.certified_caller(&caller.room, *foreign_restriction)),
+                }
+            }
+            Self::Admitted { room, admitted } => Some(admitted.caller(room)),
+        }
     }
 }
 
@@ -1448,6 +1660,7 @@ impl CapnpBrokerState {
             request.peer_id,
             offered,
             InvocationInputs {
+                caller: None,
                 execution: None,
                 argument: request.argument.as_deref(),
                 actor: &admitted.broker_actor(),
@@ -2334,6 +2547,10 @@ struct PendingWorker {
 /// as, the one-use confirmation token it presents and its ambient context.
 /// Admission checks every field; none of them grants authority by itself.
 struct InvocationInputs<'a> {
+    /// Who the invocation is admitted for, when the door knows them as a
+    /// caller: kept with the running invocation, so an edit its effect
+    /// submits is admitted for them too.
+    caller: Option<&'a tilo_actions::remote::Caller>,
     execution: Option<ExecutionScope>,
     argument: Option<&'a str>,
     actor: &'a BrokerActor,
@@ -3723,6 +3940,7 @@ impl CapnpBrokerState {
                 peer_id,
                 (surface, published),
                 InvocationInputs {
+                    caller: None,
                     execution: None,
                     argument,
                     actor,
@@ -4180,6 +4398,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                caller: None,
                 execution: None,
                 argument,
                 actor: &BrokerActor::person(actor),
@@ -4310,6 +4529,7 @@ impl CapnpBrokerState {
         provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
         let InvocationInputs {
+            caller,
             execution,
             argument,
             actor,
@@ -4322,6 +4542,7 @@ impl CapnpBrokerState {
             origin,
             retained_time,
         } = provenance;
+        let continuing = ContinuingCaller::admitted(caller, durable, origin.as_ref());
         let owner = durable.map_or_else(
             || InvocationOwner::Local {
                 actor: actor.id.clone(),
@@ -4524,6 +4745,7 @@ impl CapnpBrokerState {
         registry.insert(
             id,
             PendingInvocation {
+                caller: continuing,
                 activity: ActivityTarget::new(execution.clone(), actor, &offered.0, &offered.1),
                 owner,
                 network_evidence: durable.and_then(DurableContext::network),
@@ -5081,6 +5303,7 @@ impl CapnpBrokerState {
             resource,
             action,
             InvocationInputs {
+                caller: None,
                 execution: None,
                 argument,
                 actor: &BrokerActor::agent(run.agent_id),
@@ -5300,7 +5523,7 @@ impl CapnpBrokerState {
                 "certified document operation does not match its joined route".into(),
             ));
         }
-        let payload = collab_types::validate_whole_document_payload_route(
+        let payload = collab_types::validate_document_payload_route(
             &route.app_id,
             &route.cluster_id,
             &route.record_id,
@@ -5312,12 +5535,15 @@ impl CapnpBrokerState {
             ))
         })?;
         let channel = match &payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => collab_types::document_channel_id(
-                &route.app_id,
-                &route.cluster_id,
-                &route.record_id,
-            ),
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
+                collab_types::document_channel_id(
+                    &route.app_id,
+                    &route.cluster_id,
+                    &route.record_id,
+                )
+            }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         };
         let broker_channels = self.broker_channels.lock().map_err(|_| {
             capnp::Error::failed("collaboration governance state is unavailable".into())
@@ -5328,6 +5554,21 @@ impl CapnpBrokerState {
             ));
         }
         drop(broker_channels);
+        if admitted.agent_id.is_none() && admitted.verified.owns_person_room(&route.cluster_id) {
+            // The person room's devices hold the role their admission gave
+            // them (owner, or a foreign device's cap); there is no workspace
+            // policy to narrow it further.
+            if !role_permits(admitted.role, ArtifactKind::Note, envelope.op_class) {
+                return Err(capnp::Error::failed(
+                    "this device may not perform this document action in the person room".into(),
+                ));
+            }
+            return Ok(AuthorizedDocumentRoute {
+                artifact: envelope.artifact,
+                channel,
+                payload,
+            });
+        }
         let membership = self.membership.as_ref().ok_or_else(|| {
             capnp::Error::failed("certified session lost its membership authority".into())
         })?;
@@ -5489,6 +5730,7 @@ impl CapnpBrokerState {
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
             | CollabEvent::Realtime(_)
+            | CollabEvent::RecordContent { .. }
             | CollabEvent::RemoteAction { .. } => {
                 // Invocation delivery and cooperative cancellation are
                 // point-to-point and never enter route fanout.
@@ -5693,6 +5935,31 @@ impl CapnpBrokerState {
                 .push(ContextSub { peer_id, tx });
         }
         rx
+    }
+
+    /// Ask one local subscriber of every record channel in `cluster_id` for
+    /// its document snapshot, on behalf of no local connection: how another
+    /// device that just came back catches up on what it missed. Returns how
+    /// many channels were asked.
+    pub fn request_room_snapshots(&self, cluster_id: &str) -> usize {
+        let channels: Vec<String> = self
+            .channels
+            .lock()
+            .map(|channels| {
+                channels
+                    .keys()
+                    .filter(|key| {
+                        let route = CrdtRoute::from_channel_key(key);
+                        route.cluster_id == cluster_id && !route.record_id.is_empty()
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        channels
+            .iter()
+            .filter(|channel| self.request_document_snapshot(channel, u64::MAX))
+            .count()
     }
 
     /// Direct a late-join snapshot request to one established subscriber on
@@ -6020,6 +6287,32 @@ fn app_settings_capability(
     ))
 }
 
+/// The `LiveActivity` capability of the app `route` certifies, over the
+/// host's board, for as long as the channel stays admitted.
+fn live_activity_capability(
+    state: &Arc<CapnpBrokerState>,
+    route: CrdtRoute,
+    identity: AdmittedJoinIdentity,
+) -> Result<runtime_collab::collab_capnp::live_activity::Client, capnp::Error> {
+    if route.app_id.is_empty() {
+        return Err(capnp::Error::failed(
+            "a live activity belongs to a certified app route".into(),
+        ));
+    }
+    let Some(board) = state.services.live_activities.clone() else {
+        return Err(capnp::Error::failed(
+            "this host presents no live activities".into(),
+        ));
+    };
+    let app_id = route.app_id.clone();
+    let state = Arc::clone(state);
+    let revalidate: runtime_collab::live_activity::Revalidate =
+        Arc::new(move || state.revalidate_admission(&route, &identity).map(|_| ()));
+    Ok(capnp_rpc::new_client(
+        runtime_collab::live_activity::LiveActivityServer::new(app_id, board, revalidate),
+    ))
+}
+
 fn delegate_realtime_command(
     services: &HostServices,
     context: &crate::services::RealtimeRequestContext,
@@ -6151,7 +6444,124 @@ fn reply_frame(
     }
 }
 
+impl CapnpChannelHandle {
+    /// The host's record-content service, for a channel still admitted.
+    fn record_content(
+        &self,
+    ) -> Result<(CrdtRoute, Arc<crate::record_content::RouteContent>), capnp::Error> {
+        self.state
+            .revalidate_admission(&self.route(), &self.verified_identity)?;
+        let route = self.route();
+        if route.app_id.is_empty() || route.cluster_id.is_empty() {
+            return Err(capnp::Error::failed(
+                "record content belongs to a certified app route".into(),
+            ));
+        }
+        let content = self.state.services.record_content.clone().ok_or_else(|| {
+            capnp::Error::unimplemented("this host keeps no record content".into())
+        })?;
+        Ok((route, content))
+    }
+}
+
+/// Content arriving for one channel's record, pulled one piece of content
+/// per `read`.
+struct BlobStreamServer {
+    host_guard: Option<HostWorkerReadGuard>,
+    rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<crate::record_content::ContentArrival>>>,
+}
+
+impl blob_stream::Server for BlobStreamServer {
+    fn read(
+        self: Rc<Self>,
+        _params: blob_stream::ReadParams,
+        mut results: blob_stream::ReadResults,
+    ) -> Promise<(), capnp::Error> {
+        let rx = self.rx.clone();
+        Promise::from_future(async move {
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut guard = rx.lock().await;
+            let Some(arrival) = guard.recv().await else {
+                return Err(capnp::Error::disconnected(
+                    "record content stream closed".into(),
+                ));
+            };
+            drop(guard);
+            HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            let mut reply = results.get();
+            reply.set_hash(&arrival.hash);
+            reply.set_bytes(&arrival.bytes);
+            Ok(())
+        })
+    }
+}
+
 impl channel_handle::Server for CapnpChannelHandle {
+    fn offer_blob(
+        self: Rc<Self>,
+        params: channel_handle::OfferBlobParams,
+        _results: channel_handle::OfferBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let p = params.get()?;
+            let hash = p
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("offerBlob hash: {e}")))?
+                .to_owned();
+            let bytes = p.get_bytes()?;
+            content
+                .offer(&route, &hash, bytes)
+                .map_err(capnp::Error::failed)
+        })
+    }
+
+    fn want_blob(
+        self: Rc<Self>,
+        params: channel_handle::WantBlobParams,
+        _results: channel_handle::WantBlobResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        Promise::from_future(async move {
+            let hash = params
+                .get()?
+                .get_hash()?
+                .to_str()
+                .map_err(|e| capnp::Error::failed(format!("wantBlob hash: {e}")))?
+                .to_owned();
+            content.want(&route, &hash);
+            Ok(())
+        })
+    }
+
+    fn subscribe_blobs(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeBlobsParams,
+        mut results: channel_handle::SubscribeBlobsResults,
+    ) -> Promise<(), capnp::Error> {
+        let (route, content) = match self.record_content() {
+            Ok(found) => found,
+            Err(error) => return Promise::err(error),
+        };
+        let client: blob_stream::Client = capnp_rpc::new_client(BlobStreamServer {
+            host_guard: HostWorkerReadGuard::for_channel(
+                &self.state,
+                self.peer_id,
+                &self.verified_identity,
+            ),
+            rx: Rc::new(AsyncMutex::new(content.subscribe(&route))),
+        });
+        results.get().set_stream(client);
+        Promise::ok(())
+    }
+
     /// The caller-side door to published actions: one remote-action request
     /// frame in, one answer out, as the caller this channel was admitted as.
     fn remote_action(
@@ -6180,19 +6590,24 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // A delegated agent is its own principal already; any other
-        // connection is an application, which acts as itself.
-        let caller = if current.agent_id.is_some() {
-            person.clone()
-        } else {
-            match self
-                .state
-                .app_door(&person, &route.app_id, &request.message)
-            {
-                Ok(caller) => caller,
-                Err(refusal) => return reply_frame(*refusal, results),
-            }
-        };
+        // An edit an effect submits while running for someone is theirs.
+        let caller =
+            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
+                match continued {
+                    Ok(caller) => caller,
+                    Err(refused) => return reply_frame(*refused, results),
+                }
+            } else if current.agent_id.is_some() {
+                person.clone()
+            } else {
+                match self
+                    .state
+                    .app_door(&person, &route.app_id, &request.message)
+                {
+                    Ok(caller) => caller,
+                    Err(refusal) => return reply_frame(*refusal, results),
+                }
+            };
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
@@ -6441,6 +6856,27 @@ impl channel_handle::Server for CapnpChannelHandle {
         match app_settings_capability(&self.state, route, self.verified_identity.clone()) {
             Ok(settings) => {
                 results.get().set_settings(settings);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    fn live_activity(
+        self: Rc<Self>,
+        _params: channel_handle::LiveActivityParams,
+        mut results: channel_handle::LiveActivityResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match live_activity_capability(&self.state, route, self.verified_identity.clone()) {
+            Ok(activity) => {
+                results.get().set_activity(activity);
                 Promise::ok(())
             }
             Err(error) => Promise::err(error),
@@ -7955,6 +8391,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -7991,6 +8428,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -8019,6 +8457,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         &resource,
                         &action,
                         InvocationInputs {
+                            caller: None,
                             execution: None,
                             argument: argument.as_deref(),
                             actor: &actor,
@@ -8729,7 +9168,7 @@ fn handle_signed_op_send_for_artifact(
             let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
                 mls_vault.clone_from(&ch.mls_vault);
-                ch.record_history(&envelope);
+                ch.record_history(&route.cluster_id, &envelope);
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -8819,14 +9258,15 @@ fn handle_authorized_signed_op_send(
     debug_assert_eq!(
         authorized.channel,
         match &authorized.payload {
-            collab_types::WholeDocumentPayload::Cleartext(_) => {
+            collab_types::RoutedDocumentPayload::Cleartext(_)
+            | collab_types::RoutedDocumentPayload::CleartextSegment(_) => {
                 collab_types::document_channel_id(
                     &route.app_id,
                     &route.cluster_id,
                     &route.record_id,
                 )
             }
-            collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
+            collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
         }
     );
     handle_signed_op_send_for_artifact(
@@ -10902,7 +11342,7 @@ pub mod tests {
 
         fn app_presence(&self, _: String, _: String, _: collab_types::PeerPresence) {}
 
-        fn scrollback_request(&self, _: ArtifactId, _: u64, _: u16) {}
+        fn scrollback_request(&self, _: &str, _: ArtifactId, _: u64, _: u16) {}
     }
 
     #[cfg(test)]
@@ -11753,6 +12193,8 @@ pub mod tests {
     include!("reliable_resolution_tests.rs");
     #[cfg(test)]
     include!("durable_local_invocation_matrix_tests.rs");
+    #[cfg(test)]
+    include!("record_content_tests.rs");
 
     pub struct LocalDirectoryFixture {
         _fanout: Arc<FanoutState>,
@@ -12203,6 +12645,7 @@ pub mod tests {
                     context: None,
                     confirmation: None,
                     revision: Some("directory-r1".into()),
+                    on_behalf_of: None,
                 };
                 let mut pending = fixture.state.action_invoke(&caller, None, None, &request);
                 let admitted = tokio::time::timeout(Duration::from_secs(2), async {
@@ -12942,7 +13385,7 @@ pub mod tests {
             .expect("broker authorizes signed clear metadata without decrypting");
         assert!(matches!(
             authorized.payload,
-            collab_types::WholeDocumentPayload::Encrypted { channel, epoch: 7 }
+            collab_types::RoutedDocumentPayload::Encrypted { channel, epoch: 7 }
                 if channel == expected_channel
         ));
         handle_signed_op_send(&state, 1, &route, &admitted, encrypted.clone());
@@ -12985,6 +13428,144 @@ pub mod tests {
                 .is_err(),
             "a signed envelope cannot be replayed through another record route"
         );
+    }
+
+    /// The person room is admitted from the joiner's own root alone, with no
+    /// workspace in the tree, and its documents reach the other local
+    /// connections on the record and the peer publisher. Nobody else's root
+    /// enters it, and nobody enters another person's room.
+    #[test]
+    fn person_room_admits_only_its_own_roots_devices_as_owner() {
+        let root = SigningKey::from_bytes(&[26; 32]);
+        let device = SigningKey::from_bytes(&[27; 32]);
+        let stranger = SigningKey::from_bytes(&[28; 32]);
+        let own_room = collab_types::person_room(&root.verifying_key().to_bytes());
+        let route = CrdtRoute::record("so.tilo.tube", own_room.to_string(), "watch-history");
+        let membership = WorkspaceTree::default().shared();
+        let own_device = VerifiedJoinIdentity {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            capped: false,
+        };
+
+        let admitted = admit_verified_join(&membership.read(), &route, own_device.clone())
+            .expect("the root's own device joins its person room");
+        assert_eq!(admitted.role, CapRole::Owner);
+        assert_eq!(
+            admitted.principal_id,
+            principal_id_for_root(root.verifying_key().to_bytes())
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &route, verified_device(&stranger)).is_err(),
+            "another root's device never joins this person's room"
+        );
+        let foreign = admit_verified_join(
+            &membership.read(),
+            &route,
+            VerifiedJoinIdentity {
+                capped: true,
+                ..own_device
+            },
+        )
+        .expect("the root's foreign device joins its person room");
+        assert_eq!(
+            foreign.role,
+            CapRole::Editor,
+            "a foreign device keeps the foreign-device cap in the person room too"
+        );
+        let strangers_room = CrdtRoute::record(
+            "so.tilo.tube",
+            collab_types::person_room(&stranger.verifying_key().to_bytes()).to_string(),
+            "watch-history",
+        );
+        assert!(
+            admit_verified_join(&membership.read(), &strangers_room, own_device).is_err(),
+            "a device never joins another person's room"
+        );
+
+        let fanout = Arc::new(FanoutState::new());
+        let broker_channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        let sink = Arc::new(RecordingSink::default());
+        let publisher =
+            PeerPublisher::new(sink.clone() as Arc<dyn crate::collab_outbound::PeerPublishSink>);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::clone(&broker_channels),
+            publisher,
+            Some(membership),
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        state.ensure_channel(&route.channel_key());
+        let mut other_window = state.subscribe_ops(&route.channel_key(), 2);
+        let current = state
+            .revalidate_admission(&route, &admitted)
+            .expect("the person room stays admitted without a workspace");
+        assert_eq!(current.role, CapRole::Owner);
+
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Snapshot(b"watched".to_vec())
+                .encode()
+                .expect("typed snapshot"),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        sign_op(&mut op, &device).expect("device signs document op");
+        let authorized = state
+            .authorize_certified_document(&route, &current, &op)
+            .expect("the owner writes their own records");
+        handle_authorized_signed_op_send(&state, 1, &route, &current, &authorized, op.clone());
+
+        let delivered = other_window.try_recv().expect("local fanout");
+        assert_eq!(
+            postcard::from_bytes::<SignedOp>(&delivered.op_bytes).expect("signed envelope"),
+            op
+        );
+        assert!(matches!(
+            sink.snapshot().as_slice(),
+            [Sent::Signed { cluster_id, record_id, .. }]
+                if *cluster_id == route.cluster_id && record_id == "watch-history"
+        ));
+    }
+
+    /// A device that came back is caught up by the local apps holding the
+    /// person room's records: each record channel of that room, and only of
+    /// that room, is asked for its snapshot.
+    #[test]
+    fn room_snapshot_requests_reach_only_that_rooms_record_channels() {
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            None,
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        let person_room = collab_types::person_room(&[29; 32]).to_string();
+        let history = CrdtRoute::record("so.tilo.tube", person_room.as_str(), "watch-history");
+        let words = CrdtRoute::record("so.tilo.dict", person_room.as_str(), "learned");
+        let unscoped = CrdtRoute::cluster(person_room.as_str());
+        let shared = CrdtRoute::record("so.tilo.tube", "room-1", "watch-history");
+        let mut receivers: Vec<_> = [&history, &words, &unscoped, &shared]
+            .into_iter()
+            .zip(2_u64..)
+            .map(|(route, peer)| {
+                state.ensure_channel(&route.channel_key());
+                state.subscribe_context(&route.channel_key(), peer)
+            })
+            .collect();
+
+        assert_eq!(fanout.request_room_snapshots(&person_room), 2);
+        let asked: Vec<bool> = receivers
+            .iter_mut()
+            .map(|rx| matches!(rx.try_recv(), Ok(ContextEnvelope::SnapshotRequested)))
+            .collect();
+        assert_eq!(asked, [true, true, false, false]);
     }
 
     #[test]
@@ -13938,6 +14519,7 @@ pub mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let invocation = tilo_actions::InvocationId::new();
         let pending = PendingInvocation {
+            caller: None,
             activity: None,
             owner: InvocationOwner::Local {
                 actor: "agent:Scribe".into(),

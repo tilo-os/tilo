@@ -28,7 +28,7 @@ fn send(app: &mut PasswordsSurface, doc: &mut AutoCommit, event: &WindowEvent) {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: doc,
+            state: ui::widget::Edits::lend(doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -149,7 +149,7 @@ fn list_rows_open_items_and_toggle_favorites_through_the_list() {
     assert!(pane.perform_semantic_action(
         "passwords.item:demo-mail",
         &ui::a11y::Action::Activate,
-        &mut doc,
+        &mut ui::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     app.settle();
@@ -184,8 +184,7 @@ fn nothing_the_window_publishes_or_reads_out_holds_a_secret() {
         .map(ui::framework::LiveRow::into_resource)
         .collect();
     let resources = public_text(&rows);
-    let providers = ui::search::capability::search_providers(&app);
-    let hits = format!("{:?}", providers[0].search(""));
+    let hits = format!("{:?}", app.search_entries());
     for secret in secrets {
         assert!(!resources.contains(secret), "resources leak {secret}");
         assert!(!hits.contains(secret), "search leaks {secret}");

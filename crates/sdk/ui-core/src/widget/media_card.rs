@@ -981,7 +981,7 @@ impl MediaCard {
 impl Widget for MediaCard {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         if self.loaded.is_none()
             && let MediaSource::Url { store, url } = &self.source
             && let Some(image) = store.get(url)
@@ -1130,7 +1130,7 @@ impl Widget for MediaCard {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activation.activate()

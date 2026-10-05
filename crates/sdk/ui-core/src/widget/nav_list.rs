@@ -806,6 +806,8 @@ struct NavShared {
     item_actions: Vec<String>,
     section_actions: HashMap<NodeId, String>,
     on_select: Callback<String>,
+    selection_actions: HashMap<String, crate::widget::ActionEmitter<()>>,
+    selection_emitted: bool,
     on_action: Option<Box<dyn FnMut(&str, &str)>>,
     on_section_action: Option<Box<dyn FnMut(&str, &str)>>,
     on_rename: Option<Box<dyn FnMut(&str, String)>>,
@@ -857,7 +859,15 @@ impl NavList {
                 let Some(key) = shared.keys.get(&id).cloned() else {
                     return;
                 };
+                if shared
+                    .selection_actions
+                    .get(&key)
+                    .is_some_and(|action| !action.is_available())
+                {
+                    return;
+                }
                 shared.navigated = true;
+                shared.selection_emitted = false;
                 if shared.selected.as_deref() == Some(key.as_str()) {
                     return;
                 }
@@ -865,14 +875,33 @@ impl NavList {
                 if let Some(binding) = shared.binding.as_mut() {
                     binding.publish(&Some(key.clone()));
                 }
-                if let Some(callback) = shared.on_select.as_mut() {
+                if let Some(action) = shared.selection_actions.get_mut(&key) {
+                    let _ = action.emit(());
+                    shared.selection_emitted = true;
+                } else if let Some(callback) = shared.on_select.as_mut() {
                     callback(key);
                 }
             })
-            .on_activate(move |_| {
+            .on_activate(move |id| {
                 // Activating the selected destination still navigates to its
                 // screen; selection callbacks remain change-only.
-                activate_shared.borrow_mut().navigated = true;
+                let mut shared = activate_shared.borrow_mut();
+                let Some(key) = shared.keys.get(&id).cloned() else {
+                    return;
+                };
+                if shared
+                    .selection_actions
+                    .get(&key)
+                    .is_some_and(|action| !action.is_available())
+                {
+                    return;
+                }
+                shared.navigated = true;
+                if !std::mem::take(&mut shared.selection_emitted)
+                    && let Some(action) = shared.selection_actions.get_mut(&key)
+                {
+                    let _ = action.emit(());
+                }
             })
             .on_row_action(move |id, index| {
                 let mut shared = action_shared.borrow_mut();
@@ -1046,6 +1075,20 @@ impl NavList {
     #[must_use]
     pub fn on_select(self, f: impl FnMut(String) + 'static) -> Self {
         self.shared.borrow_mut().on_select = Some(Box::new(f));
+        self
+    }
+
+    /// Bind each destination to its published typed action. Bound rows route
+    /// selection through host custody; unbound rows keep `on_select` behavior.
+    #[must_use]
+    pub fn selection_actions(
+        self,
+        bindings: impl IntoIterator<Item = (String, tilo_actions::ActionBinding<()>)>,
+    ) -> Self {
+        self.shared.borrow_mut().selection_actions = bindings
+            .into_iter()
+            .map(|(id, binding)| (id, crate::widget::ActionEmitter::new(binding)))
+            .collect();
         self
     }
 
@@ -1362,6 +1405,23 @@ impl NavList {
         &self.filter
     }
 
+    /// Stable item ids in the current expanded and filtered row order.
+    /// Section headers are omitted. Inspection reads the same rows that the
+    /// retained navigation tree renders and exposes to accessibility.
+    #[must_use]
+    pub fn visible_item_ids(&self) -> Vec<String> {
+        let model = self.tree.model();
+        let shared = self.shared.borrow();
+        self.tree
+            .visible_rows()
+            .into_iter()
+            .filter_map(|(node, _, _)| {
+                let key = shared.keys.get(&node)?;
+                (model.item_id(key) == Some(node)).then(|| key.clone())
+            })
+            .collect()
+    }
+
     /// The list's tree, for tests reading its engine state.
     #[cfg(test)]
     pub(crate) fn tree(&self) -> &TreeView<(), NavModel> {
@@ -1441,10 +1501,18 @@ impl crate::widget::Decorator for NavList {
     }
 
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            return;
+        }
         crate::widget::Widget::provide(&self.tree, request);
     }
 
     fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+            return;
+        }
         if request.wants::<dyn NavigationSource>() {
             request.provide::<dyn NavigationSource>(self);
             return;
@@ -1471,7 +1539,7 @@ impl crate::widget::Decorator for NavList {
         node
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let next = self
             .shared
             .borrow_mut()
@@ -1484,6 +1552,27 @@ impl crate::widget::Decorator for NavList {
         crate::widget::Widget::sync(&mut self.tree, state, path);
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        fn refresh(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
+            if let Some(id) = node
+                .action_target
+                .as_deref()
+                .and_then(|target| target.strip_prefix("node:"))
+                .and_then(|id| id.parse::<NodeId>().ok())
+                && let Some(key) = shared.keys.get(&id)
+                && let Some(action) = shared.selection_actions.get(key)
+            {
+                node.state.disabled |= !action.is_available();
+            }
+            for child in &mut node.children {
+                refresh(child, shared);
+            }
+        }
+        let mut access = crate::widget::Widget::accessibility(&self.tree)?;
+        refresh(&mut access, &self.shared.borrow());
+        Some(access)
+    }
+
     fn name(&self) -> &'static str {
         "NavList"
     }
@@ -1491,3 +1580,48 @@ impl crate::widget::Decorator for NavList {
 
 #[cfg(test)]
 mod tests;
+
+impl crate::widget::controls::ActionControls for NavList {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        for action in self.shared.borrow_mut().selection_actions.values_mut() {
+            let _ = action.install_custody(domain, attachment);
+        }
+        crate::widget::controls::install_control_custody(&mut self.tree, domain, attachment);
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.shared
+            .borrow_mut()
+            .selection_actions
+            .values_mut()
+            .find_map(crate::widget::ActionEmitter::take)
+            .or_else(|| crate::widget::controls::take_control_invocation(&mut self.tree))
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let shared = self.shared.borrow();
+        let mut bindings = crate::widget::controls::control_action_bindings(&self.tree);
+        for (node, key) in &shared.keys {
+            if let Some(action) = shared.selection_actions.get(key) {
+                let id = format!("node:{node}");
+                bindings.retain(|binding| binding.control_id != id);
+                bindings.push(action.metadata(id));
+            }
+        }
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for action in self.shared.borrow_mut().selection_actions.values_mut() {
+            action.refresh_availability(allowed);
+        }
+        crate::widget::controls::refresh_control_action_availability(&mut self.tree, allowed);
+    }
+}

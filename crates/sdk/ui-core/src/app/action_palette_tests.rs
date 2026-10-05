@@ -84,7 +84,10 @@ impl Widget for ConsumingKeyboardRoot {
             event,
             WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
         ) {
-            ctx.state.put(&ROOT, "escaped_keyboard", true).unwrap();
+            ctx.state
+                .document_mut()
+                .put(&ROOT, "escaped_keyboard", true)
+                .unwrap();
             *ctx.handled = true;
         }
     }
@@ -133,9 +136,15 @@ impl crate::search::capability::SearchSource for Publisher {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(PeopleProvider), Box::new(LazyProvider)]
     }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, p: &ModelPath) {
+    fn activate_search_result(
+        &mut self,
+        action_id: &str,
+        doc: &mut crate::widget::Edits<'_>,
+        p: &ModelPath,
+    ) {
         let (doc, _) = crate::doc::document(doc, p);
-        doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
+        doc.document_mut()
+            .put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
             .unwrap();
     }
 }
@@ -365,7 +374,7 @@ fn palette_catalog_materializes_once_per_generation_under_fresh_authority() {
             assert_eq!(button.test_id(), Some("standalone-search-open"));
             assert!(button.perform_action(
                 &crate::a11y::Action::Activate,
-                &mut app.state.doc,
+                &mut crate::widget::Edits::lend(&mut app.state.doc),
                 &app.state.root
             ));
             assert_eq!(app.dispatch_history_controls(), 1);
@@ -500,7 +509,7 @@ fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
     };
     let _ = crate::shell_tabs::take_requests();
     let mut app =
-        App::new_with_controlled_inputs(State::new(), Box::new(Button::new("done", "Done", None)));
+        App::new_with_controlled_inputs(State::new(), Box::new(Button::new("done", "Done")));
     app.init_layout();
     let command = if app
         .input
@@ -575,7 +584,7 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
                 .push(Box::new(
                     TextInput::local().with_id("editor").with_initial_value("x"),
                 ))
-                .push(Box::new(Button::new("done", "Done", None))),
+                .push(Box::new(Button::new("done", "Done"))),
         ),
     );
     app.init_layout();
@@ -787,22 +796,16 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
     {
         let mut app = App::new(
             State::new(),
-            Box::new(Button::new("complete", "Complete", Some("completed"))),
+            Box::new(Button::new("complete", "Complete").on_view(|| {})),
         );
         app.init_layout();
         let resource = app
             .collect_resources()
             .into_iter()
-            .find(|resource| {
-                resource.kind == "tilo.ui.control"
-                    && resource.label == "Complete"
-                    && resource
-                        .actions
-                        .iter()
-                        .any(|action| action.id == "activate")
-            })
-            .expect("collaborative button publishes a semantic action");
-        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
+            .find(|resource| resource.label == "Complete" && !resource.actions.is_empty())
+            .expect("the button publishes its action");
+        let address =
+            tilo_actions::ActionAddress::new(resource.id.as_str(), resource.actions[0].id.as_str());
         let route = app
             .preferred_action_ui_route(&address)
             .expect("semantic action resolves to visible UI");
@@ -885,7 +888,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
     {
         let mut app = App::new_with_controlled_inputs(
             State::new(),
-            Box::new(Button::new("focus-me", "Focus me", None)),
+            Box::new(Button::new("focus-me", "Focus me")),
         );
         app.init_layout();
         app.set_focused_node(None);
@@ -929,7 +932,7 @@ fn palette_dispatch_routes_through_the_app_and_its_visible_controls() {
 
     // Case `ctrl_k_invokes_a_projected_semantic_view_control`.
     {
-        let button = Button::new("drive-me", "Drive me", None);
+        let button = Button::new("drive-me", "Drive me");
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(button));
         app.init_layout();
         app.set_focused_node(None);

@@ -70,10 +70,10 @@ impl BrowserWidget {
     fn bookmark_command(&self) -> Box<dyn FnMut()> {
         if self.is_framework_hosted() {
             let action = self.page_bookmark_action();
-            let edits = self.pending_library_edits.clone();
+            let dispatcher = self.dispatch.clone();
             Box::new(move || {
-                if let Some(action) = action.clone() {
-                    edits.update(|queue| queue.push(action));
+                if let (Some(dispatcher), Some(action)) = (&dispatcher, action.clone()) {
+                    dispatcher.apply(&action);
                 }
             })
         } else {

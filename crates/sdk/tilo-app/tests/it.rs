@@ -5,6 +5,8 @@
 
 #[path = "action_groups.rs"]
 pub mod action_groups;
+#[path = "actors.rs"]
+pub mod actors;
 #[path = "child_resources.rs"]
 pub mod child_resources;
 #[path = "control_custody_raw_holder.rs"]
@@ -15,6 +17,8 @@ pub mod effects;
 pub mod framework;
 #[path = "history_actions.rs"]
 pub mod history_actions;
+#[path = "host_context.rs"]
+pub mod host_context;
 #[path = "identity.rs"]
 pub mod identity;
 #[path = "incremental.rs"]
@@ -33,11 +37,21 @@ pub mod live_rows;
 pub mod model_contract;
 #[path = "participant.rs"]
 pub mod participant;
+#[path = "person_records.rs"]
+pub mod person_records;
+#[path = "private_windows.rs"]
+pub mod private_windows;
 #[path = "render_view.rs"]
 pub mod render_view;
 #[path = "scenarios.rs"]
 pub mod scenarios;
 #[path = "settings.rs"]
 pub mod settings;
+#[path = "surface_semantics.rs"]
+pub mod surface_semantics;
 #[path = "typed_edit_labels.rs"]
 pub mod typed_edit_labels;
+#[path = "window_content.rs"]
+pub mod window_content;
+#[path = "window_view.rs"]
+pub mod window_view;

@@ -178,8 +178,8 @@ fn long_form() -> Form {
                 .with_error("Enter a valid email address, including the domain after the at sign.")))
             .section(FormSection::new("Preferences").content(Box::new(super::super::Checkbox::new("updates", "updates")
                 .with_label("Send me occasional product updates and tips for working with my team."))))
-            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
-                .secondary(super::super::Button::new("cancel", "Cancel", None)))
+            .with_actions(Actions::new(super::super::Button::new("save", "Save account changes").role(ButtonRole::Primary))
+                .secondary(super::super::Button::new("cancel", "Cancel")))
 }
 /// A field with a validation error marks its control invalid: the control
 /// reports it to assistive technology (and edges itself in danger ink),
@@ -674,8 +674,8 @@ fn untitled_sections_custom_fields_and_control_rows() {
                 ))
                 .control_row(Box::new(
                     Row::new()
-                        .push(Box::new(Button::new("export", "Export", None)))
-                        .push(Box::new(Button::new("import", "Import", None))),
+                        .push(Box::new(Button::new("export", "Export")))
+                        .push(Box::new(Button::new("import", "Import"))),
                 )),
         )
         .section(
@@ -838,7 +838,7 @@ fn a_page_keeps_sections_on_the_leading_readable_column_with_pinned_actions() {
             vec![Box::new(Text::new("Two").with_id("two"))],
         )))
         .with_pinned_actions(Actions::new(
-            Button::new("save", "Save", None).role(ButtonRole::Primary),
+            Button::new("save", "Save").role(ButtonRole::Primary),
         ));
     let harness = FrameHarness::new_with_theme(
         crate::State::new(),
@@ -876,8 +876,7 @@ fn a_form_page_titles_in_large_title_or_not_at_all() {
     let titled = FrameHarness::new_with_theme(
         crate::State::new(),
         Box::new(
-            FormPage::new("Account", long_form())
-                .with_header_action(Button::new("reset", "Reset", None)),
+            FormPage::new("Account", long_form()).with_header_action(Button::new("reset", "Reset")),
         ),
         (1000, 800),
         theme.clone(),

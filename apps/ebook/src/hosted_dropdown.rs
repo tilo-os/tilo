@@ -149,7 +149,7 @@ impl HostedDropdown {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: &ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -192,7 +192,7 @@ impl HostedDropdown {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut automerge::AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         target == self.id && self.widget.perform_action(action, state, root)

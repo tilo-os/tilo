@@ -1,82 +1,31 @@
-#![allow(
-    clippy::expect_used,
-    clippy::items_after_statements,
-    clippy::needless_pass_by_value,
-    clippy::panic,
-    reason = "Updates consumes a closed static resource contract; missing action ids are programmer invariants"
-)]
-
-//! Updates pane — the system update manager surface.
+//! Updates pane — the system image, firmware, the media codec pack, and
+//! the automatic-update policy of this device.
 //!
-//! Tilo is an immutable bootc image: updates are atomic image pulls staged
-//! for the next boot, not piecemeal package upgrades. This pane shows the
-//! current deployment, whether a newer image is *actually* staged (read from
-//! `bootc status --format json`), and real actions:
-//!
-//! - **Check for updates** re-queries the system and stamps the last-checked
-//!   time (persisted so it survives restarts).
-//! - **Restart & update** (shown only when an image is staged) reboots into
-//!   the staged deployment via [`Rebooter`] (`systemctl reboot`).
-//! - **Automatic updates** enables or disables the update timer itself
-//!   ([`UpdateControl`]), and shows the timer's real state rather than a
-//!   stored preference, which can drift from what the machine is actually
-//!   doing.
-//! - **Roll back** makes the previous image the one this machine boots, after
-//!   showing what a rollback does not undo.
-//! - **Additional codecs** installs, retries or removes the opt-in codec pack,
-//!   which the device downloads from RPM Fusion and Cisco
-//!   ([`crate::codec_pack`]), and shows the helper's live status: not
-//!   installed, waiting for a network connection, installing (with progress),
-//!   installed, installed with the hardware H.264/HEVC part waiting for a Mesa
-//!   build matching the image, or failed.
-//
-// Stable control identifiers (replicated legacy latches are never executed):
-//   `updates.check`             — bool, "Check for updates" button
-//   `updates.restart`           — bool, "Restart & update" button
-//   `updates.auto`              — bool, automatic-updates toggle
-//   `updates.rollback`          — bool, "Roll back…" (opens the explanation)
-//   `updates.rollback.confirm`  — bool, the second click, which acts
-//   `updates.codecs.install`    — bool, "Install media codecs" / "Try again"
-//   `updates.codecs.remove`     — bool, "Remove media codecs"
-//   `updates.codecs.refresh`    — bool, "Check for the hardware driver again"
+//! Every change is an [`UpdatesEffect`], answered by the [`UpdatesModel`]
+//! the app keeps for the window: the model runs the system's update tools
+//! off the UI thread, and the pane shows where each request stands.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
-use ui::widget::{AppModel, ModelPath};
 
-use taffy::{NodeId, TaffyTree};
 use tracing::warn;
-use ui::WakeHandle;
-use ui::theme::Theme;
+use ui::framework::{EffectReply, Effected};
+use ui::tilo_resource::{self, Effect};
 use ui::widget::{Button, Column, Dropdown, ProgressBar, Row, Spacer, Text, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
+use ui::{LocalState, WakeHandle};
 
 use crate::codec_pack::{CodecAction, CodecPackStatus, MesaState, PackState};
+use crate::effects::effect;
+use crate::host::PaneCx;
 use crate::i18n::{t, t_args};
-use crate::prefs::{SystemPrefs, UpdatePrefs};
-use crate::widgets::{El, caption, card, choice_row, error_caption, rows, setting_row, value_row};
-
-pub const CHECK_KEY: &str = "updates.check";
-pub const RESTART_KEY: &str = "updates.restart";
-pub const AUTO_KEY: &str = "updates.auto";
-pub const ROLLBACK_KEY: &str = "updates.rollback";
-/// Two clicks to roll back, because the first one is easy to make by accident
-/// and the second comes after the pane has said what a rollback does not undo.
-pub const ROLLBACK_CONFIRM_KEY: &str = "updates.rollback.confirm";
-pub const FIRMWARE_REFRESH_KEY: &str = "updates.firmware.refresh";
-pub const FIRMWARE_INSTALL_KEY: &str = "updates.firmware.install";
-pub const SCHEDULE_KEY: &str = "updates.schedule";
-pub const METERED_KEY: &str = "updates.metered";
-pub const CODECS_INSTALL_KEY: &str = "updates.codecs.install";
-pub const CODECS_REMOVE_KEY: &str = "updates.codecs.remove";
-pub const CODECS_REFRESH_KEY: &str = "updates.codecs.refresh";
+use crate::prefs::UpdatePrefs;
+use crate::widgets::{
+    El, caption, card, choice_row, error_caption, error_row, rows, setting_row, value_row,
+};
 
 const UPDATE_SCHEDULES: &[&str] = &["System schedule", "Daily", "Weekly"];
 const STATUS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -106,13 +55,6 @@ fn helper_diagnostic(bytes: &[u8]) -> String {
         .collect::<String>()
         .trim()
         .to_string()
-}
-
-fn operation_button(control_id: &str, label: &str, action_id: &str) -> Button {
-    Button::new(control_id, label, None).on_action(
-        crate::actions::updates_unit_binding(action_id)
-            .unwrap_or_else(|| panic!("Updates action {action_id} must be published")),
-    )
 }
 
 fn schedule_shown(id: &str) -> String {
@@ -663,6 +605,15 @@ pub fn parse_bootc_rollback(json: &str) -> Option<String> {
 }
 
 /// Production impl: `systemctl reboot`.
+/// The rebooter of a capture, which restarts nothing.
+struct NoRestart;
+
+impl Rebooter for NoRestart {
+    fn reboot(&self) -> Result<(), String> {
+        Err("a screenshot restarts nothing".into())
+    }
+}
+
 pub struct RealRebooter;
 
 impl Rebooter for RealRebooter {
@@ -714,12 +665,11 @@ type FirmwareRefreshEvent = Result<
     String,
 >;
 
-/// The "last checked" stamp, e.g. `4 July 2026, 14:05`, read through the
-/// toolkit clock so a capture shows its pinned time.
+/// A real wall-clock "last checked" stamp, e.g. `Monday, 4 July 2026 14:05`.
 fn now_stamp() -> String {
-    ui::clock::local_now()
-        .format("%-d %B %Y, %H:%M")
-        .to_string()
+    let date = os_actions::now_date().unwrap_or_default();
+    let time = os_actions::now_clock(true).unwrap_or_default();
+    format!("{date} {time}").trim().to_string()
 }
 
 #[allow(
@@ -728,7 +678,7 @@ fn now_stamp() -> String {
               state, not a call-site boolean-blindness hazard: none are \
               constructor parameters"
 )]
-pub struct UpdatesPane {
+pub struct UpdatesModel {
     status: UpdateStatus,
     details: UpdateDetails,
     prefs: UpdatePrefs,
@@ -774,26 +724,22 @@ pub struct UpdatesPane {
     /// must surface here, not only in the journal.
     notice: Option<String>,
     dispatched_restart: bool,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    require_operation_token: bool,
-    structure_dirty: bool,
-    composed: Option<Box<dyn Widget>>,
-    rect: Rect,
+    /// The settings document the update preferences are kept in, and the
+    /// door the pane's controls go through.
+    cx: PaneCx,
+    /// The callers waiting for a request to finish.
+    replies: crate::panes::model::Replies,
+    /// What the pane shows changed since it last looked.
+    changed: bool,
 }
 
-impl Default for UpdatesPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl UpdatesPane {
-    pub fn new() -> Self {
+impl UpdatesModel {
+    /// The model of this device's updates, read from the system now.
+    pub fn new(cx: PaneCx) -> Self {
         let status_provider: StatusProvider = Arc::new(UpdateStatus::from_system);
         let status = status_provider();
         let control: Arc<dyn UpdateControl> = Arc::new(RealUpdateControl);
-        let mut prefs = SystemPrefs::load().updates;
+        let mut prefs = cx.settings::<UpdatePrefs>().get();
         // The timer is the setting; the stored preference exists only so an
         // existing file need not be migrated, and is immediately overwritten
         // by what the machine actually reports.
@@ -810,8 +756,8 @@ impl UpdatesPane {
         let pane = Self {
             status,
             details,
-            prefs: prefs.clone(),
-            last_prefs: prefs,
+            prefs,
+            last_prefs: UpdatePrefs::default(),
             status_provider,
             details_provider: Arc::new(UpdateDetails::from_system),
             clock: Arc::new(now_stamp),
@@ -839,12 +785,9 @@ impl UpdatesPane {
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            require_operation_token: false,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            cx,
+            replies: crate::panes::model::Replies::default(),
+            changed: false,
         };
         pane.watch_codec_status();
         pane
@@ -857,6 +800,7 @@ impl UpdatesPane {
     /// a test written before that existed neither reaches systemd nor gets a
     /// switch that silently reports "off".
     pub fn with_parts(
+        cx: PaneCx,
         status: UpdateStatus,
         prefs: UpdatePrefs,
         status_provider: StatusProvider,
@@ -864,6 +808,7 @@ impl UpdatesPane {
         rebooter: Arc<dyn Rebooter>,
     ) -> Self {
         Self::with_parts_and_control(
+            cx,
             status,
             prefs,
             status_provider,
@@ -876,6 +821,7 @@ impl UpdatesPane {
     /// [`UpdatesPane::with_parts`], plus the system control — the timer, the
     /// rollback target and the rollback itself.
     pub fn with_parts_and_control(
+        cx: PaneCx,
         status: UpdateStatus,
         prefs: UpdatePrefs,
         status_provider: StatusProvider,
@@ -923,13 +869,30 @@ impl UpdatesPane {
             rollback_armed: false,
             notice: None,
             dispatched_restart: false,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            require_operation_token: false,
-            structure_dirty: false,
-            composed: None,
-            rect: Rect::ZERO,
+            cx,
+            replies: crate::panes::model::Replies::default(),
+            changed: false,
         }
+    }
+
+    /// What a capture shows: a staged image waiting for a restart, and
+    /// nothing that reaches the system.
+    pub fn sample(cx: PaneCx) -> Self {
+        let status = UpdateStatus {
+            current_version: "Tilo 2026.06".into(),
+            staged_version: Some("Tilo 2026.07".into()),
+            staged_error: None,
+        };
+        let staged = status.clone();
+        Self::with_parts_and_control(
+            cx,
+            status,
+            UpdatePrefs::default(),
+            Arc::new(move || staged.clone()),
+            Arc::new(|| "Never".to_string()),
+            Arc::new(NoRestart),
+            Arc::new(UnavailableControl),
+        )
     }
 
     /// Replace the codec-pack status source and unit runner (tests).
@@ -970,7 +933,7 @@ impl UpdatesPane {
             let status = (self.codec_status_provider)();
             if status != self.codec_status {
                 self.codec_status = status;
-                self.structure_dirty = true;
+                self.changed = true;
             }
         }
     }
@@ -1100,7 +1063,7 @@ impl UpdatesPane {
     }
 
     /// (label, control id, action id) of the buttons the card offers.
-    fn codec_buttons(&self) -> Vec<(String, &'static str, &'static str)> {
+    fn codec_buttons(&self) -> Vec<(String, &'static str, UpdatesEffect)> {
         if self.codec_pending.is_some() {
             return Vec::new();
         }
@@ -1116,15 +1079,21 @@ impl UpdatesPane {
                     (CodecAction::Refresh, _) => t("upd-codecs-refresh"),
                 };
                 match action {
-                    CodecAction::Install => {
-                        (label, "settings.updates.codecs.install", "install-codecs")
-                    }
-                    CodecAction::Remove => {
-                        (label, "settings.updates.codecs.remove", "remove-codecs")
-                    }
-                    CodecAction::Refresh => {
-                        (label, "settings.updates.codecs.refresh", "refresh-codecs")
-                    }
+                    CodecAction::Install => (
+                        label,
+                        "settings.updates.codecs.install",
+                        UpdatesEffect::InstallCodecs,
+                    ),
+                    CodecAction::Remove => (
+                        label,
+                        "settings.updates.codecs.remove",
+                        UpdatesEffect::RemoveCodecs,
+                    ),
+                    CodecAction::Refresh => (
+                        label,
+                        "settings.updates.codecs.refresh",
+                        UpdatesEffect::RefreshCodecs,
+                    ),
                 }
             })
             .collect()
@@ -1149,19 +1118,19 @@ impl UpdatesPane {
         let buttons = self.codec_buttons();
         if !buttons.is_empty() {
             let mut row = Row::new();
-            for (label, control_id, action_id) in buttons {
-                row = row.push(Box::new(operation_button(control_id, &label, action_id)));
+            for (label, control_id, effect) in buttons {
+                row = row.push(Box::new(self.button(control_id, &label, effect)));
             }
             body.push(Box::new(row.push(Box::new(Spacer::new()))));
         }
         card(&codecs_card_title(), rows(body))
     }
 
-    fn handle_codecs(&mut self, action: CodecAction) {
+    fn change_codecs(&mut self, action: CodecAction) {
         let operation = Self::codec_operation(action);
         if self.codec_pending.is_some() {
             self.operation_failed(operation, "the codec pack is already being changed");
-            self.structure_dirty = true;
+            self.changed = true;
             return;
         }
         let runner = Arc::clone(&self.codec_runner);
@@ -1182,14 +1151,14 @@ impl UpdatesPane {
             self.codec_events = Some(rx);
             self.codec_pending = Some(action);
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
-    const fn codec_operation(action: CodecAction) -> crate::actions::UpdateOperation {
+    const fn codec_operation(action: CodecAction) -> &'static str {
         match action {
-            CodecAction::Install => crate::actions::UpdateOperation::InstallCodecs,
-            CodecAction::Remove => crate::actions::UpdateOperation::RemoveCodecs,
-            CodecAction::Refresh => crate::actions::UpdateOperation::RefreshCodecs,
+            CodecAction::Install => UpdatesEffect::INSTALL_CODECS.id,
+            CodecAction::Remove => UpdatesEffect::REMOVE_CODECS.id,
+            CodecAction::Refresh => UpdatesEffect::REFRESH_CODECS.id,
         }
     }
 
@@ -1226,7 +1195,7 @@ impl UpdatesPane {
                 );
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     /// Block until the running codec-pack unit returns, then apply its result
@@ -1245,106 +1214,6 @@ impl UpdatesPane {
     /// Is the machine's update timer on, as this pane last read it?
     pub fn timer_enabled(&self) -> Option<bool> {
         self.timer_enabled
-    }
-
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self.require_operation_token = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self
-    }
-
-    fn execute_local_command(&mut self, operation: crate::actions::UpdateOperation) {
-        if self.require_operation_token && self.running_operation().as_ref() != Some(&operation) {
-            return;
-        }
-        use crate::actions::UpdateOperation as Op;
-        match operation {
-            Op::Check => self.handle_check(),
-            Op::Restart => self.handle_restart(),
-            Op::ReviewRollback => self.review_rollback(),
-            Op::Rollback => self.handle_rollback(),
-            Op::RefreshFirmware => self.handle_firmware_refresh(),
-            Op::InstallFirmware => self.handle_firmware_install(),
-            Op::InstallCodecs => self.handle_codecs(CodecAction::Install),
-            Op::RemoveCodecs => self.handle_codecs(CodecAction::Remove),
-            Op::RefreshCodecs => self.handle_codecs(CodecAction::Refresh),
-            Op::SetAutomatic { enabled } => self.handle_auto_toggle(enabled),
-            Op::SetSchedule { schedule } => self.handle_schedule(schedule),
-            Op::SetMetered { allowed } => self.handle_metered(allowed),
-        }
-    }
-
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "call sites construct the exact operation whose token must be reported"
-    )]
-    fn operation_succeeded(
-        &self,
-        operation: crate::actions::UpdateOperation,
-        message: impl Into<String>,
-    ) {
-        let token = Self::operation_token(&operation);
-        if matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: active } if active == token
-        ) {
-            self.operation_status
-                .set(crate::actions::LocalOperationStatus::Succeeded {
-                    token,
-                    message: message.into(),
-                });
-        }
-    }
-
-    fn operation_token(operation: &crate::actions::UpdateOperation) -> String {
-        crate::actions::local_operation_token_for(crate::actions::UPDATE_OPERATION_TYPE, operation)
-    }
-
-    fn running_operation(&self) -> Option<crate::actions::UpdateOperation> {
-        if !self.require_operation_token {
-            return None;
-        }
-        let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
-        else {
-            return None;
-        };
-        let payload = token.strip_prefix(&format!("{}:", crate::actions::UPDATE_OPERATION_TYPE))?;
-        serde_json::from_str(payload).ok()
-    }
-
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "call sites construct the exact operation whose token must be reported"
-    )]
-    fn operation_failed(
-        &self,
-        operation: crate::actions::UpdateOperation,
-        message: impl Into<String>,
-    ) {
-        let token = Self::operation_token(&operation);
-        if matches!(
-            self.operation_status.get(),
-            crate::actions::LocalOperationStatus::Running { token: active } if active == token
-        ) {
-            self.operation_status
-                .set(crate::actions::LocalOperationStatus::Failed {
-                    token,
-                    message: message.into(),
-                });
-        }
     }
 
     /// The message currently shown in the pane, if any.
@@ -1398,7 +1267,7 @@ impl UpdatesPane {
 
     /// The "How updates work" captions, in order.
     pub fn help_lines(&self) -> Vec<String> {
-        vec![t("upd-help-2")]
+        vec![t("upd-help-1"), t("upd-help-2")]
     }
 
     pub fn status(&self) -> &UpdateStatus {
@@ -1411,10 +1280,11 @@ impl UpdatesPane {
 
     fn build_composition(&self) -> Box<dyn Widget> {
         let mut all = vec![
+            self.overview_card(),
             self.status_card(),
-            self.preferences_card(),
             self.firmware_card(),
             self.codecs_card(),
+            self.detail_card(),
             self.lifecycle_card(),
             self.rollback_card(),
             self.help_card(),
@@ -1431,13 +1301,16 @@ impl UpdatesPane {
             // journal is a switch that failed silently.
             all.insert(
                 0,
-                card(&t("upd-notice-title"), rows(vec![Box::new(Text::new(msg))])),
+                card(
+                    &t("upd-notice-title"),
+                    rows(vec![Box::new(Text::new(msg).with_role(ui::TextRole::Body))]),
+                ),
             );
         }
         crate::widgets::cards(all)
     }
 
-    /// Software updates: where the system stands and what to do about it.
+    /// Status card — current + staged + the primary action.
     fn status_card(&self) -> El {
         if let Some(error) = &self.status.staged_error {
             return card(
@@ -1455,118 +1328,162 @@ impl UpdatesPane {
                     .with_intrinsic_height()
                     .push(Box::new(
                         Text::new(&t_args("upd-ready", &[("version", staged.as_str().into())]))
-                            .with_role(ui::tokens::TextRole::Label),
+                            .with_role(ui::TextRole::Body),
                     ))
                     .push(Box::new(
                         Text::new(&t("upd-restart-apply"))
-                            .with_role(ui::tokens::TextRole::Caption)
+                            .with_role(ui::TextRole::Caption)
                             .dimmed(),
                     ))
                     .push(Box::new(
                         Row::new()
-                            .push(Box::new(operation_button(
+                            .push(Box::new(self.button(
                                 "settings.updates.restart",
                                 &t("upd-restart-update"),
-                                "restart",
+                                UpdatesEffect::RestartToUpdate,
                             )))
                             .push(Box::new(Spacer::new())),
                     )),
             ),
-            None => {
-                Box::new(Text::new(&t("upd-up-to-date")).with_role(ui::tokens::TextRole::Label))
-            }
+            None => Box::new(Text::new(&t("upd-up-to-date")).with_role(ui::TextRole::Body)),
         };
+        card(&t("upd-software"), action)
+    }
+
+    fn overview_card(&self) -> El {
+        let mut overview = vec![match &self.status.staged_error {
+            Some(error) => error_row(
+                &t("upd-os"),
+                &t_args("upd-status-error", &[("error", error.as_str().into())]),
+            ),
+            None if self.status.staged_version.is_some() => {
+                value_row(&t("upd-os"), &t("upd-os-staged"))
+            }
+            None => value_row(&t("upd-os"), &t("upd-os-current")),
+        }];
+        if let Ok(updates) = &self.firmware_updates {
+            let fw_value = if updates.is_empty() {
+                t("upd-firmware-current")
+            } else {
+                t("upd-firmware-available")
+            };
+            overview.push(value_row(&t("upd-firmware"), &fw_value));
+        }
+        card(&t("upd-overview"), rows(overview))
+    }
+
+    fn detail_card(&self) -> El {
+        let automatic = t("upd-automatic");
+        let unavailable = t("upd-unavailable");
+        let schedule_label = t("upd-schedule");
+        let check_label = if self.check_pending {
+            t("upd-checking")
+        } else {
+            t("upd-check")
+        };
+        let schedule_placeholder = self.schedule.as_deref().map(schedule_shown);
         card(
-            &t("upd-software"),
+            &t("upd-details"),
             rows(vec![
                 value_row(&t("upd-current-version"), &self.status.current_version),
                 value_row(&t("upd-last-checked"), &self.prefs.last_checked),
-                action,
+                value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
+                match self.timer_enabled {
+                    Some(_) => setting_row(
+                        &automatic,
+                        Box::new(
+                            self.cx.bind(
+                                Toggle::from_state(&LocalState::new(self.prefs.auto))
+                                    .with_id("updates.auto"),
+                                effect(UpdatesEffect::SET_AUTOMATIC_UPDATES),
+                            ),
+                        ),
+                    ),
+                    // Not a switch stuck in one position: a switch that cannot
+                    // reach the timer would report "off" for a machine that is
+                    // updating itself, which is worse than saying so.
+                    None => value_row(&automatic, &unavailable),
+                },
+                match &schedule_placeholder {
+                    Some(schedule) => choice_row(
+                        &schedule_label,
+                        Box::new(
+                            self.cx.bind(
+                                Dropdown::from_state(
+                                    UPDATE_SCHEDULES
+                                        .iter()
+                                        .map(|id| schedule_shown(id))
+                                        .collect(),
+                                    &LocalState::new(schedule.clone()),
+                                )
+                                .with_placeholder(schedule),
+                                effect(UpdatesEffect::SET_UPDATE_SCHEDULE)
+                                    .map(|shown: String| schedule_from_label(&shown)),
+                            ),
+                        ),
+                    ),
+                    None => value_row(&schedule_label, &unavailable),
+                },
+                match self.allow_metered {
+                    Some(_) => setting_row(
+                        &t("upd-metered"),
+                        Box::new(
+                            self.cx.bind(
+                                Toggle::from_state(&LocalState::new(
+                                    self.allow_metered.unwrap_or(false),
+                                ))
+                                .with_id("updates.metered"),
+                                effect(UpdatesEffect::SET_METERED_UPDATES),
+                            ),
+                        ),
+                    ),
+                    None => value_row(&t("upd-metered-short"), &t("upd-metered-unavailable")),
+                },
+                Box::new(
+                    Row::new()
+                        .push(Box::new(self.button(
+                            "settings.updates.check",
+                            &check_label,
+                            UpdatesEffect::CheckForUpdates,
+                        )))
+                        .push(Box::new(Spacer::new())),
+                ),
             ]),
         )
     }
 
-    /// Automatic updates, the download schedule and the metered-network
-    /// policy: only the controls this machine can actually reach.
-    fn preferences_card(&self) -> El {
-        let mut body: Vec<El> = Vec::new();
-        if self.timer_enabled.is_some() {
-            body.push(setting_row(
-                &t("upd-automatic"),
-                Box::new(
-                    Toggle::from_state(&ui::LocalState::new(
-                        self.timer_enabled.unwrap_or(self.prefs.auto),
-                    ))
-                    .with_id("updates.auto")
-                    .on_action(
-                        crate::actions::updates_bool_binding("automatic")
-                            .expect("automatic updates are part of the static resource contract"),
-                    ),
-                ),
-            ));
-        }
-        if let Some(schedule) = self.schedule.as_deref().map(schedule_shown) {
-            body.push(choice_row(
-                &t("upd-schedule"),
-                Box::new(
-                    Dropdown::from_state(
-                        UPDATE_SCHEDULES
-                            .iter()
-                            .map(|id| schedule_shown(id))
-                            .collect(),
-                        &ui::LocalState::new(schedule.clone()),
-                    )
-                    .on_action(
-                        crate::actions::updates_schedule_binding()
-                            .expect("update schedule is part of the static resource contract"),
-                    )
-                    .with_placeholder(&schedule),
-                ),
-            ));
-        }
-        if self.allow_metered.is_some() {
-            body.push(setting_row(
-                &t("upd-metered"),
-                Box::new(
-                    Toggle::from_state(&ui::LocalState::new(self.allow_metered.unwrap_or(false)))
-                        .with_id("updates.metered")
-                        .on_action(crate::actions::updates_bool_binding("metered").expect(
-                            "metered update policy is part of the static resource contract",
-                        )),
-                ),
-            ));
-        }
-        if body.is_empty() {
-            return Box::new(Column::new().with_no_padding().with_intrinsic_height());
-        }
-        card(&t("upd-preferences"), rows(body))
-    }
-
     fn lifecycle_card(&self) -> El {
-        let mut lifecycle_rows = Vec::new();
-        if let Some(health) = &self.details.rollback_health {
-            lifecycle_rows.push(value_row(&t("upd-rollback-health"), health));
-        }
-        if let Some(notes) = &self.details.release_notes {
-            lifecycle_rows.push(value_row(&t("upd-release-notes"), notes));
-        }
-        lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
-        if lifecycle_rows.is_empty() {
-            return Box::new(Column::new().with_no_padding().with_intrinsic_height());
+        let not_reported = t("upd-not-reported");
+        let no_doc = t("upd-no-doc-url");
+        let mut lifecycle_rows = vec![value_row(
+            &t("upd-rollback-health"),
+            self.details
+                .rollback_health
+                .as_deref()
+                .unwrap_or(&not_reported),
+        )];
+        lifecycle_rows.push(value_row(
+            &t("upd-release-notes"),
+            self.details.release_notes.as_deref().unwrap_or(&no_doc),
+        ));
+        if self.details.history.is_empty() {
+            lifecycle_rows.push(caption(&t("upd-no-bootc-history")));
+        } else {
+            lifecycle_rows.extend(self.details.history.iter().map(|line| caption(line)));
         }
         card(&t("upd-lifecycle"), rows(lifecycle_rows))
     }
 
     fn firmware_card(&self) -> El {
         let body = match &self.firmware_updates {
-            Err(_) => self.firmware_card_error(),
+            Err(error) => self.firmware_card_error(error),
             Ok(updates) if updates.is_empty() => self.firmware_card_up_to_date(),
             Ok(updates) => self.firmware_card_available(updates),
         };
         card(&t("upd-firmware"), body)
     }
 
-    fn firmware_card_error(&self) -> El {
+    fn firmware_card_error(&self, error: &str) -> El {
         let refresh_label = if self.firmware_refresh_pending {
             t("upd-refreshing")
         } else {
@@ -1574,12 +1491,13 @@ impl UpdatesPane {
         };
         rows(vec![
             value_row(&t("upd-fw-status"), &t("upd-fw-query-failed")),
+            caption(&t_args("upd-fwupd-reported", &[("error", error.into())])),
             Box::new(
                 Row::new()
-                    .push(Box::new(operation_button(
+                    .push(Box::new(self.button(
                         "settings.updates.firmware.refresh",
                         &refresh_label,
-                        "refresh-firmware",
+                        UpdatesEffect::RefreshFirmware,
                     )))
                     .push(Box::new(Spacer::new())),
             ),
@@ -1595,10 +1513,10 @@ impl UpdatesPane {
             body.push(value_row(&t("upd-activation"), &t("upd-restart-required")));
             body.push(Box::new(
                 Row::new()
-                    .push(Box::new(operation_button(
+                    .push(Box::new(self.button(
                         "settings.updates.firmware.restart",
                         &t("upd-restart-now"),
-                        "restart",
+                        UpdatesEffect::RestartToUpdate,
                     )))
                     .push(Box::new(Spacer::new())),
             ));
@@ -1610,10 +1528,10 @@ impl UpdatesPane {
             };
             body.push(Box::new(
                 Row::new()
-                    .push(Box::new(operation_button(
+                    .push(Box::new(self.button(
                         "settings.updates.firmware.refresh",
                         &check_fw,
-                        "refresh-firmware",
+                        UpdatesEffect::RefreshFirmware,
                     )))
                     .push(Box::new(Spacer::new())),
             ));
@@ -1648,10 +1566,10 @@ impl UpdatesPane {
         match &self.firmware_state {
             FirmwareUiState::Idle => items.push(Box::new(
                 Row::new()
-                    .push(Box::new(operation_button(
+                    .push(Box::new(self.button(
                         "settings.updates.firmware.install",
                         &t("upd-install-firmware"),
-                        "install-firmware",
+                        UpdatesEffect::InstallFirmware,
                     )))
                     .push(Box::new(Spacer::new())),
             )),
@@ -1669,10 +1587,10 @@ impl UpdatesPane {
                 if *needs_reboot {
                     items.push(Box::new(
                         Row::new()
-                            .push(Box::new(operation_button(
+                            .push(Box::new(self.button(
                                 "settings.updates.firmware.restart",
                                 &t("upd-restart-now"),
-                                "restart",
+                                UpdatesEffect::RestartToUpdate,
                             )))
                             .push(Box::new(Spacer::new())),
                     ));
@@ -1691,8 +1609,8 @@ impl UpdatesPane {
                 let mut entries = Vec::new();
                 for item in history.iter().take(8) {
                     let versions = match (&item.from_version, &item.to_version) {
-                        (Some(from), Some(to)) => format!("{from} → {to}, {}", item.state),
-                        (_, Some(to)) => format!("{to}, {}", item.state),
+                        (Some(from), Some(to)) => format!("{from} → {to} · {}", item.state),
+                        (_, Some(to)) => format!("{to} · {}", item.state),
                         _ => item.state.clone(),
                     };
                     entries.push(value_row(&item.device, &versions));
@@ -1705,12 +1623,15 @@ impl UpdatesPane {
                 }
                 card(&t("upd-fw-history"), rows(entries))
             }
-            Err(_) => card(
+            Err(error) => card(
                 &t("upd-fw-history"),
-                rows(vec![value_row(
-                    &t("upd-fw-status"),
-                    &t("upd-history-query-failed"),
-                )]),
+                rows(vec![
+                    value_row(&t("upd-fw-status"), &t("upd-history-query-failed")),
+                    caption(&t_args(
+                        "upd-fwupd-reported",
+                        &[("error", error.as_str().into())],
+                    )),
+                ]),
             ),
         }
     }
@@ -1730,21 +1651,23 @@ impl UpdatesPane {
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(no_previous)))
+                    .push(Box::new(
+                        Text::new(no_previous).with_role(ui::TextRole::Body),
+                    ))
                     .push(caption(no_previous_caption)),
             ),
             (Ok(Some(_)), false, [_, previous, intro, button_label, ..]) => Box::new(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(previous)))
+                    .push(Box::new(Text::new(previous).with_role(ui::TextRole::Body)))
                     .push(caption(intro))
                     .push(Box::new(
                         Row::new()
-                            .push(Box::new(operation_button(
+                            .push(Box::new(self.button(
                                 "settings.updates.rollback",
                                 button_label,
-                                "review-rollback",
+                                UpdatesEffect::ReviewRollback,
                             )))
                             .push(Box::new(Spacer::new())),
                     )),
@@ -1754,17 +1677,17 @@ impl UpdatesPane {
                 let mut col = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(prompt)));
+                    .push(Box::new(Text::new(prompt).with_role(ui::TextRole::Body)));
                 for c in caveats {
                     col = col.push(caption(c));
                 }
                 Box::new(
                     col.push(Box::new(
                         Row::new()
-                            .push(Box::new(operation_button(
+                            .push(Box::new(self.button(
                                 "settings.updates.rollback.confirm",
                                 confirm_label,
-                                "rollback",
+                                UpdatesEffect::RollBack,
                             )))
                             .push(Box::new(Spacer::new())),
                     )),
@@ -1787,9 +1710,7 @@ impl UpdatesPane {
     }
 
     fn persist(&self) {
-        let mut p = SystemPrefs::load();
-        p.updates = self.prefs.clone();
-        if let Err(e) = p.save() {
+        if let Err(e) = self.cx.settings::<UpdatePrefs>().set(&self.prefs) {
             warn!(target: "tilo::settings", op = "update_prefs_save", error = %e, "failed to persist update prefs");
         }
     }
@@ -1798,8 +1719,13 @@ impl UpdatesPane {
     /// is running.
     fn drain_firmware_events(&mut self) {
         let mut finished = false;
-        if let Some(events) = &self.firmware_events {
-            while let Ok(event) = events.try_recv() {
+        let events: Vec<os_actions::FirmwareEvent> = self
+            .firmware_events
+            .as_ref()
+            .map(|events| events.try_iter().collect())
+            .unwrap_or_default();
+        {
+            for event in events {
                 match event {
                     os_actions::FirmwareEvent::Started { total } => {
                         self.firmware_state = FirmwareUiState::Installing {
@@ -1839,7 +1765,7 @@ impl UpdatesPane {
                         self.firmware_updates = os_actions::get_firmware_updates();
                         self.firmware_history = os_actions::get_firmware_history();
                         self.operation_succeeded(
-                            crate::actions::UpdateOperation::InstallFirmware,
+                            UpdatesEffect::INSTALL_FIRMWARE.id,
                             "firmware installation finished",
                         );
                         finished = true;
@@ -1851,13 +1777,13 @@ impl UpdatesPane {
                             &[("error", error.as_str().into())],
                         ));
                         self.operation_failed(
-                            crate::actions::UpdateOperation::InstallFirmware,
+                            UpdatesEffect::INSTALL_FIRMWARE.id,
                             format!("Firmware installation failed: {error}"),
                         );
                         finished = true;
                     }
                 }
-                self.structure_dirty = true;
+                self.changed = true;
             }
         }
         if finished {
@@ -1877,10 +1803,10 @@ impl UpdatesPane {
                 self.check_pending = false;
                 self.notice = Some(t("upd-notice-check-stopped"));
                 self.operation_failed(
-                    crate::actions::UpdateOperation::Check,
+                    UpdatesEffect::CHECK_FOR_UPDATES.id,
                     "update check worker stopped",
                 );
-                self.structure_dirty = true;
+                self.changed = true;
                 return;
             }
         };
@@ -1896,7 +1822,7 @@ impl UpdatesPane {
                 self.notice = None;
                 self.persist();
                 self.operation_succeeded(
-                    crate::actions::UpdateOperation::Check,
+                    UpdatesEffect::CHECK_FOR_UPDATES.id,
                     "update check finished",
                 );
             }
@@ -1906,12 +1832,12 @@ impl UpdatesPane {
                     &[("error", error.as_str().into())],
                 ));
                 self.operation_failed(
-                    crate::actions::UpdateOperation::Check,
+                    UpdatesEffect::CHECK_FOR_UPDATES.id,
                     format!("Updates could not be checked: {error}"),
                 );
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     fn drain_firmware_refresh_events(&mut self) {
@@ -1932,10 +1858,10 @@ impl UpdatesPane {
                     &[("error", error.as_str().into())],
                 ));
                 self.operation_failed(
-                    crate::actions::UpdateOperation::RefreshFirmware,
+                    UpdatesEffect::REFRESH_FIRMWARE.id,
                     format!("Firmware metadata could not be refreshed: {error}"),
                 );
-                self.structure_dirty = true;
+                self.changed = true;
                 return;
             }
         };
@@ -1947,7 +1873,7 @@ impl UpdatesPane {
                 self.firmware_history = Ok(history);
                 self.notice = None;
                 self.operation_succeeded(
-                    crate::actions::UpdateOperation::RefreshFirmware,
+                    UpdatesEffect::REFRESH_FIRMWARE.id,
                     "firmware metadata refreshed",
                 );
             }
@@ -1959,22 +1885,22 @@ impl UpdatesPane {
                     &[("error", error.as_str().into())],
                 ));
                 self.operation_failed(
-                    crate::actions::UpdateOperation::RefreshFirmware,
+                    UpdatesEffect::REFRESH_FIRMWARE.id,
                     format!("Firmware metadata could not be refreshed: {error}"),
                 );
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     /// Check for updates → re-query the system + stamp the time + persist.
-    fn handle_check(&mut self) {
+    fn check(&mut self) {
         if self.check_pending {
             self.operation_failed(
-                crate::actions::UpdateOperation::Check,
+                UpdatesEffect::CHECK_FOR_UPDATES.id,
                 "an update check is already running",
             );
-            self.structure_dirty = true;
+            self.changed = true;
             return;
         }
         let status_provider = Arc::clone(&self.status_provider);
@@ -1998,23 +1924,23 @@ impl UpdatesPane {
         {
             self.notice = Some(t("upd-notice-check-worker"));
             self.operation_failed(
-                crate::actions::UpdateOperation::Check,
+                UpdatesEffect::CHECK_FOR_UPDATES.id,
                 "update check worker could not start",
             );
         } else {
             self.check_events = Some(rx);
             self.check_pending = true;
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
-    fn handle_firmware_refresh(&mut self) {
+    fn refresh_firmware(&mut self) {
         if self.firmware_refresh_pending || self.firmware_events.is_some() {
             self.operation_failed(
-                crate::actions::UpdateOperation::RefreshFirmware,
+                UpdatesEffect::REFRESH_FIRMWARE.id,
                 "firmware work is already in progress",
             );
-            self.structure_dirty = true;
+            self.changed = true;
             return;
         }
         let control = Arc::clone(&self.control);
@@ -2032,24 +1958,24 @@ impl UpdatesPane {
             self.notice =
                 Some("Firmware metadata could not be refreshed: worker could not start".into());
             self.operation_failed(
-                crate::actions::UpdateOperation::RefreshFirmware,
+                UpdatesEffect::REFRESH_FIRMWARE.id,
                 "firmware refresh worker could not start",
             );
         } else {
             self.firmware_refresh_events = Some(rx);
             self.firmware_refresh_pending = true;
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
-    fn handle_firmware_install(&mut self) {
+    fn install_firmware(&mut self) {
         if self.firmware_refresh_pending || self.firmware_events.is_some() {
             self.notice = Some(t("upd-notice-fw-busy"));
             self.operation_failed(
-                crate::actions::UpdateOperation::InstallFirmware,
+                UpdatesEffect::INSTALL_FIRMWARE.id,
                 "firmware work is already in progress",
             );
-            self.structure_dirty = true;
+            self.changed = true;
             return;
         }
         match self
@@ -2072,17 +1998,22 @@ impl UpdatesPane {
                     &[("error", e.as_str().into())],
                 ));
                 self.operation_failed(
-                    crate::actions::UpdateOperation::InstallFirmware,
+                    UpdatesEffect::INSTALL_FIRMWARE.id,
                     format!("Firmware upgrades could not be installed: {e}"),
                 );
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     /// Restart & update → reboot into the staged image (dedup).
-    fn handle_restart(&mut self) {
-        if !self.dispatched_restart {
+    fn restart(&mut self) {
+        if self.dispatched_restart {
+            self.operation_failed(
+                UpdatesEffect::RESTART_TO_UPDATE.id,
+                "the restart is already on its way",
+            );
+        } else {
             self.dispatched_restart = true;
             if let Err(e) = self.rebooter.reboot() {
                 warn!(target: "tilo::settings", op = "reboot", error = %e, "restart & update failed");
@@ -2091,13 +2022,13 @@ impl UpdatesPane {
                     &[("error", e.as_str().into())],
                 ));
                 self.operation_failed(
-                    crate::actions::UpdateOperation::Restart,
+                    UpdatesEffect::RESTART_TO_UPDATE.id,
                     format!("Restarting into the staged update failed: {e}"),
                 );
-                self.structure_dirty = true;
+                self.changed = true;
             } else {
                 self.operation_succeeded(
-                    crate::actions::UpdateOperation::Restart,
+                    UpdatesEffect::RESTART_TO_UPDATE.id,
                     "restart command accepted by the system",
                 );
             }
@@ -2108,8 +2039,8 @@ impl UpdatesPane {
     /// actually says. Persisting the preference happens only once the
     /// machine agrees, so the stored value never claims a state the timer
     /// isn't actually in.
-    fn handle_auto_toggle(&mut self, b: bool) {
-        let operation = crate::actions::UpdateOperation::SetAutomatic { enabled: b };
+    fn set_automatic(&mut self, b: bool) {
+        let operation = UpdatesEffect::SET_AUTOMATIC_UPDATES.id;
         if b == self.last_prefs.auto {
             self.operation_succeeded(operation, "automatic-update timer was already selected");
             return;
@@ -2154,17 +2085,19 @@ impl UpdatesPane {
                 );
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
-    fn handle_schedule(&mut self, requested_raw: String) {
+    fn set_schedule(&mut self, requested: &str) {
+        let operation = UpdatesEffect::SET_UPDATE_SCHEDULE.id;
         let Some(current) = self.schedule.clone() else {
+            self.operation_failed(
+                operation,
+                "the update schedule cannot be read on this device",
+            );
             return;
         };
-        let requested = schedule_from_label(&requested_raw);
-        let operation = crate::actions::UpdateOperation::SetSchedule {
-            schedule: requested.clone(),
-        };
+        let requested = schedule_from_label(requested);
         if requested == current || !UPDATE_SCHEDULES.contains(&requested.as_str()) {
             if requested == current {
                 self.operation_succeeded(operation, "update schedule was already selected");
@@ -2193,16 +2126,20 @@ impl UpdatesPane {
                 );
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
-    fn handle_metered(&mut self, requested: bool) {
+    fn set_metered(&mut self, requested: bool) {
         let Some(current) = self.allow_metered else {
+            self.operation_failed(
+                UpdatesEffect::SET_METERED_UPDATES.id,
+                "the metered-network policy cannot be read on this device",
+            );
             return;
         };
         if requested == current {
             self.operation_succeeded(
-                crate::actions::UpdateOperation::SetMetered { allowed: requested },
+                UpdatesEffect::SET_METERED_UPDATES.id,
                 "metered-network policy was already selected",
             );
             return;
@@ -2212,7 +2149,7 @@ impl UpdatesPane {
                 self.allow_metered = self.control.allow_metered().or(Some(requested));
                 self.notice = None;
                 self.operation_succeeded(
-                    crate::actions::UpdateOperation::SetMetered { allowed: requested },
+                    UpdatesEffect::SET_METERED_UPDATES.id,
                     "metered-network policy changed",
                 );
             }
@@ -2222,273 +2159,224 @@ impl UpdatesPane {
                     &[("error", error.as_str().into())],
                 ));
                 self.operation_failed(
-                    crate::actions::UpdateOperation::SetMetered { allowed: requested },
+                    UpdatesEffect::SET_METERED_UPDATES.id,
                     format!("Metered-network policy could not be changed: {error}"),
                 );
             }
         }
-        self.structure_dirty = true;
+        self.changed = true;
     }
 
     /// Roll back, in two steps. The first only opens the explanation.
     fn review_rollback(&mut self) {
-        self.rollback_armed = true;
-        self.notice = None;
-        self.operation_succeeded(
-            crate::actions::UpdateOperation::ReviewRollback,
-            "rollback details opened",
-        );
-        self.structure_dirty = true;
-    }
-    fn handle_rollback(&mut self) {
-        match self.control.roll_back() {
-            Ok(()) => {
-                self.rollback_armed = false;
-                self.notice = Some(t("upd-notice-rollback-ok"));
-                // The target moves once the order changes, so re-read it
-                // rather than showing the value from before the action.
-                self.rollback_target = self.control.rollback_target();
-                self.operation_succeeded(
-                    crate::actions::UpdateOperation::Rollback,
-                    "previous system image selected for next boot",
-                );
-            }
-            Err(e) => {
-                warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
-                self.notice = Some(t_args(
-                    "upd-notice-rollback",
-                    &[("error", e.as_str().into())],
-                ));
-                self.operation_failed(
-                    crate::actions::UpdateOperation::Rollback,
-                    format!("Rolling back failed: {e}"),
-                );
-            }
+        {
+            self.rollback_armed = true;
+            self.notice = None;
+            self.operation_succeeded(UpdatesEffect::REVIEW_ROLLBACK.id, "rollback details opened");
+            self.changed = true;
         }
-        self.structure_dirty = true;
+    }
+
+    fn roll_back(&mut self) {
+        {
+            match self.control.roll_back() {
+                Ok(()) => {
+                    self.rollback_armed = false;
+                    self.notice = Some(t("upd-notice-rollback-ok"));
+                    // The target moves once the order changes, so re-read it
+                    // rather than showing the value from before the action.
+                    self.rollback_target = self.control.rollback_target();
+                    self.operation_succeeded(
+                        UpdatesEffect::ROLL_BACK.id,
+                        "previous system image selected for next boot",
+                    );
+                }
+                Err(e) => {
+                    warn!(target: "tilo::settings", op = "rollback", error = %e, "rollback failed");
+                    self.notice = Some(t_args(
+                        "upd-notice-rollback",
+                        &[("error", e.as_str().into())],
+                    ));
+                    self.operation_failed(
+                        UpdatesEffect::ROLL_BACK.id,
+                        format!("Rolling back failed: {e}"),
+                    );
+                }
+            }
+            self.changed = true;
+        }
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(UpdatesPane::new())
+/// Updates, firmware and the media codec pack of this device.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum UpdatesEffect {
+    /// Check for a new system image now.
+    #[effect(job)]
+    CheckForUpdates,
+    /// Restart into the staged system image.
+    #[effect(job, destructive)]
+    RestartToUpdate,
+    /// Show what rolling back to the previous system image does not undo.
+    #[effect(job)]
+    ReviewRollback,
+    /// Boot the previous system image next time.
+    #[effect(job, destructive)]
+    RollBack,
+    /// Ask the firmware service for new firmware.
+    #[effect(job)]
+    RefreshFirmware,
+    /// Install the available firmware upgrades.
+    #[effect(job, destructive)]
+    InstallFirmware,
+    /// Install the media codec pack.
+    #[effect(job)]
+    InstallCodecs,
+    /// Remove the media codec pack.
+    #[effect(job, destructive)]
+    RemoveCodecs,
+    /// Check again for the codec pack's hardware video driver.
+    #[effect(job)]
+    RefreshCodecs,
+    /// Update the system automatically, or only when asked.
+    #[effect(job, idempotent)]
+    SetAutomaticUpdates { on: bool },
+    /// Set when updates download.
+    #[effect(job, idempotent)]
+    SetUpdateSchedule {
+        #[param("When", choices = UPDATE_SCHEDULES.iter().copied())]
+        schedule: String,
+    },
+    /// Download updates on metered networks, or wait for another network.
+    #[effect(job, idempotent)]
+    SetMeteredUpdates { allowed: bool },
 }
 
-impl Widget for UpdatesPane {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+impl UpdatesModel {
+    /// Start `effect`; `reply` is told how it ends.
+    pub(crate) fn run(&mut self, effect: UpdatesEffect, reply: Option<EffectReply>) {
+        if let Some(reply) = reply {
+            self.replies.wait(effect.id(), reply);
+        }
+        match effect {
+            UpdatesEffect::CheckForUpdates => self.check(),
+            UpdatesEffect::RestartToUpdate => self.restart(),
+            UpdatesEffect::ReviewRollback => self.review_rollback(),
+            UpdatesEffect::RollBack => self.roll_back(),
+            UpdatesEffect::RefreshFirmware => self.refresh_firmware(),
+            UpdatesEffect::InstallFirmware => self.install_firmware(),
+            UpdatesEffect::InstallCodecs => self.change_codecs(CodecAction::Install),
+            UpdatesEffect::RemoveCodecs => self.change_codecs(CodecAction::Remove),
+            UpdatesEffect::RefreshCodecs => self.change_codecs(CodecAction::Refresh),
+            UpdatesEffect::SetAutomaticUpdates { on } => self.set_automatic(on),
+            UpdatesEffect::SetUpdateSchedule { schedule } => self.set_schedule(&schedule),
+            UpdatesEffect::SetMeteredUpdates { allowed } => self.set_metered(allowed),
+        }
+    }
+
+    /// Tell the caller of `operation` it succeeded.
+    fn operation_succeeded(&mut self, operation: &'static str, message: impl Into<String>) {
+        self.replies.succeed(operation, message);
+    }
+
+    /// Tell the caller of `operation` why it failed.
+    fn operation_failed(&mut self, operation: &'static str, message: impl Into<String>) {
+        self.replies.fail(operation, message);
+    }
+
+    /// A button running `effect`.
+    fn button(&self, control_id: &str, label: &str, effect: UpdatesEffect) -> Button {
+        self.cx
+            .bind_invocation(Button::new(control_id, label), effect)
+    }
+}
+
+/// What the updates area keeps for the window: the model, read from the
+/// system when first needed.
+pub struct UpdatesArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<crate::panes::model::Shared<UpdatesModel>>,
+}
+
+impl UpdatesArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The model, created on first use: a capture's reaches no system tool.
+    pub fn model(&self) -> &crate::panes::model::Shared<UpdatesModel> {
+        self.model.get_or_init(|| {
+            let model = if self.cx.reaches_devices() {
+                UpdatesModel::new(self.cx.clone())
+            } else {
+                UpdatesModel::sample(self.cx.clone())
+            };
+            std::rc::Rc::new(std::cell::RefCell::new(model))
+        })
+    }
+
+    /// Take in finished background work, if the model exists.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            use crate::panes::model::PaneModel;
+            let _ = model.borrow_mut().poll();
+        }
+    }
+}
+
+/// Answer `effect` on the area's model.
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &crate::settings_app::SettingsApp,
+    effect: UpdatesEffect,
+    cx: &mut ui::framework::EffectCx<crate::resource::Settings, crate::settings_app::SettingsApp>,
+) -> ui::framework::EffectAnswer {
+    let reply = cx.reply();
+    app.updates().model().borrow_mut().run(effect, Some(reply));
+    Ok(Effected::Pending)
+}
+
+impl crate::panes::model::PaneModel for UpdatesModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
+    }
+
+    fn poll(&mut self) -> bool {
         self.drain_check_events();
         self.drain_firmware_refresh_events();
         self.drain_firmware_events();
         self.drain_codec_events();
         self.refresh_codec_status_if_changed();
-        if let Some(crate::actions::LocalPaneCommand::Updates(operation)) = self.command_state.get()
-        {
-            self.command_state.set(None);
-            self.execute_local_command(operation);
-        }
-        if let Some(composed) = &mut self.composed {
-            composed.sync(state, path);
-        }
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        // `child` was just created in this same `taffy` tree, so wrapping it
-        // cannot fail in practice; falling back to the child node itself
-        // (skipping the wrapper style) is a real degraded behaviour rather
-        // than a panic if that invariant is ever broken.
-        let node = taffy.new_with_children(style, &[child]).unwrap_or(child);
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).copied().unwrap_or_default();
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
-        }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        std::mem::take(&mut self.changed)
     }
 
     fn name(&self) -> &'static str {
         "UpdatesPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
-            .composed
-            .as_mut()
-            .is_some_and(|c| c.take_structure_dirty());
-        own || child
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.check_pending
-            || self.firmware_refresh_pending
-            || self.firmware_events.is_some()
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|child| child.needs_redraw())
-    }
-}
-
-/// The `--shots` pane: a machine that is up to date, with every control the
-/// pane offers reachable, so a capture reads the same everywhere.
-#[cfg(not(feature = "thin"))]
-mod capture {
-    use super::{
-        Arc, Rebooter, UpdateControl, UpdateDetails, UpdatePrefs, UpdateStatus, UpdatesPane,
-        now_stamp, t_args,
-    };
-
-    struct Reachable;
-
-    impl UpdateControl for Reachable {
-        fn timer_enabled(&self) -> Option<bool> {
-            Some(true)
-        }
-        fn set_timer(&self, _on: bool) -> Result<(), String> {
-            Ok(())
-        }
-        fn rollback_target(&self) -> Result<Option<String>, String> {
-            Ok(Some("Tilo 1.0.2".into()))
-        }
-        fn roll_back(&self) -> Result<(), String> {
-            Ok(())
-        }
-        fn schedule(&self) -> Option<String> {
-            Some("Daily".into())
-        }
-        fn set_schedule(&self, _schedule: &str) -> Result<(), String> {
-            Ok(())
-        }
-        fn allow_metered(&self) -> Option<bool> {
-            Some(false)
-        }
-        fn set_allow_metered(&self, _allow: bool) -> Result<(), String> {
-            Ok(())
-        }
-        fn check_now(&self) -> Result<(), String> {
-            Ok(())
-        }
-    }
-
-    struct Held;
-
-    impl Rebooter for Held {
-        fn reboot(&self) -> Result<(), String> {
-            Err("a capture never restarts the machine".into())
-        }
-    }
-
-    impl UpdatesPane {
-        pub(crate) fn for_shot() -> Self {
-            let status = UpdateStatus {
-                current_version: "Tilo 1.0.3".into(),
-                staged_version: None,
-                staged_error: None,
-            };
-            let prefs = UpdatePrefs {
-                last_checked: now_stamp(),
-                ..UpdatePrefs::default()
-            };
-            let provider = status.clone();
-            let mut pane = Self::with_parts_and_control(
-                status,
-                prefs,
-                Arc::new(move || provider.clone()),
-                Arc::new(now_stamp),
-                Arc::new(Held),
-                Arc::new(Reachable),
-            );
-            pane.details = UpdateDetails {
-                history: Vec::new(),
-                release_notes: None,
-                rollback_health: Some(t_args(
-                    "upd-health-protected",
-                    &[("target", "Tilo 1.0.2".into())],
-                )),
-            };
-            pane.firmware_updates = Ok(Vec::new());
-            pane.firmware_history = Ok(Vec::new());
-            pane
-        }
+    fn busy(&self) -> bool {
+        self.check_pending || self.firmware_refresh_pending || self.firmware_events.is_some()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use automerge::{AutoCommit, transaction::Transactable};
-
     use super::*;
+    use crate::panes::model::PaneModel;
     use std::sync::Mutex;
+
+    /// A model's settings document of its own.
+    fn test_cx() -> PaneCx {
+        let profile = tempfile::tempdir().unwrap().keep();
+        PaneCx::in_file(profile.join("settings.json"))
+    }
 
     #[derive(Default)]
     struct RecordingRebooter {
@@ -2501,7 +2389,7 @@ mod tests {
         }
     }
 
-    fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesPane {
+    fn pane_with(staged: Option<&str>, rebooter: Arc<RecordingRebooter>) -> UpdatesModel {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: staged.map(std::string::ToString::to_string),
@@ -2512,7 +2400,8 @@ mod tests {
             staged_version: Some("Tilo 2026.07".into()),
             staged_error: None,
         };
-        UpdatesPane::with_parts(
+        UpdatesModel::with_parts(
+            test_cx(),
             status,
             UpdatePrefs::default(),
             Arc::new(move || requeried.clone()),
@@ -2527,7 +2416,7 @@ mod tests {
         status: Arc<Mutex<String>>,
         runs: Arc<Mutex<Vec<CodecAction>>>,
         outcome: Result<(), String>,
-    ) -> UpdatesPane {
+    ) -> UpdatesModel {
         let reader = Arc::clone(&status);
         pane_with(None, Arc::new(RecordingRebooter::default())).with_codec_pack(
             Arc::new(move || CodecPackStatus::parse(&reader.lock().unwrap())),
@@ -2553,21 +2442,12 @@ mod tests {
     }
 
     /// Press a codec control, then wait for the unit to return (no polling).
-    fn press_and_finish(pane: &mut UpdatesPane, key: &str) {
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let operation = match key {
-            CODECS_INSTALL_KEY => crate::actions::UpdateOperation::InstallCodecs,
-            CODECS_REMOVE_KEY => crate::actions::UpdateOperation::RemoveCodecs,
-            CODECS_REFRESH_KEY => crate::actions::UpdateOperation::RefreshCodecs,
-            _ => panic!("unknown codec control: {key}"),
-        };
-        pane.command_state
-            .set(Some(crate::actions::LocalPaneCommand::Updates(operation)));
-        pane.sync(&mut doc, &root);
+    fn press_and_finish(pane: &mut UpdatesModel, effect: UpdatesEffect) {
+        pane.poll();
+        pane.run(effect, None);
+        pane.poll();
         pane.wait_for_codec_operation();
-        pane.sync(&mut doc, &root);
+        pane.poll();
     }
 
     #[test]
@@ -2580,8 +2460,8 @@ mod tests {
         for needle in [
             "RPM Fusion",
             "Cisco",
-            "patented formats",
-            "under their own licences",
+            "hardware video on AMD and Intel",
+            "screen sharing and calls",
             "Tilo does not host or distribute",
         ] {
             assert!(explanation.contains(needle), "{needle}: {explanation}");
@@ -2664,15 +2544,14 @@ mod tests {
         let runs = Arc::new(Mutex::new(Vec::new()));
         let status = shared_status(r#"{"state":"waiting-for-network","desired":true}"#);
         let mut pane = codec_pane(Arc::clone(&status), runs, Ok(()));
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.poll();
         // The device came online and the helper installed in the background.
         *status.lock().unwrap() =
             r#"{"state":"installed","mesa":"enabled","desired":true}"#.to_string();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.poll();
         assert_eq!(pane.codec_status().state, PackState::WaitingForNetwork);
         pane.codec_status_file_changed();
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.poll();
         assert_eq!(pane.codec_status().state, PackState::Installed);
         assert!(
             pane.codecs_card_lines()
@@ -2685,7 +2564,7 @@ mod tests {
     fn install_runs_the_unit_and_shows_the_waiting_mesa_part() {
         let runs = Arc::new(Mutex::new(Vec::new()));
         let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Ok(()));
-        press_and_finish(&mut pane, CODECS_INSTALL_KEY);
+        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
         assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Install]);
         assert_eq!(pane.codec_status().state, PackState::Installed);
         let lines = pane.codecs_card_lines();
@@ -2717,13 +2596,9 @@ mod tests {
                 Ok(())
             }),
         );
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        pane.command_state
-            .set(Some(crate::actions::LocalPaneCommand::Updates(
-                crate::actions::UpdateOperation::InstallCodecs,
-            )));
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.poll();
+        pane.run(UpdatesEffect::InstallCodecs, None);
+        pane.poll();
         let lines = pane.codecs_card_lines();
         assert!(lines.contains(&"Status: Starting\u{2026}".to_string()));
         assert!(lines.contains(&"Progress: 0%".to_string()));
@@ -2739,7 +2614,7 @@ mod tests {
     fn failed_install_surfaces_the_helper_error_and_offers_retry() {
         let runs = Arc::new(Mutex::new(Vec::new()));
         let mut pane = codec_pane(shared_status(""), Arc::clone(&runs), Err("offline".into()));
-        press_and_finish(&mut pane, CODECS_INSTALL_KEY);
+        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
         assert_eq!(
             pane.notice(),
             Some("The codec pack could not be changed: offline")
@@ -2747,7 +2622,7 @@ mod tests {
         let lines = pane.codecs_card_lines();
         assert!(lines.contains(&"Status: Installation failed: offline".to_string()));
         assert!(lines.contains(&"Try again".to_string()));
-        press_and_finish(&mut pane, CODECS_INSTALL_KEY);
+        press_and_finish(&mut pane, UpdatesEffect::InstallCodecs);
         assert_eq!(
             *runs.lock().unwrap(),
             vec![CodecAction::Install, CodecAction::Install]
@@ -2759,7 +2634,7 @@ mod tests {
         let runs = Arc::new(Mutex::new(Vec::new()));
         let status = shared_status(r#"{"state":"installed","mesa":"waiting","desired":true}"#);
         let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
-        press_and_finish(&mut pane, CODECS_REFRESH_KEY);
+        press_and_finish(&mut pane, UpdatesEffect::RefreshCodecs);
         assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Refresh]);
     }
 
@@ -2768,7 +2643,7 @@ mod tests {
         let runs = Arc::new(Mutex::new(Vec::new()));
         let status = shared_status(r#"{"state":"installed","mesa":"enabled","desired":true}"#);
         let mut pane = codec_pane(status, Arc::clone(&runs), Ok(()));
-        press_and_finish(&mut pane, CODECS_REMOVE_KEY);
+        press_and_finish(&mut pane, UpdatesEffect::RemoveCodecs);
         assert_eq!(*runs.lock().unwrap(), vec![CodecAction::Remove]);
         assert_eq!(pane.codec_status().state, PackState::NotInstalled);
         assert_eq!(
@@ -2839,10 +2714,6 @@ mod tests {
 
     /// Checks and firmware refresh return promptly, stamp only on success, dedupe, and ignore replicated latches.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn update_checks_run_promptly_and_stamp_only_on_completion() {
         // Case `check_requeries_and_stamps_last_checked`.
         // Check for updates re-queries the system and stamps a real
@@ -2851,18 +2722,13 @@ mod tests {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let reb = Arc::new(RecordingRebooter::default());
             let mut pane = pane_with(None, reb);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+            pane.poll();
             assert_eq!(pane.prefs().last_checked, "Never");
             assert_eq!(pane.status().staged_version, None);
             // Press Check.
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Check,
-                )));
-            pane.sync(&mut doc, &root);
-            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            pane.poll();
+            settle(&mut pane, |pane| pane.check_pending);
             assert_eq!(
                 pane.prefs().last_checked,
                 "CHECKED-NOW",
@@ -2873,7 +2739,6 @@ mod tests {
                 Some("Tilo 2026.07"),
                 "the re-query result landed"
             );
-            assert!(pane.take_structure_dirty(), "check refreshes the view");
         }
 
         // Case `blocking_update_check_returns_promptly_and_stamps_only_on_completion`.
@@ -2882,20 +2747,15 @@ mod tests {
             let control = Arc::new(FakeControl::new(None, None));
             let release = control.gate_checks();
             let mut pane = pane_with_control(Arc::clone(&control));
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Check,
-                )));
+            pane.poll();
+            pane.run(UpdatesEffect::CheckForUpdates, None);
             // The check is held until released below: were `sync` to wait for
             // it, this call would only return once the gate timed out.
-            pane.sync(&mut doc, &root);
+            pane.poll();
             assert!(pane.check_pending, "the check runs off the UI thread");
             assert_eq!(pane.prefs().last_checked, "Never");
             release.send(()).unwrap();
-            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            settle(&mut pane, |pane| pane.check_pending);
             assert!(
                 !control.gate_timed_out(),
                 "sync blocked on the update check"
@@ -2909,14 +2769,9 @@ mod tests {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(None, None).failing_check());
             let mut pane = pane_with_control(control);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Check,
-                )));
-            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            pane.poll();
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            settle(&mut pane, |pane| pane.check_pending);
             assert_eq!(pane.prefs().last_checked, "Never");
             assert!(
                 pane.notice()
@@ -2930,17 +2785,12 @@ mod tests {
             let control = Arc::new(FakeControl::new(None, None));
             let release = control.gate_refreshes();
             let mut pane = pane_with_control(Arc::clone(&control));
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::RefreshFirmware,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.poll();
+            pane.run(UpdatesEffect::RefreshFirmware, None);
+            pane.poll();
             assert!(pane.firmware_refresh_pending);
             release.send(()).unwrap();
-            settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
+            settle(&mut pane, |pane| pane.firmware_refresh_pending);
             assert!(
                 !control.gate_timed_out(),
                 "sync blocked on the firmware refresh"
@@ -2948,14 +2798,11 @@ mod tests {
             assert_eq!(pane.firmware_updates, Ok(Vec::new()));
 
             control.set_refresh_fails(true);
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::RefreshFirmware,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.run(UpdatesEffect::RefreshFirmware, None);
+            pane.poll();
             assert!(pane.firmware_refresh_pending);
             release.send(()).unwrap();
-            settle(&mut pane, &mut doc, |pane| pane.firmware_refresh_pending);
+            settle(&mut pane, |pane| pane.firmware_refresh_pending);
             assert!(pane.firmware_updates.is_err());
             assert!(pane.notice().is_some_and(|message| {
                 message.contains("Firmware metadata could not be refreshed")
@@ -2968,94 +2815,25 @@ mod tests {
             let control = Arc::new(FakeControl::new(None, None));
             let release = control.gate_checks();
             let mut pane = pane_with_control(Arc::clone(&control));
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Check,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.poll();
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            pane.poll();
             assert!(pane.check_pending);
             // A second press while the first check is provably still running.
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Check,
-                )));
-            pane.sync(&mut doc, &root);
-            assert!(
-                pane.command_state.get().is_none(),
-                "the duplicate press is cleared"
-            );
+            pane.run(UpdatesEffect::CheckForUpdates, None);
+            pane.poll();
             release.send(()).unwrap();
-            settle(&mut pane, &mut doc, |pane| pane.check_pending);
+            settle(&mut pane, |pane| pane.check_pending);
             assert_eq!(*control.check_calls.lock().unwrap(), 1);
-        }
-
-        // Case `replicated_update_latches_never_call_system_controls`.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), Some("Tilo previous")));
-            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-            let commands = ui::LocalState::new(None);
-            let mut pane = pane_with_control(Arc::clone(&control))
-                .with_command_state(&commands)
-                .with_operation_status(&status);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let initial_heads = doc.get_heads();
-            pane.sync(&mut doc, &root);
-            assert_eq!(doc.get_heads(), initial_heads);
-            let _ = doc.put(&root, AUTO_KEY, false);
-            let _ = doc.put(&root, CHECK_KEY, true);
-            let _ = doc.put(&root, ROLLBACK_CONFIRM_KEY, true);
-            let poisoned_heads = doc.get_heads();
-            pane.sync(&mut doc, &root);
-            assert_eq!(doc.get_heads(), poisoned_heads);
-
-            assert!(control.set_calls.lock().unwrap().is_empty());
-            assert_eq!(*control.check_calls.lock().unwrap(), 0);
-            assert_eq!(*control.rollbacks.lock().unwrap(), 0);
-            assert!(pane.prefs.auto);
-
-            // Local requests also need the executor's matching admission token.
-            commands.set(Some(crate::actions::LocalPaneCommand::Updates(
-                crate::actions::UpdateOperation::Check,
-            )));
-            pane.sync(&mut doc, &root);
-            assert_eq!(*control.check_calls.lock().unwrap(), 0);
-            let review = crate::actions::UpdateOperation::ReviewRollback;
-            status.set(crate::actions::LocalOperationStatus::Running {
-                token: UpdatesPane::operation_token(&review),
-            });
-            commands.set(Some(crate::actions::LocalPaneCommand::Updates(
-                crate::actions::UpdateOperation::Rollback,
-            )));
-            pane.sync(&mut doc, &root);
-            assert_eq!(*control.rollbacks.lock().unwrap(), 0);
-            commands.set(Some(crate::actions::LocalPaneCommand::Updates(review)));
-            pane.sync(&mut doc, &root);
-            assert!(
-                pane.rollback_armed,
-                "the matching local operation is admitted"
-            );
-            assert_eq!(*control.rollbacks.lock().unwrap(), 0);
-            assert_eq!(*control.check_calls.lock().unwrap(), 0);
-            assert!(control.set_calls.lock().unwrap().is_empty());
-            assert_eq!(doc.get_heads(), poisoned_heads);
         }
     }
 
     /// Drive the host's polling until `pending` clears. The bound is a hang
     /// guard for a worker that never reports, not a performance budget.
-    fn settle(
-        pane: &mut UpdatesPane,
-        doc: &mut AutoCommit,
-        pending: impl Fn(&UpdatesPane) -> bool,
-    ) {
+    fn settle(pane: &mut UpdatesModel, pending: impl Fn(&UpdatesModel) -> bool) {
         let deadline = ui::time::now() + GATE_TIMEOUT;
         loop {
-            pane.sync(doc, &automerge::ROOT);
+            pane.poll();
             if !pending(pane) {
                 return;
             }
@@ -3069,30 +2847,18 @@ mod tests {
 
     /// Restart reboots once; rollback is confirmed, reported, honestly described and absent without an image.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
     fn restart_and_rollback_are_confirmed_and_reported() {
         // Case `restart_reboots_once`.
         // Restart & update reboots exactly once via the injected rebooter.
         {
             let reb = Arc::new(RecordingRebooter::default());
             let mut pane = pane_with(Some("Tilo 2026.07"), reb.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Restart,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.poll();
+            pane.run(UpdatesEffect::RestartToUpdate, None);
+            pane.poll();
             // A second stray press must not reboot again.
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Restart,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.run(UpdatesEffect::RestartToUpdate, None);
+            pane.poll();
             assert_eq!(*reb.calls.lock().unwrap(), 1);
         }
 
@@ -3103,17 +2869,12 @@ mod tests {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")));
             let mut pane = pane_with_control(control.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+            pane.poll();
             assert_eq!(pane.rollback_target(), Some("tilo:gen41"));
 
             // First click: nothing happens to the machine.
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::ReviewRollback,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.run(UpdatesEffect::ReviewRollback, None);
+            pane.poll();
             assert_eq!(
                 *control.rollbacks.lock().unwrap(),
                 0,
@@ -3133,11 +2894,8 @@ mod tests {
             }
 
             // Second click: it acts.
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Rollback,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.run(UpdatesEffect::RollBack, None);
+            pane.poll();
             assert_eq!(*control.rollbacks.lock().unwrap(), 1);
             let notice = pane.notice().expect("the result has to be shown");
             assert!(
@@ -3153,14 +2911,9 @@ mod tests {
             let control =
                 Arc::new(FakeControl::new(Some(true), Some("tilo:gen41")).failing_rollback());
             let mut pane = pane_with_control(control);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::Rollback,
-                )));
-            pane.sync(&mut doc, &root);
+            pane.poll();
+            pane.run(UpdatesEffect::RollBack, None);
+            pane.poll();
             let notice = pane.notice().expect("a failed rollback must be visible");
             assert!(
                 notice.contains("the boot loader would not take it"),
@@ -3353,7 +3106,8 @@ mod tests {
             staged_error: Some("error: This command requires root privileges".into()),
         };
         let requeried = status.clone();
-        let pane = UpdatesPane::with_parts_and_control(
+        let pane = UpdatesModel::with_parts_and_control(
+            test_cx(),
             status,
             UpdatePrefs::default(),
             Arc::new(move || requeried.clone()),
@@ -3372,14 +3126,15 @@ mod tests {
         }
     }
 
-    fn pane_with_control(control: Arc<FakeControl>) -> UpdatesPane {
+    fn pane_with_control(control: Arc<FakeControl>) -> UpdatesModel {
         let status = UpdateStatus {
             current_version: "Tilo 2026.06".into(),
             staged_version: None,
             staged_error: None,
         };
         let requeried = status.clone();
-        UpdatesPane::with_parts_and_control(
+        UpdatesModel::with_parts_and_control(
+            test_cx(),
             status,
             UpdatePrefs::default(),
             Arc::new(move || requeried.clone()),
@@ -3387,58 +3142,6 @@ mod tests {
             Arc::new(RecordingRebooter::default()),
             control,
         )
-    }
-
-    fn refused_automatic_update_switch_is_restored_and_reported() {
-        fn checked(widget: &dyn ui::Widget, id: &str) -> Option<bool> {
-            if widget.test_id() == Some(id) {
-                return widget.accessibility().and_then(|node| node.state.checked);
-            }
-            widget
-                .children()
-                .into_iter()
-                .find_map(|child| checked(child, id))
-        }
-
-        // Case `a_refused_switch_snaps_back_and_is_reported_in_the_pane`.
-        // When the system refuses, the switch goes back and the pane says so on
-        // screen. A warning in the journal is, for a settings switch, the same as
-        // failing silently.
-        {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new();
-            let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
-            let mut pane = pane_with_control(control.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::SetAutomatic { enabled: false },
-                )));
-            pane.sync(&mut doc, &root);
-
-            assert_eq!(
-                control.timer_enabled(),
-                Some(true),
-                "the timer must be untouched when the change was refused"
-            );
-            let controls = pane.preferences_card();
-
-            assert_eq!(
-                checked(controls.as_ref(), "updates.auto"),
-                Some(true),
-                "the switch itself must snap back, or it shows a state the machine \
-             is not in"
-            );
-            let notice = pane
-                .notice()
-                .expect("a refused change has to appear in the pane, not only the journal");
-            assert!(
-                notice.contains("polkit said no"),
-                "the message must carry the reason, got: {notice}"
-            );
-        }
     }
 
     /// The switch mirrors the timer, disables it, snaps back on refusal and is absent when unreadable.
@@ -3451,7 +3154,8 @@ mod tests {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             // A preferences file that says "off" and a timer that is on.
             let control = Arc::new(FakeControl::new(Some(true), None));
-            let pane = UpdatesPane::with_parts_and_control(
+            let pane = UpdatesModel::with_parts_and_control(
+                test_cx(),
                 UpdateStatus {
                     current_version: "Tilo".into(),
                     staged_version: None,
@@ -3484,15 +3188,10 @@ mod tests {
             let _cfg = crate::prefs::test_env::ConfigGuard::new();
             let control = Arc::new(FakeControl::new(Some(true), None));
             let mut pane = pane_with_control(control.clone());
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+            pane.poll();
 
-            pane.command_state
-                .set(Some(crate::actions::LocalPaneCommand::Updates(
-                    crate::actions::UpdateOperation::SetAutomatic { enabled: false },
-                )));
-            pane.sync(&mut doc, &root);
+            pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+            pane.poll();
 
             assert_eq!(
                 *control.set_calls.lock().unwrap(),
@@ -3511,7 +3210,37 @@ mod tests {
             );
         }
 
-        refused_automatic_update_switch_is_restored_and_reported();
+        // Case `a_refused_switch_snaps_back_and_is_reported_in_the_pane`.
+        // When the system refuses, the switch goes back and the pane says so on
+        // screen. A warning in the journal is, for a settings switch, the same as
+        // failing silently.
+        {
+            let _cfg = crate::prefs::test_env::ConfigGuard::new();
+            let control = Arc::new(FakeControl::new(Some(true), None).failing_set());
+            let mut pane = pane_with_control(control.clone());
+            pane.poll();
+
+            pane.run(UpdatesEffect::SetAutomaticUpdates { on: false }, None);
+            pane.poll();
+
+            assert_eq!(
+                control.timer_enabled(),
+                Some(true),
+                "the timer must be untouched when the change was refused"
+            );
+            assert!(
+                pane.prefs().auto,
+                "the switch itself must snap back, or it shows a state the machine \
+             is not in"
+            );
+            let notice = pane
+                .notice()
+                .expect("a refused change has to appear in the pane, not only the journal");
+            assert!(
+                notice.contains("polkit said no"),
+                "the message must carry the reason, got: {notice}"
+            );
+        }
 
         // Case `an_unreadable_timer_is_not_rendered_as_off`.
         // A machine that cannot be asked gets no switch at all. Rendering "off"
@@ -3526,5 +3255,33 @@ mod tests {
             assert!(UnavailableControl.set_timer(true).is_err());
             assert!(UnavailableControl.roll_back().is_err());
         }
+    }
+
+    /// The effects reach the model the app keeps; a capture's reaches no
+    /// system tool and says why it did nothing.
+    #[test]
+    fn effects_reach_the_model_and_report_how_they_end() {
+        use crate::effects::SettingsEffect;
+        use crate::resource::SettingsShell;
+        use ui::prelude::TestApp;
+
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        app.effect(&SettingsEffect::from(UpdatesEffect::CheckForUpdates))
+            .expect("the check reads the sample image");
+        let refused = app
+            .effect_confirmed(&SettingsEffect::from(UpdatesEffect::RollBack))
+            .unwrap_err();
+        assert!(
+            format!("{refused:?}").contains("Rolling back failed"),
+            "{refused:?}"
+        );
+        app.effect(&SettingsEffect::from(
+            crate::effects::NavigationEffect::OpenPane {
+                pane: "updates".into(),
+            },
+        ))
+        .unwrap();
+        let frame = app.harness().inspection_json().unwrap();
+        assert!(frame.contains("Tilo 2026.07"), "{frame}");
     }
 }

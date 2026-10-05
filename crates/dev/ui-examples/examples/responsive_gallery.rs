@@ -26,39 +26,11 @@ pub fn run(_args: &[String]) {
     let theme = Theme::dark();
     let state_file = "session.crdt";
 
-    let mut state = if let Ok(data) = fs::read(state_file) {
+    let state = if let Ok(data) = fs::read(state_file) {
         State::load(&data).unwrap_or_else(|_| State::new())
     } else {
         State::new()
     };
-
-    {
-        use automerge::ReadDoc;
-        use automerge::transaction::Transactable;
-        let _ = state.doc.put(&state.root, "request_save", false);
-        let _ = state.doc.put(&state.root, "request_load", false);
-        let has_text = state
-            .doc
-            .get(&state.root, "text_val")
-            .ok()
-            .flatten()
-            .is_some();
-        if !has_text {
-            match state
-                .doc
-                .put_object(&state.root, "text_val", automerge::ObjType::Text)
-            {
-                Ok(text_id) => {
-                    let _ = state
-                        .doc
-                        .splice_text(&text_id, 0, 0, "Edit me and restart!");
-                }
-                Err(err) => {
-                    eprintln!("responsive_gallery: failed to seed text_val: {err}");
-                }
-            }
-        }
-    }
 
     let root_widget = build_root_widget(&theme);
 
@@ -77,16 +49,8 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
                 Row::new()
                     .push(Box::new(Text::new("title").with_role(TextRole::LargeTitle)))
                     .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new(
-                        "btn_save",
-                        "save",
-                        Some("request_save"),
-                    )))
-                    .push(Box::new(Button::new(
-                        "btn_load",
-                        "load",
-                        Some("request_load"),
-                    ))),
+                    .push(Box::new(Button::new("btn_save", "save")))
+                    .push(Box::new(Button::new("btn_load", "load"))),
             ))
             .push(Box::new(Banner::info("Resize the window").with_message(
                 "The chips and stat tiles below reflow as the width changes.",
@@ -100,9 +64,9 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
                         .push(Box::new(Text::new("welcome")))
                         .push(Box::new(SearchField::new().with_placeholder("Search")))
                         .push(Box::new(
-                            TextInput::new(vec![])
-                                .with_id("inp_1")
-                                .with_on_change_path("text_val"),
+                            TextInput::local()
+                                .with_initial_value("Edit me")
+                                .with_id("inp_1"),
                         )),
                 )),
             ))
@@ -123,11 +87,11 @@ fn build_root_widget(theme: &Theme) -> Box<dyn Widget> {
             ])))
             .push(Box::new(
                 Row::new()
-                    .push(Box::new(Button::new("b1", "Wrap Item 1", None)))
-                    .push(Box::new(Button::new("b2", "Wrap Item 2", None)))
-                    .push(Box::new(Button::new("b3", "Wrap Item 3", None)))
-                    .push(Box::new(Button::new("b4", "Wrap Item 4", None)))
-                    .push(Box::new(Button::new("b5", "Wrap Item 5", None))),
+                    .push(Box::new(Button::new("b1", "Wrap Item 1")))
+                    .push(Box::new(Button::new("b2", "Wrap Item 2")))
+                    .push(Box::new(Button::new("b3", "Wrap Item 3")))
+                    .push(Box::new(Button::new("b4", "Wrap Item 4")))
+                    .push(Box::new(Button::new("b5", "Wrap Item 5"))),
             )),
     )
 }

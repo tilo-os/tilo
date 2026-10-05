@@ -654,7 +654,7 @@ impl Avatar {
 }
 
 impl Widget for Avatar {
-    fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         if self.image.is_none()
             && let Picture::Lazy { store, url } = &self.picture
             && let Some(image) = store.get(url)

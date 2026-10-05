@@ -421,7 +421,6 @@ pub fn header_actions(job: Option<JobKind>, can_back_up: bool, intents: &Intents
             } else {
                 "Back up now"
             },
-            None,
         )
         .role(ButtonRole::Primary)
         .control_size(ControlSize::Small)
@@ -817,13 +816,13 @@ pub fn snapshot_details(
     let usable = can_act && snapshot.status != SnapStatus::Failed;
     let restore = {
         let intents = intents.clone();
-        Button::new("backups-restore", "Restore…", None)
+        Button::new("backups-restore", "Restore…")
             .with_enabled(usable)
             .on_view(move || intents.push(Intent::OpenRestore))
     };
     let verify = {
         let intents = intents.clone();
-        Button::new("backups-verify", "Verify files", None)
+        Button::new("backups-verify", "Verify files")
             .with_enabled(usable)
             .tooltip("Read every file and compare its checksum")
             .on_effect(move || intents.push(Intent::Verify))
@@ -1069,7 +1068,7 @@ impl<W: Widget + 'static> ui::widget::Decorator for OnSignal<W> {
         self.forward();
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         self.forward();
         Widget::update(&mut self.inner, state, path)
     }

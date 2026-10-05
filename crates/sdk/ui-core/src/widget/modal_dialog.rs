@@ -30,7 +30,9 @@
 //! closures and do not flow through the document.
 
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -1106,7 +1108,7 @@ impl Widget for FooterKey {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
+        _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
         if !self.enabled || !matches!(action, crate::a11y::Action::Activate) {
@@ -1121,7 +1123,7 @@ impl Widget for FooterKey {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         target == self.action_target && self.perform_action(action, state, path)
@@ -1730,7 +1732,7 @@ impl<C: Widget> ModalDialog<C> {
                 &mut crate::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     // A node of the dialog's own tree means nothing to a
@@ -1882,7 +1884,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.open {
@@ -1899,7 +1901,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             &mut crate::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1930,7 +1932,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         });
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // The dialog holds no document state itself; its content does.
         self.content.sync(state, path);
     }
@@ -2227,7 +2229,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                     // sheet's default answer, as Return is on macOS.
                     let enter = *key == NamedKey::Enter;
                     let content_handled = self.forward_to_content(event, ctx)
-                        || activate_focused(&mut self.content, ctx.state, ctx.path, enter);
+                        || activate_focused(&mut self.content, &mut ctx.state, ctx.path, enter);
                     if !content_handled
                         && enter
                         && let Some(slot) = self.default_slot()
@@ -2450,7 +2452,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut AppModel,
+        _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
         if !self.open || !matches!(action, crate::a11y::Action::Activate) {
@@ -2506,7 +2508,7 @@ fn tree_window(taffy: &TaffyTree<()>, node: NodeId) -> Option<Rect> {
 /// button. Returns whether it took it.
 fn activate_focused(
     widget: &mut dyn Widget,
-    state: &mut AppModel,
+    state: &mut crate::widget::Edits<'_>,
     path: &ModelPath,
     buttons_only: bool,
 ) -> bool {

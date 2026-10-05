@@ -13,7 +13,8 @@
 //! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
 //! - [`net`] — the live background fetches (`tilo_net` on the app runtime).
 //! - [`doc`] — the Automerge CRDT projection (saved places only; provider
-//!   cache data is device-local).
+//!   cache data is device-local), written only by [`actions::WeatherAction`].
+//! - [`resource`] — the [`Weather`] resource and the [`WeatherShell`] app.
 //! - [`sample`] — bundled, fully-populated offline data.
 //! - [`icon`] / [`chart`] — content drawing (weather glyphs, the hourly
 //!   strip), every value read from the theme.
@@ -25,16 +26,15 @@
 //!   hosts.
 //! - [`app`] — the root [`WeatherApp`] widget composing the window shell.
 //!
-//! ## Captures/tests vs. live
-//! A `--shots` capture can't await a network fetch, so it stages the window
-//! onto fully-populated [`sample`] places and readings with the network off
-//! ([`WeatherApp::new`] starts that way for tests), and a screenshot is
-//! honest and offline.
+//! ## Captures vs. live
+//! A screenshot cannot await a network fetch, so a capture stages the bundled
+//! [`sample`] places through the resource's actions and shows their bundled
+//! forecasts, offline and deterministic.
 //!
-//! The live surface is [`WeatherApp::live`]: it adopts the user's saved places
-//! and fetches their real Open-Meteo observations. A blank record stays empty.
-//! History shows recorded saved places through the shared domain painter;
-//! provider observations and device units are not recorded versions.
+//! A live window shows the person's saved places and fetches their real
+//! Open-Meteo observations; a blank record stays empty. History shows
+//! recorded saved places; provider observations and device units are not
+//! recorded versions.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -70,9 +70,6 @@ pub mod app;
 pub mod chart;
 pub mod core;
 pub mod doc;
-pub mod framework_history;
-#[cfg(test)]
-mod framework_history_tests;
 pub mod icon;
 pub mod interaction;
 pub mod model;
@@ -82,25 +79,13 @@ mod presentation;
 pub mod region;
 pub mod resource;
 pub mod sample;
-pub mod search_provider;
 pub mod units;
 pub mod wxcode;
 
 pub use app::WeatherApp;
-
-use ui::widget::Widget;
-
-/// Build and return the app's root widget tree. Single integration point
-/// used by both the live event loop and the `--shots` offscreen renderer.
-pub fn app_root() -> Box<dyn Widget> {
-    Box::new(WeatherApp::live())
-}
-
-/// The app as every host mounts it: the live root and its actions.
-pub fn definition() -> &'static ui::application::ApplicationDefinition {
-    ui::launch::LaunchSpec::new("so.tilo.weather", app_root)
-        .component_actions(actions::register)
-        .as_definition("Weather")
-}
-
 pub use resource::{Weather, WeatherShell};
+
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<WeatherShell>()
+}

@@ -31,8 +31,8 @@ fn email_input() -> TextInput {
     input
 }
 fn actions() -> Actions {
-    Actions::new(Button::new("save", "Save account changes", None).role(ButtonRole::Primary))
-        .secondary(Button::new("cancel", "Cancel", None))
+    Actions::new(Button::new("save", "Save account changes").role(ButtonRole::Primary))
+        .secondary(Button::new("cancel", "Cancel"))
 }
 // Automatic authoring: content, grouping and order; no layout pixels or breakpoints.
 fn account() -> Form {
@@ -239,10 +239,9 @@ fn settings_form() -> Form {
                 ))
                 .control_row(Box::new(
                     Row::new()
-                        .push(Box::new(Button::new("export", "Export data", None)))
+                        .push(Box::new(Button::new("export", "Export data")))
                         .push(Box::new(
-                            Button::new("delete", "Delete account", None)
-                                .role(ButtonRole::Destructive),
+                            Button::new("delete", "Delete account").role(ButtonRole::Destructive),
                         )),
                 )),
         )

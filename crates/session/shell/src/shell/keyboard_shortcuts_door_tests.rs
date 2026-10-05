@@ -112,6 +112,7 @@ impl Door {
         answer(self.host.invoke(
             caller,
             InvokeRequest {
+                on_behalf_of: None,
                 invocation: InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: workspace_provider(&ROOM.to_string()),
@@ -205,7 +206,7 @@ fn press(
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::from(modifiers),
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,

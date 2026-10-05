@@ -71,7 +71,7 @@ impl ui::widget::Decorator for Swap {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt();
         self.content.sync(state, path);
     }

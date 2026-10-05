@@ -15,7 +15,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use account_custody::icloud::{ICloudAuthError, ICloudChallenge, ICloudSignIn};
 use account_custody::nextcloud::{self, NextcloudError};
 use account_custody::{Authorization, Custodian, CustodyError, LoopbackCancel, OAuthCloud};
-use ui::widget::{Row, Spacer, TextInput, TextInputKind};
+use ui::widget::{Button, Row, Spacer, TextInput, TextInputKind};
 
 use crate::accounts::AccountKind;
 use crate::widgets::{El, caption, card, field_row, rows};
@@ -618,7 +618,8 @@ impl SignInFlow {
     }
 
     /// The flow's card.
-    pub fn card(&self) -> El {
+    /// The sign-in card; `bind` gives each button its effect.
+    pub fn card(&self, bind: &dyn Fn(Button, super::AccountsEffect) -> Button) -> El {
         let title = format!(
             "{} {}",
             if self.existing_id.is_some() {
@@ -679,27 +680,15 @@ impl SignInFlow {
                 (_, AccountKind::ICloudDrive) => "Sign in",
                 _ => "Continue in browser",
             };
-            buttons = buttons.push(Box::new(super::account_action_button(
-                "settings.accounts.form.save",
-                label,
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                "External Accounts".into(),
-                "save-form",
-                tilo_actions::OperationKind::Effect,
-                crate::actions::AccountOperation::SubmitForm,
-                false,
+            buttons = buttons.push(Box::new(bind(
+                Button::new("settings.accounts.form.save", label),
+                super::AccountsEffect::SaveAccountForm,
             )));
         }
         buttons = buttons
-            .push(Box::new(super::account_action_button(
-                "settings.accounts.form.cancel",
-                "Cancel",
-                crate::actions::pane_resource_id(crate::categories::Category::ExternalAccounts),
-                "External Accounts".into(),
-                "cancel-form",
-                tilo_actions::OperationKind::View,
-                crate::actions::AccountOperation::CancelForm,
-                false,
+            .push(Box::new(bind(
+                Button::new("settings.accounts.form.cancel", "Cancel"),
+                super::AccountsEffect::CancelAccountForm,
             )))
             .push(Box::new(Spacer::new()));
         fields.push(Box::new(buttons));

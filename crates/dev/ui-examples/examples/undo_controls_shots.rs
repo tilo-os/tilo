@@ -97,7 +97,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
-    row.sync(&mut state.doc, &state.root);
+    row.sync(&state.doc, &state.root);
     let node = row.build_layout(&mut taffy, theme, &mut node_map);
     taffy
         .compute_layout_with_measure(
@@ -150,7 +150,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
                 &mut tilo_ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut state.doc,
+                    state: tilo_ui::widget::Edits::lend(&mut state.doc),
                     path: &state.root,
                     handled: &mut handled,
                     focus_target: &mut ft,

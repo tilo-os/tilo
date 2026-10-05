@@ -110,6 +110,7 @@ pub mod action;
 pub mod batch;
 pub mod child;
 pub mod collection;
+pub mod content;
 pub mod delta;
 pub mod diff;
 pub mod effect;
@@ -141,13 +142,15 @@ pub use model::{
 pub use reader::{Demand, Reader, heads_of};
 pub use replica::Replica;
 pub use resource::{
-    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Resource, ScopeDecl, SearchEntry,
-    SearchRow, SearchRowShape, action_label, build_action, declaration_spec, encode, origin_now_ms,
-    publish, scope_contains,
+    APPLY, APPLY_PARAM, ActionDecl, BuildAction, NoAction, Place, Resource, ScopeDecl, SearchBody,
+    SearchEntry, SearchPiece, SearchRow, SearchRowShape, SearchText, SearchWeight, SharedRecord,
+    action_label, bind_declaration, build_action, declaration_spec, encode, origin_now_ms, publish,
+    scope_contains,
 };
 pub use schema::JsonSchema;
 pub use shape::{FieldShape, Shape};
 pub use text::{PlainText, TextEdit};
+pub use tilo_actions::PermissionRequirement;
 pub use tilo_resource_macros::{Effect, JsonSchema, Model, resource};
 
 /// Items the generated code refers to. Not part of the public API.

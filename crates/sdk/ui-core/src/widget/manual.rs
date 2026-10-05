@@ -3,7 +3,7 @@ use super::composition_parts::{Parts, retained_parts};
 use super::layout_info::ManualLayout;
 use super::{Element, LayoutInfo, Widget, WidgetLayoutError};
 use crate::{PresenceCtx, Theme, bound_dispatch::BoundNodeMap, text_render::TextRenderer};
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::{

@@ -97,13 +97,11 @@ mod tests {
         for size in [ControlSize::Small, ControlSize::Regular, ControlSize::Large] {
             let row = Row::new()
                 .push(Box::new(
-                    Button::new("p", "Save", None)
+                    Button::new("p", "Save")
                         .role(ButtonRole::Primary)
                         .control_size(size),
                 ))
-                .push(Box::new(
-                    Button::new("s", "Discard", None).control_size(size),
-                ))
+                .push(Box::new(Button::new("s", "Discard").control_size(size)))
                 .push(Box::new(
                     Dropdown::new(vec!["Medium".into()], "d").control_size(size),
                 ))

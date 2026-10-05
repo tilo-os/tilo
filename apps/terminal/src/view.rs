@@ -180,7 +180,7 @@ impl ui::widget::Decorator for TerminalView {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self
@@ -190,7 +190,7 @@ impl ui::widget::Decorator for TerminalView {
         handled
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.serve_find_request();
         self.scope.sync(state, path);
     }

@@ -112,7 +112,7 @@ impl FrameHarness {
             event,
             self.input_scale,
             self.modifiers,
-            &mut self.state.doc,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
         self.finish_caller_palette();
@@ -162,7 +162,7 @@ impl FrameHarness {
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut self.state.doc,
+                &mut crate::widget::Edits::lend(&mut self.state.doc),
                 &self.state.root,
             ) {
                 tracing::warn!(%error, "caller local request refused");
@@ -189,7 +189,7 @@ impl FrameHarness {
             results_owner,
             target,
             action,
-            &mut self.state.doc,
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         )
     }

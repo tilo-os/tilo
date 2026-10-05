@@ -4,8 +4,8 @@
 //! drawing, and modal hit stack. It emits typed effects; `BooksApp` remains
 //! responsible for persisting those effects in the books document.
 
-use automerge::{AutoCommit, ObjId};
-use vello::kurbo::{Point, Rect};
+use automerge::ObjId;
+use vello::kurbo::{Affine, Point, Rect};
 
 use ui::TextRole;
 use ui::icons::Icon;
@@ -197,7 +197,7 @@ impl ReadingSettings {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<ReadingSettingsAction> {
         let (field, value) = self

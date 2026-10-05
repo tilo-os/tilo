@@ -71,7 +71,7 @@ impl ui::widget::Decorator for EditorPane {
         &mut self.text
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if !self.attached
             && let Some(dispatcher) = self.link.sql_edits()
         {
@@ -116,7 +116,7 @@ struct RunButton {
 impl RunButton {
     fn new(link: &Link) -> Self {
         let run_link = link.clone();
-        let button = Button::new("db.query.run", "Run", None)
+        let button = Button::new("db.query.run", "Run")
             .role(ButtonRole::Primary)
             .shortcut_hint(Shortcut::command("Enter"))
             .on_effect(move || {
@@ -141,7 +141,7 @@ impl ui::widget::Decorator for RunButton {
         &mut self.button
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let enabled = self.link.read(|model| model.connected && !model.busy);
         self.button.set_enabled(enabled);
         Widget::sync(&mut self.button, state, path);
@@ -195,7 +195,7 @@ impl ui::widget::Decorator for StarterQueries {
         &mut self.menu
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.chosen.take() {
             self.menu.set_selected("");
         }
@@ -304,7 +304,7 @@ impl ui::widget::Decorator for ResultsPane {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (generation, result) = self
             .link
             .read(|model| (model.query_generation, model.query.clone()));

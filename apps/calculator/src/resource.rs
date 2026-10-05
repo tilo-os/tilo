@@ -4,16 +4,17 @@
 
 use std::rc::Rc;
 
-use tilo_actions::{ActionParam, ActionSpec, OperationKind, ParamType, RetryPolicy};
+use tilo_actions::{ActionParam, ParamType};
 use ui::framework::{Fixture, ResourceApp, ResourceSelection, ResourceSurface, SurfaceCx, ViewCx};
+use ui::tilo_resource::Effect as _;
 use ui::tilo_resource::items::{ItemAction, ItemCollection, item_children, item_resource_id};
 use ui::tilo_resource::{ActionDecl, Doc, Id, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::actions::{
-    CALCULATOR_ACTION_TYPE, CALCULATOR_OPERATION_TYPE, CalculatorAction, CalculatorOperation,
-    GraphKind, add_graph_action, clear_history_ids_action, delete_graph_action,
-    delete_history_entry_action, set_graph_expr_action, toggle_graph_visible_action,
+    CALCULATOR_ACTION_TYPE, CalculatorAction, CalculatorEffect, GraphKind, add_graph_action,
+    clear_history_ids_action, delete_graph_action, delete_history_entry_action,
+    set_graph_expr_action, toggle_graph_visible_action,
 };
 use crate::app::CalculatorApp;
 use crate::doc::{self, FUNCS, HISTORY, SURFACES};
@@ -183,33 +184,6 @@ impl Resource for Calculator {
         ]
     }
 
-    #[allow(
-        clippy::expect_used,
-        reason = "compile-time calculator operation payloads always serialize"
-    )]
-    fn local_operations() -> Vec<ActionSpec> {
-        [
-            (
-                "show-calculator",
-                "Show calculator",
-                CalculatorOperation::ShowCalculator,
-            ),
-            (
-                "show-graph-2d",
-                "Show 2D graph",
-                CalculatorOperation::ShowGraph2d,
-            ),
-            (
-                "show-graph-3d",
-                "Show 3D graph",
-                CalculatorOperation::ShowGraph3d,
-            ),
-        ]
-        .into_iter()
-        .map(|(id, label, operation)| view_operation(id, label, &operation))
-        .collect()
-    }
-
     /// Every history entry and graph row, with the row actions bound to it;
     /// a history entry also recalls its calculation.
     fn children(state: &CalculatorState) -> Vec<tilo_actions::Resource> {
@@ -253,30 +227,37 @@ impl Resource for Calculator {
             else {
                 continue;
             };
-            child.actions.insert(
-                0,
-                view_operation(
-                    "open",
-                    "Recall calculation",
-                    &CalculatorOperation::RecallHistory { id },
-                ),
-            );
+            child
+                .actions
+                .insert(0, CalculatorEffect::Open { entry: id }.bound());
         }
         children
     }
 
     fn search(state: &CalculatorState) -> Vec<ui::tilo_resource::SearchEntry> {
-        let history = state.history.iter().map(|(id, entry)| {
-            ui::tilo_resource::SearchEntry::new(history_label(entry), entry.expr.clone())
-                .anchored(history_entry_id(id))
-        });
+        let history = state
+            .history
+            .iter()
+            .map(|(id, entry)| ui::tilo_resource::SearchEntry {
+                anchor: Some(history_entry_id(id)),
+                title: history_label(entry),
+                text: entry.expr.clone(),
+                action: None,
+                ..Default::default()
+            });
         let graphs = [GraphKind::Curve2d, GraphKind::Surface3d]
             .into_iter()
             .flat_map(|kind| {
-                state.graphs(kind).iter().map(move |(id, plot)| {
-                    ui::tilo_resource::SearchEntry::new(graph_label(kind, plot), plot.expr.clone())
-                        .anchored(graph_row_id(kind, id))
-                })
+                state
+                    .graphs(kind)
+                    .iter()
+                    .map(move |(id, plot)| ui::tilo_resource::SearchEntry {
+                        anchor: Some(graph_row_id(kind, id)),
+                        title: graph_label(kind, plot),
+                        text: plot.expr.clone(),
+                        action: None,
+                        ..Default::default()
+                    })
             });
         history.chain(graphs).collect()
     }
@@ -342,22 +323,6 @@ fn graph_items(kind: GraphKind, rows: &[(String, PlotFn)]) -> Vec<(Id, String)> 
     rows.iter()
         .map(|(id, plot)| (Id::from_raw(id), graph_label(kind, plot)))
         .collect()
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "compile-time calculator operation payloads always serialize"
-)]
-fn view_operation(id: &str, label: &str, operation: &CalculatorOperation) -> ActionSpec {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        CALCULATOR_OPERATION_TYPE,
-        operation,
-    )
-    .expect("CalculatorOperation encodes")
-    .retry_policy(RetryPolicy::Idempotent)
 }
 
 fn history_label(entry: &HistoryEntry) -> String {
@@ -517,7 +482,16 @@ fn scenario_actions(model: &CalcModel) -> Vec<CalculatorAction> {
     history.chain(graphs).collect()
 }
 
-impl ResourceSurface<Calculator> for CalculatorApp {
+impl ResourceSurface<Calculator, CalculatorEffect> for CalculatorApp {
+    fn effect(
+        &mut self,
+        effect: CalculatorEffect,
+        _cx: &mut ui::framework::EffectCx<Calculator, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.queue_effect(effect)?;
+        Ok(ui::framework::Effected::done())
+    }
+
     fn present(&mut self, state: &Rc<CalculatorState>) {
         self.adopt_resource_state(state);
     }
@@ -563,7 +537,7 @@ mod tests {
         assert_eq!(ids, ["open", "delete-history-entry"], "{ids:?}");
         assert_eq!(
             entry.actions[0].kind,
-            OperationKind::View,
+            tilo_actions::OperationKind::View,
             "recall is presentation"
         );
         assert!(

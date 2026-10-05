@@ -176,7 +176,7 @@ impl ui::widget::Decorator for MailSidebar {
         &mut self.list
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh();
         ui::widget::Widget::sync(&mut self.list, state, path);
     }

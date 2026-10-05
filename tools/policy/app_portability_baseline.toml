@@ -1,4 +1,3 @@
-
 # Platform code that apps and the SDK's portable crates still contain
 # (tools/policy/check_app_portability.py, rules in app_portability_rules.toml).
 # Keyed package -> rule -> count. Counts may only fall: lower an entry when you
@@ -37,9 +36,6 @@ D2 = 2
 [apps.chat]
 D1 = 1
 D2 = 8
-
-[apps.clocks]
-D2 = 1
 
 [apps.code-editor]
 D1 = 1
@@ -110,8 +106,8 @@ D2 = 1
 D2 = 3
 
 [apps.notes]
-D1 = 2
-D2 = 8
+D1 = 1
+D2 = 6
 
 [apps.osk]
 D1 = 3
@@ -138,8 +134,8 @@ D2 = 5
 D2 = 2
 
 [apps.remote]
-D1 = 2
-D2 = 6
+D1 = 1
+D2 = 5
 
 [apps.settings]
 D1 = 4
@@ -165,7 +161,7 @@ D2 = 8
 [apps.terminal]
 D1 = 5
 D2 = 5
-R1 = 52
+R1 = 50
 R2 = 56
 R3 = 3
 
@@ -173,17 +169,17 @@ R3 = 3
 D2 = 2
 
 [apps.tube]
-D1 = 2
-D2 = 4
+D1 = 1
+D2 = 3
 
 [apps.typst-editor]
-D2 = 2
+D2 = 1
 
 [apps.video-editor]
 D2 = 3
 
 [apps.video-player]
-D2 = 3
+D2 = 1
 
 [apps.vpn]
 D1 = 1
@@ -217,7 +213,7 @@ R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 314
+R1 = 305
 W1 = 18
 W2 = 2
 W3 = 77

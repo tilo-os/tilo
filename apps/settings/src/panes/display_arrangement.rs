@@ -15,9 +15,9 @@ use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{ActionEmitter, BadgeFace, ChipStyle, Widget};
+use ui::widget::{ActionEmitter, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -28,14 +28,14 @@ use placement::Placement;
 
 use crate::i18n::{t, t_args};
 
-/// The canvas's width over its height; the desktop is scaled to fit inside
-/// it. A drawing area sized for a desk of monitors.
-const CANVAS_ASPECT: f32 = 3.2;
+/// Canvas height; the desktop is scaled to fit inside it. A drawing area
+/// sized for a desk of monitors, not a spacing step, so no token names it.
+const CANVAS_HEIGHT: f32 = 220.0;
 /// Inner margin between the canvas edge and the desktop's bounding box.
 const CANVAS_PAD: f64 = ui::tokens::Spacing::BASE.s6 as f64;
-/// Snap distance on screen (the `s3` step), converted to desktop units at
-/// the canvas scale.
-const SNAP_SCREEN_PX: f64 = ui::tokens::Spacing::BASE.s3 as f64;
+/// Snap distance on screen, converted to desktop units at the canvas scale.
+/// A pointer tolerance rather than layout spacing, so no token names it.
+const SNAP_SCREEN_PX: f64 = 12.0;
 
 /// One display as the canvas draws it.
 #[derive(Clone, Debug, PartialEq)]
@@ -299,23 +299,21 @@ impl DisplayArrangement {
         dragging: bool,
     ) {
         let colors = &theme.tokens.colors;
-        let unit = f64::from(theme.tokens.spacing.s1);
-        let ground = colors.surfaces.raised;
-        let radius = f64::from(theme.tokens.radii.item);
+
+        let radius = f64::from(theme.tokens.radii.control);
         let shape = RoundedRect::from_rect(rect, radius);
-        let tier = ui::chrome::selection_tier_on(
+        let tier = ui::chrome::selection_tier(
             theme,
             ui::chrome::SelectionState::new(display.primary, dragging, false),
-            ground,
         );
-        let fill = if dragging {
-            colors.lift_on(ground, 1.0)
+        let fill = if display.movable {
+            colors.lift(if dragging { 0.7 } else { 0.45 })
         } else {
-            ground
+            colors.lift(0.2)
         };
         scene.fill(Fill::NonZero, transform, fill, None, &shape);
         scene.stroke(
-            &Stroke::new(if dragging { unit / 2.0 } else { unit / 4.0 }),
+            &Stroke::new(if dragging { 2.0 } else { 1.0 }),
             transform,
             if dragging {
                 theme.border_focus
@@ -325,52 +323,64 @@ impl DisplayArrangement {
             None,
             &ui::surface::edge_outline(rect, radius),
         );
-        // The number Identify shows, and the display's name under it.
         let number = display.number.to_string();
-        let number_style = theme.text(ui::TextRole::Title).strong();
-        let label_style = theme.text(ui::TextRole::Caption);
-        let (nw, nh) = text_renderer.measure_style(&number, None, &number_style);
-        let label = text_renderer.elide_to_width_style(
-            &display.label,
-            px(rect.width() - 4.0 * unit),
-            &label_style,
-        );
-        let (lw, lh) = text_renderer.measure_style(&label, None, &label_style);
-        let primary = t("display-primary-marker");
-        let badge_w = BadgeFace::intrinsic_width(&primary, text_renderer, theme);
-        let badge_h = BadgeFace::height(theme);
-        let block =
-            f64::from(nh) + f64::from(lh) + if display.primary { unit + badge_h } else { 0.0 };
-        let top = rect.center().y - block / 2.0;
-        let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-        ctx.text(
+        let number_size = theme
+            .text(ui::tokens::typography::TextRole::Title)
+            .size
+            .min(px(rect.height() * 0.45))
+            .max(theme.text(ui::tokens::typography::TextRole::Body).size);
+        let (nw, nh) =
+            text_renderer.measure_weighted(&number, number_size, None, TextWeight::Semibold);
+        text_renderer.draw_text_weighted(
+            scene,
             &number,
-            &number_style,
+            number_size,
             colors.text_primary,
-            Point::new(rect.center().x - f64::from(nw) / 2.0, top),
+            transform.pre_translate(
+                (
+                    rect.center().x - f64::from(nw) / 2.0,
+                    rect.center().y - f64::from(nh) / 2.0 - 6.0,
+                )
+                    .into(),
+            ),
+            None,
+            TextWeight::Semibold,
+        );
+        let label = text_renderer.elide_to_width(
+            &display.label,
+            theme.text(ui::tokens::typography::TextRole::Caption).size,
+            px(rect.width() - 12.0),
+        );
+        let (lw, _) = text_renderer.measure(
+            &label,
+            theme.text(ui::tokens::typography::TextRole::Caption).size,
             None,
         );
-        ctx.text(
+        text_renderer.draw_text(
+            scene,
             &label,
-            &label_style,
+            theme.text(ui::tokens::typography::TextRole::Caption).size,
             colors.text_dim,
-            Point::new(rect.center().x - f64::from(lw) / 2.0, top + f64::from(nh)),
+            transform.pre_translate(
+                (
+                    rect.center().x - f64::from(lw) / 2.0,
+                    rect.center().y + f64::from(nh) / 2.0 - 4.0,
+                )
+                    .into(),
+            ),
             None,
         );
         if display.primary {
-            // The primary display says so under its name.
-            let y = top + f64::from(nh) + f64::from(lh) + unit;
-            BadgeFace::new(
-                Rect::new(
-                    rect.center().x - badge_w / 2.0,
-                    y,
-                    rect.center().x + badge_w / 2.0,
-                    y + badge_h,
-                ),
-                &primary,
-            )
-            .style(ChipStyle::Neutral)
-            .paint(scene, transform, text_renderer, theme);
+            // Primary marker: a small bar along the top edge, the place the
+            // top bar lives on that display.
+            let bar = Rect::new(rect.x0 + 6.0, rect.y0 + 5.0, rect.x1 - 6.0, rect.y0 + 8.0);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.text_primary,
+                None,
+                &RoundedRect::from_rect(bar, 1.5),
+            );
         }
     }
 }
@@ -392,9 +402,8 @@ impl Widget for DisplayArrangement {
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::auto(),
+                    height: Dimension::length(CANVAS_HEIGHT),
                 },
-                aspect_ratio: Some(CANVAS_ASPECT),
                 flex_shrink: 0.0,
                 ..Default::default()
             })
@@ -422,13 +431,12 @@ impl Widget for DisplayArrangement {
         _presence: &PresenceCtx,
     ) {
         let colors = &theme.tokens.colors;
-        let radius = f64::from(theme.tokens.radii.control);
-        // The desk is a well a step below the content ground; the displays on
-        // it are raised, so they read in the light and dark themes alike.
+        let radius = f64::from(theme.tokens.radii.panel);
+        let ground = colors.lift(0.1);
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.surfaces.sidebar,
+            ground,
             None,
             &RoundedRect::from_rect(self.rect, radius),
         );
@@ -450,16 +458,18 @@ impl Widget for DisplayArrangement {
         }
         if drawn.is_empty() {
             let message = t("display-arrangement-empty");
-            let style = theme.text(ui::TextRole::Body);
-            let (w, h) = text_renderer.measure_style(&message, None, &style);
-            let mut ctx = ui::paint::PaintCtx::new(scene, transform, text_renderer, theme);
-            ctx.text(
+            let (w, h) = text_renderer.measure(&message, theme.text(ui::TextRole::Body).size, None);
+            text_renderer.draw_text(
+                scene,
                 &message,
-                &style,
+                theme.text(ui::TextRole::Body).size,
                 colors.text_dim,
-                Point::new(
-                    self.rect.center().x - f64::from(w) / 2.0,
-                    self.rect.center().y - f64::from(h) / 2.0,
+                transform.pre_translate(
+                    (
+                        self.rect.center().x - f64::from(w) / 2.0,
+                        self.rect.center().y - f64::from(h) / 2.0,
+                    )
+                        .into(),
                 ),
                 None,
             );
@@ -618,9 +628,30 @@ mod tests {
     fn canvas() -> DisplayArrangement {
         let moves = displays()
             .iter()
-            .filter_map(|display| {
-                crate::actions::display_output_move_binding(display.connector.clone())
-                    .map(|binding| (display.connector.clone(), binding))
+            .map(|display| {
+                use ui::tilo_resource::Effect as _;
+                let spec = crate::effects::SettingsEffect::declarations()
+                    .into_iter()
+                    .find(|decl| decl.id == "move-display")
+                    .expect("moving a display is an effect")
+                    .spec(crate::effects::OPERATION);
+                let resource =
+                    ui::tilo_actions::Resource::new("settings.root", "settings.root", "Settings")
+                        .with_action(spec.clone());
+                let connector = display.connector.clone();
+                let binding = ui::tilo_actions::ActionBinding::new(
+                    &resource,
+                    &spec,
+                    move |(x, y): (i32, i32)| {
+                        crate::panes::display::DisplayEffect::MOVE_DISPLAY.arguments(&(
+                            connector.clone(),
+                            x,
+                            y,
+                        ))
+                    },
+                )
+                .expect("the move effect is exported");
+                (display.connector.clone(), binding)
             })
             .collect();
         let mut canvas = DisplayArrangement::new(displays(), moves, ui::LocalState::new(None));
@@ -645,7 +676,7 @@ mod tests {
 
         let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
             .expect("the drop is sent as the display's move action");
-        assert_eq!(invocation.address.action, "move");
+        assert_eq!(invocation.address.action, "move-display");
         let x = invocation.arguments["x"].as_i64().unwrap();
         let y = invocation.arguments["y"].as_i64().unwrap();
         assert_eq!((x, y), (0, 1080), "snapped flush under the panel");

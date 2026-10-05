@@ -17,7 +17,7 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1567,7 +1567,7 @@ impl Widget for FilePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
@@ -1577,7 +1577,7 @@ impl Widget for FilePicker {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
@@ -2423,7 +2423,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -3251,7 +3251,7 @@ mod tests {
                 &mut picker,
                 &Action::Activate,
                 &[PickerFocus::Confirm.id()],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &path,
             ));
             assert!(picker.replace_prompt().is_some());
@@ -3260,7 +3260,7 @@ mod tests {
                     &mut picker,
                     &Action::Activate,
                     &[PickerFocus::Confirm.id()],
-                    &mut doc,
+                    &mut crate::widget::Edits::lend(&mut doc),
                     &path,
                 ),
                 "the picker behind the prompt cannot be operated"
@@ -3271,7 +3271,7 @@ mod tests {
                 &mut picker,
                 &Action::Activate,
                 &[prompt.key.expect("prompt key"), replace],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &path,
             ));
             assert_eq!(
@@ -3375,7 +3375,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

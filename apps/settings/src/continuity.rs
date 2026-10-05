@@ -4,8 +4,6 @@
 //! fleet and relay.  This module stores only this machine's release policy:
 //! which facets may leave or control it, plus a small non-secret audit trail.
 
-use std::path::{Path, PathBuf};
-
 use serde::{Deserialize, Serialize};
 
 pub(crate) const AUDIT_LIMIT: usize = 24;
@@ -117,7 +115,7 @@ impl AuditEntry {
     }
 }
 
-/// The release policy stored under `tilo.continuity` on this device.
+/// The release policy, the person's `continuity` settings.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 #[allow(
@@ -138,19 +136,11 @@ pub(crate) struct ContinuityPrivacy {
     pub(crate) audit: Vec<AuditEntry>,
 }
 
-impl ContinuityPrivacy {
-    pub(crate) fn load_at(path: &Path) -> Self {
-        let mut policy: Self = settings_store::load_at(path)
-            .get("continuity")
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
-            .unwrap_or_default();
-        if policy.audit.len() > AUDIT_LIMIT {
-            policy.audit.drain(..policy.audit.len() - AUDIT_LIMIT);
-        }
-        policy
-    }
+impl ui::storage::SettingsSchema for ContinuityPrivacy {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("continuity");
+}
 
+impl ContinuityPrivacy {
     pub(crate) const fn allowed(&self, capability: Capability) -> bool {
         match capability {
             Capability::Clipboard => self.clipboard,
@@ -194,22 +184,6 @@ impl ContinuityPrivacy {
             self.audit.drain(..self.audit.len() - AUDIT_LIMIT);
         }
     }
-
-    pub(crate) fn save_to(&self, path: Option<&Path>) -> std::io::Result<()> {
-        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        let values = value
-            .as_object()
-            .cloned()
-            .ok_or_else(|| std::io::Error::other("continuity policy is not an object"))?;
-        match path {
-            Some(path) => settings_store::update_section_at(path, "continuity", values),
-            None => settings_store::update_section("continuity", values),
-        }
-    }
-}
-
-pub(crate) fn settings_path() -> Option<PathBuf> {
-    settings_store::settings_path()
 }
 
 #[cfg(test)]
@@ -249,10 +223,9 @@ mod tests {
     }
 
     #[test]
-    fn local_round_trip_is_bounded_and_preserves_unowned_settings() {
+    fn the_audit_is_bounded_and_round_trips_through_the_settings() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, r#"{"locale":{"currency":"EUR"}}"#).unwrap();
+        let cx = crate::host::PaneCx::in_file(dir.path().join("settings.json"));
         let mut policy = ContinuityPrivacy {
             enabled: true,
             ..ContinuityPrivacy::default()
@@ -261,12 +234,11 @@ mod tests {
         for second in 0..(AUDIT_LIMIT as u64 + 5) {
             policy.record(Some(Capability::FileTransfer), second % 2 == 0, second);
         }
-        policy.save_to(Some(&path)).unwrap();
+        cx.settings::<ContinuityPrivacy>().set(&policy).unwrap();
 
-        let loaded = ContinuityPrivacy::load_at(&path);
+        let loaded = cx.settings::<ContinuityPrivacy>().get();
         assert_eq!(loaded, policy);
         assert_eq!(loaded.audit.len(), AUDIT_LIMIT);
         assert_eq!(loaded.audit[0].recorded_at_secs, 5);
-        assert_eq!(settings_store::load_at(&path)["locale"]["currency"], "EUR");
     }
 }

@@ -37,27 +37,27 @@
 //! (a ripple delete, a split) are carried as one action so they land as a
 //! single undo boundary and replay atomically.
 
-use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
-    ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResultSpec, RetryPolicy,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, OperationKind, ParamType, Resource,
 };
+
+use ui::tilo_resource::{self, ActionDecl, Effect};
 
 use crate::curve::Curve;
 use crate::doc::VideoDoc;
 use crate::model::{
-    ChromaKey, Clip, EffectKind, Filters, MAX_GAIN_DB, MIN_GAIN_DB, Mask, MaskShape, MediaItem,
-    MediaKind, Project, TextSource, Track, TrackKind, Transform, Transition,
+    ChromaKey, Clip, ClipId, EffectKind, Filters, MAX_GAIN_DB, MIN_GAIN_DB, Mask, MaskShape,
+    MediaItem, MediaKind, Project, TextSource, Track, TrackKind, Transform, Transition,
 };
 use crate::param::{ClipAnimation, Interp, Param};
+use crate::resource::VideoProject;
 
 /// Registry `type_id` for every video-editor action.
 pub const VIDEO_EDITOR_ACTION_TYPE: &str = "video_editor.action";
-pub const VIDEO_EDITOR_OPERATION_TYPE: &str = "video_editor.operation";
 
 pub fn track_resource_id(id: Uuid) -> String {
     format!("video.track:{id}")
@@ -102,101 +102,88 @@ pub fn reveal_media_address(id: Uuid) -> ActionAddress {
     ActionAddress::new(media_resource_id(id), "open")
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VideoEditorOperation {
+/// What the editor does that is no edit of the project: revealing a track,
+/// clip, effect, marker or source, and the project file and render jobs.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "video_editor.effect")]
+pub enum VideoEditorEffect {
+    /// Reveal track.
+    #[effect(view, row, idempotent)]
     RevealTrack {
+        #[param("The track's id")]
         track: String,
     },
+    /// Reveal clip.
+    #[effect(view, row, idempotent)]
     RevealClip {
+        #[param("The clip's id")]
         clip: String,
     },
+    /// Reveal effect.
+    #[effect(view, row, idempotent)]
     RevealEffect {
+        #[param("The clip the effect is on")]
         clip: String,
+        #[param("The effect's id")]
         effect: String,
     },
+    /// Reveal marker.
+    #[effect(view, row, idempotent)]
     RevealMarker {
+        #[param("The marker's id")]
         marker: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[param("The clip the marker is on; omit for a project marker")]
         clip: Option<String>,
     },
+    /// Reveal media.
+    #[effect(view, row, idempotent)]
     RevealMedia {
+        #[param("The source's id")]
         media: String,
     },
-    ImportMedia {
+    /// Import media.
+    #[effect(job, device_only)]
+    Import {
+        #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
-    OpenProject {
+    /// Open project.
+    #[effect(job, device_only)]
+    Open {
+        #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
-    SaveProject {
+    /// Save project.
+    #[effect(job, device_only)]
+    Save {
+        #[param("Direct filesystem path; omit to save to the current project file")]
         path: Option<String>,
     },
-    SaveProjectAs {
+    /// Save project as.
+    #[effect(job, device_only)]
+    SaveAs {
+        #[param("Direct filesystem path; omit to use the system picker")]
         path: Option<String>,
     },
+    /// Export video.
+    #[effect(cancellable, device_only)]
     Export {
+        #[param("Direct export path; omit to use the system picker")]
         path: Option<String>,
     },
+    /// Cancel export.
+    #[effect(destructive)]
     CancelExport,
 }
 
-pub fn operation_kind(operation: &VideoEditorOperation) -> OperationKind {
-    match operation {
-        VideoEditorOperation::RevealTrack { .. }
-        | VideoEditorOperation::RevealClip { .. }
-        | VideoEditorOperation::RevealEffect { .. }
-        | VideoEditorOperation::RevealMarker { .. }
-        | VideoEditorOperation::RevealMedia { .. } => OperationKind::View,
-        VideoEditorOperation::ImportMedia { .. }
-        | VideoEditorOperation::OpenProject { .. }
-        | VideoEditorOperation::SaveProject { .. }
-        | VideoEditorOperation::SaveProjectAs { .. }
-        | VideoEditorOperation::Export { .. }
-        | VideoEditorOperation::CancelExport => OperationKind::Effect,
+impl VideoEditorEffect {
+    /// This effect as the `open` action of the row it reveals.
+    pub(crate) fn reveal(&self, label: &str) -> ActionSpec {
+        let mut spec = self.bound();
+        spec.id = "open".into();
+        spec.label = label.into();
+        spec
     }
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "the passed enum is a serde-derived local value, so ActionSpec encoding is infallible by construction"
-)]
-fn operation(
-    id: &str,
-    label: &str,
-    kind: OperationKind,
-    value: &VideoEditorOperation,
-) -> ActionSpec {
-    let spec = ActionSpec::operation(id, label, kind, VIDEO_EDITOR_OPERATION_TYPE, value)
-        .expect("VideoEditorOperation is always serializable");
-    match value {
-        VideoEditorOperation::RevealTrack { .. }
-        | VideoEditorOperation::RevealClip { .. }
-        | VideoEditorOperation::RevealEffect { .. }
-        | VideoEditorOperation::RevealMarker { .. }
-        | VideoEditorOperation::RevealMedia { .. } => spec
-            .with_contract(ActionContract::view())
-            .retry_policy(RetryPolicy::Idempotent),
-        _ => spec,
-    }
-}
-
-/// Decode a palette operation payload, or `None` when `type_id` is not the
-/// editor's operation type.
-///
-/// # Errors
-///
-/// The deserializer's message when the payload is not a
-/// [`VideoEditorOperation`].
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<VideoEditorOperation>, String> {
-    if type_id != VIDEO_EDITOR_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|e| e.to_string())
 }
 
 /// A serializable snapshot of a clip's scalar fields, in exactly the
@@ -644,6 +631,16 @@ pub enum VideoEditorAction {
     RemoveMedia { id: String, clips: Vec<String> },
     /// Replace the project settings (name / fps / resolution).
     SetProjectMeta(ProjectMeta),
+    /// Set the timeline's in and out marks — the range a render covers —
+    /// and nothing else, so a mark never carries a stale copy of the other
+    /// project settings over a collaborator's change to them. `None` clears
+    /// a mark.
+    SetMarks {
+        #[serde(default)]
+        mark_in: Option<f64>,
+        #[serde(default)]
+        mark_out: Option<f64>,
+    },
     /// Append one named timeline marker without replacing the project's
     /// marker map. Markers are resources in their own right, so this action
     /// carries the authored marker identity rather than a positional list.
@@ -1673,6 +1670,16 @@ impl Action for VideoEditorAction {
             VideoEditorAction::SetProjectMeta(meta) => {
                 VideoDoc::write_project_meta(doc, &meta.to_project());
             }
+            VideoEditorAction::SetMarks { mark_in, mark_out } => {
+                for mark in [mark_in, mark_out].into_iter().flatten() {
+                    if !mark.is_finite() || *mark < 0.0 {
+                        return Err(ActionError::Refused(
+                            "a mark is a time at or after the start".into(),
+                        ));
+                    }
+                }
+                VideoDoc::write_marks(doc, *mark_in, *mark_out);
+            }
             VideoEditorAction::LoadProject(data) => {
                 VideoDoc::replace_project(doc, &data.to_project());
             }
@@ -1825,6 +1832,14 @@ pub fn set_project_meta_action(p: &Project) -> VideoEditorAction {
     VideoEditorAction::SetProjectMeta(ProjectMeta::from_project(p))
 }
 
+/// Set `p`'s in and out marks, and only those.
+pub fn set_marks_action(p: &Project) -> VideoEditorAction {
+    VideoEditorAction::SetMarks {
+        mark_in: p.mark_in,
+        mark_out: p.mark_out,
+    }
+}
+
 /// Replace the whole project — what opening a project file dispatches.
 pub fn load_project_action(p: &Project) -> VideoEditorAction {
     VideoEditorAction::LoadProject(ProjectData::from_project(p))
@@ -1834,7 +1849,7 @@ pub fn load_project_action(p: &Project) -> VideoEditorAction {
 // Resource tree
 // ===========================================================================
 
-/// The presentation context the editor hands [`provide_resources`]: a snapshot
+/// The presentation context the editor hands [`playhead_declarations`]: a snapshot
 /// of the current project (the doc projection) plus the live playhead — state
 /// that lives in the app, not the document. The playhead makes the split /
 /// trim-to-playhead actions buildable from where the user actually is.
@@ -1953,43 +1968,83 @@ fn parse_colour(s: &str) -> Option<[f64; 4]> {
     }
 }
 
-/// Playhead/mix-accurate conveniences — presentation state, not CRDT.
-///
-/// Standalone [`provide_resources`] nests these under `video.project`. Hosted
-/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
-/// slices alone so agents keep mark/split/trim-at-playhead (and mix trim)
-/// without a second project root beside [`crate::resource::VideoProject`].
+/// Edits bound to where this participant is: their playhead, and the mix
+/// their monitor measured. Published on the project beside its own actions
+/// (`ResourceSurface::bound_declarations`); each builds the project's typed
+/// action from the state the editor showed when it was invoked. A time
+/// argument (`at`) defaults to the playhead, so an agent can name any other
+/// instant without moving it.
 #[allow(
-    clippy::expect_used,
     clippy::too_many_lines,
-    reason = "playhead-bound payloads serialize only local serde enums; the clip loop mirrors the timeline tree"
+    reason = "one declaration per playhead-bound edit, each with its own parameters and builder"
 )]
-pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
-    let p = &ctx.project;
-    let at = ctx.playhead;
-    let mut playhead = Resource::new(
-        "video.playhead",
-        "video.playhead",
-        format!("Playhead at {at:.2}s"),
-    );
+pub fn playhead_declarations(ctx: &VideoResourceCtx) -> Vec<ActionDecl<VideoProject>> {
+    let playhead = ctx.playhead;
+    let at_param = || {
+        ActionParam::optional_owned(
+            "at",
+            ParamType::Number,
+            "seconds on the timeline; the playhead when omitted",
+        )
+    };
+    let clip_param = || {
+        ActionParam::required_owned(
+            "clip",
+            ParamType::Text,
+            "the clip's id, as its row names it",
+        )
+    };
+    let instant = move |args: &ActionArgs| -> Result<f64, String> {
+        let at = args.number("at").unwrap_or(playhead);
+        if at.is_finite() && at >= 0.0 {
+            Ok(at)
+        } else {
+            Err("a time at or after the start".into())
+        }
+    };
+    let clip_of = |args: &ActionArgs, project: &Project| -> Result<ClipId, String> {
+        let id = args
+            .text("clip")
+            .and_then(|id| {
+                id.trim()
+                    .trim_start_matches("video.clip:")
+                    .parse::<Uuid>()
+                    .ok()
+            })
+            .ok_or("name a clip by its id")?;
+        project
+            .clip(id)
+            .map(|clip| clip.id)
+            .ok_or_else(|| "no such clip in this project".to_owned())
+    };
 
-    let mut marked = p.clone();
-    marked.set_mark_in(at);
-    playhead = playhead.with_action(immediate(
-        "mark-in",
-        "Mark in at playhead",
-        &set_project_meta_action(&marked),
-    ));
-    let mut marked = p.clone();
-    marked.set_mark_out(at);
-    playhead = playhead.with_action(immediate(
-        "mark-out",
-        "Mark out at playhead",
-        &set_project_meta_action(&marked),
-    ));
+    let mut decls = Vec::new();
+    for (id, label, out) in [
+        ("mark-in", "Mark in", false),
+        ("mark-out", "Mark out", true),
+    ] {
+        let project = ctx.project.clone();
+        decls.push(
+            ActionDecl::new(id, label, vec![at_param()], move |args, _now| {
+                let at = instant(args)?;
+                let mut marked = project.clone();
+                if out {
+                    marked.set_mark_out(at);
+                } else {
+                    marked.set_mark_in(at);
+                }
+                Ok(set_marks_action(&marked))
+            })
+            .describe(if out {
+                "Set where a render ends: at the playhead, or at `at`."
+            } else {
+                "Set where a render begins: at the playhead, or at `at`."
+            }),
+        );
+    }
 
     if ctx.mix.clipped() {
-        let snap = p.clone();
+        let project = ctx.project.clone();
         let lanes = ctx.mix.measured_tracks();
         let over = ctx.mix.worst_over_db();
         let lane_words = match ctx.mix.clipped_tracks().len() {
@@ -1997,25 +2052,26 @@ pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
             1 => ", 1 lane over on its own".to_string(),
             n => format!(", {n} lanes over on their own"),
         };
-        playhead = playhead.with_action(
-            ActionSpec::typed(
+        decls.push(
+            ActionDecl::new(
                 "trim-mix",
                 "Trim the mix to fit",
-                "0",
-                ExecutionLocus::ClientLocal,
-                vec![ActionParam::required(
+                vec![ActionParam::required_owned(
                     "headroom",
                     ParamType::Number,
-                    "decibels to leave below full scale; 0 lands the measured \
-                     peak exactly at full scale",
+                    "decibels to leave below full scale; 0 lands the measured peak exactly \
+                     at full scale",
                 )],
-                move |args: &ActionArgs| {
+                move |args, _now| {
                     let headroom = args.number("headroom").unwrap_or(0.0).max(0.0);
-                    let next = snap.lanes_trimmed_by(&lanes, over + headroom);
-                    encode(&upsert_tracks_and_clips_action(&next, &[]))
+                    let next = project.lanes_trimmed_by(&lanes, over + headroom);
+                    if next.is_empty() {
+                        return Err("nothing to trim".into());
+                    }
+                    Ok(upsert_tracks_and_clips_action(&next, &[]))
                 },
             )
-            .with_description(format!(
+            .describe(format!(
                 "the mix was measured {over:+.1} dB over full scale in {} place{}{lane_words}; \
                  every lane comes down by the same amount, so the balance is unchanged",
                 ctx.mix.overs.len(),
@@ -2024,102 +2080,115 @@ pub fn live_playhead_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
         );
     }
 
-    playhead = playhead.with_action(ActionSpec::typed(
-        "add-marker",
-        "Add marker at playhead",
-        "Marker",
-        ExecutionLocus::ClientLocal,
-        vec![ActionParam::required(
-            "name",
-            ParamType::Text,
-            "what the marker is called; an empty name reads as “Marker”",
-        )],
-        move |args: &ActionArgs| {
-            let raw_name = args.text("name").unwrap_or("").trim();
-            let label = if raw_name.is_empty() {
-                "Marker"
-            } else {
-                raw_name
-            };
-            let project_marker = crate::model::Marker::new(at, label, 1);
-            encode(&VideoEditorAction::AddProjectMarker {
-                marker: project_marker,
-            })
-        },
-    ));
-    if let Some(m) = p.markers.iter().find(|m| (m.t - at).abs() < 0.25) {
-        playhead = playhead.with_action(immediate(
-            "remove-marker",
-            &format!("Remove marker \u{201c}{}\u{201d}", m.name),
-            &VideoEditorAction::RemoveProjectMarker {
-                marker: m.id.to_string(),
+    decls.push(
+        ActionDecl::new(
+            "add-marker-here",
+            "Add marker at playhead",
+            vec![ActionParam::required_owned(
+                "name",
+                ParamType::Text,
+                "what the marker is called; an empty name reads as “Marker”",
+            )],
+            move |args, _now| {
+                let raw_name = args.text("name").unwrap_or("").trim();
+                let label = if raw_name.is_empty() {
+                    "Marker"
+                } else {
+                    raw_name
+                };
+                Ok(VideoEditorAction::AddProjectMarker {
+                    marker: crate::model::Marker::new(playhead, label, 1),
+                })
             },
-        ));
-    }
-
-    for clip in &p.clips {
-        let cid = clip.id;
-        let group = p.link_group(cid);
-        // Distinct ids from timeline `video.clip:{id}` so the playhead slice
-        // can sit beside the document tree without a duplicate resource id.
-        let mut cr = Resource::new(
-            format!("video.playhead-clip:{cid}"),
-            "video.playhead-clip",
-            p.media(clip.media)
-                .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone()),
+        )
+        .describe("Place a named marker where the playhead is."),
+    );
+    if let Some(marker) = ctx
+        .project
+        .markers
+        .iter()
+        .find(|m| (m.t - playhead).abs() < 0.25)
+    {
+        let id = marker.id.to_string();
+        decls.push(
+            ActionDecl::new(
+                "remove-marker-here",
+                format!("Remove marker \u{201c}{}\u{201d}", marker.name),
+                Vec::new(),
+                move |_args, _now| {
+                    Ok(VideoEditorAction::RemoveProjectMarker { marker: id.clone() })
+                },
+            )
+            .destructive(),
         );
-
-        let mut split_project = p.clone();
-        let halves = split_project.split_linked(cid, at);
-        if !halves.is_empty() {
-            let written: Vec<Clip> = halves
-                .iter()
-                .flat_map(|(l, r)| [*l, *r])
-                .filter_map(|id| split_project.clip(id).cloned())
-                .collect();
-            let action = match written.as_slice() {
-                [left, right] => split_clip_action(left, right),
-                many => upsert_clips_action(many),
-            };
-            cr = cr.with_action(immediate("split", "Split at playhead", &action));
-        }
-
-        if clip.covers(at) {
-            let mut ti = p.clone();
-            let din = at - clip.start;
-            ti.trim_in_linked(cid, din);
-            if group.iter().any(|id| ti.clip(*id).is_some()) {
-                cr = cr.with_action(immediate(
-                    "trim-in",
-                    "Trim in to playhead",
-                    &patch_clips_fields_action(p, &ti, &group),
-                ));
-            }
-            let mut to = p.clone();
-            let dout = at - clip.end();
-            to.trim_out_linked(cid, dout);
-            if group.iter().any(|id| to.clip(*id).is_some()) {
-                cr = cr.with_action(immediate(
-                    "trim-out",
-                    "Trim out to playhead",
-                    &patch_clips_fields_action(p, &to, &group),
-                ));
-            }
-        }
-
-        if !cr.actions.is_empty() {
-            playhead = playhead.with_child(cr);
-        }
     }
 
-    annotate_contracts(&mut playhead);
-    vec![playhead]
+    let project = ctx.project.clone();
+    decls.push(
+        ActionDecl::new(
+            "split-clip",
+            "Split clip at playhead",
+            vec![clip_param(), at_param()],
+            move |args, _now| {
+                let at = instant(args)?;
+                let id = clip_of(args, &project)?;
+                let mut split = project.clone();
+                let halves = split.split_linked(id, at);
+                let written: Vec<Clip> = halves
+                    .iter()
+                    .flat_map(|(l, r)| [*l, *r])
+                    .filter_map(|id| split.clip(id).cloned())
+                    .collect();
+                match written.as_slice() {
+                    [] => Err("the clip does not cover that time".into()),
+                    [left, right] => Ok(split_clip_action(left, right)),
+                    many => Ok(upsert_clips_action(many)),
+                }
+            },
+        )
+        .describe("Cut a clip (and the clips linked to it) in two at the playhead, or at `at`."),
+    );
+    for (id, label, head) in [
+        ("trim-in-clip", "Trim clip in to playhead", true),
+        ("trim-out-clip", "Trim clip out to playhead", false),
+    ] {
+        let project = ctx.project.clone();
+        decls.push(
+            ActionDecl::new(
+                id,
+                label,
+                vec![clip_param(), at_param()],
+                move |args, _now| {
+                    let at = instant(args)?;
+                    let id = clip_of(args, &project)?;
+                    let clip = project.clip(id).ok_or("no such clip in this project")?;
+                    if !clip.covers(at) {
+                        return Err("the clip does not cover that time".into());
+                    }
+                    let group = project.link_group(id);
+                    let mut trimmed = project.clone();
+                    if head {
+                        trimmed.trim_in_linked(id, at - clip.start);
+                    } else {
+                        trimmed.trim_out_linked(id, at - clip.end());
+                    }
+                    Ok(patch_clips_fields_action(&project, &trimmed, &group))
+                },
+            )
+            .describe(if head {
+                "Move a clip's start (and its linked clips') to the playhead, or to `at`."
+            } else {
+                "Move a clip's end (and its linked clips') to the playhead, or to `at`."
+            }),
+        );
+    }
+    decls
 }
 
 /// Build the resource tree the editor currently has open: the project, its
 /// tracks (top-to-bottom display order), and the clips on each track — every
-/// document-mutating operation exported as an action. Playhead/mix conveniences
-/// ride [`live_playhead_resources`] under the project root.
+/// document-mutating operation exported as an action. Edits bound to the
+/// playhead and the measured mix are [`playhead_declarations`].
 ///
 /// # Panics
 ///
@@ -2144,93 +2213,6 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
             p.name.clone()
         },
     );
-    for (id, label, variant) in [
-        ("import", "Import media", 0_u8),
-        ("open", "Open project", 1),
-        ("save", "Save project", 2),
-        ("save-as", "Save project as", 3),
-    ] {
-        root = root.with_action(
-            ActionSpec::typed_operation(
-                id,
-                label,
-                "path (omit to use the system picker/current project)",
-                OperationKind::Effect,
-                VIDEO_EDITOR_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct filesystem path",
-                )],
-                move |args: &ActionArgs| {
-                    let path = args
-                        .text("path")
-                        .filter(|p| !p.trim().is_empty())
-                        .map(str::to_string);
-                    let op = match variant {
-                        0 => VideoEditorOperation::ImportMedia { path },
-                        1 => VideoEditorOperation::OpenProject { path },
-                        2 => VideoEditorOperation::SaveProject { path },
-                        _ => VideoEditorOperation::SaveProjectAs { path },
-                    };
-                    EncodedAction::encode_operation(VIDEO_EDITOR_OPERATION_TYPE, &op)
-                        .expect("video operation serializes")
-                },
-            )
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        );
-    }
-    // The action's identity, parameters, and job contract do not disappear
-    // when this build lacks an encoder. Consumers can still discover the
-    // canonical operation and explain its availability consistently; only
-    // invocation is refused until an encoder-capable build is present.
-    let export = ActionSpec::typed_operation(
-        "export",
-        "Export video",
-        "path (omit to use the system picker)",
-        OperationKind::Effect,
-        VIDEO_EDITOR_OPERATION_TYPE,
-        vec![ActionParam::optional_owned(
-            "path",
-            ParamType::Text,
-            "Direct export path",
-        )],
-        |args: &ActionArgs| {
-            EncodedAction::encode_operation(
-                VIDEO_EDITOR_OPERATION_TYPE,
-                &VideoEditorOperation::Export {
-                    path: args
-                        .text("path")
-                        .filter(|p| !p.trim().is_empty())
-                        .map(str::to_string),
-                },
-            )
-            .expect("export operation serializes")
-        },
-    )
-    .execution(ExecutionMode::Background { cancellable: true })
-    .returns(ResultSpec::Job);
-    root = root.with_action(match crate::export::unavailable_reason() {
-        Some(_) => export.unavailable(
-            "export_unavailable",
-            "Video export is unavailable on this system",
-        ),
-        None => export,
-    });
-    if let Ok(spec) = ActionSpec::operation(
-        "cancel-export",
-        "Cancel export",
-        OperationKind::Effect,
-        VIDEO_EDITOR_OPERATION_TYPE,
-        &VideoEditorOperation::CancelExport,
-    ) {
-        root = root.with_action(spec.destructive().unavailable(
-            "runtime_state_required",
-            "Cancel is offered in the Export panel while a render is running",
-        ));
-    }
-
     // Project-level: rename (settings live in the doc).
     {
         let snap = p.clone();
@@ -2327,8 +2309,8 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
 
     // Project-level: the render range. The export loop used to run the whole
     // timeline unconditionally, so checking a ten-second fix meant
-    // re-rendering everything. Playhead mark-in/out and mix trim ride
-    // [`live_playhead_resources`].
+    // re-rendering everything. Marking at the playhead and trimming the
+    // measured mix are bound to the editor's view ([`playhead_declarations`]).
     {
         if p.has_marks() {
             let mut cleared = p.clone();
@@ -2336,7 +2318,7 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
             root = root.with_action(immediate(
                 "clear-marks",
                 "Clear in / out marks",
-                &set_project_meta_action(&cleared),
+                &set_marks_action(&cleared),
             ));
         }
         let snap = p.clone();
@@ -2368,7 +2350,7 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 if let Some(start) = args.number("start") {
                     next.set_mark_in(start);
                 }
-                encode(&set_project_meta_action(&next))
+                encode(&set_marks_action(&next))
             },
         ));
     }
@@ -2420,15 +2402,13 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 "video.marker",
                 marker.name.clone(),
             )
-            .with_action(operation(
-                "open",
-                "Reveal marker",
-                OperationKind::View,
-                &VideoEditorOperation::RevealMarker {
+            .with_action(
+                VideoEditorEffect::RevealMarker {
                     marker: marker.id.to_string(),
                     clip: None,
-                },
-            ))
+                }
+                .reveal("Reveal marker"),
+            )
             .with_action(ActionSpec::typed(
                 "rename",
                 "Rename marker",
@@ -2522,14 +2502,12 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
     for track in p.display_tracks() {
         let tid = track.id;
         let mut tr = Resource::new(track_resource_id(tid), "video.track", track.name.clone())
-            .with_action(operation(
-                "open",
-                "Reveal track",
-                OperationKind::View,
-                &VideoEditorOperation::RevealTrack {
+            .with_action(
+                VideoEditorEffect::RevealTrack {
                     track: tid.to_string(),
-                },
-            ));
+                }
+                .reveal("Reveal track"),
+            );
 
         // Track-level: rename, toggle mute (deterministic flip against the
         // snapshot), delete (with its clips).
@@ -2635,15 +2613,12 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
             let label = p
                 .media(clip.media)
                 .map_or_else(|| format!("Clip {cid}"), |m| m.name.clone());
-            let mut cr =
-                Resource::new(clip_resource_id(cid), "video.clip", label).with_action(operation(
-                    "open",
-                    "Reveal clip",
-                    OperationKind::View,
-                    &VideoEditorOperation::RevealClip {
-                        clip: cid.to_string(),
-                    },
-                ));
+            let mut cr = Resource::new(clip_resource_id(cid), "video.clip", label).with_action(
+                VideoEditorEffect::RevealClip {
+                    clip: cid.to_string(),
+                }
+                .reveal("Reveal clip"),
+            );
 
             // Every clip linked to this one. A clip that is not linked is a
             // group of one, so every operation below is written against the
@@ -2675,7 +2650,7 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                 &delete_clips_action(&removed, &moved),
             ));
 
-            // Split / trim-at-playhead ride [`live_playhead_resources`].
+            // Split / trim-at-playhead are [`playhead_declarations`].
 
             // Colour grade — prompted `0..1` sliders folded into optimistic
             // clip-field patches.
@@ -3018,15 +2993,13 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                     "video.effect",
                     effect.kind.label(),
                 )
-                .with_action(operation(
-                    "open",
-                    "Reveal effect",
-                    OperationKind::View,
-                    &VideoEditorOperation::RevealEffect {
+                .with_action(
+                    VideoEditorEffect::RevealEffect {
                         clip: cid.to_string(),
                         effect: effect_id.to_string(),
-                    },
-                ));
+                    }
+                    .reveal("Reveal effect"),
+                );
 
                 er = er.with_action(ActionSpec::typed(
                     "set-amount",
@@ -3474,15 +3447,13 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
                         "video.marker",
                         marker.name.clone(),
                     )
-                    .with_action(operation(
-                        "open",
-                        "Reveal marker",
-                        OperationKind::View,
-                        &VideoEditorOperation::RevealMarker {
+                    .with_action(
+                        VideoEditorEffect::RevealMarker {
                             marker: marker.id.to_string(),
                             clip: Some(cid.to_string()),
-                        },
-                    ))
+                        }
+                        .reveal("Reveal marker"),
+                    )
                     .with_action(ActionSpec::typed(
                         "rename",
                         "Rename marker",
@@ -3554,14 +3525,12 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
     for m in bin_media {
         let mid = m.id;
         let mut mr = Resource::new(media_resource_id(mid), "video.media", m.name.clone())
-            .with_action(operation(
-                "open",
-                "Reveal media",
-                OperationKind::View,
-                &VideoEditorOperation::RevealMedia {
+            .with_action(
+                VideoEditorEffect::RevealMedia {
                     media: mid.to_string(),
-                },
-            ));
+                }
+                .reveal("Reveal media"),
+            );
         let rename_snap = m.clone();
         if let Some(text) = m.text.clone() {
             let base = m.clone();
@@ -3753,23 +3722,21 @@ pub(crate) fn project_tree(ctx: &VideoResourceCtx) -> Vec<Resource> {
         root = root.with_child(mr);
     }
 
-    for extra in live_playhead_resources(ctx) {
-        root = root.with_child(extra);
-    }
-
     annotate_contracts(&mut root);
     vec![root]
 }
 
-/// The published project. Playhead and mix rows stay live extras on this tree
-/// so standalone callers still see them; the framework root adds them itself.
-pub fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
-    // Standalone / palette / tests need the timeline at the *live* playhead
-    // (clip markers, keys, trim). `tilo_resource::publish` builds document
-    // children at playhead 0 and keeps playhead doors on the surface — that
-    // path stays for the framework root; this tree is the live editor door.
+/// The tree the host publishes for an editor showing `ctx`: the project and
+/// its rows at the live playhead, with the edits bound to the playhead beside
+/// the project's own actions.
+#[cfg(test)]
+pub(crate) fn provide_resources(ctx: &VideoResourceCtx) -> Vec<Resource> {
     let mut roots = project_tree(ctx);
     for root in &mut roots {
+        for decl in playhead_declarations(ctx) {
+            root.actions
+                .push(ui::tilo_resource::declaration_spec(&decl));
+        }
         annotate_contracts(root);
     }
     roots
@@ -3904,32 +3871,6 @@ fn parse_transition(s: &str) -> Transition {
         "dip" | "diptoblack" | "dip to black" => Transition::DipToBlack,
         "wipe" => Transition::Wipe,
         other => Transition::from_name(other),
-    }
-}
-
-// Inherent resource publication (was ResourceProvider)
-impl crate::app::VideoEditorApp {
-    pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let ctx = self.video_resource_ctx();
-        // The document is the project once it holds one. An unsynced editor
-        // still has the project only on the widget. Playhead and mix stay live.
-        let project = if VideoDoc::is_empty(doc) {
-            ctx.project.clone()
-        } else {
-            VideoDoc::load_project(doc)
-        };
-        let label = if project.name.is_empty() {
-            "Project".to_string()
-        } else {
-            project.name.clone()
-        };
-        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
-            "video.project",
-            &label,
-            &project,
-        );
-        root.children.extend(live_playhead_resources(&ctx));
-        vec![root]
     }
 }
 
@@ -4292,7 +4233,11 @@ mod tests {
         // Case `the_palette_adds_a_timeline_marker_and_removes_it`.
         {
             let (ctx, _) = ctx_fixture();
-            let marked = run(&ctx.project, &spec(&ctx, "add-marker"), Some("Act two"));
+            let marked = run(
+                &ctx.project,
+                &spec(&ctx, "add-marker-here"),
+                Some("Act two"),
+            );
             assert_eq!(marked.markers.len(), 1);
             assert_eq!(marked.markers[0].name, "Act two");
             assert_eq!(marked.markers[0].t, 4.0, "at the playhead");
@@ -4301,7 +4246,7 @@ mod tests {
                 project: marked,
                 ..ctx
             };
-            let gone = run(&ctx2.project, &spec(&ctx2, "remove-marker"), None);
+            let gone = run(&ctx2.project, &spec(&ctx2, "remove-marker-here"), None);
             assert!(gone.markers.is_empty());
         }
         // Case `the_palette_adds_a_title_to_the_bin`.
@@ -4360,7 +4305,7 @@ mod tests {
                 ("toggle-reverse", None),
                 ("pip-bl", None),
                 ("key-scale_x", None),
-                ("add-marker", Some("m")),
+                ("add-marker-here", Some("m")),
                 ("add-clip-marker", Some("m")),
                 ("set-rotation", Some("-12")),
             ] {
@@ -4388,7 +4333,9 @@ mod tests {
 
     use super::*;
     use crate::app::VideoEditorApp;
+    use automerge::AutoCommit;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_actions::{ExecutionMode, ResultSpec};
     use ui::testing::action_contract::{find_spec, spec_encoding};
     use ui::widget::Widget;
 
@@ -4404,7 +4351,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         VideoDoc::seed_sample(&mut doc);
         let mut app = VideoEditorApp::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        ui::framework::ResourceSurface::<
+            crate::resource::VideoProject,
+            crate::actions::VideoEditorEffect,
+        >::present(&mut app, &std::rc::Rc::new(VideoDoc::load_project(&doc)));
+        app.sync(&doc, &automerge::ROOT);
         (app, doc)
     }
 
@@ -4429,7 +4380,7 @@ mod tests {
         // Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             assert_eq!(resources.len(), 1, "one open project");
             let project = &resources[0];
             assert_eq!(project.kind, "video_editor.project");
@@ -4574,7 +4525,7 @@ mod tests {
         // stack through the same narrow effects action the inspector uses.
         {
             let (app, mut doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()
@@ -4617,11 +4568,31 @@ mod tests {
 
     /// The editor's published tree for `doc`: a fresh editor synced to it,
     /// exactly as the host wires one to its document.
+    /// What the host publishes for an editor showing `doc`: the project's
+    /// own publication, with the edits the editor binds to its playhead.
+    fn published(app: &VideoEditorApp, doc: &AutoCommit) -> Vec<Resource> {
+        let project = VideoDoc::load_project(doc);
+        let mut root = ui::tilo_resource::publish::<crate::resource::VideoProject>(
+            <crate::resource::VideoProject as ui::tilo_resource::Resource>::KIND,
+            &project.name,
+            &project,
+        );
+        for decl in playhead_declarations(&app.video_resource_ctx()) {
+            root.actions
+                .push(ui::tilo_resource::declaration_spec(&decl));
+        }
+        vec![root]
+    }
+
     fn resources_for(doc: &AutoCommit) -> Vec<Resource> {
         let mut app = VideoEditorApp::new();
-        let mut doc = doc.clone();
-        app.sync(&mut doc, &automerge::ROOT);
-        ui::resources::resources(&app, &doc)
+        let doc = doc.clone();
+        ui::framework::ResourceSurface::<
+            crate::resource::VideoProject,
+            crate::actions::VideoEditorEffect,
+        >::present(&mut app, &std::rc::Rc::new(VideoDoc::load_project(&doc)));
+        app.sync(&doc, &automerge::ROOT);
+        published(&app, &doc)
     }
 
     fn clip_id(res: &Resource) -> Uuid {
@@ -4720,7 +4691,7 @@ mod tests {
         // inspector edit to 0.9 would — a slider value folded into one action.
         {
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             let (clip_res, spec) = find_spec(&resources, "video.clip", "set-brightness");
             let from_spec = prompted_encode(spec, "0.9");
 
@@ -4833,7 +4804,7 @@ mod tests {
             use tilo_actions::params::ArgValue;
 
             let (app, doc) = seeded();
-            let resources = ui::resources::resources(&app, &doc);
+            let resources = published(&app, &doc);
             let clip_res = resources[0]
                 .children
                 .iter()
@@ -4890,7 +4861,11 @@ mod tests {
                     let p = &sp.params()[i];
                     assert_eq!(p.name.as_ref(), *name, "{id} names its argument {i}");
                     assert_eq!(p.ty, *ty, "{id} declares the type of {name}");
-                    assert!(p.required, "{id} needs {name}");
+                    if *name == "at" {
+                        assert!(!p.required, "{id}'s time defaults to the playhead");
+                    } else {
+                        assert!(p.required, "{id} needs {name}");
+                    }
                     assert!(!p.description.is_empty(), "{id} says what {name} means");
                 }
             }
@@ -5032,13 +5007,18 @@ mod tests {
                     // the *type* of one of them and not a missing sibling. An
                     // action carrying two numbers has to refuse a word in either
                     // position, not only the first.
+                    // A text sibling (the clip a cut names) is given text.
+                    let sibling = |ty: &ParamType, number: ArgValue| match ty {
+                        ParamType::Text => ArgValue::Text("x".into()),
+                        _ => number,
+                    };
                     let with = |bad: Option<&str>| -> Vec<(String, ArgValue)> {
                         params
                             .iter()
-                            .map(|(name, _)| {
+                            .map(|(name, ty)| {
                                 let v = match bad {
                                     Some(word) if name == target => ArgValue::Text(word.into()),
-                                    _ => ArgValue::Number(0.25),
+                                    _ => sibling(ty, ArgValue::Number(0.25)),
                                 };
                                 ((*name).to_string(), v)
                             })
@@ -5055,7 +5035,7 @@ mod tests {
                     // has to stay passable.
                     let ints: Vec<(String, ArgValue)> = params
                         .iter()
-                        .map(|(name, _)| ((*name).to_string(), ArgValue::Integer(1)))
+                        .map(|(name, ty)| ((*name).to_string(), sibling(ty, ArgValue::Integer(1))))
                         .collect();
                     assert!(
                         ActionArgs::bind(sp.params(), ints).is_ok(),
@@ -5326,7 +5306,7 @@ mod tests {
     /// width without a height would be a shape nobody asked for. Every
     /// assertion the single-pair table made is still made, once per declared
     /// parameter.
-    const DECLARED: [(&str, &[(&str, ParamType)]); 28] = [
+    const DECLARED: [(&str, &[(&str, ParamType)]); 33] = [
         ("rename-project", &[("name", ParamType::Text)]),
         (
             "set-frame-size",
@@ -5337,7 +5317,21 @@ mod tests {
             "set-render-range",
             &[("start", ParamType::Number), ("end", ParamType::Number)],
         ),
-        ("add-marker", &[("name", ParamType::Text)]),
+        ("add-marker-here", &[("name", ParamType::Text)]),
+        ("mark-in", &[("at", ParamType::Number)]),
+        ("mark-out", &[("at", ParamType::Number)]),
+        (
+            "split-clip",
+            &[("clip", ParamType::Text), ("at", ParamType::Number)],
+        ),
+        (
+            "trim-in-clip",
+            &[("clip", ParamType::Text), ("at", ParamType::Number)],
+        ),
+        (
+            "trim-out-clip",
+            &[("clip", ParamType::Text), ("at", ParamType::Number)],
+        ),
         ("add-title", &[("text", ParamType::Text)]),
         ("rename-track", &[("name", ParamType::Text)]),
         ("set-brightness", &[("value", ParamType::Number)]),
@@ -5539,7 +5533,8 @@ mod tests {
             let rippled = run(&ctx.project, &spec(&ctx, "ripple-delete"), None);
             assert!(rippled.clip(picture).is_none() && rippled.clip(sound).is_none());
 
-            let cut = run(&ctx.project, &spec(&ctx, "split"), None);
+            let picture_id = picture.to_string();
+            let cut = run(&ctx.project, &spec(&ctx, "split-clip"), Some(&picture_id));
             assert_eq!(cut.clips.len(), 4, "both lanes were cut");
             let tails: Vec<&Clip> = cut.clips.iter().filter(|c| c.start > 3.9).collect();
             assert_eq!(tails.len(), 2);
@@ -5560,7 +5555,7 @@ mod tests {
                 "re-timing one half and not the other desyncs them permanently",
             );
 
-            let trimmed = run(&ctx.project, &spec(&ctx, "trim-in"), None);
+            let trimmed = run(&ctx.project, &spec(&ctx, "trim-in-clip"), Some(&picture_id));
             assert!(
                 (trimmed.clip(picture).expect("picture").in_point
                     - trimmed.clip(sound).expect("sound").in_point)
@@ -6203,8 +6198,8 @@ mod tests {
         }
         // Case `file_and_render_effects_are_canonical_and_not_falsely_reversible`.
         {
-            let resources = provide_resources(&VideoResourceCtx::default());
-            let root = &resources[0];
+            use ui::tilo_resource::Effect;
+            let specs = VideoEditorEffect::specs();
             for id in [
                 "import",
                 "open",
@@ -6213,7 +6208,7 @@ mod tests {
                 "export",
                 "cancel-export",
             ] {
-                let action = root.actions.iter().find(|action| action.id == id).unwrap();
+                let action = specs.iter().find(|action| action.id == id).unwrap();
                 assert_eq!(action.kind, OperationKind::Effect, "{id}");
                 assert!(!action.contract.reversible, "{id}");
                 if id != "cancel-export" {
@@ -6225,12 +6220,6 @@ mod tests {
                     assert_eq!(action.params()[0].name.as_ref(), "path", "{id}");
                 }
             }
-            let cancel = root
-                .actions
-                .iter()
-                .find(|a| a.id == "cancel-export")
-                .unwrap();
-            assert!(!cancel.contract.availability.is_available());
         }
         // Case `concurrent_effect_actions_replay_in_either_order_with_one_stable_stack`.
         {

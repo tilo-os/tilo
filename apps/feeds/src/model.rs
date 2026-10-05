@@ -261,12 +261,13 @@ impl ReadFont {
     }
 }
 
-/// Article-reader preferences. Persisted in the CRDT so collaborators reading
-/// together (and the same user across sessions) share a consistent layout.
+/// Article-reader preferences: the person's own, following them to every
+/// device as a personal settings section, never the shared library.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReadSettings {
     /// How much larger than its text role the article is set (1.0 is the
-    /// role's own size), clamped to [`Self::SCALE_MIN`, `Self::SCALE_MAX`].
+    /// role's own size), clamped to [`Self::FONT_MIN`, `Self::FONT_MAX`].
     pub font_scale: f32,
     pub font: ReadFont,
     pub theme: ReadTheme,
@@ -282,11 +283,17 @@ impl Default for ReadSettings {
     }
 }
 
+impl ui::storage::SettingsSchema for ReadSettings {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
+}
+
 impl ReadSettings {
-    /// Smallest reading scale.
-    pub const SCALE_MIN: f32 = 0.8;
-    /// Largest reading scale.
-    pub const SCALE_MAX: f32 = 1.8;
+    pub const FONT_MIN: f32 = 0.8;
+    pub const FONT_MAX: f32 = 1.8;
+    /// One step of the reader's text size controls.
+    pub const FONT_STEP: f32 = 0.1;
+    /// Base body size in logical px before the scale multiplier.
+    pub const BASE_SIZE: f32 = 16.0;
 
     /// The reading scale as a whole percentage (`110` for 1.1).
     pub fn percent(&self) -> f64 {
@@ -295,7 +302,7 @@ impl ReadSettings {
 
     #[must_use]
     pub fn clamped(mut self) -> Self {
-        self.font_scale = self.font_scale.clamp(Self::SCALE_MIN, Self::SCALE_MAX);
+        self.font_scale = self.font_scale.clamp(Self::FONT_MIN, Self::FONT_MAX);
         self
     }
 }
@@ -567,6 +574,15 @@ impl Store {
         removed
     }
 
+    /// The order a new folder takes: after the last one.
+    pub fn next_folder_order(&self) -> u32 {
+        self.folders
+            .iter()
+            .map(|f| f.order)
+            .max()
+            .map_or(0, |m| m + 1)
+    }
+
     pub fn next_feed_order(&self, folder: Option<Id>) -> u32 {
         self.feeds
             .iter()
@@ -757,13 +773,13 @@ mod tests {
                 ..Default::default()
             }
             .clamped();
-            assert_eq!(s.font_scale, ReadSettings::SCALE_MAX);
+            assert_eq!(s.font_scale, ReadSettings::FONT_MAX);
             let s = ReadSettings {
                 font_scale: 0.1,
                 ..Default::default()
             }
             .clamped();
-            assert_eq!(s.font_scale, ReadSettings::SCALE_MIN);
+            assert_eq!(s.font_scale, ReadSettings::FONT_MIN);
             let s = ReadSettings {
                 font_scale: 1.1,
                 ..Default::default()

@@ -350,13 +350,13 @@ impl Widget for NativeView {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(fallback) = &mut self.fallback {
             fallback.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.fallback
             .as_mut()
             .is_some_and(|fallback| fallback.update(state, path))
@@ -793,7 +793,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -811,7 +811,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut state,
+                    state: crate::widget::Edits::lend(&mut state),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,

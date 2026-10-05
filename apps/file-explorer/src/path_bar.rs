@@ -335,7 +335,7 @@ impl Widget for PathBar {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.editing {
@@ -494,7 +494,7 @@ mod tests {
                 let mut doc = AutoCommit::new();
                 assert!(bar.perform_action(
                     &Action::SetValue(input.into()),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert_eq!(bar.field.suggestions().len(), 1);
@@ -529,7 +529,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: ui::widget::Edits::lend(&mut doc),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -585,7 +585,11 @@ mod tests {
             assert_eq!(trail.value.as_deref(), Some("Documents"));
 
             let mut doc = AutoCommit::new();
-            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(bar.perform_action(
+                &Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT
+            ));
             assert!(bar.is_editing());
             let input = bar.accessibility().expect("editable path semantics");
             assert_eq!(input.role, Role::TextInput);

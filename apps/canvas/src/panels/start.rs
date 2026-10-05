@@ -15,7 +15,7 @@ use ui::{PresenceCtx, TextRenderer, Theme};
 
 use super::caption;
 use crate::actions::{CanvasAction, NewArtwork};
-use crate::document::{self, Recent, SIZES, STARTS};
+use crate::document::{self, RecentArtworks, SIZES, STARTS};
 use crate::model::{Artwork, Ground};
 use crate::render::{Options, Renderer};
 use crate::resource::ArtworkResource;
@@ -224,7 +224,7 @@ impl Widget for Swatch {
             .draw(&art, scene, to_screen, text, &Options::default());
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn name(&self) -> &'static str {
         "Swatch"
@@ -523,7 +523,7 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let button = |id: &str, icon: Icon, then: Box<dyn Fn()>| -> Element {
         let name = lookup(id);
-        Box::new(Button::new(id, &name, None).with_icon(icon).on_view(then))
+        Box::new(Button::new(id, &name).with_icon(icon).on_view(then))
     };
     let new = {
         let sheet = tools.sheet.clone();
@@ -545,7 +545,7 @@ fn card(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         let welcomed = tools.welcomed.clone();
         let name = lookup("canvas-welcome-close");
         Box::new(
-            Button::new("canvas-welcome-close", "", None)
+            Button::new("canvas-welcome-close", "")
                 .with_icon(Icon::X)
                 .role(ui::widget::ButtonRole::Plain)
                 .with_accessible_name(&name)
@@ -645,7 +645,8 @@ fn placed(card: Element, sidebar: bool) -> Element {
 /// The artworks worked on lately, each opened by a click.
 fn recent_list(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     let files = tools.files.clone();
-    cx.switch(&tools.recents, move |_, recents: &Vec<Recent>| {
+    cx.switch(&tools.recents, move |_, recents: &RecentArtworks| {
+        let recents = &recents.artworks;
         if recents.is_empty() {
             return Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element;
         }

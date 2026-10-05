@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::search::{ScopeDecl, SearchRequest, SearchResult, search_button};
-use crate::widget::{AppModel, Button, ModelPath, Widget};
+use crate::widget::{Button, ModelPath, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use tilo_actions::{ActionSpec, Resource};
@@ -83,7 +83,8 @@ impl crate::search::capability::SearchSource for MailRoot {
     fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
         vec![Box::new(Mailbox)]
     }
-    fn activate_search_result(&mut self, _: &str, _: &mut AppModel, _: &ModelPath) {}
+    fn activate_search_result(&mut self, _: &str, _: &mut crate::widget::Edits<'_>, _: &ModelPath) {
+    }
 }
 
 impl crate::resources::PublishesResources for MailRoot {
@@ -123,7 +124,7 @@ fn press_launcher(app: &mut App) {
     let launcher = app.root_widget.children_mut().into_iter().next().unwrap();
     assert!(launcher.perform_action(
         &crate::a11y::Action::Activate,
-        &mut app.state.doc,
+        &mut crate::widget::Edits::lend(&mut app.state.doc),
         &app.state.root
     ));
 }

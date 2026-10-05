@@ -935,7 +935,7 @@ mod tests {
                     height: 100.0,
                 })
             })
-            .child(Box::new(Button::new("action", "Action", None)));
+            .child(Box::new(Button::new("action", "Action")));
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1122,7 +1122,7 @@ mod tests {
                 ["target", "target"],
                 ["other", "removed"],
             ] {
-                let mut old = Box::new(Button::new("target", "Target", None));
+                let mut old = Box::new(Button::new("target", "Target"));
                 let mut tree = TaffyTree::new();
                 let mut nodes = HashMap::new();
                 let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1136,8 +1136,8 @@ mod tests {
                 nodes.clear();
                 bindings.clear();
                 let mut rebuilt = Column::new()
-                    .push(Box::new(Button::new(target_keys[0], "First", None)))
-                    .push(Box::new(Button::new(target_keys[1], "Second", None)));
+                    .push(Box::new(Button::new(target_keys[0], "First")))
+                    .push(Box::new(Button::new(target_keys[1], "Second")));
                 let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
                 // SAFETY: exact exclusively owned rebuilt tree and maps.
                 unsafe {
@@ -1158,8 +1158,8 @@ mod tests {
         fn duplicate_source_key_cannot_transfer_focus_to_the_surviving_other_control() {
             use crate::widget::{Button, Column};
             let mut old = Column::new()
-                .push(Box::new(Button::new("duplicate", "Removed", None)))
-                .push(Box::new(Button::new("duplicate", "Survivor", None)));
+                .push(Box::new(Button::new("duplicate", "Removed")))
+                .push(Box::new(Button::new("duplicate", "Survivor")));
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1173,7 +1173,7 @@ mod tests {
                 unsafe { CompositionFocus::capture(Some(selected), &nodes, &bindings) }.unwrap();
             nodes.clear();
             bindings.clear();
-            let mut survivor = Button::new("duplicate", "Survivor", None);
+            let mut survivor = Button::new("duplicate", "Survivor");
             let root = survivor.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
             // SAFETY: exact exclusively owned replacement tree and maps.
             unsafe {
@@ -1185,7 +1185,7 @@ mod tests {
 
         fn review_disabled_duplicate_target_does_not_transfer_focus_to_enabled_other() {
             use crate::widget::{Button, Column};
-            let mut old = Button::new("target", "Original", None);
+            let mut old = Button::new("target", "Original");
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = old.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
@@ -1197,11 +1197,11 @@ mod tests {
                 unsafe { CompositionFocus::capture(Some(root), &nodes, &bindings) }.unwrap();
             nodes.clear();
             bindings.clear();
-            let mut disabled = Button::new("target", "Original", None);
+            let mut disabled = Button::new("target", "Original");
             disabled.set_enabled(false);
             let mut rebuilt = Column::new()
                 .push(Box::new(disabled))
-                .push(Box::new(Button::new("target", "Other", None)));
+                .push(Box::new(Button::new("target", "Other")));
             let root = rebuilt.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
             unsafe {
                 bindings.rebuild(&rebuilt, &tree, root, &nodes);
@@ -1461,4 +1461,58 @@ pub(super) fn allocation_or_content_size(
             layout.size.height.max(layout.content_size.height)
         },
     }
+}
+
+/// Lay `widget` out on its own at `rect`, in a layout tree of its own, with
+/// the passes the host runs (build, resolve, apply) but at a size the host
+/// did not give it: a capture drawing a scrolling document at its full
+/// height. The widget's retained layout nodes then name that tree, so the
+/// host must rebuild its own before it lays the widget out again.
+///
+/// # Errors
+///
+/// Returns the solver's error when Taffy rejects the tree.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "window-space layout dimensions narrowed for taffy; never near f32::MAX"
+)]
+pub(crate) fn lay_out_detached(
+    widget: &mut dyn Widget,
+    rect: vello::kurbo::Rect,
+    theme: &Theme,
+    text: &mut TextRenderer,
+) -> Result<(), WidgetLayoutError> {
+    let (w, h) = (rect.width() as f32, rect.height() as f32);
+    let mut taffy = TaffyTree::new();
+    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = widget.build_layout(&mut taffy, theme, &mut nodes);
+    let root = taffy.new_with_children(
+        taffy::Style {
+            size: Size {
+                width: taffy::Dimension::length(w),
+                height: taffy::Dimension::length(h),
+            },
+            ..Default::default()
+        },
+        &[child],
+    )?;
+    let mut bindings = BoundNodeMap::new();
+    // SAFETY: `widget`, `taffy`, `child` and `nodes` come from the build
+    // above and stay exclusively borrowed while layout runs.
+    unsafe {
+        bindings.rebuild(widget, &taffy, child, &nodes);
+        compute_widget_layout(
+            &mut taffy,
+            root,
+            Size {
+                width: AvailableSpace::Definite(w),
+                height: AvailableSpace::Definite(h),
+            },
+            &nodes,
+            &bindings,
+            text,
+        )?;
+    }
+    widget.apply_layout(&taffy, child, rect.origin());
+    Ok(())
 }

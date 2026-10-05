@@ -416,7 +416,7 @@ impl CameraApp {
         theme: &Theme,
         area: Rect,
     ) {
-        let waiting = self.scan_image_picker.is_some();
+        let waiting = self.scan_import_pending.get();
         let content = EmptyStateContent {
             icon: Some(Icon::QrCode),
             message: Some("No camera is connected. Choose a saved image that shows a code."),

@@ -191,7 +191,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -322,8 +322,10 @@ fn stale_files_document_open_is_cancelled_before_record_or_tab_publication() {
     let directory = tempfile::tempdir().unwrap();
     let h = harness_with_inputs(
         4,
-        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
-            .expect("owned Files directory"),
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
+            directory.path(),
+        )
+        .expect("owned Files directory"),
     );
     let chrome = h.chrome.clone();
     let source = h.tabs[1]; // Files in the production demo workspace.
@@ -384,8 +386,10 @@ fn non_files_source_cannot_use_the_hosted_files_capability() {
     let directory = tempfile::tempdir().unwrap();
     let h = harness_with_inputs(
         4,
-        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
-            .expect("owned Files directory"),
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
+            directory.path(),
+        )
+        .expect("owned Files directory"),
     );
     let chrome = h.chrome.clone();
     let source = h.tabs[0]; // Notes, not the Files tile at index 1.
@@ -430,8 +434,10 @@ fn wrong_document_open_capability_cannot_use_the_current_files_source() {
     let directory = tempfile::tempdir().unwrap();
     let h = harness_with_inputs(
         4,
-        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory(directory.path())
-            .expect("owned Files directory"),
+        crate::shell::hosted_inputs::HostedTileInputs::for_host_directory_privately(
+            directory.path(),
+        )
+        .expect("owned Files directory"),
     );
     let chrome = h.chrome.clone();
     let source = h.tabs[1]; // Files in the production demo workspace.
@@ -603,7 +609,7 @@ fn tab_context_menu_opens_navigates_dismisses_and_paints_only_while_open() {
         assert!(!h.host.perform_semantic_action(
             "tabmenu:split-right",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            &mut ui::widget::Edits::lend(&mut h.doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -835,7 +841,7 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
         let performed = h.host.perform_semantic_action(
             "tabmenu:new-group",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            &mut ui::widget::Edits::lend(&mut h.doc),
             &automerge::ROOT,
         );
         assert!(performed, "an offered row activates");
@@ -849,7 +855,7 @@ fn tab_context_menu_actions_edit_the_tree_the_same_way_from_every_route() {
         assert!(!h.host.perform_semantic_action(
             "tabmenu:close",
             &ui::a11y::Action::Activate,
-            &mut h.doc,
+            &mut ui::widget::Edits::lend(&mut h.doc),
             &automerge::ROOT,
         ));
     }

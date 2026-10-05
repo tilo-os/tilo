@@ -73,7 +73,7 @@ impl Resource for Totp {
 /// What the Authenticator does with what only this device holds: the add
 /// form, an account's codes and its secret.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "totp.effect")]
+#[effect(operation = "totp.effect", device_only)]
 pub enum TotpEffect {
     /// Add account.
     ///
@@ -231,7 +231,7 @@ impl ui::widget::Decorator for CountedShell {
         &mut self.shell
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let count = self.count.get();
         self.shell.set_content_count((count > 0).then_some(count));
         ui::widget::Widget::update(&mut self.shell, state, path)

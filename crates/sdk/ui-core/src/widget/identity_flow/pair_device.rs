@@ -803,7 +803,7 @@ impl PairDeviceScreen {
 }
 
 impl Widget for PairDeviceScreen {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -1061,7 +1061,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: doc,
+                        state: crate::widget::Edits::lend(doc),
                         path: &automerge::ROOT,
                         handled: &mut handled,
                         focus_target: &mut target,
@@ -1097,7 +1097,7 @@ mod tests {
             Widget::perform_action(
                 &mut s.cells[1],
                 &crate::a11y::Action::SetValue("2468".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
             s.settle(None);
@@ -1115,7 +1115,7 @@ mod tests {
                     anchor: 0,
                     focus: 1,
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             );
             send(

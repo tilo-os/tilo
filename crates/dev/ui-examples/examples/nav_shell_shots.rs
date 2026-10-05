@@ -201,7 +201,7 @@ fn rail() -> NavShell {
 }
 
 fn labelled(id: &str, label: &str, icon: Icon) -> Element {
-    Box::new(Button::new(id, label, None).with_icon(icon).on_view(|| {}))
+    Box::new(Button::new(id, label).with_icon(icon).on_view(|| {}))
 }
 
 /// A message view whose labelled actions collapse to icons, then into More.

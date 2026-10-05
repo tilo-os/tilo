@@ -26,11 +26,10 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
     fn fractional_button_allocation_drives_inspection_semantics_and_click() {
         let mut harness = FrameHarness::new(
             crate::State::new(),
-            Box::new(fixed(Box::new(Button::new(
-                "action",
-                "A very long action title",
-                Some("clicked"),
-            )))),
+            Box::new(fixed(Box::new(
+                Button::new("action", "A very long action title")
+                    .on_click(crate::testing::record_click("clicked")),
+            ))),
             (400, 300),
         );
         let snapshot = harness.inspection();
@@ -49,15 +48,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             accesskit::Rect::new(10.25, 20.75, 130.75, 61.0)
         );
         harness.click_at(70.0, 40.0);
-        use automerge::ReadDoc;
-        assert!(
-            harness
-                .state_mut()
-                .doc
-                .get(automerge::ROOT, "clicked")
-                .unwrap()
-                .is_some()
-        );
+        assert_eq!(crate::testing::clicks("clicked"), 1);
     }
 
     fn measures_real_wrapping_container_and_form_subtrees() {
@@ -170,7 +161,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
                 height: 100.25,
             })
         })
-        .child(Box::new(Button::new("float", "Float", None)));
+        .child(Box::new(Button::new("float", "Float")));
         let harness = FrameHarness::new(crate::State::new(), Box::new(region), (500, 300));
         let snapshot = harness.inspection();
         assert_eq!(snapshot.root.rect[2], 200.5);
@@ -342,9 +333,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
 #[test]
 fn nested_manual_measurement_settles_bounded_and_side_effect_free() {
     fn nested_manual_regions_settle_and_preserve_auto_sibling_allocation() {
-        let manual = fixed(Box::new(fixed(Box::new(Button::new(
-            "nested", "Nested", None,
-        )))));
+        let manual = fixed(Box::new(fixed(Box::new(Button::new("nested", "Nested")))));
         let form = Form::new().section(
             FormSection::new("Mixed")
                 .content(Box::new(manual))
@@ -600,7 +589,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                     height: 20.0,
                 })
             })
-            .child(Box::new(Button::new("overflow", "Visible overflow", None)));
+            .child(Box::new(Button::new("overflow", "Visible overflow")));
             let mut tree = TaffyTree::new();
             let mut nodes = HashMap::new();
             let root = widget.build_layout(&mut tree, &Theme::dark(), &mut nodes);
@@ -658,7 +647,7 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
                 height: 20.0,
             })
         })
-        .child(Box::new(Button::new("clipped", "Clipped grandchild", None)));
+        .child(Box::new(Button::new("clipped", "Clipped grandchild")));
         let region = Manual::new(|ctx| {
             ctx.place(0, Rect::new(0.0, 0.0, 100.0, 20.0))?;
             Ok(Size {
@@ -740,7 +729,7 @@ fn nested_negative_overflow(horizontal: bool) {
             height: 20.0,
         })
     })
-    .child(Box::new(Button::new("grandchild", "Visible", None)));
+    .child(Box::new(Button::new("grandchild", "Visible")));
     let mut outer = Manual::new(|ctx| {
         ctx.place(0, Rect::new(0.0, 0.0, 100.0, 20.0))?;
         Ok(Size {

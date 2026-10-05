@@ -207,15 +207,20 @@ fn a_person_opens_a_recent_artwork_from_the_welcome() {
             .unwrap();
     }
     let painted = canvas::document::read(&path).unwrap();
-    canvas::document::recents::remember(canvas::document::Recent {
-        path: path.display().to_string(),
-        title: "Valley".into(),
-        width: painted.width,
-        height: painted.height,
-        at_ms: 1,
-        thumbnail: None,
-    });
     let mut app = TestApp::<App>::new().unwrap();
+    app.settings::<canvas::document::RecentArtworks>()
+        .update(|recents| {
+            recents.remember(canvas::document::Recent {
+                path: path.display().to_string(),
+                title: "Valley".into(),
+                width: painted.width,
+                height: painted.height,
+                at_ms: 1,
+                thumbnail: None,
+            });
+        })
+        .unwrap();
+    app.harness().key("Shift");
     app.harness().click_named("canvas-recent-1").unwrap();
     app.harness().key("Shift");
     assert_eq!(

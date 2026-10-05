@@ -214,7 +214,7 @@ impl Decorator for ConnectForm {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         if self.fields.engine() != self.built_for {
             self.built_for = self.fields.engine();
             self.content = content(&self.fields);

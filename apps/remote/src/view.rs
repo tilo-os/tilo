@@ -95,7 +95,7 @@ pub(crate) fn list_actions(requests: &Requests, has_connections: bool) -> Vec<El
     let mut actions: Vec<Element> = vec![Box::new(search_button(SearchRequest::this_app()))];
     if has_connections {
         actions.push(Box::new(
-            Button::new("remote.connection.new", "New connection", None)
+            Button::new("remote.connection.new", "New connection")
                 .with_icon(Icon::Plus)
                 .on_click(queue(requests, Action::NewConnection)),
         ));
@@ -444,7 +444,7 @@ pub(crate) fn connection_form(
     let mut form = Form::new().section(machine_section(requests, fields, model));
     if let Some(id) = model.editing {
         form = form.with_actions(Actions::new(
-            Button::new("remote.form.delete", "Delete connection", None)
+            Button::new("remote.form.delete", "Delete connection")
                 .role(ButtonRole::Destructive)
                 .on_click(queue(requests, Action::RequestDelete(id))),
         ));
@@ -461,11 +461,10 @@ pub(crate) fn connection_form(
 pub(crate) fn form_actions(requests: &Requests) -> Vec<Element> {
     vec![
         Box::new(
-            Button::new("remote.form.cancel", "Cancel", None)
-                .on_click(queue(requests, Action::Back)),
+            Button::new("remote.form.cancel", "Cancel").on_click(queue(requests, Action::Back)),
         ),
         Box::new(
-            Button::new("remote.form.save", "Save", None)
+            Button::new("remote.form.save", "Save")
                 .role(ButtonRole::Primary)
                 .on_click(queue(requests, Action::SaveForm)),
         ),
@@ -519,7 +518,6 @@ pub(crate) fn session_actions(
                 } else {
                     "Fit to window"
                 },
-                None,
             )
             .on_click(queue(requests, Action::ToggleScale)),
         ));
@@ -529,7 +527,7 @@ pub(crate) fn session_actions(
         ));
     }
     actions.push(Box::new(
-        Button::new("remote.session.disconnect", "Disconnect", None)
+        Button::new("remote.session.disconnect", "Disconnect")
             .role(ButtonRole::Destructive)
             .on_click(queue(requests, Action::Disconnect)),
     ));
@@ -582,7 +580,7 @@ impl ui::widget::Decorator for Actionable {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut ui::widget::AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
         let done = self.inner.perform_action(action, state, path);

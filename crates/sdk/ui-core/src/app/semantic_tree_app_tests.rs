@@ -166,6 +166,10 @@ struct CounterCard {
     scoped_jobs: Vec<crate::invocation_scope::ResourceInvocationScope>,
     scoped_results: Vec<tilo_actions::InvocationUpdate>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
+    /// Bump the counter as part of every `ping`, as an effect's handler
+    /// submits an edit.
+    bump_after_ping: bool,
+    follow_ups: Vec<crate::widget::controls::AttributedControlInvocation>,
 }
 
 fn counter_resource(destructive: bool) -> Resource {
@@ -246,7 +250,7 @@ impl CounterCard {
         let resource = counter_resource(destructive);
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "bump").unwrap();
         Self {
-            button: Button::new("bump", "Bump", None).on_action(binding),
+            button: Button::new("bump", "Bump").on_action(binding),
             destructive,
             lazy_resource: None,
             directory_provider: None,
@@ -257,6 +261,8 @@ impl CounterCard {
             scoped_jobs: vec![],
             scoped_results: vec![],
             resource_result: None,
+            bump_after_ping: false,
+            follow_ups: vec![],
         }
     }
 
@@ -274,7 +280,7 @@ impl CounterCard {
 
     fn with_lazy_resource(resource: Resource) -> Self {
         Self {
-            button: Button::new("lazy-resource", "Lazy resource", None),
+            button: Button::new("lazy-resource", "Lazy resource"),
             destructive: false,
             lazy_resource: Some(resource),
             directory_provider: None,
@@ -285,6 +291,8 @@ impl CounterCard {
             scoped_jobs: vec![],
             scoped_results: vec![],
             resource_result: None,
+            bump_after_ping: false,
+            follow_ups: vec![],
         }
     }
 
@@ -301,10 +309,26 @@ impl CounterCard {
     }
 
     fn current_resource(&self, doc: &automerge::AutoCommit) -> Resource {
-        let resource = counter_resource_with_reset(
+        let mut resource = counter_resource_with_reset(
             self.destructive,
             self.post_bump_reset && counter_in_doc(doc) > 0,
         );
+        if self.bump_after_ping {
+            resource = resource.with_action(
+                ActionSpec::operation(
+                    "peek",
+                    "Peek at the counter",
+                    OperationKind::Effect,
+                    COUNTER_TYPE,
+                    &CounterAction::Bump,
+                )
+                .unwrap()
+                .with_contract(tilo_actions::ActionContract {
+                    permission: PermissionRequirement::Read,
+                    ..tilo_actions::ActionContract::default()
+                }),
+            );
+        }
         if self.async_bump {
             resource.with_action(
                 ActionSpec::operation(
@@ -326,16 +350,23 @@ impl CounterCard {
 impl Widget for CounterCard {
     crate::provides!(
         dyn crate::resources::PublishesResources,
-        dyn crate::search::capability::SearchSource
+        dyn crate::search::capability::SearchSource,
+        dyn crate::widget::controls::ActionControls
     );
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
-        let (s, p) = crate::doc::document(s, p);
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
+        let (s, p) = crate::doc::document_ref(s, p);
         self.button.sync(s, p);
+    }
+    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+        self.button.settle(edits, p);
+        let mut actions = crate::action_host::ActionHost::new();
         for scope in std::mem::take(&mut self.scoped_jobs) {
             let invocation = scope.invocation();
-            let result = scope.with_document_mutation(s, |doc| {
-                CounterAction::Bump.apply(doc).map_err(|e| e.to_string())
+            let result = scope.with_document_mutation(edits.document_mut(), |doc| {
+                actions
+                    .try_dispatch(doc, COUNTER_TYPE, &CounterAction::Bump)
+                    .map_err(|error| error.to_string())
             });
             self.scoped_results.push(match result {
                 Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
@@ -354,7 +385,9 @@ impl Widget for CounterCard {
             });
         }
         if let Some(invocation) = self.pending_bump.take() {
-            CounterAction::Bump.apply(s).unwrap();
+            actions
+                .try_dispatch(edits.document_mut(), COUNTER_TYPE, &CounterAction::Bump)
+                .unwrap();
             self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
@@ -403,12 +436,17 @@ impl Widget for CounterCard {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let (request, scope) = op.with_custody();
         if scope.is_none()
-            && let Some(started) = crate::widget::start_in_children(self, op, doc, path)?
+            && let Some(started) = crate::widget::start_in_children(
+                self,
+                op,
+                &mut crate::widget::Edits::lend(doc.document_mut()),
+                path,
+            )?
         {
             return Ok(Some(started));
         }
@@ -419,6 +457,15 @@ impl Widget for CounterCard {
                 None => self.pending_bump = Some(request.invocation),
             }
             return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+        }
+        if self.bump_after_ping && request.kind == tilo_actions::OperationKind::Effect {
+            self.follow_ups.push((
+                tilo_actions::ControlInvocation {
+                    address: tilo_actions::ActionAddress::new("test.counter", "bump"),
+                    arguments: serde_json::Map::new(),
+                },
+                Some(request.invocation),
+            ));
         }
         Ok(
             (request.kind == tilo_actions::OperationKind::Effect
@@ -452,6 +499,19 @@ impl Widget for CounterCard {
             self.resource_result.take()
         } else {
             None
+        }
+    }
+}
+
+impl crate::widget::controls::ActionControls for CounterCard {
+    fn take_attributed_control_invocation(
+        &mut self,
+    ) -> Option<crate::widget::controls::AttributedControlInvocation> {
+        if self.follow_ups.is_empty() {
+            self.take_control_invocation()
+                .map(|invocation| (invocation, None))
+        } else {
+            Some(self.follow_ups.remove(0))
         }
     }
 }
@@ -593,7 +653,7 @@ fn activate_bound_button(app: &mut App) {
     assert!(unsafe {
         (*pointer).perform_action(
             &crate::a11y::Action::Activate,
-            &mut app.state.doc,
+            &mut crate::widget::Edits::lend(&mut app.state.doc),
             &app.state.root,
         )
     });
@@ -764,7 +824,7 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert!(!unsafe {
             (*pointer).perform_action(
                 &crate::a11y::Action::Activate,
-                &mut app.state.doc,
+                &mut crate::widget::Edits::lend(&mut app.state.doc),
                 &app.state.root,
             )
         });
@@ -787,35 +847,6 @@ fn action_bound_controls_use_the_fresh_door_and_never_auto_confirm() {
         assert_eq!(counter(&app), 0);
         assert!(app.state.peek_last_undo().is_none());
         assert!(app.action_palette().is_some(), "confirmation UI is open");
-    }
-
-    // Case `action_bound_background_control_remains_pending_until_terminal_update`.
-    {
-        let resource =
-            crate::widget::resource_actions::resource("test.job", "Job", "run", "Run", true);
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
-        let button = Button::new("run", "Run", None).on_action(binding);
-        let root = crate::widget::resource_actions::background(Box::new(button), resource, |_| {
-            let (sender, receiver) = std::sync::mpsc::channel();
-            sender
-                .send(Ok(tilo_actions::ActionOutput::default()))
-                .unwrap();
-            Ok(receiver)
-        });
-        let mut app = App::new_with_controlled_inputs(State::new(), root);
-        app.init_layout();
-        activate_bound_button(&mut app);
-        assert_eq!(app.dispatch_control_invocations(), 1);
-        assert_eq!(
-            app.actions.local_invocations.len(),
-            1,
-            "Accepted is not success"
-        );
-        assert!(app.poll_directed_invocations());
-        assert!(
-            app.actions.local_invocations.is_empty(),
-            "terminal result closes the tracked local job"
-        );
     }
 
     // Case `confirmed_control_preserves_captured_arguments_through_palette_dispatch`.
@@ -1110,6 +1141,45 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
             ),
             "unexpected refusal: {error:?}"
         );
+    }
+
+    // Case `a_device_only_effect_runs_for_the_person_at_the_device_alone`.
+    {
+        /// A typed effect vocabulary as an app declares it.
+        #[derive(Clone, Debug, tilo_resource::Effect)]
+        #[effect(operation = "test.counter")]
+        enum Folder {
+            /// Copy a folder on this computer.
+            #[effect(device_only)]
+            CopyLocalFolder,
+            /// Count the copies.
+            Count,
+        }
+        let mut resource = Resource::new("test.folder", "test.folder", "Folder");
+        for spec in <Folder as tilo_resource::Effect>::specs() {
+            resource = resource.with_action(spec);
+        }
+        let mut app = lazy_app(resource);
+        let invoke = |app: &mut App, action: &str, actor: &str| {
+            app.invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new("test.folder", action),
+                    actor,
+                )
+                .broker_admitted(true)
+                .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+        };
+        assert!(matches!(
+            invoke(&mut app, "copy-local-folder", "person:guest"),
+            Err(tilo_actions::DoorError::Unavailable { ref code, .. }) if code == "local_device_only"
+        ));
+        assert!(
+            invoke(&mut app, "count", "person:guest").is_ok(),
+            "a collaborator still reaches the shared effects"
+        );
+        let me = app.collaboration.local_author.0.clone();
+        assert!(invoke(&mut app, "copy-local-folder", &me).is_ok());
     }
 
     // Case `directed_local_device_effect_cannot_run_for_a_remote_writer`.
@@ -1590,7 +1660,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             let button_id = format!("action-{id}");
             let captured = std::rc::Rc::clone(&captured);
             Box::new(
-                crate::widget::Button::new(&button_id, "Action", None).on_click(move || {
+                crate::widget::Button::new(&button_id, "Action").on_click(move || {
                     captured.set(captured.get().saturating_add(1));
                 }),
             )
@@ -1678,7 +1748,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
     {
         let presses = std::rc::Rc::new(std::cell::Cell::new(0_usize));
         let captured = std::rc::Rc::clone(&presses);
-        let button = Button::new("drive-me", "Drive me", None).on_click(move || {
+        let button = Button::new("drive-me", "Drive me").on_click(move || {
             captured.set(captured.get().saturating_add(1));
         });
         let mut app = App::new(State::new(), Box::new(button));
@@ -1695,6 +1765,143 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
                 .all(|action| action.id != "activate")
         }));
         assert_eq!(presses.get(), 0);
+    }
+}
+
+#[test]
+fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
+    let mut card = CounterCard::new();
+    card.bump_after_ping = true;
+    let mut app = App::new(State::new(), Box::new(card));
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    app.init_layout();
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        7,
+        invocation,
+        "test.counter".into(),
+        "ping".into(),
+        None,
+        "agent:Scribe",
+        None,
+    );
+    assert_eq!(counter(&app), 1, "the effect's edit was applied");
+    assert_eq!(
+        app.state
+            .peek_last_undo()
+            .and_then(|entry| entry.author.as_ref()),
+        Some(&crate::permissions::UserId("agent:Scribe".into())),
+        "by the effect's invoker, not the person at the device"
+    );
+    assert!(
+        app.actions.acting_for.is_empty(),
+        "the answered invocation runs for nobody"
+    );
+
+    // An effect a viewer may take lends them no write: its edit is refused.
+    app.invoke_published_action(
+        8,
+        tilo_actions::InvocationId::new(),
+        "test.counter".into(),
+        "peek".into(),
+        None,
+        "agent:Viewer",
+        None,
+    );
+    assert_eq!(counter(&app), 1, "the viewer's effect wrote nothing");
+    assert!(app.actions.acting_for.is_empty());
+
+    // An edit the app submits on its own is the local person's.
+    let local = app.collaboration.local_author.0.clone();
+    app.invoke_resource_action(ResourceInvocation::new(
+        &tilo_actions::ActionAddress::new("test.counter", "bump"),
+        &local,
+    ))
+    .expect("the local person bumps");
+    assert_eq!(counter(&app), 2);
+    assert_eq!(
+        app.state
+            .peek_last_undo()
+            .and_then(|entry| entry.author.as_ref()),
+        Some(&crate::permissions::UserId(local))
+    );
+}
+
+#[test]
+fn with_a_broker_an_effects_edit_is_admitted_there_for_its_invoker() {
+    let terminal = |sent: &[CollabRequest], invocation: tilo_actions::InvocationId| {
+        sent.iter().find_map(|request| match request {
+            CollabRequest::UpdateInvocation { update, .. }
+                if update.is_terminal() && update.invocation() == invocation =>
+            {
+                Some(update.clone())
+            }
+            _ => None,
+        })
+    };
+    for refused in [true, false] {
+        let mut card = CounterCard::new();
+        card.bump_after_ping = true;
+        let mut app = App::new(State::new(), Box::new(card));
+        app.action_registry_mut()
+            .register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        let sent = Rc::new(RefCell::new(vec![]));
+        app.collaboration.manager =
+            CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+        let invocation = tilo_actions::InvocationId::new();
+        app.invoke_published_action(
+            9,
+            invocation,
+            "test.counter".into(),
+            "ping".into(),
+            None,
+            "agent:Scribe",
+            None,
+        );
+        assert_eq!(
+            counter(&app),
+            0,
+            "nothing is applied before the broker admits it"
+        );
+        let follow_up = sent
+            .borrow()
+            .iter()
+            .find_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                } => Some(invoke.clone()),
+                _ => None,
+            })
+            .expect("the edit goes to the broker");
+        assert_eq!(follow_up.on_behalf_of, Some(invocation));
+        assert_eq!(follow_up.target.address.action, "bump");
+        assert!(
+            terminal(&sent.borrow(), invocation).is_none(),
+            "the effect answers once its edit is admitted"
+        );
+
+        let request_id = *app.actions.follow_ups.keys().next().unwrap();
+        let receipt = if refused {
+            Err("NotPermitted".to_owned())
+        } else {
+            Ok((
+                follow_up.invocation,
+                tilo_actions::InvocationUpdate::Accepted {
+                    invocation: follow_up.invocation,
+                },
+            ))
+        };
+        assert!(app.settle_follow_up(request_id, &receipt));
+        match terminal(&sent.borrow(), invocation) {
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) if refused => {
+                assert_eq!(error.code, "permission_denied");
+            }
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. }) if !refused => {}
+            other => panic!("unexpected answer: {other:?}"),
+        }
+        assert!(app.actions.acting_for.is_empty());
     }
 }
 

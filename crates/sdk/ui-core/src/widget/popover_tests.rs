@@ -75,7 +75,7 @@ fn dispatch<C: Widget + 'static>(p: &mut Popover<C>, event: &WindowEvent) -> boo
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: &mut doc,
+            state: crate::widget::Edits::lend(&mut doc),
             path: &root,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -509,7 +509,7 @@ fn a_hosted_popover_lays_its_content_out_in_the_window_tree() {
 #[test]
 fn a_popover_button_opens_its_popover_at_its_own_rect() {
     use crate::headless::Framed;
-    let button = crate::widget::Button::new("filters", "Filters", None).with_popover(Fixed {
+    let button = crate::widget::Button::new("filters", "Filters").with_popover(Fixed {
         rect: Rect::ZERO,
         w: 160.0,
         h: 60.0,

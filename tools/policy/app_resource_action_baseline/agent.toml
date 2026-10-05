@@ -1,5 +1,0 @@
-# Audited ceilings of apps/agent (tools/policy/check_app_resource_action_contract.py).
-# Each count may only go down; the target is an empty file.
-
-[ratchets.widget_owned_document]
-"apps/agent/src/apply.rs" = 2

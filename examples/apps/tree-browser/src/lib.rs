@@ -138,7 +138,7 @@ fn detail_pane(cx: &ViewCx<Notebook>, id: u64) -> Element {
         .with_placeholder("tree-notes-placeholder")
         .multiline(true);
     let share = cx.actions().bind_invocation(
-        Button::new("tree-share", "tree-share", None),
+        Button::new("tree-share", "tree-share"),
         Notebook::SHARE.with(id),
     );
     Box::new(ui::column![

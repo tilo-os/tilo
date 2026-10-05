@@ -60,7 +60,7 @@ fn empty_revealed_secret_preedit_protects_the_production_frame() {
         &mut EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::from(ModifiersState::empty()),
-            state: &mut state.doc,
+            state: crate::widget::Edits::lend(&mut state.doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,

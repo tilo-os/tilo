@@ -432,6 +432,30 @@ impl HistoryHost {
             .find(|source| source.scope() == key)
             .expect("validated scope")
     }
+    /// The checked-file scope whose content asked to show a file's history
+    /// while another scope is shown: opening a file's history from the app
+    /// (its History command on a selected file) moves to that file's scope.
+    fn file_scope_asking_to_open(&self) -> Option<usize> {
+        if matches!(
+            self.source(),
+            HistorySourceRegistration::CheckedFiles { .. }
+        ) {
+            return None;
+        }
+        self.registration
+            .definition
+            .scopes
+            .iter()
+            .position(|scope| {
+                self.registration.sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        HistorySourceRegistration::CheckedFiles { scope: key, source }
+                            if *key == scope.key && source.wants_open()
+                    )
+                })
+            })
+    }
     pub(crate) fn validate(&self) -> Result<(), HistoryRegistrationError> {
         if self.invalid_owner {
             return Err(HistoryRegistrationError::UnsupportedOwner);
@@ -841,7 +865,7 @@ impl HistoryHost {
             if widget.test_id() == Some(id) {
                 return widget.perform_action(
                     &crate::a11y::Action::Activate,
-                    &mut AutoCommit::new(),
+                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
                 );
             }
@@ -1009,6 +1033,9 @@ impl HistoryHost {
         if self.assets.has_results() {
             return true;
         }
+        if self.file_scope_asking_to_open().is_some() {
+            return true;
+        }
         if let HistorySourceRegistration::CheckedFiles { source, .. } = self.source()
             && (source.target().map(|target| target.binding) != self.observed_file_binding
                 || source.wants_open()
@@ -1091,6 +1118,9 @@ impl HistoryHost {
             changed = true;
         }
         let requested = self.requested_entry.take().filter(|_| self.open);
+        if let Some(scope) = self.file_scope_asking_to_open() {
+            self.commands.borrow_mut().push_back(Command::Scope(scope));
+        }
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
             // These callbacks were produced by the superseded presentation.
@@ -1299,7 +1329,7 @@ impl HistoryHost {
     }
     fn command_button(&self, id: &str, label: &str, command: Command) -> Button {
         let queue = self.commands.clone();
-        Button::new(id, label, None).on_click(move || queue.borrow_mut().push_back(command))
+        Button::new(id, label).on_click(move || queue.borrow_mut().push_back(command))
     }
     fn preview_page_toolbar(&self, mut toolbar: Column) -> Column {
         if let Some(preview) = &self.canvas().preview {
@@ -1436,7 +1466,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None).on_click(move || callback.invoke()),
+                            Button::new(&id, label).on_click(move || callback.invoke()),
                         ));
                     } else {
                         let command =
@@ -1448,7 +1478,7 @@ impl HistoryHost {
                         self.pending_control_callbacks
                             .insert(id.clone(), callback.clone());
                         row = row.push(Box::new(
-                            Button::new(&id, label, None).on_click(move || callback.invoke()),
+                            Button::new(&id, label).on_click(move || callback.invoke()),
                         ));
                     }
                     let commands = self.pending_controls.commands();
@@ -1462,7 +1492,7 @@ impl HistoryHost {
                     self.pending_control_callbacks
                         .insert(cancel_id.clone(), callback.clone());
                     row = row.push(Box::new(
-                        Button::new(&cancel_id, "history-mode-cancel", None)
+                        Button::new(&cancel_id, "history-mode-cancel")
                             .on_click(move || callback.invoke()),
                     ));
                 }

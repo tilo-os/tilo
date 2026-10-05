@@ -6,8 +6,9 @@
 //! CRDT projection: it syncs between that user's devices but is not a shared
 //! collaborator feed.
 //!
-//! Colours are never stored: art that has not loaded is the toolkit's
-//! generated placeholder, so the model stays theme-agnostic.
+//! Colours are never stored: thumbnails derive a deterministic gradient
+//! from a seed string at draw time (`util::seed_gradient`) so the model
+//! stays theme-agnostic and the OS keeps control of the palette.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -68,28 +69,31 @@ impl Category {
         Category::ALL.into_iter().find(|c| c.api_key() == s)
     }
 
-    /// The catalogue key naming this kind of segment.
-    fn message_key(self) -> &'static str {
+    /// Short human label for the seek bar legend + settings rows.
+    pub fn label(self) -> &'static str {
         match self {
-            Category::Sponsor => "tube-segment-sponsor",
-            Category::SelfPromo => "tube-segment-selfpromo",
-            Category::Interaction => "tube-segment-interaction",
-            Category::Intro => "tube-segment-intro",
-            Category::Outro => "tube-segment-outro",
-            Category::Preview => "tube-segment-preview",
-            Category::MusicOfftopic => "tube-segment-music-offtopic",
-            Category::Filler => "tube-segment-filler",
+            Category::Sponsor => "Sponsor",
+            Category::SelfPromo => "Self-promo",
+            Category::Interaction => "Interaction reminder",
+            Category::Intro => "Intermission / intro",
+            Category::Outro => "Endcards / outro",
+            Category::Preview => "Preview / recap",
+            Category::MusicOfftopic => "Non-music section",
+            Category::Filler => "Filler tangent",
         }
     }
 
-    /// Short human label for the seek bar legend + settings rows.
-    pub fn label(self) -> String {
-        crate::i18n::t(self.message_key())
-    }
-
-    /// One sentence on what this kind of segment covers.
-    pub fn blurb(self) -> String {
-        crate::i18n::t(&format!("{}-about", self.message_key()))
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Category::Sponsor => "Paid promotion, paid referrals and direct advertisements.",
+            Category::SelfPromo => "Unpaid/self promotion, merch, donations, charity.",
+            Category::Interaction => "\"Like and subscribe\" reminders without other content.",
+            Category::Intro => "An interval without actual content — pause, animation, intro.",
+            Category::Outro => "Credits or when the video is over — endcards and outros.",
+            Category::Preview => "Quick recap of previous episodes or a preview of what's coming.",
+            Category::MusicOfftopic => "Non-music sections in a music video — for music listening.",
+            Category::Filler => "Tangential scenes added only to lengthen the video.",
+        }
     }
 
     /// The official `SponsorBlock` colour identity (RGB), kept here so the
@@ -126,12 +130,27 @@ pub enum SkipMode {
 
 impl SkipMode {
     /// Short label for the settings mode selector.
-    pub fn label(self) -> String {
-        crate::i18n::t(match self {
-            SkipMode::Skip => "tube-mode-skip",
-            SkipMode::Show => "tube-mode-show",
-            SkipMode::Disabled => "tube-mode-off",
-        })
+    pub fn label(self) -> &'static str {
+        match self {
+            SkipMode::Skip => "Auto-skip",
+            SkipMode::Show => "Show",
+            SkipMode::Disabled => "Off",
+        }
+    }
+
+    /// The stable name an effect names this mode by.
+    pub fn key(self) -> &'static str {
+        match self {
+            SkipMode::Skip => "skip",
+            SkipMode::Show => "show",
+            SkipMode::Disabled => "disabled",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled]
+            .into_iter()
+            .find(|mode| mode.key() == key)
     }
 
     /// Cycle order for the settings selector: Auto-skip → Show → Off → …
@@ -206,6 +225,90 @@ pub struct Playlist {
     /// Ordered ids of the playlist's videos (as many as the backend returned).
     #[serde(default)]
     pub video_ids: Vec<VideoId>,
+}
+
+/// The three result kinds Tube's search can surface, used both as the type
+/// filter and to tag a search result row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchType {
+    Video,
+    Playlist,
+    Creator,
+}
+
+impl SearchType {
+    pub const ALL: [SearchType; 3] = [SearchType::Video, SearchType::Playlist, SearchType::Creator];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchType::Video => "Video",
+            SearchType::Playlist => "Playlist",
+            SearchType::Creator => "Creator",
+        }
+    }
+}
+
+/// Multi-select type filter for the search results. All three types are shown
+/// by default; the *first* click on any chip narrows to just that type
+/// (deselecting the others), and subsequent clicks toggle individual chips.
+/// Toggling everything off is treated as "show all" so the results never dead-end.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is an independent, orthogonal filter chip toggle (video/playlist/ \
+              creator), not a state machine"
+)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchTypeFilter {
+    pub video: bool,
+    pub playlist: bool,
+    pub creator: bool,
+    /// True until the user has interacted; the first interaction is the
+    /// "narrow to just this type" click.
+    pub pristine: bool,
+}
+
+impl Default for SearchTypeFilter {
+    fn default() -> Self {
+        Self {
+            video: true,
+            playlist: true,
+            creator: true,
+            pristine: true,
+        }
+    }
+}
+
+impl SearchTypeFilter {
+    /// Whether type `t` is currently selected (and thus its results shown + its
+    /// chip highlighted).
+    pub fn shows(&self, t: SearchType) -> bool {
+        match t {
+            SearchType::Video => self.video,
+            SearchType::Playlist => self.playlist,
+            SearchType::Creator => self.creator,
+        }
+    }
+
+    /// Apply a click on the chip for type `t`. The first click narrows to just
+    /// `t`; later clicks toggle `t`. If a toggle would leave nothing selected,
+    /// revert to the all-selected (pristine) default.
+    pub fn click(&mut self, t: SearchType) {
+        if self.pristine {
+            self.video = t == SearchType::Video;
+            self.playlist = t == SearchType::Playlist;
+            self.creator = t == SearchType::Creator;
+            self.pristine = false;
+        } else {
+            match t {
+                SearchType::Video => self.video = !self.video,
+                SearchType::Playlist => self.playlist = !self.playlist,
+                SearchType::Creator => self.creator = !self.creator,
+            }
+            if !self.video && !self.playlist && !self.creator {
+                *self = SearchTypeFilter::default();
+            }
+        }
+    }
 }
 
 /// A channel / uploader.
@@ -289,7 +392,10 @@ impl Video {
     }
 }
 
-/// User-controlled settings. Lives in the CRDT.
+/// How this person likes Tube to play: `SponsorBlock`, `DeArrow`, dislike
+/// counts, autoplay, comments and the preferred quality. A personal setting
+/// that follows them to every device and that collaborators on a shared
+/// library never see.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, user-facing setting toggle, not a state machine"
@@ -321,6 +427,10 @@ pub struct Settings {
 /// of our flags want to default *on* when absent from older persisted state).
 fn default_true() -> bool {
     true
+}
+
+impl ui::storage::SettingsSchema for Settings {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Personal;
 }
 
 impl Default for Settings {
@@ -400,9 +510,9 @@ impl Settings {
     }
 }
 
-/// Where the catalogue currently on screen came from. Drives the header's
-/// status badge ("Offline", "Connecting"), shown whenever the catalogue is not
-/// live `YouTube` data.
+/// Where the catalogue currently on screen came from. Drives the top-bar
+/// status pill ("Live" vs "Sample") so the user always knows whether they are
+/// looking at real `YouTube` data or the bundled offline sample.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DataSource {
     /// True once a live backend has returned data this session.
@@ -433,6 +543,7 @@ pub enum Route {
     Watch(VideoId),
     Channel(ChannelId),
     Playlist(PlaylistId),
+    Search(String),
     History,
     Settings,
 }
@@ -474,22 +585,19 @@ pub struct TubeModel {
     /// silently reordering another client's queue.
     #[serde(default)]
     pub queue: Vec<VideoId>,
-    /// Stable signed-in profile scope for the owner-local history store. The
-    /// host supplies this from the account identity; the offline default is a
-    /// deterministic local profile for hermetic tests and screenshots.
-    #[serde(default = "default_history_owner")]
-    pub history_owner: String,
-    /// Ordered visible projection of the separate owner-local history document,
-    /// never the source of persistence or a subtree of shared collaboration.
-    /// IDs without loaded metadata remain here so a refresh
-    /// cannot erase durable history membership.
+    /// The person's watch history, newest first, as their own record holds
+    /// it ([`crate::history::WatchHistory`]); never part of the shared library.
+    /// Ids without loaded metadata stay, so a refresh cannot drop history.
     pub history: Vec<VideoId>,
-    /// A local-only recovery banner shown when the durable owner history store
-    /// was preserved but could not be opened or written. Never synchronised.
+    /// Shown when the watch history could not be stored.
     #[serde(default)]
-    pub history_recovery_notice: Option<String>,
+    pub history_notice: Option<String>,
     pub settings: Settings,
     pub route: Route,
+    /// Last submitted, device-local search query. The editable top-bar buffer
+    /// is a toolkit [`ui::LocalState`] owned by `TubeApp`; it is copied here
+    /// only when the user submits so this route can render independently.
+    pub search_query: String,
     /// Playhead position (seconds) on the current watch page.
     pub playhead: f64,
     pub playing: bool,
@@ -504,19 +612,18 @@ pub struct TubeModel {
     #[serde(default)]
     pub comment_likes: BTreeMap<String, bool>,
     /// Transient user-facing notices — auto-skip confirmations, worker status,
-    /// "link copied" acknowledgements — shown as toasts. Newest first, capped.
+    /// "link copied" acknowledgements — rendered as a toast stack on the watch
+    /// page. Newest first, capped.
     #[serde(default)]
     pub notices: Vec<String>,
-    /// How many notices have ever been pushed, so the root can toast each new
-    /// one exactly once.
-    #[serde(default)]
-    pub notice_count: u64,
     /// Provenance of the on-screen catalogue (sample vs live).
     #[serde(default)]
     pub data_source: DataSource,
-    /// The query whose live results are held in `search_hits`, so search
-    /// answers with the backend's exact ordered result set (which a local
-    /// substring filter would otherwise mangle for multi-word queries).
+    /// The query whose live results are held in `search_hits`. Lets the
+    /// search screen render the backend's exact ordered result set (which a
+    /// local substring filter would otherwise mangle for multi-word queries)
+    /// while still falling back to the local filter when there are no live
+    /// hits.
     #[serde(default)]
     pub search_hits_query: String,
     /// Ordered video ids returned by the live backend for `search_hits_query`.
@@ -529,6 +636,9 @@ pub struct TubeModel {
     /// `search_hits_query`.
     #[serde(default)]
     pub search_channel_hits: Vec<ChannelId>,
+    /// The active multi-select type filter on the search results.
+    #[serde(default)]
+    pub search_type_filter: SearchTypeFilter,
     /// The video whose live "up next" list is held in `related_hits`.
     #[serde(default)]
     pub related_of: VideoId,
@@ -555,6 +665,14 @@ pub struct TubeModel {
     /// retryable, not evidence that the network is unavailable.
     #[serde(default)]
     pub feed_error: Option<String>,
+    /// Whether a search is in flight, so the results screen shows a skeleton
+    /// instead of a premature "No results".
+    #[serde(default)]
+    pub search_loading: bool,
+    /// A user-legible reason the newest search could not be queued. Cleared on
+    /// each fresh submission and on a result response.
+    #[serde(default)]
+    pub search_error: Option<String>,
 }
 
 impl Default for TubeModel {
@@ -565,28 +683,30 @@ impl Default for TubeModel {
             playlists: Vec::new(),
             subscriptions: Vec::new(),
             queue: Vec::new(),
-            history_owner: default_history_owner(),
             history: Vec::new(),
-            history_recovery_notice: None,
+            history_notice: None,
             settings: Settings::default(),
             route: Route::Home,
+            search_query: String::new(),
             playhead: 0.0,
             playing: false,
             liked: Vec::new(),
             comment_likes: BTreeMap::new(),
             notices: Vec::new(),
-            notice_count: 0,
             data_source: DataSource::default(),
             search_hits_query: String::new(),
             search_hits: Vec::new(),
             search_playlist_hits: Vec::new(),
             search_channel_hits: Vec::new(),
+            search_type_filter: SearchTypeFilter::default(),
             related_of: String::new(),
             related_hits: Vec::new(),
             dislikes: BTreeMap::new(),
             dearrow_thumb_url: BTreeMap::new(),
             feed_loading: false,
             feed_error: None,
+            search_loading: false,
+            search_error: None,
         }
     }
 }
@@ -662,22 +782,6 @@ impl TubeModel {
         self.subscription_key(id).is_some()
     }
 
-    pub fn toggle_subscribe(&mut self, id: &str) {
-        if let Some(pos) = self.subscriptions.iter().position(|subscription| {
-            subscription == id
-                || self.channel(id).is_some_and(|channel| {
-                    subscription == &channel.handle
-                        || subscription
-                            .strip_prefix("https://youtube.com/")
-                            .is_some_and(|handle| handle == channel.handle.trim_start_matches('/'))
-                })
-        }) {
-            self.subscriptions.remove(pos);
-        } else {
-            self.subscriptions.push(id.to_string());
-        }
-    }
-
     pub fn is_liked(&self, id: &str) -> bool {
         self.liked.iter().any(|l| l == id)
     }
@@ -685,14 +789,6 @@ impl TubeModel {
     /// Whether a video is a member of the shared watch queue.
     pub fn is_queued(&self, id: &str) -> bool {
         self.queue.iter().any(|queued| queued == id)
-    }
-
-    pub fn toggle_like(&mut self, id: &str) {
-        if let Some(pos) = self.liked.iter().position(|l| l == id) {
-            self.liked.remove(pos);
-        } else {
-            self.liked.push(id.to_string());
-        }
     }
 
     /// The like count to display for a video: the base count plus one while the
@@ -721,33 +817,11 @@ impl TubeModel {
         &v.thumbnail_url
     }
 
-    /// Record a transient notice (newest first, capped); the root shows each
-    /// new one as a toast.
+    /// Push a transient notice onto the front of the toast stack (newest first,
+    /// capped so it stays a compact strip).
     pub fn push_notice(&mut self, msg: impl Into<String>) {
         self.notices.insert(0, msg.into());
         self.notices.truncate(8);
-        self.notice_count = self.notice_count.saturating_add(1);
-    }
-
-    /// Update the in-memory projection after an already-dispatched canonical
-    /// history action. Persistence belongs to the owner-local action store;
-    /// retaining this helper keeps the opened card responsive before the next
-    /// document reconciliation pass.
-    pub fn record_watch(&mut self, id: &str) {
-        self.history.retain(|h| h != id);
-        self.history.insert(0, id.to_string());
-        self.history.truncate(50);
-    }
-
-    /// Replace the visible ordered projection of the owner-local history document.
-    /// Entries are sorted by the authored watch timestamp (newest first) with
-    /// the stable video id as a deterministic concurrent tie-breaker.
-    pub fn set_history_projection(&mut self, entries: BTreeMap<VideoId, u64>) {
-        let mut ordered = entries.into_iter().collect::<Vec<_>>();
-        ordered.sort_by(|(left_id, left_at), (right_id, right_at)| {
-            right_at.cmp(left_at).then_with(|| left_id.cmp(right_id))
-        });
-        self.history = ordered.into_iter().map(|(id, _)| id).take(50).collect();
     }
 
     /// Videos uploaded by channels the user is subscribed to.
@@ -1003,10 +1077,6 @@ impl TubeModel {
     }
 }
 
-fn default_history_owner() -> String {
-    "profile:local".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1081,6 +1151,54 @@ mod tests {
             assert_eq!(v.display_title(false), "ORIGINAL");
             v.dearrow_title = None;
             assert_eq!(v.display_title(true), "ORIGINAL");
+        }
+    }
+
+    #[test]
+    fn search_type_filter_narrows_toggles_and_reverts() {
+        // Case `search_type_filter_defaults_all_selected`.
+        {
+            let f = SearchTypeFilter::default();
+            assert!(f.shows(SearchType::Video));
+            assert!(f.shows(SearchType::Playlist));
+            assert!(f.shows(SearchType::Creator));
+            assert!(f.pristine);
+        }
+        // Case `search_type_filter_first_click_narrows_to_that_type`.
+        {
+            let mut f = SearchTypeFilter::default();
+            f.click(SearchType::Playlist);
+            assert!(
+                !f.shows(SearchType::Video),
+                "first click deselects the others"
+            );
+            assert!(
+                f.shows(SearchType::Playlist),
+                "first click selects the clicked type"
+            );
+            assert!(!f.shows(SearchType::Creator));
+            assert!(!f.pristine);
+        }
+        // Case `search_type_filter_further_clicks_toggle_individually`.
+        {
+            let mut f = SearchTypeFilter::default();
+            f.click(SearchType::Video); // narrow to Video only
+            f.click(SearchType::Creator); // now Video + Creator
+            assert!(f.shows(SearchType::Video));
+            assert!(f.shows(SearchType::Creator));
+            assert!(!f.shows(SearchType::Playlist));
+            f.click(SearchType::Video); // toggle Video off → Creator only
+            assert!(!f.shows(SearchType::Video));
+            assert!(f.shows(SearchType::Creator));
+        }
+        // Case `search_type_filter_toggling_all_off_reverts_to_all`.
+        {
+            let mut f = SearchTypeFilter::default();
+            f.click(SearchType::Video); // Video only
+            f.click(SearchType::Video); // would be empty → revert to all
+            assert!(f.shows(SearchType::Video));
+            assert!(f.shows(SearchType::Playlist));
+            assert!(f.shows(SearchType::Creator));
         }
     }
 
@@ -1235,34 +1353,13 @@ mod tests {
     }
 
     #[test]
-    fn subscriptions_and_history_toggle_and_dedup() {
-        // Case `subscribe_toggles`.
-        {
-            let mut m = TubeModel::default();
-            m.toggle_subscribe("c1");
-            assert!(m.is_subscribed("c1"));
-            m.toggle_subscribe("c1");
-            assert!(!m.is_subscribed("c1"));
-        }
-        // Case `imported_url_subscription_toggles_the_same_durable_entry`.
-        {
-            let mut m = TubeModel::default();
-            m.channels.push(chan("UC_A", "Creator", ""));
-            m.subscriptions.push("https://youtube.com/UC_A".into());
-
-            assert!(m.is_subscribed("UC_A"));
-            assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
-            m.toggle_subscribe("UC_A");
-            assert!(m.subscriptions.is_empty());
-        }
-        // Case `history_dedups_and_fronts`.
-        {
-            let mut m = TubeModel::default();
-            m.record_watch("a");
-            m.record_watch("b");
-            m.record_watch("a");
-            assert_eq!(m.history, vec!["a", "b"]);
-        }
+    fn an_imported_url_subscription_is_the_creators_subscription() {
+        let mut m = TubeModel::default();
+        m.channels.push(chan("UC_A", "Creator", ""));
+        m.subscriptions.push("https://youtube.com/UC_A".into());
+        assert!(m.is_subscribed("UC_A"));
+        assert_eq!(m.subscription_key("UC_A"), Some("https://youtube.com/UC_A"));
+        assert!(!m.is_subscribed("UC_B"));
     }
 
     fn sample_video() -> Video {

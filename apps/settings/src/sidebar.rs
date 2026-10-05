@@ -15,20 +15,42 @@ use crate::categories::{Category, Section};
 
 /// The id of the navigation list, for tests and inspection.
 pub const NAV_ID: &str = "settings.nav";
+pub const SIDEBAR_WIDTH: f64 = ui::tokens::Metrics::BASE.sidebar_width as f64;
+pub const SHELL_FIELD_INSET: f32 = ui::tokens::Spacing::BASE.s3;
+pub fn width_for_text_scale(scale: f32) -> f64 {
+    SIDEBAR_WIDTH * f64::from(scale.clamp(0.5, 4.0))
+}
 
 /// Build the sectioned category list with `selected` chosen. Choosing a row
 /// writes its category to `selection_request`.
-pub fn build(selected: Category, selection_request: &ui::LocalState<Option<Category>>) -> NavList {
+pub fn build(
+    cx: &crate::host::PaneCx,
+    selected: Category,
+    query: &str,
+    selection_request: &ui::LocalState<Option<Category>>,
+) -> Box<dyn ui::Widget> {
     let request = selection_request.clone();
-    NavList::new(sections())
+    let bindings = Category::ALL
+        .iter()
+        .filter_map(|category| {
+            cx.invocation_binding(crate::effects::NavigationEffect::OpenPane {
+                pane: category.slug().to_owned(),
+            })
+            .map(|binding| (category.slug().to_owned(), binding))
+        })
+        .collect::<Vec<_>>();
+    let mut list = NavList::new(sections())
         .with_id(NAV_ID)
         .with_accessible_name(crate::i18n::t("settings-nav-name"))
         .selected(selected.slug())
+        .selection_actions(bindings)
         .on_select(move |id| {
             if let Some(category) = Category::from_slug(&id) {
                 request.set(Some(category));
             }
-        })
+        });
+    list.set_filter(query);
+    Box::new(list)
 }
 
 /// The sections of the list, in render order.
@@ -87,7 +109,14 @@ mod tests {
     #[test]
     fn choosing_a_row_publishes_a_local_request_without_touching_the_document() {
         let request = ui::LocalState::new(None);
-        let mut list = build(Category::Network, &request);
+        let cx =
+            crate::host::PaneCx::detached(ui::storage::AppStorage::for_app("so.tilo.settings"));
+        let mut widget = build(&cx, Category::Network, "", &request);
+        let list = widget
+            .as_any_mut()
+            .unwrap()
+            .downcast_mut::<ui::widget::NavList>()
+            .unwrap();
         assert_eq!(list.selected_id().as_deref(), Some("network"));
         list.set_selected(Some("about"));
         assert_eq!(list.selected_id().as_deref(), Some("about"));

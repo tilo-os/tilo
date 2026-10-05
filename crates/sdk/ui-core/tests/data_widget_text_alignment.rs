@@ -409,11 +409,8 @@ fn legacy_cards() -> Element {
             )))
             .push(Box::new(
                 Section::new(vec![Box::new(Text::new("No email accounts yet."))]).with_header(
-                    SectionHeader::heading("Email").action(Button::new(
-                        "add-account",
-                        "Add account",
-                        None,
-                    )),
+                    SectionHeader::heading("Email")
+                        .action(Button::new("add-account", "Add account")),
                 ),
             )),
     )

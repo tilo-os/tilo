@@ -106,12 +106,12 @@ impl ui::widget::Decorator for HeaderButton {
         &mut self.button
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.follow();
         Widget::sync(&mut self.button, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.follow();
         Widget::update(&mut self.button, state, path)
     }
@@ -163,7 +163,7 @@ impl ui::widget::Decorator for ScaleField {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = Widget::perform_action(&mut self.input, action, state, path);
@@ -182,8 +182,8 @@ pub(crate) fn reader_settings_panel(settings: ReadSettings, requests: &Requests)
     let scale = ScaleField {
         input: NumberInput::new(settings.percent())
             .with_range(
-                f64::from(ReadSettings::SCALE_MIN) * 100.0,
-                f64::from(ReadSettings::SCALE_MAX) * 100.0,
+                f64::from(ReadSettings::FONT_MIN) * 100.0,
+                f64::from(ReadSettings::FONT_MAX) * 100.0,
             )
             .with_step(10.0)
             .with_suffix("%")

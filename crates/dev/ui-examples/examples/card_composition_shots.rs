@@ -14,16 +14,16 @@ fn cards() -> Element {
     Box::new(CardGrid::new(vec![
         Box::new(Card::new(Box::new(Text::new("A focused terminal for everyday work.")))
             .with_title("Terminal")
-            .with_footer(Actions::new(Button::new("terminal-open", "Open", None).role(ButtonRole::Primary)))),
+            .with_footer(Actions::new(Button::new("terminal-open", "Open").role(ButtonRole::Primary)))),
         Box::new(Card::new(Box::new(Text::new("Keep your documents and projects together. Search shared folders, review recent changes, and continue working with your team across connected devices.")))
             .with_title("Workspace")
-            .with_footer(Actions::new(Button::new("workspace-install", "Install workspace", None).role(ButtonRole::Primary))
-                .secondary(Button::new("workspace-details", "Details", None)))),
+            .with_footer(Actions::new(Button::new("workspace-install", "Install workspace").role(ButtonRole::Primary))
+                .secondary(Button::new("workspace-details", "Details")))),
         Box::new(Card::new(Box::new(Text::new("Your connections are ready. Refresh remote services to discover updates and sync changes from your other devices.")))
             .with_title("Remote connections")
-            .with_footer(Actions::new(Button::new("remote-refresh", "Refresh all connections", None)
+            .with_footer(Actions::new(Button::new("remote-refresh", "Refresh all connections")
                 .with_icon(tilo_ui::icons::Icon::Refresh).role(ButtonRole::Primary))
-                .secondary(Button::new("remote-details", "View details", None)))),
+                .secondary(Button::new("remote-details", "View details")))),
     ]))
 }
 

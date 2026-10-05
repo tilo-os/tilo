@@ -462,7 +462,7 @@ impl Filterable for JournalPane {
 impl Widget for JournalPane {
     ui::provides!(dyn Filterable);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt();
         for child in self.children_mut() {
             child.sync(state, path);
@@ -678,7 +678,7 @@ impl Widget for JournalPane {
         self.children().iter().any(|c| c.wants_pointer_capture())
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in self.children_mut() {
             changed |= child.update(state, path);

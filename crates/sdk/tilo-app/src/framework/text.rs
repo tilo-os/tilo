@@ -29,7 +29,6 @@ pub trait EditsText: Widget {
 impl EditsText for TextInput {
     fn show_text(&mut self, obj: ObjId) {
         self.bind_text(obj);
-        self.set_direct_crdt_writes(false);
     }
     fn hide_text(&mut self) {
         self.clear_text_binding();
@@ -48,7 +47,6 @@ impl EditsText for TextInput {
 impl EditsText for CodeEditor {
     fn show_text(&mut self, obj: ObjId) {
         self.bind_text(obj);
-        self.set_direct_crdt_writes(false);
     }
     fn hide_text(&mut self) {
         self.clear_text_binding();
@@ -147,7 +145,7 @@ impl<W: EditsText> TextControl<W> {
 
     /// Bind the text `locate` finds now in `doc`: for a host outside the
     /// widget tree, before it reads the control each frame.
-    pub fn pull(&mut self, doc: &mut Doc) {
+    pub fn pull(&mut self, doc: &Doc) {
         self.follow(doc);
         self.control.sync(doc, &ui_core::automerge::ROOT);
         self.stored = self.control.shown_text().to_owned();
@@ -155,7 +153,7 @@ impl<W: EditsText> TextControl<W> {
 
     /// Submit the control's edit since the last call as one splice: for a
     /// host outside the widget tree, after it handed the control an event.
-    pub fn submit(&mut self, doc: &mut Doc) {
+    pub fn submit(&mut self, edits: &mut ui_core::widget::Edits<'_>) {
         let Some(edited) = self.control.take_edited() else {
             return;
         };
@@ -163,7 +161,7 @@ impl<W: EditsText> TextControl<W> {
             return;
         };
         let applied = match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, &edit),
+            Some(dispatch) => dispatch.apply_now(edits, &edit),
             None => Err(tilo_actions::ActionError::Refused(
                 "this text is open to view only".into(),
             )),
@@ -195,7 +193,7 @@ impl<W: EditsText> TextControl<W> {
 
 // The control's layout, drawing and input are its own; the wrapper binds it
 // to the text before each sync and turns its edits into splices after.
-impl<W: EditsText> Decorator for TextControl<W> {
+impl<W: EditsText + 'static> Decorator for TextControl<W> {
     type Inner = W;
 
     fn inner(&self) -> &W {
@@ -206,9 +204,9 @@ impl<W: EditsText> Decorator for TextControl<W> {
         &mut self.control
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, _) = ui_core::doc::document(state, path);
+            let (doc, _) = ui_core::doc::document_ref(state, path);
             self.follow(doc);
         }
         self.control.sync(state, path);
@@ -217,17 +215,17 @@ impl<W: EditsText> Decorator for TextControl<W> {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.control.handle_event(event, ctx);
-        self.submit(ctx.state);
+        self.submit(&mut ctx.edits());
     }
 
     fn perform_action(
         &mut self,
         action: &ui_core::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self.control.perform_action(action, state, path);
-        self.submit(ui_core::doc::document(state, path).0);
+        self.submit(state);
         handled
     }
 
@@ -235,13 +233,13 @@ impl<W: EditsText> Decorator for TextControl<W> {
         &mut self,
         action: &ui_core::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self
             .control
             .perform_action_at(action, key_path, state, path);
-        self.submit(ui_core::doc::document(state, path).0);
+        self.submit(state);
         handled
     }
 
@@ -249,13 +247,13 @@ impl<W: EditsText> Decorator for TextControl<W> {
         &mut self,
         target: &str,
         action: &ui_core::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui_core::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self
             .control
             .perform_semantic_action(target, action, state, path);
-        self.submit(ui_core::doc::document(state, path).0);
+        self.submit(state);
         handled
     }
 }

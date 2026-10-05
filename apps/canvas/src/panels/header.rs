@@ -242,7 +242,7 @@ impl Command {
     fn button(self, cx: &ViewCx<ArtworkResource>, labelled: bool) -> Element {
         let label = self.label();
         let button = if labelled {
-            Button::new(&self.id, &label, None)
+            Button::new(&self.id, &label)
                 .with_icon(self.icon)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
@@ -679,7 +679,7 @@ const NOTICE_LETTERS: usize = 44;
 fn sheet_button(tools: &Tools, id: &str, icon: Icon, which: Sheet) -> Button {
     let sheet = tools.sheet.clone();
     let name = ui::i18n::I18nManager::lookup_plain(id);
-    Button::new(id, "", None)
+    Button::new(id, "")
         .with_icon(icon)
         .role(ui::widget::ButtonRole::Plain)
         .with_accessible_name(&name)
@@ -707,7 +707,7 @@ fn menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
         // again in one step, then saving, exporting and the keys.
         let (start, rest) = items.split_at(2);
         let mut options: Vec<(String, String)> = start.iter().map(entry).collect();
-        options.extend(recents.iter().take(MENU_RECENTS).map(|recent| {
+        options.extend(recents.artworks.iter().take(MENU_RECENTS).map(|recent| {
             let name = if recent.title.is_empty() {
                 std::path::Path::new(&recent.path)
                     .file_stem()

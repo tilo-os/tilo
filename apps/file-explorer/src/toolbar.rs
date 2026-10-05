@@ -292,7 +292,7 @@ impl Controls {
             if view_mode == ViewMode::Grid {
                 let sink = self.sink.clone();
                 out.push(Box::new(
-                    Button::new("files.sort_menu", &t("files-sort-by"), None)
+                    Button::new("files.sort_menu", &t("files-sort-by"))
                         .with_icon(Icon::ArrowUpDown)
                         .on_effect(move || push(&sink, FileCommand::OpenSortMenu)),
                 ));
@@ -309,7 +309,7 @@ impl Controls {
             let button = if compact {
                 Button::icon_only("files.archive.extract", Icon::Download, &extract_label)
             } else {
-                Button::new("files.archive.extract", &extract_label, None).with_icon(Icon::Download)
+                Button::new("files.archive.extract", &extract_label).with_icon(Icon::Download)
             };
             out.push(Box::new(button.on_effect(move || {
                 push(&sink, FileCommand::ExtractCurrentArchive);
@@ -432,7 +432,7 @@ impl FileToolbar {
 }
 
 impl Widget for FileToolbar {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
             let shared = &self.controls.shared;
             let mut context = shared.context.borrow_mut();

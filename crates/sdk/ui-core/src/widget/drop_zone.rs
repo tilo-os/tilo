@@ -467,7 +467,7 @@ impl Widget for DropZone {
     fn on_drop(
         &mut self,
         payload: DragPayload,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) {
         if let DragPayload::File { path } = payload {
@@ -582,7 +582,7 @@ mod tests {
             DragPayload::File {
                 path: "/home/ada/notes.epub".into(),
             },
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         );
         assert_eq!(

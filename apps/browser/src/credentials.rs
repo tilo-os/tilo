@@ -59,21 +59,11 @@ pub(crate) struct Credentials {
 }
 impl Credentials {
     pub fn new(private: bool) -> Self {
-        Self::with_address_path(
-            private,
-            if private {
-                None
-            } else {
-                crate::storage::config_dir().map(|p| p.join("addresses.json"))
-            },
-        )
-    }
-    pub fn with_address_path(private: bool, path: Option<std::path::PathBuf>) -> Self {
         Self {
             open: false,
             private,
             address_mode: false,
-            addresses: crate::address_controls::AddressControls::new(private, path),
+            addresses: crate::address_controls::AddressControls::new(private),
             origin: None,
             document: String::new(),
             sequence: 0,
@@ -118,8 +108,14 @@ impl Credentials {
             action,
         }]
     }
-    /// Review fixture: the passwords panel (or the address autofill panel)
-    /// open on a secure page with a login form and saved accounts.
+    /// Fill forms from, and edit, the person's address book.
+    pub fn attach_address_book(
+        &mut self,
+        book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
+    ) {
+        self.addresses.attach(book);
+    }
+
     pub(crate) fn stage_for_review(&mut self, addresses: bool, origin: &str) {
         self.origin = crate::site_controls::origin(origin);
         self.address_mode = addresses;
@@ -162,10 +158,10 @@ impl Credentials {
             self.addresses.stage_for_review();
         }
     }
-    /// Whether the panel is the address autofill one rather than passwords.
     pub fn addresses_open(&self) -> bool {
         self.address_mode
     }
+
     pub fn close(&mut self) -> Vec<CredentialRequest> {
         let requests = if self.open {
             self.request(CredentialAction::Cancel)
@@ -391,7 +387,7 @@ impl Credentials {
             .min()
     }
     fn button(&self, id: &str, label: &str, action: Action) -> Button {
-        Button::new(id, label, None).on_effect(self.command(action))
+        Button::new(id, label).on_effect(self.command(action))
     }
     fn command(&self, action: Action) -> impl FnMut() + 'static {
         let pending = self.action.clone();
@@ -714,11 +710,9 @@ mod tests {
     fn credential_discovery_is_scoped_to_safe_current_documents() {
         // Phase `address_mode_discovers_forms_without_keychain_account_requests`.
         {
-            let directory = tempfile::tempdir().unwrap();
-            let mut model = Credentials::with_address_path(
-                false,
-                Some(directory.path().join("addresses.json")),
-            );
+            let (_app, book) = crate::autofill::tests::address_book();
+            let mut model = Credentials::new(false);
+            model.attach_address_book(book);
             model.navigation("https://example.com");
             let status = model.open_addresses(true).remove(0);
             let requests = model.apply(reply(&status, "1"));

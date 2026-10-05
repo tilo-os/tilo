@@ -81,6 +81,7 @@ pub fn find(
 /// part drawn on the window's thread; [`Prepared::finish`] does the slow
 /// part anywhere, so a person's window keeps drawing meanwhile.
 pub struct Prepared {
+    content: tilo_content::ContentStore,
     rgba: Vec<u8>,
     width: u32,
     height: u32,
@@ -163,6 +164,8 @@ pub fn prepare(
         0.0
     };
     Ok(Prepared {
+        content: ui::tilo_resource::content::current()
+            .ok_or("the artwork's content store is unavailable")?,
         rgba,
         width,
         height,
@@ -236,7 +239,12 @@ impl Prepared {
                 .iter()
                 .any(|value| *value > 0.0 && *value < 1.0);
         let kept = if soft {
-            Some(kept_matte(&matte, self.view.origin(), self.to_cells)?)
+            Some(kept_matte(
+                &self.content,
+                &matte,
+                self.view.origin(),
+                self.to_cells,
+            )?)
         } else {
             None
         };
@@ -294,6 +302,7 @@ fn view_of(
 /// The soft edge kept as content, laid over the artwork where the render
 /// it was found in lies.
 fn kept_matte(
+    content: &tilo_content::ContentStore,
     matte: &tilo_subject::Matte,
     origin: Point,
     to_cells: Affine,
@@ -305,7 +314,7 @@ fn kept_matte(
     )]
     let (width, height) = (matte.width as f64, matte.height as f64);
     Ok(Matte {
-        src: crate::resource::store(&matte_picture(matte)?)?,
+        src: store_picture(content, &matte_picture(matte)?)?,
         rect: [origin.x, origin.y, width / per_x, height / per_y],
     })
 }
@@ -375,10 +384,12 @@ pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
             .layer(&layer)
             .filter(|layer| layer.is_mask())
             .map_or_else(|| layer.clone(), |mask| mask.mask_of.clone());
-        let alpha = matte_alpha(&matte)?;
+        let content = ui::tilo_resource::content::current()
+            .ok_or("the artwork's content store is unavailable")?;
+        let alpha = matte_alpha(&content, &matte)?;
         let mut cleaned = Vec::new();
         for mark in art.marks_of(&owner) {
-            if let Some(src) = clean_picture(mark, &matte, &alpha)? {
+            if let Some(src) = clean_picture(&content, mark, &matte, &alpha)? {
                 cleaned.push([mark.id.clone(), src]);
             }
         }
@@ -396,8 +407,11 @@ pub fn clean(using: UseSelection) -> Result<CanvasAction, String> {
 }
 
 /// A matte picture's coverage.
-fn matte_alpha(matte: &Matte) -> Result<tilo_subject::Matte, String> {
-    let bytes = crate::picture::bytes_of(&matte.src)
+fn matte_alpha(
+    content: &tilo_content::ContentStore,
+    matte: &Matte,
+) -> Result<tilo_subject::Matte, String> {
+    let bytes = crate::picture::bytes_of(content, &matte.src)
         .ok_or("the selection's refined edge is not on this device; refine it again")?;
     let image = image::load_from_memory(&bytes)
         .map_err(|error| format!("the refined edge cannot be read: {error}"))?
@@ -425,6 +439,7 @@ fn matte_alpha(matte: &Matte) -> Result<tilo_subject::Matte, String> {
     reason = "pixel indices bounded by the picture's size; coordinates checked against it before the cast"
 )]
 fn clean_picture(
+    content: &tilo_content::ContentStore,
     mark: &crate::model::Mark,
     matte: &Matte,
     alpha: &tilo_subject::Matte,
@@ -435,7 +450,7 @@ fn clean_picture(
     let Some(placement) = crate::picture::Placement::of(&mark.shape) else {
         return Ok(None);
     };
-    let Some(bytes) = crate::picture::bytes_of(src) else {
+    let Some(bytes) = crate::picture::bytes_of(content, src) else {
         return Ok(None);
     };
     let image = image::load_from_memory(&bytes)
@@ -504,7 +519,14 @@ fn clean_picture(
     }
     let picture = image::RgbaImage::from_raw(width as u32, height as u32, out)
         .ok_or("the cleaned picture is malformed")?;
-    crate::resource::store(&encode_like(&picture, &bytes)?).map(Some)
+    store_picture(content, &encode_like(&picture, &bytes)?).map(Some)
+}
+
+fn store_picture(content: &tilo_content::ContentStore, bytes: &[u8]) -> Result<String, String> {
+    let hash = content
+        .put(bytes)
+        .map_err(|error| format!("the content could not be stored: {error}"))?;
+    ui::tilo_actions::content_resource(&hash).ok_or_else(|| "the content has no address".to_owned())
 }
 
 /// `picture` encoded as its source was: a photograph that came as a JPEG

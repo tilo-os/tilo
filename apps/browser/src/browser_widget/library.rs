@@ -136,7 +136,7 @@ impl BrowserWidget {
                         });
                         actions.push(
                             self.bind_button(
-                                Button::new(&format!("{id}.cancel"), "Cancel", None)
+                                Button::new(&format!("{id}.cancel"), "Cancel")
                                     .with_accessible_name(&format!("Cancel download {name}")),
                                 &id,
                                 "cancel",
@@ -149,7 +149,7 @@ impl BrowserWidget {
                         }
                         actions.push(
                             self.bind_button(
-                                Button::new(&format!("{id}.reveal"), "Show in Files", None)
+                                Button::new(&format!("{id}.reveal"), "Show in Files")
                                     .with_accessible_name(&format!("Show {name} in Files")),
                                 &id,
                                 "reveal",
@@ -160,7 +160,7 @@ impl BrowserWidget {
                         row = row.error();
                         actions.push(
                             self.bind_button(
-                                Button::new(&format!("{id}.retry"), "Retry", None)
+                                Button::new(&format!("{id}.retry"), "Retry")
                                     .with_accessible_name(&format!("Retry download {name}")),
                                 &id,
                                 "retry",
@@ -218,7 +218,6 @@ impl BrowserWidget {
             let toggle = Button::new(
                 &format!("browser.extension.grant.{}", extension.id),
                 if approved { "Revoke" } else { "Approve" },
-                None,
             )
             .on_effect(move || {
                 let message = match crate::extensions::set_approved(&info, !approved) {
@@ -239,7 +238,6 @@ impl BrowserWidget {
                     Button::new(
                         &format!("browser.extension.action.{}", extension.id),
                         "Open action page",
-                        None,
                     )
                     .on_effect(move || engine.send(WebViewCommand::Navigate(url.clone()))),
                 ));
@@ -354,7 +352,7 @@ impl BrowserWidget {
                 "Pause history"
             };
             header = header.push(Box::new(self.bind_button(
-                Button::new("browser.library.history-pause", label, None),
+                Button::new("browser.library.history-pause", label),
                 "browser.session",
                 "toggle-history-pause",
             )));
@@ -381,7 +379,7 @@ impl BrowserWidget {
             ))));
         }
         header = header.push(Box::new(self.bind_button(
-            Button::new("browser.library.close", "Done", None),
+            Button::new("browser.library.close", "Done"),
             "browser",
             "show-page",
         )));

@@ -230,7 +230,7 @@ pub(crate) fn header_actions(
             panic.clone(),
         )),
         Box::new(
-            Button::new("firewall-apply", "Apply", None)
+            Button::new("firewall-apply", "Apply")
                 .role(ButtonRole::Primary)
                 .tooltip("Apply the configuration to the system")
                 .on_effect(move || apply.push(Intent::Apply)),
@@ -294,7 +294,7 @@ impl Decorator for LabelledSwitch {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut ui::widget::AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
         match action {
@@ -357,7 +357,7 @@ impl Decorator for RetryOnAction {
         self.forward();
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         self.forward();
         Widget::update(&mut self.state, state, path)
     }
@@ -366,7 +366,7 @@ impl Decorator for RetryOnAction {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut ui::widget::AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
         let handled = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
@@ -467,7 +467,7 @@ fn zone_status(model: &PageModel<'_>, intents: &Intents) -> Column {
     } else {
         let intents = intents.clone();
         Box::new(
-            Button::new("firewall-make-active", "Make active zone", None)
+            Button::new("firewall-make-active", "Make active zone")
                 .on_effect(move || intents.push(Intent::MakeActive)),
         )
     };
@@ -537,8 +537,7 @@ fn tab_bar(selected: Tab, intents: &Intents) -> Row {
     }
     let add = intents.clone();
     bar.push(Box::new(Spacer::new())).push(Box::new(
-        Button::new("firewall-rule-new", "Add rule", None)
-            .on_view(move || add.push(Intent::OpenAddRule)),
+        Button::new("firewall-rule-new", "Add rule").on_view(move || add.push(Intent::OpenAddRule)),
     ))
 }
 

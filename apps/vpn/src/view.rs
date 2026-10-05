@@ -299,7 +299,7 @@ impl ui::widget::Decorator for ImportOnAction {
         self.forward();
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         self.forward();
         Widget::update(&mut self.state, state, path)
     }
@@ -334,7 +334,7 @@ fn notice(notice: &Notice<'_>, intents: &Intents) -> Element {
                 .on_dismiss(dismiss);
             if notice.retry {
                 banner = banner.with_action(
-                    Button::new("vpn-retry-import", "Try again", None)
+                    Button::new("vpn-retry-import", "Try again")
                         .on_effect(intents.sender(Intent::RetryImport)),
                 );
             }
@@ -476,7 +476,7 @@ impl MainActionButton {
                 _ => ButtonRole::Primary,
             };
             row = row.push(Box::new(
-                Button::new("vpn-main-action", action.label(), None)
+                Button::new("vpn-main-action", action.label())
                     .role(role)
                     .control_size(ControlSize::Small)
                     .on_effect(self.intents.sender(Intent::MainAction(id))),
@@ -499,12 +499,12 @@ impl ui::widget::Decorator for MainActionButton {
         &mut self.row
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         self.follow();
         Widget::sync(&mut self.row, state, path);
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let changed = self.follow();
         Widget::update(&mut self.row, state, path) || changed
     }

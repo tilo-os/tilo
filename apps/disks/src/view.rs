@@ -167,7 +167,7 @@ impl ui::widget::Decorator for RescanOnAction {
         self.forward();
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         self.forward();
         Widget::update(&mut self.state, state, path)
     }
@@ -246,7 +246,7 @@ fn actions(model: &DetailModel<'_>, intents: &Intents) -> Section {
     let mut row = Row::new();
     for (kind, enabled) in ActionKind::bar().into_iter().zip(model.enabled) {
         let intents = intents.clone();
-        let button = Button::new(&format!("disks-action-{}", kind.key()), kind.label(), None)
+        let button = Button::new(&format!("disks-action-{}", kind.key()), kind.label())
             .role(if kind.destructive() {
                 ButtonRole::Destructive
             } else {

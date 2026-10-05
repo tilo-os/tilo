@@ -225,7 +225,7 @@ impl Decorator for StructureView {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         let table = self.link.read(|model| model.table.clone());
         self.show(table.as_ref());
         self.content.sync(state, path);

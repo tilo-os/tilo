@@ -488,15 +488,12 @@ pub struct EmptyState {
     message: Option<String>,
     action_label: Option<String>,
     action_id: Option<String>,
+    action_enabled: bool,
     /// What the action is bound to. When set, the action is a published
     /// [`Button`](crate::widget::Button) (`engine`) and every activation path
     /// goes through it, like [`super::Button::on_action`].
     handler: Option<Handler>,
     engine: Option<crate::widget::Button>,
-    /// Optional CRDT action key, matching [`super::Button`]'s action-path
-    /// contract. The drain channel remains available for immediate-mode
-    /// parents; a retained shell can instead observe this semantic key.
-    action_path: Option<String>,
     /// Drained flag set when the action is clicked.
     action_fired: bool,
     rect: Rect,
@@ -537,9 +534,9 @@ impl EmptyState {
             message: None,
             action_label: None,
             action_id: None,
+            action_enabled: true,
             handler: None,
             engine: None,
-            action_path: None,
             action_fired: false,
             rect: Rect::ZERO,
             action_rect: Rect::ZERO,
@@ -642,6 +639,17 @@ impl EmptyState {
         self
     }
 
+    /// Keep the recovery action visible while its binding is unavailable.
+    #[must_use]
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.action_enabled = enabled;
+        if let Some(engine) = &mut self.engine {
+            engine.set_enabled(enabled);
+        }
+        self.layout_dirty = true;
+        self
+    }
+
     /// Stable identity for the optional call-to-action. Supplying it makes the
     /// action automatically available to accessibility, search, and agents.
     #[must_use]
@@ -658,7 +666,6 @@ impl EmptyState {
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
         self.handler = Some(Handler::Binding(binding));
-        self.action_path = None;
         self.action_fired = false;
         self.rebuild_engine();
         self
@@ -669,7 +676,6 @@ impl EmptyState {
     #[must_use]
     pub fn on_view(mut self, f: impl FnMut() + 'static) -> Self {
         self.handler = Some(Handler::View(Rc::new(RefCell::new(Box::new(f)))));
-        self.action_path = None;
         self.rebuild_engine();
         self
     }
@@ -679,19 +685,7 @@ impl EmptyState {
     #[must_use]
     pub fn on_effect(mut self, f: impl FnMut() + 'static) -> Self {
         self.handler = Some(Handler::Effect(Rc::new(RefCell::new(Box::new(f)))));
-        self.action_path = None;
         self.rebuild_engine();
-        self
-    }
-
-    /// Publish activation at `path` in the app document as well as through
-    /// [`Self::take_action`]. This gives an empty state's primary action the
-    /// same pointer, keyboard and accessibility route as a normal button.
-    #[must_use]
-    pub fn with_action_path(mut self, path: impl Into<String>) -> Self {
-        self.handler = None;
-        self.engine = None;
-        self.action_path = Some(path.into());
         self
     }
 
@@ -710,8 +704,9 @@ impl EmptyState {
             return;
         };
         let id = self.action_control_id();
-        let button =
-            crate::widget::Button::new(&id, &label, None).role(crate::widget::ButtonRole::Primary);
+        let button = crate::widget::Button::new(&id, &label)
+            .role(crate::widget::ButtonRole::Primary)
+            .with_enabled(self.action_enabled);
         self.engine = Some(match handler {
             Handler::Binding(binding) => button.on_action(binding),
             Handler::View(f) => button.on_view(move || (f.borrow_mut())()),
@@ -733,16 +728,12 @@ impl EmptyState {
         }
     }
 
-    fn fire_action(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn fire_action(&mut self, state: &mut crate::widget::Edits<'_>, path: &ObjId) {
         if let Some(engine) = &mut self.engine {
             let _ = engine.perform_action(&crate::a11y::Action::Activate, state, path);
             return;
         }
         self.action_fired = true;
-        if let Some(action_path) = &self.action_path {
-            use automerge::transaction::Transactable as _;
-            let _ = state.put(path, action_path, true);
-        }
     }
 
     /// Drain the "action was clicked" signal (fires once per click). The
@@ -857,7 +848,7 @@ impl Widget for EmptyState {
         dyn crate::resources::PublishesResources
     );
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         let revision = crate::i18n::I18nManager::revision();
         if revision != self.i18n_revision {
             self.i18n_revision = revision;
@@ -1000,7 +991,7 @@ impl Widget for EmptyState {
                 && self.action_label.is_some()
                 && self.action_rect.contains(self.last_cursor) =>
             {
-                self.fire_action(ctx.state, ctx.path);
+                self.fire_action(&mut ctx.state, ctx.path);
                 *ctx.handled = true;
             }
             _ => {}
@@ -1020,7 +1011,7 @@ impl Widget for EmptyState {
     }
 
     fn is_enabled(&self) -> bool {
-        self.engine.as_ref().is_none_or(Widget::is_enabled)
+        self.action_enabled && self.engine.as_ref().is_none_or(Widget::is_enabled)
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -1045,7 +1036,7 @@ impl Widget for EmptyState {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
@@ -1064,7 +1055,7 @@ impl Widget for EmptyState {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.action_label.is_some()
@@ -1075,7 +1066,7 @@ impl Widget for EmptyState {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         match &mut self.engine {
@@ -1190,15 +1181,9 @@ impl crate::widget::controls::ActionControls for EmptyState {
         if let Some(engine) = &self.engine {
             return crate::widget::controls::ActionControls::control_action_bindings(engine);
         }
-        match &self.action_path {
-            Some(path) => vec![crate::widget::ControlBindingMetadata {
-                control_id: self.action_control_id(),
-                kind: crate::widget::ControlBindingKind::CollaborativeDocument(path.clone()),
-            }],
-            None => vec![crate::widget::ControlBindingMetadata::semantic(
-                self.action_control_id(),
-            )],
-        }
+        vec![crate::widget::ControlBindingMetadata::semantic(
+            self.action_control_id(),
+        )]
     }
     fn refresh_control_action_availability(
         &mut self,
@@ -1277,7 +1262,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -1582,54 +1567,52 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut es,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(es.take_action(), "Enter/Space/AT Activate reaches the CTA");
         }
 
         fn action_path_is_shared_by_pointer_and_accessibility_activation() {
-            use automerge::{ReadDoc as _, Value, transaction::Transactable as _};
-
-            let key = "empty.open";
-            let mut es = EmptyState::new("Nothing here")
+            use automerge::ReadDoc as _;
+            use std::cell::Cell;
+            let invoked = Rc::new(Cell::new(0));
+            let counted = invoked.clone();
+            let empty = EmptyState::new("Nothing here")
                 .with_action("Open")
-                .with_action_path(key);
-            lay_out(&mut es, 600.0, 400.0);
-            let _ = draw(&mut es);
-
-            let mut taffy = TaffyTree::<()>::new();
-            let node = taffy.leaf_node(Style::default());
-            let mut handled = false;
-            let mut focus = None;
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            for event in [cursor(es.action_rect().center()), press()] {
-                es.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-            }
-            assert!(matches!(
-                doc.get(&root, key),
-                Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
-            ));
-
-            let _ = doc.put(&root, key, false);
-            assert!(es.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
-            assert!(matches!(
-                doc.get(&root, key),
-                Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
-            ));
+                .with_action_id("empty.open")
+                .on_view(move || counted.set(counted.get() + 1));
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                empty,
+                (600, 400),
+                Theme::dark(),
+            );
+            let action = harness.root::<EmptyState>().action_rect();
+            assert!(action.area() > 0.0, "the recovery action has a target");
+            harness.click_at(action.center().x, action.center().y);
+            assert_eq!(
+                invoked.get(),
+                1,
+                "pointer activation invokes the published action"
+            );
+            harness
+                .perform_named("empty.open", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert_eq!(
+                invoked.get(),
+                2,
+                "accessibility invokes the same published action"
+            );
+            assert!(
+                harness
+                    .state()
+                    .doc
+                    .get(automerge::ROOT, "empty.open")
+                    .unwrap()
+                    .is_none(),
+                "a view action never writes a click pulse into the resource"
+            );
         }
 
         fn canonical_action_binding_replaces_the_legacy_document_channel() {
@@ -1648,7 +1631,6 @@ mod tests {
             let mut es = EmptyState::new("Unavailable")
                 .with_action("Refresh catalog")
                 .with_action_id("catalog.empty.refresh")
-                .with_action_path("legacy.refresh")
                 .on_action(binding);
             lay_out(&mut es, 600.0, 400.0);
             let _ = draw(&mut es);
@@ -1759,92 +1741,51 @@ mod tests {
         }
 
         fn retained_empty_state_has_a_scrollable_route_to_essential_content() {
-            use automerge::{ReadDoc as _, Value, transaction::Transactable as _};
-
-            let mut scroll = EmptyState::new("No messages are available")
+            use std::cell::Cell;
+            let invoked = Rc::new(Cell::new(0));
+            let counted = invoked.clone();
+            let scroll = EmptyState::new("No messages are available")
                 .with_icon(Icon::Inbox)
                 .with_message("Reconnect to load messages.")
                 .with_action("Review connection settings")
-                .with_action_path("empty.review")
+                .with_action_id("empty.review")
+                .on_view(move || counted.set(counted.get() + 1))
                 .into_scrollable()
                 .with_height(50.0);
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let mut tr = crate::font_catalog::fixture_renderer();
-            let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout_with_measure(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(240.0),
-                        height: taffy::AvailableSpace::Definite(50.0),
-                    },
-                    |known, available, id, _, _| {
-                        node_map.get(&id).map_or(taffy::Size::ZERO, |&ptr| unsafe {
-                            (*ptr).measure(known, available, &mut tr)
-                        })
-                    },
-                )
-                .unwrap();
-            scroll.apply_layout(&taffy, node, Point::ZERO);
-
-            assert!(scroll.vertical_overflows());
-            assert!(scroll.max_offset_y() > 0.0);
-            scroll.scroll_by(0.0, scroll.max_offset_y());
-            scroll.apply_layout(&taffy, node, Point::ZERO);
-            let mut scene = Scene::new();
-            scroll.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                scroll,
+                (240, 50),
+                Theme::dark(),
             );
+            assert!(harness.root::<Scrollable>().vertical_overflows());
+            let end = harness.root::<Scrollable>().max_offset_y();
+            assert!(end > 0.0);
+            harness.root_mut::<Scrollable>().scroll_by(0.0, end);
+            harness.relayout();
+            let _ = harness.inspection();
+            let scroll = harness.root::<Scrollable>();
             let action = scroll.children()[0]
                 .synthetic_accessibility_rect(&[0])
                 .expect("retained action geometry");
             assert!(
                 scroll.content_viewport_rect().contains(action.center()),
-                "scrolled action is visible: {action:?}"
+                "the scrolled action is visible: {action:?}"
             );
-
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let mut handled = false;
-            let mut focus = None;
-            for event in [cursor(action.center()), press()] {
-                scroll.handle_event(
-                    &event,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
-                        path: &root,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: &taffy,
-                    },
-                );
-            }
-            assert!(
-                handled,
-                "visible scrolled action accepts pointer activation"
+            harness.click_at(action.center().x, action.center().y);
+            assert_eq!(
+                invoked.get(),
+                1,
+                "visible recovery action invokes through the host"
             );
-            assert!(matches!(
-                doc.get(&root, "empty.review"),
-                Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
-            ));
-
-            let _ = doc.put(&root, "empty.review", false);
-            let child = scroll.children_mut().remove(0);
-            child.set_focus(true);
-            assert!(child.perform_action(&crate::a11y::Action::Activate, &mut doc, &root));
-            assert!(matches!(
-                doc.get(&root, "empty.review"),
-                Ok(Some((Value::Scalar(value), _))) if value.as_ref().as_bool() == Some(true)
-            ));
+            harness
+                .perform_named("empty.review", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert_eq!(
+                invoked.get(),
+                2,
+                "accessibility uses the same recovery action"
+            );
         }
 
         fn roomy_scrollable_retains_the_icon_and_explanatory_message() {

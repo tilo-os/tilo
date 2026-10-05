@@ -183,9 +183,9 @@ fn manual_account(scale: f32) -> Element {
         .child(Box::new(
             Checkbox::new("updates", "updates").with_label(UPDATES),
         ))
-        .child(Box::new(Button::new("cancel", "Cancel", None)))
+        .child(Box::new(Button::new("cancel", "Cancel")))
         .child(Box::new(
-            Button::new("save", "Save account changes", Some("saved")).role(ButtonRole::Primary),
+            Button::new("save", "Save account changes").role(ButtonRole::Primary),
         ));
     surface(Box::new(region))
 }
@@ -212,11 +212,8 @@ fn account() -> Form {
             Checkbox::new("updates", "updates").with_label(UPDATES),
         )))
         .with_actions(
-            Actions::new(
-                Button::new("save", "Save account changes", Some("saved"))
-                    .role(ButtonRole::Primary),
-            )
-            .secondary(Button::new("cancel", "Cancel", None)),
+            Actions::new(Button::new("save", "Save account changes").role(ButtonRole::Primary))
+                .secondary(Button::new("cancel", "Cancel")),
         )
 }
 fn automatic_in_manual() -> Element {

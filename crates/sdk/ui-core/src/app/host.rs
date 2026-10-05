@@ -288,8 +288,7 @@ fn run_layout_pass(
         }
         app.history_viewport_width = logical.0;
         let _ = app.history_local_resources();
-        app.document_history
-            .sync(&mut app.state.doc, &app.state.root);
+        app.document_history.sync(&app.state.doc, &app.state.root);
     }
     if !app.layout.layout_dirty && !viewport_changed {
         return Some((false, 0, 0));

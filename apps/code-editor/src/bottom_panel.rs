@@ -36,6 +36,7 @@ const VISIBLE_ROWS: usize = 4;
 pub enum PanelTab {
     Problems,
     Terminal,
+    Search,
 }
 
 impl PanelTab {
@@ -43,6 +44,7 @@ impl PanelTab {
         match self {
             Self::Problems => 1,
             Self::Terminal => 2,
+            Self::Search => 3,
         }
     }
 
@@ -50,9 +52,34 @@ impl PanelTab {
         match id {
             1 => Some(Self::Problems),
             2 => Some(Self::Terminal),
+            3 => Some(Self::Search),
             _ => None,
         }
     }
+}
+
+/// One row in the Search tab: everything the panel needs to draw a hit and
+/// nothing about where it came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HitRow {
+    pub rel: String,
+    pub line: usize,
+    pub preview: String,
+    /// Character offset and length of the match *within `preview`*, so the
+    /// highlight lands on the matched text after the preview was clipped.
+    pub highlight: (usize, usize),
+}
+
+/// What the Search tab is currently showing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchState {
+    pub query: String,
+    pub rows: Vec<HitRow>,
+    /// True while the worker is still walking the tree.
+    pub running: bool,
+    /// True when the bounded walk stopped before it covered the whole project.
+    pub truncated: bool,
+    pub files_scanned: usize,
 }
 
 /// Severity of a diagnostic.
@@ -82,6 +109,7 @@ pub struct BottomPanel {
     rect: Rect,
     tab: PanelTab,
     problems: Vec<Diagnostic>,
+    search: SearchState,
     tabs: TabBar,
     tabs_node: Option<NodeId>,
     /// Set when the user picks a tab — read and cleared by the app.
@@ -121,6 +149,7 @@ impl BottomPanel {
             rect: Rect::ZERO,
             tab: PanelTab::Problems,
             problems: Vec::new(),
+            search: SearchState::default(),
             tabs: Self::fresh_tabs(PanelTab::Problems, 0),
             tabs_node: None,
             tab_changed: false,
@@ -147,6 +176,7 @@ impl BottomPanel {
             vec![
                 TabDescriptor::new(PanelTab::Problems.id(), Self::problems_title(problems)),
                 TabDescriptor::new(PanelTab::Terminal.id(), "Terminal"),
+                TabDescriptor::new(PanelTab::Search.id(), "Search results"),
             ],
             active.id(),
         )
@@ -199,6 +229,33 @@ impl BottomPanel {
     /// position across rebuilds.
     fn rebuild_list(&mut self) {
         self.list_node = None;
+        if self.tab == PanelTab::Search {
+            let rows: Vec<Element> = self
+                .search
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, hit)| {
+                    let activated = Rc::clone(&self.activated);
+                    Box::new(
+                        ListRow::new(format!("search-{index}"), &hit.preview)
+                            .meta(format!("{}:{}", hit.rel, hit.line))
+                            .on_activate(move || activated.set(Some(index))),
+                    ) as Element
+                })
+                .collect();
+            self.list = Some(
+                Scrollable::new_vertical()
+                    .fill_parent_height()
+                    .with_persisted_offset(Rc::clone(&self.list_offset))
+                    .with_child(Box::new(
+                        Container::new()
+                            .with_inset(Rhythm::Section)
+                            .with_child(Box::new(Section::new(rows))),
+                    )),
+            );
+            return;
+        }
         if self.problems.is_empty() {
             self.list = None;
             self.list_offset.set((0.0, 0.0));
@@ -238,6 +295,9 @@ impl BottomPanel {
     /// The (line, column) of the diagnostic the user activated, once. Both are
     /// 1-based, as listed.
     pub fn take_jump(&self) -> Option<(usize, usize)> {
+        if self.tab != PanelTab::Problems {
+            return None;
+        }
         let index = self.activated.take()?;
         self.problems.get(index).map(|d| (d.line, d.col))
     }
@@ -310,6 +370,8 @@ impl BottomPanel {
         if self.tab != tab {
             self.tab = tab;
             self.tabs.set_active(tab.id());
+            self.activated.set(None);
+            self.rebuild_list();
             self.dirty = true;
         }
     }
@@ -486,7 +548,7 @@ impl Widget for BottomPanel {
         self.tabs
             .draw(scene, transform, text_renderer, theme, presence);
         match self.tab {
-            PanelTab::Problems => {
+            PanelTab::Problems | PanelTab::Search => {
                 self.draw_problems(scene, transform, text_renderer, theme, presence);
             }
             PanelTab::Terminal => self.draw_terminal_note(scene, transform, text_renderer, theme),
@@ -494,7 +556,7 @@ impl Widget for BottomPanel {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.tab == PanelTab::Problems
+        if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
             && let (Some(list), Some(n)) = (self.list.as_mut(), self.list_node)
         {
             list.handle_event(event, &mut ctx.reborrow(ctx.path, n));
@@ -531,7 +593,7 @@ impl Widget for BottomPanel {
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = vec![&self.tabs];
-        if self.tab == PanelTab::Problems
+        if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
             && let Some(list) = &self.list
         {
             out.push(list);
@@ -541,7 +603,7 @@ impl Widget for BottomPanel {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut out: Vec<&mut (dyn Widget + '_)> = vec![&mut self.tabs];
-        if self.tab == PanelTab::Problems
+        if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
             && let Some(list) = self.list.as_mut()
         {
             out.push(list);
@@ -642,5 +704,24 @@ mod tests {
         assert!(
             (wanted - (ui::widget::tabs::TAB_BAR_HEIGHT + VISIBLE_ROWS as f64 * row)).abs() < 1e-9
         );
+    }
+}
+
+impl BottomPanel {
+    pub fn set_search(&mut self, search: SearchState) {
+        if self.search != search {
+            self.search = search;
+            if self.tab == PanelTab::Search {
+                self.rebuild_list();
+            }
+            self.dirty = true;
+        }
+    }
+    pub fn take_search_jump(&self) -> Option<usize> {
+        if self.tab == PanelTab::Search {
+            self.activated.take()
+        } else {
+            None
+        }
     }
 }

@@ -94,7 +94,7 @@ impl PagePart {
             event,
             ctx.scale_factor,
             ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.path,
             ctx.handled,
         );

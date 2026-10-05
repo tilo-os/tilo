@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{NodeId, TaffyTree};
 use ui::framework::Dispatcher;
@@ -443,7 +444,7 @@ impl Core {
     /// text, applied now so the next keystroke splices the text it made.
     /// Typing a word is one undo step. A refused edit (a viewer's) writes
     /// nothing, and the editor shows the stored text again.
-    fn flush_body_edit(&mut self, doc: &mut AutoCommit) {
+    fn flush_body_edit(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(text) = self.body_editor.take_dirty() else {
             return;
         };
@@ -523,7 +524,7 @@ impl Core {
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
         );
-        self.flush_body_edit(ctx.state);
+        self.flush_body_edit(&mut ctx.state);
         // Pointer motion stays everyone's; the editor only claims what it
         // consumed.
         handled && !matches!(event, WindowEvent::CursorMoved { .. })
@@ -843,12 +844,12 @@ impl ui::widget::Decorator for SidebarNav {
         &mut self.list
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh();
         Widget::sync(&mut self.list, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.refresh();
         Widget::update(&mut self.list, state, path)
     }
@@ -1166,14 +1167,14 @@ impl ui::widget::Decorator for SnippetsApp {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.core.borrow_mut().sync_body_editor();
         self.settle();
         self.refresh_columns();
         Widget::sync(&mut self.shell, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.settle();
         self.refresh_columns();
         self.stage_pending_scenario();
@@ -1413,7 +1414,7 @@ impl ui::widget::Decorator for SnippetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = {

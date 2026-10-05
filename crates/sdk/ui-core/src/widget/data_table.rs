@@ -3160,7 +3160,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.visible_window_changed();
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let model_changes = self
             .model
             .as_deref_mut()
@@ -3901,7 +3901,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -3961,7 +3961,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -5027,7 +5027,7 @@ mod tests {
                 &mut table,
                 "row:99999999:0",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(table.model_selection().primary(), Some(&99_999_999));
@@ -5074,7 +5074,7 @@ mod tests {
             changed.set(true);
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let after = Widget::accessibility(&table).expect("loaded semantics");
@@ -5157,7 +5157,7 @@ mod tests {
                 .push(TableModelChange::RowsChanged { keys: vec![2] });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -5188,7 +5188,7 @@ mod tests {
                 .push(TableModelChange::RowsInserted { index: 0, count: 1 });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -5202,7 +5202,7 @@ mod tests {
             });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -5598,7 +5598,7 @@ mod tests {
                 &mut table,
                 "row:98:0",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(table.selection().primary(), Some(1));
@@ -5606,7 +5606,7 @@ mod tests {
                 &mut table,
                 "row:98:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(&*activated.borrow(), &[1]);
@@ -5662,7 +5662,7 @@ mod tests {
                 &mut t,
                 &crate::a11y::Action::Activate,
                 &[7],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert!(!handled, "a vanished row cannot be activated");
@@ -5714,7 +5714,7 @@ mod tests {
                     .with_render(Box::new(|_, _, _, _, _, _| {}))
                     .with_accessible_value(|row: &R| format!("custom {}", row.name)),
                 ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0))
-                    .with_widget(|_, _| Box::new(Button::new("edit", "Edit", None))),
+                    .with_widget(|_, _| Box::new(Button::new("edit", "Edit"))),
             ];
             let mut table = DataTable::new(columns);
             table.set_rows(vec![R { name: "Ada".into() }]);
@@ -5794,7 +5794,7 @@ mod tests {
                     let clicks = Rc::clone(&clicks);
                     let id = format!("action-{index}");
                     Box::new(
-                        Button::new(&id, &row.name, None)
+                        Button::new(&id, &row.name)
                             .on_click(move || clicks.set(clicks.get().saturating_add(1))),
                     )
                 },
@@ -5899,7 +5899,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -6079,7 +6079,7 @@ mod tests {
                     ColumnDef::new("action", "Action", ColumnWidth::Fixed(160.0))
                         .with_align(align)
                         .with_widget(|row: &R, index| {
-                            Box::new(Button::new(&format!("go-{index}"), &row.name, None))
+                            Box::new(Button::new(&format!("go-{index}"), &row.name))
                         }),
                     ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0)),
                 ])
@@ -6126,7 +6126,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -6179,7 +6179,7 @@ mod tests {
             );
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             assert!(
@@ -6880,7 +6880,7 @@ mod content_edge_tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -7053,7 +7053,7 @@ mod content_edge_tests {
             &mut table,
             &crate::a11y::Action::Expand,
             &[0],
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(toggles.borrow().len(), 2);

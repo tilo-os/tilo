@@ -387,7 +387,7 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
     assert_eq!(fixture.viewport(), (3840.0, 2160.0));
     assert_eq!(
         fixture.host().fixture_provider_ids(),
-        vec!["actions", "notes", "editor", "records"]
+        vec!["actions", "records"]
     );
 
     let chrome = fixture.chrome();
@@ -466,10 +466,20 @@ fn assert_populated_tree_inventory(fixture: &PopulatedShellFixture) {
 }
 
 fn assert_owned_files_fixture(fixture: &PopulatedShellFixture) {
-    let mut fixture_children = std::fs::read_dir(fixture.parent.path())
+    let entries = std::fs::read_dir(fixture.parent.path())
         .expect("fixture parent remains owned")
         .collect::<Result<Vec<_>, _>>()
         .expect("fixture child entries");
+    // Beside the Files folder, the profile the fixture's apps keep their
+    // records in.
+    let (profiles, mut fixture_children): (Vec<_>, Vec<_>) =
+        entries.into_iter().partition(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("tilo-shell-fixture-apps-")
+        });
+    assert_eq!(profiles.len(), 1, "one owned apps profile");
     assert_eq!(fixture_children.len(), 1, "one owned Files fixture child");
     let child = fixture_children
         .pop()

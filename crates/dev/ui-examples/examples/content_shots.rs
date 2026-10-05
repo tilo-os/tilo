@@ -67,11 +67,11 @@ fn rows() -> Element {
                     .on_activate(|| {}),
             ),
         ])
-        .with_header(SectionHeader::heading("Inbox").count(3).action(Button::new(
-            "mark-read",
-            "Mark all as read",
-            None,
-        ))),
+        .with_header(
+            SectionHeader::heading("Inbox")
+                .count(3)
+                .action(Button::new("mark-read", "Mark all as read")),
+        ),
     )
 }
 
@@ -121,7 +121,7 @@ fn cards() -> Element {
                     "A terminal that follows you between devices.",
                 )))
                 .with_title("Terminal")
-                .with_footer(Actions::new(Button::new("open-terminal", "Open", None).role(ButtonRole::Primary)))
+                .with_footer(Actions::new(Button::new("open-terminal", "Open").role(ButtonRole::Primary)))
                 .on_activate("terminal", || {}),
             ),
             Box::new(
@@ -131,8 +131,8 @@ fn cards() -> Element {
                 .with_title("Ada Lovelace")
                 .leading_stripe(Tone::of_identity("ada@example.org"))
                 .with_footer(
-                    Actions::new(Button::new("resolve", "Resolve", None))
-                        .secondary(Button::new("reply", "Reply", None)),
+                    Actions::new(Button::new("resolve", "Resolve"))
+                        .secondary(Button::new("reply", "Reply")),
                 ),
             ),
             Box::new(
@@ -141,7 +141,7 @@ fn cards() -> Element {
                 )))
                 .with_title("Nightly backup")
                 .leading_stripe(Tone::Danger)
-                .with_footer(Actions::new(Button::new("retry", "Retry backup", None).role(ButtonRole::Primary))),
+                .with_footer(Actions::new(Button::new("retry", "Retry backup").role(ButtonRole::Primary))),
             ),
         ])
         .with_card_width(CardWidth::Regular),
@@ -294,7 +294,7 @@ fn states_page() -> Element {
         Box::new(
             DropZone::new("import", "Drop books to add them")
                 .message("EPUB or PDF, up to 200 MB")
-                .with_action(Button::new("choose", "Choose files", None)),
+                .with_action(Button::new("choose", "Choose files")),
         ),
         Box::new(Skeleton::row()),
         Box::new(Skeleton::text(3)),
@@ -323,14 +323,14 @@ fn banners() -> Element {
             .push(Box::new(
                 tilo_ui::widget::Banner::error("Couldn't update the forecast")
                     .with_message("Check your connection and try again.")
-                    .with_action(Button::new("retry", "Try again", None).on_view(|| {}))
+                    .with_action(Button::new("retry", "Try again").on_view(|| {}))
                     .with_id("forecast"),
             ))
             .push(Box::new(
                 tilo_ui::widget::Banner::warning("Changes aren\u{2019}t saved")
                     .with_message("Restore keyring or storage access on this device, then retry.")
-                    .with_action(Button::new("retry-save", "Retry", None).on_view(|| {}))
-                    .with_secondary_action(Button::new("details", "Details", None).on_view(|| {}))
+                    .with_action(Button::new("retry-save", "Retry").on_view(|| {}))
+                    .with_secondary_action(Button::new("details", "Details").on_view(|| {}))
                     .on_dismiss(|| {}),
             ))
             .push(Box::new(

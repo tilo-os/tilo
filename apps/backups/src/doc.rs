@@ -14,8 +14,8 @@
 //! ```
 //!
 //! Every getter tolerates a missing/foreign-typed key by returning the
-//! seeded default, so a fresh `State::new()` doc (the `--shots` path) reads
-//! cleanly even before [`BackupsDoc::seed`] has run.
+//! policy default, so a fresh document reads cleanly before any retention
+//! has been set.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId};
@@ -27,9 +27,10 @@ use crate::model::RetentionPolicy;
 pub struct BackupsDoc;
 
 impl BackupsDoc {
-    /// Write the default UI state into the document if (and only if) it has
-    /// not been seeded yet. Idempotent: keys already present are left alone
-    /// so a peer's adopted state is never clobbered.
+    /// Write the default policy into a test document if (and only if) it has
+    /// not been written yet. Idempotent: keys already present are left alone
+    /// so a peer's state is never clobbered.
+    #[cfg(test)]
     pub fn seed(doc: &mut AutoCommit, root: &ObjId) {
         let p = RetentionPolicy::default();
         Self::seed_int(doc, root, "ret_hourly", i64::from(p.hourly));
@@ -38,6 +39,7 @@ impl BackupsDoc {
         Self::seed_int(doc, root, "ret_monthly", i64::from(p.monthly));
     }
 
+    #[cfg(test)]
     fn seed_int(doc: &mut AutoCommit, root: &ObjId, key: &str, val: i64) {
         if read_i64_coerced(doc, root, key).is_none() {
             let _ = doc.put(root, key, val);

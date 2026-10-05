@@ -8,7 +8,6 @@
 
 use ui::time::{Duration, Instant};
 
-use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -229,7 +228,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<EndpointEffect> {
         let endpoint = self.focused?;
         drive(
@@ -248,7 +247,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / scale, position.y / scale);
@@ -266,7 +265,7 @@ impl EndpointEditor {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> Option<EndpointEffect> {
         if self.swap_rect.is_some_and(|rect| rect.contains(point)) {
             self.dismiss();
@@ -500,7 +499,7 @@ fn drive(
     event: &WindowEvent,
     scale: f64,
     modifiers: winit::event::Modifiers,
-    doc: &mut AutoCommit,
+    doc: &mut ui::widget::Edits<'_>,
 ) {
     if let WindowEvent::MouseInput {
         state: ElementState::Pressed,

@@ -1,4 +1,4 @@
-use super::{AutoCommit, Key, MapInfo, MapsApp, NamedKey, Panel, WindowEvent};
+use super::{Hit, Key, MapInfo, MapsApp, NamedKey, Panel, WindowEvent};
 
 impl MapsApp {
     /// Route a keystroke into the focused endpoint field. Enter runs its
@@ -10,7 +10,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if self.endpoints.is_focused() {
             if let Some(effect) = self.endpoints.handle_key(event, scale, modifiers, doc) {
@@ -29,7 +29,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         crate::hand_laid::drive(&mut self.overflow, event, scale, modifiers, doc);
     }
@@ -51,7 +51,7 @@ impl MapsApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         self.endpoints.forward_pointer(event, scale, modifiers, doc);
     }

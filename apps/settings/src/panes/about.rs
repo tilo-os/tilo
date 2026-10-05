@@ -16,10 +16,50 @@ use std::fs;
 use std::path::Path;
 use std::time::Duration;
 
+use ui::framework::{EffectAnswer, EffectCx, Effected};
+use ui::tilo_resource;
 use ui::widget::{Button, Row, Spacer, Widget};
 
+use crate::host::PaneCx;
 use crate::i18n::t;
-use crate::widgets::{card, hero, rows, value_row};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+use crate::widgets::{caption, card, hero, rows, value_row};
+
+/// What About offers to do with this device's identity.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum AboutEffect {
+    /// Open the identity backup, to carry the person's identity to a new
+    /// device.
+    #[effect(job, label = "Back up identity")]
+    BackUpIdentity,
+}
+
+/// Answer `effect` by opening the tool it names.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: AboutEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    match effect {
+        AboutEffect::BackUpIdentity => {
+            if !app.host().reaches_devices() {
+                return Err("only a window someone uses opens the identity backup".into());
+            }
+            Ok(cx.thread(
+                move |_| os_actions::open_tool(portable_identity_backup_intent()),
+                |_: &mut SettingsApp, opened: Result<(), String>, _| {
+                    opened.map(|()| Effected::done())
+                },
+            ))
+        }
+    }
+}
 
 fn fact(value: &str) -> String {
     if value == "unknown" {
@@ -117,22 +157,6 @@ impl AboutInfo {
         }
     }
 
-    /// The facts of a fixed machine, for captures: the same on every host.
-    #[cfg(not(feature = "thin"))]
-    pub(crate) fn for_shot() -> Self {
-        Self {
-            pretty_name: "Tilo 1.0".to_string(),
-            kernel: "6.14.2-tilo".to_string(),
-            uptime: "2d 3h 18m".to_string(),
-            hostname: "ada-laptop".to_string(),
-            arch: "x86_64".to_string(),
-            cpu: "AMD Ryzen 7 7840U".to_string(),
-            memory: "32.0 GiB".to_string(),
-            identity_name: Some("Ada Lovelace".to_string()),
-            identity_public_key: Some([0x3a; 32]),
-        }
-    }
-
     /// A short, stable workspace identity fingerprint.
     ///
     /// Connected workspaces use the public group key that identifies the
@@ -154,7 +178,7 @@ impl AboutInfo {
         );
         let hex = format!("{fingerprint:016x}");
         format!(
-            "{} {} {} {}",
+            "{}·{}·{}·{}",
             hex.get(0..4).unwrap_or_default(),
             hex.get(4..8).unwrap_or_default(),
             hex.get(8..12).unwrap_or_default(),
@@ -163,13 +187,21 @@ impl AboutInfo {
     }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    build_with(&AboutInfo::from_system())
+pub fn build(cx: &PaneCx) -> Box<dyn Widget> {
+    build_with(cx, &AboutInfo::from_system())
 }
 
-pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
-    // The machine's name and icon head the page; the OS is a row below.
-    let hero_block = hero(ui::icons::Icon::Monitor, &info.hostname);
+pub fn build_with(cx: &PaneCx, info: &AboutInfo) -> Box<dyn Widget> {
+    // A device-identity hero: the machine's name in the accent, the OS beneath.
+    let hero_block = Box::new(
+        ui::widget::Column::new()
+            .with_no_padding()
+            .push(hero(ui::icons::Icon::Monitor, &info.hostname))
+            .push(Box::new(
+                ui::widget::Text::new(&info.pretty_name)
+                    .with_role(ui::tokens::typography::TextRole::Body),
+            )),
+    );
 
     let person = info
         .identity_name
@@ -187,20 +219,23 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         rows(vec![
             value_row(&t("settings-about-person"), &person),
             value_row(&t("settings-about-identity"), &info.fingerprint()),
+            caption(&t("settings-about-identity-caption")),
         ]),
     );
 
     let backup = card(
         &t("settings-about-backup-card"),
-        rows(vec![Box::new(
-            Row::new()
-                .push(Box::new(
-                    Button::new(PORTABLE_BACKUP_BUTTON, &backup_label, None).on_effect(|| {
-                        let _ = os_actions::open_tool(portable_identity_backup_intent());
-                    }),
-                ))
-                .push(Box::new(Spacer::new())),
-        )]),
+        rows(vec![
+            caption(&t("settings-about-backup-caption")),
+            Box::new(
+                Row::new()
+                    .push(Box::new(cx.bind_invocation(
+                        Button::new(PORTABLE_BACKUP_BUTTON, &backup_label),
+                        AboutEffect::BackUpIdentity,
+                    )))
+                    .push(Box::new(Spacer::new())),
+            ),
+        ]),
     );
 
     let system = card(
@@ -353,7 +388,7 @@ mod tests {
         // Architecture is a compile-time fact, always present.
         assert!(!info.arch.is_empty());
         info.identity_public_key = Some([0xab; 32]);
-        assert_eq!(info.fingerprint(), "abab abab abab abab");
+        assert_eq!(info.fingerprint(), "abab·abab·abab·abab");
 
         let info = AboutInfo {
             pretty_name: "x".into(),
@@ -367,9 +402,8 @@ mod tests {
             identity_public_key: None,
         };
         let fp = info.fingerprint();
-        // 4 groups of 4 hex chars separated by spaces.
-        assert_eq!(fp.split(' ').count(), 4);
-        assert!(fp.split(' ').all(|group| group.len() == 4));
+        // 4 groups of 4 hex chars separated by middots.
+        assert_eq!(fp.matches('\u{00B7}').count(), 3);
         assert_eq!(info.fingerprint(), fp, "deterministic");
 
         let intent = portable_identity_backup_intent();

@@ -18,7 +18,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -984,13 +984,7 @@ fn button_width(button: &mut Button, text: &mut TextRenderer) -> f64 {
 }
 
 impl Widget for Banner {
-    crate::provides!(dyn crate::undo::UndoPoints);
-
-    fn update(
-        &mut self,
-        state: &mut crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
-    ) -> bool {
+    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let before = self.visible();
         self.poll_source();
         let mut changed = false;
@@ -1004,7 +998,7 @@ impl Widget for Banner {
         changed
     }
 
-    fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
         self.poll_source();
         if self.dismiss_requested.take() {
             self.dismiss_now();
@@ -1161,7 +1155,7 @@ impl Widget for Banner {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let started = crate::widget::start_in_children(self, op, doc, path)?;
@@ -1222,23 +1216,6 @@ impl Widget for Banner {
             node = node.with_description(message.clone());
         }
         Some(node)
-    }
-}
-
-impl crate::undo::UndoPoints for Banner {
-    fn needs_commit(&self) -> bool {
-        [&self.secondary, &self.action]
-            .into_iter()
-            .flatten()
-            .any(|button| crate::undo::needs_commit(button))
-    }
-    fn on_commit(&mut self) {
-        for button in [&mut self.secondary, &mut self.action]
-            .into_iter()
-            .flatten()
-        {
-            crate::undo::on_commit(button);
-        }
     }
 }
 

@@ -175,7 +175,7 @@ mod tests {
             include_str!("import.rs"),
             include_str!("lib.rs"),
             include_str!("people.rs"),
-            include_str!("presentation.rs"),
+            include_str!("resource.rs"),
             include_str!("search.rs"),
         ];
         let mut checked = 0;

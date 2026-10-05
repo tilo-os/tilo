@@ -1,12 +1,11 @@
 //! Accessibility + keyboard proof for the retained API-tester tree.
 //!
-//! These tests drive the **real widget tree** through `ui::headless::Driver`
-//! — the same event dispatch, layout, and `Widget::accessibility()` the live
-//! app uses, with no display — and assert on the accessibility nodes the
-//! AccessKit bridge exports and on keyboard focus traversal. They are the
-//! reusable pattern every converted app should copy: build a `Driver`, assert
-//! the focusable controls exist with the right roles/labels, Tab through them,
-//! and activate one with Enter to prove the real handler runs.
+//! These tests drive the **real app** through the framework's test host —
+//! the same resource, event dispatch, layout, and `Widget::accessibility()` the
+//! live app uses, with no display — and assert on the accessibility nodes the
+//! AccessKit bridge exports and on keyboard focus traversal: the focusable
+//! controls exist with the right roles/labels, Tab reaches them, and Enter
+//! runs the real handler.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,25 +17,34 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use api_tester::ApiTesterApp;
-use ui::State;
+use api_tester::ApiTesterShell;
+use api_tester::actions::ApiTesterEffect;
 use ui::a11y::Role;
+use ui::framework::testing::TestApp;
 use ui::headless::Driver;
 
-fn driver() -> Driver {
-    // The demo build populates collections / environments / history / a
-    // response so every control class is present.
-    Driver::new(
-        State::new(),
-        Box::new(ApiTesterApp::new_demo()),
-        (1280, 800),
-    )
+/// The live app at `viewport`, staged for `scenario` as `--shots` stages it.
+fn staged(scenario: Option<&str>, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    app.harness().resize(viewport).unwrap();
+    ui::framework::stage::<ApiTesterShell>(app.harness(), scenario).unwrap();
+    app
 }
 
-fn staged(scenario: &str, size: (u32, u32)) -> Driver {
-    let mut app = ApiTesterApp::new_demo();
-    assert!(app.stage(scenario), "{scenario}");
-    Driver::new(State::new(), Box::new(app), size)
+/// The live app on the sample workspace: collections, environments,
+/// history and a response, so every control class is present.
+fn sample() -> TestApp<ApiTesterShell> {
+    staged(None, (1280, 800))
+}
+
+/// The app as screenshot scenario `scenario` shows it, at `viewport`.
+fn captured(scenario: &str, viewport: (u32, u32)) -> TestApp<ApiTesterShell> {
+    staged(Some(scenario), viewport)
+}
+
+/// Apply what the last input submitted.
+fn settle(d: &mut Driver) {
+    d.wait_until(ui::time::Duration::ZERO, |_| true);
 }
 
 /// Every surface (full demo, empty and error responses, the narrow window,
@@ -46,8 +54,8 @@ fn staged(scenario: &str, size: (u32, u32)) -> Driver {
 fn every_surface_exposes_named_accessible_controls() {
     every_control_is_a_focusable_accessible_node();
     empty_and_error_response_surfaces_expose_recovery_actions();
-    narrow_window_keeps_the_sidebar_toggle_reachable();
-    sheets_expose_only_their_named_fields();
+    narrow_workspace_menu_is_keyboard_accessible();
+    contextual_forms_expose_only_their_named_fields();
 }
 
 /// Every interactive control is a real focusable widget with an accessibility
@@ -55,7 +63,8 @@ fn every_surface_exposes_named_accessible_controls() {
 /// painted canvas could never provide.
 /// Case of `every_surface_exposes_named_accessible_controls`.
 fn every_control_is_a_focusable_accessible_node() {
-    let d = driver();
+    let mut app = sample();
+    let d = app.harness();
     let nodes = d.focus_access_nodes();
     let roles: Vec<Role> = nodes.iter().map(|n| n.role).collect();
 
@@ -149,7 +158,8 @@ fn every_control_is_a_focusable_accessible_node() {
 
 /// Case of `every_surface_exposes_named_accessible_controls`.
 fn empty_and_error_response_surfaces_expose_recovery_actions() {
-    let empty = staged("empty", (1280, 800));
+    let mut empty = captured("empty", (1280, 800));
+    let empty = empty.harness();
     let nodes = empty.focus_access_nodes();
     assert!(
         empty.a11y_node_named("No response yet").is_some(),
@@ -164,7 +174,8 @@ fn empty_and_error_response_surfaces_expose_recovery_actions() {
         "Send is offered once: the empty state does not repeat it"
     );
 
-    let error = staged("error", (390, 844));
+    let mut error = captured("error", (390, 844));
+    let error = error.harness();
     assert!(
         error.focus_access_nodes().iter().any(|node| {
             node.role == Role::Group
@@ -178,8 +189,9 @@ fn empty_and_error_response_surfaces_expose_recovery_actions() {
 }
 
 /// Case of `every_surface_exposes_named_accessible_controls`.
-fn narrow_window_keeps_the_sidebar_toggle_reachable() {
-    let d = staged("default", (390, 844));
+fn narrow_workspace_menu_is_keyboard_accessible() {
+    let mut d = captured("empty", (390, 844));
+    let d = d.harness();
     assert!(
         d.focus_access_nodes().iter().any(|node| {
             node.role == Role::Button && node.name.as_deref() == Some("Show sidebar")
@@ -189,10 +201,16 @@ fn narrow_window_keeps_the_sidebar_toggle_reachable() {
 }
 
 /// Case of `every_surface_exposes_named_accessible_controls`.
-fn sheets_expose_only_their_named_fields() {
-    let variable = staged("form-new-variable", (1280, 800));
-    let nodes = variable.focus_access_nodes();
-    for name in ["Variable", "Value"] {
+fn contextual_forms_expose_only_their_named_fields() {
+    let mut variable = captured("form-new-variable", (390, 844));
+    let nodes = variable.harness().focus_access_nodes();
+    for name in [
+        "Variable key",
+        "Variable value",
+        "Where the value is kept",
+        "Cancel",
+        "Confirm",
+    ] {
         assert!(
             nodes.iter().any(|node| node.name.as_deref() == Some(name)),
             "{name}"
@@ -205,9 +223,10 @@ fn sheets_expose_only_their_named_fields() {
         "the variable sheet has distinct Variable and Value fields, not an irrelevant Name input"
     );
 
-    let rename = staged("form-rename-request", (1280, 800));
+    let mut rename = captured("form-rename-request", (1280, 800));
     assert!(
         rename
+            .harness()
             .focus_access_nodes()
             .iter()
             .any(|node| node.role == Role::TextInput && node.name.as_deref() == Some("Name")),
@@ -221,7 +240,8 @@ fn sheets_expose_only_their_named_fields() {
 fn keyboard_focus_traverses_activates_and_dismisses_through_real_handlers() {
     tab_traverses_every_control_in_order();
     enter_activates_a_focused_row_through_the_real_handler();
-    escape_dismisses_a_sheet();
+    composition_disclosure_hides_maintenance_and_returns_focus();
+    composition_narrow_escape_paging_and_open_resize_are_reachable();
 }
 
 /// Tab / Shift+Tab move keyboard focus between the real controls in tree
@@ -229,8 +249,14 @@ fn keyboard_focus_traverses_activates_and_dismisses_through_real_handlers() {
 /// through the same focus walk.
 /// Case of `keyboard_focus_traverses_activates_and_dismisses_through_real_handlers`.
 fn tab_traverses_every_control_in_order() {
-    let mut d = driver();
-    let stops = d.tab_through();
+    let mut app = sample();
+    let d = app.harness();
+    // The window's own chrome (History) precedes the app's controls.
+    let stops: Vec<_> = d
+        .tab_through()
+        .into_iter()
+        .skip_while(|(role, _)| *role != Role::ComboBox)
+        .collect();
 
     // The builder comes first, top-left to top-right: method picker, URL
     // field, Save, Send, then the request tabs.
@@ -260,9 +286,9 @@ fn tab_traverses_every_control_in_order() {
 
     // Every focusable control is reached exactly once.
     assert_eq!(
-        stops.len(),
+        stops.len().saturating_add(1),
         d.focus_order().len(),
-        "Tab visits every focusable node"
+        "Tab visits every focusable node, after the window's History button"
     );
 
     // Focus reaches the sidebar's list (arrows move through its rows) and
@@ -291,8 +317,9 @@ fn tab_traverses_every_control_in_order() {
 /// real handler — the same path a screen reader's "activate" takes.
 /// Case of `keyboard_focus_traverses_activates_and_dismisses_through_real_handlers`.
 fn enter_activates_a_focused_row_through_the_real_handler() {
-    let mut d = driver();
-    let target = "Create user";
+    let mut app = sample();
+    let d = app.harness();
+    let target = "Users API, collection, 4 requests";
 
     let mut reached = false;
     for _ in 0..=d.focus_order().len() {
@@ -302,41 +329,268 @@ fn enter_activates_a_focused_row_through_the_real_handler() {
             break;
         }
     }
-    assert!(reached, "Tab can land on the saved requests");
-    let chosen = |d: &Driver| {
-        d.focused_access_node().is_some_and(|list| {
-            list.children
-                .iter()
-                .any(|row| row.name.as_deref() == Some(target) && row.state.selected)
-        })
-    };
-    for _ in 0..8 {
-        if chosen(&d) {
-            break;
-        }
-        d.key("ArrowDown");
-    }
-    d.key("Enter");
-    assert!(chosen(&d), "the arrows chose the request");
+    assert!(reached, "Tab can land on the collection header");
 
-    let nodes = d.focus_access_nodes();
+    // Expanded: its request rows are present.
+    let before = d.focus_access_nodes();
     assert!(
-        nodes
+        before
             .iter()
-            .any(|n| n.role == Role::ComboBox && n.value.as_deref() == Some("POST")),
-        "the method picker follows the loaded request"
+            .any(|n| n.name.as_deref() == Some("GET List users")),
+        "before activation the collection is expanded"
+    );
+
+    // Activate with the keyboard.
+    d.key("Enter");
+
+    // Collapsed: the request rows are gone and the header reports it.
+    let after = d.focus_access_nodes();
+    assert!(
+        !after
+            .iter()
+            .any(|n| n.name.as_deref() == Some("GET List users")),
+        "Enter collapsed the collection, hiding its request rows"
+    );
+    let coll = after
+        .iter()
+        .find(|n| n.name.as_deref() == Some(target))
+        .expect("the collection header is still present");
+    assert_eq!(
+        coll.state.expanded,
+        Some(false),
+        "the header now reports collapsed"
     );
 }
 
-/// Case of `keyboard_focus_traverses_activates_and_dismisses_through_real_handlers`.
-fn escape_dismisses_a_sheet() {
-    let mut d = staged("form-new-collection", (1280, 800));
+/// Case of `keyboard_focus_traverses_activates_and_returns_through_real_handlers`.
+fn composition_disclosure_hides_maintenance_and_returns_focus() {
+    let mut app = sample();
+    let d = app.harness();
+    assert!(
+        !d.targets().contains_key("api.rename-request"),
+        "maintenance is hidden by default"
+    );
+    assert!(d.targets()["api.nav.1"].y0 < d.targets()["api.request-actions"].y0);
+    d.click_named("api.request-actions").unwrap();
+    assert!(d.targets().contains_key("api.rename-request"));
+    assert!(!d.targets().contains_key("api.new-variable"));
+    d.perform_named("api.rename-request", &ui::a11y::Action::Focus)
+        .unwrap();
+    d.key("Escape");
+    assert!(!d.targets().contains_key("api.rename-request"));
+    assert!(
+        d.focused_access_node()
+            .unwrap()
+            .name
+            .unwrap()
+            .starts_with("Request actions")
+    );
+}
+
+/// The request divider responds to keyboard and pointer, its manual
+/// preference survives resizes and tab changes, and 2x text keeps every
+/// control on screen; each case mounts its own Driver.
+#[test]
+fn request_divider_and_controls_survive_resize_and_text_scale() {
+    composition_params_fit_rows_and_divider_adjusts_with_keyboard();
+    composition_pointer_drag_body_auth_and_preference_survive_resize();
+    composition_real_two_x_retains_all_controls_and_response_space();
+}
+
+/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
+fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
+    let mut app = sample();
+    let d = app.harness();
+    let before = d.targets()["api.request-divider"];
+    let top = d.targets()["api.send"].y0;
+    assert!(
+        before.y0 - top < 300.0,
+        "three parameter rows fit above the response"
+    );
+    d.perform_named("api.request-divider", &ui::a11y::Action::Focus)
+        .unwrap();
+    d.key("ArrowDown");
+    assert!(d.targets()["api.request-divider"].y0 > before.y0);
+    d.resize((800, 480)).unwrap();
+    assert!(d.targets()["api.request-divider"].y1 < 380.0);
+    d.resize((1280, 800)).unwrap();
+    assert!(d.targets()["api.request-divider"].y0 > before.y0);
+    d.click_named("api.request-actions").unwrap();
+    d.click_named("api.reset-request-area").unwrap();
+    assert_eq!(d.targets()["api.request-divider"], before);
+}
+
+fn click_tab(d: &mut Driver, index: u32) {
+    let rect = d.targets()["api.request-tabs"];
+    d.click_at(
+        rect.x0 + rect.width() * (f64::from(index) + 0.5) / 4.0,
+        rect.center().y,
+    );
+}
+
+fn move_pointer(d: &mut Driver, x: f64, y: f64) {
+    d.send(&winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(x, y),
+    });
+}
+
+fn assert_sidebar_targets(d: &Driver, height: f64) {
+    let targets = d.targets();
+    let mut sidebar = Vec::new();
+    for (id, rect) in &targets {
+        if id.starts_with("api.nav.")
+            || [
+                "api.env",
+                "api.new-collection",
+                "api.save-request",
+                "api.collection-actions",
+                "api.request-actions",
+                "api.environment-actions",
+                "api.rename-request",
+                "api.delete-request",
+                "api.increase-request-area",
+                "api.decrease-request-area",
+                "api.reset-request-area",
+                "api.new-environment",
+                "api.rename-environment",
+                "api.delete-environment",
+                "api.new-variable",
+                "api.delete-variable",
+                "api.previous-saved",
+                "api.next-saved",
+            ]
+            .contains(&id.as_str())
+        {
+            assert!(
+                rect.x0 >= 0.0
+                    && rect.y0 >= 0.0
+                    && rect.y1 <= height
+                    && rect.width() > 0.0
+                    && rect.height() > 0.0,
+                "{id}: {rect:?} inside {height}"
+            );
+            for (other, other_rect) in &sidebar {
+                assert!(
+                    rect.intersect(*other_rect).area() <= 0.0,
+                    "{id} overlaps {other}"
+                );
+            }
+            sidebar.push((id, *rect));
+        }
+    }
+}
+
+/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
+#[expect(
+    clippy::float_cmp,
+    reason = "the divider moves by exactly the dragged whole-pixel distance"
+)]
+fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
+    let mut app = sample();
+    let d = app.harness();
+    let divider = d.targets()["api.request-divider"];
+    move_pointer(d, divider.center().x, divider.center().y);
+    d.send(&winit::event::WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: winit::event::ElementState::Pressed,
+        button: winit::event::MouseButton::Left,
+    });
+    move_pointer(d, divider.center().x, divider.center().y + 200.0);
+    d.send(&winit::event::WindowEvent::MouseInput {
+        device_id: winit::event::DeviceId::dummy(),
+        state: winit::event::ElementState::Released,
+        button: winit::event::MouseButton::Left,
+    });
+    let manual = d.targets()["api.request-divider"];
+    assert_eq!(manual.y0, divider.y0 + 200.0);
+    d.click_named("api.nav.3").unwrap();
+    click_tab(d, 3);
+    assert!(d.targets().contains_key("api.body"));
+    assert_eq!(d.targets()["api.request-divider"], manual);
+    d.click_named("api.body").unwrap();
+    d.type_text("x");
+    assert_eq!(d.targets()["api.request-divider"], manual);
+    click_tab(d, 2);
+    assert!(!d.targets().contains_key("api.body"));
+    assert_eq!(d.targets()["api.request-divider"], manual);
+    let modes = d.targets()["api.response-view"];
+    d.click_at(modes.x0 + modes.width() * 5.0 / 6.0, modes.center().y);
     assert!(
         d.focus_access_nodes()
             .iter()
             .any(|node| node.name.as_deref() == Some("Name")),
         "the sheet is open"
     );
+    d.resize((800, 480)).unwrap();
+    assert!(d.targets()["api.request-divider"].y1 <= 380.0);
+    d.resize((1280, 800)).unwrap();
+    assert_eq!(d.targets()["api.request-divider"], manual);
+}
+
+/// Real management buttons and Send (pointer and keyboard) drive the same
+/// mutations and requests as the live app; each case mounts its own Driver.
+#[test]
+fn real_buttons_perform_canonical_mutations_and_live_sends() {
+    composition_management_real_buttons_keep_canonical_mutations();
+    pointer_and_keyboard_send_use_the_live_request();
+}
+
+/// Case of `real_buttons_perform_canonical_mutations_and_live_sends`.
+fn composition_management_real_buttons_keep_canonical_mutations() {
+    let mut app = sample();
+    let d = app.harness();
+    d.perform_named("api.collection-actions", &ui::a11y::Action::Focus)
+        .unwrap();
+    d.key("Enter");
+    d.click_named("api.rename-collection").unwrap();
+    assert!(d.targets().contains_key("api.form-name"));
+    d.click_named("api.form-name").unwrap();
+    d.key("Home");
+    d.type_text("Edited ");
+    d.click_named("api.form-confirm").unwrap();
+    settle(d);
+    assert!(
+        d.focus_access_nodes().iter().any(|n| n
+            .name
+            .as_deref()
+            .is_some_and(|s| s.contains("Edited") && s.contains("collection"))),
+        "{}",
+        d.dump_json()
+    );
+    d.click_named("api.environment-actions").unwrap();
+    d.click_named("api.new-variable").unwrap();
+    d.click_named("api.form-variable-key").unwrap();
+    d.type_text("region");
+    d.click_named("api.form-variable-value").unwrap();
+    d.type_text("eu-west-1");
+    d.click_named("api.form-confirm").unwrap();
+    settle(d);
+    let json = d.dump_json();
+    assert!(
+        json.contains("eu-west-1") && json.contains("region"),
+        "{json}"
+    );
+}
+
+/// Case of `keyboard_focus_traverses_activates_and_returns_through_real_handlers`.
+fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
+    let mut app = sample();
+    let d = app.harness();
+    d.resize((480, 900)).unwrap();
+    d.perform_named("api.workspace-menu", &ui::a11y::Action::Focus)
+        .unwrap();
+    d.key("Enter");
+    // Settle the drawer's existing animation through real redraw ticks.
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        d.relayout();
+    }
+    d.click_named("api.environment-actions").unwrap();
+    assert_sidebar_targets(d, 900.0);
+    // 480 logical pixels for the app below the window's 40-pixel title bar.
+    d.resize((800, 520)).unwrap();
+    assert_sidebar_targets(d, 520.0);
     d.key("Escape");
     assert!(
         !d.focus_access_nodes()
@@ -346,190 +600,29 @@ fn escape_dismisses_a_sheet() {
     );
 }
 
-/// The environment picker chooses an environment, and its commands open the
-/// sheets that manage environments without becoming the picker's value.
-#[test]
-fn the_environment_picker_switches_environments_and_opens_management_sheets() {
-    let mut d = driver();
-    let env_value = |d: &Driver| {
-        d.focus_access_nodes()
-            .iter()
-            .find(|n| n.role == Role::ComboBox && n.name.as_deref() == Some("Environment"))
-            .and_then(|n| n.value.clone())
-    };
-    assert_eq!(env_value(&d).as_deref(), Some("Production"));
-    d.click_named("api.env").unwrap();
-    d.key("ArrowDown");
-    d.key("Enter");
-    assert_eq!(env_value(&d).as_deref(), Some("Staging"), "the pick sticks");
-
-    d.click_named("api.env").unwrap();
-    // Staging, Local, No environment, then the first command.
-    for _ in 0..3 {
-        d.key("ArrowDown");
-    }
-    d.key("Enter");
-    assert!(
-        d.focus_access_nodes()
-            .iter()
-            .any(|n| n.role == Role::TextInput && n.name.as_deref() == Some("Name")),
-        "New environment opens its sheet"
-    );
-    d.key("Escape");
-    assert_eq!(
-        env_value(&d).as_deref(),
-        Some("Staging"),
-        "a command is not the picker's value"
-    );
-}
-
-/// Typing in the table's blank row keeps the caret where it is, makes the row
-/// a pair and gives the table a new blank row to type the next one in.
-#[test]
-fn typing_in_the_blank_row_adds_a_pair_and_a_new_blank_row() {
-    let mut d = driver();
-    let keys = |d: &Driver| {
-        d.focus_access_nodes()
-            .iter()
-            .filter(|n| n.role == Role::TextInput && n.name.as_deref() == Some("Key"))
-            .count()
-    };
-    let before = keys(&d);
-    let mut reached = false;
-    for _ in 0..=d.focus_order().len() {
-        d.tab(false);
-        let focused = d.focused_access_node();
-        if focused.as_ref().is_some_and(|n| {
-            n.role == Role::TextInput
-                && n.name.as_deref() == Some("Key")
-                && n.value.as_deref().is_none_or(str::is_empty)
-        }) {
-            reached = true;
-            break;
-        }
-    }
-    assert!(reached, "Tab reaches the blank row's key field");
-    d.type_text("limit");
-    d.poll_frame().expect("a frame runs");
-    let focused = d.focused_access_node().expect("focus stays");
-    assert_eq!(
-        focused.value.as_deref(),
-        Some("limit"),
-        "the field kept focus while the table grew"
-    );
-    assert_eq!(keys(&d), before + 1, "a new blank row appeared");
-    let checked = d
-        .focus_access_nodes()
-        .iter()
-        .filter(|n| n.role == Role::Checkbox && n.state.checked == Some(true))
-        .count();
-    assert!(checked >= 3, "the typed row is included, got {checked}");
-}
-
-/// Choosing a tab replaces the panel, and each panel is made of real controls.
-#[test]
-fn tabs_choose_the_panel_and_the_panel_is_made_of_real_controls() {
-    let mut d = driver();
-    let tabs = d.targets()["api.request-tabs"];
-    let click_tab = |d: &mut Driver, index: f64| {
-        d.click_at(
-            tabs.x0 + tabs.width() * (index + 0.5) / 4.0,
-            tabs.center().y,
-        );
-    };
-    click_tab(&mut d, 1.0);
-    let nodes = d.focus_access_nodes();
-    assert!(
-        nodes
-            .iter()
-            .any(|n| n.role == Role::TextInput && n.value.as_deref() == Some("X-Client")),
-        "the Headers tab lists the request's headers"
-    );
-    assert!(
-        !nodes
-            .iter()
-            .any(|n| n.role == Role::TextInput && n.value.as_deref() == Some("per_page")),
-        "the parameters are gone"
-    );
-    click_tab(&mut d, 2.0);
-    let nodes = d.focus_access_nodes();
-    assert!(
-        nodes
-            .iter()
-            .any(|n| n.role == Role::TextInput && n.name.as_deref() == Some("Token")),
-        "the Auth tab edits the bearer token"
-    );
-    click_tab(&mut d, 3.0);
-    assert!(
-        d.focus_access_nodes()
-            .iter()
-            .any(|n| n.role == Role::Group && n.value.as_deref() == Some("None")),
-        "the Body tab offers the body modes"
-    );
-}
-
-/// The split between the request and the response responds to the pointer, and
-/// 2x text keeps every control on screen.
-#[test]
-fn the_split_drags_and_text_scale_keeps_controls_on_screen() {
-    let mut d = driver();
-    let before = d.targets()["api.response-view"];
-    let height = 800.0;
-    // The divider lies a little above the response's own top edge, which
-    // leaves room between the two; find where it can be taken.
-    let pointer = |d: &mut Driver, y: f64| {
-        d.send(&winit::event::WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(700.0, y),
-        });
-    };
-    let button = |d: &mut Driver, state| {
-        d.send(&winit::event::WindowEvent::MouseInput {
-            device_id: winit::event::DeviceId::dummy(),
-            state,
-            button: winit::event::MouseButton::Left,
-        });
-    };
-    let mut after = before;
-    for above in (0..40).map(f64::from) {
-        let divider_y = before.y0 - above;
-        pointer(&mut d, divider_y);
-        button(&mut d, winit::event::ElementState::Pressed);
-        pointer(&mut d, divider_y + 120.0);
-        button(&mut d, winit::event::ElementState::Released);
-        after = d.targets()["api.response-view"];
-        if after.y0 > before.y0 + 60.0 {
-            break;
-        }
-    }
-    assert!(
-        after.y0 > before.y0 + 60.0,
-        "the response moved down with the divider: {before:?} -> {after:?}"
-    );
-
-    let app = ApiTesterApp::new_demo();
-    let d = Driver::new_with_theme(
-        State::new(),
-        Box::new(app),
-        (800, 900),
+/// Case of `request_divider_and_controls_survive_resize_and_text_scale`.
+fn composition_real_two_x_retains_all_controls_and_response_space() {
+    let mut app = captured("rail-open", (800, 900));
+    let d = app.harness();
+    d.relayout_themed(
+        ui::headless::viewport((800.0, 900.0)),
         ui::theme::Theme::dark().with_text_scale(2.0),
-    );
-    for (id, rect) in d.targets() {
-        if id.starts_with("api.") {
-            assert!(
-                rect.x0 >= 0.0 && rect.x1 <= 800.0 && rect.y1 <= 900.0 + height,
-                "{id}: {rect:?} stays in the window"
-            );
-        }
-    }
-    assert!(d.targets()["api.request-tabs"].x1 <= 800.0);
+    )
+    .unwrap();
+    assert_sidebar_targets(d, 900.0);
+    d.click_named("api.environment-actions").unwrap();
+    assert_sidebar_targets(d, 900.0);
+    let targets = d.targets();
+    assert!(targets["api.request-divider"].y1 < 700.0);
+    assert!(targets["api.request-tabs"].x1 <= 800.0);
 }
 
 /// Sheets collect a name and dispatch the canonical action through the real
 /// controls.
 #[test]
 fn a_sheet_creates_a_collection_through_the_real_controls() {
-    let mut d = driver();
+    let mut app = sample();
+    let d = app.harness();
     d.click_named("api.new-collection").unwrap();
     d.type_text("Billing API");
     d.key("Enter");
@@ -575,7 +668,32 @@ fn pointer_and_keyboard_send_use_the_live_request() {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         });
-        let mut d = driver();
+        let mut app = sample();
+        // The token is a secret variable: its value is kept on this device.
+        let state = app.state();
+        let token = state
+            .environments
+            .iter()
+            .find(|environment| Some(environment.id) == state.active_env)
+            .and_then(|environment| {
+                environment
+                    .variables
+                    .iter()
+                    .find(|variable| variable.key == "token")
+                    .map(|variable| variable.id.clone())
+            })
+            .expect("the active environment has a token");
+        app.effect(&ApiTesterEffect::SetSecretValue {
+            variable: token,
+            value: "prod_sk_9f8c1a2b3d4e5f60".into(),
+        })
+        .unwrap();
+        // The request's own credential, also kept on this device, names it.
+        app.effect(&ApiTesterEffect::SetCredential {
+            secret: "{{token}}".into(),
+        })
+        .unwrap();
+        let d = app.harness();
         d.perform_named(
             "api.url",
             &ui::a11y::Action::SetValue(format!("http://{address}/verify")),
@@ -605,19 +723,10 @@ fn pointer_and_keyboard_send_use_the_live_request() {
 /// demo. Rows and cells carry their callbacks as widget closures, which the
 /// native-app audit reports as such; nothing else may be reported.
 #[test]
-fn native_app_audit_reports_only_widget_callbacks() {
-    for app in [ApiTesterApp::new, ApiTesterApp::new_demo] {
-        let d = Driver::new(State::new(), Box::new(app()), (1280, 800));
-        let audit = d.native_app_audit();
-        assert!(audit.accessibility.is_clean(), "{audit:#?}");
-        for issue in &audit.issues {
-            assert!(
-                matches!(
-                    issue.code.as_str(),
-                    "legacy-callback" | "orphan-action-binding"
-                ),
-                "{issue:?}"
-            );
-        }
+fn native_app_contract_is_certified() {
+    for scenario in ["empty", "rail-open"] {
+        let mut app = captured(scenario, (1280, 800));
+        let audit = app.harness().native_app_audit();
+        assert!(audit.is_certified(), "{scenario}: {audit:#?}");
     }
 }

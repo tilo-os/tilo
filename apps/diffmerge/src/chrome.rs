@@ -146,7 +146,7 @@ impl Chrome {
         } else {
             t("toolbar-sample")
         };
-        let sample = Button::new("diffmerge.load-sample", &sample_label, None)
+        let sample = Button::new("diffmerge.load-sample", &sample_label)
             .control_size(ControlSize::Small)
             .on_effect(self.request(Command::LoadSample));
         // The one primary action: a labelled button, or its icon when the
@@ -154,7 +154,7 @@ impl Chrome {
         let open = if compact {
             Button::icon_only("diffmerge.open-files", Icon::FolderOpen, &t("toolbar-open"))
         } else {
-            Button::new("diffmerge.open-files", &t("toolbar-open"), None)
+            Button::new("diffmerge.open-files", &t("toolbar-open"))
         }
         .role(ButtonRole::Primary)
         .control_size(ControlSize::Small)

@@ -1,11 +1,10 @@
 //! Weather — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default — the framework app ([`weather::WeatherShell`]): the live
-//!     window, and `--shots PATH` (with `--scenario NAME`, `--viewport WxH`,
-//!     `--theme NAME`) for a capture of the same window, staged onto the
-//!     bundled sample places.
-//!   * `--probe` — exercise the live networking stack and print what came back.
+//!   * default — the framework app ([`weather::WeatherShell`]), including its
+//!     `--shots --scenario NAME` captures.
+//!   * `--probe` — exercise the live networking stack and print what came
+//!     back.
 
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
 // An app runs as its own sandboxed process, so an integer that wraps here
@@ -44,8 +43,7 @@ extern crate runtime_dylib;
 /// Returns an error if `--probe` can't complete its live fetch within its
 /// deadline.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.iter().any(|a| a == "--probe") {
+    if std::env::args().any(|a| a == "--probe") {
         let _ = tracing_subscriber::fmt::try_init();
         return run_probe();
     }

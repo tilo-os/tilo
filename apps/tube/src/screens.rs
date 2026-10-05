@@ -21,9 +21,10 @@ use ui::widget::{
 };
 
 use crate::action::{self, Action, ActionBus, Invocations, SettingFlag};
+use crate::actions::{TubeAction, TubeEffect};
 use crate::i18n::{arg, t, t_args};
 use crate::images::Imgs;
-use crate::model::{Category, Route, SkipMode, TubeModel, Video};
+use crate::model::{Category, Route, SearchType, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{PlayerHost, SharedPlayer};
 
@@ -262,6 +263,7 @@ pub fn title(route: &Route) -> String {
         Route::Queue => t("tube-nav-queue"),
         Route::History => t("tube-nav-history"),
         Route::Settings => t("tube-nav-settings"),
+        Route::Search(query) => format!("Search: {query}"),
         Route::Watch(_) | Route::Channel(_) | Route::Playlist(_) => String::new(),
     }
 }
@@ -276,10 +278,10 @@ pub fn header_actions(ui: Ui<'_>) -> Vec<Element> {
     }
     if matches!(ui.model.route, Route::History) && !ui.model.history.is_empty() {
         actions.push(Box::new(
-            Button::new("clear_history", &t("tube-clear-history"), None)
+            Button::new("clear_history", &t("tube-clear-history"))
                 .role(ButtonRole::Destructive)
                 .control_size(ControlSize::Small)
-                .on_click(ui.push(Action::ClearHistory)),
+                .on_click(ui.push(Action::Effect(TubeEffect::ClearHistory))),
         ));
     }
     actions.push(Box::new(ui::search::search_button(
@@ -404,7 +406,7 @@ pub fn subscriptions(ui: Ui<'_>) -> Scrollable {
 pub fn history(ui: Ui<'_>) -> Scrollable {
     let model = ui.model;
     let mut children: Vec<Element> = Vec::new();
-    if let Some(recovery) = &model.history_recovery_notice {
+    if let Some(recovery) = &model.history_notice {
         children.push(Box::new(
             Banner::warning(t("tube-history-not-saving")).with_message(recovery.clone()),
         ));
@@ -451,7 +453,15 @@ pub fn queue(ui: Ui<'_>) -> Scrollable {
             .dimmed(),
         ));
     }
-    page(children)
+    Scrollable::new_vertical().with_child(Box::new(
+        children.into_iter().fold(
+            Column::new()
+                .with_id("queue_page")
+                .with_intrinsic_height()
+                .with_rhythm(ui::tokens::Rhythm::Group),
+            |column, child| column.push(child),
+        ),
+    ))
 }
 
 pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
@@ -491,7 +501,7 @@ pub fn playlist(ui: Ui<'_>, id: &str) -> Scrollable {
     ));
     if let Some(first) = videos.first() {
         info = info.push(Box::new(
-            Button::new("playlist_play", &t("tube-play-all"), None)
+            Button::new("playlist_play", &t("tube-play-all"))
                 .with_icon(Icon::Play)
                 .role(ButtonRole::Primary)
                 .on_click(ui.push(Action::OpenVideo(first.id.clone()))),
@@ -598,13 +608,16 @@ pub fn channel(ui: Ui<'_>, id: &str) -> Scrollable {
 }
 
 fn subscribe_button(ui: Ui<'_>, channel_id: &str) -> Button {
-    let action = Action::ToggleSubscribe(channel_id.to_string());
+    let action = Action::Edit(TubeAction::SetSubscription {
+        channel_id: channel_id.to_string(),
+        subscribed: !ui.model.is_subscribed(channel_id),
+    });
     if ui.model.is_subscribed(channel_id) {
-        Button::new("subscribe_btn", &t("tube-subscribed"), None)
+        Button::new("subscribe_btn", &t("tube-subscribed"))
             .with_icon(Icon::Bell)
             .on_click(ui.push(action))
     } else {
-        Button::new("subscribe_btn", &t("tube-subscribe"), None)
+        Button::new("subscribe_btn", &t("tube-subscribe"))
             .role(ButtonRole::Primary)
             .on_click(ui.push(action))
     }
@@ -837,11 +850,14 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
     } else {
         t("tube-like")
     };
-    let like = Button::new("watch_like", &like_label, None)
+    let like = Button::new("watch_like", &like_label)
         .with_icon(Icon::ThumbsUp)
         .with_accessible_name(&like_name)
         .toggled(liked)
-        .on_click(ui.push(Action::ToggleLike(v.id.clone())));
+        .on_click(ui.push(Action::Edit(TubeAction::SetVideoLiked {
+            video_id: v.id.clone(),
+            liked: !liked,
+        })));
     let queue = Button::new(
         "watch_queue",
         &t(if queued {
@@ -849,14 +865,13 @@ fn watch_actions(ui: Ui<'_>, v: &Video) -> Row {
         } else {
             "tube-add-to-queue"
         }),
-        None,
     )
     .with_icon(Icon::ListVideo);
-    let queue = match crate::actions::queue_binding(model, &v.id) {
-        Some(binding) => queue.on_action(binding),
-        None => queue,
-    };
-    let copy_link = Button::new("watch_copy_link", &t("tube-copy-link"), None)
+    let queue = queue.on_click(ui.push(Action::Edit(TubeAction::SetQueueMembership {
+        video_id: v.id.clone(),
+        queued: !queued,
+    })));
+    let copy_link = Button::new("watch_copy_link", &t("tube-copy-link"))
         .with_icon(Icon::Copy)
         .on_click(ui.push(Action::Share(v.id.clone())));
     let settings = Button::icon_only(
@@ -998,12 +1013,21 @@ fn comment(ui: Ui<'_>, c: &crate::model::Comment) -> Row {
 
 fn up_next(ui: Ui<'_>, id: &str) -> Column {
     let rhythm = &ui.theme.tokens.spacing.rhythm;
+    let enabled = !ui.model.settings.autoplay;
     let autoplay = Toggle::from_state(&ui::LocalState::new(ui.model.settings.autoplay))
         .with_id("switch_up_next_autoplay")
         .with_accessible_name(&t("tube-autoplay"))
         .on_change({
             let bus = ui.bus.clone();
-            move |_| action::push(&bus, Action::ToggleSetting(SettingFlag::Autoplay))
+            move |_| {
+                action::push(
+                    &bus,
+                    Action::Effect(TubeEffect::SetPreference {
+                        preference: SettingFlag::Autoplay.id().into(),
+                        enabled,
+                    }),
+                )
+            }
         });
     let header = Row::new()
         .no_wrap()
@@ -1101,7 +1125,15 @@ fn switch(ui: Ui<'_>, id: &str, on: bool, flag: SettingFlag) -> Toggle {
     let bus = ui.bus.clone();
     Toggle::from_state(&ui::LocalState::new(on))
         .with_id(id)
-        .on_change(move |_| action::push(&bus, Action::ToggleSetting(flag)))
+        .on_change(move |_| {
+            action::push(
+                &bus,
+                Action::Effect(TubeEffect::SetPreference {
+                    preference: flag.id().into(),
+                    enabled: !on,
+                }),
+            )
+        })
 }
 
 /// A sentence under a group of settings that the person needs to read the
@@ -1206,7 +1238,12 @@ fn quality_settings(ui: Ui<'_>) -> FormSection {
             .iter()
             .find(|q| quality_label(q) == label)
         {
-            action::push(&bus, Action::SetQuality((*q).to_string()));
+            action::push(
+                &bus,
+                Action::Effect(TubeEffect::SetPreferredQuality {
+                    quality: (*q).to_string(),
+                }),
+            );
         }
     });
     FormSection::new(t("tube-quality"))
@@ -1255,15 +1292,21 @@ fn segment_settings(ui: Ui<'_>) -> FormSection {
         let bus = ui.bus.clone();
         let modes = [SkipMode::Skip, SkipMode::Show, SkipMode::Disabled];
         let dropdown = Dropdown::from_state(
-            modes.iter().map(|m| m.label()).collect(),
-            &ui::LocalState::new(stored.label()),
+            modes.iter().map(|m| m.label().to_string()).collect(),
+            &ui::LocalState::new(stored.label().to_string()),
         )
         .with_id(&format!("mode_{}", category.api_key()))
         .with_accessible_name(category.label())
         .with_enabled(s.sponsorblock_enabled)
         .on_change(move |label| {
             if let Some(mode) = modes.iter().find(|m| m.label() == label) {
-                action::push(&bus, Action::SetCategory(category, *mode));
+                action::push(
+                    &bus,
+                    Action::Effect(TubeEffect::SetSegmentHandling {
+                        category: category.api_key().into(),
+                        mode: mode.key().into(),
+                    }),
+                );
             }
         });
         let name =
@@ -1369,9 +1412,9 @@ fn device_sync_settings(
         )));
     if !active.is_empty() {
         summary = summary.push(Box::new(
-            Button::new("grayjay_sync_now", &t("tube-sync-now"), None)
+            Button::new("grayjay_sync_now", &t("tube-sync-now"))
                 .with_icon(Icon::Refresh)
-                .on_click(ui.push(Action::SyncDevices)),
+                .on_click(ui.push(Action::Effect(TubeEffect::SyncDevices))),
         ));
     }
     section = section.content(Box::new(summary));
@@ -1390,7 +1433,7 @@ fn device_sync_settings(
                     .with_enter_submits(true),
             ))
             .push(Box::new(
-                Button::new("grayjay_pair", &t("tube-pair-device"), None)
+                Button::new("grayjay_pair", &t("tube-pair-device"))
                     .on_click(ui.push(Action::PairDevice)),
             )),
     ));
@@ -1418,10 +1461,13 @@ fn device_sync_settings(
                     Button::new(
                         &format!("grayjay_approve_{}", peer.short_id()),
                         &t("tube-approve-device"),
-                        None,
                     )
                     .role(ButtonRole::Primary)
-                    .on_click(ui.push(Action::ApproveDevice(peer.id.clone()))),
+                    .on_click(ui.push(Action::Effect(
+                        TubeEffect::ApproveDevice {
+                            device: peer.id.clone(),
+                        },
+                    ))),
                 )),
             ));
         }
@@ -1462,7 +1508,10 @@ fn device_sync_settings(
                 .icon(Icon::Monitor)
                 .secondary(detail)
                 .action(Icon::Trash, t("tube-revoke-device"), move || {
-                    action::push(&bus, Action::RevokeDevice(id.clone()));
+                    action::push(
+                        &bus,
+                        Action::Effect(TubeEffect::RevokeDevice { device: id.clone() }),
+                    );
                 });
             if failed {
                 row = row.error();
@@ -1497,4 +1546,68 @@ fn relative_sync_time(time: i64) -> String {
         "tube-last-synced",
         &[arg("when", ui::format::relative(current - time))],
     )
+}
+
+/// Backend results displayed as the same semantic media cards used by the catalogue.
+pub fn search_results(ui: Ui<'_>, query: &str) -> Scrollable {
+    let filters = SearchType::ALL.into_iter().fold(Row::new(), |row, kind| {
+        row.push(Box::new(
+            Chip::new(kind.label())
+                .selected(ui.model.search_type_filter.shows(kind))
+                .on_click(ui.push(Action::ToggleSearchType(kind))),
+        ))
+    });
+    let mut children: Vec<Element> = vec![Box::new(filters)];
+    if ui.model.search_loading {
+        children.push(Box::new(skeleton_grid(ui)));
+    } else if let Some(error) = &ui.model.search_error {
+        children.push(Box::new(EmptyState::new(error).with_icon(Icon::Search)));
+    } else {
+        if ui.model.search_type_filter.shows(SearchType::Video) {
+            children.push(video_grid(ui, ui.model.search_display(query)));
+        }
+        if ui.model.search_type_filter.shows(SearchType::Playlist) {
+            let rows = ui
+                .model
+                .search_playlists_display(query)
+                .into_iter()
+                .map(|playlist| {
+                    Box::new(
+                        ListRow::new(format!("tube.playlist:{}", playlist.id), &playlist.title)
+                            .icon(Icon::ListVideo)
+                            .secondary(&playlist.channel_name)
+                            .on_activate(ui.push(Action::Effect(TubeEffect::OpenPlaylist {
+                                playlist: playlist.id.clone(),
+                            }))),
+                    ) as Element
+                })
+                .collect();
+            children.push(Box::new(
+                Section::new(rows).with_header(SectionHeader::group(SearchType::Playlist.label())),
+            ));
+        }
+        if ui.model.search_type_filter.shows(SearchType::Creator) {
+            let rows = ui
+                .model
+                .search_creators_display(query)
+                .into_iter()
+                .map(|creator| {
+                    Box::new(
+                        ListRow::new(format!("tube.channel:{}", creator.id), &creator.name)
+                            .icon(Icon::Users)
+                            .secondary(&creator.handle)
+                            .on_activate(ui.push(Action::Effect(TubeEffect::OpenCreator {
+                                creator: creator.id.clone(),
+                            }))),
+                    ) as Element
+                })
+                .collect();
+            children.push(Box::new(
+                Section::new(rows).with_header(SectionHeader::group(SearchType::Creator.label())),
+            ));
+        }
+    }
+    page(vec![Box::new(Section::new(children).with_header(
+        SectionHeader::heading(format!("Search: {query}")),
+    ))])
 }

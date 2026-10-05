@@ -65,10 +65,6 @@ a11y-text-color-default = Default text colour
 a11y-highlight = Highlight #{ $hex }
 a11y-highlight-clear = Clear highlight
 
-## Crash-recovery banner
-recovery-banner = Recovered unsaved changes from a previous session.
-recovery-restore = Restore
-recovery-discard = Discard
 
 ## Status bar
 status-untitled = Untitled
@@ -189,12 +185,6 @@ toast-saved = Document saved
 toast-save-failed = Could not save the document
 toast-open-failed = Could not open the document. Your current document is unchanged.
 toast-view-only = This document is open to view only.
-unsaved-title = Save changes?
-unsaved-body = Save this document before replacing it.
-unsaved-save = Save
-unsaved-discard = Discard changes
-unsaved-cancel = Cancel
-unsaved-close = Close
 toast-file-dialog-failed = Could not open the file chooser
 
 ## Outline / navigation pane
@@ -230,6 +220,7 @@ toolbar-history = History
 toolbar-text-color = Colour
 toolbar-highlight = Highlight
 picker-text-color = Text colour
+toolbar-more = More ▾
 picker-highlight = Highlight
 a11y-text-colour-name = { $colour } text
 a11y-highlight-name = { $colour } highlight
@@ -269,3 +260,4 @@ panel-align-left = Left
 panel-align-center = Centre
 panel-align-right = Right
 panel-align-justify = Justify
+a11y-more-tools = More formatting and document tools

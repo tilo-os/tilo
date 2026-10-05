@@ -12,7 +12,6 @@ use crate::appliance_owner::{
 use crate::model::{AppStatus, ApplianceState, Catalogue, Route, VmInstallConfirmation};
 use crate::provider::{CompatibilityProvider, EmptyProvider, LiveProvider};
 use crate::strings;
-use automerge::{AutoCommit, ObjId};
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::fs::File;
@@ -181,7 +180,7 @@ fn action_button(
     intents: &Intents,
     intent: Intent,
 ) -> Button {
-    Button::new(id, &strings::t(label_key), None)
+    Button::new(id, &strings::t(label_key))
         .role(role)
         .on_effect(queue(intents, intent))
 }
@@ -267,9 +266,10 @@ pub struct WindowsApp {
     confirm_escalate_to_vm: Option<String>,
     confirm_vendor_uninstall: Option<String>,
     confirm_delete_data: Option<String>,
-    resource_invocation: Option<tilo_actions::InvocationId>,
+    /// The answer owed to the effect still running, given when the picker,
+    /// the service or the appliance settles.
+    resource_reply: Option<ui::framework::EffectReply>,
     resource_waits_for_appliance: bool,
-    resource_result: Option<tilo_actions::InvocationUpdate>,
     pending_control_invocation: Option<tilo_actions::ControlInvocation>,
     /// The routes the service reports, which the route projection compares
     /// the shared overrides against.
@@ -439,9 +439,8 @@ impl WindowsApp {
             confirm_escalate_to_vm: None,
             confirm_vendor_uninstall: None,
             confirm_delete_data: None,
-            resource_invocation: None,
+            resource_reply: None,
             resource_waits_for_appliance: false,
-            resource_result: None,
             pending_control_invocation: None,
             reported_routes: crate::resource::ReportedRoutes::default(),
             route_projection: ui::framework::Projection::default(),
@@ -532,34 +531,45 @@ impl WindowsApp {
     }
 
     fn finish_resource_operation(&mut self, result: Result<(), String>) {
-        let Some(invocation) = self.resource_invocation.take() else {
-            return;
-        };
-        self.resource_result = Some(match result {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
-            Err(message) => tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "windows.operation_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            },
-        });
+        if let Some(reply) = self.resource_reply.take() {
+            reply.finish(result.map(|()| tilo_actions::ActionOutput::default()));
+        }
     }
 
     fn cancel_resource_operation(&mut self, message: &str) {
-        let Some(invocation) = self.resource_invocation.take() else {
-            return;
-        };
-        self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-            invocation,
-            message: Some(message.into()),
-        });
+        self.finish_resource_operation(Err(message.to_string()));
+    }
+
+    /// Whether an effect is still waiting for its answer.
+    pub(crate) fn is_busy(&self) -> bool {
+        self.resource_reply.is_some()
+    }
+
+    /// Answer `effect`: ask the service, the appliance or the file chooser,
+    /// and answer at once or once that settles.
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: &actions::WindowsEffect,
+        cx: &mut ui::framework::EffectCx<crate::resource::Windows, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if self.resource_reply.is_some() {
+            return Err("another Windows operation is still running".into());
+        }
+        let (type_id, _) = effect.operation();
+        if !self.invoke_effect_operation(type_id, &effect.payload())? {
+            return Err(format!("`{type_id}` is not a Windows operation"));
+        }
+        let deferred = self.portal_rx.is_some()
+            || self.document_portal_rx.is_some()
+            || self.iso_portal_rx.is_some()
+            || self.appliance_owner.busy()
+            || !self.provider.borrow_mut().operations_complete_on_return();
+        if !deferred {
+            return Ok(ui::framework::Effected::done());
+        }
+        self.resource_waits_for_appliance = effect.waits_for_appliance();
+        self.resource_reply = Some(cx.reply());
+        Ok(ui::framework::Effected::Pending)
     }
 
     /// Show the outcome of a request: its error, or `done` when it was
@@ -695,7 +705,7 @@ impl WindowsApp {
         if let Some(notice) = self.appliance_owner.drain() {
             self.notice = Some(Notice::info(notice));
         }
-        if self.resource_invocation.is_some()
+        if self.resource_reply.is_some()
             && self.resource_waits_for_appliance
             && let Some(result) = self.appliance_owner.take_action_result()
         {
@@ -717,7 +727,7 @@ impl WindowsApp {
         if let Some(notice) = provider_notice {
             self.notice = Some(Notice::info(notice));
         }
-        let result = (self.resource_invocation.is_some() && !self.resource_waits_for_appliance)
+        let result = (self.resource_reply.is_some() && !self.resource_waits_for_appliance)
             .then(|| self.provider.borrow_mut().take_operation_result())
             .flatten();
         if let Some(result) = result {
@@ -1901,32 +1911,6 @@ impl WindowsApp {
     }
 }
 
-const LOCAL_OPERATIONS: &[&str] = &[
-    crate::actions::SHOW_OPERATION,
-    "windows.launch",
-    "windows.launch-vm-fallback",
-    "windows.publish",
-    "windows.retry-install",
-    "windows.escalate-install",
-    "windows.remove-launcher",
-    "windows.uninstall",
-    "windows.delete-data",
-    "windows.open-file",
-    "windows.install",
-    "windows.import-iso",
-    "windows.confirm-capsule-install",
-    "windows.confirm-vm-install",
-    "windows.recovery",
-    "windows.start",
-    "windows.restart",
-    "windows.suspend",
-    "windows.resume",
-    "windows.shutdown",
-    "windows.temporary-network",
-    "windows.update-network",
-    "windows.revoke-network",
-];
-
 /// The window is its shell plus the model, the confirmation dialog and the
 /// Windows operations the shell knows nothing about.
 impl ui::widget::Decorator for WindowsApp {
@@ -1941,22 +1925,11 @@ impl ui::widget::Decorator for WindowsApp {
     }
 
     ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource;
+        dyn ui::widget::controls::ActionControls;
         inner = shell
     );
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        LOCAL_OPERATIONS
-    }
-
-    fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = self.shell.resource_operation_handlers();
-        handlers.extend(LOCAL_OPERATIONS.iter().map(|handler| (*handler).to_owned()));
-        handlers
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_portal();
         self.drain_document_portal();
         self.drain_iso_portal();
@@ -2054,7 +2027,7 @@ impl ui::widget::Decorator for WindowsApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let activates = matches!(
@@ -2083,68 +2056,8 @@ impl ui::widget::Decorator for WindowsApp {
         self.settle();
         handled
     }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            let started = ui::widget::start_in_children(self, op, doc, path);
-            self.settle();
-            return started;
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            // A control in the view ran: apply what it asked for.
-            self.settle();
-            return Ok(Some(started));
-        }
-        let started = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )?;
-        self.refresh();
-        self.rebuild();
-        Ok(started)
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.refresh();
-        self.rebuild();
-        if self
-            .resource_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_result.take()
-        } else {
-            None
-        }
-    }
-
-    fn name(&self) -> &str {
-        "WindowsApp"
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
-    }
-}
-
-impl ui::search::capability::SearchSource for WindowsApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
@@ -2153,77 +2066,6 @@ impl ui::widget::controls::ActionControls for WindowsApp {
         self.pending_control_invocation.take().or_else(|| {
             ui::widget::controls::ActionControls::take_control_invocation(&mut self.shell)
         })
-    }
-}
-
-impl WindowsApp {
-    /// Show the application a `show` payload names, as choosing its row
-    /// does.
-    fn show_app(&mut self, payload: &[u8]) -> Result<(), String> {
-        let id: String = serde_json::from_slice(payload).map_err(|error| error.to_string())?;
-        let index = self
-            .catalogue
-            .apps
-            .iter()
-            .position(|app| app.id == id)
-            .ok_or_else(|| format!("no Windows application {id}"))?;
-        self.select(Page::App, index);
-        Ok(())
-    }
-
-    fn admit_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if !LOCAL_OPERATIONS.contains(&type_id) {
-            return Ok(None);
-        }
-        if kind == tilo_actions::OperationKind::View && type_id == crate::actions::SHOW_OPERATION {
-            self.show_app(payload)?;
-            return Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
-        }
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        if self.resource_invocation.is_some() {
-            return Err("another Windows operation is still running".into());
-        }
-        if !self.invoke_effect_operation(type_id, payload)? {
-            return Ok(None);
-        }
-        let deferred = self.portal_rx.is_some()
-            || self.document_portal_rx.is_some()
-            || self.iso_portal_rx.is_some()
-            || self.appliance_owner.busy()
-            || !self.provider.borrow_mut().operations_complete_on_return();
-        if deferred {
-            self.resource_invocation = Some(invocation);
-            self.resource_waits_for_appliance = matches!(
-                type_id,
-                "windows.import-iso"
-                    | "windows.recovery"
-                    | "windows.start"
-                    | "windows.restart"
-                    | "windows.suspend"
-                    | "windows.resume"
-                    | "windows.shutdown"
-                    | "windows.temporary-network"
-                    | "windows.update-network"
-                    | "windows.revoke-network"
-            );
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
     }
 }
 
@@ -2588,7 +2430,7 @@ mod tests {
                 &mut app,
                 "windows.select:cyberpunk-2077",
                 &AccessibilityAction::Activate,
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(app.selected, 1);
@@ -2596,7 +2438,7 @@ mod tests {
                 &mut app,
                 "windows.select:stale-id",
                 &AccessibilityAction::Activate,
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
         }

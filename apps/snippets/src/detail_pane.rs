@@ -146,7 +146,6 @@ pub(crate) fn build(core: &Shared, requests: &Requests) -> Element {
             } else {
                 "snippets-copy"
             }),
-            None,
         )
         .role(ButtonRole::Primary)
         .on_effect(move || requests.borrow_mut().push(Action::Copy(id)))
@@ -272,12 +271,12 @@ impl ui::widget::Decorator for Anchored {
         &mut self.button
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh();
         Widget::sync(&mut self.button, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.refresh();
         Widget::update(&mut self.button, state, path)
     }
@@ -352,7 +351,7 @@ impl ui::widget::Decorator for LanguagePicker {
         node
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.open_if_asked();
         Widget::update(&mut self.dropdown, state, path)
     }
@@ -398,7 +397,7 @@ impl ui::widget::Decorator for EmptyAction {
         node
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.drain();
         Widget::update(&mut self.state, state, path)
     }
@@ -411,7 +410,7 @@ impl ui::widget::Decorator for EmptyAction {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         let done = Widget::perform_action(&mut self.state, action, state, root);

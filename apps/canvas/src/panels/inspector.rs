@@ -480,19 +480,15 @@ fn area_tool(tools: &Tools, tool: Tool) -> Element {
     // under way and applies the area as one step.
     let finding = std::rc::Rc::clone(&tools.finding);
     parts.push(Box::new(
-        Button::new(
-            "canvas-select-subject",
-            &lookup("canvas-select-subject"),
-            None,
-        )
-        .with_icon(Icon::Sparkles)
-        .tooltip(lookup("canvas-select-subject-hint"))
-        .on_view(move || {
-            finding.borrow_mut().wanted = Some(crate::selection::Select {
-                subject: Some(true),
-                ..crate::selection::Select::default()
-            });
-        }),
+        Button::new("canvas-select-subject", &lookup("canvas-select-subject"))
+            .with_icon(Icon::Sparkles)
+            .tooltip(lookup("canvas-select-subject-hint"))
+            .on_view(move || {
+                finding.borrow_mut().wanted = Some(crate::selection::Select {
+                    subject: Some(true),
+                    ..crate::selection::Select::default()
+                });
+            }),
     ));
     if tool == Tool::Wand {
         parts.push(tolerance(tools));

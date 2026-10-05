@@ -3,8 +3,9 @@
 //! Every string the user reads in the editor chrome is looked up by key
 //! rather than written at the call site, so the app translates without
 //! touching the layout code and `--pseudo-locale` exercises every label.
-//! The bundle is registered once per thread by [`install`]; it is embedded
-//! with `include_str!` (as `photos`, `chat` and `word-processor` do), so a
+//! The bundle is the app's [`CATALOG`], loaded in every host that mounts the
+//! app and on first use in any other thread; it is embedded with
+//! `include_str!` (as `photos`, `chat` and `word-processor` do), so a
 //! `--shots` render and a unit test resolve the same strings a live session
 //! does. Keys are `slides-*` so they cannot collide with another app's
 //! resources in the shared registry.
@@ -12,20 +13,17 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use ui::i18n::{ArgValue, I18nManager, PseudoLocale};
+use ui::i18n::{ArgValue, EmbeddedCatalog, I18nManager, PseudoLocale};
 
 /// The English bundle.
 const EN_US: &str = include_str!("../locales/en-US.ftl");
 
-/// Register the bundle. Idempotent, and safe to call from both the live
-/// binary and a test.
-pub fn install() {
-    I18nManager::init("en-US");
-    I18nManager::add_resource("en-US", EN_US.to_string());
-}
+/// The app's messages.
+pub static CATALOG: EmbeddedCatalog =
+    EmbeddedCatalog::new("en-US", &[("en-US", EN_US)], "slides-present");
 
-/// Look up `key`. Registers the bundle on first use so a unit test that
-/// constructs the app directly still gets real text rather than a raw key.
+/// Look up `key`. Loads the catalogue on first use on a thread whose host
+/// has not, so text is real rather than a raw key.
 ///
 /// The chrome asks for the same few dozen labels on every `compute_chrome`
 /// (each frame, pointer move and press), so resolved text is memoised per
@@ -60,16 +58,10 @@ pub fn tr_args(key: &str, args: &[(&str, ArgValue)]) -> String {
     I18nManager::format(key, args)
 }
 
-/// Install the bundle once **per thread**: `I18nManager` keeps its bundles
-/// in a `thread_local!`, so a process-wide `Once` would leave every other
-/// thread looking up an empty manager and reading keys instead of sentences.
+/// Load the catalogue into this thread's manager, once per manager:
+/// `I18nManager` keeps its bundles in a `thread_local!`.
 fn ensure() {
-    thread_local! {
-        static DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    }
-    if !DONE.with(|d| d.replace(true)) {
-        install();
-    }
+    CATALOG.ensure();
 }
 
 #[cfg(test)]

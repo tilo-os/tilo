@@ -7,11 +7,10 @@
 //!   prev/next-change navigation.
 //! * **3-way merge** — base / ours / theirs source columns with per-hunk
 //!   conflict resolution (take ours / theirs / both) and an editable merged
-//!   result mirrored into an Automerge `Text` so the output is collaboratively
-//!   editable with undo/redo for free.
+//!   result, a text in the document every collaborator edits.
 //!
-//! [`DiffmergeShell`] is the single integration point used by the live event
-//! loop, the web desktop and the `--shots` renderer alike.
+//! What is open and the merged result are the [`Diffmerge`] resource;
+//! [`DiffmergeShell`] runs it.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -50,20 +49,13 @@ mod pane;
 pub mod resource;
 pub mod samples;
 mod scroll;
-mod web_file;
 
-pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, HunkChoice};
+pub use actions::{DIFFMERGE_ACTION_TYPE, DiffmergeAction, DiffmergeEffect, HunkChoice};
 pub use app::{DiffMergeApp, Mode};
 pub use model::{DiffModel, MergeModel, Resolution};
+pub use resource::{Diffmerge, DiffmergeShell};
 
-/// The app as every host mounts it: the live comparison and its actions.
+/// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::framework::definition::<DiffmergeShell>()
 }
-
-pub use resource::{Diffmerge, DiffmergeShell, launch_spec};
-
-pub mod framework_history;
-
-#[cfg(test)]
-mod framework_history_tests;

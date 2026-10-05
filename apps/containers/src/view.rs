@@ -181,7 +181,7 @@ pub(crate) fn primary(
     intents: &Intents,
 ) -> Element {
     Box::new(
-        Button::new(id, label, None)
+        Button::new(id, label)
             .with_icon(icon)
             .role(ButtonRole::Primary)
             .on_view(intents.on(intent)),
@@ -534,11 +534,11 @@ fn verb_button(
     intents: &Intents,
 ) -> Button {
     let c = model.container;
-    let button = Button::new(&format!("detail-{verb_id}-{}", c.id), label, None)
+    let button = Button::new(&format!("detail-{verb_id}-{}", c.id), label)
         .with_icon(icon)
         .with_enabled(model.controls);
     let binding = (model.live_engine && verb_id != "remove")
-        .then(|| crate::published::container_resource(c, true))
+        .then(|| crate::app::container_row(c, true).into_resource())
         .and_then(|resource| ui::tilo_actions::ActionBinding::unit_for(&resource, verb_id).ok());
     match binding {
         Some(binding) => button.on_action(binding),
@@ -1093,7 +1093,7 @@ impl ui::widget::Decorator for ActOnEmpty {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut ui::widget::AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
         let handled = Widget::perform_semantic_action(&mut self.state, target, action, state, path);
@@ -1104,7 +1104,7 @@ impl ui::widget::Decorator for ActOnEmpty {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut ui::widget::AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ui::widget::ModelPath,
     ) -> bool {
         let handled = Widget::perform_action(&mut self.state, action, state, path);

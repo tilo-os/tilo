@@ -48,14 +48,14 @@ fn focused(frame: &FrameHarness, name: &str) -> bool {
 
 fn target_and_other() -> Column {
     Column::new()
-        .push(Box::new(Button::new("target", "Target", None)))
-        .push(Box::new(Button::new("other", "Other", None)))
+        .push(Box::new(Button::new("target", "Target")))
+        .push(Box::new(Button::new("other", "Other")))
 }
 
 fn behind_background(content: impl Widget + 'static) -> FrameHarness {
     frame(Box::new(
         Column::new()
-            .push(Box::new(Button::new("background", "Background", None)))
+            .push(Box::new(Button::new("background", "Background")))
             .push(Box::new(content)),
     ))
 }
@@ -276,7 +276,7 @@ impl Widget for Scheduled {
         None
     }
 
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
         false
     }
@@ -326,13 +326,13 @@ fn portable_review_clean_animation_and_delayed_wake_drive_frames() {
 #[test]
 fn portable_review_trap_confines_tab_shift_tab_and_spatial_focus() {
     let controls = Column::new()
-        .push(Box::new(Button::new("first", "First", None)))
-        .push(Box::new(Button::new("last", "Last", None)));
+        .push(Box::new(Button::new("first", "First")))
+        .push(Box::new(Button::new("last", "Last")));
     let modal = Container::new()
         .with_focus_trap()
         .with_child(Box::new(controls));
     let root = Column::new()
-        .push(Box::new(Button::new("background", "Background", None)))
+        .push(Box::new(Button::new("background", "Background")))
         .push(Box::new(modal));
     let mut frame = frame(Box::new(root));
     assert_eq!(
@@ -442,7 +442,7 @@ impl Widget for Gate {
 fn portable_review_modal_enter_leave_restores_semantic_focus() {
     let open = Rc::new(Cell::new(false));
     let gate = Gate {
-        content: Column::new().push(Box::new(Button::new("inside", "Inside", None))),
+        content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: open.clone(),
         traps: true,
         delivered: Rc::default(),
@@ -463,7 +463,7 @@ fn portable_review_modal_enter_leave_restores_semantic_focus() {
 fn portable_review_modal_owning_keyboard_receives_tab_and_alt_arrow() {
     let delivered = Rc::new(Cell::new(0));
     let gate = Gate {
-        content: Column::new().push(Box::new(Button::new("inside", "Inside", None))),
+        content: Column::new().push(Box::new(Button::new("inside", "Inside"))),
         open: Rc::new(Cell::new(true)),
         traps: false,
         delivered: delivered.clone(),
@@ -781,7 +781,7 @@ fn viewport_change_rebuilds_and_matches_a_fresh_composition() {
 
 #[test]
 fn full_relayout_valve_forces_the_rebuild_path() {
-    let root = Column::new().push(Box::new(Button::new("target", "Target", None)));
+    let root = Column::new().push(Box::new(Button::new("target", "Target")));
     let mut frame = frame(Box::new(root));
     frame.relayout();
     assert!(!frame.last_relayout().rebuilt, "retained by default");

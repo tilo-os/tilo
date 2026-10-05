@@ -1,23 +1,15 @@
-//! Bounded, cursor-paged global search for browser history, bookmarks, and
-//! device-local download resources.
+//! The person's browsing history and the device-local downloads as the
+//! search entries the browser surface contributes to the app's one search
+//! source. Bookmarks are the browser resource's own search entries.
 //!
-//! The retained index is refreshed only after a durable corpus revision.
-//! Providers then clone it cheaply, so opening global search does not clone
-//! or remap the full browser library.  A provider resolves action resources
-//! against the current index, which refuses an address that went stale after
-//! the result was rendered.
+//! The entries are rebuilt only after a durable corpus revision, so opening
+//! global search does not remap the full browser library. A hit's row is
+//! resolved against the current entries, which refuses an address that went
+//! stale after the result was rendered.
 
-use tilo_actions::{
-    ActionAddress, ActionContract, ActionSpec, ExecutionMode, OperationKind, Resource, ResultSpec,
-    RetryPolicy,
-};
+use tilo_actions::{ActionAddress, Resource};
 use ui::icons::Icon;
-use ui::search::{
-    CatalogSearchProvider, Facet, PagePoll, PendingToken, ScopeDecl, SearchCatalog, SearchCursor,
-    SearchPage, SearchProvider, SearchQuery, SearchResult,
-};
-
-const DEFAULT_RESULT_LIMIT: usize = 100;
+use ui::tilo_resource::SearchEntry;
 
 #[derive(Clone)]
 struct Row {
@@ -29,15 +21,16 @@ struct Row {
     /// opening the same row from Library.
     resource_kind: &'static str,
     search_kind: &'static str,
+    /// The download a hit shows; `None` for a page it opens.
+    download: Option<String>,
     icon: Icon,
     score: i32,
 }
 
 struct IndexState {
     history_revision: u64,
-    bookmark_revision: u64,
     download_revision: u64,
-    catalog: SearchCatalog,
+    entries: Vec<SearchEntry>,
     rows: std::collections::BTreeMap<String, Row>,
 }
 
@@ -45,9 +38,8 @@ impl Default for IndexState {
     fn default() -> Self {
         Self {
             history_revision: u64::MAX,
-            bookmark_revision: u64::MAX,
             download_revision: u64::MAX,
-            catalog: SearchCatalog::new("Browser"),
+            entries: Vec::new(),
             rows: std::collections::BTreeMap::new(),
         }
     }
@@ -68,49 +60,33 @@ impl BrowserSearchIndex {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.history_revision = u64::MAX;
-        state.bookmark_revision = u64::MAX;
         state.download_revision = u64::MAX;
     }
 
-    pub fn sync(&self, history: &crate::history::History, bookmarks: &crate::library::Bookmarks) {
-        self.sync_all(history, bookmarks, &crate::downloads::Downloads::default());
+    pub fn sync(&self, history: &crate::history::History) {
+        self.sync_all(history, &crate::downloads::Downloads::default());
     }
 
     pub fn sync_all(
         &self,
         history: &crate::history::History,
-        bookmarks: &crate::library::Bookmarks,
         downloads: &crate::downloads::Downloads,
     ) {
         let history_revision = history.revision();
-        let bookmark_revision = bookmarks.revision();
         let download_revision = downloads.revision();
         let current = self
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let unchanged = current.history_revision == history_revision
-            && current.bookmark_revision == bookmark_revision
             && current.download_revision == download_revision;
         drop(current);
         if unchanged {
             return;
         }
 
-        let catalog = SearchCatalog::new("Browser");
+        let mut entries = Vec::new();
         let mut rows = std::collections::BTreeMap::new();
-        for entry in bookmarks.entries() {
-            let row = Row {
-                resource_id: crate::actions::bookmark_resource_id(&entry.url),
-                title: entry.title.clone(),
-                url: entry.url.clone(),
-                resource_kind: "browser.bookmark",
-                search_kind: "Bookmarks",
-                icon: Icon::Star,
-                score: 40,
-            };
-            Self::index_row(&catalog, &mut rows, row);
-        }
         for entry in history.entries() {
             let row = Row {
                 resource_id: crate::actions::history_resource_id(&entry.url),
@@ -122,10 +98,11 @@ impl BrowserSearchIndex {
                 url: entry.url.clone(),
                 resource_kind: "browser.history-entry",
                 search_kind: "History",
+                download: None,
                 icon: Icon::History,
                 score: i32::try_from(entry.visit_count.min(20)).unwrap_or(20),
             };
-            Self::index_row(&catalog, &mut rows, row);
+            Self::index_row(&mut entries, &mut rows, row);
         }
         for entry in downloads.entries() {
             let destination = entry
@@ -139,6 +116,7 @@ impl BrowserSearchIndex {
                 url: format!("{} {destination}", entry.source_url),
                 resource_kind: "browser.download",
                 search_kind: "Downloads",
+                download: Some(entry.id.clone()),
                 icon: Icon::Download,
                 score: if entry.status == crate::downloads::DownloadStatus::Completed {
                     35
@@ -146,7 +124,7 @@ impl BrowserSearchIndex {
                     20
                 },
             };
-            Self::index_row(&catalog, &mut rows, row);
+            Self::index_row(&mut entries, &mut rows, row);
         }
 
         let mut state = self
@@ -154,200 +132,127 @@ impl BrowserSearchIndex {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.history_revision = history_revision;
-        state.bookmark_revision = bookmark_revision;
         state.download_revision = download_revision;
-        state.catalog = catalog;
+        state.entries = entries;
         state.rows = rows;
     }
 
     fn index_row(
-        catalog: &SearchCatalog,
+        entries: &mut Vec<SearchEntry>,
         rows: &mut std::collections::BTreeMap<String, Row>,
         row: Row,
     ) {
-        let result = SearchResult::for_action(
-            row.search_kind,
-            &row.title,
-            ActionAddress::new(
-                &row.resource_id,
-                if row.resource_kind == "browser.download" {
-                    "show"
-                } else {
-                    "open"
-                },
-            ),
-        )
-        .with_subtitle(&row.url)
-        .with_icon(row.icon)
-        .with_score(row.score);
-        let searchable = format!("{} {}", row.title, row.url);
-        // Both values were constructed from a non-empty stable URL hash and
-        // canonical action address directly above; an error would signal a
-        // programming bug, not user data.  Refuse that row rather than
-        // risking an opaque activation.
-        if catalog.upsert(&row.resource_id, searchable, result).is_ok() {
-            rows.insert(row.resource_id.clone(), row);
+        if rows.contains_key(&row.resource_id) {
+            return;
         }
+        entries.push(
+            SearchEntry::new(row.title.clone(), String::new())
+                .invoking(ActionAddress::new(
+                    &row.resource_id,
+                    if row.download.is_some() {
+                        "show-download"
+                    } else {
+                        "open"
+                    },
+                ))
+                .grouped(row.search_kind)
+                .subtitled(row.url.clone())
+                .with_icon(row.icon.name())
+                .boosted(row.score),
+        );
+        rows.insert(row.resource_id.clone(), row);
     }
 
-    pub fn provider(&self) -> BrowserSearchProvider {
-        BrowserSearchProvider {
-            library: LibraryCatalog {
-                index: self.clone(),
-            },
-        }
-    }
-}
-
-/// The library's search provider: history, bookmarks and downloads, with each
-/// section declared as a scope the Library's search button narrows to.
-pub struct BrowserSearchProvider {
-    library: LibraryCatalog,
-}
-
-/// The catalogue answering every query; [`BrowserSearchProvider`] adds the
-/// scopes a catalogue provider cannot declare itself.
-struct LibraryCatalog {
-    index: BrowserSearchIndex,
-}
-
-impl SearchProvider for BrowserSearchProvider {
-    fn name(&self) -> &str {
-        SearchProvider::name(&self.library)
+    /// Every history page and download as a search entry.
+    pub fn entries(&self) -> Vec<SearchEntry> {
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entries
+            .clone()
     }
 
-    fn action_directory_generation(&self) -> Option<u64> {
-        self.library.action_directory_generation()
-    }
-
-    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
-        self.library.action_directory_cursor_is_current(cursor)
-    }
-
-    fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.library.search(query)
-    }
-
-    fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.library.search_limited(query, limit)
-    }
-
-    fn search_page(
-        &self,
-        query: &SearchQuery,
-        cursor: Option<&SearchCursor>,
-        work_budget: usize,
-        result_limit: usize,
-    ) -> SearchPage {
-        self.library
-            .search_page(query, cursor, work_budget, result_limit)
-    }
-
-    fn poll_page(&self, token: &PendingToken) -> PagePoll {
-        self.library.poll_page(token)
-    }
-
-    fn facets(&self) -> Vec<Facet> {
-        SearchProvider::facets(&self.library)
-    }
-
-    fn search_scopes(&self) -> Vec<ScopeDecl> {
-        vec![
-            ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
-            ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
-            ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
-        ]
-    }
-
-    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
-        self.library.resolve_action_resource(address)
-    }
-}
-
-impl LibraryCatalog {
-    fn row_resource(row: &Row) -> Resource {
-        let mut resource = Resource::new(&row.resource_id, row.resource_kind, &row.title);
-        let (action, label, payload, contract) = if row.resource_kind == "browser.download" {
-            (
-                "show",
-                "Show download",
-                serde_json::json!({ "operation": "show-library", "section": "downloads" }),
-                ActionContract::view(),
-            )
-        } else {
-            (
-                "open",
-                "Open page",
-                serde_json::json!({ "operation": "navigate", "url": row.url }),
-                navigation_contract(),
-            )
-        };
-        if let Ok(spec) = ActionSpec::operation(
-            action,
-            label,
-            OperationKind::Effect,
-            "browser.operation",
-            &payload,
-        ) {
-            resource.actions.push(spec.with_contract(contract));
-        }
-        resource
-    }
-}
-
-/// This mirrors `BrowserWidget`'s navigation contract.  Search resolution can
-/// happen without materialising the whole widget tree, so it owns a value
-/// copy rather than a second, weaker action shape.
-fn navigation_contract() -> ActionContract {
-    ActionContract {
-        retry: RetryPolicy::Idempotent,
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Json {
-            schema: serde_json::json!({ "type": "string" }),
-        },
-        tags: vec!["network".into(), "navigation".into()],
-        ..ActionContract::view()
-    }
-}
-
-impl CatalogSearchProvider for LibraryCatalog {
-    const RESULT_LIMIT: usize = DEFAULT_RESULT_LIMIT;
-
-    fn provider_name(&self) -> &'static str {
-        "Browser"
-    }
-
-    fn catalog(&self) -> Option<SearchCatalog> {
-        Some(
-            self.index
-                .state
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .catalog
-                .clone(),
-        )
-    }
-
-    fn limited_work_budget(&self, limit: usize) -> usize {
-        // A one-shot query inspects no more candidates than results it asked for.
-        limit
-    }
-
-    fn resolve_action_address(&self, address: &ActionAddress) -> Option<Resource> {
+    /// The row a hit opens: the same row, with the same effect, the window
+    /// publishes for it. `None` once the entry is gone.
+    pub fn resource(&self, id: &str) -> Option<Resource> {
+        use ui::tilo_resource::Effect as _;
         let row = self
-            .index
             .state
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .rows
-            .get(&address.resource)
+            .get(id)
             .cloned()?;
-        let expected = if row.resource_kind == "browser.download" {
-            "show"
-        } else {
-            "open"
+        let action = match &row.download {
+            Some(id) => crate::effects::BrowserEffect::ShowDownload { id: id.clone() }.bound(),
+            None => crate::effects::BrowserEffect::Open {
+                url: row.url.clone(),
+            }
+            .bound(),
         };
-        (address.action == expected).then(|| Self::row_resource(&row))
+        Some(Resource::new(&row.resource_id, row.resource_kind, &row.title).with_action(action))
+    }
+
+    /// The search source the framework builds over these entries, resolving
+    /// hits the way the browser surface does.
+    #[cfg(test)]
+    pub fn provider(&self) -> TestSearch {
+        TestSearch {
+            index: self.clone(),
+            source: Box::new(ui::framework::testing::search_source::<
+                crate::resource::Browser,
+            >(self.entries())),
+        }
+    }
+}
+
+/// See [`BrowserSearchIndex::provider`].
+#[cfg(test)]
+pub struct TestSearch {
+    index: BrowserSearchIndex,
+    source: Box<dyn ui::search::SearchProvider>,
+}
+
+#[cfg(test)]
+impl ui::search::SearchProvider for TestSearch {
+    fn name(&self) -> &str {
+        self.source.name()
+    }
+
+    fn search(&self, query: &str) -> Vec<ui::search::SearchResult> {
+        self.source.search(query)
+    }
+
+    fn search_limited(&self, query: &str, limit: usize) -> Vec<ui::search::SearchResult> {
+        self.source.search_limited(query, limit)
+    }
+
+    fn search_page(
+        &self,
+        query: &ui::search::SearchQuery,
+        cursor: Option<&ui::search::SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> ui::search::SearchPage {
+        self.source
+            .search_page(query, cursor, work_budget, result_limit)
+    }
+
+    fn search_scopes(&self) -> Vec<ui::search::ScopeDecl> {
+        vec![
+            ui::search::ScopeDecl::new(crate::actions::HISTORY_SCOPE, "History"),
+            ui::search::ScopeDecl::new(crate::actions::BOOKMARKS_SCOPE, "Bookmarks"),
+            ui::search::ScopeDecl::new(crate::actions::DOWNLOADS_SCOPE, "Downloads"),
+        ]
+    }
+
+    fn resolve_action_resource(&self, address: &ActionAddress) -> Option<Resource> {
+        let resource = self.index.resource(&address.resource)?;
+        resource
+            .actions
+            .iter()
+            .any(|action| action.id == address.action)
+            .then_some(resource)
     }
 }
 
@@ -355,6 +260,7 @@ impl CatalogSearchProvider for LibraryCatalog {
 mod tests {
     use super::*;
     use ui::search::SearchProvider;
+    use ui::search::SearchQuery;
 
     /// Cursor paging, stale addresses, identity and downloads.
     #[test]
@@ -374,7 +280,7 @@ mod tests {
                 );
             }
             let index = BrowserSearchIndex::default();
-            index.sync(&history, &crate::library::Bookmarks::default());
+            index.sync(&history);
             let provider = index.provider();
             let hits = provider.search_limited("Page", 12);
             assert_eq!(hits.len(), 12);
@@ -393,51 +299,47 @@ mod tests {
 
         // Phase `stale_search_addresses_are_refused_after_a_corpus_change`.
         {
-            let mut bookmarks = crate::library::Bookmarks::default();
-            assert!(bookmarks.add("https://stale.example.test", "Stale"));
+            let mut history = crate::history::History::new();
+            history.record_at("https://stale.example.test", "Stale", 1);
             let index = BrowserSearchIndex::default();
-            index.sync(&crate::history::History::new(), &bookmarks);
+            index.sync(&history);
             let provider = index.provider();
             let hit = provider.search_limited("stale", 1).pop().unwrap();
             let address = hit.action_address().unwrap();
-            assert!(bookmarks.remove("https://stale.example.test"));
-            index.sync(&crate::history::History::new(), &bookmarks);
-            assert!(provider.resolve_action_resource(&address).is_none());
-        }
-
-        // Phase `search_uses_the_library_resource_identity_and_contract`.
-        {
-            let mut bookmarks = crate::library::Bookmarks::default();
-            // Legacy profile rows may omit the trailing slash.  The library uses
-            // a normalized resource id, and search must resolve that exact same
-            // object rather than a second raw-URL identity.
-            assert!(bookmarks.add("https://canonical.example.test", "Canonical"));
-            let index = BrowserSearchIndex::default();
-            index.sync(&crate::history::History::new(), &bookmarks);
-            let provider = index.provider();
-            let hit = provider.search_limited("canonical", 1).pop().unwrap();
-            let address = hit.action_address().unwrap();
             assert_eq!(
                 address.resource,
-                crate::actions::bookmark_resource_id("https://canonical.example.test")
+                crate::actions::history_resource_id("https://stale.example.test")
             );
-            let resource = provider.resolve_action_resource(&address).unwrap();
-            assert_eq!(resource.kind, "browser.bookmark");
-            assert!(matches!(
-                resource.actions[0].contract.execution,
-                ExecutionMode::Background { cancellable: false }
-            ));
+            history.clear();
+            index.sync(&history);
+            assert!(provider.resolve_action_resource(&address).is_none());
         }
 
         // Phase `library_sections_are_scopes_that_admit_only_their_own_hits`.
         {
             let mut history = crate::history::History::new();
             history.record_at("https://rust.example.test", "Rust notes", 1);
-            let mut bookmarks = crate::library::Bookmarks::default();
-            assert!(bookmarks.add("https://rust.example.test/book", "Rust book"));
+            let mut document = automerge::AutoCommit::new();
+            use ui::tilo_resource::Resource as _;
+            crate::resource::Browser::initialize(&mut document).unwrap();
+            tilo_actions::Action::apply(
+                &crate::actions::BrowserAction::AddBookmark {
+                    url: "https://rust.example.test/book".into(),
+                    title: "Rust book".into(),
+                    tag: "test-search-bookmark".into(),
+                },
+                &mut document,
+            )
+            .unwrap();
+            let state = crate::resource::Browser::read(&document).unwrap();
             let index = BrowserSearchIndex::default();
-            index.sync(&history, &bookmarks);
-            let provider = index.provider();
+            index.sync(&history);
+            let mut entries = index.entries();
+            entries.extend(crate::resource::Browser::search(&state));
+            let mut provider = index.provider();
+            provider.source = Box::new(ui::framework::testing::search_source::<
+                crate::resource::Browser,
+            >(entries));
             let scopes = provider.search_scopes();
             assert_eq!(
                 scopes
@@ -467,19 +369,15 @@ mod tests {
                 "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
             );
             let index = BrowserSearchIndex::default();
-            index.sync_all(
-                &crate::history::History::new(),
-                &crate::library::Bookmarks::default(),
-                &downloads,
-            );
+            index.sync_all(&crate::history::History::new(), &downloads);
             let provider = index.provider();
             let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
             let address = hit.action_address().unwrap();
-            assert_eq!(address.resource, "browser.downloads/stable-download");
-            assert_eq!(address.action, "show");
+            assert_eq!(address.resource, "browser.download.stable-download");
+            assert_eq!(address.action, "show-download");
             let resource = provider.resolve_action_resource(&address).unwrap();
             assert_eq!(resource.kind, "browser.download");
-            assert_eq!(resource.actions[0].id, "show");
+            assert_eq!(resource.actions[0].id, "show-download");
             assert!(!provider.search_limited("example.test/sdk", 1).is_empty());
             assert!(!provider.search_limited("home/alex/Downloads", 1).is_empty());
         }

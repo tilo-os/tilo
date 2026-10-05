@@ -64,10 +64,6 @@ a11y-text-color-default = Standard-Textfarbe
 a11y-highlight = Hervorhebung #{ $hex }
 a11y-highlight-clear = Hervorhebung entfernen
 
-## Crash-recovery banner
-recovery-banner = Nicht gespeicherte Änderungen aus einer früheren Sitzung wiederhergestellt.
-recovery-restore = Wiederherstellen
-recovery-discard = Verwerfen
 
 ## Status bar
 status-untitled = Unbenannt
@@ -167,12 +163,6 @@ toast-saved = Dokument gespeichert
 toast-save-failed = Dokument konnte nicht gespeichert werden
 toast-open-failed = Dokument konnte nicht geöffnet werden. Das aktuelle Dokument bleibt unverändert.
 toast-view-only = Dieses Dokument ist nur zum Ansehen geöffnet.
-unsaved-title = Speichern?
-unsaved-body = Dieses Dokument vor dem Ersetzen speichern?
-unsaved-save = Speichern
-unsaved-discard = Änderungen verwerfen
-unsaved-cancel = Abbrechen
-unsaved-close = Schließen
 toast-file-dialog-failed = Dateiauswahl konnte nicht geöffnet werden
 
 ## Outline / navigation pane
@@ -196,6 +186,7 @@ canvas-empty-placeholder = Beginne zu schreiben…
 toolbar-history = Verlauf
 toolbar-text-color = Farbe
 toolbar-highlight = Hervorhebung
+toolbar-more = Mehr ▾
 picker-text-color = Textfarbe
 picker-highlight = Hervorhebung
 a11y-text-colour-name = Textfarbe { $colour }
@@ -212,6 +203,7 @@ color-cyan = Cyan
 color-pink = Rosa
 color-orange = Orange
 a11y-version-history = Versionsverlauf
+a11y-more-tools = Weitere Formatierungs- und Dokumentwerkzeuge
 panel-close = Schließen
 
 ## Inspector and status band

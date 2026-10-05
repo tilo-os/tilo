@@ -23,7 +23,6 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::actions::PasswordsEffect;
 use crate::list_pane::ListPane;
-use crate::search::VaultSearchProvider;
 use crate::vault::{Core, Dialog, Request, Requests, Screen, Shared, VaultFilter};
 
 /// The `--shots --scenario` names this app stages.
@@ -153,12 +152,12 @@ impl ui::widget::Decorator for Sidebar {
         &mut self.list
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.refresh();
         Widget::sync(&mut self.list, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.refresh();
         Widget::update(&mut self.list, state, path)
     }
@@ -173,7 +172,6 @@ pub struct PasswordsSurface {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    search: VaultSearchProvider,
     /// The page revision the content column was built from.
     built_page: Option<u64>,
     /// The list revision the overview title and search index follow.
@@ -211,7 +209,6 @@ impl PasswordsSurface {
             core,
             requests,
             shell,
-            search: VaultSearchProvider::new(),
             built_page: None,
             built_list: None,
             overview_title: title,
@@ -291,7 +288,6 @@ impl PasswordsSurface {
         }
         if self.built_list != Some(list) {
             self.built_list = Some(list);
-            self.search.replace(&self.core.borrow().items);
         }
         if title != self.overview_title {
             self.shell.set_overview_title(title.clone());
@@ -323,6 +319,11 @@ impl PasswordsSurface {
     /// Live vault rows, one per item.
     pub(crate) fn item_rows(&self) -> Vec<ui::framework::LiveRow> {
         self.core.borrow().item_rows()
+    }
+
+    /// Non-secret metadata handed to the framework's one search index.
+    pub(crate) fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search::entries(&self.core.borrow().items)
     }
 
     /// The live row `id`, whether or not the list shows it now.
@@ -472,23 +473,7 @@ impl ui::widget::Decorator for PasswordsSurface {
         &mut self.shell
     }
 
-    fn provide<'a>(&'a self, request: &mut ui::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
-        } else {
-            Widget::provide(&self.shell, request);
-        }
-    }
-
-    fn provide_mut<'a>(&'a mut self, request: &mut ui::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn ui::search::capability::SearchSource>() {
-            request.provide::<dyn ui::search::capability::SearchSource>(self);
-        } else {
-            Widget::provide_mut(&mut self.shell, request);
-        }
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
             let mut core = self.core.borrow_mut();
             core.transfer_poll_deadline.set(None);
@@ -498,7 +483,7 @@ impl ui::widget::Decorator for PasswordsSurface {
         Widget::sync(&mut self.shell, state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.settle();
         if self.settled_layouts >= SETTLED_LAYOUTS {
             self.stage_pending();
@@ -584,13 +569,6 @@ impl ui::widget::Decorator for PasswordsSurface {
 
     fn name(&self) -> &'static str {
         "Passwords"
-    }
-}
-
-impl ui::search::capability::SearchSource for PasswordsSurface {
-    /// The vault's items by name, username and website; never a secret.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search.clone())]
     }
 }
 

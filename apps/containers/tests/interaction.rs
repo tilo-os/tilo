@@ -16,12 +16,13 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use automerge::AutoCommit;
 use containers::ContainersShell;
 use containers::app::ContainersApp;
 use containers::doc::{CreateDraft, CreateField};
 use containers::model::{DetailTab, Section, sample_engine};
 use containers::terminal;
-use ui::headless::Driver;
+use ui::headless::Driver as FrameDriver;
 use ui::prelude::TestApp;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -32,11 +33,83 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 fn offline_at(viewport: (u32, u32), theme: Theme) -> Driver {
     let mut app = ContainersApp::sample();
     app.stage_scene(None);
-    Driver::for_root(ui::State::new(), app, viewport, theme)
+    Driver {
+        frame: FrameDriver::for_root(ui::State::new(), app, viewport, theme),
+    }
 }
 
+struct Driver {
+    frame: FrameDriver,
+}
+impl std::ops::Deref for Driver {
+    type Target = FrameDriver;
+    fn deref(&self) -> &FrameDriver {
+        &self.frame
+    }
+}
+impl std::ops::DerefMut for Driver {
+    fn deref_mut(&mut self) -> &mut FrameDriver {
+        &mut self.frame
+    }
+}
+enum TestKey {
+    Text(String),
+    Named(winit::keyboard::NamedKey),
+}
+impl From<&str> for TestKey {
+    fn from(s: &str) -> Self {
+        Self::Text(s.into())
+    }
+}
+impl From<winit::keyboard::NamedKey> for TestKey {
+    fn from(k: winit::keyboard::NamedKey) -> Self {
+        Self::Named(k)
+    }
+}
+impl Driver {
+    fn offline() -> Self {
+        offline_at(VIEWPORT, Theme::dark())
+    }
+    fn parts(&mut self) -> (&mut ContainersApp, &mut AutoCommit) {
+        let (app, state) = self.frame.root_and_state_mut::<ContainersApp>();
+        (app, &mut state.doc)
+    }
+    fn app(&mut self) -> &mut ContainersApp {
+        self.frame.root_mut::<ContainersApp>()
+    }
+    fn frame(&mut self) {
+        self.frame.relayout();
+    }
+    fn frame_sized(&mut self, width: u32, height: u32) {
+        let theme = self.frame.theme().clone();
+        self.frame.relayout_themed((width, height), theme).unwrap();
+    }
+    fn click(&mut self, x: f64, y: f64) {
+        self.frame.click_at(x, y);
+    }
+    fn key(&mut self, key: impl Into<TestKey>) {
+        let spec = match key.into() {
+            TestKey::Text(s) => s,
+            TestKey::Named(k) => format!("{k:?}"),
+        };
+        self.frame.key(&spec);
+    }
+    fn type_char(&mut self, text: &str) {
+        self.frame.type_text(text);
+    }
+    fn rgba(&self) -> Vec<u8> {
+        self.frame.render_rgba()
+    }
+}
 fn offline() -> Driver {
-    offline_at(VIEWPORT, Theme::dark())
+    Driver::offline()
+}
+fn semantic_nodes(root: &ui::a11y::AccessNode) -> Vec<&ui::a11y::AccessNode> {
+    let mut out = vec![root];
+    for child in &root.children {
+        out.extend(semantic_nodes(child));
+    }
+    out
 }
 
 fn app(d: &mut Driver) -> &mut ContainersApp {
@@ -54,14 +127,14 @@ fn painted(d: &Driver) -> usize {
         .count()
 }
 
-fn labels(d: &Driver) -> Vec<String> {
+fn labels(d: &FrameDriver) -> Vec<String> {
     d.a11y_nodes()
         .into_iter()
         .filter_map(|(_, node)| node.label().map(str::to_owned))
         .collect()
 }
 
-fn named(d: &Driver, name: &str, role: ui::accesskit::Role) -> ui::accesskit::NodeId {
+fn named(d: &FrameDriver, name: &str, role: ui::accesskit::Role) -> ui::accesskit::NodeId {
     d.a11y_nodes()
         .into_iter()
         .find(|(_, node)| node.label() == Some(name) && node.role() == role)
@@ -309,26 +382,14 @@ fn container_resources_open_terminal_and_log_detail() {
         let mut d = offline();
         d.key("2");
         let id = sample_engine().containers[1].id.clone();
-        let payload = serde_json::to_vec(&vec!["logs", id.as_str()]).unwrap();
-        let (root, state) = d.root_and_state_mut::<ContainersApp>();
-        assert!(
-            root.start_operation(
-                &ui::widget::ResourceOperation::local(
-                    ui::tilo_actions::InvocationId::new(),
-                    ui::tilo_actions::OperationKind::View,
-                    "containers.logs",
-                    &payload,
-                ),
-                &mut state.doc,
-                &automerge::ROOT,
-            )
-            .map(|started| started.is_some())
-            .unwrap()
-        );
-        d.relayout();
-        assert_eq!(app(&mut d).section(), Section::Containers);
-        assert_eq!(app(&mut d).selected(), Some(id.as_str()));
-        assert_eq!(app(&mut d).tab(), DetailTab::Logs);
+        let (app, _doc) = d.parts();
+        app.perform_effect(containers::resource::ContainersEffect::OpenLogs {
+            container: id.clone(),
+        })
+        .unwrap();
+        assert_eq!(d.app().section(), Section::Containers);
+        assert_eq!(d.app().selected(), Some(id.as_str()));
+        assert_eq!(d.app().tab(), DetailTab::Logs);
     }
 }
 
@@ -388,17 +449,50 @@ fn keyboard_pointer_and_semantic_navigation() {
 
     // --- phase: tabs_switch_the_detail ---
     {
-        let mut d = offline();
-        let stats = d
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.label() == Some("Stats"))
-            .map(|(id, _)| id)
-            .expect("the Stats tab is named");
-        d.perform_a11y_action(stats, &ui::a11y::Action::Activate)
-            .unwrap();
-        assert_eq!(app(&mut d).tab(), DetailTab::Stats);
-        assert!(labels(&d).iter().any(|label| label == "Memory"));
+        let mut d = Driver::offline();
+        d.frame();
+        // The demo opens with a selection; Escape clears it so we observe the
+        // click producing a fresh selection.
+        d.key(winit::keyboard::NamedKey::Escape);
+        d.frame();
+        assert!(d.app().selected().is_none(), "selection cleared");
+        // Click the first list row (below the header, in the list area).
+        d.click(300.0, 140.0);
+        d.frame();
+        assert!(
+            d.app().selected().is_some(),
+            "clicking a container row selects it and opens the detail pane"
+        );
+    }
+
+    // --- phase: painted_controls_have_named_semantics_and_activation_reuses_hit_dispatch ---
+    {
+        let mut d = Driver::offline();
+        d.frame();
+        d.key(winit::keyboard::NamedKey::Escape);
+        d.frame();
+        let expected = sample_engine().containers[0].id.clone();
+        let target = format!("containers.container:{expected}:select");
+        let tree = d
+            .app()
+            .accessibility()
+            .expect("custom canvas exports a semantic window");
+        assert_eq!(tree.role, ui::a11y::Role::Window);
+        let nodes = semantic_nodes(&tree);
+        assert!(nodes.iter().any(|node| {
+            node.action_target.as_deref() == Some(target.as_str())
+                && node.role == ui::a11y::Role::ListItem
+                && node.name.as_deref().is_some_and(|name| !name.is_empty())
+                && node.bounds.is_some()
+        }));
+        let (app, doc) = d.parts();
+        assert!(app.perform_semantic_action(
+            &target,
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(doc),
+            &automerge::ROOT,
+        ));
+        assert_eq!(d.app().selected(), Some(expected.as_str()));
     }
 }
 

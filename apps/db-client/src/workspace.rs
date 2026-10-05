@@ -71,7 +71,7 @@ impl ui::widget::Decorator for Placeholder {
         &mut self.empty
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(link) = &self.link
             && self.empty.take_action()
         {
@@ -125,7 +125,7 @@ impl ui::widget::Decorator for ErrorBanner {
         &mut self.banner
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.banner.take_dismissed() {
             self.link.ask(Intent::DismissStatus);
         }
@@ -185,7 +185,7 @@ impl ui::widget::Decorator for TabStrip {
         &mut self.tabs
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let tab = tab_index(self.link.read(|model| model.tab));
         if self.tabs.selected() != tab {
             self.tabs.set_selected(tab);
@@ -266,7 +266,7 @@ impl ui::widget::Decorator for PageButton {
         &mut self.button
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let available = self.link.read(|model| {
             if self.forward {
                 let shown = model.data.as_ref().map_or(0, |data| data.rows.len());
@@ -348,7 +348,7 @@ impl ui::widget::Decorator for DataPane {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (generation, data) = self
             .link
             .read(|model| (model.data_generation, model.data.clone()));
@@ -496,7 +496,7 @@ impl ui::widget::Decorator for Workspace {
         &mut self.column
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.arrange();
         Widget::sync(&mut self.column, state, path);
     }

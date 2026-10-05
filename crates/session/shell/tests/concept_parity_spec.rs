@@ -1258,7 +1258,7 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -1971,7 +1971,7 @@ mod overview_add_workspace {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -1988,7 +1988,7 @@ mod overview_add_workspace {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &doc_root,
                     handled: &mut handled,
                     focus_target: &mut focus,

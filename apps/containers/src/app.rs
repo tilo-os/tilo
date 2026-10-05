@@ -15,15 +15,18 @@
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
+use crate::resource::ContainersEffect;
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::control_custody::RawControlSlot;
-use ui::framework::Dispatcher;
+use ui::framework::{Dispatcher, LiveRow};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::tilo_actions::ActionSpec;
 use ui::tilo_actions::{ActionAddress, ControlInvocation};
+use ui::tilo_resource::Effect as _;
 use ui::time::Instant;
 use ui::tokens::TextRole;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
@@ -284,7 +287,6 @@ pub struct ContainersApp {
     /// Bumped whenever `engine` changes.
     engine_rev: u64,
     /// Retained, revision-gated search projection.
-    pub(crate) search_index: crate::search_provider::ContainerSearchIndex,
     rect: Rect,
     /// The window, rebuilt part by part from the published model.
     window: ModelView<(Section, bool, bool)>,
@@ -373,7 +375,6 @@ impl ContainersApp {
     }
 
     fn with_engine(engine: Engine, make_input: fn() -> TextInput) -> Self {
-        let search_index = crate::search_provider::ContainerSearchIndex::new(&engine);
         let intents = Intents::default();
         let installed_images = crate::create_form::InstalledImages::new(
             crate::create_form::image_references(&engine).into(),
@@ -390,7 +391,6 @@ impl ContainersApp {
         Self {
             engine,
             engine_rev: 0,
-            search_index,
             rect: Rect::ZERO,
             window,
             parts,
@@ -529,8 +529,25 @@ impl ContainersApp {
         self.set_create_open(true);
     }
 
+    pub(crate) fn set_create_field(
+        &mut self,
+        field: CreateField,
+        value: &str,
+    ) -> Result<(), String> {
+        let dispatcher = self
+            .dispatcher
+            .as_ref()
+            .ok_or_else(|| "the create form is not attached".to_owned())?;
+        crate::resource::create_field_dispatcher(dispatcher, field).apply(
+            &ui::tilo_resource::TextEdit::ReplaceText {
+                text: value.to_owned(),
+            },
+        );
+        Ok(())
+    }
+
     /// Empty the draft, once a container was created from it.
-    fn clear_create(&mut self, doc: &mut AutoCommit) {
+    fn clear_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
@@ -539,10 +556,88 @@ impl ContainersApp {
         }
     }
 
+    pub(crate) fn engine_rows(&self) -> Vec<LiveRow> {
+        let live = self.engine.live;
+        let mut rows: Vec<LiveRow> = self
+            .engine
+            .containers
+            .iter()
+            .map(|container| container_row(container, live))
+            .chain(
+                self.engine
+                    .images
+                    .iter()
+                    .map(|image| image_row(image, live)),
+            )
+            .chain(
+                self.engine
+                    .volumes
+                    .iter()
+                    .map(|volume| volume_row(volume, live)),
+            )
+            .chain(
+                self.engine
+                    .distroboxes
+                    .iter()
+                    .map(|distrobox| distrobox_row(distrobox, live)),
+            )
+            .take(RESOURCE_SNAPSHOT_LIMIT)
+            .collect();
+        if let Some(pull) = &self.pull {
+            rows.push(LiveRow::new(
+                "containers.pull-job",
+                "containers.job",
+                format!("Pulling {}", pull.reference),
+            ));
+        }
+        rows
+    }
+
+    /// The live row `id`, wherever it is in the engine.
+    pub(crate) fn engine_row(&self, id: &str) -> Option<LiveRow> {
+        let live = self.engine.live;
+        if let Some(container_id) = id
+            .strip_prefix("container:")
+            .and_then(|rest| rest.strip_suffix(":logs"))
+        {
+            return self.engine.find(container_id).map(logs_row);
+        }
+        if let Some(container_id) = id.strip_prefix("container:") {
+            return self
+                .engine
+                .find(container_id)
+                .map(|container| container_row(container, live));
+        }
+        if let Some(reference) = id.strip_prefix("image:") {
+            return self
+                .engine
+                .images
+                .iter()
+                .find(|item| item.reference() == reference)
+                .map(|item| image_row(item, live));
+        }
+        if let Some(name) = id.strip_prefix("volume:") {
+            return self
+                .engine
+                .volumes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| volume_row(item, live));
+        }
+        if let Some(name) = id.strip_prefix("distrobox:") {
+            return self
+                .engine
+                .distroboxes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| distrobox_row(item, live));
+        }
+        None
+    }
+
     /// The engine changed: the search index and the shell follow it.
     pub(crate) fn engine_changed(&mut self) {
         self.engine_rev = self.engine_rev.wrapping_add(1);
-        self.search_index.sync(&self.engine);
         *self.installed_images.borrow_mut() = crate::create_form::image_references(&self.engine);
     }
 
@@ -966,8 +1061,8 @@ impl ContainersApp {
         }
     }
 
-    pub(crate) fn submit_create(&mut self, doc: &mut AutoCommit) {
-        let draft = CreateDoc::read(doc);
+    pub(crate) fn submit_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let draft = CreateDoc::read(doc.doc());
         let Some(args) = draft.run_args() else {
             self.show_toast("Choose an image to create the container from", true);
             return;
@@ -1194,7 +1289,7 @@ impl ContainersApp {
     // ---- intents --------------------------------------------------------
 
     /// Apply what the window's controls asked for.
-    pub(crate) fn drain_intents(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn drain_intents(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let intents = self.intents.take();
         if intents.is_empty() {
             return;
@@ -1209,7 +1304,7 @@ impl ContainersApp {
         clippy::too_many_lines,
         reason = "one flat match from every control's intent to its effect"
     )]
-    fn apply_intent(&mut self, doc: &mut AutoCommit, intent: Intent) {
+    fn apply_intent(&mut self, doc: &mut ui::widget::Edits<'_>, intent: Intent) {
         match intent {
             Intent::ShowSection(section) => self.show_section(section),
             Intent::Select(id) => self.select_container(id),
@@ -1419,46 +1514,18 @@ pub(crate) fn past_tense(action: Action) -> &'static str {
 // =====================================================================
 
 impl Widget for ContainersApp {
-    ui::provides!(
-        dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "containers.container",
-            "containers.logs",
-            "containers.image",
-            "containers.volume",
-            "containers.distrobox",
-        ]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            self.drain_intents(doc);
-            return Ok(Some(started));
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
         }
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
+        self.drain_intents(edits);
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, _) = ui::doc::document(state, path);
+            let (_doc, _) = ui::doc::document_ref(state, path);
             self.drain_bg();
             // Periodically re-probe the engine. Controlled fixtures own that
             // cadence through their request channel.
@@ -1475,7 +1542,6 @@ impl Widget for ContainersApp {
                 self.spawn_refresh();
             }
             self.hydrate_selection();
-            self.drain_intents(doc);
             if self.pull_dirty {
                 self.rebuild_pull();
             }
@@ -1500,10 +1566,9 @@ impl Widget for ContainersApp {
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         {
-            let (doc, _) = ui::doc::document(state, path);
-            self.drain_intents(doc);
+            let (_doc, _) = ui::doc::document_ref(state, path);
             if self.pull_dirty {
                 self.rebuild_pull();
             }
@@ -1644,7 +1709,7 @@ impl Widget for ContainersApp {
                 self.handle_keys(event, ctx);
             }
         }
-        self.drain_intents(ctx.state);
+        self.drain_intents(&mut ctx.edits());
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1727,12 +1792,6 @@ impl Widget for ContainersApp {
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
-    }
-}
-
-impl ui::search::capability::SearchSource for ContainersApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
@@ -2081,7 +2140,7 @@ mod tests {
 
         // --- phase: resource_snapshot_is_bounded_and_omitted_identity_resolves_lazily ---
         {
-            let limit = crate::published::RESOURCE_SNAPSHOT_LIMIT;
+            let limit = RESOURCE_SNAPSHOT_LIMIT;
             let mut app = ContainersApp::sample();
             let template = app.engine.containers[0].clone();
             app.engine.containers.clear();
@@ -2111,8 +2170,15 @@ mod tests {
                 "a stale search address cannot recreate removed authority"
             );
             assert!(
-                ui::search::SearchProvider::search(&app.search_index.provider(), &omitted)
-                    .is_empty()
+                crate::search::engine_entries(&app.engine)
+                    .iter()
+                    .all(|entry| {
+                        entry
+                            .action
+                            .as_ref()
+                            .is_none_or(|action| action.resource != omitted)
+                    }),
+                "removed containers are absent from canonical search entries"
             );
         }
     }
@@ -2190,7 +2256,7 @@ mod tests {
             .unwrap();
         }
         app.set_create_open(true);
-        app.submit_create(&mut doc);
+        app.submit_create(&mut ui::widget::Edits::lend(&mut doc));
         let ControlledRuntimeRequest::Create(request) = requests.recv().unwrap() else {
             panic!("expected one controlled create request");
         };
@@ -2295,5 +2361,165 @@ mod tests {
             requests.try_recv().is_err(),
             "a hydrated container is not asked again"
         );
+    }
+}
+
+const RESOURCE_SNAPSHOT_LIMIT: usize = 200;
+
+/// `effect`, as a row offers it: an engine effect only while the engine
+/// answers.
+fn offered(effect: &ContainersEffect, engine_live: bool, offline: &str) -> ActionSpec {
+    let spec = effect.bound();
+    if engine_live || effect.engine_operation().is_none() {
+        spec
+    } else {
+        spec.unavailable("engine_offline", offline)
+    }
+}
+
+const ENGINE_OFFLINE: &str = "Container engine actions are unavailable in demo mode";
+
+pub(crate) fn container_row(container: &crate::model::Container, engine_live: bool) -> LiveRow {
+    let id = || container.id.clone();
+    let mut row = LiveRow::new(
+        format!("container:{}", container.id),
+        "containers.container",
+        container.name.clone(),
+    )
+    .operation({
+        let mut open = ContainersEffect::SelectContainer { id: Some(id()) }.bound();
+        open.label = format!("Open {}", container.name);
+        open
+    });
+    let effects = match container.status {
+        crate::model::ContainerStatus::Running | crate::model::ContainerStatus::Restarting => vec![
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::Restart { container: id() },
+            ContainersEffect::Pause { container: id() },
+            ContainersEffect::Shell { container: id() },
+        ],
+        crate::model::ContainerStatus::Paused => vec![
+            ContainersEffect::Unpause { container: id() },
+            ContainersEffect::Stop { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+            ContainersEffect::Shell { container: id() },
+        ],
+        _ => vec![
+            ContainersEffect::Start { container: id() },
+            ContainersEffect::RemoveContainer { container: id() },
+        ],
+    };
+    for effect in &effects {
+        row = row.operation(offered(effect, engine_live, ENGINE_OFFLINE));
+    }
+    row.row(logs_row(container))
+}
+
+fn logs_row(container: &crate::model::Container) -> LiveRow {
+    LiveRow::new(
+        format!("container:{}:logs", container.id),
+        "containers.logs",
+        format!("{} logs", container.name),
+    )
+    .effect(&ContainersEffect::OpenLogs {
+        container: container.id.clone(),
+    })
+}
+
+fn image_row(image: &crate::model::Image, engine_live: bool) -> LiveRow {
+    let reference = image.reference();
+    LiveRow::new(
+        format!("image:{reference}"),
+        "containers.image",
+        reference.clone(),
+    )
+    .effect(&ContainersEffect::ShowImage {
+        image: reference.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveImage { image: reference },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
+}
+
+fn volume_row(volume: &crate::model::Volume, engine_live: bool) -> LiveRow {
+    LiveRow::new(
+        format!("volume:{}", volume.name),
+        "containers.volume",
+        volume.name.clone(),
+    )
+    .effect(&ContainersEffect::ShowVolume {
+        volume: volume.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::RemoveVolume {
+            volume: volume.name.clone(),
+        },
+        engine_live,
+        ENGINE_OFFLINE,
+    ))
+}
+
+fn distrobox_row(distrobox: &crate::model::DistroBox, engine_live: bool) -> LiveRow {
+    LiveRow::new(
+        format!("distrobox:{}", distrobox.name),
+        "containers.distrobox",
+        distrobox.name.clone(),
+    )
+    .effect(&ContainersEffect::ShowDistrobox {
+        distrobox: distrobox.name.clone(),
+    })
+    .operation(offered(
+        &ContainersEffect::EnterDistrobox {
+            distrobox: distrobox.name.clone(),
+        },
+        engine_live,
+        "Distrobox actions are unavailable in demo mode",
+    ))
+}
+
+impl ContainersApp {
+    /// Ask the engine to `verb` the `kind` of thing named `target`.
+    pub(crate) fn run_engine_operation(
+        &mut self,
+        kind: &str,
+        verb: &str,
+        target: &str,
+    ) -> Result<(), String> {
+        if !self.engine.live {
+            return Err("container engine actions are unavailable while Podman is offline".into());
+        }
+        #[cfg(test)]
+        if let Some(result) = self.controlled_immediate(
+            format!("{kind}.{verb}"),
+            target.to_string(),
+            vec![verb.to_string(), target.to_string()],
+        ) {
+            result?;
+            self.spawn_refresh();
+            self.show_toast(format!("{verb} accepted for {target}"), false);
+            return Ok(());
+        }
+        match (kind, verb) {
+            ("containers.container", "start") => podman::run_action(Action::Start, target)?,
+            ("containers.container", "stop") => podman::run_action(Action::Stop, target)?,
+            ("containers.container", "restart") => podman::run_action(Action::Restart, target)?,
+            ("containers.container", "pause") => podman::run_action(Action::Pause, target)?,
+            ("containers.container", "unpause") => podman::run_action(Action::Unpause, target)?,
+            ("containers.container", "remove") => podman::run_action(Action::Remove, target)?,
+            ("containers.container", "shell") => {
+                crate::terminal::open(crate::terminal::exec_attach_intent(target))?;
+            }
+            ("containers.image", "remove") => podman::remove_image(target, true)?,
+            ("containers.volume", "remove") => podman::remove_volume(target, false)?,
+            ("containers.distrobox", "enter") => {
+                crate::terminal::open(crate::terminal::distrobox_enter_intent(target))?;
+            }
+            _ => return Err(format!("`{verb}` is not a container engine operation")),
+        }
+        self.spawn_refresh();
+        self.show_toast(format!("{verb} accepted for {target}"), false);
+        Ok(())
     }
 }

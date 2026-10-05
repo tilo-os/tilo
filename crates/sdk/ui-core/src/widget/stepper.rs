@@ -599,7 +599,7 @@ impl Widget for Stepper {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &crate::widget::ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {

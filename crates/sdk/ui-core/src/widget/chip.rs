@@ -1072,7 +1072,7 @@ impl Widget for Chip {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut crate::widget::AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _root: &crate::widget::ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -1376,7 +1376,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -1505,7 +1505,7 @@ mod activation_tests {
         assert!(Widget::perform_action(
             &mut chip,
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");

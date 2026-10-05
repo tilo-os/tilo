@@ -34,7 +34,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::rc::Rc;
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::AutoCommit;
@@ -164,8 +165,6 @@ pub type NotesEditor = RichTextSurface<PageBody>;
 pub struct PageBody {
     field: RichTextField,
     page: Option<PageId>,
-    /// Notes' own action host, for hosts that mount notes without the framework.
-    local: Option<crate::resource::LocalSink>,
 }
 
 impl PageBody {
@@ -174,16 +173,15 @@ impl PageBody {
             self.field
                 .attach(crate::actions::page_body_dispatcher(notebook, page));
         }
-        self.local = None;
     }
 }
 
 impl RichTextSource for PageBody {
     fn read_only(&self) -> bool {
-        self.local.is_none() && self.field.read_only()
+        self.field.read_only()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit) {
+    fn sync(&mut self, doc: &AutoCommit) {
         self.field.sync(doc);
     }
 
@@ -201,13 +199,10 @@ impl RichTextSource for PageBody {
 
     fn apply(
         &mut self,
-        doc: &mut AutoCommit,
+        edits: &mut ui::widget::Edits<'_>,
         edit: &tilo_document::RichTextAction,
     ) -> Result<(), ui::tilo_actions::ActionError> {
-        match (&self.local, self.page) {
-            (Some(local), Some(page)) => local.borrow_mut().apply_body_edit(doc, page, edit),
-            _ => self.field.apply(doc, edit),
-        }
+        self.field.apply(edits, edit)
     }
 
     fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
@@ -219,19 +214,17 @@ impl RichTextSource for PageBody {
 /// column width. Keeping construction behind one helper prevents a page bind,
 /// remote rebind, or empty-state reset from silently returning to the shared
 /// editor's single-line (code/editor) default. `page` is the page whose body
-/// it edits, through the notebook's dispatcher or else notes' local action
-/// host; without a page it shows what it is given and writes nothing.
+/// it edits, through the notebook's dispatcher; without a page or a
+/// dispatcher it shows what it is given and writes nothing.
 fn notes_editor(
     page: Option<PageId>,
     notebook: Option<&Dispatcher<crate::resource::Notebook>>,
-    local: Option<&crate::resource::LocalSink>,
 ) -> NotesEditor {
     let mut body = PageBody {
         field: RichTextField::view_only(move |doc| {
             page.and_then(|page| crate::doc::NotesDoc::page_body(doc, page))
         }),
         page,
-        local: local.cloned(),
     };
     if let Some(notebook) = notebook {
         body.attach(notebook);
@@ -248,6 +241,15 @@ fn notes_editor(
     reason = "the local focus, hover, empty-state and layout flags independently track retained widget lifecycles; grouping them would only hide rather than simplify that state"
 )]
 pub struct MainPanel {
+    header: crate::note_header::NoteHeader,
+    backlinks: Vec<BacklinkChip>,
+    backlink_rects: Vec<Rect>,
+    backlink_area_height: f64,
+    pending_backlink_open: Option<PageId>,
+    focused_backlink: Option<PageId>,
+    hovered_backlink: Option<PageId>,
+    header_node: Option<NodeId>,
+    metadata_height: f64,
     /// Currently displayed page (None until a selection lands). Also the
     /// "is a page open" signal that gates the title vs. the empty state.
     page_id: Option<PageId>,
@@ -272,17 +274,25 @@ pub struct MainPanel {
     /// Rising-edge: a committed title edit that should rename the page. The
     /// host drains it via [`take_title_rename`](Self::take_title_rename).
     pending_rename: Option<String>,
-    /// Durable tags, the note's place and dates, and the incoming links, as
-    /// toolkit widgets under the title. The tag and link buttons only record
-    /// intent; the app drains it into the canonical operation.
-    header: NoteHeader,
-    header_node: Option<NodeId>,
-    /// The height the whole header (tags, captions, incoming links and the
-    /// gap to the body) takes in the scrolling document. It is recalculated
-    /// whenever width, text scale, or membership changes, so large text and
-    /// long tag names never collide with the first document block.
-    metadata_height: f64,
-    /// Set while a new header height is being discovered so the host rebuilds
+    /// Durable tags assigned to the open page, rendered as quiet chips. The
+    /// selection/filter around them belongs to the app and is intentionally
+    /// local; this view only receives the document-derived labels.
+    tags: Vec<TagChip>,
+    /// Exact hit geometry for the wrapped tag chips. This is computed during
+    /// layout, shared by pointer + semantic activation, and deliberately
+    /// avoids making the title's entire metadata band accidentally editable.
+    tag_rects: Vec<Rect>,
+    /// The height reserved for wrapped tag rows. It is recalculated whenever
+    /// width, text scale, or membership changes, so large text and long tag
+    /// names never collide with the first document block.
+    tag_area_height: f64,
+    /// A tag chip is a local navigation control. The app opens the tag it
+    /// names, checking the tag still exists, before changing the local browse
+    /// view.
+    pending_tag_open: Option<crate::model::TagId>,
+    focused_tag: Option<crate::model::TagId>,
+    hovered_tag: Option<crate::model::TagId>,
+    /// Set while a new chip height is being discovered so the host rebuilds
     /// the absolute editor inset on the immediately following layout pass.
     tag_layout_dirty: bool,
     /// Live editor. Always present (defaults to an empty document)
@@ -291,9 +301,6 @@ pub struct MainPanel {
     /// The notebook's dispatcher, once the app is hosted: page bodies are
     /// edited through it.
     notebook: Option<Dispatcher<crate::resource::Notebook>>,
-    /// Notes' own action host until the app is hosted by the framework:
-    /// the app's, shared, or this panel's own when it stands alone.
-    local: Option<crate::resource::LocalSink>,
     image_store: Option<ui::ImageStore>,
     /// Last markdown body the panel was loaded with. Used to detect
     /// whether the editor's current state still matches the loaded
@@ -360,13 +367,24 @@ impl MainPanel {
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
+            tags: Vec::new(),
+            tag_rects: Vec::new(),
+            tag_area_height: 0.0,
+            pending_tag_open: None,
+            focused_tag: None,
+            hovered_tag: None,
             header: NoteHeader::default(),
             header_node: None,
             metadata_height: 0.0,
             tag_layout_dirty: false,
-            editor: notes_editor(None, None, None),
+            backlinks: Vec::new(),
+            backlink_rects: Vec::new(),
+            backlink_area_height: 0.0,
+            pending_backlink_open: None,
+            focused_backlink: None,
+            hovered_backlink: None,
+            editor: notes_editor(None, None),
             notebook: None,
-            local: Some(crate::resource::LocalSink::default()),
             image_store: None,
             body: String::new(),
             rect: Rect::ZERO,
@@ -544,7 +562,6 @@ impl MainPanel {
     ) -> Result<Self, String> {
         let mut panel = Self::new();
         panel.notebook.clone_from(&self.notebook);
-        panel.local.clone_from(&self.local);
         panel.set_image_store(self.image_store.clone());
         panel.set_local_author(self.local_author.clone());
         if let Some(page) = workspace.selected() {
@@ -692,6 +709,11 @@ impl MainPanel {
         self.editor.editor_mut().set_transclusion_previews(previews);
     }
 
+    /// The store the editor draws images from.
+    pub(crate) fn image_store(&self) -> Option<&ui::ImageStore> {
+        self.image_store.as_ref()
+    }
+
     pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
         self.image_store.clone_from(&store);
         self.editor.editor_mut().set_image_store(store);
@@ -702,20 +724,10 @@ impl MainPanel {
     pub(crate) fn attach_notebook(&mut self, notebook: Dispatcher<crate::resource::Notebook>) {
         self.editor.source_mut().attach(&notebook);
         self.notebook = Some(notebook);
-        self.local = None;
-    }
-
-    /// Edit page bodies through notes' own action host until the app is
-    /// hosted by the framework.
-    pub(crate) fn use_local_actions(&mut self, local: crate::resource::LocalSink) {
-        if self.notebook.is_none() {
-            self.editor.source_mut().local = Some(Rc::clone(&local));
-            self.local = Some(local);
-        }
     }
 
     fn fresh_editor(&self, page: Option<PageId>) -> NotesEditor {
-        let mut editor = notes_editor(page, self.notebook.as_ref(), self.local.as_ref());
+        let mut editor = notes_editor(page, self.notebook.as_ref());
         editor
             .editor_mut()
             .set_image_store(self.image_store.clone());
@@ -987,13 +999,6 @@ impl MainPanel {
         md
     }
 
-    /// Compare content rather than paint dirtiness, which also changes on load
-    /// and focus. Used only when recovering a failed legacy disk read.
-    pub(crate) fn has_unsaved_body(&self) -> bool {
-        let specs = crate::markdown::blocks_to_specs(self.editor.editor().blocks());
-        crate::markdown::serialize(&specs) != self.body
-    }
-
     /// Currently displayed title, if any. `None` when no page is open.
     pub fn title(&self) -> Option<&str> {
         if self.page_id.is_some() {
@@ -1125,21 +1130,7 @@ impl Default for MainPanel {
     }
 }
 
-/// The undo boundaries of body edits applied through the local action host.
-impl ui::undo::CommittedActions for MainPanel {
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.as_ref()?.borrow_mut().take_committed()
-    }
-    fn keeps_undo_step_open(&self) -> bool {
-        self.local
-            .as_ref()
-            .is_some_and(|local| local.borrow().keeps_step_open())
-    }
-}
-
 impl Widget for MainPanel {
-    ui::provides!(dyn ui::undo::CommittedActions);
-
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         Some(ui::widget::PrimaryScrollRegion {
             key: "primary",
@@ -1196,8 +1187,8 @@ impl Widget for MainPanel {
         children
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         self.date_index.sync(state);
         let dates = self
             .page_id
@@ -1908,7 +1899,7 @@ impl Widget for MainPanel {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if self.page_id.is_none() && matches!(action, ui::a11y::Action::Activate) {
@@ -1925,7 +1916,7 @@ impl Widget for MainPanel {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == "notes.scroll-position" {
@@ -2035,7 +2026,7 @@ mod tests {
             assert!(panel.perform_semantic_action(
                 target,
                 &ui::a11y::Action::SetValue("Launch plan".into()),
-                &mut doc,
+                &mut Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -2057,7 +2048,11 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(p.perform_action(&ui::a11y::Action::Activate, &mut doc, &ObjId::Root));
+            assert!(p.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut Edits::lend(&mut doc),
+                &ObjId::Root
+            ));
             assert!(p.take_empty_action());
         }
 
@@ -2207,5 +2202,103 @@ mod tests {
             assert!(p.page_id().is_none());
             assert!(p.title().is_none());
         }
+    }
+
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
+    #[test]
+    fn metadata_bands_tags_and_backlinks_clear_the_editor_and_keep_identity() {
+        use ui::headless::Framed;
+        fn mounted(
+            width: u32,
+            theme: Theme,
+        ) -> (Framed<MainPanel>, Vec<crate::model::TagId>, PageId) {
+            let mut panel = MainPanel::new();
+            panel.load_page(fresh_page_id(), "Launch", "First body paragraph");
+            let tags = ["Release planning", "Customer research", "Accessibility"]
+                .into_iter()
+                .map(|name| TagChip {
+                    id: fresh_page_id(),
+                    name: name.into(),
+                })
+                .collect::<Vec<_>>();
+            let ids = tags.iter().map(|t| t.id).collect::<Vec<_>>();
+            panel.set_tags(tags);
+            panel.set_parent_path("Projects / Launch".into());
+            let source = fresh_page_id();
+            panel.set_backlinks(vec![BacklinkChip {
+                page: source,
+                title: "Long-running launch notes".into(),
+                references: 2,
+            }]);
+            (
+                Framed::new(ui::State::new(), panel, (width, 700), theme),
+                ids,
+                source,
+            )
+        }
+        for (width, scale) in [(800, 1.0), (300, 2.0)] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let (panel, tags, source) = mounted(width, theme.clone());
+            let targets = Framed::harness(&panel).targets();
+            let chips = tags
+                .iter()
+                .map(|tag| targets[&format!("notes.tag-chip:{tag}")])
+                .collect::<Vec<_>>();
+            assert_eq!(chips.len(), 3);
+            assert!(
+                chips
+                    .iter()
+                    .all(|r| r.y0 >= panel.title_rect.y1 + f64::from(theme.tokens.spacing.s1)),
+                "title and tags have separate bands"
+            );
+            assert!(
+                chips.iter().all(|r| r.y0 >= panel.scroll_viewport().y0),
+                "metadata starts inside the scrolling viewport"
+            );
+            assert!(
+                chips
+                    .iter()
+                    .all(|r| r.x0 >= 0.0 && r.x1 <= f64::from(width)),
+                "tags remain inside the panel"
+            );
+            if width == 300 {
+                assert!(chips[1].y0 > chips[0].y0, "long tags wrap");
+            }
+            let backlink = targets[&format!("notes.backlink-chip:{source}")];
+            let editor_top = panel.rect.y0 + panel.editor_top_inset();
+            assert!(chips.iter().all(|r| r.y1 <= editor_top));
+            assert!(
+                backlink.y1 <= editor_top,
+                "incoming-link metadata clears the first block"
+            );
+            // Each visible chip publishes the exact stable resource address,
+            // so accessibility and the palette resolve the same identity.
+            let bindings = ui::widget::controls::control_action_bindings(&**panel);
+            for tag in &tags {
+                let expected = crate::actions::open_tag_binding(*tag, "label").unwrap();
+                assert!(
+                    bindings
+                        .iter()
+                        .any(|b| b.control_id == format!("notes.tag-chip:{tag}")
+                            && b.kind
+                                == ui::widget::ControlBindingKind::Action(
+                                    expected.address().clone()
+                                ))
+                );
+            }
+            let expected = crate::actions::open_page_binding(source, "label").unwrap();
+            assert!(bindings.iter().any(|b| b.control_id
+                == format!("notes.backlink-chip:{source}")
+                && b.kind == ui::widget::ControlBindingKind::Action(expected.address().clone())));
+        }
+    }
+}
+
+impl MainPanel {
+    pub fn take_tag_open(&mut self) -> Option<crate::model::TagId> {
+        self.pending_tag_open.take()
+    }
+    pub fn take_backlink_open(&mut self) -> Option<PageId> {
+        self.pending_backlink_open.take()
     }
 }

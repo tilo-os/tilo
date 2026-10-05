@@ -5,15 +5,14 @@
     reason = "migration stack lint debt is scoped to this target"
 )]
 
-//! Quick Browser library root. The binary is a thin shim over the
-//! `BrowserWidget` exported here so the `--shots` mode can construct
-//! the whole chrome without booting an event loop.
+//! Browser library root: the [`BrowserShell`] framework app, whose surface
+//! is a [`BrowserWindow`] showing one [`BrowserWidget`] page. Other pages are
+//! other Browser instances in the desktop's tabs.
 //!
 //! The browser is deliberately small: it is chrome (address bar,
 //! navigation, progress, filter loading) around the `ui` toolkit's
 //! `WebView` widget. The web engine itself lives behind
-//! `ui::webview::WebViewEngine`. A window shows one page; other pages are
-//! other Browser instances in the desktop's tabs.
+//! `ui::webview::WebViewEngine`; retained tabs share one native runtime.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -52,6 +51,7 @@ mod capture_page;
 mod credentials;
 mod daily_controls;
 pub mod downloads;
+pub mod effects;
 pub mod extensions;
 pub mod history;
 pub mod library;
@@ -70,12 +70,8 @@ pub use browser_widget::BrowserWidget;
 pub use browser_window::BrowserWindow;
 
 mod capabilities;
-/// Production Browser root used by the normal launcher, headless tooling,
-/// and certification. Launch-specific URI handling remains in the binary;
-/// this deliberately creates the same safe default profile a user gets when
-/// opening Browser without a target.
-#[must_use]
-pub fn app_root() -> BrowserWidget {
-    BrowserWidget::new()
-}
-pub use resource::{Browser, BrowserShell, launch_spec as framework_launch_spec};
+mod live_capture;
+
+pub use resource::{Browser, BrowserShell};
+
+ui::dev_reload_entry!(BrowserShell);

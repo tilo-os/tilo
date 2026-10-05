@@ -18,6 +18,7 @@ pub mod adjust;
 pub mod answer;
 pub mod author;
 pub mod brushes;
+pub mod content;
 pub mod content_geometry;
 pub mod described;
 pub mod detail;
@@ -72,9 +73,17 @@ impl ResourceApp for App {
 
     fn view(cx: &mut ViewCx<ArtworkResource>) -> Element {
         locales::install();
-        let tools = tools::Tools::default();
+        let recents = cx.settings::<document::RecentArtworks>();
+        let tools = tools::Tools {
+            recents: recents.state(),
+            ..tools::Tools::default()
+        };
         let canvas = cx.surface(surface::CanvasSurface::new(tools.clone()));
-        let canvas: Element = Box::new(preview::VersionPreview::new(canvas, tools.preview.clone()));
+        let canvas: Element = Box::new(preview::VersionPreview::new(
+            canvas,
+            tools.preview.clone(),
+            cx.content(),
+        ));
         let canvas = menu::over(canvas, &tools, cx.live(), cx.dispatcher());
         let dock = LocalState::new(Dock::Layers);
         let staged = dock.clone();
@@ -122,6 +131,7 @@ impl ResourceApp for App {
         Box::new(panels::files::FileDesk::new(
             Box::new(layers),
             tools,
+            recents,
             cx.live().clone(),
             cx.dispatcher(),
         ))
@@ -167,9 +177,13 @@ impl ResourceApp for App {
             return Vec::new();
         }
         let open = if file.media_type() == document::MEDIA_TYPE {
-            let Ok(artwork) =
-                document::unpack(file.bytes(), &tilo_content::ContentStore::for_app())
-            else {
+            let Ok(artwork) = document::unpack(
+                file.bytes(),
+                &input
+                    .content()
+                    .cloned()
+                    .unwrap_or_else(crate::content::store),
+            ) else {
                 return Vec::new();
             };
             CanvasAction::OpenArtwork(actions::OpenArtwork {
@@ -312,7 +326,7 @@ impl ui::widget::Decorator for Shown {
         &mut self.dialog
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         let open = self.sheet.with(|sheet| *sheet == Some(self.which));
         if open != self.dialog.is_open() {
             self.dialog.set_open(open);

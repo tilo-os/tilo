@@ -48,6 +48,7 @@ pub(super) struct RowContext {
     scale: f64,
     geo: Geo,
     thumbs: Option<ThumbCtx>,
+    workspace_roots: Rc<[std::path::PathBuf]>,
     rename_rect: Option<Rc<Cell<Option<Rect>>>>,
 }
 
@@ -158,6 +159,7 @@ pub(super) struct ListInputs<'a> {
     pub text_scale: f64,
     pub geo: Geo,
     pub thumbs: Option<ThumbCtx>,
+    pub workspace_roots: Rc<[std::path::PathBuf]>,
     pub renaming: Option<usize>,
     pub rename_rect: Option<Rc<Cell<Option<Rect>>>>,
     pub theme: &'a Theme,
@@ -286,6 +288,7 @@ fn paint_name_cell(
     };
     let visual = VisualPaint {
         thumbs: cx.thumbs.as_ref(),
+        workspace_roots: &cx.workspace_roots,
         scale: cx.scale,
         glyph_px: icon_px,
         glyph_color: ink,
@@ -369,6 +372,7 @@ impl ListSlot {
             scale: inputs.scale,
             geo: inputs.geo,
             thumbs: inputs.thumbs.clone(),
+            workspace_roots: Rc::clone(&inputs.workspace_roots),
             rename_rect: inputs.rename_rect.clone(),
         });
         let rows: Vec<ListRow> = inputs
@@ -570,7 +574,7 @@ impl ListSlot {
         let mut inner = ui::widget::EventCtx {
             scale_factor: ctx.scale_factor,
             modifiers: ctx.modifiers,
-            state: &mut *ctx.state,
+            state: ctx.state.reborrow(),
             path: ctx.path,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -582,7 +586,7 @@ impl ListSlot {
 
     pub(super) fn update(
         &self,
-        state: &mut ui::widget::AppModel,
+        state: &ui::widget::AppModel,
         path: &ui::widget::ModelPath,
     ) -> bool {
         self.0

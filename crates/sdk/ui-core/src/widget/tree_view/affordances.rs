@@ -799,7 +799,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut automerge::AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Option<bool> {
         use crate::a11y::Action;

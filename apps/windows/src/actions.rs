@@ -9,12 +9,11 @@ use crate::model::{Catalogue, Route};
 use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{
-    Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec,
-    Availability, ConfirmationPolicy, DiscoveryScope, Doc, EncodedAction, ExecutionLocus,
-    ExecutionMode, OperationKind, ParamType, PermissionRequirement, Resource, ResultSpec,
-    RetryPolicy, RiskLevel,
+    Action, ActionError, ActionRegistry, ActionSpec, Availability, ConfirmationPolicy,
+    DiscoveryScope, Doc, EncodedAction, ExecutionLocus, Resource,
 };
 use ui::framework::LiveRow;
+use ui::tilo_resource::{self, Effect};
 
 pub const WINDOWS_ACTION_TYPE: &str = "windows.compat.action";
 /// Stable id of the manager resource published by [`tilo_resource::publish`].
@@ -48,6 +47,182 @@ impl Action for WindowsAction {
 
 pub fn register(registry: &mut ActionRegistry) {
     registry.register::<WindowsAction>(WINDOWS_ACTION_TYPE);
+}
+
+/// What Windows Apps asks the compatibility service and the managed
+/// appliance to do. None of it is document state: a launch, an install or a
+/// lifecycle change happens on this machine, where it is invoked.
+#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[effect(operation = "windows.effect")]
+pub enum WindowsEffect {
+    /// Install Windows application.
+    #[effect(job, privileged, permission = "admin")]
+    Install {
+        #[param("Path of the installer; omit to choose one")]
+        path: Option<String>,
+    },
+    /// Import Windows ISO.
+    #[effect(job, privileged, permission = "admin")]
+    ImportIso {
+        #[param("Path of the ISO; omit to choose one")]
+        path: Option<String>,
+    },
+    /// Open recovery desktop.
+    #[effect(row, job, privileged, permission = "admin")]
+    Recovery,
+    /// Start Windows.
+    #[effect(row, job, privileged, permission = "admin")]
+    Start,
+    /// Restart Windows.
+    #[effect(row, job, privileged, permission = "admin")]
+    Restart,
+    /// Suspend Windows.
+    #[effect(row, job, privileged, permission = "admin")]
+    Suspend,
+    /// Resume Windows.
+    #[effect(row, job, privileged, permission = "admin")]
+    Resume,
+    /// Shut down Windows.
+    #[effect(row, job, privileged, permission = "admin")]
+    Shutdown,
+    /// Connect temporarily for activation.
+    #[effect(row, job, privileged, permission = "admin")]
+    TemporaryNetwork,
+    /// Connect temporarily for Windows Update.
+    #[effect(row, job, privileged, permission = "admin")]
+    UpdateNetwork,
+    /// Disconnect temporary network access.
+    #[effect(row, job, privileged, permission = "admin")]
+    RevokeNetwork,
+    /// Install in a private capsule.
+    #[effect(row, job, privileged, permission = "admin")]
+    InstallPrivateCapsule,
+    /// Install in the Windows appliance.
+    #[effect(row, job, privileged, permission = "admin")]
+    InstallWindowsAppliance,
+    /// Launch.
+    #[effect(row, job)]
+    Launch {
+        #[param("The application's id")]
+        app: String,
+    },
+    /// Open in Windows appliance.
+    #[effect(row, job, privileged, permission = "admin")]
+    LaunchVmFallback {
+        #[param("The application's id")]
+        app: String,
+    },
+    /// Open file in Windows.
+    #[effect(job, permission = "read")]
+    OpenFile {
+        #[param("The application's id")]
+        app: String,
+        #[param("Path of the file; omit to choose one")]
+        path: Option<String>,
+    },
+    /// Publish launcher.
+    #[effect(row, job, permission = "admin")]
+    Publish {
+        #[param("The application's id")]
+        app: String,
+    },
+    /// Retry installation.
+    #[effect(row, job, privileged, permission = "admin")]
+    RetryInstall {
+        #[param("The application's private capsule")]
+        capsule: String,
+    },
+    /// Install in Windows appliance.
+    #[effect(row, job, privileged, permission = "admin")]
+    EscalateInstall {
+        #[param("The application's private capsule")]
+        capsule: String,
+    },
+    /// Remove launcher.
+    #[effect(row, job, destructive, permission = "admin")]
+    RemoveLauncher {
+        #[param("The application's id")]
+        app: String,
+    },
+    /// Uninstall.
+    #[effect(row, job, destructive, permission = "admin")]
+    Uninstall {
+        #[param("The application's id")]
+        app: String,
+    },
+    /// Delete application data.
+    #[effect(row, job, destructive, permission = "admin")]
+    DeleteData {
+        #[param("The application's private capsule")]
+        capsule: String,
+    },
+}
+
+impl WindowsEffect {
+    /// The service operation this effect asks for, and the item it names.
+    pub(crate) fn operation(&self) -> (&'static str, String) {
+        let none = String::new;
+        match self {
+            Self::Install { path } => ("windows.install", path.clone().unwrap_or_default()),
+            Self::ImportIso { path } => ("windows.import-iso", path.clone().unwrap_or_default()),
+            Self::Recovery => ("windows.recovery", none()),
+            Self::Start => ("windows.start", none()),
+            Self::Restart => ("windows.restart", none()),
+            Self::Suspend => ("windows.suspend", none()),
+            Self::Resume => ("windows.resume", none()),
+            Self::Shutdown => ("windows.shutdown", none()),
+            Self::TemporaryNetwork => ("windows.temporary-network", none()),
+            Self::UpdateNetwork => ("windows.update-network", none()),
+            Self::RevokeNetwork => ("windows.revoke-network", none()),
+            Self::InstallPrivateCapsule => ("windows.confirm-capsule-install", none()),
+            Self::InstallWindowsAppliance => ("windows.confirm-vm-install", none()),
+            Self::Launch { app } => ("windows.launch", app.clone()),
+            Self::LaunchVmFallback { app } => ("windows.launch-vm-fallback", app.clone()),
+            Self::OpenFile { app, .. } => ("windows.open-file", app.clone()),
+            Self::Publish { app } => ("windows.publish", app.clone()),
+            Self::RetryInstall { capsule } => ("windows.retry-install", capsule.clone()),
+            Self::EscalateInstall { capsule } => ("windows.escalate-install", capsule.clone()),
+            Self::RemoveLauncher { app } => ("windows.remove-launcher", app.clone()),
+            Self::Uninstall { app } => ("windows.uninstall", app.clone()),
+            Self::DeleteData { capsule } => ("windows.delete-data", capsule.clone()),
+        }
+    }
+
+    /// The operation's argument as the service handlers read it.
+    pub(crate) fn payload(&self) -> Vec<u8> {
+        let encoded = match self {
+            Self::OpenFile { app, path } => {
+                serde_json::to_vec(&[app.clone(), path.clone().unwrap_or_default()])
+            }
+            other => serde_json::to_vec(&other.operation().1),
+        };
+        encoded.unwrap_or_default()
+    }
+
+    /// Whether its answer waits on the managed appliance.
+    pub(crate) fn waits_for_appliance(&self) -> bool {
+        matches!(
+            self,
+            Self::ImportIso { .. }
+                | Self::Recovery
+                | Self::Start
+                | Self::Restart
+                | Self::Suspend
+                | Self::Resume
+                | Self::Shutdown
+                | Self::TemporaryNetwork
+                | Self::UpdateNetwork
+                | Self::RevokeNetwork
+        )
+    }
+}
+
+/// `effect` as an item offers it now: available or not, as the service
+/// reports.
+fn offered(effect: &WindowsEffect, available: bool, reason: Option<&str>) -> ActionSpec {
+    let mut spec = effect.bound();
+    spec.contract.availability = availability(available, reason);
+    spec
 }
 
 /// Read one collaborative route override from the shared document.
@@ -85,97 +260,28 @@ fn availability(available: bool, reason: Option<&str>) -> Availability {
     }
 }
 
-fn effect(
-    id: &str,
-    label: &str,
-    type_id: &str,
-    payload: &str,
-    contract: ActionContract,
-) -> ActionSpec {
-    // All payloads come from server-owned resource identities. Keep the
-    // encoded operation total even if serialization ever changes: the empty
-    // string then reaches the normal authenticated handler and is refused,
-    // rather than crashing resource publication.
-    let payload = serde_json::to_vec(payload).unwrap_or_else(|_| b"\"\"".to_vec());
-    let type_id = type_id.to_string();
-    ActionSpec::typed_operation(
-        id,
-        label,
-        "",
-        OperationKind::Effect,
-        type_id.clone(),
-        Vec::new(),
-        move |_| EncodedAction {
-            type_id: type_id.clone(),
-            payload: payload.clone(),
-        },
-    )
-    .with_contract(contract)
-}
-
-/// Install Effect on the manager door (no document delta). Appliance Effects
-/// ride the live `windows.appliance` row from [`live_rows`].
-pub fn manager_effect_specs() -> Vec<ActionSpec> {
-    vec![
-        path_operation(
-            "install",
-            "Install Windows application",
-            "windows.install",
-            "installer path",
-        )
-        .requiring(PermissionRequirement::Admin)
-        .privileged(),
+/// The appliance's lifecycle, available once it is `ready`.
+fn appliance_effects(ready: bool) -> Vec<ActionSpec> {
+    [
+        WindowsEffect::Recovery,
+        WindowsEffect::Start,
+        WindowsEffect::Restart,
+        WindowsEffect::Suspend,
+        WindowsEffect::Resume,
+        WindowsEffect::Shutdown,
+        WindowsEffect::TemporaryNetwork,
+        WindowsEffect::UpdateNetwork,
+        WindowsEffect::RevokeNetwork,
     ]
-}
-
-/// Appliance lifecycle Effects, available once the appliance is `ready`.
-pub fn appliance_effect_specs(ready: bool) -> Vec<ActionSpec> {
-    let mut specs = vec![
-        path_operation(
-            "import-iso",
-            "Import Windows ISO",
-            "windows.import-iso",
-            "ISO path",
+    .iter()
+    .map(|effect| {
+        offered(
+            effect,
+            ready,
+            Some("Set up the managed Windows appliance first"),
         )
-        .requiring(PermissionRequirement::Admin)
-        .privileged(),
-    ];
-    for (id, label, type_id) in [
-        ("recovery", "Open recovery desktop", "windows.recovery"),
-        ("start", "Start Windows", "windows.start"),
-        ("restart", "Restart Windows", "windows.restart"),
-        ("suspend", "Suspend Windows", "windows.suspend"),
-        ("resume", "Resume Windows", "windows.resume"),
-        ("shutdown", "Shut down Windows", "windows.shutdown"),
-        (
-            "temporary-network",
-            "Connect temporarily for activation",
-            "windows.temporary-network",
-        ),
-        (
-            "update-network",
-            "Connect temporarily for Windows Update",
-            "windows.update-network",
-        ),
-        (
-            "revoke-network",
-            "Disconnect temporary network access",
-            "windows.revoke-network",
-        ),
-    ] {
-        let contract = ActionContract {
-            permission: PermissionRequirement::Admin,
-            risk: RiskLevel::Privileged,
-            confirmation: ConfirmationPolicy::Confirm,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            availability: availability(ready, Some("Set up the managed Windows appliance first")),
-            ..ActionContract::default()
-        };
-        specs.push(effect(id, label, type_id, "", contract));
-    }
-    specs
+    })
+    .collect()
 }
 
 /// Document-bound route shortcuts for one override already in shared state.
@@ -224,25 +330,26 @@ pub fn live_rows(catalogue: &Catalogue) -> Vec<LiveRow> {
 
 fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
     let maintenance = maintenance_specs(app);
+    let mut launch = offered(
+        &WindowsEffect::Launch {
+            app: app.id.clone(),
+        },
+        app.launch_available,
+        app.launch_unavailable_reason.as_deref(),
+    );
+    launch.contract.discovery = DiscoveryScope::Launchable;
     let mut row = LiveRow::new(
         format!("windows.app:{}", app.id),
         "windows.compat-app",
         &app.name,
     )
-    .operation(show_spec(app))
-    .operation(effect(
-        "launch",
-        "Launch",
-        "windows.launch",
-        &app.id,
-        launch_contract(app),
-    ))
-    .operation(effect(
-        "launch-vm-fallback",
-        "Open in Windows appliance",
-        "windows.launch-vm-fallback",
-        &app.id,
-        vm_launch_contract(app),
+    .operation(launch)
+    .operation(offered(
+        &WindowsEffect::LaunchVmFallback {
+            app: app.id.clone(),
+        },
+        app.vm_fallback_available,
+        app.vm_fallback_unavailable_reason.as_deref(),
     ));
     for spec in &maintenance {
         row = row.operation(spec.clone());
@@ -256,181 +363,78 @@ fn app_row(app: &crate::model::WindowsApp) -> LiveRow {
     }
 }
 
-/// Show `app` in the window, as choosing its row does: the action a
-/// search hit for it invokes. Local presentation only.
-fn show_spec(app: &crate::model::WindowsApp) -> ActionSpec {
-    let payload = serde_json::to_vec(&app.id).unwrap_or_else(|_| b"\"\"".to_vec());
-    ActionSpec::typed_operation(
-        "show",
-        "Show",
-        "",
-        OperationKind::View,
-        SHOW_OPERATION,
-        Vec::new(),
-        move |_| EncodedAction {
-            type_id: SHOW_OPERATION.into(),
-            payload: payload.clone(),
-        },
-    )
-}
-
-/// The view operation that shows one application.
-pub const SHOW_OPERATION: &str = "windows.show";
-
-fn launch_contract(app: &crate::model::WindowsApp) -> ActionContract {
-    ActionContract {
-        availability: availability(
-            app.launch_available,
-            app.launch_unavailable_reason.as_deref(),
-        ),
-        retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: false },
-        discovery: DiscoveryScope::Launchable,
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    }
-}
-
-fn vm_launch_contract(app: &crate::model::WindowsApp) -> ActionContract {
-    ActionContract {
-        availability: availability(
-            app.vm_fallback_available,
-            app.vm_fallback_unavailable_reason.as_deref(),
-        ),
-        risk: RiskLevel::Privileged,
-        permission: PermissionRequirement::Admin,
-        confirmation: ConfirmationPolicy::Confirm,
-        retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    }
-}
-
 fn maintenance_specs(app: &crate::model::WindowsApp) -> Vec<ActionSpec> {
-    let mut specs = Vec::new();
-    for (id, label, type_id, enabled, payload, confirmation, risk) in [
-        (
-            "publish",
-            "Publish launcher",
-            "windows.publish",
-            app.can_publish_vm_candidate,
-            app.id.as_str(),
-            ConfirmationPolicy::None,
-            RiskLevel::Low,
-        ),
-        (
-            "retry-install",
-            "Retry installation",
-            "windows.retry-install",
-            app.can_retry_install,
-            app.capsule.as_str(),
-            ConfirmationPolicy::Confirm,
-            RiskLevel::Privileged,
-        ),
-        (
-            "escalate-install",
-            "Install in Windows appliance",
-            "windows.escalate-install",
-            app.can_escalate_install_to_vm,
-            app.capsule.as_str(),
-            ConfirmationPolicy::Confirm,
-            RiskLevel::Privileged,
-        ),
-        (
-            "remove-launcher",
-            "Remove launcher",
-            "windows.remove-launcher",
-            app.can_remove_launcher,
-            app.id.as_str(),
-            ConfirmationPolicy::Confirm,
-            RiskLevel::Destructive,
-        ),
-        (
-            "uninstall",
-            "Uninstall",
-            "windows.uninstall",
-            app.can_vendor_uninstall,
-            app.id.as_str(),
-            ConfirmationPolicy::Confirm,
-            RiskLevel::Destructive,
-        ),
-        (
-            "delete-data",
-            "Delete application data",
-            "windows.delete-data",
-            app.can_delete_data,
-            app.capsule.as_str(),
-            ConfirmationPolicy::Phrase {
-                phrase: app.name.clone(),
+    const REASON: &str =
+        "The service did not offer this operation for the current installation state";
+    let mut delete = offered(
+        &WindowsEffect::DeleteData {
+            capsule: app.capsule.clone(),
+        },
+        app.can_delete_data,
+        Some(REASON),
+    );
+    // Erasing an application's data asks for its name.
+    delete.contract.confirmation = ConfirmationPolicy::Phrase {
+        phrase: app.name.clone(),
+    };
+    vec![
+        offered(
+            &WindowsEffect::Publish {
+                app: app.id.clone(),
             },
-            RiskLevel::Destructive,
+            app.can_publish_vm_candidate,
+            Some(REASON),
         ),
-    ] {
-        let contract = ActionContract {
-            availability: availability(
-                enabled,
-                Some("The service did not offer this operation for the current installation state"),
-            ),
-            permission: PermissionRequirement::Admin,
-            risk,
-            confirmation,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            ..ActionContract::default()
-        };
-        specs.push(effect(id, label, type_id, payload, contract));
-    }
-    specs
+        offered(
+            &WindowsEffect::RetryInstall {
+                capsule: app.capsule.clone(),
+            },
+            app.can_retry_install,
+            Some(REASON),
+        ),
+        offered(
+            &WindowsEffect::EscalateInstall {
+                capsule: app.capsule.clone(),
+            },
+            app.can_escalate_install_to_vm,
+            Some(REASON),
+        ),
+        offered(
+            &WindowsEffect::RemoveLauncher {
+                app: app.id.clone(),
+            },
+            app.can_remove_launcher,
+            Some(REASON),
+        ),
+        offered(
+            &WindowsEffect::Uninstall {
+                app: app.id.clone(),
+            },
+            app.can_vendor_uninstall,
+            Some(REASON),
+        ),
+        delete,
+    ]
 }
 
 fn open_file_spec(app: &crate::model::WindowsApp) -> Option<ActionSpec> {
     // Keep the operation discoverable for every published guest application,
     // including app-focused SPICE entries where it is deliberately disabled.
-    // Omitting its availability contract made search and agents advertise a
-    // file bridge that the rendered control correctly refused.
+    // Omitting its availability made search and agents advertise a file
+    // bridge that the rendered control correctly refused.
     if app.route != Route::Vm {
         return None;
     }
-    let app_id = app.id.clone();
-    Some(
-        ActionSpec::typed_operation(
-            "open-file",
-            "Open file in Windows",
-            "path (omit to use the system file picker)",
-            OperationKind::Effect,
-            "windows.open-file",
-            vec![ActionParam::optional_owned(
-                "path",
-                ParamType::Text,
-                "Direct path; omit to use the system file picker",
-            )],
-            move |args: &ActionArgs| {
-                EncodedAction::encode_operation(
-                    "windows.open-file",
-                    &vec![app_id.clone(), args.text("path").unwrap_or("").to_string()],
-                )
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: "windows.open-file".into(),
-                    payload: Vec::new(),
-                })
-            },
-        )
-        .with_contract(ActionContract {
-            availability: availability(
-                app.launch_available && app.portal_file_open_available,
-                app.portal_file_open_unavailable_reason
-                    .as_deref()
-                    .or(app.launch_unavailable_reason.as_deref()),
-            ),
-            permission: PermissionRequirement::Read,
-            retry: RetryPolicy::AtMostOnce,
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            ..ActionContract::default()
-        }),
-    )
+    Some(offered(
+        &WindowsEffect::OpenFile {
+            app: app.id.clone(),
+            path: None,
+        },
+        app.launch_available && app.portal_file_open_available,
+        app.portal_file_open_unavailable_reason
+            .as_deref()
+            .or(app.launch_unavailable_reason.as_deref()),
+    ))
 }
 
 fn prefix_row(app: &crate::model::WindowsApp, maintenance: &[ActionSpec]) -> Option<LiveRow> {
@@ -453,60 +457,14 @@ fn prefix_row(app: &crate::model::WindowsApp, maintenance: &[ActionSpec]) -> Opt
     Some(prefix)
 }
 
-fn path_operation(id: &str, label: &str, type_id: &str, detail: &str) -> ActionSpec {
-    let operation_type = type_id.to_string();
-    ActionSpec::typed_operation(
-        id,
-        label,
-        "path (omit to use the system file picker)",
-        OperationKind::Effect,
-        operation_type.clone(),
-        vec![ActionParam::optional_owned(
-            "path",
-            ParamType::Text,
-            detail.to_string(),
-        )],
-        move |args| {
-            EncodedAction::encode_operation(&operation_type, &args.text("path").unwrap_or(""))
-                .unwrap_or_else(|_| EncodedAction {
-                    type_id: operation_type.clone(),
-                    payload: Vec::new(),
-                })
-        },
-    )
-    .execution(ExecutionMode::Background { cancellable: false })
-    .returns(ResultSpec::Job)
-}
-
 fn pending_install_row(confirmation: &crate::model::VmInstallConfirmation) -> LiveRow {
-    let contract = || ActionContract {
-        permission: PermissionRequirement::Admin,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Confirm,
-        retry: RetryPolicy::AtMostOnce,
-        execution: ExecutionMode::Background { cancellable: false },
-        result: ResultSpec::Job,
-        ..ActionContract::default()
-    };
     LiveRow::new(
         "windows.pending-install",
         "windows.pending-install",
         format!("Install {}", confirmation.display_name),
     )
-    .operation(effect(
-        "install-private-capsule",
-        "Install in a private capsule",
-        "windows.confirm-capsule-install",
-        "",
-        contract(),
-    ))
-    .operation(effect(
-        "install-windows-appliance",
-        "Install in the Windows appliance",
-        "windows.confirm-vm-install",
-        "",
-        contract(),
-    ))
+    .effect(&WindowsEffect::InstallPrivateCapsule)
+    .effect(&WindowsEffect::InstallWindowsAppliance)
 }
 
 fn appliance_row(catalogue: &Catalogue) -> LiveRow {
@@ -515,7 +473,7 @@ fn appliance_row(catalogue: &Catalogue) -> LiveRow {
         "windows.appliance",
         "Managed Windows appliance",
     );
-    for spec in appliance_effect_specs(catalogue.vm.ready) {
+    for spec in appliance_effects(catalogue.vm.ready) {
         appliance = appliance.operation(spec);
     }
     appliance
@@ -525,6 +483,9 @@ fn appliance_row(catalogue: &Catalogue) -> LiveRow {
 mod tests {
     use super::*;
     use crate::provider::CompatibilityProvider;
+    use tilo_actions::{
+        ExecutionMode, OperationKind, PermissionRequirement, ResultSpec, RiskLevel,
+    };
 
     fn registry() -> ActionRegistry {
         let mut registry = ActionRegistry::new();
@@ -581,7 +542,6 @@ mod tests {
             "Use Wine",
             "Use Proton",
             "Use catalogue recommendation",
-            "Install Windows application",
         ],
         replay: [
             route_override => |_| encode(&set_route("cyberpunk-2077", Route::Proton)),

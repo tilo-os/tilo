@@ -11,7 +11,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue, Value};
 use ui::framework::{LaunchInput, ResourceApp, ViewCx};
 use ui::record::RecordId;
-use ui::tilo_actions::{ActionError, ActionSpec};
+use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
@@ -109,32 +109,109 @@ fn read_pages(doc: &Doc) -> Result<Vec<Vec<u8>>, ModelError> {
         .collect()
 }
 
-/// Write `new` over the pages `old` read from the document, touching only
+/// The pages list, created empty when the record has none yet.
+fn pages_list_or_new(doc: &mut Doc) -> Result<ObjId, ActionError> {
+    match pages_list(doc).map_err(refused)? {
+        Some(list) => Ok(list),
+        None => Ok(doc.put_object(ROOT, "pages", ObjType::List)?),
+    }
+}
+
+/// How long each page is, read without copying any of them.
+fn page_lengths(doc: &Doc, list: &ObjId) -> Result<Vec<usize>, ModelError> {
+    (0..doc.length(list))
+        .map(|index| match doc.get(list, index)? {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Bytes(page) => Ok(page.len()),
+                _ => Err(ModelError::shape("bytes").at("pages")),
+            },
+            _ => Err(ModelError::shape("bytes").at("pages")),
+        })
+        .collect()
+}
+
+/// The pages `range` of the list, copied to be edited.
+fn read_page_range(
+    doc: &Doc,
+    list: &ObjId,
+    range: std::ops::Range<usize>,
+) -> Result<Vec<Vec<u8>>, ModelError> {
+    range
+        .map(|index| match doc.get(list, index)? {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Bytes(page) => Ok(page.clone()),
+                _ => Err(ModelError::shape("bytes").at("pages")),
+            },
+            _ => Err(ModelError::shape("bytes").at("pages")),
+        })
+        .collect()
+}
+
+/// Write `new` over the pages `old` that start at page `base`, touching only
 /// the pages that differ.
-fn write_pages(doc: &mut Doc, old: &[Vec<u8>], new: &[Vec<u8>]) -> Result<(), ActionError> {
-    let list = match pages_list(doc).map_err(refused)? {
-        Some(list) => list,
-        None => doc.put_object(ROOT, "pages", ObjType::List)?,
-    };
+fn write_pages(
+    doc: &mut Doc,
+    list: &ObjId,
+    base: usize,
+    old: &[Vec<u8>],
+    new: &[Vec<u8>],
+) -> Result<(), ActionError> {
     let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
     let old_rest = old.get(prefix..).unwrap_or_default();
     let new_rest = new.get(prefix..).unwrap_or_default();
     let suffix = common_suffix(old_rest, new_rest);
     let old_middle = old_rest.get(..old_rest.len() - suffix).unwrap_or_default();
     let new_middle = new_rest.get(..new_rest.len() - suffix).unwrap_or_default();
+    let start = base + prefix;
     for (index, (was, page)) in old_middle.iter().zip(new_middle).enumerate() {
         if was != page {
-            doc.put(&list, prefix + index, ScalarValue::Bytes(page.clone()))?;
+            doc.put(list, start + index, ScalarValue::Bytes(page.clone()))?;
         }
     }
     let common = old_middle.len().min(new_middle.len());
     for _ in common..old_middle.len() {
-        doc.delete(&list, prefix + common)?;
+        doc.delete(list, start + common)?;
     }
     for (index, page) in new_middle.iter().enumerate().skip(common) {
-        doc.insert(&list, prefix + index, ScalarValue::Bytes(page.clone()))?;
+        doc.insert(list, start + index, ScalarValue::Bytes(page.clone()))?;
     }
     Ok(())
+}
+
+/// Write `new` over the pages `old` that start at page `base`, creating the
+/// pages list when the record has none yet.
+fn replace_pages(
+    doc: &mut Doc,
+    base: usize,
+    old: &[Vec<u8>],
+    new: &[Vec<u8>],
+) -> Result<(), ActionError> {
+    let list = pages_list_or_new(doc)?;
+    write_pages(doc, &list, base, old, new)
+}
+
+/// The pages that hold any byte of `from..to`, and the offset the first of
+/// them starts at.
+fn pages_over(lengths: &[usize], from: usize, to: usize) -> (std::ops::Range<usize>, usize) {
+    let mut start = 0;
+    let mut first = None;
+    let mut first_start = 0;
+    let mut last = 0;
+    for (index, length) in lengths.iter().enumerate() {
+        let end = start + length;
+        if end > from && start < to {
+            if first.is_none() {
+                first = Some(index);
+                first_start = start;
+            }
+            last = index + 1;
+        }
+        start = end;
+    }
+    match first {
+        Some(first) => (first..last, first_start),
+        None => (0..0, 0),
+    }
 }
 
 #[allow(
@@ -151,23 +228,31 @@ fn paginate(bytes: &[u8]) -> Vec<Vec<u8>> {
 
 /// The page holding `offset` and where in it; the end of the buffer is the
 /// end of its last page.
-fn locate(pages: &[Vec<u8>], offset: usize) -> Option<(usize, usize)> {
+fn locate(lengths: &[usize], offset: usize) -> Option<(usize, usize)> {
     let mut start = 0;
-    for (index, page) in pages.iter().enumerate() {
-        if offset < start + page.len() {
+    for (index, length) in lengths.iter().enumerate() {
+        if offset < start + length {
             return Some((index, offset - start));
         }
-        start += page.len();
+        start += length;
     }
-    let (last, page) = pages.iter().enumerate().next_back()?;
-    (offset == start).then_some((last, page.len()))
+    let (last, length) = lengths.iter().enumerate().next_back()?;
+    (offset == start).then_some((last, *length))
 }
 
-/// Apply `action` to the record.
+/// Apply `action` to the record. An edit reads and writes only the pages
+/// it touches, so typing into a large file copies one page, not the file.
 pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), ActionError> {
-    let old = read_pages(doc).map_err(refused)?;
-    let len: usize = old.iter().map(Vec::len).sum();
-    let mut pages = old.clone();
+    let existing = pages_list(doc).map_err(refused)?;
+    let lengths = match &existing {
+        Some(list) => page_lengths(doc, list).map_err(refused)?,
+        None => Vec::new(),
+    };
+    let len: usize = lengths.iter().sum();
+    let read = |doc: &Doc, range: std::ops::Range<usize>| match &existing {
+        Some(list) => read_page_range(doc, list, range).map_err(refused),
+        None => Ok(Vec::new()),
+    };
     match action {
         HexEditorAction::Open { name, bytes } => {
             let state = HexEditor::read(doc).map_err(refused)?;
@@ -182,7 +267,8 @@ pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), Actio
                 "opened",
                 ScalarValue::Uint(state.opened.saturating_add(1)),
             )?;
-            pages = paginate(bytes);
+            let old = read(doc, 0..lengths.len())?;
+            replace_pages(doc, 0, &old, &paginate(bytes))
         }
         HexEditorAction::InsertBytes { offset, bytes } => {
             if *offset > len {
@@ -191,19 +277,18 @@ pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), Actio
             if bytes.is_empty() {
                 return Ok(());
             }
-            match locate(&pages, *offset) {
-                Some((index, at)) => {
-                    let Some(page) = pages.get_mut(index) else {
-                        return Err(beyond(*offset, len));
-                    };
-                    page.splice(at..at, bytes.iter().copied());
-                    if page.len() > MAX_PAGE {
-                        let split = paginate(page);
-                        pages.splice(index..=index, split);
-                    }
-                }
-                None => pages = paginate(bytes),
-            }
+            let Some((index, at)) = locate(&lengths, *offset) else {
+                return replace_pages(doc, 0, &[], &paginate(bytes));
+            };
+            let old = read(doc, index..index + 1)?;
+            let mut page = old.concat();
+            page.splice(at..at, bytes.iter().copied());
+            let new = if page.len() > MAX_PAGE {
+                paginate(&page)
+            } else {
+                vec![page]
+            };
+            replace_pages(doc, index, &old, &new)
         }
         HexEditorAction::DeleteBytes { offset, len: count } => {
             if *count == 0 {
@@ -213,8 +298,12 @@ pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), Actio
                 return Err(beyond(*offset, len));
             }
             let end = offset.saturating_add(*count).min(len);
-            let mut start = 0;
-            for page in &mut pages {
+            let (range, first_start) = pages_over(&lengths, *offset, end);
+            let base = range.start;
+            let old = read(doc, range)?;
+            let mut new = old.clone();
+            let mut start = first_start;
+            for page in &mut new {
                 let (from, to) = (start, start + page.len());
                 start = to;
                 let cut_from = (*offset).max(from);
@@ -223,7 +312,8 @@ pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), Actio
                     page.drain(cut_from - from..cut_to - from);
                 }
             }
-            pages.retain(|page| !page.is_empty());
+            new.retain(|page| !page.is_empty());
+            replace_pages(doc, base, &old, &new)
         }
         HexEditorAction::OverwriteBytes { offset, bytes } => {
             if bytes.is_empty() {
@@ -232,14 +322,15 @@ pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), Actio
             if *offset >= len {
                 return Err(beyond(*offset, len));
             }
-            let end = offset.saturating_add(bytes.len());
-            let mut start = 0;
-            for page in &mut pages {
+            let end = offset.saturating_add(bytes.len()).min(len);
+            let (range, first_start) = pages_over(&lengths, *offset, end);
+            let base = range.start;
+            let old = read(doc, range)?;
+            let mut new = old.clone();
+            let mut start = first_start;
+            for page in &mut new {
                 let page_start = start;
                 start += page.len();
-                if start <= *offset || page_start >= end {
-                    continue;
-                }
                 for (index, slot) in page.iter_mut().enumerate() {
                     if let Some(byte) = (page_start + index)
                         .checked_sub(*offset)
@@ -249,9 +340,9 @@ pub(crate) fn apply(action: &HexEditorAction, doc: &mut Doc) -> Result<(), Actio
                     }
                 }
             }
+            replace_pages(doc, base, &old, &new)
         }
     }
-    write_pages(doc, &old, &pages)
 }
 
 fn beyond(offset: usize, len: usize) -> ActionError {
@@ -286,10 +377,6 @@ impl ResourceApp for HexEditorShell {
             .name
             .clone()
             .unwrap_or_else(|| HexEditor::LABEL.to_owned())
-    }
-
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::view_operations()
     }
 
     /// The buffer of a file is a record of its own, derived from the

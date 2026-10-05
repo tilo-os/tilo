@@ -36,6 +36,7 @@
 
 pub mod apply;
 pub mod draw;
+pub mod effects;
 pub mod locales;
 pub mod preview;
 pub mod studio;
