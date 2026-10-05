@@ -13,6 +13,31 @@ use canvas::{App, Artwork};
 use ui::prelude::{Invoke, TestApp};
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
+#[test]
+fn fit_from_a_focused_brush_field_restores_pointer_artwork_coordinates() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    desk.key("Ctrl+1");
+    desk.app
+        .harness()
+        .perform_named("canvas-brush-colour", &ui::a11y::Action::Focus)
+        .unwrap();
+    desk.key("Ctrl+0");
+    let before = desk.art().marks.len();
+    desk.drag((100.0, 100.0), (250.0, 100.0));
+    let art = desk.art();
+    assert_eq!(art.marks.len(), before + 1);
+    let Shape::Stroke { points, .. } = &art.marks.last().unwrap().shape else {
+        panic!("the pointer should lay a brush stroke");
+    };
+    let first = points.first().unwrap();
+    let last = points.last().unwrap();
+    assert!((first[0] - 100.0).abs() < 1.0, "{points:?}");
+    assert!((first[1] - 100.0).abs() < 1.0, "{points:?}");
+    assert!((last[0] - 250.0).abs() < 1.0, "{points:?}");
+    assert!((last[1] - 100.0).abs() < 1.0, "{points:?}");
+}
+
 /// The app with the vector sample drawn, the canvas focused, and where the
 /// artwork lies on screen.
 struct Desk {
