@@ -226,7 +226,6 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             .with_icon(crate::icons::Icon::Inbox)
             .with_message("Reconnect to load messages.")
             .with_action("Review connection settings")
-            .with_action_path("empty.review")
             .into_scrollable()
             .with_height(50.0);
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
@@ -260,11 +259,15 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
             &mut app,
             &named_key_event(NamedKey::Enter, ElementState::Pressed),
         ));
-        assert!(matches!(
-            app.state.doc.get(automerge::ROOT, "empty.review"),
-            Ok(Some((automerge::Value::Scalar(value), _)))
-                if value.as_ref().as_bool() == Some(true)
-        ));
+        let fired = app
+            .mutate_node(action_node, |widget| {
+                widget
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<EmptyState>())
+                    .is_some_and(EmptyState::take_action)
+            })
+            .unwrap();
+        assert!(fired, "Enter reaches the empty state's action");
     }
 }
 
