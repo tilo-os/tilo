@@ -3758,6 +3758,13 @@ impl StoreApp {
                 self.focused_detail = None;
                 self.remotes_open = false;
                 self.safety_open = false;
+                self.set_query(String::new());
+                // This job supplies the repository result itself. An empty
+                // global search queued here would replace it immediately.
+                self.pending_search = None;
+                self.pending_detail = None;
+                self.catalog_page = 0;
+                self.scroll_offset.set((0.0, 0.0));
                 self.set_active_filter(SourceFilter::All);
                 self.set_active_category(None);
                 self.structure_dirty = true;
@@ -4633,6 +4640,8 @@ mod tests {
                 .iter()
                 .any(|action| action.id == "remove-remote")
         );
+        app.set_query("old search".into());
+        app.catalog_page = 4;
         let job = admitted_job(
             &mut app,
             StoreEffect::BrowseRemote {
@@ -4643,6 +4652,13 @@ mod tests {
             matches!(job.request, Request::BrowseRemote(ref id) if id == "remote:system:tools")
         );
         assert!(!app.remotes_open);
+        assert_eq!(app.query(), "");
+        assert_eq!(app.catalog_page, 0);
+        assert!(
+            app.pending_search.is_none(),
+            "a global empty search must not overwrite repository browsing"
+        );
+
         let remote_item = crate::sources::remote_catalogue_items(
             "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\ttools\n",
             &remote,
@@ -4668,8 +4684,30 @@ mod tests {
             })
             .is_err()
         );
+        let mut disabled = remote;
+        disabled.disabled = true;
+        app.set_remotes(vec![disabled]);
+        assert!(
+            !app.live_row("remote:system:tools")
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "browse-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::BrowseRemote {
+                remote: "remote:system:tools".into()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unsupported_device_version_has_no_invocable_open_offer() {
+        let mut app = seeded_app();
         let mut unsupported = item(
-            "Foreign app",
+            "Foreign",
             StoreSource::Tilo {
                 registry_name: "Tilo".into(),
             },
@@ -4689,23 +4727,6 @@ mod tests {
             matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
         );
         assert!(app.admit(StoreEffect::Open { app: id }).is_err());
-        let mut disabled = remote;
-        disabled.disabled = true;
-        app.set_remotes(vec![disabled]);
-        assert!(
-            !app.live_row("remote:system:tools")
-                .unwrap()
-                .into_resource()
-                .actions
-                .iter()
-                .any(|action| action.id == "browse-remote")
-        );
-        assert!(
-            app.admit(StoreEffect::BrowseRemote {
-                remote: "remote:system:tools".into()
-            })
-            .is_err()
-        );
     }
 
     #[test]
