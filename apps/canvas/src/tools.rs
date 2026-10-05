@@ -181,6 +181,9 @@ pub struct Tools {
     pub layer_adjust: LocalState<bool>,
     /// A picture being chosen to add, until the chooser answers.
     pub picking: Rc<RefCell<Option<ui::portal::ContentsChannel>>>,
+    /// A subject to find or an edge to refine, asked from a button: the
+    /// canvas draws what it needs and the rest runs off the window's thread.
+    pub finding: Rc<RefCell<Finding>>,
     /// The preset the brush lays strokes with on a plain layer.
     pub preset: LocalState<Preset>,
     /// The brush's opacity, `0..=1`.
@@ -371,6 +374,7 @@ impl Default for Tools {
             crop: LocalState::new(false),
             live: Rc::default(),
             picking: Rc::default(),
+            finding: Rc::default(),
             layer_adjust: LocalState::new(false),
             preset: LocalState::new(Preset::Round),
             opacity: LocalState::new(1.0),
@@ -606,4 +610,13 @@ mod tests {
             .set(Some(("burnt-sienna".into(), "#8a3c1e".into())));
         assert_eq!(tools.paint(), "pigment:burnt-sienna");
     }
+}
+
+/// Finding an area off the window's thread.
+#[derive(Default)]
+pub struct Finding {
+    /// Asked for and not started: the select it resolves.
+    pub wanted: Option<crate::selection::Select>,
+    /// Under way: the area, as the select to apply, or why not.
+    pub pending: Option<std::sync::mpsc::Receiver<Result<crate::selection::Select, String>>>,
 }

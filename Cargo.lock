@@ -5116,6 +5116,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-power-mgmt",
  "tilo-startup-metrics",
+ "tilo-test-env",
  "tilo-ui",
  "tilo-vello",
  "tilo-winit",

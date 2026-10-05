@@ -105,6 +105,7 @@ fn stage(storage: &Storage, scratch: &Path, version: &str) -> (RegistryVersion, 
             architecture: "x86_64".into(),
             isa: "x86_64-v3".into(),
             runtime: None,
+            interfaces: Vec::new(),
         },
     };
     let blob = tilo_app_package::BlobHash::of(unique.as_bytes()).to_hex();

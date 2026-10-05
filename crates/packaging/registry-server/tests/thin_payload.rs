@@ -138,6 +138,7 @@ fn publish(
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: manifest.package.native_runtime_binding().map(str::to_owned),
+                interfaces: Vec::new(),
             },
         }],
         updated_at_unix: 1,
