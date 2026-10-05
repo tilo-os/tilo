@@ -161,8 +161,8 @@ impl Widget for Page {
     }
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         {
-            let (doc, root) = ui::doc::document(state, path);
-            let stored = ui::doc::read_text(&*doc, root, TITLE).unwrap_or_default();
+            let (doc, root) = ui::doc::document_ref(state, path);
+            let stored = ui::doc::read_text(doc, root, TITLE).unwrap_or_default();
             if self.title.with(|shown| *shown != stored) {
                 self.title.set(stored);
             }
