@@ -468,6 +468,7 @@ grep -Fqx 'Service=tilo-ush.service' "$ush_socket"
 grep -Fqx 'SocketMode=0600' "$ush_socket"
 grep -Fqx 'Backlog=16' "$ush_socket"
 grep -Fqx 'ProtectHostname=private' "$ush_service"
+grep -Fqx 'Environment=TILO_USH_BIN=/usr/libexec/tilo-ush' "$ush_service"
 grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_service"
 if grep -Fqx 'ProtectHostname=yes' "$ush_service"; then
   fail 'ush supervisor denies Bubblewrap the nested guest hostname'

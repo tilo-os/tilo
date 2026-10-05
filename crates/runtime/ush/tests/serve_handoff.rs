@@ -726,3 +726,126 @@ fn assert_tool_recorded(store: &Store, images: &Path) {
         "the tool image holds the command"
     );
 }
+
+struct ReexecSupervisor(std::process::Child);
+impl Drop for ReexecSupervisor {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn start_reexec_supervisor(
+    binary: &Path,
+    stable: &Path,
+    socket: &Path,
+    store: &Store,
+    images: &Path,
+) -> ReexecSupervisor {
+    let unit = include_str!("../../../../os/usr/lib/systemd/user/tilo-ush.service");
+    let pin = unit
+        .lines()
+        .find_map(|line| line.strip_prefix("Environment=TILO_USH_BIN="));
+    let mut command = std::process::Command::new(binary);
+    command.env_remove("TILO_USH_BIN");
+    if let Some(pin) = pin {
+        assert_eq!(
+            pin, "/usr/libexec/tilo-ush",
+            "the service pins its installed executable"
+        );
+        command.env("TILO_USH_BIN", stable);
+    }
+    ReexecSupervisor(
+        command
+            .args(["serve", "--socket"])
+            .arg(socket)
+            .env("TILO_USH_HOME", store.root())
+            .env("TILO_USH_IMAGES", images)
+            .env("SHELL", "/usr/bin/bash")
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn the_shipped_service_reexecs_the_same_elf_when_its_launch_path_is_unlinked() {
+    use std::os::fd::{FromRawFd, OwnedFd};
+    assert!(
+        guest_unavailable().is_none(),
+        "this regression must observe a real confined guest"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let images = dir.path().join("images");
+    fixture_images(&images);
+    let store = Store::at(dir.path().join("store"));
+    store.ensure().unwrap();
+    let granted = dir.path().join("granted");
+    std::fs::create_dir_all(&granted).unwrap();
+    fixture_environment(&store, &granted);
+    let binary = dir.path().join("tilo-ush");
+    std::fs::copy(env!("CARGO_BIN_EXE_tilo-ush"), &binary).unwrap();
+    let stable = dir.path().join("usr/libexec/tilo-ush");
+    std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+    std::fs::hard_link(&binary, &stable).unwrap();
+    let socket = dir.path().join("ush.sock");
+    let mut supervisor = start_reexec_supervisor(&binary, &stable, &socket, &store, &images);
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() && Instant::now() < deadline {
+        assert!(supervisor.0.try_wait().unwrap().is_none());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(socket.exists(), "actual supervisor must start");
+    let running = PathBuf::from(format!("/proc/{}/exe", supervisor.0.id()));
+    let original = std::fs::metadata(&binary).unwrap();
+    let observed = std::fs::metadata(&running).unwrap();
+    let pinned = std::fs::metadata(&stable).unwrap();
+    assert_eq!(
+        (pinned.dev(), pinned.ino()),
+        (original.dev(), original.ino()),
+        "the pin must retain the exact running ELF, not another build"
+    );
+    assert_eq!(
+        (observed.dev(), observed.ino()),
+        (original.dev(), original.ino())
+    );
+    std::fs::remove_file(&binary).unwrap();
+    let misleading = std::fs::read_link(&running).unwrap();
+    assert!(
+        !misleading.exists(),
+        "current_exe cannot be reexecuted in this fixture"
+    );
+    let (stream, fd) = open_default_session(&socket);
+    // SAFETY: the service handed this test ownership of one PTY master.
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let prompt = read_until(fd.as_raw_fd(), "Fixture", tilo_test_env::hang_bound());
+    assert!(
+        prompt.contains("Fixture"),
+        "same-build reexec must return an actual shell: {prompt}"
+    );
+    let script =
+        b"printf 'REEXEC_%s\\n' SAME_ELF; test ! -w /usr && printf 'USR_%s\\n' READ_ONLY; exit\r";
+    // SAFETY: the owned master is live and script is a bounded byte slice.
+    assert_eq!(
+        unsafe { libc::write(fd.as_raw_fd(), script.as_ptr().cast(), script.len()) },
+        isize::try_from(script.len()).unwrap()
+    );
+    let seen = read_until(fd.as_raw_fd(), "USR_READ_ONLY", tilo_test_env::hang_bound());
+    assert!(
+        seen.contains("REEXEC_SAME_ELF"),
+        "guest answered through the real PTY: {seen}"
+    );
+    assert!(
+        seen.contains("USR_READ_ONLY"),
+        "guest confinement remains active: {seen}"
+    );
+    stream
+        .set_read_timeout(Some(tilo_test_env::hang_bound()))
+        .unwrap();
+    let mut lifetime = &stream;
+    assert_eq!(
+        lifetime.read(&mut [0_u8; 1]).unwrap(),
+        0,
+        "the service retires and reaps the exited guest before teardown"
+    );
+}
