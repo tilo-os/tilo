@@ -79,6 +79,11 @@ pub struct Row {
     /// Align intrinsic-height children to the top edge. The default remains
     /// centred for toolbars and compact control rows.
     align_start: bool,
+    /// See [`Row::with_min_height`]: resolved from the theme at layout.
+    min_height: Option<super::ControlSize>,
+    /// The gap, padding (across, along) and minimum height the last layout
+    /// resolved from the theme, for [`Widget::measure`].
+    resolved: (f32, f32, f32, f32),
     /// Subtree cache — same pattern as `Column::subtree_cache`.
     /// See that field for the gory rationale.
     subtree_cache: Scene,
@@ -116,6 +121,8 @@ impl Row {
             justify: None,
             align_items_override: None,
             align_start: false,
+            min_height: None,
+            resolved: (0.0, 0.0, 0.0, 0.0),
             subtree_cache: Scene::new(),
             cache_rect: vello::kurbo::Rect::ZERO,
             cache_present: false,
@@ -238,6 +245,16 @@ impl Row {
         self
     }
 
+    /// Stand at least as tall as a control of `size`, resolved from the
+    /// theme at layout (it follows text size and density): rows of a list
+    /// whose controls differ (a keycap, a recorder field) keep one rhythm
+    /// without a pixel literal.
+    #[must_use]
+    pub fn with_min_height(mut self, size: super::ControlSize) -> Self {
+        self.min_height = Some(size);
+        self
+    }
+
     /// Top-align children with different intrinsic heights, as in a wrapping
     /// collection of cards.
     #[must_use]
@@ -314,6 +331,10 @@ impl Widget for Row {
             }
             None => (self.horizontal_padding, self.vertical_padding),
         };
+        let min_height = self
+            .min_height
+            .map_or(0.0, |size| crate::num::f32_of_f64(size.height(theme)));
+        self.resolved = (gap, pad_x, pad_y, min_height);
 
         let node = taffy.parent_node(
             Style {
@@ -345,6 +366,14 @@ impl Widget for Row {
                     width: percent(1.0_f32),
                     height: taffy::Dimension::auto(),
                 },
+                min_size: taffy::Size {
+                    width: taffy::Dimension::auto(),
+                    height: if self.min_height.is_some() {
+                        length(min_height)
+                    } else {
+                        taffy::Dimension::auto()
+                    },
+                },
                 // Keep optional toolbar padding inside the row's percentage
                 // width instead of growing the parent's content bounds.
                 box_sizing: taffy::BoxSizing::BorderBox,
@@ -355,6 +384,38 @@ impl Widget for Row {
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
+    }
+
+    /// The row's own intrinsic size, from its children's, for a host that
+    /// measures a control before laying it out (a form field deciding
+    /// whether it fits beside its label). A single-line row is its children
+    /// side by side; a wrapping one is at least its widest child.
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let (gap, pad_x, pad_y, min_height) = self.resolved;
+        let sizes: Vec<taffy::Size<f32>> = self
+            .children
+            .iter_mut()
+            .map(|child| Widget::measure(child.as_mut(), known, available, text_renderer))
+            .collect();
+        let count = u16::try_from(sizes.len()).unwrap_or(u16::MAX);
+        let gaps = gap * f32::from(count.saturating_sub(1));
+        let line = sizes.iter().map(|size| size.width).sum::<f32>() + gaps;
+        let width = if self.no_wrap || matches!(available.width, taffy::AvailableSpace::MaxContent)
+        {
+            line
+        } else {
+            sizes.iter().map(|size| size.width).fold(0.0, f32::max)
+        };
+        let height = sizes.iter().map(|size| size.height).fold(0.0, f32::max);
+        taffy::Size {
+            width: width + 2.0 * pad_x,
+            height: (height + 2.0 * pad_y).max(min_height),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -708,6 +769,23 @@ mod tests {
             .unwrap();
         root.apply_layout(&taffy, node, Point::ZERO);
         root.children().iter().map(|c| c.get_rect()).collect()
+    }
+
+    /// A row of short content stands as tall as the control size it names,
+    /// so a list mixing keycaps and recorder fields keeps one rhythm.
+    #[test]
+    fn a_row_stands_at_least_a_control_high() {
+        let regular = crate::widget::ControlSize::Regular.height(&Theme::dark());
+        let mut plain = two_texts();
+        lay_out(&mut plain, 400.0);
+        assert!(plain.get_rect().height() < regular, "text alone is shorter");
+        let mut row = two_texts().with_min_height(crate::widget::ControlSize::Regular);
+        lay_out(&mut row, 400.0);
+        assert!(
+            (row.get_rect().height() - regular).abs() < 0.5,
+            "{} vs {regular}",
+            row.get_rect().height()
+        );
     }
 
     fn two_texts() -> Row {

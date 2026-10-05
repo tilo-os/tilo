@@ -181,10 +181,10 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
         let caption = first_named(&*app, "Maximise contrast for low-vision comfort");
         let next_label = first_named(&*app, "Reduce motion");
         let toggles = by_widget_name(&*app, "Toggle");
-        let block_centre = f64::midpoint(label.y0, caption.y1);
+        let label_centre = label.center().y;
         let row_toggle = toggles
             .iter()
-            .find(|t| t.y0 <= block_centre && block_centre <= t.y1)
+            .find(|t| t.y0 <= label_centre && label_centre <= t.y1)
             .copied()
             .expect("the High contrast row carries a toggle");
         // The caption is part of its label's block, not a line of its own.
@@ -201,11 +201,12 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
             next_label.y0 - caption.y1 > caption.y0 - label.y1,
             "the caption must belong to its label, not float towards the next row"
         );
-        // The toggle is centred on the label and its caption together.
+        // The toggle stands on its label's line, the caption reading under
+        // the label as a field's help does.
         same_centre_line(
-            block_centre,
+            label_centre,
             row_toggle.center().y,
-            "label block vs toggle centre",
+            "label vs toggle centre",
         );
     }
 
@@ -293,9 +294,11 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
     }
 
     // Case `region_choice_rows_switch_layout_as_one_card`.
-    // The Formats card composes all six choice rows the same way: beneath their
-    // labels on a phone, beside them once the card can seat label and chooser on
-    // one line. No row is left inline while its neighbours wrap.
+    // The Formats card lays all six choice rows out the same way, decided at
+    // layout from the width it really gets: beneath their labels where the
+    // widest label and chooser do not fit side by side (a phone at large
+    // text), beside them once they do. No row is left inline while its
+    // neighbours wrap.
     {
         let config = crate::support::ScratchConfig::new();
         let rows = [
@@ -306,13 +309,13 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             ("region.number_style", "Number format"),
             ("region.first_day", "First day of week"),
         ];
-        let phone = (390.0, 844.0);
+        let phone = (320.0, 844.0);
         let app = config
             .app()
             .with_category(Category::RegionFormats)
             .with_width_hint(phone.0)
             .with_deterministic_hardware_for_shot();
-        let app = lay_out(app, phone);
+        let app = lay_out_scaled(app, phone, 2.0);
         let sp = spacing();
         for (id, label) in rows {
             let control = by_test_id(&*app, id);
@@ -326,15 +329,15 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
                 label.x0,
                 &format!("phone: {id} starts on its label's left edge"),
             );
-            // The chooser hugs its label by the caption gap, not the row gap.
-            // Taffy rounds each sibling's position to whole pixels on its own, so
-            // the gap between two adjacent edges can land one pixel either side of
-            // the token; anything past that is a real gap defect.
+            // The chooser hugs its label by a stacked field's step, not the
+            // row gap. Taffy rounds each sibling's position to whole pixels on
+            // its own, so the gap between two adjacent edges can land one pixel
+            // either side of the token; anything past that is a real gap defect.
             let gap = control.y0 - label.y1;
             assert!(
-                gap >= 0.0 && gap <= f64::from(sp.s1) + 1.0,
-                "phone: {id} caption gap {gap} must be the s1 step ({}) within one rounding pixel",
-                sp.s1
+                gap >= 0.0 && gap <= f64::from(sp.s2) + 1.0,
+                "phone: {id} gap {gap} must be the s2 step ({}) within one rounding pixel",
+                sp.s2
             );
         }
 

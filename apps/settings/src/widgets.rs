@@ -25,8 +25,8 @@ use ui::icons::Icon;
 use ui::tokens::{Metrics, Rhythm, Spacing, SpacingStep, TextRole};
 pub use ui::widget::Tone as StatusTone;
 use ui::widget::{
-    Badge, Button, ChipStyle, Column, Container, ControlSize, IconSize, IconWidget, Row, Section,
-    Spacer, Text, Widget,
+    Badge, Button, ChipStyle, Column, Container, ControlSize, Density, Field, FormSection,
+    IconSize, IconWidget, Row, Section, Spacer, Text, Widget,
 };
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
@@ -57,9 +57,17 @@ pub fn cards(items: Vec<El>) -> El {
 }
 
 /// A vertical stack of pre-built rows — the standard body for a section.
-/// Rows are siblings: closer than sections, still visibly apart.
+/// It is a form section, so its labelled rows ([`setting_row`],
+/// [`choice_row`] and the like) share one label column and decide together,
+/// at layout and from the width they really get, whether their controls
+/// stand beside their labels or beneath them.
 pub fn rows(items: Vec<El>) -> El {
-    Box::new(stack(items, Rhythm::Sibling))
+    // Settings rows are a list, a compact step apart, not a form's
+    // comfortable spacing.
+    Box::new(items.into_iter().fold(
+        FormSection::untitled().with_density(Some(Density::Compact)),
+        FormSection::content,
+    ))
 }
 
 /// An intrinsic-height column that owns one uniform `gap` between its
@@ -110,42 +118,36 @@ fn row_label(label: &str) -> El {
     )
 }
 
-/// A label with a description hugging it, as one block of a row. The
-/// description sits one caption gap under the label, so it reads as part of
-/// its row rather than floating between two.
-fn row_label_described(label: &str, description: &str) -> El {
-    Box::new(
-        Container::new()
-            .with_no_padding()
-            .with_flex_grow()
-            .with_child(Box::new(
-                Column::new()
-                    .with_no_padding()
-                    .with_intrinsic_height()
-                    .with_rhythm(Rhythm::Tight)
-                    .push(Box::new(Text::new(label)))
-                    .push(caption(description)),
-            )),
-    )
-}
-
 /// One line of a settings list: `lead` takes the room, `control` keeps its
-/// own size at the trailing edge and is centred on the line.
+/// own size at the trailing edge and is centred on the line, which is at
+/// least a control high so every row of a list keeps one rhythm.
 fn trailing_row(lead: El, control: El) -> El {
     Box::new(
         Row::new()
             .no_wrap()
+            .with_min_height(ControlSize::Regular)
             .with_align_items(taffy::AlignItems::Center)
             .push(lead)
             .push(control),
     )
 }
 
+/// A labelled row of a settings section: a [`Field`] whose control keeps its
+/// own width at the trailing edge beside the label, and takes the full width
+/// beneath it once the section is too narrow for the pair.
+fn labelled_row(label: &str, description: Option<&str>, control: El) -> El {
+    let field = Field::custom(label, control).with_trailing_control();
+    Box::new(match description {
+        Some(description) => field.with_help(description),
+        None => field,
+    })
+}
+
 /// A label-on-the-left, control-on-the-right row — the workhorse settings
 /// line. The label grows to the control and the control stays at the
 /// trailing edge, centred on the line whatever its height.
 pub fn setting_row(label: &str, control: El) -> El {
-    trailing_row(row_label(label), control)
+    labelled_row(label, None, control)
 }
 
 /// A label/value row where the value is plain read-only text.
@@ -157,7 +159,7 @@ pub fn value_row(label: &str, value: &str) -> El {
 /// control. The helper line is part of the label block and the control is
 /// centred on the pair, so the description groups with its own row.
 pub fn setting_row_described(label: &str, description: &str, control: El) -> El {
-    trailing_row(row_label_described(label, description), control)
+    labelled_row(label, Some(description), control)
 }
 
 /// A row for a continuous control (a slider) that wants the whole measure:
@@ -260,7 +262,6 @@ pub fn caption(text: &str) -> El {
 
 thread_local! {
     static COMPOSE_TEXT_GROWTH: Cell<f32> = const { Cell::new(1.0) };
-    static COMPOSE_WIDTH: Cell<Option<f32>> = const { Cell::new(None) };
 }
 
 /// Record the live theme's [`ui::Theme::text_growth`] before a pane
@@ -277,22 +278,6 @@ pub fn set_compose_text_growth(growth: f32) {
 
 fn compose_text_growth() -> f32 {
     COMPOSE_TEXT_GROWTH.get()
-}
-
-/// Record the width (logical px) the page gives the pane being composed, or
-/// `None` before the page has been laid out. Every choice row of the pane
-/// then settles on one form together ([`choices_stack`]).
-pub fn set_compose_width(width: Option<f32>) {
-    COMPOSE_WIDTH.set(width.filter(|w| w.is_finite()));
-}
-
-/// Whether the pane composes its choice rows with the chooser beneath the
-/// label. One decision for the whole page, so a narrow window never shows
-/// some rows inline and their neighbours stacked.
-pub fn choices_stack() -> bool {
-    COMPOSE_WIDTH
-        .get()
-        .is_some_and(|width| width < choice_rows_stack_below())
 }
 
 /// The width of a compact right-aligned chooser (dropdown, segmented
@@ -328,38 +313,17 @@ pub fn compact_control_w(width: f32, control: El) -> El {
     )
 }
 
-/// A settings row whose trailing control is a compact, right-aligned chooser
-/// (see [`compact_control`]). The label stays left and the chooser sits at
-/// the row's right edge on one line; in a narrow page the whole pane's
-/// choosers go beneath their labels instead ([`choices_stack`]).
+/// A settings row whose trailing control is a compact chooser (dropdown,
+/// segmented picker): at least the compact chooser width at the row's right
+/// edge beside the label. When the section is too narrow for its labels and
+/// choosers, every row of it puts its chooser beneath the label, full width.
 pub fn choice_row(label: &str, control: El) -> El {
-    if choices_stack() {
-        return choice_row_stacked(label, control);
-    }
-    trailing_row(row_label(label), compact_control(control))
+    labelled_row(label, None, control)
 }
 
-/// [`choice_row`] with a helper line under the label. The description spans
-/// the whole row, hugging it, so a long one is not squeezed into the label's
-/// column beside the chooser.
+/// [`choice_row`] with a helper line under the label.
 pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
-    if choices_stack() {
-        return stacked_block(
-            vec![
-                Box::new(Text::new(label)) as El,
-                caption(description),
-                control,
-            ],
-            Rhythm::Tight,
-        );
-    }
-    stacked_block(
-        vec![
-            trailing_row(row_label(label), compact_control(control)),
-            caption(description),
-        ],
-        Rhythm::Tight,
-    )
+    labelled_row(label, Some(description), control)
 }
 
 fn stacked_block(items: Vec<El>, gap: Rhythm) -> El {
@@ -380,13 +344,6 @@ pub fn choice_row_stacked(label: &str, control: El) -> El {
         vec![Box::new(Text::new(label)) as El, control],
         Rhythm::Tight,
     )
-}
-
-/// The section width (logical px) below which a pane composes its choice
-/// rows with the chooser beneath the label: the compact chooser, one `s3`
-/// gap and room for a typical settings label.
-pub fn choice_rows_stack_below() -> f32 {
-    compact_chooser_width() + spacing().s3 + Metrics::BASE.sidebar_min_width / 2.0
 }
 
 /// A small status badge (e.g. "Connected", "Paired", "Offline"). The tone

@@ -834,6 +834,9 @@ impl Widget for Text {
                 taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
             }
         };
+        // The same pixel of slack `draw` wraps with, so a line measured as
+        // wrapping is painted wrapped and the other way round.
+        let max_w = max_w.map(|w| if w > 0.0 { w + 1.0 } else { w });
         let constraints = TextLayoutConstraints {
             max_width: max_w,
             max_height: max_h,

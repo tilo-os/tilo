@@ -48,6 +48,8 @@ pub struct Container {
     min_width: Option<f32>,
     /// Mutually independent from [`Container::fill_height`].
     fixed_height: Option<f32>,
+    /// See [`Container::with_min_height`]: resolved from the theme at layout.
+    min_height: Option<super::ControlSize>,
     /// `max_width` keeps the container on its parent's leading edge
     /// instead of centring it.
     leading: bool,
@@ -94,6 +96,7 @@ impl Container {
             min_width: None,
             max_width: None,
             fixed_height: None,
+            min_height: None,
             leading: false,
             readable: false,
             hug: false,
@@ -264,6 +267,15 @@ impl Container {
     pub fn with_max_width(mut self, px: f32) -> Self {
         self.readable = false;
         self.max_width = Some(px);
+        self
+    }
+
+    /// Stand at least as tall as a control of `size`, resolved from the
+    /// theme at layout (it follows text size and density), so a row holding
+    /// a shorter control keeps the rhythm of rows holding a taller one.
+    #[must_use]
+    pub fn with_min_height(mut self, size: super::ControlSize) -> Self {
+        self.min_height = Some(size);
         self
     }
 
@@ -468,7 +480,9 @@ impl Widget for Container {
             size: taffy::Size { width, height },
             min_size: taffy::Size {
                 width: self.min_width.map_or(taffy::Dimension::auto(), length),
-                height: taffy::Dimension::auto(),
+                height: self.min_height.map_or(taffy::Dimension::auto(), |size| {
+                    length(crate::num::f32_of_f64(size.height(theme)))
+                }),
             },
             max_size: taffy::Size {
                 width: max_width.map_or(taffy::Dimension::auto(), length),
