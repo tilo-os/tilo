@@ -265,7 +265,6 @@ impl TubeApp {
     /// Apply the actions the controls queued: from the event that queued
     /// them, and from the frame's sync for those the window's shell runs
     /// (its Back chip). Returns whether the view changed.
-
     fn apply_queued(&mut self) -> bool {
         let mut changed = false;
         for action in action::drain(&self.bus) {
@@ -773,6 +772,7 @@ impl TubeApp {
         self.shell_stale = true;
     }
 
+    #[must_use]
     pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {
         self.model.search_query = query.to_string();
         self.model.search_hits_query = query.to_string();
@@ -942,7 +942,6 @@ impl TubeApp {
     }
 
     #[cfg(feature = "grayjay-sync")]
-
     fn show_device_sync_sample(&mut self) {
         self.model.route = Route::Settings;
         self.device_sync = crate::sync::DeviceSync::visual_sample();
@@ -1481,7 +1480,6 @@ impl TubeApp {
 
     /// Show each notice pushed since the last frame as a toast, oldest first,
     /// and let the toasts that have been read expire.
-
     fn show_new_notices(&mut self) {
         use std::hash::{Hash, Hasher};
         let mut identity = std::collections::hash_map::DefaultHasher::new();
@@ -1623,7 +1621,6 @@ impl TubeApp {
         reason = "one match arm per Action variant; the length is the number of actions the \
                   screens push, not complexity in any one arm"
     )]
-
     fn apply(&mut self, action: Action) -> bool {
         match action {
             Action::ToggleSidebar => {
@@ -1761,7 +1758,6 @@ impl TubeApp {
     /// Make bounded-worker saturation explicit. This is a local, retryable
     /// condition, not an offline/network failure, so never falsify the source
     /// provenance while reporting it.
-
     fn request_rejected(&mut self, request: &Request, stopped: bool) {
         const BUSY: &str = "Too many requests are pending. Please try again.";
         const STOPPED: &str = "Tube can't reach its sources here; it is offline.";
@@ -1809,7 +1805,6 @@ impl TubeApp {
         reason = "one match arm per worker Update variant; the length is the number of \
                   update kinds, not accidental complexity in any one arm"
     )]
-
     fn pump(&mut self) -> bool {
         let Some(worker) = &self.worker else {
             return false;

@@ -354,7 +354,7 @@ impl Widget for SpeedTestApp {
         }
     }
 
-    fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         if let Some(run) = &self.run {
             let phase = match run.phase() {
@@ -382,7 +382,7 @@ impl Widget for SpeedTestApp {
         {
             let measured = f64::from_bits(run.live_bits.load(Ordering::Acquire));
             let bytes = run.bytes.load(Ordering::Acquire);
-            if measured != self.display_value || bytes != self.transferred {
+            if !measured.total_cmp(&self.display_value).is_eq() || bytes != self.transferred {
                 self.display_value = measured;
                 self.transferred = bytes;
                 changed = true;
@@ -401,7 +401,7 @@ impl Widget for SpeedTestApp {
         changed |= (previous - self.ring_progress).abs() > 0.0005;
         self.refresh_view();
         if let Some(root) = &mut self.root {
-            changed |= root.update(_doc, _path);
+            changed |= root.update(doc, path);
         }
         changed
     }
@@ -433,11 +433,6 @@ impl Widget for SpeedTestApp {
             self.rect = root.get_rect();
         }
     }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "declarative paint of the whole window, read top to bottom"
-    )]
 
     fn accessibility(&self) -> Option<AccessNode> {
         None

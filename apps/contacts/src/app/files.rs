@@ -514,7 +514,7 @@ impl ContactsApp {
 
 impl ContactsApp {
     pub(super) fn invoke_contact_export_operation(
-        &mut self,
+        &self,
         _state: &ui::widget::Edits<'_>,
         id: ContactId,
     ) -> Result<bool, String> {
@@ -535,7 +535,7 @@ impl ContactsApp {
 
 impl ContactsApp {
     pub(super) fn invoke_duplicate_review_operation(
-        &mut self,
+        &self,
         _state: &ui::widget::Edits<'_>,
     ) -> Result<bool, String> {
         let candidate = self

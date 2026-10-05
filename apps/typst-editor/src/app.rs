@@ -518,7 +518,7 @@ impl TypstApp {
             if self.err_count > 0 {
                 self.set_flash("Compile failed");
             } else {
-                self.set_flash(&format!("Compiled in {} ms", self.elapsed_ms));
+                self.set_flash(format!("Compiled in {} ms", self.elapsed_ms));
             }
         }
     }
@@ -649,7 +649,7 @@ impl TypstApp {
         let src = match read_text(path) {
             Ok(s) => s,
             Err(e) => {
-                self.set_flash(&format!("Open failed: {e}"));
+                self.set_flash(format!("Open failed: {e}"));
                 return Err(e.to_string());
             }
         };
@@ -690,7 +690,7 @@ impl TypstApp {
                     },
                     PortalOutcome::Cancelled => Err("cancelled".into()),
                     PortalOutcome::Failed(e) => {
-                        self.set_flash(&format!("File chooser unavailable: {e}"));
+                        self.set_flash(format!("File chooser unavailable: {e}"));
                         Err(e)
                     }
                 };
@@ -704,7 +704,7 @@ impl TypstApp {
         }
     }
 
-    fn run_command(&mut self, command: Command, _doc: &ui::automerge::AutoCommit) {
+    fn run_command(&self, command: Command, _doc: &ui::automerge::AutoCommit) {
         use crate::actions::TypstEffect;
         let effect = match command {
             Command::Compile => TypstEffect::Compile,
@@ -899,9 +899,6 @@ impl TypstApp {
             self.chrome.open_picker();
         }
     }
-
-    /// Screenshot-only: add an error to the source and compile it at once, so
-    /// the capture shows a failed compile over the last good render.
 
     /// Carve the Problems panel out of the bottom of `col` when it is open
     /// and there is room: as tall as its rows need, at most half the column.
@@ -1726,12 +1723,11 @@ impl TypstApp {
         if self.save_status.contains(p) {
             if self.save_status.click(p) == Some(ui::SaveAction::Retry)
                 && let Some(path) = self.save_path.clone()
+                && let Some(dispatcher) = &self.actions
             {
-                if let Some(dispatcher) = &self.actions {
-                    dispatcher.effect(&crate::actions::TypstEffect::Save {
-                        path: Some(path.to_string_lossy().into_owned()),
-                    });
-                }
+                dispatcher.effect(&crate::actions::TypstEffect::Save {
+                    path: Some(path.to_string_lossy().into_owned()),
+                });
             }
             self.dirty = true;
             *handled = true;

@@ -211,9 +211,9 @@ fn timezone_results(query: &str) -> Vec<String> {
         .collect()
 }
 
-fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
+fn world_clock_list(state: &ui::LocalState<Shown>, controls: &Controls) -> ModelView<Shown> {
     let list_controls = controls.clone();
-    let list = ModelView::from_state(state, move |s| {
+    ModelView::from_state(state, move |s| {
         let mut col = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -240,7 +240,11 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
             col = col.push(Box::new(clock_card(&clock.city, Box::new(row))));
         }
         Box::new(col)
-    });
+    })
+}
+
+fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
+    let list = world_clock_list(state, controls);
     let city_query = ui::LocalState::new(String::new());
     let result_query = city_query.clone();
     let add = controls.dispatcher.clone();
@@ -944,7 +948,7 @@ fn surface(
     .with_accessible_name("Clocks")
     .bind_selection(&selection)
     .on_select(move |id| {
-        if let Some(mode) = id.parse::<usize>().ok() {
+        if let Ok(mode) = id.parse::<usize>() {
             mode_state.set(mode);
         }
     });

@@ -24,8 +24,6 @@ use crate::model::{Auth, BodyMode, HttpMethod, KeyValue, Request, RequestTab};
 use crate::swap::{Swap, SwapHandle};
 use crate::vars;
 
-/// The document key the method picker's value lives at.
-
 /// Ids of the blank row each table ends with.
 #[derive(Clone, Debug)]
 pub(crate) struct BlankRows {

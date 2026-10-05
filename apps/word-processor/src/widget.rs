@@ -1338,9 +1338,7 @@ impl WordProcessorWidget {
         if widget.inner.containers.is_none() {
             return Err("document does not carry the Writer schema".into());
         }
-        // The incremental reader advances the document's patch log, so a
-        // read-only record is materialized from a private fork.
-        widget.refresh_blocks(&mut state.clone());
+        widget.refresh_blocks(state);
         widget.sheet = widget.inner.stylesheet(state);
         Ok(widget)
     }
@@ -6258,10 +6256,6 @@ impl WordProcessorWidget {
     /// Chrome bands above the canvas — toolbar, Find bar,
     /// ruler — plus the canvas/page geometry they reserve around. The first
     /// pass of [`Self::draw`].
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the chrome bands are laid out top to bottom, each reserving space the next band and the canvas depend on"
-    )]
     fn draw_frame_chrome(
         &mut self,
         scene: &mut Scene,
@@ -13082,7 +13076,7 @@ impl WordProcessorWidget {
                 ..
             } => {
                 let was_handled = *ctx.handled;
-                self.handle_right_press(&mut ctx.state, tb_h, ctx.handled);
+                self.handle_right_press(&ctx.state, tb_h, ctx.handled);
                 if !was_handled && self.lifecycle.focused && self.rect.contains(self.pointer) {
                     *ctx.focus_target = Some(ctx.node_id);
                 }
@@ -13137,7 +13131,7 @@ impl WordProcessorWidget {
                     },
                 ..
             } => {
-                if self.handle_modified_navigation(&mut ctx.state, logical_key, *ctx.modifiers) {
+                if self.handle_modified_navigation(&ctx.state, logical_key, *ctx.modifiers) {
                     *ctx.handled = true;
                 } else {
                     self.handle_key_press(

@@ -136,6 +136,28 @@ pub(crate) fn contact_page(
         page = page.push(Box::new(tags));
     }
 
+    let facts = contact_properties(contact, shared);
+    if !facts.is_empty() {
+        page = page.push(Box::new(PropertyList::new(facts)));
+    }
+
+    Box::new(
+        Scrollable::new_vertical()
+            .with_semantic_key("contacts.detail")
+            .with_persisted_offset(std::rc::Rc::clone(scroll))
+            // The facts keep to the readable column on the leading edge,
+            // the page gutter around it.
+            .with_child(Box::new(
+                ui::widget::Container::new()
+                    .with_inset(ui::tokens::Rhythm::Group)
+                    .readable()
+                    .with_child(Box::new(page.with_no_padding())),
+            )),
+    )
+}
+
+/// Editable contact facts in their shared label/value column, in reading order.
+fn contact_properties(contact: &Contact, shared: &Shared) -> Vec<Property> {
     // Every fact in one list, so its labels and values keep one column down
     // the page; the label says what kind of fact a value is.
     let mut facts: Vec<Property> = Vec::new();
@@ -223,21 +245,5 @@ pub(crate) fn contact_page(
             queue(shared, Request::EditField(contact.id, Slot::Notes)),
         ));
     }
-    if !facts.is_empty() {
-        page = page.push(Box::new(PropertyList::new(facts)));
-    }
-
-    Box::new(
-        Scrollable::new_vertical()
-            .with_semantic_key("contacts.detail")
-            .with_persisted_offset(std::rc::Rc::clone(scroll))
-            // The facts keep to the readable column on the leading edge,
-            // the page gutter around it.
-            .with_child(Box::new(
-                ui::widget::Container::new()
-                    .with_inset(ui::tokens::Rhythm::Group)
-                    .readable()
-                    .with_child(Box::new(page.with_no_padding())),
-            )),
-    )
+    facts
 }

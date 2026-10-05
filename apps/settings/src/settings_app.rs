@@ -50,9 +50,6 @@ const MEASURE: f32 = ui::tokens::Metrics::BASE.panel_width_sheet;
 /// (see `SettingsApp::build_shell`).
 pub const NAV_BREAKPOINT: f64 = ui::tokens::Metrics::BASE.compact_breakpoint as f64;
 
-/// Horizontal gutter (logical px) of the page column inside the content
-/// area — the `s6` step.
-
 /// One scroller's offset, shared with every scroller rebuilt in its place.
 type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
 
@@ -293,13 +290,6 @@ impl SettingsApp {
             field.set_query(query);
         }
     }
-
-    /// Build the local search field placed at the top of the shell's sidebar.
-    /// The field shares typed local state with the app, so filtering survives a
-    /// structural rebuild without creating a document draft. Because the shell
-    /// hosts it as a direct child in the App's tree, a click focuses it and
-    /// `autofocus_on_structure_change` restores focus + caret after the
-    /// filtered sidebar rebuilds.
 
     /// Build the content pane: an unboxed category heading followed by the
     /// selected category's body, wrapped in a vertical [`Scrollable`] so tall
@@ -729,12 +719,11 @@ impl Widget for SettingsApp {
             self.sidebar_selection.set(None);
             self.select(category);
         }
-        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter) {
-            if self.search_state.with(|query| query == &self.search_query)
-                && field.value() != self.search_query
-            {
-                self.search_state.set(field.value().to_owned());
-            }
+        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
+            && self.search_state.with(|query| query == &self.search_query)
+            && field.value() != self.search_query
+        {
+            self.search_state.set(field.value().to_owned());
         }
         let query = self.search_state.with(Clone::clone);
         if query != self.search_query {
@@ -868,10 +857,10 @@ impl Widget for SettingsApp {
         {
             shell.handle_event(event, &mut ctx.reborrow(ctx.path, shell_node));
         }
-        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter) {
-            if self.search_state.with(|query| query != field.value()) {
-                self.search_state.set(field.value().to_owned());
-            }
+        if let Some(field) = self.shell.as_ref().and_then(NavShell::filter)
+            && self.search_state.with(|query| query != field.value())
+        {
+            self.search_state.set(field.value().to_owned());
         }
     }
 

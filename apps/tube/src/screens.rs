@@ -451,7 +451,7 @@ pub fn queue(ui: Ui<'_>) -> Scrollable {
                 .with_id("queue_page")
                 .with_intrinsic_height()
                 .with_rhythm(ui::tokens::Rhythm::Group),
-            |column, child| column.push(child),
+            Column::push,
         ),
     ))
 }
@@ -1026,7 +1026,7 @@ fn up_next(ui: Ui<'_>, id: &str) -> Column {
                         preference: SettingFlag::Autoplay.id().into(),
                         enabled,
                     }),
-                )
+                );
             }
         });
     let header = Row::new()
@@ -1132,7 +1132,7 @@ fn switch(ui: Ui<'_>, id: &str, on: bool, flag: SettingFlag) -> Toggle {
                     preference: flag.id().into(),
                     enabled: !on,
                 }),
-            )
+            );
         })
 }
 
@@ -1314,9 +1314,7 @@ fn segment_settings(ui: Ui<'_>) -> FormSection {
         let about = stack()
             .with_gap(rhythm.tight)
             .push(Box::new(Row::new().no_wrap().push(Box::new(name))))
-            .push(Box::new(
-                text(&category.blurb(), TextRole::Caption).dimmed(),
-            ));
+            .push(Box::new(text(category.blurb(), TextRole::Caption).dimmed()));
         section = section.content(Box::new(
             Row::new()
                 .no_wrap()

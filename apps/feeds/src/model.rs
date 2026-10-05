@@ -296,7 +296,7 @@ impl ReadSettings {
     pub fn adjust_text_percent(&mut self, direction: i16) {
         let next = self.percent() + f64::from(direction) * f64::from(Self::TEXT_PERCENT_STEP);
         self.font_scale = (next / 100.0) as f32;
-        *self = self.clone().clamped();
+        *self = (*self).clamped();
     }
     /// The reading scale as a whole percentage (`110` for 1.1).
     pub fn percent(&self) -> f64 {
