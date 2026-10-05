@@ -17,8 +17,8 @@ field, and ``click BUS NAME`` invokes the click action of the node named NAME
 once it appears.
 
 ``page`` opens Browser the same way and serves a page from this machine. Once
-the address field is on the bus it prints ``ready URL``; the caller types that
-address on the real keyboard. The check passes when Browser's engine fetched
+the address field holds keyboard focus it prints ``ready URL``; the caller
+types that address on the real keyboard. The check passes when Browser's engine fetched
 the page and Browser names the loaded document after its title.
 
 ``settings-network`` opens Settings' Network pane and requires what it reads
@@ -31,6 +31,12 @@ Ctrl+T. The app must answer with another instance of itself, in a new
 desktop tab beside the first — one window group grows by exactly one tab
 and a second process of the app joins the bus. Apps have no tab strips of
 their own.
+
+``osk-search FIFO`` proves the on-screen keyboard on a touchscreen: it opens
+the app palette, taps its search field through the root touchscreen helper
+serving FIFO (``input-hotplug-check.sh touchscreen``), requires the keyboard
+service to start and stay running, taps three of its letter keys and reads the
+typed letters back from the field.
 
 The small ``[accessibility.atspi_acceptance]`` section in a signed app
 manifest is the certification data.  Adding an app is data, not another
@@ -70,6 +76,11 @@ SHELL_TREE_NODE_LIMIT = 1024
 # AT-SPI connection without reading another process's /proc entry.
 SHELL_BUS_NAME = "org.freedesktop.impl.portal.desktop.tilo"
 OPEN_APP_ACTION = "Open an app"
+# AT-SPI role numbers (AtspiRole) the gate tells apart.
+ROLE_PAGE_TAB = 37
+ROLE_PAGE_TAB_LIST = 38
+# Document frame, spreadsheet, presentation, text, web and email.
+DOCUMENT_ROLES = frozenset({82, 92, 93, 94, 95, 96})
 LAUNCH_TIMEOUT_SECONDS = 120
 PAGE_TITLE = "Tilo browser engine check"
 # Typing the address and starting the engine, under emulation on some lanes.
@@ -179,6 +190,14 @@ class AtspiClient:
             "--object-path", path, "--method", interface_method, *args, check=check,
         )
 
+    def role(self, path: str) -> int | None:
+        """The node's AT-SPI role number (AtspiRole). AccessKit answers
+        Accessible.GetRole but has no role-name method, so roles are compared
+        by number."""
+        reply = self.call(path, "org.a11y.atspi.Accessible.GetRole", check=False)
+        match = re.search(r"uint32\s+(\d+)", reply)
+        return int(match.group(1)) if match else None
+
     def property(self, path: str, name: str) -> str:
         return self.call(
             path, "org.freedesktop.DBus.Properties.Get", "org.a11y.atspi.Accessible", name,
@@ -218,16 +237,65 @@ class AtspiClient:
         result = self.call(path, "org.a11y.atspi.EditableText.SetTextContents", value, check=False)
         return "true" in result
 
+    def clickable(self, tree: dict[str, str], expected: str) -> list[str]:
+        """Paths of the nodes named EXPECTED that offer AT-SPI's click action."""
+        return [
+            path for path in self.named(tree, expected)
+            if "'click'" in self.call(path, "org.a11y.atspi.Action.GetActions", check=False)
+        ]
+
     def click(self, tree: dict[str, str], expected: str) -> None:
-        for path in self.named(tree, expected):
-            actions = self.call(path, "org.a11y.atspi.Action.GetActions", check=False)
-            if "'click'" not in actions:
-                continue
+        for path in self.clickable(tree, expected):
             result = self.call(path, "org.a11y.atspi.Action.DoAction", "0")
             if "true" not in result:
                 raise GateError(f"AT-SPI action {expected!r} was rejected: {result.strip()}")
             return
         raise GateError(f"AT-SPI tree has no click-capable node named {expected!r}")
+
+
+# Below its breakpoint an app built on the shared shell shows one screen at a
+# time: it opens on the selected pane, with a Back arrow to its navigation list
+# (crates/sdk/ui-core/src/widget/app_shell.rs). A tiled desktop window is often
+# that narrow. Someone who cannot see an entry there goes back to the list once.
+NARROW_BACK = "Back"
+
+
+def wait_for_reachable(
+    client: AtspiClient,
+    names: tuple[str, ...],
+    subject: str,
+    limit: int = TREE_NODE_LIMIT,
+    clickable: bool = False,
+) -> dict[str, str]:
+    """The app's tree once it exposes every name in NAMES (as something that
+    can be clicked, with CLICKABLE), going back from a narrow window's pane to
+    its list once if that is where they are."""
+    find = client.clickable if clickable else client.named
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    latest: dict[str, str] = {}
+    went_back = False
+    while True:
+        try:
+            latest = client.tree(limit)
+            if all(find(latest, name) for name in names):
+                return latest
+            if not went_back and client.clickable(latest, NARROW_BACK):
+                client.click(latest, NARROW_BACK)
+                went_back = True
+                # The list replaces the pane; give the deadline back for it.
+                deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        except GateError:
+            # AccessKit can replace a subtree while it is walked; walk again.
+            pass
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(POLL_SECONDS * 4)
+    observed = "\n".join(sorted({name.strip() for name in latest.values() if name.strip()}))
+    raise GateError(
+        f"{subject}: tree never exposed {'click-capable ' if clickable else ''}"
+        f"{', '.join(names)}{' (also not after going Back)' if went_back else ''}; "
+        f"observed AT-SPI names:\n{observed}"
+    )
 
 
 def bus_pids(address: str) -> dict[str, int]:
@@ -506,16 +574,12 @@ def tab_lists(shell: AtspiClient) -> list[list[str]]:
             tree = shell.tree(SHELL_TREE_NODE_LIMIT)
             lists: list[list[str]] = []
             for path in tree:
-                role = shell.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-                if "'page tab list'" not in role:
+                if shell.role(path) != ROLE_PAGE_TAB_LIST:
                     continue
                 children = shell.call(path, "org.a11y.atspi.Accessible.GetChildren")
                 tabs = []
                 for child in PATH_RE.findall(children):
-                    child_role = shell.call(
-                        child, "org.a11y.atspi.Accessible.GetRoleName", check=False,
-                    )
-                    if "'page tab'" in child_role:
+                    if shell.role(child) == ROLE_PAGE_TAB:
                         tabs.append(tree.get(child, shell.property(child, "Name")).strip())
                 lists.append(tabs)
             return lists
@@ -608,7 +672,7 @@ def exercise(scenario: Scenario, address: str) -> None:
     bus_name, pid = open_in_session(address, scenario.app_name)
     try:
         client = AtspiClient(address, bus_name)
-        initial = wait_for_tree(client, (scenario.root, *scenario.required), scenario.app_id)
+        initial = wait_for_reachable(client, (scenario.root, *scenario.required), scenario.app_id)
         client.click(initial, scenario.action)
         wait_for_tree(client, scenario.after_action, scenario.app_id)
     except GateError as error:
@@ -660,6 +724,47 @@ def wait_for_names(client: AtspiClient, names: tuple[str, ...], timeout: float) 
     raise GateError(f"Browser never exposed {', '.join(names)}; it exposed: {observed}")
 
 
+ADDRESS_FIELD = "Address and search"
+
+
+def wait_for_keyboard_focus(client: AtspiClient, field: str, timeout: float) -> None:
+    """Give the editable FIELD keyboard focus and wait until it has it.
+
+    An app publishes its accessibility tree from its first layout, but the
+    compositor maps its window, and hands it the keyboard, only once its first
+    frame is presented. On a software-rendered VM that is seconds later, and
+    keys pressed in between land on whatever had focus before: an address
+    typed then reaches Browser with its first characters missing, and
+    ``tp://…`` is no web address. AccessKit reports a node focused only while
+    its window holds keyboard focus, so the focused state is the signal that
+    real key presses will arrive."""
+    deadline = time.monotonic() + timeout
+    target = None
+    while True:
+        if target is None:
+            try:
+                tree = client.tree(BROWSER_TREE_NODE_LIMIT)
+            except GateError:
+                tree = {}
+            target = next(
+                (path for path, name in tree.items()
+                 if is_typing_target(client, path, name, field)),
+                None,
+            )
+            if target is not None:
+                client.call(target, "org.a11y.atspi.Component.GrabFocus", check=False)
+        if target is not None:
+            reply = client.call(target, "org.a11y.atspi.Accessible.GetState", check=False)
+            word = re.search(r"uint32\s+(\d+)", reply)
+            if word and int(word.group(1)) & FOCUSED_STATE_BIT:
+                return
+        if time.monotonic() >= deadline:
+            what = "never appeared" if target is None else "never took keyboard focus"
+            raise GateError(f"Browser's editable {field!r} {what}; "
+                            f"session log: {app_log('Browser')}")
+        time.sleep(POLL_SECONDS * 4)
+
+
 def load_page(address: str, title: str) -> str:
     """Open Browser, hand the address to the caller's keyboard, and require the
     engine to load the page this process serves."""
@@ -668,7 +773,8 @@ def load_page(address: str, title: str) -> str:
         bus_name, pid = open_in_session(address, "Browser")
         try:
             client = AtspiClient(address, bus_name)
-            wait_for_names(client, ("Address and search",), START_TIMEOUT_SECONDS * 3)
+            wait_for_names(client, (ADDRESS_FIELD,), START_TIMEOUT_SECONDS * 3)
+            wait_for_keyboard_focus(client, ADDRESS_FIELD, START_TIMEOUT_SECONDS * 3)
             print(f"ready {url}", flush=True)
             try:
                 wait_for_names(client, (title,), PAGE_TIMEOUT_SECONDS)
@@ -782,16 +888,12 @@ def settings_network(address: str) -> None:
     bus_name, pid = open_in_session(address, SETTINGS_APP_NAME)
     try:
         client = AtspiClient(address, bus_name)
-        deadline = time.monotonic() + START_TIMEOUT_SECONDS
-        while True:
-            try:
-                tree = client.tree(SHELL_TREE_NODE_LIMIT)
-                client.click(tree, NETWORK_PANE)
-                break
-            except GateError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(POLL_SECONDS * 4)
+        # The Network pane's heading is also named "Network"; the category
+        # entry is the one that can be clicked.
+        tree = wait_for_reachable(
+            client, (NETWORK_PANE,), SETTINGS_APP_NAME, SHELL_TREE_NODE_LIMIT, clickable=True,
+        )
+        client.click(tree, NETWORK_PANE)
         deadline = time.monotonic() + NETWORK_TIMEOUT_SECONDS
         problems: list[str] = ["the pane was never read"]
         names: list[str] = []
@@ -851,8 +953,7 @@ def is_typing_target(client: AtspiClient, path: str, name: str, field: str | Non
             f"'{field}'" in name
             and "org.a11y.atspi.EditableText" in client.interfaces(path)
         )
-    role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-    return "document" in role and "Component" in client.interfaces(path)
+    return client.role(path) in DOCUMENT_ROLES and "Component" in client.interfaces(path)
 
 
 def prepare_typing(
@@ -888,8 +989,7 @@ def prepare_typing(
             if is_typing_target(client, path, name, field):
                 document = path
                 break
-            role = client.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
-            seen.append(f"{role.strip()} {name.strip()}")
+            seen.append(f"role {client.role(path)} {name.strip()}")
         else:
             if time.monotonic() >= deadline:
                 close_app(pid)
@@ -946,9 +1046,14 @@ def check_present(address: str, state: Path, app_name: str, name: str) -> None:
         state.unlink(missing_ok=True)
 
 
-def check_typed(address: str, state: Path, expected: str, status: str | None = None) -> None:
+def check_typed(
+    address: str, state: Path, expected: str, status: str | None = None, min_chars: int | None = None,
+) -> None:
     """The document opened by `prepare_typing` holds exactly EXPECTED and,
-    with STATUS, the app names its save state STATUS and no other."""
+    with STATUS, the app names its save state STATUS and no other. With
+    MIN_CHARS, a text node holding at least that many of the typed characters
+    is enough: long typing runs are judged by how much arrived, not by every
+    key."""
     bus_name, pid_text = state.read_text().split()
     pid = int(pid_text)
     client = AtspiClient(address, bus_name)
@@ -960,20 +1065,92 @@ def check_typed(address: str, state: Path, expected: str, status: str | None = N
                 texts = text_nodes(client)
             except GateError:
                 texts = {}
-            if expected in texts.values():
-                print(f"typed text reads back exactly: {expected!r}")
+            if min_chars is not None and any(len(text) >= min_chars for text in texts.values()):
+                longest = max(len(text) for text in texts.values())
+                print(f"typed text reads back: {longest} of {len(expected)} characters")
                 if status is not None:
                     check_save_status(client, status, deadline)
                 return
+            if expected in texts.values():
+                print(f"typed text reads back exactly: {expected!r}")
+                if status is not None:
+                    # Saving starts once the typing ends: the save state gets
+                    # its own window rather than what reading the text left.
+                    check_save_status(
+                        client, status, time.monotonic() + SAVE_TIMEOUT_SECONDS
+                    )
+                return
             time.sleep(POLL_SECONDS * 4)
-        seen = sorted({text for text in texts.values() if text})
-        raise GateError(f"typed {expected!r}, but the document's text nodes hold {seen!r}")
+        seen = sorted({text[:200] for text in texts.values() if text})
+        raise GateError(f"typed {expected[:200]!r}, but the document's text nodes hold {seen!r}")
     finally:
         close_app(pid)
         state.unlink(missing_ok=True)
 
 
+SESSION_LOG = Path.home() / ".local/state/tilo/session-logs/latest.log"
+HISTORY_BUTTON = "History"
+
+
+def session_log_lines() -> list[str]:
+    try:
+        return SESSION_LOG.read_text(errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def wait_for_log_line(start: int, needle: str, subject: str, timeout: float) -> str:
+    """The first session log line after line START that holds NEEDLE."""
+    deadline = time.monotonic() + timeout
+    while True:
+        for line in session_log_lines()[start:]:
+            if needle in line:
+                return re.sub(r"\x1b\[[0-9;]*m", "", line).strip()
+        if time.monotonic() >= deadline:
+            raise GateError(f"{subject}: the session log never showed {needle!r}")
+        time.sleep(POLL_SECONDS * 4)
+
+
+def reopen_history(address: str, app_name: str, package: str, expect_text: str) -> None:
+    """Open APP_NAME again on the document typed into before, require that it shows
+    EXPECT_TEXT, then open its History. Prints the reopened app's APP-STARTUP line and
+    History's HISTORY-OPEN line, which app_startup_check.py judges."""
+    start = len(session_log_lines())
+    bus_name, pid = open_in_session(address, app_name)
+    client = AtspiClient(address, bus_name)
+    try:
+        startup = wait_for_log_line(
+            start, f"stderr] APP-STARTUP app={package} ", app_name, LAUNCH_TIMEOUT_SECONDS)
+        print(startup)
+        deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        texts: dict[str, str] = {}
+        while not any(expect_text in text for text in texts.values()):
+            if time.monotonic() >= deadline:
+                seen = sorted({text[:80] for text in texts.values() if text})
+                raise GateError(f"{app_name} reopened without the typed note; it shows {seen!r}")
+            time.sleep(POLL_SECONDS * 4)
+            try:
+                texts = text_nodes(client)
+            except GateError:
+                texts = {}
+        deadline = time.monotonic() + START_TIMEOUT_SECONDS
+        while True:
+            try:
+                client.click(client.tree(TYPING_TREE_NODE_LIMIT), HISTORY_BUTTON)
+                break
+            except GateError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(POLL_SECONDS * 4)
+        print(wait_for_log_line(
+            start, f"[app {package} stderr] HISTORY-OPEN ", f"{app_name} History",
+            START_TIMEOUT_SECONDS))
+    finally:
+        close_app(pid)
+
+
 SAVE_STATES = ("Saved", "Saving…", "Save failed", "Not saved")
+SAVE_TIMEOUT_SECONDS = 30
 
 
 def check_save_status(client: AtspiClient, expected: str, deadline: float) -> None:
@@ -1028,6 +1205,160 @@ def check_described(address: str, state: Path, name: str, expected: str) -> None
         state.unlink(missing_ok=True)
 
 
+OSK_SERVICE_TIMEOUT_SECONDS = 60
+OSK_TYPING_TIMEOUT_SECONDS = 15
+# Three letter keys across the keyboard's middle letter row.
+OSK_KEY_FRACTIONS = (0.2, 0.45, 0.7)
+OSK_ROW_FRACTION = 0.55
+SCREEN_COORDS = "0"
+
+
+def extents_reply(reply: str) -> tuple[int, int, int, int] | None:
+    """The rectangle in a gdbus `Component.GetExtents` reply such as `((0, 0, 1280, 800),)`."""
+    match = re.match(r"\(\(\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(-?\d+)\s*\),\)\s*$", reply.strip())
+    if not match:
+        return None
+    x, y, w, h = (int(value) for value in match.groups())
+    return x, y, w, h
+
+
+def keyboard_rect(width: float, height: float) -> tuple[float, float, float, float]:
+    """Where the compositor docks the on-screen keyboard on a WIDTH x HEIGHT
+    output: bottom-anchored and centred, at most 960 wide, 40% of the height
+    within 220..380, with a 20 px margin."""
+    margin = min(20.0, width / 20.0)
+    w = min(max(width - margin * 2.0, 1.0), 960.0)
+    h = min(min(max(height * 0.40, 220.0), 380.0), max(height - margin * 2.0, 1.0))
+    return (width - w) / 2.0, max(height - h - margin, 0.0), w, h
+
+
+def osk_processes() -> list[int]:
+    """This user's running on-screen keyboard processes."""
+    uid = os.getuid()
+    found = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if entry.stat().st_uid != uid:
+                continue
+            argv0 = (entry / "cmdline").read_bytes().split(b"\0", 1)[0]
+        except OSError:
+            continue
+        if argv0.endswith(b"/bin/osk"):
+            found.append(int(entry.name))
+    return found
+
+
+def shell_viewport(shell: AtspiClient) -> tuple[int, int]:
+    """The compositor's output size, as its own AT-SPI window reports it."""
+    largest = None
+    for path in shell_tree(shell):
+        rect = extents_reply(
+            shell.call(path, "org.a11y.atspi.Component.GetExtents", SCREEN_COORDS, check=False)
+        )
+        if not rect or rect[2] <= 0 or rect[3] <= 0:
+            continue
+        role = shell.call(path, "org.a11y.atspi.Accessible.GetRoleName", check=False)
+        if "'frame'" in role or "'window'" in role:
+            return rect[0] + rect[2], rect[1] + rect[3]
+        if largest is None or rect[2] * rect[3] > largest[2] * largest[3]:
+            largest = rect
+    if largest is None:
+        raise GateError("the compositor's AT-SPI tree has no node with on-screen extents")
+    # Without a window node, the desktop surface spans the output.
+    return largest[0] + largest[2], largest[1] + largest[3]
+
+
+def open_search_field(shell: AtspiClient) -> str:
+    """Open the app palette and return its editable query field."""
+    _, opener = wait_for_shell_node(shell, OPEN_APP_ACTION)
+    result = shell.call(opener, "org.a11y.atspi.Action.DoAction", "0")
+    if "true" not in result:
+        raise GateError(f"AT-SPI {OPEN_APP_ACTION!r} was rejected: {result.strip()}")
+    deadline = time.monotonic() + START_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        tree = shell_tree(shell)
+        for path in tree:
+            if "Command palette" in tree[path]:
+                continue
+            if "org.a11y.atspi.EditableText" in shell.interfaces(path):
+                return path
+        time.sleep(POLL_SECONDS * 4)
+    raise GateError("the app palette exposed no editable query over AT-SPI")
+
+
+def field_text(shell: AtspiClient, path: str) -> str:
+    reply = shell.call(path, "org.a11y.atspi.Text.GetText", "--", "0", "-1", check=False)
+    return text_reply(reply) or ""
+
+
+def osk_search(address: str, fifo: Path) -> None:
+    """Tap the search field on the touchscreen FIFO drives; the on-screen
+    keyboard must start and show, and tapping three of its letter keys must
+    type into the field, read back over AT-SPI."""
+    address = atspi_address()
+    shell = shell_client(address)
+    width, height = shell_viewport(shell)
+
+    def tap(x: float, y: float) -> None:
+        with fifo.open("w") as touch:
+            touch.write(f"tap {x / width:.5f} {y / height:.5f}\n")
+
+    try:
+        field = open_search_field(shell)
+        rect = extents_reply(
+            shell.call(field, "org.a11y.atspi.Component.GetExtents", SCREEN_COORDS)
+        )
+        if not rect or rect[2] <= 0 or rect[3] <= 0:
+            raise GateError(f"the search field has no on-screen extents: {rect}")
+        centre = (rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
+        before = field_text(shell, field)
+        # A touchscreen in use is what starts the keyboard service.
+        tap(*centre)
+        deadline = time.monotonic() + OSK_SERVICE_TIMEOUT_SECONDS
+        stable_since = None
+        while True:
+            if osk_processes():
+                stable_since = stable_since or time.monotonic()
+                # Alive past one restart period: it did not exit at start.
+                if time.monotonic() - stable_since >= 6:
+                    break
+            else:
+                stable_since = None
+            if time.monotonic() >= deadline:
+                raise GateError(
+                    "the on-screen keyboard never kept running after a touch on the search field; "
+                    f"session log: {app_log('osk')}"
+                )
+            time.sleep(POLL_SECONDS * 4)
+        kx, ky, kw, kh = keyboard_rect(width, height)
+        deadline = time.monotonic() + OSK_TYPING_TIMEOUT_SECONDS * 2
+        while True:
+            # The tap on the focused field shows the keyboard for it.
+            tap(*centre)
+            time.sleep(1.5)
+            for fx in OSK_KEY_FRACTIONS:
+                tap(kx + kw * fx, ky + kh * OSK_ROW_FRACTION)
+                time.sleep(0.4)
+            typed_deadline = time.monotonic() + OSK_TYPING_TIMEOUT_SECONDS
+            text = before
+            while time.monotonic() < typed_deadline:
+                text = field_text(shell, field)
+                if text != before and text.strip():
+                    print(f"on-screen keyboard typed {text!r} into the search field")
+                    return
+                time.sleep(POLL_SECONDS * 4)
+            if time.monotonic() >= deadline:
+                raise GateError(
+                    f"tapping the on-screen keyboard's keys left the search field at {text!r}; "
+                    f"keyboard processes {osk_processes()}; session log: {app_log('osk')}"
+                )
+    finally:
+        with fifo.open("w") as touch:
+            touch.write("done\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
@@ -1066,6 +1397,18 @@ def main() -> int:
     typed.add_argument("text")
     typed.add_argument("--state", type=Path, required=True)
     typed.add_argument("--status", help="the save state the app must name once the text reads back")
+    typed.add_argument(
+        "--min-chars", type=int,
+        help="accept a text node holding at least this many characters instead of exactly TEXT",
+    )
+    history = sub.add_parser(
+        "reopen-history",
+        help="open APP_NAME again, require the typed note, open History; print the app's "
+        "APP-STARTUP and HISTORY-OPEN lines",
+    )
+    history.add_argument("app_name")
+    history.add_argument("package")
+    history.add_argument("--expect-text", required=True)
     described = sub.add_parser(
         "described",
         help="check the document `type-into` opened has a node NAME described as DESCRIPTION",
@@ -1099,6 +1442,11 @@ def main() -> int:
         "again as a desktop tab beside the first",
     )
     tab.add_argument("app_name")
+    osk = sub.add_parser(
+        "osk-search",
+        help="tap the search field on a touchscreen; the on-screen keyboard must show and type into it",
+    )
+    osk.add_argument("fifo", type=Path, help="the touchscreen command FIFO input-hotplug-check.sh serves")
     args = parser.parse_args()
     for executable in ("busctl", "gdbus"):
         if not shutil.which(executable):
@@ -1130,13 +1478,19 @@ def main() -> int:
             prepare_typing(address, args.app_name, args.create, args.state, args.field)
             return 0
         if args.command == "typed":
-            check_typed(address, args.state, args.text, args.status)
+            check_typed(address, args.state, args.text, args.status, args.min_chars)
+            return 0
+        if args.command == "reopen-history":
+            reopen_history(address, args.app_name, args.package, args.expect_text)
             return 0
         if args.command == "described":
             check_described(address, args.state, args.name, args.description)
             return 0
         if args.command == "present":
             check_present(address, args.state, args.app_name, args.name)
+            return 0
+        if args.command == "osk-search":
+            osk_search(address, args.fifo)
             return 0
         if args.command == "new-tab":
             new_tab(address, args.app_name)

@@ -291,6 +291,9 @@ fn mint_serial(state: &mut State) -> Serial {
 }
 
 fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) {
+    state
+        .clients_given_input
+        .insert(crate::compositor::state::client_index_of(surface_id));
     let now = Instant::now();
     state
         .activation_serials
@@ -306,6 +309,16 @@ fn record_activation_serial(state: &mut State, serial: Serial, surface_id: u64) 
     {
         let _ = state.activation_serials.pop_front();
     }
+}
+
+/// The xdg `app_id` a toplevel declared, for naming it in latency records.
+fn toplevel_app_id(surface: &WlSurface) -> Option<String> {
+    smithay::wayland::compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+            .and_then(|data| data.lock().ok()?.app_id.clone())
+    })
 }
 
 /// Milliseconds since compositor start — the timestamp base every input event on this seat shares.
@@ -451,6 +464,20 @@ impl State {
         let delivered = forward && has_focus && intercepted.is_none();
         if delivered && let Some(surface_id) = self.client_input.keyboard_focus {
             record_activation_serial(self, serial, surface_id);
+            if pressed {
+                let app = self
+                    .client_input
+                    .surfaces
+                    .get(&surface_id)
+                    .and_then(toplevel_app_id)
+                    .unwrap_or_default();
+                crate::compositor::key_latency::tracker().key_delivered(
+                    surface_id,
+                    &app,
+                    keycode,
+                    Instant::now(),
+                );
+            }
         }
         delivered
     }
@@ -709,6 +736,12 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        if matches!(touch, BackendTouchEvent::Down { .. })
+            && let Some((id, _)) = target
+        {
+            self.clients_given_input
+                .insert(crate::compositor::state::client_index_of(id));
+        }
         if matches!(touch, BackendTouchEvent::Down { .. }) {
             // A client that never asked for a `wl_touch` would receive
             // nothing; it gets the contact as pointer input instead.
@@ -1320,6 +1353,9 @@ pub fn route_input(
         state
             .remote_input_firewall
             .note_local_input(std::time::Instant::now());
+        if matches!(event, WindowEvent::KeyboardInput { .. }) {
+            state.end_remote_typing();
+        }
         state.release_personal_keyboard_focus();
         // Another device of the person last placed this seat's pointer, on a
         // window it shows. The host's cursor never left its spot, so the

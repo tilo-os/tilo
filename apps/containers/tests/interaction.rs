@@ -320,35 +320,28 @@ fn sections_and_modals_render_non_blank() {
 // =====================================================================
 
 // =====================================================================
-// Interaction: enter-distrobox builds the right terminal command
+// Interaction: enter-distrobox asks for the right terminal
 // =====================================================================
 
-/// Entering a distrobox builds its terminal and the canonical log resource opens the collaborative detail.
+/// Entering a distrobox asks for Terminal and the canonical log resource opens the collaborative detail.
 #[test]
 fn container_resources_open_terminal_and_log_detail() {
-    // --- phase: enter_distrobox_builds_terminal_running_distrobox_enter ---
+    // --- phase: enter_distrobox_asks_for_terminal_running_distrobox_enter ---
     {
-        // The inner command the Tilo terminal runs must invoke `distrobox enter`.
-        let inner = terminal::distrobox_enter_command("my-distrobox");
-        assert!(inner.contains("distrobox enter 'my-distrobox'"), "{inner}");
-        // And the spawned Command must target the terminal binary with SHELL set
-        // to a launcher that runs that inner command.
-        let cmd = terminal::terminal_command(&inner, "enter-my-distrobox").expect("build cmd");
-        let prog = cmd.get_program().to_string_lossy().to_string();
-        assert!(
-            prog.ends_with("terminal"),
-            "spawns the terminal binary: {prog}"
+        // Terminal is asked for by intent; the shell runs `distrobox enter`.
+        let intent = terminal::distrobox_enter_intent("my-distrobox");
+        assert_eq!(
+            intent,
+            runtime_portal::tools::ToolIntent::ContainerShell {
+                container: "my-distrobox".into(),
+                engine: runtime_portal::tools::ContainerEngine::Distrobox,
+            }
         );
-        let shell = cmd
-            .get_envs()
-            .find(|(k, _)| *k == std::ffi::OsStr::new("SHELL"))
-            .and_then(|(_, v)| v)
-            .map(|v| v.to_string_lossy().to_string())
-            .expect("SHELL env points at the launcher");
-        assert!(shell.contains("tilo-term-enter-my-distrobox.sh"), "{shell}");
-        // The launcher on disk really runs the distrobox-enter command.
-        let body = std::fs::read_to_string(&shell).expect("launcher written");
-        assert!(body.contains("distrobox enter 'my-distrobox'"), "{body}");
+        assert_eq!(
+            intent.package_id(),
+            Some("so.tilo.terminal"),
+            "opens the Terminal package, not a loose binary"
+        );
     }
 
     // --- phase: canonical_log_resource_opens_collaborative_detail_state ---

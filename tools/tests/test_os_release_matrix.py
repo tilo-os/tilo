@@ -20,7 +20,7 @@ WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 def matrix_script() -> str:
     workflow = WORKFLOW.read_text()
     marker = "      - name: Select validation or native publication lanes\n"
-    block = workflow.split(marker, 1)[1].split("\n\n  signing-preflight:", 1)[0]
+    block = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0].split("\n\n  signing-preflight:", 1)[0]
     return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 
@@ -171,7 +171,13 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     if publish:
                         self.assertEqual(group, "tilo-os-image-series-2")
                     else:
-                        self.assertEqual(group, f"tilo-os-image-validate-{ref}")
+                        self.assertEqual(group, "tilo-os-image-validate-2")
+        with self.subTest(phase='full branch proofs share a queue without cancelling another owner'):
+            branches = ("refs/heads/feature-a", "refs/heads/feature-b")
+            groups = [concurrency_group(ref, "workflow_dispatch", "false") for ref in branches]
+            self.assertEqual(groups, ["tilo-os-image-validate-2"] * 2)
+            self.assertNotEqual(groups[0], concurrency_group(branches[0], "workflow_call", ""))
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
         with self.subTest(phase='Lenovo publication has a source-specific lock'):
             self.assertEqual(
                 concurrency_group("refs/heads/main", "workflow_dispatch", "true", "lenovo-83ed"),
@@ -246,7 +252,7 @@ class OsDevLaneTests(unittest.TestCase):
         self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
         self.assertIn(".forgejo/workflows/release-apps.yml", step)
         self.assertIn("index.json | jq -r '.source // empty'", step)
-        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+        self.assertLess(step.index("[[ $source != \"$COLLECTION_SOURCE\" ]]"),
                         step.index("echo 'TILO_PREBUILT_APPS=1'"))
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))

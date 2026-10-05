@@ -964,6 +964,8 @@ impl ActionFixture {
 
 include!("directory_permission_tests.rs");
 
+include!("invocation_locus_tests.rs");
+
 include!("owner_publication_tests.rs");
 
 include!("action_directory_snapshot_bound_tests.rs");

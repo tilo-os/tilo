@@ -193,8 +193,7 @@ fn validated_workspace(doc: &AutoCommit, validate_image_bytes: bool) -> Result<W
         } else {
             Some(uuid(&parent)?)
         };
-        let order = u32::try_from(integer(doc, &page, "order")?)
-            .map_err(|_| format!("page {id} order exceeds u32"))?;
+        let order = string(doc, &page, "order")?;
         data.pages.push(PageMeta {
             id,
             title: text(doc, &page, "title")?,
@@ -692,7 +691,7 @@ mod tests {
                 id: page,
                 title: "Reference".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             },
         );
         NotesDoc::fill_page_body(&mut doc, page, blocks).unwrap();
@@ -793,7 +792,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             initialize_empty(&mut doc).unwrap();
             let page = uuid::Uuid::new_v4();
-            crate::actions::new_page_action(page, None, 0, "Images")
+            crate::actions::new_page_action(page, None, "a".into(), "Images")
                 .apply(&mut doc)
                 .unwrap();
             let bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0];

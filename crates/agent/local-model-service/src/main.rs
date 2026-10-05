@@ -23,7 +23,7 @@ use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use local_model_service::{
     HttpsTransport, LocalModelService, ProcessHandle, ProcessSupervisor, ServiceError,
-    SignedRuntime, VllmCommand,
+    SignedRuntime, VllmCommand, user_model_root,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -179,6 +179,10 @@ struct HardwareRecommendation {
     free_storage_gib: Option<u16>,
     reason: String,
 }
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent signed declaration in the catalog wire format"
+)]
 #[derive(Clone, Serialize)]
 struct LocalModelPackage {
     id: String,
@@ -192,6 +196,9 @@ struct LocalModelPackage {
     installed_bytes: u64,
     vision: bool,
     face_recognition: bool,
+    /// Runs inside the process that uses it: nothing to start or stop.
+    in_process: bool,
+    segmentation: bool,
 }
 #[derive(Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -217,6 +224,13 @@ struct InstalledLocalModel {
     package: LocalModelPackage,
     phase: LocalModelPhase,
 }
+/// A signed in-process model, offered whether or not it is installed;
+/// `phase` is absent until the person sets it up.
+#[derive(Serialize)]
+struct InProcessLocalModel {
+    package: LocalModelPackage,
+    phase: Option<LocalModelPhase>,
+}
 #[derive(Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum AcceleratorSetupState {
@@ -236,7 +250,10 @@ struct AcceleratorSetup {
 struct LocalModelSnapshot {
     hardware: HardwareRecommendation,
     recommendation: Option<LocalModelPackage>,
+    /// Installed runtime-served models.
     models: Vec<InstalledLocalModel>,
+    /// Every catalog model that runs in-process, with its install state.
+    in_process: Vec<InProcessLocalModel>,
     accelerator_setup: Option<AcceleratorSetup>,
 }
 
@@ -295,6 +312,11 @@ fn load_catalog(path: &PathBuf, keys: &PathBuf) -> Result<CatalogPayload, String
         .map_err(|_| "catalog signature verification failed")?;
     for runtime in &signed.payload.runtimes {
         runtime.validate().map_err(|error| error.to_string())?;
+    }
+    for model in &signed.payload.models {
+        model
+            .validate_shape()
+            .map_err(|error| format!("{}: {error}", model.id))?;
     }
     Ok(signed.payload)
 }
@@ -654,6 +676,8 @@ fn package(model: &LocalModelRelease) -> LocalModelPackage {
         installed_bytes: model.installed_size_bytes,
         vision: model.vision,
         face_recognition: model.face_recognition,
+        in_process: model.runs_in_process(),
+        segmentation: model.segmentation,
     }
 }
 fn runtime_kind_for(
@@ -1178,12 +1202,6 @@ fn paths(cli: &Cli) -> Result<(PathBuf, PathBuf, PathBuf), String> {
     ))
 }
 
-fn user_model_root() -> PathBuf {
-    xdg_paths::xdg::data_home()
-        .unwrap_or_else(|| PathBuf::from("/tmp/.local/share"))
-        .join("tilo/models")
-}
-
 fn allocate_loopback_port() -> Result<u16, String> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
     listener
@@ -1350,9 +1368,12 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
                 })?;
         }
         Action::Start { model } => {
-            if !catalog.models.iter().any(|release| release.id == model) {
-                return Err("model is not in the signed catalog".to_string());
-            }
+            let release = catalog
+                .models
+                .iter()
+                .find(|release| release.id == model)
+                .ok_or_else(|| "model is not in the signed catalog".to_string())?;
+            refuse_in_process(release)?;
             service
                 .mark_starting(&model)
                 .map_err(|error| error.to_string())?;
@@ -1361,6 +1382,9 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
             })?;
         }
         Action::Stop { model } => {
+            if let Some(release) = catalog.models.iter().find(|release| release.id == model) {
+                refuse_in_process(release)?;
+            }
             service.stop(&model).map_err(|error| error.to_string())?;
         }
         Action::Remove { model } => {
@@ -1376,6 +1400,7 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
                 .iter()
                 .find(|release| release.id == model)
                 .ok_or_else(|| "model is not in the signed catalog".to_string())?;
+            refuse_in_process(release)?;
             let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
             if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
                 let _ = service.record_failure(&model, error.to_string());
@@ -1421,7 +1446,7 @@ fn local_snapshot(
             catalog
                 .models
                 .iter()
-                .find(|model| &model.id == id)
+                .find(|model| &model.id == id && !model.runs_in_process())
                 .map(|model| InstalledLocalModel {
                     package: package(model),
                     phase: phase(&managed.status),
@@ -1432,13 +1457,45 @@ fn local_snapshot(
         hardware: recommendation(&hardware, runtime, recommended.is_some()),
         recommendation: recommended,
         models,
+        in_process: in_process_models(&catalog.models, service.state()),
         accelerator_setup: accelerator_setup_snapshot(),
     };
     serde_json::to_string(&payload).map_err(|error| error.to_string())
 }
 
+/// Every signed in-process model with its install state. These do not
+/// depend on the hardware probe: they are small and run on any CPU.
+fn in_process_models(
+    models: &[LocalModelRelease],
+    state: &local_model_service::ServiceState,
+) -> Vec<InProcessLocalModel> {
+    models
+        .iter()
+        .filter(|model| model.runs_in_process())
+        .map(|model| InProcessLocalModel {
+            package: package(model),
+            phase: state
+                .models
+                .get(&model.id)
+                .map(|managed| phase(&managed.status)),
+        })
+        .collect()
+}
+
+fn refuse_in_process(release: &LocalModelRelease) -> Result<(), String> {
+    if release.runs_in_process() {
+        Err(format!(
+            "{} runs inside the apps that use it; there is nothing to start or stop",
+            release.label
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 /// Install then start one signed release in the detached worker, recording
-/// any failure in the service state Settings observes.
+/// any failure in the service state Settings observes. An in-process model
+/// is only installed: no runtime, hardware gate or service applies to it.
 fn run_install_worker(
     service: &mut LocalModelService<ReqwestTransport, SystemdSupervisor>,
     catalog: &CatalogPayload,
@@ -1452,6 +1509,13 @@ fn run_install_worker(
             release.id == model && revision.is_none_or(|revision| revision == &release.version)
         })
         .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
+    if release.runs_in_process() {
+        if let Err(error) = service.install_in_process_with_progress(release) {
+            let _ = service.record_failure(model, error.to_string());
+            return Err(error.to_string());
+        }
+        return Ok(());
+    }
     let runtime = signed_runtime_for(catalog, &local_hardware(), release)?;
     if let Err(error) = service
         .install_with_runtime_progress(runtime, release)
@@ -1552,6 +1616,74 @@ fn enqueue_start_worker(
 mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
+
+    fn release(id: &str, in_process: bool) -> LocalModelRelease {
+        LocalModelRelease {
+            id: id.into(),
+            label: id.into(),
+            description: "test".into(),
+            version: "d".repeat(64),
+            artifact: agent_provider_config::local::PinnedArtifact {
+                url: format!("https://artifacts.example.invalid/{}/model", "d".repeat(64)),
+                sha256: "e".repeat(64),
+                size_bytes: 10,
+            },
+            artifact_format: if in_process {
+                agent_provider_config::local::ModelArtifactFormat::OnnxFile
+            } else {
+                agent_provider_config::local::ModelArtifactFormat::VllmGguf
+            },
+            license_id: "Apache-2.0".into(),
+            license_url: "https://artifacts.example.invalid/LICENSE".into(),
+            requires_acceptance: false,
+            installed_size_bytes: 10,
+            allowed_runtimes: if in_process {
+                std::collections::BTreeSet::new()
+            } else {
+                [RuntimeKind::Cpu].into()
+            },
+            required_memory_mib: 1,
+            required_accelerator_mib: 0,
+            context_window: if in_process { 0 } else { 4096 },
+            vision: false,
+            face_recognition: false,
+            segmentation: in_process,
+        }
+    }
+
+    /// Every in-process catalog model is offered with its install state —
+    /// absent until set up — and runtime models never join that list or
+    /// accept a start for an in-process one.
+    #[test]
+    fn the_snapshot_offers_every_in_process_model_with_its_state() {
+        let models = [
+            release("chat", false),
+            release("subject", true),
+            release("other-subject", true),
+        ];
+        let mut state = local_model_service::ServiceState::default();
+        state.models.insert(
+            "subject".into(),
+            local_model_service::ManagedModel {
+                model_sha256: "e".repeat(64),
+                status: LocalModelStatus::Installed,
+                process: None,
+                in_process: None,
+            },
+        );
+        let listed = in_process_models(&models, &state);
+        let json = serde_json::to_value(&listed).unwrap();
+        assert_eq!(json.as_array().unwrap().len(), 2);
+        assert_eq!(json[0]["package"]["id"], "subject");
+        assert_eq!(json[0]["package"]["in_process"], true);
+        assert_eq!(json[0]["package"]["segmentation"], true);
+        assert_eq!(json[0]["phase"]["state"], "ready");
+        assert_eq!(json[0]["phase"]["running"], false);
+        assert_eq!(json[1]["package"]["id"], "other-subject");
+        assert!(json[1]["phase"].is_null());
+        assert!(refuse_in_process(&models[1]).is_err());
+        assert!(refuse_in_process(&models[0]).is_ok());
+    }
 
     /// The RPC wire bytes are pinned and one service connection serves two sequential requests.
     #[test]

@@ -45,6 +45,7 @@ PACKAGING_INPUTS = {
     "dist/apps/assemble-collection.sh",
     "tools/apps/assemble_app_collection.py",
     "os/scripts/bake-runtime-bundle.sh",
+    "os/scripts/stamp-runtime.sh",
     "tools/assemble_verified_apps.py",
     "tools/app_packaging_plan.py",
 }

@@ -520,6 +520,26 @@ pub(crate) fn refuse(message: impl Into<String>) -> ActionError {
 /// The id of a mark or layer given none: a hash of what it is and where it
 /// sits in its action, so every replica of the action names it alike and two
 /// collaborators drawing different things never collide.
+/// A name for a new layer made from `base` that no layer has yet: "Layer
+/// 3" after "Layer 2"; another medium's base alone while it is unused
+/// ("Oil"), numbered once it is ("Oil 2"). Plain layers are always
+/// numbered, as people count them.
+pub fn numbered_name<'a>(names: impl IntoIterator<Item = &'a str>, base: &str) -> String {
+    let number = |name: &str| -> Option<u32> {
+        let rest = name.strip_prefix(base)?;
+        if rest.is_empty() {
+            return Some(1);
+        }
+        rest.strip_prefix(' ')?.parse().ok()
+    };
+    let highest = names.into_iter().filter_map(number).max();
+    match highest {
+        None if base != "Layer" => base.to_owned(),
+        None => format!("{base} 1"),
+        Some(highest) => format!("{base} {}", highest.saturating_add(1)),
+    }
+}
+
 pub fn derived_id(prefix: &str, content: &impl Serialize, index: usize) -> String {
     let mut hasher = blake3::Hasher::new();
     hasher.update(
@@ -1581,6 +1601,11 @@ fn arrange_marks(doc: &mut Doc, art: &Artwork, arrange: &Arrange) -> Result<(), 
 }
 
 impl tilo_actions::Action for CanvasAction {
+    /// The step as history names it: "Recolour 2 marks", "Move Sun".
+    fn history_label(&self, doc: &Doc) -> Option<String> {
+        crate::described::label(self, doc)
+    }
+
     fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
         let art = doc::read(doc);
         match self {
@@ -2110,7 +2135,7 @@ fn add_layer(doc: &mut Doc, art: &Artwork, add: &AddLayer) -> Result<(), ActionE
         &Layer {
             id,
             name: if add.name.trim().is_empty() {
-                "Layer".into()
+                numbered_name(art.layers.iter().map(|layer| layer.name.as_str()), "Layer")
             } else {
                 add.name.clone()
             },

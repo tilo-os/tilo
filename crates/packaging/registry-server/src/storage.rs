@@ -30,7 +30,10 @@
 //!                                    # form and payload blobs
 //!         <blake3>.tapp              # collected tapp that does not rebuild
 //!     payload-blobs/
-//!         <blake3>                   # reviewed payload blobs, by content
+//!         <blake3>                   # reviewed payload blobs and chunks, by
+//!                                    # content
+//!         <blake3>.chunks            # chunk list of a reviewed blob kept as
+//!                                    # chunks (see `payload_objects`)
 //!     thin-packages/
 //!         <package-root>.tapp        # reviewed thin tapps, by package root
 //!     artifacts/
@@ -61,6 +64,9 @@ use registry_types::{
 };
 
 use crate::allowlist::PublisherAllowlist;
+
+mod payload_objects;
+pub use payload_objects::IncomingObject;
 
 /// Signed snapshots kept on disk, newest first. Older members are pruned
 /// behind a [`HistoryCompaction`] record; the oldest retained member's signed
@@ -485,6 +491,13 @@ impl Storage {
         let Some(path) = self.payload_blob_path(blake3_hex) else {
             return Ok(None);
         };
+        if std::fs::metadata(&path)
+            .is_ok_and(|metadata| metadata.len() > tilo_app_package::chunks::MAX_OBJECT_BYTES)
+        {
+            return Err(StorageError::Parse(
+                "payload blob exceeds the object size limit".into(),
+            ));
+        }
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -544,6 +557,16 @@ impl Storage {
         let Some(stored) = self.store_package(bytes)? else {
             return Ok(false);
         };
+        // A thin package is small and kept whole; its payload is fetched
+        // into the blob store separately.
+        if stored
+            .meta
+            .payload_hashes()
+            .iter()
+            .any(|hash| !stored.blobs.contains_key(hash))
+        {
+            return Ok(false);
+        }
         let rebuilt = tilo_app_package::tapp::to_bytes(&stored.meta, Some(&stored.blobs))
             .map_err(|error| StorageError::Encode(format!("rebuild package: {error}")))?;
         if rebuilt != bytes {
@@ -1700,10 +1723,25 @@ impl<'a> SnapshotLock<'a> {
             );
         }
         let blob_dir = storage.root.join("payload-blobs");
+        let chunks = storage.live_chunks(&blobs)?;
         for blob in list_digests(&blob_dir, "")? {
-            if !blobs.contains(&blob) {
+            if !blobs.contains(&blob) && !chunks.contains(&blob) {
                 plan.payload_blobs.push(sized(blob_dir.join(&blob))?);
             }
+        }
+        for suffix in [
+            payload_objects::CHUNKS_SUFFIX,
+            payload_objects::PENDING_CHUNKS_SUFFIX,
+        ] {
+            for blob in list_digests(&blob_dir, suffix)? {
+                if !blobs.contains(&blob) {
+                    plan.payload_blobs
+                        .push(sized(blob_dir.join(format!("{blob}{suffix}")))?);
+                }
+            }
+        }
+        for stale in storage.stale_incoming(std::time::Duration::from_secs(24 * 60 * 60))? {
+            plan.payload_blobs.push(sized(stale)?);
         }
         Ok(plan)
     }
@@ -1922,19 +1960,10 @@ impl tilo_app_package::BlobSource for StoredBlobs<'_> {
         &self,
         hash: &tilo_app_package::BlobHash,
     ) -> std::io::Result<Option<tilo_app_package::OpenBlob<'_>>> {
-        let Some(path) = self.0.payload_blob_path(&hash.to_hex()) else {
-            return Ok(None);
-        };
-        let file = match std::fs::File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        let len = file.metadata()?.len();
-        Ok(Some(tilo_app_package::OpenBlob {
-            len,
-            reader: Box::new(std::io::BufReader::new(file)),
-        }))
+        Ok(self
+            .0
+            .open_payload_stream(hash)?
+            .map(|(len, reader)| tilo_app_package::OpenBlob { len, reader }))
     }
 }
 

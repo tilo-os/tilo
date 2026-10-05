@@ -46,6 +46,7 @@ impl Harness {
             Some(SystemStore {
                 data_dir: system_dir.clone(),
                 payload_dir: system_dir,
+                interfaces: None,
             }),
         ));
         let listener = transport::bind(&socket)?;

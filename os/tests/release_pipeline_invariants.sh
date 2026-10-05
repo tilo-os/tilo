@@ -307,7 +307,7 @@ grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json
   || bad 'OS composition can ship a desktop payload older than its own compositor sources'
 
 grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
-  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 8 \
+  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 9 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
@@ -340,7 +340,7 @@ grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
 grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
   && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
   && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
-  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 8 ] \
+  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 9 ] \
   && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
   && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
   && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \
@@ -352,6 +352,7 @@ if ! grep -q '^  pull_request:' "$os" \
   && ! grep -Fq '  schedule:' "$os" \
   && grep -Fq '  workflow_dispatch:' "$os" \
   && grep -Fq 'native-atspi-smoke.sh oobe-actions' "$os" \
+  && grep -Fq 'native-atspi-smoke.sh quick-settings' "$os" \
   && grep -Fq 'native-atspi-smoke.sh auth' "$os" \
   && grep -Fq 'org.freedesktop.PolicyKit1.Authority.CheckAuthorization' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && grep -Fq 'installed-atspi-apps.sh' "$os" \
@@ -367,6 +368,17 @@ if ! grep -q '^  pull_request:' "$os" \
   ok 'OS release VM drives compositor and manifest-certified app AT-SPI actions over its session bus'
 else
   bad 'AT-SPI release gate can ship an app outside the readable, action-capable desktop endpoint'
+fi
+
+# polkit's rules engine reads a subject as a process or a bus name only; a
+# unix-session subject reaches g_assert_not_reached() and aborts polkitd, so
+# the administrator-prompt check must ask as a process in the session.
+smoke="$repo/crates/session/shell/tests/native_atspi_smoke.sh"
+if grep -Fq "('unix-process', {'pid': <uint32 \$asker>, 'start-time': <uint64 \$started>" "$smoke" \
+  && ! grep -Fq "('unix-session'" "$smoke"; then
+  ok 'the release VM asks polkit for administrator access as a session process'
+else
+  bad 'the release VM asks polkit with a subject its rules engine aborts on'
 fi
 
 grep -Fq 'matrix: ${{ fromJSON(needs.catalog.outputs.linux-matrix) }}' "$imager" \
@@ -465,6 +477,16 @@ grep -Fq './os/dev/test-nearby-pairing.sh "$TILO_DISK"' "$os" \
   && grep -Fq '  oobe-nearby)' "$repo/crates/session/shell/tests/native_atspi_smoke.sh" \
   && ok 'the OS gate pairs a first-boot device with a nearby trusted one and surfaces helper failures' \
   || bad 'nearby pairing from first-boot onboarding has no real-boot gate'
+
+# Apps opened on a slow machine keep their windows: the dev gate signs in
+# again with every frame stalled as on a slow laptop and opens apps. The stall
+# is a developer override that release compositors never read.
+grep -Fq './os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130' "$os" \
+  && grep -Fq 'TILO_TEST_FRAME_STALL_MS' "$repo/os/dev/test-slow-frame-launch.sh" \
+  && grep -Fq '"TILO_TEST_FRAME_STALL_MS",' "$repo/crates/session/shell/src/compositor/dev_env.rs" \
+  && grep -Fq 'super::dev_env::DEV_ENV_OVERRIDES' "$repo/crates/session/shell/src/compositor/frame_stall.rs" \
+  && ok 'the dev gate opens apps at a slow machine'"'"'s frame times, behind the developer-override gate' \
+  || bad 'apps opened on a slow machine have no real-boot gate'
 
 python3 "$repo/tools/apps/app_release.py" --collection default > /dev/null \
   && python3 "$repo/tools/apps/app_release.py" --collection recovery > /dev/null \

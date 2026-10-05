@@ -750,6 +750,20 @@ struct DevArgs {
     #[arg(long)]
     timings: bool,
 
+    /// Build the app optimised, with `--profile thin-app`: release
+    /// optimisation without LTO, as thin Tilo builds ship. Use it when the
+    /// debug build is too slow to judge (painting, video, large documents);
+    /// each rebuild takes longer. The app still reloads in place.
+    #[arg(long, conflicts_with = "profile")]
+    release: bool,
+
+    /// Cargo profile for every build of the app [default: Cargo's `dev`].
+    /// Only `dev` and `thin-app` reload in place; any other profile (such
+    /// as the fat-LTO `release`) restarts the app on each change instead.
+    /// The runtime host stays a debug build.
+    #[arg(long)]
+    profile: Option<String>,
+
     /// `web` serves the app's web build and reloads the page into the same
     /// document after each rebuild; a native platform runs on this machine
     /// only when it is that system and architecture.
@@ -1850,8 +1864,12 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         watch_ui: !args.app_only,
         debounce: Duration::from_millis(args.debounce_ms.get()),
         timings: args.timings,
+        profile: dev_profile(args.release, args.profile),
     };
     let (platform, arch) = args.platform.resolve()?;
+    if platform == tilo_app_cli::PackagePlatform::Web && request.profile.is_some() {
+        anyhow::bail!("--release and --profile are for a native or Android dev loop");
+    }
     if platform == tilo_app_cli::PackagePlatform::Web {
         tilo_app_cli::web::dev_web(
             &path,
@@ -1875,6 +1893,15 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         }
     }
     Ok(json!({"stopped": true}))
+}
+
+/// The Cargo profile `dev` builds the app with; `None` is Cargo's `dev`.
+fn dev_profile(release: bool, profile: Option<String>) -> Option<String> {
+    if release {
+        Some(tilo_app_cli::DEV_RELEASE_PROFILE.to_owned())
+    } else {
+        profile
+    }
 }
 
 fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
@@ -2732,6 +2759,7 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
                 watch_ui: true,
                 debounce: Duration::from_millis(tilo_app_cli::DEV_DEBOUNCE_MS),
                 timings: false,
+                profile: None,
             },
         )?;
         Ok(report)
@@ -3491,6 +3519,25 @@ mod tests {
                 [OsString::from("--document"), OsString::from("sample.qdoc")]
             );
             assert!(Cli::try_parse_from(["tilo-app", "dev", "--debounce-ms", "0"]).is_err());
+            assert_eq!(dev.profile, None);
+            assert_eq!(dev_profile(dev.release, dev.profile), None);
+        }
+
+        // Phase: dev_builds_the_app_in_a_chosen_profile.
+        {
+            let dev = |args: &[&str]| {
+                let cli = Cli::try_parse_from(["tilo-app", "dev"].iter().chain(args))?;
+                let Command::Dev(dev) = cli.command else {
+                    panic!("expected dev command");
+                };
+                Ok::<_, clap::Error>(dev_profile(dev.release, dev.profile))
+            };
+            assert_eq!(dev(&["--release"]).unwrap().as_deref(), Some("thin-app"));
+            assert_eq!(
+                dev(&["--profile", "release"]).unwrap().as_deref(),
+                Some("release")
+            );
+            assert!(dev(&["--release", "--profile", "dev"]).is_err());
         }
 
         // Phase: every_build_command_takes_platform_and_arch.

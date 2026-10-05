@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::shell::personal_continuity::DeviceId;
 
-pub const FABRIC_SCHEMA_VERSION: u16 = 5;
+pub const FABRIC_SCHEMA_VERSION: u16 = 6;
 pub const MAX_DEVICES: usize = 64;
 /// More network interfaces than any one device wakes through.
 pub const MAX_WAKE_ROUTES: usize = 8;
@@ -1673,6 +1673,9 @@ pub struct DeviceFabricSnapshot {
     pub wifi: Vec<WifiCredential>,
     pub display: Option<DisplayPlacement>,
     pub speakers: crate::shell::speaker_group::SpeakerFabricState,
+    /// Disk-unlock enrolments of this device and the owner's unlock
+    /// settings published from it.
+    pub unlock: crate::shell::device_unlock::UnlockFabricState,
 }
 
 impl DeviceFabricSnapshot {
@@ -1709,6 +1712,7 @@ impl DeviceFabricSnapshot {
             display.validate(&self.owner)?;
         }
         self.speakers.validate(&self.owner)?;
+        self.unlock.validate(&self.owner)?;
         unique(self.media.iter().map(|item| item.id.as_str()))?;
         unique(self.clipboard.iter().map(|item| item.id))?;
         unique(self.settings.iter().map(|item| item.key.as_str()))?;
@@ -1749,6 +1753,13 @@ impl DeviceFabric {
                         snapshot
                             .speakers
                             .memberships
+                            .iter()
+                            .map(|item| item.stamp.counter),
+                    )
+                    .chain(
+                        snapshot
+                            .unlock
+                            .enrolments
                             .iter()
                             .map(|item| item.stamp.counter),
                     )
@@ -1830,6 +1841,12 @@ impl DeviceFabric {
                 Ok(true)
             }
         }
+    }
+
+    /// Forget everything a device published, e.g. once it left the fleet.
+    /// Returns whether it had published anything.
+    pub fn remove_device(&mut self, device: &DeviceId) -> bool {
+        self.snapshots.remove(device).is_some()
     }
 
     pub fn online_devices(&self) -> impl Iterator<Item = &DevicePresence> {
@@ -2301,6 +2318,8 @@ pub enum FabricError {
     InvalidSpeakerGroup,
     #[error("that device cannot play in this speaker group")]
     IneligibleSpeakerMember,
+    #[error("invalid disk-unlock enrolment or setting")]
+    InvalidUnlockEnrolment,
     #[error("invalid wake route")]
     InvalidWakeRoute,
 }
@@ -2353,6 +2372,7 @@ mod tests {
                 scale_milli: 1000,
                 stamp: stamp(device, counter),
             }),
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
