@@ -317,6 +317,11 @@ fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
         .id
         .clone();
     assert!(app.invoke_semantic_action(&target, "open", None).unwrap());
+    let queued = app
+        .controlled_native_input_snapshot_for_test()
+        .expect("observer before the ordinary navigation pump");
+    assert_eq!(queued["pending_page_events"], 1);
+    assert_ne!(queued["selected_page"], f.child.to_string());
     assert!(
         app.controlled_hosted_model_for_test(),
         "completed bound navigation schedules its worker"
@@ -326,6 +331,7 @@ fn native_bound_open_binds_the_editor_after_the_worker_has_settled() {
         .expect("drawn Notes editor observer");
     assert_eq!(observed["bound_page"], f.child.to_string());
     assert_eq!(observed["selected_page"], f.child.to_string());
+    assert_projection_observation(&observed, f.child);
     let body = f
         .records
         .read(&checkout.id, |doc| {
@@ -395,6 +401,7 @@ fn native_accessibility_page_activation_binds_an_empty_note_without_another_inpu
         .expect("native Notes observer");
     assert_eq!(observed["selected_page"], f.empty.to_string());
     assert_eq!(observed["bound_page"], f.empty.to_string());
+    assert_projection_observation(&observed, f.empty);
     assert_eq!(observed["body_chars"], 0);
     assert!(!app.controlled_hosted_model_for_test());
     assert_eq!(
@@ -407,4 +414,19 @@ fn native_accessibility_page_activation_binds_an_empty_note_without_another_inpu
     for report in app.take_component_close_reports() {
         assert_closed(&report);
     }
+}
+
+/// The live observer distinguishes the queued route from its synchronized
+/// editor without exposing document heads, operations or note contents.
+fn assert_projection_observation(observed: &serde_json::Value, page: notes::model::PageId) {
+    assert_eq!(observed["main_page"], page.to_string());
+    assert_eq!(observed["editor_binding_page"], page.to_string());
+    assert_eq!(observed["pending_page_events"], 0);
+    assert_eq!(observed["adopted"], true);
+    let key = &observed["canonical_sync_key"];
+    assert_eq!(key["selected_page"], page.to_string());
+    assert_eq!(key["pending_operations"], 0);
+    assert!(key["heads_count"].as_u64().unwrap() > 0);
+    assert_eq!(key["heads_hash"].as_str().unwrap().len(), 64);
+    assert!(key.get("heads").is_none());
 }
