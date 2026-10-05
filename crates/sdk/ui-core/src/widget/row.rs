@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -230,14 +230,13 @@ impl Row {
 impl Widget for Row {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         // This container owns no operation handler: offer each child once.
@@ -247,7 +246,7 @@ impl Widget for Row {
     /// Forward the per-frame update pass; every child runs, and a
     /// change in any of them is a change here. Not short-circuited —
     /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -560,19 +559,6 @@ impl Widget for Row {
     }
 }
 
-impl crate::undo::UndoPoints for Row {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
-        }
-    }
-}
-
 impl crate::presence::capability::PublishesPresence for Row {
     fn presence_key(&self) -> Option<PresenceKey> {
         if self.presence_path.is_empty() {
@@ -683,8 +669,8 @@ mod tests {
             Row::new()
                 .no_wrap()
                 .with_gap(4.0)
-                .push(Box::new(Button::new("a", "Alpha", None)))
-                .push(Box::new(Button::new("b", "Beta", None)))
+                .push(Box::new(Button::new("a", "Alpha")))
+                .push(Box::new(Button::new("b", "Beta")))
         };
         let nested = Row::new()
             .no_wrap()
@@ -735,7 +721,7 @@ mod tests {
                     .with_min_width(0.0)
                     .with_child(Box::new(Text::new(label))),
             ))
-            .push(Box::new(Button::new("eye", "Eye", None)));
+            .push(Box::new(Button::new("eye", "Eye")));
         let mut panel = Container::new()
             .with_no_padding()
             .with_width(240.0)

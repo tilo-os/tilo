@@ -68,7 +68,7 @@ fn dispatch(w: &mut dyn Widget, doc: &mut AutoCommit, ev: &WindowEvent) {
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: doc,
+            state: tilo_ui::widget::Edits::lend(doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,

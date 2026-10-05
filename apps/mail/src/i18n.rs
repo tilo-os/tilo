@@ -15,6 +15,11 @@ static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "mail-search-placeholder",
 );
 
+/// The catalogue, which every host mounting Mail loads before its view.
+pub fn catalog() -> &'static EmbeddedCatalog {
+    &CATALOG
+}
+
 /// Load the catalogue on this thread if it is not loaded yet.
 pub fn ensure() {
     CATALOG.ensure();

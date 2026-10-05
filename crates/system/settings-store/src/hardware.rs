@@ -2510,7 +2510,9 @@ impl ShortcutConfig {
         Self::from_section(super::load_section_at(path, "shortcuts"))
     }
 
-    fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
+    /// The configuration a `shortcuts` section holds, repaired as
+    /// [`Self::normalise`] repairs it.
+    pub fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
         let loaded: Self =
             serde_json::from_value(serde_json::Value::Object(section)).unwrap_or_default();
         Self::normalise(loaded)
@@ -2591,7 +2593,12 @@ impl ShortcutConfig {
         super::update_section_at(path, "shortcuts", self.section()?)
     }
 
-    fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
+    /// The `shortcuts` section holding this configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised.
+    pub fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
         Ok(value.as_object().cloned().unwrap_or_default())
     }

@@ -1163,7 +1163,7 @@ impl Widget for ToggleGroup {
         "ToggleGroup"
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(index) = self.choice.as_mut().and_then(|choice| (choice.pull)()) {
             self.set_selected(index);
         }
@@ -1222,7 +1222,7 @@ impl Widget for ToggleGroup {
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        _doc: &mut AutoCommit,
+        _doc: &mut crate::widget::Edits<'_>,
         _path: &ObjId,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
         let Some(request) = op.unscoped() else {
@@ -1284,7 +1284,7 @@ impl Widget for ToggleGroup {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let prefix = self.segment_prefix();
@@ -1443,7 +1443,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1499,8 +1499,8 @@ mod tests {
 
         // A value set elsewhere (a keyboard shortcut) is shown on sync.
         state.set('a');
-        let mut doc = AutoCommit::new();
-        Widget::sync(&mut rail, &mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        Widget::sync(&mut rail, &doc, &automerge::ROOT);
         assert_eq!(rail.selected(), 0);
 
         // An icon segment's label and shortcut are its tooltip.
@@ -1960,7 +1960,7 @@ mod tests {
                 &mut group,
                 "segment:1",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(group.selected(), 1);
@@ -1991,7 +1991,7 @@ mod tests {
                 &mut group,
                 "appearance:segment:1",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -2017,7 +2017,7 @@ mod tests {
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             )
             .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))

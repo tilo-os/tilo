@@ -472,7 +472,7 @@ mod tests {
                 frame.dispatch_event(
                     &crate::shell::test_support::typed_key_event(Key::Character(key.into())),
                     &Modifiers::from(modifiers),
-                    &mut document,
+                    &mut ui::widget::Edits::lend(&mut document),
                     &automerge::ROOT,
                     &mut focus,
                 )

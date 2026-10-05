@@ -475,11 +475,11 @@ fi
 # private async-std copy — cargo unions features, so it turns ashpd off for
 # every portal-using crate at once.
 #
-# apps/chat did exactly that, and it was invisible: chat's ashpd is behind
-# `live-media`, which is off by default, so no ordinary build, no --shots run
-# and no CI job ever compiled it. The OS image is the first thing that asks for
-# that feature, so the image build is where it surfaced — after the cold Rust
-# compile. A grep costs nothing and catches it before the build starts.
+# A crate whose ashpd sits behind a feature that is off by default does this
+# invisibly: no ordinary build, no --shots run and no CI job compiles it. The
+# OS image is the first thing that asks for the feature, so the image build is
+# where it surfaces — after the cold Rust compile. A grep costs nothing and
+# catches it before the build starts.
 offenders="$(grep -rln 'ashpd *= *{[^}]*default-features *= *true' \
                --include=Cargo.toml "$REPO" 2>/dev/null \
              | grep -v '/vendor/' | sed "s|^$REPO/||" | tr '\n' ' ')"

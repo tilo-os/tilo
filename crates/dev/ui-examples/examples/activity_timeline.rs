@@ -194,7 +194,7 @@ pub fn run(args: &[String]) {
 )]
 fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let (w, h) = viewport;
-    let mut state = State::new();
+    let state = State::new();
     let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
@@ -205,7 +205,7 @@ fn render_shot(mut widget: Box<dyn Widget>, viewport: (u32, u32), out: &Path) {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
-    widget.sync(&mut state.doc, &state.root);
+    widget.sync(&state.doc, &state.root);
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
     let root = match taffy.new_with_children(
         Style {

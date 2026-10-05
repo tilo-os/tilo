@@ -134,8 +134,13 @@ policies! {
         "tilo.shortcuts.bindings",
         "tilo.desktop_controls.vim_mode",
         "tilo.quick_settings.controls",
+        "tilo.default_apps.handlers",
         "tilo.text_assistance.check_spelling",
         "tilo.text_assistance.auto_correct",
+        "tilo.text_assistance.spelling_language",
+        // Hosted providers name no device: an endpoint on the internet and a
+        // reference to the key, never the key itself.
+        "tilo.agent_providers.hosted",
     ],
     DeviceLocal => [
         "tilo.audio.output_device",
@@ -188,9 +193,8 @@ policies! {
         "tilo.display_transaction.candidate",
         "tilo.display_transaction.deadline_unix_ms",
         "tilo.display_transaction.message",
-        // Provider records can name loopback endpoints and device-vault
-        // locators. The secret bytes live elsewhere, but this aggregate
-        // cannot safely roam until it is split into portable/local records.
+        // Providers on this device or its network, and which one this device
+        // uses by default.
         "tilo.agent_providers.config",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
@@ -502,7 +506,7 @@ mod tests {
                     "app_continuations": false,
                     "audit": []
                 },
-                "agent_providers": {"config": {}},
+                "agent_providers": {"config": {}, "hosted": {}},
                 "collaboration": {"status_sharing": "automatic", "manual_status": null},
                 "history": {"seen_frontiers": {}}
             });

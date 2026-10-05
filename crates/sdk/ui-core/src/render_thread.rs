@@ -1431,22 +1431,13 @@ mod admission_tests {
             impl Widget for Root {
                 fn update(
                     &mut self,
-                    doc: &mut crate::widget::AppModel,
-                    path: &crate::widget::ModelPath,
+                    _: &crate::widget::AppModel,
+                    _: &crate::widget::ModelPath,
                 ) -> bool {
-                    let (doc, path) = crate::doc::document(doc, path);
-                    if let Some(value) = self.pending.take() {
-                        doc.put(path, "label", value).unwrap();
-                        true
-                    } else {
-                        false
-                    }
+                    // The owner wrote the label; this pass takes it up.
+                    self.pending.take().is_some()
                 }
-                fn sync(
-                    &mut self,
-                    doc: &mut crate::widget::AppModel,
-                    path: &crate::widget::ModelPath,
-                ) {
+                fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
                     self.text.sync(doc, path);
                 }
                 fn build_layout(
@@ -1497,8 +1488,9 @@ mod admission_tests {
                 pending: Some("initial"),
             };
             let mut doc = automerge::AutoCommit::new();
-            root.update(&mut doc, &automerge::ROOT);
-            root.sync(&mut doc, &automerge::ROOT);
+            doc.put(automerge::ROOT, "label", "initial").unwrap();
+            root.update(&doc, &automerge::ROOT);
+            root.sync(&doc, &automerge::ROOT);
             let now = crate::time::now();
             let mut retry = retry::RenderRetryState::default();
             for _ in 0..8 {
@@ -1518,6 +1510,7 @@ mod admission_tests {
                 );
                 tx.send((Scene::new(), Vec::<Rect>::new())).unwrap();
                 root.pending = Some(value);
+                doc.put(automerge::ROOT, "label", value).unwrap();
                 let admitted_at = if index == 1 {
                     assert!(retry.known_occluded());
                     assert!(
@@ -1529,8 +1522,8 @@ mod admission_tests {
                     tick
                 };
                 if prepare_frame(&mut retry, &mut buffers, admitted_at).unwrap() {
-                    assert!(root.update(&mut doc, &automerge::ROOT));
-                    root.sync(&mut doc, &automerge::ROOT);
+                    assert!(root.update(&doc, &automerge::ROOT));
+                    root.sync(&doc, &automerge::ROOT);
                     let _ = buffers.recv().unwrap();
                 }
                 assert_eq!(

@@ -63,7 +63,7 @@ fn empty_terminal_context_menu_shot_writes_png_at_narrow_high_text_scale() {
         .arg(&out)
         .arg("--scenario")
         .arg("empty-menu")
-        .arg("--size")
+        .arg("--viewport")
         .arg("390x844")
         .env("TILO_SHOTS_TEXT_SCALE", "1.5")
         .status()

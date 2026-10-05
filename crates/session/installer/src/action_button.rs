@@ -11,16 +11,15 @@
 //!     **secondary** (raised fill, neutral label),
 //!   * supports a **disabled** state (dimmed, non-interactive, dropped
 //!     from the focus order),
-//!   * fires a CRDT boolean flag on click / Space — the rising-edge
-//!     pattern the [`crate::installer_app::InstallerApp`] consumes, exactly
-//!     like `ui::Button`'s `on_click_path`.
+//!   * on click / Enter / Space / assistive activation fires its
+//!     [`Control`]: the published action the
+//!     [`crate::installer_app::InstallerApp`] runs through its action door.
 //!
 //! Every colour is read from the [`Theme`]; nothing is hard-coded.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -34,6 +33,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::control::Control;
+
 const HEIGHT: f32 = 44.0;
 const LABEL_SIZE: f32 = 15.0;
 
@@ -43,8 +44,8 @@ const LABEL_SIZE: f32 = 15.0;
 )]
 pub struct ActionButton {
     label: String,
-    /// CRDT path of the boolean flag raised when the button fires.
-    click_path: String,
+    /// The published action the button runs when it fires.
+    control: Control,
     /// Stable E2E `test_id`. Defaults to the label, but the label can change
     /// (e.g. a checkbox-style toggle), so it can be pinned via
     /// [`ActionButton::with_test_id`] to stay addressable across rebuilds.
@@ -62,11 +63,11 @@ pub struct ActionButton {
 }
 
 impl ActionButton {
-    /// A secondary (neutral) button firing `click_path` on activation.
-    pub fn new(label: &str, click_path: &str) -> Self {
+    /// A secondary (neutral) button firing `control` on activation.
+    pub fn new(label: &str, control: Control) -> Self {
         Self {
             label: label.to_string(),
-            click_path: click_path.to_string(),
+            control,
             test_id: None,
             checked: None,
             primary: false,
@@ -107,11 +108,11 @@ impl ActionButton {
         self
     }
 
-    fn fire(&self, state: &mut AutoCommit, root: &ObjId) {
+    fn fire(&self) {
         if self.disabled {
             return;
         }
-        let _ = state.put(root, self.click_path.as_str(), true);
+        self.control.fire();
     }
 
     fn accessible_label(&self) -> &str {
@@ -128,7 +129,7 @@ impl ActionButton {
     reason = "the tests exercise both the inherent constructor above and Widget implementation below"
 )]
 mod tests {
-    use automerge::{ROOT, ReadDoc};
+    use automerge::{AutoCommit, ROOT, ReadDoc};
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     use super::*;
@@ -151,7 +152,8 @@ mod tests {
     }
 
     fn assert_key_fires(key: NamedKey) {
-        let mut button = ActionButton::new("Back", "installer.back");
+        let (control, presses) = Control::detached("installer", "back", serde_json::Value::Null);
+        let mut button = ActionButton::new("Back", control);
         button.set_focus(true);
         let mut doc = AutoCommit::new();
         let mut taffy = TaffyTree::new();
@@ -164,7 +166,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -173,12 +175,13 @@ mod tests {
             },
         );
         assert!(handled);
+        let fired = presses.take().expect("the button fires its action");
         assert_eq!(
-            doc.get(&ROOT, "installer.back")
-                .unwrap()
-                .and_then(|(value, _)| value.as_bool()),
-            Some(true)
+            fired.address.encode(),
+            tilo_actions::ActionAddress::new("installer", "back").encode()
         );
+        assert!(presses.take().is_none(), "one activation is one press");
+        assert_eq!(doc.length(ROOT), 0, "a button never writes the document");
         assert!(button.is_focused(), "activation must not move focus");
     }
 
@@ -191,8 +194,9 @@ mod tests {
         }
         // Phase `button_semantics_are_named_focusable_and_activatable`.
         {
-            let mut button =
-                ActionButton::new("Reboot now", "installer.reboot").with_test_id("reboot");
+            let (control, presses) =
+                Control::detached("installer.power", "reboot", serde_json::Value::Null);
+            let mut button = ActionButton::new("Reboot now", control).with_test_id("reboot");
             button.set_focus(true);
             let node = button.accessibility().expect("button semantics");
             assert_eq!(node.role, ui::a11y::Role::Button);
@@ -201,21 +205,36 @@ mod tests {
             assert!(node.state.focused);
 
             let mut doc = AutoCommit::new();
-            assert!(button.perform_action(&ui::a11y::Action::Activate, &mut doc, &ROOT));
+            assert!(button.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert_eq!(
-                doc.get(&ROOT, "installer.reboot")
-                    .unwrap()
-                    .and_then(|(value, _)| value.as_bool()),
-                Some(true)
+                presses.take().map(|press| press.address.action),
+                Some("reboot".to_string())
             );
+            assert_eq!(doc.length(ROOT), 0);
             assert!(button.is_focused(), "AT activation must not steal focus");
+            // A disabled button runs nothing.
+            let mut disabled = button.disabled(true);
+            assert!(!disabled.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
+            assert!(presses.take().is_none());
         }
         // Phase `recovery_ack_is_a_cleanly_named_native_checkbox`.
         {
-            let button =
-                ActionButton::new("[x] I will save my recovery key", "installer.recovery_ack")
-                    .with_test_id("recovery_ack")
-                    .checkbox(true);
+            let (control, _) = Control::detached(
+                "installer.review",
+                "set-recovery-promise",
+                serde_json::json!({ "acknowledged": false }),
+            );
+            let button = ActionButton::new("[x] I will save my recovery key", control)
+                .with_test_id("recovery_ack")
+                .checkbox(true);
             let node = button.accessibility().expect("checkbox semantics");
             assert_eq!(node.role, ui::a11y::Role::Checkbox);
             assert_eq!(node.name.as_deref(), Some("I will save my recovery key"));
@@ -413,7 +432,7 @@ impl Widget for ActionButton {
                             *ctx.focus_target = Some(ctx.node_id);
                         } else {
                             // Fire on release (matches ui::Button).
-                            self.fire(ctx.state, ctx.path);
+                            self.fire();
                         }
                     }
                 } else if self.is_pressed {
@@ -430,7 +449,7 @@ impl Widget for ActionButton {
                     },
                 ..
             } if self.is_focused => {
-                self.fire(ctx.state, ctx.path);
+                self.fire();
                 *ctx.handled = true;
             }
             _ => {}
@@ -466,23 +485,22 @@ impl Widget for ActionButton {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
-        root: &ModelPath,
+        _state: &mut ui::widget::Edits<'_>,
+        _root: &ModelPath,
     ) -> bool {
-        let (state, root) = ui::doc::document(state, root);
         let accepted = matches!(action, ui::a11y::Action::Activate)
             || (self.checked.is_some() && matches!(action, ui::a11y::Action::ToggleCheck));
         if self.disabled || !accepted {
             return false;
         }
-        self.fire(state, root);
+        self.fire();
         true
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
-        let control_id = self.test_id().unwrap_or(self.click_path.as_str());
+        let control_id = self.test_id().unwrap_or(self.label.as_str());
         let clean_label = self.accessible_label();
         let role = if self.checked.is_some() {
             Role::Checkbox
@@ -507,12 +525,9 @@ impl Widget for ActionButton {
 
 impl ui::widget::controls::ActionControls for ActionButton {
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        vec![ui::widget::ControlBindingMetadata {
-            control_id: self
-                .test_id()
-                .unwrap_or(self.click_path.as_str())
-                .to_string(),
-            kind: ui::widget::ControlBindingKind::CollaborativeDocument(self.click_path.clone()),
-        }]
+        vec![
+            self.control
+                .metadata(self.test_id().unwrap_or(self.label.as_str())),
+        ]
     }
 }

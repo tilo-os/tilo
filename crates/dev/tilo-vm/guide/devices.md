@@ -298,6 +298,55 @@ recorded (registered before tilo-vm recorded one) is woken by hand once,
 then `vm status` records it. A libvirt VM is woken through the hypervisor
 (`virsh dompmwakeup`); `vm start` does the same for one that is suspended.
 
+## Beyond the LAN
+
+A device that is not on this network, a laptop at home or a board in
+another office, is reached over the peer network: hole-punched QUIC between
+the two machines, through a relay when no direct path exists, which follows
+a roam or a lost link by itself. Its dev image serves tilo-vmd's request
+protocol there as `tilo-device-admin/1` (`tilo-device-admin.service`, also
+while it sits at its login screen), never a shell.
+
+```sh
+tilo-vm vm enrol-admin --via yoga   # once: yoga holds your identity and certifies this machine
+tilo-vm vm status board             # on board's LAN once: records its route over the peer network
+tilo-vm vm status board             # anywhere: "reached over the peer network: relay https://..."
+```
+
+**This machine enrols as one of the owner's devices.** The device admits
+only a device of its owner's identity whose root-signed certificate grants
+administration, and that the owner has not removed. `vm enrol-admin` makes
+this machine's device key (beside `vms.toml`, in `admin-identity/`) and has
+the owner's root certify it with `tilo-enroll certify --capability admin`.
+With `--via <device>` tilo-vm runs that over SSH on the device where the
+owner approves new devices, as the account it logs in with, which must own
+the identity (register it as the owner: `vm add --ssh <owner>@<address>`).
+Without `--via` it prints the key and the command for the owner to run, and
+`--cert <file>` installs what they hand back. The certificate lists this
+machine among the owner's devices, so Settings shows it and removing it
+there ends its access. tilo-vm needs `tilo-device-admin` beside it (or in
+`TILO_DEVICE_ADMIN`): `cargo build --release -p tilo-device-admin` and copy
+it next to `tilo-vm`.
+
+**The route is recorded like the address.** `vm add` and `vm status` record
+the device id and route the device reports (`tilo-device-admin id`) in
+`vms.toml`; `vm status` says `beyond the LAN:` what it has. When the device
+answers neither at its address nor by name, a command looks once (no minute
+of retries: the peer network rides out roams itself), then dials the
+recorded route and says which one it took, relay or direct. The device logs
+each session and each request (`journalctl -u tilo-device-admin` on it).
+
+**What works over it.** Everything that is a tilo-vmd request: `status`,
+`vm status`, slots, swaps of CI layers (tilo-vm uploads them), rollbacks,
+`logs`, `shot`, `control`, `input` and `vm awake`. What needs SSH (`slot
+exec`, builds on the device, `vm ssh`, `vm upgrade`) waits until it is on
+this network again.
+
+**A relay of your own.** A device and this machine use the public relays
+unless `TILO_DEVICE_ADMIN_RELAY=<url>` names one of yours: on the device in
+`/etc/tilo/device-admin.env` (then `systemctl restart tilo-device-admin`),
+where it is recorded with the route, so tilo-vm uses it too.
+
 ## When something is off
 
 - `vm add` or `vm status` says the key was refused: run the install command
@@ -307,6 +356,15 @@ then `vm status` records it. A libvirt VM is woken through the hypervisor
   `tilo-vm vm awake <name> --for 2h` keeps it from sleeping again.
 - `moved from <old> to <new>`: it was found by name on another address and
   that is recorded now; nothing to do.
+- `not on this network, and it did not answer over the peer network`: it is
+  asleep, offline or cannot reach a relay; wake it at the machine, then
+  `tilo-vm vm awake <name> --for 2h`.
+- `it refused this machine`: the device said why (another identity, no
+  administration grant, removed from the owner's devices);
+  `tilo-vm vm enrol-admin` fixes each.
+- `this machine is not enrolled`: `tilo-vm vm enrol-admin --via <device>`.
+- `another device answered for it`: the recorded route is stale; `tilo-vm vm
+  status <name>` on its LAN records it again.
 - `cannot run commands as root without a password`: the `--ssh` account has
   no passwordless sudo; rerun `vm add` with the same `--ssh` and `--key` and
   `--grant-sudo` (each `vm add` records what it is given).

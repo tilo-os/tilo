@@ -68,6 +68,7 @@ impl Resource for Firewall {
                 title: zone.kind.name().to_owned(),
                 text: format!("{} rules", zone.rules.len()),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }
@@ -75,7 +76,7 @@ impl Resource for Firewall {
 
 /// What the firewall does outside the document, for every caller.
 #[derive(Clone, Debug, PartialEq, Effect)]
-#[effect(operation = "firewall.effect")]
+#[effect(operation = "firewall.effect", device_only)]
 pub enum FirewallEffect {
     /// Apply firewall configuration.
     #[effect(job, permission = "admin")]
@@ -216,18 +217,19 @@ impl ResourceApp for FirewallShell {
 
     /// A new record starts with what firewalld on the creating device
     /// already has, which that device therefore need not apply again. A
-    /// device without a readable firewalld starts empty and offers a retry.
+    /// device without a readable firewalld starts empty and offers a retry,
+    /// and so does a record created without a window: it is no device's.
     fn seed(cx: &SeedCx<'_>) -> Vec<Invoke<Firewall>> {
-        if cx.host().capture().is_some() {
+        let Some(host) = cx.host().filter(|host| host.capture().is_none()) else {
             return Vec::new();
-        }
+        };
         let Ok(config) = read_device() else {
             return Vec::new();
         };
         let applied = AppliedConfig {
             config: Some(config.canonical().to_json()),
         };
-        if let Err(error) = cx.host().settings::<AppliedConfig>().set(&applied) {
+        if let Err(error) = host.settings::<AppliedConfig>().set(&applied) {
             tracing::warn!(%error, "could not remember the imported firewall configuration");
         }
         Invoke::apply(&FirewallAction::Import { config })

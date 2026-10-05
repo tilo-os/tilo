@@ -105,7 +105,7 @@ pub fn store_card(
     } else {
         action.label().to_string()
     };
-    let mut action_btn = Button::new(action_click_key, &action_label, None);
+    let mut action_btn = Button::new(action_click_key, &action_label);
     if let Some(binding) = action_binding {
         action_btn = action_btn.on_action(binding);
     }
@@ -124,7 +124,7 @@ pub fn store_card(
         format!("{} {}", action.label(), item.name)
     });
 
-    let mut details_btn = Button::new(&format!("{}.button", details.key), "Details", None);
+    let mut details_btn = Button::new(&format!("{}.button", details.key), "Details");
     if let Some(binding) = details.binding {
         details_btn = details_btn.on_action(binding);
     }

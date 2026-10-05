@@ -176,7 +176,7 @@ impl Widget for Well {
         Some(AccessNode::new(Role::Image).with_name(self.describe()))
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {}
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {}
 
     fn name(&self) -> &'static str {
         "Well"

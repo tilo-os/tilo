@@ -1,6 +1,6 @@
-//! Library target for `quick-terminal`. The binary in `main.rs` delegates
-//! widget construction to this module so the tilo shell can embed a
-//! `TerminalWidget` as an `AppWidget` inside a tile.
+//! The terminal: a [`Terminal`] session resource and the [`TerminalWidget`]
+//! surface that runs its process. The app is [`TerminalShell`]; the shell
+//! also embeds the widget in a tile.
 //!
 //! See [`actions`] for the resource + action-model split: the shared document is
 //! the emulator's live-screen projection, while Ctrl+K exposes real PTY controls
@@ -35,9 +35,10 @@
 )]
 
 pub mod actions;
-pub mod framework_history;
 mod graphics;
 pub mod resource;
+mod scenarios;
+pub mod screen;
 pub mod target;
 
 pub use graphics::TerminalImagePlacement;
@@ -78,8 +79,6 @@ pub fn demo_session_input() -> &'static str {
 }
 
 #[cfg(test)]
-mod framework_history_tests;
-#[cfg(test)]
 mod target_tests;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -97,6 +96,17 @@ impl Default for HostedProcessServices {
         let ush = xdg_paths::xdg::runtime_dir()
             .and_then(|runtime| Self::discover_from_runtime_dir(&runtime).ush);
         Self { ush }
+    }
+}
+
+impl HostedProcessServices {
+    /// No process service: a host that shows a terminal (a capture, a
+    /// fixture) without letting it open sessions.
+    pub fn unavailable() -> Self {
+        Self {
+            #[cfg(unix)]
+            ush: None,
+        }
     }
 }
 
@@ -373,7 +383,19 @@ impl std::fmt::Display for HostedTerminalError {
     }
 }
 impl std::error::Error for HostedTerminalError {}
-pub use resource::{Terminal, TerminalShell};
+pub use resource::{Terminal, TerminalEffect, TerminalShell};
+
+/// The terminal a host mounted, when `widget` is the root of a terminal
+/// tab: for a host's test that types into the terminal it shows.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn mounted_terminal(widget: &mut dyn ui::widget::Widget) -> Option<&mut TerminalWidget> {
+    ui::framework::testing::surface_in_root::<TerminalShell, TerminalWidget>(widget)
+}
+
+/// The terminal's application definition: the one every host mounts.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<TerminalShell>()
+}
 
 /// Without a hosted process-service transport nothing opens here.
 #[cfg(not(unix))]

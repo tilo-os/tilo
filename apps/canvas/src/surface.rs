@@ -16,16 +16,14 @@ use std::rc::Rc;
 
 use serde_json::{Value, json};
 use ui::a11y::{AccessNode, Role};
-use ui::automerge::{AutoCommit, ObjId};
 use ui::framework::{Dispatcher, ResourceSurface, SurfaceCx};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
-use ui::tilo_actions::{self, ActionOutput, InvocationUpdate};
+use ui::tilo_actions::{self, ActionOutput};
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke, Vec2};
 use ui::vello::peniko::Fill;
 use ui::widget::{
-    AppModel, EventCtx, ModelPath, PenSample, ResourceOperation, ResourceOperationStart,
-    SelectionHandle, SelectionHandles, Widget,
+    AppModel, EventCtx, ModelPath, PenSample, SelectionHandle, SelectionHandles, Widget,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -42,7 +40,7 @@ use crate::gesture::text::{TextSession, Typed};
 use crate::gesture::{Ink, edit};
 use crate::model::{Artwork, Mark, Shape};
 use crate::render::{Options, Renderer};
-use crate::resource::{ArtworkResource, ExportSvg, VIEW_TYPE, ViewOp};
+use crate::resource::{ArtworkResource, ExportSvg, ViewOp};
 use crate::view_ops;
 
 /// The largest SVG `export-svg` also answers inline, in bytes.
@@ -180,7 +178,6 @@ pub struct CanvasSurface {
     /// What the pen reported with the pointer's newest move or press; none
     /// when a mouse moved it.
     stylus: Option<PenSample>,
-    results: HashMap<tilo_actions::InvocationId, InvocationUpdate>,
     /// The theme's sizes as of the last layout, for handles hit-tested
     /// between frames.
     metrics: ui::tokens::Metrics,
@@ -231,7 +228,6 @@ impl CanvasSurface {
             space: false,
             modifiers: ModifiersState::empty(),
             stylus: None,
-            results: HashMap::new(),
             metrics: ui::tokens::Metrics::BASE,
             spacing: ui::tokens::Spacing::BASE,
         }
@@ -2068,9 +2064,9 @@ impl CanvasSurface {
     }
 
     /// The revision a view answers about: the document's heads.
-    fn revision(doc: &mut AutoCommit) -> String {
+    fn revision(heads: &[ui::automerge::ChangeHash]) -> String {
         let mut hasher = blake3::Hasher::new();
-        for head in doc.get_heads() {
+        for head in heads {
             hasher.update(head.as_ref());
         }
         hasher
@@ -2084,34 +2080,37 @@ impl CanvasSurface {
     /// The artwork at `version` (a change id or a checkpoint name), its
     /// revision and the version's name; now when `version` is absent.
     fn at_version(
-        doc: &mut AutoCommit,
+        cx: &Reading,
         version: Option<&str>,
     ) -> Result<(Artwork, String, Option<String>), String> {
         let Some(version) = version else {
-            return Ok((crate::doc::read(doc), Self::revision(doc), None));
+            let document = cx
+                .document()
+                .ok_or_else(|| "the artwork is not open here".to_owned())?;
+            return Ok((
+                crate::doc::read(&document),
+                Self::revision(&cx.heads()),
+                None,
+            ));
         };
-        let heads = ui::history_source::steps::resolve(doc, version)?;
-        let mut past = doc
-            .fork_at(&heads)
-            .map_err(|error| format!("version {version:?} is not in this artwork: {error}"))?;
-        let name = ui::framework::history::version_name(&heads);
+        let past = cx.version(version)?;
         Ok((
-            crate::doc::read(&past),
-            Self::revision(&mut past),
-            Some(name),
+            crate::doc::read(&past.doc),
+            Self::revision(&past.heads),
+            Some(past.name),
         ))
     }
 
     /// The two versions a diff compares; `to` is now when absent.
     fn versions(
-        doc: &mut AutoCommit,
+        cx: &Reading,
         now: &Artwork,
         diff: &crate::resource::Diff,
     ) -> Result<view_ops::Versions, String> {
-        let (before, _, from) = Self::at_version(doc, Some(&diff.from))?;
+        let (before, _, from) = Self::at_version(cx, Some(&diff.from))?;
         let (after, to) = match &diff.to {
             Some(to) => {
-                let (after, _, to) = Self::at_version(doc, Some(to))?;
+                let (after, _, to) = Self::at_version(cx, Some(to))?;
                 (after, to)
             }
             None => (now.clone(), None),
@@ -2188,13 +2187,13 @@ impl CanvasSurface {
         }))
     }
 
-    fn answer(&mut self, op: &ViewOp, doc: &mut AutoCommit) -> Result<ActionOutput, String> {
+    fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<ActionOutput, String> {
         let version = match op {
             ViewOp::Look(look) => look.version.as_deref(),
             ViewOp::Inspect(inspect) => inspect.version.as_deref(),
             _ => None,
         };
-        let (art, revision, shown) = Self::at_version(doc, version)?;
+        let (art, revision, shown) = Self::at_version(cx, version)?;
         let stamp = |info: &mut Value| {
             if let Value::Object(fields) = info {
                 fields.insert("revision".into(), revision.clone().into());
@@ -2212,7 +2211,7 @@ impl CanvasSurface {
                     resources: Vec::new(),
                 });
             };
-            let hash = tilo_content::ContentStore::for_app()
+            let hash = crate::content::store()
                 .put(&picture.bytes)
                 .map_err(|error| format!("the picture could not be stored: {error}"))?;
             let address = tilo_actions::content_resource(&hash)
@@ -2243,7 +2242,7 @@ impl CanvasSurface {
                 export,
             ))),
             ViewOp::Diff(diff) => {
-                let versions = Self::versions(doc, &art, diff)?;
+                let versions = Self::versions(cx, &art, diff)?;
                 let look = diff.look.unwrap_or(false);
                 picture(view_ops::diff(
                     &mut self.tools.renderer.borrow_mut(),
@@ -3142,42 +3141,6 @@ impl Widget for CanvasSurface {
         }
     }
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[VIEW_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return Ok(None);
-        };
-        if request.type_id != VIEW_TYPE {
-            return Ok(None);
-        }
-        let view: ViewOp = serde_json::from_slice(request.payload)
-            .map_err(|error| format!("not a canvas view: {error}"))?;
-        // An answer shows every picture: it waits for those still decoding.
-        self.tools.renderer.borrow_mut().pictures.patient = true;
-        let output = self.answer(&view, doc);
-        self.tools.renderer.borrow_mut().pictures.patient = false;
-        let output = output?;
-        Ok(Some(ResourceOperationStart::Completed(output)))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<InvocationUpdate> {
-        self.results.remove(&invocation)
-    }
-
     fn accessibility(&self) -> Option<AccessNode> {
         let layers = self.art.layers.len();
         let marks = self.art.marks.len();
@@ -3286,7 +3249,7 @@ impl Widget for CanvasSurface {
         })
     }
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.follow_keys();
         self.follow_view();
         // How large a brush can be follows the artwork's size.
@@ -3318,7 +3281,20 @@ impl Widget for CanvasSurface {
     }
 }
 
-impl ResourceSurface<ArtworkResource> for CanvasSurface {
+/// What a canvas view reads the artwork through.
+type Reading = ui::framework::EffectCx<ArtworkResource, CanvasSurface>;
+
+impl ResourceSurface<ArtworkResource, ViewOp> for CanvasSurface {
+    /// A view or an export, answered at once from the artwork as it is now
+    /// or at the version the caller named.
+    fn effect(
+        &mut self,
+        op: ViewOp,
+        cx: &mut ui::framework::EffectCx<ArtworkResource, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.answer(&op, cx).map(ui::framework::Effected::Done)
+    }
+
     fn present(&mut self, state: &Rc<Artwork>) {
         self.expected.retain(|id| state.mark(id).is_none());
         let expected = &self.expected;
@@ -3352,6 +3328,9 @@ impl ResourceSurface<ArtworkResource> for CanvasSurface {
     }
 
     fn attach(&mut self, cx: SurfaceCx<ArtworkResource>) {
+        if let Some(content) = cx.content() {
+            self.tools.renderer.borrow_mut().pictures.read_from(content);
+        }
         self.read_only = cx.read_only();
         self.dispatcher = Some(cx.dispatcher());
     }

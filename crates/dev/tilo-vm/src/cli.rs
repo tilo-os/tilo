@@ -716,6 +716,21 @@ pub enum VmCommand {
         #[arg(long)]
         off: bool,
     },
+    /// Enrol this machine as one of the owner's devices, so tilo-vm reaches their devices over the peer network when they are not on this network.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm enrol-admin --via yoga   # yoga holds the owner's identity: it certifies this machine over SSH\n  tilo-vm vm enrol-admin              # this machine's key, and how to certify it by hand\n  tilo-vm vm enrol-admin --cert admin.cert\n\nBeyond the LAN, tilo-vm dials a device's device-admin route over the peer\nnetwork (hole-punched, relayed when it must be) once SSH and the device's\nname do not answer. The device admits only a device of its owner's identity\nwhose certificate grants administration, so this machine enrols once, like\nany other device: the owner's root certifies its key with `tilo-enroll\ncertify --capability admin`, on the device where they approve new devices,\nwhich also lists it among their devices (Settings can remove it). With --via\ntilo-vm runs that over SSH as the account it logs in with; that account must\nown the identity (an owner-account device: vm add --ssh <owner>@...).\nNeeds tilo-device-admin beside tilo-vm. Details: tilo-vm guide devices."
+    )]
+    EnrolAdmin {
+        /// A registered device that holds the owner's identity: it certifies this machine over SSH.
+        #[arg(long, conflicts_with = "cert")]
+        via: Option<String>,
+        /// A certificate the owner made for this machine's key (tilo-enroll certify --capability admin).
+        #[arg(long)]
+        cert: Option<std::path::PathBuf>,
+        /// This machine's name in the owner's device list (default: its hostname).
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Boot the VM and wait until SSH answers.
     #[command(after_help = "Examples:\n  tilo-vm vm start")]
     Start {

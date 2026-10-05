@@ -179,14 +179,6 @@ impl DiffView {
         self.active_block
     }
 
-    pub(crate) fn resource_ctx(&self) -> Option<crate::actions::DiffResourceCtx> {
-        (!self.model.blocks.is_empty()).then(|| crate::actions::DiffResourceCtx {
-            left_label: self.left_label.clone(),
-            right_label: self.right_label.clone(),
-            model: self.model.clone(),
-        })
-    }
-
     /// Navigate to one canonical change-block address. Invalid or stale
     /// addresses are ignored instead of jumping to a different block.
     pub fn block_fingerprint(&self, block: usize) -> Option<String> {

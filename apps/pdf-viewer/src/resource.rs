@@ -1,21 +1,24 @@
 //! PDF Viewer as a [`tilo_resource::Resource`]: markup on the open document is
 //! the shared state; page/zoom presentation is View; annotations are document
-//! actions. Live find-in-page hits stay on the surface — hosted
-//! [`PublishesResources`](ui::resources::PublishesResources) returns only that
-//! slice beside the framework door.
+//! actions. The document's outline and live find-in-page hits stay on the
+//! surface, published beside the resource with view operations only.
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::framework::{
+    EffectAnswer, EffectCx, Fixture, LaunchInput, LiveRow, ResourceApp, ResourceSurface, RunMode,
+    SurfaceCx, ViewCx,
+};
+use ui::record::RecordId;
+use ui::tilo_actions::{ActionAddress, PermissionRequirement};
+use ui::tilo_resource::{ActionDecl, Doc, Invoke, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{PDF_VIEWER_ACTION_TYPE, PdfViewerAction, register};
+use crate::actions::{PDF_VIEWER_ACTION_TYPE, PdfEffect, PdfViewerAction, register};
 use crate::app::PdfApp;
 use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{Annotation, Comment, Signature};
+use crate::scenarios::SampleDocument;
 
 /// Collaborative markup projected from the annotation-set record.
 #[derive(Clone, Debug, Default)]
@@ -24,6 +27,17 @@ pub struct PdfMarkup {
     pub annotations: Vec<Annotation>,
     pub comments: Vec<Comment>,
     pub signatures: Vec<Signature>,
+    /// The PDF bytes the markup is made against, once a document opened.
+    pub source: Option<PinnedSource>,
+}
+
+/// The PDF bytes a record's markup is made against.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedSource {
+    pub hash: String,
+    pub len: u64,
+    /// The file name it was opened under; empty when it was not named.
+    pub name: String,
 }
 
 /// The PDF markup resource.
@@ -50,38 +64,85 @@ impl Resource for PdfViewer {
             annotations: PdfDoc::list_annotations(doc),
             comments: PdfDoc::list_comments(doc),
             signatures: PdfDoc::list_signatures(doc),
+            source: PdfDoc::source(doc).map(|(hash, len, _)| PinnedSource {
+                hash,
+                len,
+                name: PdfDoc::source_name(doc).unwrap_or_default(),
+            }),
         })
+    }
+
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        crate::actions::declarations()
+    }
+
+    fn least_permission() -> PermissionRequirement {
+        PermissionRequirement::Comment
+    }
+
+    /// Replying and commenting need only the right to comment.
+    fn permission(action: &PdfViewerAction) -> PermissionRequirement {
+        match action.required_verb() {
+            ui::permissions::Verb::Comment => PermissionRequirement::Comment,
+            _ => PermissionRequirement::Write,
+        }
     }
 
     fn children(state: &PdfMarkup) -> Vec<tilo_actions::Resource> {
         crate::actions::markup_children(state)
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::document_local_operations()
+    fn child(state: &PdfMarkup, id: &str) -> Option<tilo_actions::Resource> {
+        crate::actions::markup_child(state, id)
     }
 
+    /// The markup people made, each entry opening the child it names.
     fn search(state: &PdfMarkup) -> Vec<SearchEntry> {
-        state
+        let entry = |resource: String, title: String, text: String| SearchEntry {
+            anchor: Some(resource.clone()),
+            title,
+            text,
+            action: Some(ActionAddress::new(&resource, "go-to")),
+            ..Default::default()
+        };
+        let mut entries: Vec<SearchEntry> = state
             .annotations
             .iter()
-            .map(|anno| SearchEntry {
-                anchor: Some(format!("pdf.annotation:{}", anno.id)),
-                title: format!("Annotation on page {}", anno.page.saturating_add(1)),
-                text: anno.author.clone(),
-                action: None,
+            .map(|anno| {
+                entry(
+                    format!("pdf.annotation:{}", anno.id),
+                    format!("{} annotation", anno.kind.type_key()),
+                    format!("Page {} · {}", anno.page, anno.author),
+                )
             })
-            .chain(state.comments.iter().map(|comment| SearchEntry {
-                anchor: Some(format!("pdf.comment:{}", comment.id)),
-                title: "Comment".into(),
-                text: comment.author.clone(),
-                action: None,
-            }))
-            .collect()
+            .collect();
+        for comment in &state.comments {
+            entries.push(entry(
+                format!("pdf.comment:{}", comment.id),
+                format!("Comment — {}", comment.author),
+                comment.body.clone(),
+            ));
+            for reply in &comment.replies {
+                entries.push(entry(
+                    format!("pdf.reply:{}:{}", comment.id, reply.id),
+                    format!("Reply — {}", reply.author),
+                    reply.body.clone(),
+                ));
+            }
+        }
+        for signature in &state.signatures {
+            entries.push(entry(
+                format!("pdf.signature:{}", signature.id),
+                format!("Signature by {}", signature.signer),
+                format!("Page {} · {}", signature.page, signature.date),
+            ));
+        }
+        entries
     }
 }
 
-/// Framework app: the PDF widget is the surface over [`PdfViewer`].
+/// The PDF reader: one record per document holds its markup, and the
+/// reader is the surface over it.
 pub struct PdfViewerShell;
 
 impl ResourceApp for PdfViewerShell {
@@ -89,129 +150,134 @@ impl ResourceApp for PdfViewerShell {
     const ID: &'static str = "so.tilo.pdf-viewer";
     const TITLE: &'static str = "PDF Viewer";
     const ICON: Option<&'static str> = Some("pdf-viewer");
+    const OPENS: &'static [&'static str] = &["application/pdf"];
+    /// The PDF to open (`pdf-viewer paper.pdf`).
+    const ARGUMENTS: usize = 1;
+
+    fn view(cx: &mut ViewCx<PdfViewer>) -> Element {
+        let content = cx.content().unwrap_or_else(crate::app::default_content);
+        let app = if cx.mode() == RunMode::Past {
+            // A past version shows its markup's record, never a document:
+            // History builds a view for every version it previews.
+            PdfApp::past()
+        } else if let Some(path) = cx.launch_arguments().first() {
+            PdfApp::open_with_content(path, content)
+        } else if cx.fixture::<SampleDocument>().is_some() {
+            PdfApp::sample_with_content(content)
+        } else {
+            PdfApp::empty_with_content(content)
+        };
+        cx.surface(app)
+    }
+
+    fn label(state: &PdfMarkup) -> String {
+        match &state.source {
+            Some(source) if !source.name.is_empty() => source.name.clone(),
+            _ if state.pages.is_empty() => "PDF Viewer".into(),
+            _ => format!("{} pages", state.pages.len()),
+        }
+    }
+
+    /// A document's markup is a record of its own, derived from the file's
+    /// durable identity, so renaming or moving the file finds the same
+    /// annotations, a copy starts clean, and another app's record of the
+    /// same file is left alone.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input.argument().map(|path| {
+            RecordId::derived(
+                MARKUP_ROLE,
+                &RecordId::identify_file(std::path::absolute(path).unwrap_or_else(|_| path.into())),
+            )
+        })
+    }
+
+    /// A handed file is kept in the content store and pinned as the record's
+    /// source, so the record reopens it wherever the bytes are.
+    fn launch(input: &LaunchInput<'_>, _created: bool) -> Vec<Invoke<PdfViewer>> {
+        let (Some(file), Some(content)) = (input.file(), input.content()) else {
+            return Vec::new();
+        };
+        let Ok(hash) = content.put(file.bytes()) else {
+            return Vec::new();
+        };
+        let len = u64::try_from(file.bytes().len()).unwrap_or(u64::MAX);
+        Invoke::apply(&crate::actions::pin_source_action(&hash, len, file.name()))
+            .into_iter()
+            .collect()
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        crate::scenarios::SCENARIOS
+    }
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1280, 800)
     }
 
-    fn view(cx: &mut ViewCx<PdfViewer>) -> Element {
-        cx.surface(PdfApp::new())
+    fn fixture(fixture: &mut Fixture<PdfViewer>) {
+        crate::scenarios::fixture(fixture);
     }
 
-    fn label(state: &PdfMarkup) -> String {
-        if state.pages.is_empty() {
-            "PDF Viewer".into()
-        } else {
-            format!("{} pages", state.pages.len())
-        }
+    fn scenario(name: Option<&str>) -> Vec<Invoke<PdfViewer>> {
+        crate::scenarios::scenario(name)
     }
 }
 
-impl ResourceSurface<PdfViewer> for PdfApp {
+/// The role of a document's markup record beside the document's own.
+const MARKUP_ROLE: &str = "annotations";
+
+impl ResourceSurface<PdfViewer, PdfEffect> for PdfApp {
     fn present(&mut self, state: &Rc<PdfMarkup>) {
         self.adopt_resource_state(state);
     }
 
+    /// What the open document says — its pages' text, its outline, the
+    /// current find hits — beside the markup the resource holds.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.shown_search_entries()
+    }
+
     fn attach(&mut self, cx: SurfaceCx<PdfViewer>) {
         self.attach_framework(cx.dispatcher());
-    }
-}
-
-/// Framework dispatcher when hosted; the local action host for standalone
-/// tests and the screenshot launcher.
-pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<PdfViewer>>,
-    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
-    hosted: bool,
-    last: Option<EncodedAction>,
-}
-
-impl Default for ActionSink {
-    fn default() -> Self {
-        Self {
-            local: ui::ActionHost::new(),
-            framework: None,
-            hosted: false,
-            last: None,
-        }
-    }
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<PdfViewer>) {
-        self.framework = Some(dispatcher);
-        self.hosted = true;
-    }
-
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.hosted
-    }
-
-    pub(crate) fn dispatch_with_context(
-        &mut self,
-        doc: &mut AutoCommit,
-        type_id: &str,
-        action: &PdfViewerAction,
-        context: ui::tilo_actions::ActionContext,
-    ) {
-        match &self.framework {
-            Some(dispatcher) => {
-                self.last = Some(crate::actions::encode(action));
-                let _ = dispatcher.apply_now_with(doc, action, context);
-            }
-            None => self
-                .local
-                .dispatch_with_context(doc, type_id, action, context),
+        self.attach_people(cx.people());
+        self.attach_open_here(cx.opener());
+        // A capture shows the scenario's signature, never the person's.
+        if cx.mode().is_live()
+            && let Some(signature) = cx.person::<crate::signature::SignatureProfile>()
+        {
+            self.attach_signature(signature);
         }
     }
 
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
+    fn read_only_changed(&mut self, read_only: bool) {
+        self.set_read_only(read_only);
     }
 
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
-            self.last.as_ref()
-        } else {
-            self.local.last_dispatched()
+    fn stage(&mut self, scenario: Option<&str>) {
+        PdfApp::stage(self, scenario);
+    }
+
+    fn effect(&mut self, effect: PdfEffect, cx: &mut EffectCx<PdfViewer, Self>) -> EffectAnswer {
+        match effect {
+            PdfEffect::Open { path } => self.open_effect(path, cx),
+            effect => self.answer_effect(&effect, || cx.reply()),
         }
     }
 
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.hosted = true;
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.document_rows()
     }
-}
 
-pub fn launch_spec() -> ui::launch::LaunchSpec {
-    ui::framework::launch_spec::<PdfViewerShell>()
-}
-
-pub fn standalone_launch() -> bool {
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--data-dir" => {
-                let _ = args.next();
-            }
-            "--shots" | "--responsive-matrix" | "--native-audit" | "--headless" | "--sample" => {
-                return true;
-            }
-            file if !file.starts_with('-') => return true,
-            _ => {}
-        }
+    fn live_row(&self, id: &str) -> Option<LiveRow> {
+        self.document_row(id)
     }
-    false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::resources::PublishesResources;
     use ui::tilo_actions::OperationKind;
-    use ui::widget::Widget;
+    use ui::tilo_resource::Effect;
 
     #[test]
     fn published_pages_carry_duplicate_and_delete() {
@@ -244,24 +310,15 @@ mod tests {
             .iter()
             .map(|action| action.id.as_str())
             .collect();
-        for id in ["open", "duplicate", "delete", "move-down", "rotate-cw"] {
+        for id in ["go-to", "duplicate", "delete", "move-down", "rotate-cw"] {
             assert!(ids.contains(&id), "{ids:?}");
         }
     }
 
     #[test]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "merged scenario / publish-ownership assertion kept top-to-bottom"
-    )]
-    fn hosted_resources_keep_find_hits_without_document_root() {
-        let published = ui::tilo_resource::publish::<PdfViewer>(
-            "pdf.document:sample",
-            "PDF",
-            &PdfMarkup::default(),
-        );
-        assert_eq!(published.kind, "pdf.document");
-        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+    fn the_surface_publishes_find_hits_beside_the_resource_never_a_document_root() {
+        let specs = PdfEffect::specs();
+        let ids: Vec<&str> = specs.iter().map(|a| a.id.as_str()).collect();
         for expected in [
             "previous-page",
             "next-page",
@@ -274,116 +331,70 @@ mod tests {
         ] {
             assert!(
                 ids.contains(&expected),
-                "palette `{expected}` must ride local_operations via publish: {ids:?}"
+                "palette `{expected}` is a typed effect of the reader: {ids:?}"
             );
         }
-        let find = published
-            .actions
-            .iter()
-            .find(|action| action.id == "find")
-            .expect("find");
-        assert_eq!(find.kind, OperationKind::View);
-
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let kind = |id: &str| {
+            specs
+                .iter()
+                .find(|action| action.id == id)
+                .map(|action| action.kind)
+        };
+        assert_eq!(kind("find"), Some(OperationKind::View));
+        assert_eq!(kind("open"), Some(OperationKind::Effect));
         assert!(
-            !app.is_hosted(),
-            "standalone stays on the local action host"
+            !ids.contains(&"go-to") && !ids.contains(&"go-to-match"),
+            "navigation to a place is offered only bound to its row: {ids:?}"
         );
 
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
+        app.sync_settled(&mut state.doc, &state.root);
         app.stage_find_for_test("sandbox");
         assert!(
             app.find_match_count_for_test() > 0,
-            "sample must yield find hits for the hosted extras contract"
+            "sample must yield find hits"
         );
-
-        let standalone = app.resources(&state.doc);
-        assert_eq!(standalone.len(), 1);
-        assert_eq!(standalone[0].kind, "pdf.document");
-        let standalone_find = standalone[0]
-            .children
+        let rows: Vec<tilo_actions::Resource> = app
+            .document_rows()
+            .into_iter()
+            .map(LiveRow::into_resource)
+            .collect();
+        assert!(
+            rows.iter().all(|resource| resource.kind != "pdf.document"),
+            "the surface never republishes pdf.document beside the resource"
+        );
+        let hits = rows
             .iter()
-            .find(|child| child.kind == "pdf.search")
-            .expect("standalone nests find hits under the document");
+            .find(|resource| resource.kind == "pdf.search")
+            .expect("the find slice");
         assert!(
-            !standalone_find.children.is_empty(),
-            "standalone find projection carries match rows"
+            !hits.children.is_empty()
+                && hits
+                    .children
+                    .iter()
+                    .all(|hit| hit.kind == "pdf.search-result"
+                        && hit
+                            .actions
+                            .iter()
+                            .all(|action| action.kind == OperationKind::View
+                                && action.id == "go-to-match")),
+            "find hits are navigable rows with view operations only"
         );
-        assert!(
-            standalone_find
-                .children
-                .iter()
-                .all(|hit| hit.kind == "pdf.search-result"
-                    && hit.actions.iter().any(|action| action.id == "open")),
-            "each find hit is a navigable search-result row"
-        );
-
-        app.mark_hosted_for_test();
-        assert!(app.is_hosted());
-        let extras = app.resources(&state.doc);
-        assert!(
-            extras
-                .iter()
-                .all(|resource| resource.kind != "pdf.document"),
-            "hosted must not republish pdf.document beside ResourceRoot: {:?}",
-            extras
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(extras.len(), 1, "hosted returns the find slice alone");
-        assert_eq!(extras[0].kind, "pdf.search");
-        let directory = app
-            .action_directory_resource_page(&state.doc, &[], 32)
-            .expect("directory page");
-        assert!(
-            directory
-                .resources
-                .iter()
-                .all(|resource| resource.kind != "pdf.document"),
-            "hosted directory must not republish pdf.document: {:?}",
-            directory
-                .resources
-                .iter()
-                .map(|resource| resource.id.as_str())
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(directory.resources.len(), 1);
-        assert_eq!(directory.resources[0].id, extras[0].id);
+        let hit = &hits.children[0];
         assert_eq!(
-            extras[0].id, standalone_find.id,
-            "hosted find tree matches the standalone nested slice"
-        );
-        assert_eq!(
-            extras[0].children.len(),
-            standalone_find.children.len(),
-            "hosted keeps the same bounded match rows"
-        );
-        assert!(
-            extras[0]
-                .children
-                .iter()
-                .all(|hit| hit.kind == "pdf.search-result"),
-            "hosted extras are find hits only, not pages/markup: {:?}",
-            extras[0]
-                .children
-                .iter()
-                .map(|child| child.kind.as_str())
-                .collect::<Vec<_>>()
+            app.document_row(hit.id.as_str())
+                .map(|resolved| resolved.id().to_owned()),
+            Some(hit.id.as_str().to_owned()),
+            "a hit beyond the listed page resolves by id"
         );
 
         app.stage_find_for_test("");
         assert!(
-            app.resources(&state.doc).is_empty(),
-            "hosted publishes no extras when find has no query"
-        );
-        let directory = app
-            .action_directory_resource_page(&state.doc, &[], 32)
-            .expect("directory page");
-        assert!(
-            directory.resources.is_empty(),
-            "hosted directory publishes no document when find has no query"
+            app.document_rows()
+                .iter()
+                .all(|row| !row.id().starts_with("pdf.search")),
+            "no find slice without a query"
         );
     }
 }

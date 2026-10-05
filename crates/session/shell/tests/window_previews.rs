@@ -135,7 +135,7 @@ fn hold_alt_tab(fb: &mut FrameBuilder) {
         let _ = fb.dispatch_event(
             &key_event(key, state),
             &alt,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &mut focus,
         );

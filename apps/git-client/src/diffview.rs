@@ -3,8 +3,12 @@
 //! and a hover affordance for staging individual hunks.
 //!
 //! Rendering is a single linear pass over the parsed [`FileDiff`] lines,
-//! producing one row per line. The layout knows its own row height so the
-//! owning view can scroll it and hit-test hunk-stage buttons.
+//! producing one row per line — or, with wrapping on, as many rows as a
+//! long line needs. With whitespace shown, spaces and tabs are marked. The
+//! layout knows its own row height and content height so the owning view
+//! can scroll it and hit-test hunk-stage buttons.
+
+use std::ops::Range;
 
 use vello::kurbo::{Point, Rect};
 
@@ -101,11 +105,13 @@ impl Metrics {
     }
 }
 
-/// What one [`DiffView::draw`] pass produced: the hunk-action hit rects and
-/// the row metrics the owner needs to clamp scrolling to the same pitch.
+/// What one [`DiffView::draw`] pass produced: the hunk-action hit rects, the
+/// row metrics and the content height (wrapped rows included) the owner
+/// needs to clamp scrolling to what was painted.
 pub struct DiffDraw {
     pub buttons: Vec<HunkButton>,
     pub metrics: Metrics,
+    pub content_h: f64,
 }
 
 /// What a hunk-action button does when clicked.
@@ -176,6 +182,7 @@ impl DiffView {
         interaction: HunkInteraction,
     ) -> DiffDraw {
         let metrics = Metrics::measure(ctx.text, diff, ctx.theme);
+        let char_w = f64::from(draw::mono_width(ctx.text, "M", FONT)).max(1.0);
         let pass = DiffPass {
             diff,
             viewport,
@@ -183,9 +190,14 @@ impl DiffView {
             settings: *settings,
             interaction,
             metrics,
+            char_w,
         };
-        let buttons = pass.draw_rows(ctx);
-        DiffDraw { buttons, metrics }
+        let (buttons, rows) = pass.draw_rows(ctx);
+        DiffDraw {
+            buttons,
+            metrics,
+            content_h: ui::num::f64_of_usize(rows) * metrics.row_h + 8.0,
+        }
     }
 }
 
@@ -198,10 +210,14 @@ struct DiffPass<'a> {
     settings: Settings,
     interaction: HunkInteraction,
     metrics: Metrics,
+    /// Advance of one monospace cell, the unit long lines wrap at.
+    char_w: f64,
 }
 
 impl DiffPass<'_> {
-    fn draw_rows(&self, ctx: &mut PaintCtx<'_>) -> Vec<HunkButton> {
+    /// Paint every row; answers the hunk buttons and how many rows the
+    /// content spans.
+    fn draw_rows(&self, ctx: &mut PaintCtx<'_>) -> (Vec<HunkButton>, usize) {
         let c = &ctx.theme.tokens.colors;
         let viewport = self.viewport;
         // Pane background.
@@ -222,7 +238,7 @@ impl DiffPass<'_> {
                 Point::new(viewport.x0 + 24.0, viewport.y0 + 24.0),
                 None,
             );
-            return Vec::new();
+            return (Vec::new(), self.diff.lines.len());
         }
 
         // Clip to the viewport so scrolled rows don't bleed.
@@ -244,27 +260,57 @@ impl DiffPass<'_> {
         result
     }
 
-    fn draw_unified(&self, ctx: &mut PaintCtx<'_>) -> Vec<HunkButton> {
+    /// The byte ranges of `line`'s content painted on successive rows: the
+    /// whole line, or with wrapping on, `cols` characters per row. Hunk
+    /// headers and meta lines never wrap.
+    fn segments(&self, line: &DiffLine, cols: usize) -> Vec<Range<usize>> {
+        let wraps = self.settings.wrap_lines
+            && matches!(
+                line.kind,
+                DiffLineKind::Context | DiffLineKind::Addition | DiffLineKind::Deletion
+            );
+        if wraps {
+            wrap_ranges(&line.content, cols)
+        } else {
+            std::iter::once(0..line.content.len()).collect()
+        }
+    }
+
+    /// How many characters fit in `width` px of code.
+    fn columns(&self, width: f64) -> usize {
+        ui::num::usize_of_f64((width / self.char_w).floor()).max(1)
+    }
+
+    fn draw_unified(&self, ctx: &mut PaintCtx<'_>) -> (Vec<HunkButton>, usize) {
         let m = &self.metrics;
         let viewport = self.viewport;
         let mut buttons: Vec<HunkButton> = Vec::new();
-        let top = viewport.y0 - self.scroll;
         let mut last_hunk: Option<usize> = None;
+        let cols = self.columns(viewport.width() - m.gutter_w - 14.0 - m.inset);
+        let mut rows = 0;
 
-        for (i, line) in self.diff.lines.iter().enumerate() {
-            let y = top + i as f64 * m.row_h;
-            if y + m.row_h < viewport.y0 || y > viewport.y1 {
+        for line in &self.diff.lines {
+            let segments = self.segments(line, cols);
+            let y = viewport.y0 - self.scroll + ui::num::f64_of_usize(rows) * m.row_h;
+            rows += segments.len();
+            let block = Rect::new(
+                viewport.x0,
+                y,
+                viewport.x1,
+                y + ui::num::f64_of_usize(segments.len()) * m.row_h,
+            );
+            if block.y1 < viewport.y0 || y > viewport.y1 {
                 continue; // cull off-screen rows
             }
-            let row = Rect::new(viewport.x0, y, viewport.x1, y + m.row_h);
             let text_limit =
-                self.draw_unified_row_background(ctx, row, line, &mut last_hunk, &mut buttons);
-            self.draw_unified_row_content(ctx, line, row, text_limit);
+                self.draw_unified_row_background(ctx, block, line, &mut last_hunk, &mut buttons);
+            self.draw_unified_row_content(ctx, line, block, text_limit, &segments);
         }
-        buttons
+        (buttons, rows)
     }
 
-    /// The row's tinted background, and — on a hunk's first row — its
+    /// The line's tinted background over all its rows (`block`), and — on a
+    /// hunk's first row — its
     /// stage/unstage (+ worktree-side discard) buttons (part of
     /// [`Self::draw_unified`]). Returns the x the row's text must end before
     /// when buttons occupy its right end, so a long `@@ … @@` header elides
@@ -272,15 +318,16 @@ impl DiffPass<'_> {
     fn draw_unified_row_background(
         &self,
         ctx: &mut PaintCtx<'_>,
-        row: Rect,
+        block: Rect,
         line: &DiffLine,
         last_hunk: &mut Option<usize>,
         buttons: &mut Vec<HunkButton>,
     ) -> Option<f64> {
         let theme = ctx.theme;
+        let row = block.with_size((block.width(), self.metrics.row_h));
         match line.kind {
-            DiffLineKind::Addition => ctx.fill_rect(row, draw::add_tint(theme)),
-            DiffLineKind::Deletion => ctx.fill_rect(row, draw::del_tint(theme)),
+            DiffLineKind::Addition => ctx.fill_rect(block, draw::add_tint(theme)),
+            DiffLineKind::Deletion => ctx.fill_rect(block, draw::del_tint(theme)),
             DiffLineKind::Hunk => {
                 hunk_band(ctx, row);
                 // Emit the hunk action button(s) on the first row of the
@@ -311,28 +358,31 @@ impl DiffPass<'_> {
                     return Some(leftmost - gap);
                 }
             }
-            DiffLineKind::Meta => ctx.fill_rect(row, theme.tokens.colors.surfaces.raised),
+            DiffLineKind::Meta => ctx.fill_rect(block, theme.tokens.colors.surfaces.raised),
             DiffLineKind::Context => {}
         }
         None
     }
 
     /// The line-number gutter, marker glyph, and syntax-highlighted (or
-    /// plain) content for one `row` (part of [`Self::draw_unified`]).
-    /// `text_limit` is the x a hunk header must end before (the first hunk
-    /// button); code rows are clipped by the pane instead.
+    /// plain) content for one line spanning `block`, a row per segment (part
+    /// of [`Self::draw_unified`]). `text_limit` is the x a hunk header must
+    /// end before (the first hunk button); code rows are clipped by the pane
+    /// instead.
     fn draw_unified_row_content(
         &self,
         ctx: &mut PaintCtx<'_>,
         line: &DiffLine,
-        row: Rect,
+        block: Rect,
         text_limit: Option<f64>,
+        segments: &[Range<usize>],
     ) {
         let m = &self.metrics;
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
+        let row = block.with_size((block.width(), m.row_h));
         let ty = row.y0 + m.text_dy;
-        self.draw_linenos(ctx, row.origin(), line);
+        self.draw_linenos(ctx, row.origin(), line, block.height());
 
         // Marker glyph + content.
         let content_x = row.x0 + m.gutter_w;
@@ -365,17 +415,45 @@ impl DiffPass<'_> {
             DiffLineKind::Meta => {
                 draw::mono(ctx, &line.content, FONT, c.text_dim, content_origin);
             }
-            _ => draw_code(
+            _ => self.draw_segments(
                 ctx,
-                &line.content,
+                line,
                 &self.diff.language,
                 Point::new(text_x, ty),
-                self.settings.syntax_highlight,
+                segments,
             ),
         }
     }
 
-    fn draw_split(&self, ctx: &mut PaintCtx<'_>) -> Vec<HunkButton> {
+    /// `line`'s code, a segment per row from `origin` down, with its
+    /// whitespace marked when the person shows it.
+    fn draw_segments(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        line: &DiffLine,
+        language: &str,
+        origin: Point,
+        segments: &[Range<usize>],
+    ) {
+        let mut y = origin.y;
+        for segment in segments {
+            let at = Point::new(origin.x, y);
+            draw_code(
+                ctx,
+                &line.content,
+                language,
+                at,
+                self.settings.syntax_highlight,
+                segment.clone(),
+            );
+            if self.settings.show_whitespace {
+                draw_whitespace(ctx, &line.content, segment.clone(), at);
+            }
+            y += self.metrics.row_h;
+        }
+    }
+
+    fn draw_split(&self, ctx: &mut PaintCtx<'_>) -> (Vec<HunkButton>, usize) {
         let m = &self.metrics;
         let viewport = self.viewport;
         let theme = ctx.theme;
@@ -383,18 +461,30 @@ impl DiffPass<'_> {
         let mid = f64::midpoint(viewport.x0, viewport.x1);
         draw::vline(ctx, mid, viewport.y0, viewport.y1, c.border_standard);
 
-        let top = viewport.y0 - self.scroll;
         let lines = &self.diff.lines;
+        let cols = self.columns(mid - viewport.x0 - m.old_col_right - 2.0 * m.inset - 10.0);
+        let segments_of = |index: Option<usize>| {
+            index
+                .and_then(|index| lines.get(index))
+                .map(|line| self.segments(line, cols))
+                .unwrap_or_default()
+        };
+        let mut painted = 0;
         // Pair deletions/additions into aligned rows. We walk lines and
         // emit left (old) / right (new) cells; context spans both.
         let rows = pair_rows(lines);
-        for (i, pr) in rows.iter().enumerate() {
-            let y = top + i as f64 * m.row_h;
-            if y + m.row_h < viewport.y0 || y > viewport.y1 {
+        for pr in &rows {
+            let left_segments = segments_of(pr.left);
+            let right_segments = segments_of(pr.right);
+            let span = left_segments.len().max(right_segments.len()).max(1);
+            let y = viewport.y0 - self.scroll + ui::num::f64_of_usize(painted) * m.row_h;
+            painted += span;
+            let bottom = y + ui::num::f64_of_usize(span) * m.row_h;
+            if bottom < viewport.y0 || y > viewport.y1 {
                 continue;
             }
-            let left = Rect::new(viewport.x0, y, mid, y + m.row_h);
-            let right = Rect::new(mid, y, viewport.x1, y + m.row_h);
+            let left = Rect::new(viewport.x0, y, mid, bottom);
+            let right = Rect::new(mid, y, viewport.x1, bottom);
 
             // `pr.left`/`pr.right` are always valid indices into this same
             // `diff.lines` (`pair_rows` builds them from it), but `.get`
@@ -410,7 +500,7 @@ impl DiffPass<'_> {
                 } else if line.kind == DiffLineKind::Meta {
                     ctx.fill_rect(left, c.surfaces.raised);
                 }
-                self.draw_half(ctx, line, left.origin(), true);
+                self.draw_half(ctx, line, left.origin(), true, &left_segments);
             }
             if let Some(ri) = pr.right
                 && let Some(line) = lines.get(ri)
@@ -422,15 +512,22 @@ impl DiffPass<'_> {
                 } else if line.kind == DiffLineKind::Meta {
                     ctx.fill_rect(right, c.surfaces.raised);
                 }
-                self.draw_half(ctx, line, right.origin(), false);
+                self.draw_half(ctx, line, right.origin(), false, &right_segments);
             }
         }
-        Vec::new()
+        (Vec::new(), painted)
     }
 
     /// One side of a split row whose top-left is `origin`: the old line
     /// number and content when `is_left`, the new ones otherwise.
-    fn draw_half(&self, ctx: &mut PaintCtx<'_>, line: &DiffLine, origin: Point, is_left: bool) {
+    fn draw_half(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        line: &DiffLine,
+        origin: Point,
+        is_left: bool,
+        segments: &[Range<usize>],
+    ) {
         let m = &self.metrics;
         let c = &ctx.theme.tokens.colors;
         let ty = origin.y + m.text_dy;
@@ -461,19 +558,13 @@ impl DiffPass<'_> {
             DiffLineKind::Meta => {
                 draw::mono(ctx, &line.content, FONT, c.text_dim, text_origin);
             }
-            _ => draw_code(
-                ctx,
-                &line.content,
-                "text",
-                text_origin,
-                self.settings.syntax_highlight,
-            ),
+            _ => self.draw_segments(ctx, line, "text", text_origin, segments),
         }
     }
 
     /// The unified gutter's two right-aligned line numbers and its divider,
-    /// for the row whose top-left is `origin`.
-    fn draw_linenos(&self, ctx: &mut PaintCtx<'_>, origin: Point, line: &DiffLine) {
+    /// for the line whose top-left is `origin` and whose rows span `height`.
+    fn draw_linenos(&self, ctx: &mut PaintCtx<'_>, origin: Point, line: &DiffLine, height: f64) {
         let m = &self.metrics;
         let c = &ctx.theme.tokens.colors;
         let ty = origin.y + m.text_dy;
@@ -490,7 +581,7 @@ impl DiffPass<'_> {
             ctx,
             origin.x + m.gutter_w - m.inset,
             origin.y,
-            origin.y + m.row_h,
+            origin.y + height,
             c.border_standard,
         );
     }
@@ -544,18 +635,23 @@ impl DiffPass<'_> {
     }
 }
 
-/// Syntax-highlighted (or plain, when `highlight` is off) code with its
-/// top-left at `origin`.
+/// The `range` of a line's `content`, syntax-highlighted (or plain, when
+/// `highlight` is off), with its top-left at `origin`. The whole line is
+/// tokenized so a wrapped segment keeps the colours of the line it is part
+/// of.
 fn draw_code(
     ctx: &mut PaintCtx<'_>,
     content: &str,
     language: &str,
     origin: Point,
     highlight: bool,
+    range: Range<usize>,
 ) {
     let theme = ctx.theme;
     if !highlight {
-        draw::mono(ctx, content, FONT, theme.tokens.colors.text_primary, origin);
+        if let Some(segment) = content.get(range) {
+            draw::mono(ctx, segment, FONT, theme.tokens.colors.text_primary, origin);
+        }
         return;
     }
     // Diff rows are discontiguous slices of the file, so each line is
@@ -565,13 +661,61 @@ fn draw_code(
         .start()
         .highlight_line(content);
     for span in spans {
-        let Some(text) = content.get(span.range) else {
+        let start = span.range.start.max(range.start);
+        let end = span.range.end.min(range.end);
+        if start >= end {
+            continue;
+        }
+        let Some(text) = content.get(start..end) else {
             continue;
         };
         let color = theme.tokens.syntax.color(span.kind);
         draw::mono(ctx, text, FONT, color, Point::new(cx, origin.y));
         cx += f64::from(draw::mono_width(ctx.text, text, FONT));
     }
+}
+
+/// Mark the spaces (`·`) and tabs (`→`) of `content[range]`, painted with its
+/// top-left at `origin`, in the dim text colour over the code.
+fn draw_whitespace(ctx: &mut PaintCtx<'_>, content: &str, range: Range<usize>, origin: Point) {
+    let Some(segment) = content.get(range) else {
+        return;
+    };
+    let color = ctx.theme.tokens.colors.text_dim;
+    let mut x = origin.x;
+    let mut buf = [0u8; 4];
+    for ch in segment.chars() {
+        let glyph: &str = ch.encode_utf8(&mut buf);
+        let advance = f64::from(draw::mono_width(ctx.text, glyph, FONT));
+        let mark = match ch {
+            ' ' => Some("\u{b7}"),
+            '\t' => Some("\u{2192}"),
+            _ => None,
+        };
+        if let Some(mark) = mark {
+            draw::mono(ctx, mark, FONT, color, Point::new(x, origin.y));
+        }
+        x += advance;
+    }
+}
+
+/// `content` cut into byte ranges of at most `cols` characters each; an empty
+/// line is one empty range.
+fn wrap_ranges(content: &str, cols: usize) -> Vec<Range<usize>> {
+    let cols = cols.max(1);
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    let mut count = 0;
+    for (index, _) in content.char_indices() {
+        if count == cols {
+            ranges.push(start..index);
+            start = index;
+            count = 0;
+        }
+        count += 1;
+    }
+    ranges.push(start..content.len());
+    ranges
 }
 
 /// A hunk header row: the raised band closed top and bottom by its
@@ -686,6 +830,70 @@ mod tests {
         metrics_match_the_constants_at_1x_and_follow_the_text_scale();
         gutter_digits_come_from_the_widest_column_tail();
         hunk_header_elides_before_the_unstage_button();
+    }
+
+    /// Paint `d` into a 390 px pane with `settings`: the content height and
+    /// the glyphs painted.
+    fn painted(d: &FileDiff, settings: Settings) -> (f64, usize) {
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        let viewport = Rect::new(0.0, 0.0, 390.0, 600.0);
+        let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let out = DiffView::draw_with_metrics(
+            &mut ctx,
+            viewport,
+            d,
+            0.0,
+            &settings,
+            HunkInteraction::default(),
+        );
+        (out.content_h, scene.encoding().resources.glyphs.len())
+    }
+
+    /// Wrapping long lines paints them over more rows, in both layouts, so
+    /// the diff grows taller; showing whitespace marks its spaces and tabs.
+    #[test]
+    fn wrap_and_whitespace_preferences_change_the_painted_diff() {
+        let long = "x".repeat(200);
+        let d = parse_unified(
+            "x.rs",
+            "rust",
+            &format!("@@ -1,2 +1,2 @@\n ctx\n-{long}\n+{long} \tend\n"),
+        );
+        for layout in [DiffLayout::Unified, DiffLayout::SideBySide] {
+            let plain = Settings {
+                diff_layout: layout,
+                ..Settings::default()
+            };
+            let (flat_h, flat_glyphs) = painted(&d, plain);
+            let (wrapped_h, _) = painted(
+                &d,
+                Settings {
+                    wrap_lines: true,
+                    ..plain
+                },
+            );
+            assert!(
+                wrapped_h > flat_h,
+                "{layout:?}: wrapped lines take more rows ({wrapped_h} > {flat_h})"
+            );
+            let (shown_h, shown_glyphs) = painted(
+                &d,
+                Settings {
+                    show_whitespace: true,
+                    ..plain
+                },
+            );
+            assert!((shown_h - flat_h).abs() < f64::EPSILON);
+            assert!(
+                shown_glyphs > flat_glyphs,
+                "{layout:?}: whitespace is marked ({shown_glyphs} > {flat_glyphs})"
+            );
+        }
+        assert_eq!(wrap_ranges("abcdef", 4), vec![0..4, 4..6]);
+        assert_eq!(wrap_ranges("", 4), vec![0..0]);
+        assert_eq!(wrap_ranges("äöü", 2), vec![0..4, 4..6]);
     }
 
     fn pair_rows_aligns_change_blocks() {

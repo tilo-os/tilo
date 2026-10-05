@@ -297,7 +297,7 @@ impl ShellDriver {
         self.fb.dispatch_event(
             event,
             &self.modifiers,
-            &mut self.state,
+            &mut ui::widget::Edits::lend(&mut self.state),
             &self.root_obj,
             &mut self.focus,
         )
@@ -438,9 +438,9 @@ impl ShellDriver {
     pub fn step_frames(&mut self, frames: u32) {
         for _ in 0..frames {
             std::thread::sleep(Duration::from_millis(FRAME_MS));
-            // Drive the per-frame update + redraw so animation state
-            // advances. `update` runs the per-tick reconciler too.
-            self.fb.host_mut().update(&mut self.state, &self.root_obj);
+            // Run the same readonly sync, typed settlement and update
+            // as the native compositor before painting animations.
+            self.fb.pump_apps(&mut self.state, &self.root_obj);
             // Re-draw into a throwaway scene so tick functions inside
             // `draw` (overview crossfade tick, etc.) see elapsed time.
             let _ = self.paint();
@@ -900,6 +900,19 @@ impl ShellDriver {
     /// deliberately different from the principal id to guard agent typing.
     pub fn seed_agent_screen_exposure_for_shots(&self, surface_id: u64) {
         use shell::shell::chrome_state::ActiveExposure;
+        self.seed_agent_member_for_shots();
+        self.chrome_handle()
+            .borrow_mut()
+            .set_active_exposures(vec![ActiveExposure {
+                peer: 9,
+                surface: surface_id,
+                can_control: true,
+            }]);
+    }
+
+    /// An authenticated agent fixture shared by roster, settings and exposure
+    /// scenes. Sample membership stays entirely within the shots renderer.
+    fn seed_agent_member_for_shots(&self) {
         use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
 
         let handle = self.chrome_handle();
@@ -917,18 +930,12 @@ impl ShellDriver {
             );
             if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
-                workspace
-                    .collaborators
-                    .push(Collaborator::new("scribe", "Release Notes Agent").with_session(9));
+                workspace.collaborators.insert(
+                    0,
+                    Collaborator::new("scribe", "Release Notes Agent").with_session(9),
+                );
             }
         }
-        handle
-            .borrow_mut()
-            .set_active_exposures(vec![ActiveExposure {
-                peer: 9,
-                surface: surface_id,
-                can_control: true,
-            }]);
     }
 
     pub fn seed_inferred_status_for_shots(&mut self, text: &str) {
@@ -1745,6 +1752,7 @@ impl ShellDriver {
 
     fn scene_ws_settings_agents(&mut self) {
         self.seed_workspace_permissions();
+        self.seed_agent_member_for_shots();
         self.with_chrome(|st| {
             st.overlays.ws_settings = true;
             st.ws_settings_tab = WsTab::Agents;
@@ -1757,6 +1765,7 @@ impl ShellDriver {
     /// band and the Workspace activity footer row.
     fn scene_collaborators(&mut self) {
         self.seed_shared_room();
+        self.seed_agent_member_for_shots();
         self.with_chrome(|st| {
             {
                 let mut tree = st.tree_mut();

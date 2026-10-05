@@ -9,9 +9,11 @@
 //! CRDT so collaboration and undo come for free.
 
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::{AutoCommit, ChangeHash};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -21,20 +23,14 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::time::Duration;
 
-use crate::actions::PdfOperation;
+use crate::actions::PdfEffect;
 use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
-use ui::permissions::PermissionContext;
 use ui::portal::{
     ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
 };
 
-#[derive(Clone, Copy)]
-enum PortalActionKind {
-    Open,
-    Save,
-}
 use ui::chrome::SelectionState;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -50,7 +46,7 @@ use ui::widget::{
 use crate::chrome::{self as chrome, rhythm};
 use crate::doc::{PagePlanEntry, PdfDoc};
 use crate::model::{
-    self, AnnoKind, Annotation, Comment, Document, MARGIN, Match, PAGE_H, PAGE_W, PtRect, Reply,
+    self, AnnoKind, Annotation, Comment, Document, MARGIN, Match, PAGE_H, PAGE_W, PtRect,
     SearchOptions, Signature, SignatureInk, Swatch, Tool,
 };
 use crate::render;
@@ -194,12 +190,6 @@ const MAX_NEW_THUMB_RASTERS_PER_FRAME: usize = 2;
 const SNAP_NEAR: f64 = 18.0;
 /// Screen-px a single arrow-key press scrolls the document.
 const KEY_SCROLL_STEP: f64 = 90.0;
-/// Fixed date stamped on the bundled demonstration signature. It is only
-/// ever read by [`PdfApp::seed`], which runs on the screenshot / test path,
-/// so the shots stay byte-for-byte deterministic. Signatures placed at
-/// runtime read the real system clock via [`today_ymd`] instead.
-const SEED_DATE: &str = "2026-06-30";
-
 /// The current UTC date as `YYYY-MM-DD`, read from the system clock. This is
 /// the real signing date stamped on a signature the user places at runtime.
 /// The reader's app id, the scope its permissions are decided in.
@@ -222,30 +212,16 @@ fn today_ymd() -> String {
     ymd_from_unix_secs(secs)
 }
 
+/// The UTC date of a Unix time in milliseconds, as `YYYY-MM-DD`.
+pub(crate) fn ymd_from_unix_ms(ms: i64) -> String {
+    ymd_from_unix_secs(ms.div_euclid(1000))
+}
+
 /// Convert a Unix timestamp (seconds) into a UTC `YYYY-MM-DD` string. Pure,
 /// so the date logic is unit-testable without a clock.
 fn ymd_from_unix_secs(secs: i64) -> String {
     let (year, m, d) = ui::date::civil_from_days(secs.div_euclid(86_400));
     format!("{year:04}-{m:02}-{d:02}")
-}
-
-/// A plausible hand-drawn signature as normalised `[0,1]²` strokes, used to seed
-/// the demonstration document (shots/tests) so a still frame shows a *real*
-/// drawn signature rather than a canned style. Never used for a live document.
-fn sample_drawn_signature() -> Vec<Vec<(f64, f64)>> {
-    use std::f64::consts::PI;
-    let n = 64;
-    let flourish: Vec<(f64, f64)> = (0..=n)
-        .map(|i| {
-            let t = f64::from(i) / f64::from(n);
-            let x = 0.06 + 0.86 * t;
-            let y = 0.55 - 0.34 * (t * PI * 2.6).sin() * (1.0 - 0.35 * t);
-            (x, y)
-        })
-        .collect();
-    // A short underline flick beneath the flourish.
-    let underline = vec![(0.14, 0.86), (0.5, 0.9), (0.82, 0.8)];
-    vec![flourish, underline]
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -545,8 +521,14 @@ pub struct PdfApp {
     pending_import: Option<ImportRequest>,
     /// False until a file has been loaded — drives the empty state.
     has_document: bool,
-    /// The file has opened, but the host has not admitted its markup record.
-    awaiting_markup_record: bool,
+    /// The PDF the record's markup is made against, as last presented.
+    record_source: Option<crate::resource::PinnedSource>,
+    /// The record's pinned source was asked for from the content store.
+    reopen_requested: bool,
+    /// A capture shows the reader opening a document whose open never ends.
+    staged_opening: bool,
+    /// A capture imports a page on the next sync, where the document is.
+    staged_import: bool,
     /// The opened file's display name, shown in the chrome.
     doc_name: String,
     /// A human-readable reason the last open failed, if any.
@@ -554,12 +536,6 @@ pub struct PdfApp {
     /// Imported pages' bytes, referenced from the shared page plan by hash.
     /// Created once with the app and shared with its PDF worker session.
     content: ContentStore,
-    /// Seed demonstration markup on first sync. Only ever set on the
-    /// screenshot / test path, never for a user document.
-    seed_sample: bool,
-    /// Screenshot-only: drop the caret into the first comment on the first
-    /// sync so a still frame can show the inline editor. Never set at runtime.
-    shots_edit_first_comment: bool,
     /// Screenshot-only: arm a live page-rail reorder drag each frame so a still
     /// frame captures the drag ghost + reflow gap. Never set at runtime.
     shots_rail_drag: bool,
@@ -569,15 +545,10 @@ pub struct PdfApp {
     /// Screenshot-only: defer opening the annotation menu until after the
     /// initial CRDT sync has populated its target.
     shots_context_menu: bool,
-    /// Screenshot-only: land on the Signatures panel (which the demo seed would
-    /// otherwise override to Comments) so a still frame shows the composer.
-    shots_sign: bool,
-
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
     comments: Vec<Comment>,
     signatures: Vec<Signature>,
-    seeded: bool,
 
     // View state — local / per-peer, never in the shared doc.
     rect: Rect,
@@ -603,10 +574,9 @@ pub struct PdfApp {
     resource_page_imports: Vec<Option<crate::doc::ImportedPage>>,
     /// Original text-backend pages, used to materialise a remote plan.
     source_pages: Vec<model::Page>,
-    /// Retained global-search namespace. Opening/typing in the palette only
-    /// clones this handle; projection happens during state sync.
-    search_catalog: ui::search::SearchCatalog,
-    search_catalog_ids: HashSet<String>,
+    /// What the open document says, for search: rebuilt during state sync
+    /// when the document or the find results change, never on a keystroke.
+    search_entries: Vec<ui::tilo_resource::SearchEntry>,
     search_projection_revision: Option<SearchProjectionRevision>,
     #[cfg(test)]
     search_projection_refreshes: usize,
@@ -658,6 +628,13 @@ pub struct PdfApp {
     sig_strokes: Vec<Vec<(f64, f64)>>,
     /// The stroke currently being drawn on the pad (pointer held), if any.
     sig_stroke: Option<Vec<(f64, f64)>>,
+    /// The person's own signature record the composer reads and keeps the
+    /// signer and drawn strokes in, so they follow the person to their
+    /// other devices and never reach a collaborator. Absent where the host
+    /// keeps no person records (a capture, a past version).
+    signature: Option<ui::framework::PersonRecord<crate::signature::SignatureProfile>>,
+    /// The signature record's revision the composer last read.
+    signature_revision: Option<u64>,
     /// The draw pad's screen rect, captured during the sidebar draw so a press
     /// inside it starts drawing rather than hitting a button.
     sig_pad_rect: Rect,
@@ -703,23 +680,14 @@ pub struct PdfApp {
     /// The on-disk path the current document was opened from, used to suggest a
     /// filename and folder when saving flattened markup.
     source_path: Option<std::path::PathBuf>,
-    /// The record holding *this document's* markup — the annotations, comments
-    /// and signatures the user has made on it.
-    ///
-    /// It is a record of its own that references the document record, not
-    /// state inside it. That is what makes the reader's markup shareable
-    /// separately from the file, and it is why opening a second document no
-    /// longer has anything to clear: the second document's markup is a
-    /// different document. `None` on the empty state — no document, no
-    /// markup.
-    markup_record: Option<ui::RecordCheckout>,
     /// A transient one-line status (e.g. "Saved to …"), shown as a toast until
     /// the next document action.
     status_note: Option<String>,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
     portal_save_rx: Option<PortalChannel>,
-    portal_action: Option<(tilo_actions::InvocationId, PortalActionKind)>,
-    completed_portal_action: Option<tilo_actions::InvocationUpdate>,
+    /// The open or save effect waiting on a picker, the PDF owner or the
+    /// host, answered when it finishes.
+    portal_action: Option<ui::framework::EffectReply>,
 
     // Interaction transients.
     last_mouse: Point,
@@ -729,7 +697,6 @@ pub struct PdfApp {
     rail_drag: Option<f64>,
     context_menu: Option<ContextMenu>,
     created_counter: i64,
-    commit_pending: bool,
     dirty: bool,
     /// Set by `rasterize_visible` when it hit the per-frame new-raster budget
     /// and still has uncached visible pages to render. Keeps `needs_redraw`
@@ -781,6 +748,12 @@ pub struct PdfApp {
     /// The same request on a host without paths (a browser page), which
     /// answers with the file's bytes.
     portal_contents_rx: Option<ContentsChannel>,
+    /// Opens another document in this window, on that document's own
+    /// markup record, in place of the one shown. Absent outside a host.
+    open_here: Option<ui::framework::OpenHere>,
+    /// The document asked to open in this window's place, until the host
+    /// answers.
+    pending_reopen: Option<(std::path::PathBuf, ui::application::ReplacementOutcome)>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -824,10 +797,13 @@ pub struct PdfApp {
     /// An in-progress drag of a sticky-note marker (reposition), if any.
     marker_drag: Option<ui::MarkerDrag>,
 
-    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
-    /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
-    /// action, and records the last one for parity checks with the palette.
-    actions: crate::resource::ActionSink,
+    /// The names of the participants, as the host's roster has them; the
+    /// markup records ids. Absent outside a host.
+    people: Option<ui::framework::People>,
+    /// Where edits go: the resource's dispatcher, attached by the host.
+    dispatcher: Option<ui::framework::Dispatcher<crate::resource::PdfViewer>>,
+    /// The participant may only view the document.
+    read_only: bool,
     /// How each displayed page maps between the engine's page space, PDF
     /// user space and its card in the stack (rotation and fit included).
     page_maps: Vec<model::PageMap>,
@@ -847,25 +823,17 @@ pub struct PdfApp {
     /// The source hash whose existing markup was asked for, so it is
     /// asked for once.
     existing_request: Option<String>,
+    /// The loaded document's record still needs what opening it adds: a
+    /// page plan, the pinned source, the markup taken over from the PDF.
+    seed_pending: bool,
     /// Whether page images currently leave the document's own markup out.
     reader_markup_hidden: bool,
-    /// The acting user's rights over this document, as the host decided
-    /// them for the current frame.
-    permissions: PermissionContext,
 }
 
-/// The content store an app constructed without one uses: the app's own
-/// store, or an in-memory one under unit test so tests never write to the
-/// user's data directory.
-fn default_content() -> ContentStore {
-    #[cfg(test)]
-    {
-        ContentStore::memory()
-    }
-    #[cfg(not(test))]
-    {
-        ContentStore::for_app()
-    }
+/// The content store an app constructed without one uses, where no host
+/// lent the window one: kept in memory.
+pub(crate) fn default_content() -> ContentStore {
+    ContentStore::memory()
 }
 
 impl PdfApp {
@@ -892,7 +860,7 @@ impl PdfApp {
         #[cfg(test)]
         match crate::source::open(path, &content) {
             Ok(loaded) => {
-                let mut app = Self::build(loaded.doc, false, content);
+                let mut app = Self::build(loaded.doc, content);
                 app.source_blob = Some((
                     loaded.raster.source_hash().to_string(),
                     loaded.raster.source_len(),
@@ -902,7 +870,6 @@ impl PdfApp {
                 app.has_document = true;
                 app.doc_name = loaded.name;
                 app.source_path = Some(path.to_path_buf());
-                app.markup_record = Some(Self::markup_record_for(&loaded.file, path));
                 app
             }
             Err(e) => {
@@ -914,76 +881,84 @@ impl PdfApp {
     }
 
     /// The no-document state: a clean "open a PDF" surface, no fabricated
-    /// content.
+    /// content. A record that already marks up a document reopens it.
     pub fn empty() -> Self {
-        let mut app = Self::empty_with_content(default_content());
-        // Where files have no path, the PDF last opened by contents.
-        if !crate::web_file::native_paths()
-            && let Some(file) = crate::web_file::recall()
-            && let Some(Ok(request)) = app
-                .raster_handle
-                .as_ref()
-                .map(|handle| handle.open_contents(&file.name, file.bytes))
-        {
-            app.pending_open = Some(request);
-            app.status_note = Some("Opening PDF…".to_string());
-        }
-        app
+        Self::empty_with_content(default_content())
     }
 
-    fn empty_with_content(content: ContentStore) -> Self {
+    /// [`PdfApp::empty`], reading documents from and keeping imported pages
+    /// in `content`.
+    pub fn empty_with_content(content: ContentStore) -> Self {
         Self::build(
             model::Document::blank_pages("", "", 1, PAGE_W, PAGE_H),
-            false,
             content,
         )
     }
 
-    /// The bundled demonstration document with example markup seeded on first
-    /// sync. Used only by the screenshot harness and tests.
+    /// A past version of the record in History: its markup, without
+    /// opening a document, so previewing versions starts no PDF engine.
+    pub fn past() -> Self {
+        let mut app = Self::empty_with_content(ContentStore::memory());
+        app.raster_handle = None;
+        app
+    }
+
+    /// The bundled demonstration document. Used only by screenshot
+    /// scenarios and tests; its markup is the scenario's actions.
     pub fn sample() -> Self {
-        let mut app = Self::build(model::sample_document(), true, default_content());
+        Self::sample_with_content(default_content())
+    }
+
+    /// [`PdfApp::sample`], keeping imported pages in `content`.
+    pub fn sample_with_content(content: ContentStore) -> Self {
+        let mut app = Self::build(model::sample_document(), content);
         app.has_document = true;
         app.doc_name = "Tilo Technical Overview.pdf".to_string();
-        app.signer_name = "Alice Example".to_string();
+        app.signer_name = crate::scenarios::SIGNER.to_string();
         app
     }
 
-    /// Screenshot-only: the sample document with the first comment already in
-    /// edit mode, so a still frame captures the inline editor (caret + focus
-    /// ring). Only reachable from the shots harness.
-    pub fn sample_editing() -> Self {
-        let mut app = Self::sample();
-        app.shots_edit_first_comment = true;
-        app
+    /// Stage the view state screenshot `scenario` shows, once its actions
+    /// have applied: the review the demonstration document lands on, and
+    /// the editor, selection, menu or panel the scenario is about.
+    pub(crate) fn stage(&mut self, scenario: Option<&str>) {
+        if self.has_document {
+            // The review lands on the note's comment thread; zoom stays at
+            // fit-page so no content is clipped.
+            self.selected_anno = Some(crate::scenarios::NOTE.to_string());
+            self.sidebar_tab = SidebarTab::Comments;
+            self.sidebar_reveal = Some(crate::scenarios::NOTE_COMMENT.to_string());
+        }
+        match scenario {
+            Some("edit-comment") => self.begin_edit(
+                EditTarget::CommentBody(crate::scenarios::NOTE_COMMENT.to_string()),
+                crate::scenarios::NOTE_COMMENT_BODY,
+            ),
+            Some("selection-hud") => self.arm_shots_selection(),
+            Some("page-bubble") => self.arm_shots_page_bubble(),
+            Some("context-menu") => self.arm_shots_context_menu(),
+            Some("search") => self.arm_shots_search(),
+            Some("sign") => self.arm_shots_sign_compose(),
+            Some("reorder") => self.arm_shots_rail_drag(),
+            Some("import") => {
+                self.show_rail = true;
+                self.staged_import = true;
+            }
+            Some("loading") => self.staged_opening = true,
+            Some("error") => {
+                self.load_error = Some(
+                    "Could not open inaccessible.pdf: the file is unavailable or is not a readable PDF"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+        self.dirty = true;
     }
 
-    /// Back-compat constructor: the empty state.
-    pub fn new() -> Self {
-        Self::empty()
-    }
-
-    /// Screenshot-only owner-worker loading state. This exercises the same
-    /// empty-state a11y/live-region and visual affordance used by a real
-    /// accepted open before its terminal worker event arrives.
-    pub fn loading_preview() -> Self {
-        let mut app = Self::empty();
-        app.pending_open = Some(OpenRequest {
-            id: 0,
-            path: "opening.pdf".into(),
-        });
-        app
-    }
-
-    /// Screenshot-only failed initial-open state, including the persistent,
-    /// assertive error that is retained until the next successful open.
-    pub fn error_preview() -> Self {
-        let mut app = Self::empty();
-        app.load_error = Some(
-            "Could not open inaccessible.pdf: the file is unavailable or is not a readable PDF"
-                .to_string(),
-        );
-        app
+    /// Whether a document is being opened: the loading state shows.
+    fn opening(&self) -> bool {
+        self.pending_open.is_some() || self.staged_opening
     }
 
     /// Screenshot-only: arm a live page-rail reorder drag so a still frame shows
@@ -1022,10 +997,10 @@ impl PdfApp {
     /// the real signature-composer workflow.
     pub fn arm_shots_sign_compose(&mut self) {
         self.show_sidebar = true;
-        self.shots_sign = true;
+        self.sidebar_tab = SidebarTab::Signatures;
         self.tool = Tool::Sign;
         self.sig_mode = SigMode::Draw;
-        self.sig_strokes = sample_drawn_signature();
+        self.sig_strokes = crate::scenarios::sample_drawn_signature();
     }
 
     /// Screenshot-only: stage a settled text selection over page 1 (a synthetic
@@ -1067,10 +1042,10 @@ impl PdfApp {
         self.show_sidebar = true;
     }
 
-    /// Screenshot / demo helper: import a distinctive generated image as a new
-    /// page after the current one, so a still frame shows an imported image page
+    /// Screenshot helper: import a distinctive generated image as a new page
+    /// after the current one, so a still frame shows an imported image page
     /// in the rail + canvas. No-op when no PDF is open.
-    pub fn demo_import_image(&mut self) {
+    fn demo_import_image(&mut self, state: &AutoCommit) {
         self.show_rail = true;
         if !self.raster_active() {
             return;
@@ -1092,10 +1067,7 @@ impl PdfApp {
             return;
         };
         if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
-            // Screenshot-only helper; production imports receive the checked
-            // out shared record from `sync`/the portal path.
-            let mut state = AutoCommit::new();
-            self.import_file(&png, &mut state);
+            self.import_file(&png, state);
         }
     }
 
@@ -1103,7 +1075,7 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "constructor lists the complete explicit state of this custom document workspace"
     )]
-    fn build(doc: Document, seed_sample: bool, content: ContentStore) -> Self {
+    fn build(doc: Document, content: ContentStore) -> Self {
         let page_count = doc.page_count();
         let source_pages = doc.pages.clone();
         let author = std::env::var("QUICK_APP_ID")
@@ -1130,21 +1102,19 @@ impl PdfApp {
             pending_save: None,
             pending_import: None,
             has_document: false,
-            awaiting_markup_record: false,
-            markup_record: None,
+            record_source: None,
+            reopen_requested: false,
+            staged_opening: false,
+            staged_import: false,
             doc_name: String::new(),
             load_error: None,
             content,
-            seed_sample,
-            shots_edit_first_comment: false,
             shots_rail_drag: false,
             shots_page_bubble: false,
             shots_context_menu: false,
-            shots_sign: false,
             annotations: Vec::new(),
             comments: Vec::new(),
             signatures: Vec::new(),
-            seeded: false,
             rect: Rect::ZERO,
             fit: FitMode::Page,
             viewport: ViewportState::new()
@@ -1158,8 +1128,7 @@ impl PdfApp {
             resource_page_sources: (1..=page_count).collect(),
             resource_page_imports: vec![None; page_count],
             source_pages,
-            search_catalog: ui::search::SearchCatalog::new(crate::search_provider::PDF_SEARCH_KIND),
-            search_catalog_ids: HashSet::new(),
+            search_entries: Vec::new(),
             search_projection_revision: None,
             #[cfg(test)]
             search_projection_refreshes: 0,
@@ -1186,6 +1155,8 @@ impl PdfApp {
             sig_mode: SigMode::Type,
             sig_strokes: Vec::new(),
             sig_stroke: None,
+            signature: None,
+            signature_revision: None,
             sig_pad_rect: Rect::ZERO,
             search_active: false,
             search_input: TextInput::local()
@@ -1207,14 +1178,12 @@ impl PdfApp {
             status_note: None,
             portal_save_rx: None,
             portal_action: None,
-            completed_portal_action: None,
             last_mouse: Point::ZERO,
             drag: None,
             pan: None,
             rail_drag: None,
             context_menu: None,
             created_counter: 100,
-            commit_pending: false,
             dirty: true,
             pending_raster: false,
             pending_visuals: false,
@@ -1229,6 +1198,8 @@ impl PdfApp {
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
             portal_rx: None,
             portal_contents_rx: None,
+            open_here: None,
+            pending_reopen: None,
             overlay_mode: false,
             prev_overlay: None,
             toolbar_rect: Rect::ZERO,
@@ -1246,7 +1217,14 @@ impl PdfApp {
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
-            actions: crate::resource::ActionSink::default(),
+            // Unit tests drive the reader without a host: its edits go
+            // through the same executor a hosted reader's do.
+            #[cfg(test)]
+            dispatcher: Some(ui::framework::testing::dispatcher(APP_ID)),
+            #[cfg(not(test))]
+            dispatcher: None,
+            read_only: false,
+            people: None,
             page_maps: Vec::new(),
             resource_page_rotations: Vec::new(),
             form_fields: Vec::new(),
@@ -1255,83 +1233,163 @@ impl PdfApp {
             stored_annotations: Vec::new(),
             adopted: Vec::new(),
             existing_request: None,
+            seed_pending: true,
             reader_markup_hidden: false,
-            permissions: PermissionContext::permissive(),
             markup_style: model::MarkupStyle::Highlight,
         }
     }
 
-    /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction) —
-    /// the single mutation path shared with the Ctrl+K palette. The action is
-    /// applied through the Tilo action executor (a pinned actor + committed
-    /// change, so it replays byte-identically on peers), exactly as the palette
-    /// does. The doc heads captured just before the first action of the event
-    /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
+    /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction)
+    /// through the resource's dispatcher — the single mutation path shared
+    /// with the Ctrl+K palette — applied to the document this event received,
+    /// so the reader reads it back at once. One event's actions are one undo
+    /// step.
+    /// Test-only: one frame's sync, then what it submitted applied to `doc`
+    /// as the host applies it, and shown in the same frame.
+    #[cfg(test)]
+    pub(crate) fn sync_settled(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
+        Widget::sync(self, doc, root);
+        let Some(dispatcher) = self.dispatcher.clone() else {
+            return;
+        };
+        if !ui::framework::testing::resolve(&dispatcher, doc)
+            .expect("submitted edits apply")
+            .is_empty()
+        {
+            Widget::sync(self, doc, root);
+        }
+    }
+
+    /// Submit `action` through the resource's dispatcher to be applied
+    /// after this pass, from a pass that only reads the document (a frame's
+    /// sync, a worker's answer). A refusal is reported by the dispatcher.
+    pub(crate) fn submit(&self, action: &crate::actions::PdfViewerAction) {
+        if let Some(dispatcher) = self.dispatcher.as_ref() {
+            dispatcher.apply(action);
+        }
+    }
+
     pub(crate) fn perform_action(
         &mut self,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         action: &crate::actions::PdfViewerAction,
     ) {
-        if !self.may(action.required_verb()) {
+        let Some(dispatcher) = self.dispatcher.as_ref() else {
+            return;
+        };
+        if !dispatcher.may_apply(action) {
             self.status_note = Some("You can view this document but not change it".to_string());
             self.dirty = true;
             return;
         }
-        self.actions.dispatch_with_context(
+        if let Err(error) = dispatcher.apply_now_with(
             state,
-            crate::actions::PDF_VIEWER_ACTION_TYPE,
             action,
-            tilo_actions::ActionContext::for_action("so.tilo.pdf-viewer", "PDF Viewer", action),
-        );
+            tilo_actions::ActionContext::for_action(APP_ID, "PDF Viewer", action),
+        ) {
+            self.status_note = Some(error.to_string());
+            self.dirty = true;
+        }
     }
 
-    /// Show markup the framework resource already holds.
-    /// An empty projection does not clear markup that has not been published yet.
+    /// Follow the record's state: which document its markup is made
+    /// against. The markup itself is read from the document every sync
+    /// receives, the live one or a past version.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::PdfMarkup) {
-        if state.pages.is_empty()
-            && state.annotations.is_empty()
-            && state.comments.is_empty()
-            && state.signatures.is_empty()
-        {
-            return;
-        }
-        self.stored_annotations.clone_from(&state.annotations);
-        self.comments.clone_from(&state.comments);
-        if !self.page_maps.is_empty() {
-            self.annotations = self
-                .stored_annotations
-                .iter()
-                .map(|annotation| {
-                    self.page_map(annotation.page)
-                        .annotation_to_card(annotation)
-                })
-                .collect();
-            self.signatures = state
-                .signatures
-                .iter()
-                .map(|signature| self.page_map(signature.page).signature_to_card(signature))
-                .collect();
+        if self.record_source != state.source {
+            self.record_source.clone_from(&state.source);
         }
         self.dirty = true;
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// Attach the resource's dispatcher when hosted as a [`ResourceSurface`].
     pub(crate) fn attach_framework(
         &mut self,
         dispatcher: ui::framework::Dispatcher<crate::resource::PdfViewer>,
     ) {
-        self.actions.attach(dispatcher);
+        self.read_only = dispatcher.read_only();
+        // What this participant authors is recorded under their id, and
+        // shown under the name the roster has for it.
+        if let Some(me) = dispatcher.me() {
+            me.clone_into(&mut self.author);
+        }
+        self.dispatcher = Some(dispatcher);
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
+    /// Open other documents through `open_here`.
+    pub(crate) fn attach_open_here(&mut self, open_here: Option<ui::framework::OpenHere>) {
+        self.open_here = open_here;
     }
 
-    /// Test-only: mark hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
+    /// Show the participants' names from `people`.
+    pub(crate) fn attach_people(&mut self, people: ui::framework::People) {
+        self.people = Some(people);
+        self.dirty = true;
+    }
+
+    /// The name to show for the participant `id` an annotation, comment or
+    /// reply records.
+    pub(crate) fn author_name(&self, id: &str) -> String {
+        self.people
+            .as_ref()
+            .map_or_else(|| id.to_owned(), |people| people.name(id))
+    }
+
+    /// Compose with the person's own signature record.
+    pub(crate) fn attach_signature(
+        &mut self,
+        signature: ui::framework::PersonRecord<crate::signature::SignatureProfile>,
+    ) {
+        self.signature = Some(signature);
+        self.signature_revision = None;
+    }
+
+    /// Read the person's signature when it changed: composed here, in
+    /// another window or on another of their devices.
+    fn follow_signature(&mut self) {
+        let Some(record) = self.signature.as_ref() else {
+            return;
+        };
+        let revision = record.revision();
+        if self.signature_revision == Some(revision) {
+            return;
+        }
+        self.signature_revision = Some(revision);
+        let kept = record.get();
+        if !kept.signer.is_empty() {
+            self.signer_name.clone_from(&kept.signer);
+        }
+        self.sig_strokes.clone_from(&kept.strokes);
+        self.dirty = true;
+    }
+
+    /// Keep an edit of the person's signature in their own record.
+    fn keep_signature(&mut self, action: &crate::signature::SignatureAction) {
+        let Some(record) = self.signature.as_ref() else {
+            return;
+        };
+        if let Err(error) = record.apply(action) {
+            self.status_note = Some(format!("Your signature was not kept: {error}"));
+            self.dirty = true;
+        }
+    }
+
+    /// Keep the drawn strokes as the person's signature.
+    fn keep_strokes(&mut self) {
+        let action = crate::signature::SignatureAction::SetStrokes {
+            strokes: self.sig_strokes.clone(),
+        };
+        self.keep_signature(&action);
+    }
+
+    /// The participant's permission to edit changed.
+    pub(crate) fn set_read_only(&mut self, read_only: bool) {
+        if self.read_only != read_only {
+            self.read_only = read_only;
+            // Allowed to write now, the record gets what opening it adds.
+            self.seed_pending |= !read_only;
+            self.dirty = true;
+        }
     }
 
     /// Test-only: open find and materialise matches for `query`.
@@ -1351,19 +1409,10 @@ impl PdfApp {
     /// The presentation context Ctrl+K needs to build the document-level action
     /// (add a note at the current page). `None` when no document is open.
     pub(crate) fn pdf_resource_ctx(&self) -> Option<crate::actions::PdfResourceCtx> {
-        if !self.has_document || self.awaiting_markup_record {
+        if !self.has_document {
             return None;
         }
-        let doc_id = self.markup_record.as_ref().map_or_else(
-            || {
-                if self.seed_sample {
-                    "sample".to_string()
-                } else {
-                    "document".to_string()
-                }
-            },
-            |record| record.id.as_str().to_string(),
-        );
+        let doc_id = "document".to_string();
         let title = if self.doc.title.is_empty() {
             doc_id.clone()
         } else {
@@ -1403,16 +1452,16 @@ impl PdfApp {
         })
     }
 
-    /// Refresh global search only when the shared document or durable page
-    /// occurrence projection changed. Palette opening and keystrokes never
-    /// traverse document text or markup.
-    fn refresh_search_catalog(&mut self, state: &mut AutoCommit) {
+    /// Rebuild the search entries only when the shared document or durable
+    /// page occurrence projection changed. Searching never traverses
+    /// document text or markup.
+    fn refresh_search_entries(&mut self, state: &AutoCommit) {
         let Some(ctx) = self.pdf_resource_ctx() else {
             return;
         };
         let revision = SearchProjectionRevision {
             doc_id: ctx.doc_id.clone(),
-            heads: state.get_heads(),
+            heads: state.committed_heads(),
             page_ids: ctx.page_ids.clone(),
             page_sources: ctx.page_sources.clone(),
             search_token: ctx.search_token.clone(),
@@ -1421,42 +1470,11 @@ impl PdfApp {
         if self.search_projection_revision.as_ref() == Some(&revision) {
             return;
         }
-        let ids = match crate::search_provider::PdfSearchProvider::index_into(
-            &self.search_catalog,
-            &ctx,
-            &self.source_pages,
-            &self.annotations,
-            &self.comments,
-            &self.signatures,
-        ) {
-            Ok(ids) => ids,
-            Err(error) => {
-                self.status_note = Some(format!("Search index unavailable: {error}"));
-                return;
-            }
-        };
-        for stale in self.search_catalog_ids.difference(&ids) {
-            let _ = self.search_catalog.remove(stale);
-        }
-        self.search_catalog_ids = ids;
+        self.search_entries = crate::search::surface_entries(&ctx, &self.source_pages);
         self.search_projection_revision = Some(revision);
         #[cfg(test)]
         {
             self.search_projection_refreshes += 1;
-        }
-    }
-
-    /// Whether the acting user may perform `verb` on this document.
-    pub(crate) fn may(&self, verb: ui::permissions::Verb) -> bool {
-        self.permissions
-            .check(&ui::permissions::PermissionScope::app(APP_ID, verb))
-    }
-
-    /// Replace the permission context (the host hands one over every frame).
-    pub fn set_permissions(&mut self, permissions: PermissionContext) {
-        if self.permissions != permissions {
-            self.permissions = permissions;
-            self.dirty = true;
         }
     }
 
@@ -1518,7 +1536,7 @@ impl PdfApp {
 
     /// Author a new annotation drawn in card space: store its geometry in
     /// the page's PDF user space, anchored to the page occurrence.
-    fn author_annotation(&mut self, state: &mut AutoCommit, a: &Annotation) {
+    fn author_annotation(&mut self, state: &mut ui::widget::Edits<'_>, a: &Annotation) {
         let user = Annotation {
             created_ms: now_ms(),
             ..self.page_map(a.page).annotation_to_user(a)
@@ -1532,13 +1550,14 @@ impl PdfApp {
 
     /// Pin the open document's bytes in its record the first time the
     /// record meets them; say so when the file no longer matches.
-    fn pin_source(&mut self, state: &mut AutoCommit) {
+    fn pin_source(&mut self, state: &AutoCommit) {
         let Some((hash, len)) = self.source_blob.clone() else {
             return;
         };
         match PdfDoc::source(state) {
-            None if self.may(ui::permissions::Verb::Write) => {
-                self.perform_action(state, &crate::actions::pin_source_action(&hash, len));
+            None if !self.read_only => {
+                let action = crate::actions::pin_source_action(&hash, len, &self.doc_name);
+                self.submit(&action);
             }
             Some((pinned, _, _)) if pinned != hash => {
                 self.status_note = Some(
@@ -1552,7 +1571,7 @@ impl PdfApp {
 
     /// Take over the markup already in the PDF the first time the record
     /// meets these bytes (see [`crate::adopt`]): ask the PDF owner for it,
-    /// once per source.
+    /// once per source. Whether it was asked or is not needed.
     #[cfg_attr(
         not(test),
         allow(
@@ -1560,16 +1579,20 @@ impl PdfApp {
             reason = "the synchronous test backend records the import at once"
         )
     )]
-    fn adopt_existing(&mut self, state: &mut AutoCommit) {
+    fn adopt_existing(&mut self, state: &AutoCommit) -> bool {
         let Some((hash, _)) = self.source_blob.clone() else {
-            return;
+            return true;
         };
-        if !self.may(ui::permissions::Verb::Write)
-            || PdfDoc::source(state).is_none_or(|(pinned, _, _)| pinned != hash)
+        let Some((pinned, _, _)) = PdfDoc::source(state) else {
+            // The source is pinned first; its markup is taken over after.
+            return self.read_only;
+        };
+        if self.read_only
+            || pinned != hash
             || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
         {
-            return;
+            return true;
         }
         self.existing_request = Some(hash);
         #[cfg(test)]
@@ -1581,23 +1604,24 @@ impl PdfApp {
                     self.status_note = Some(format!("Could not read the PDF's markup: {error}"));
                 }
             }
-            return;
+            return true;
         }
         let requested = match (self.raster_handle.as_ref(), self.raster_document.as_ref()) {
             (Some(handle), Some(document)) => handle.read_existing(document.id),
             _ => Err(crate::source::RasterSubmitError::Stopped),
         };
         if let Err(error) = requested {
-            // Try again on a later frame.
             self.existing_request = None;
             tracing::debug!(%error, "asking for the PDF's own markup failed");
+            return false;
         }
+        true
     }
 
     /// Record the markup `existing` (read from the bytes hashed `hash`).
     fn finish_adoption(
         &mut self,
-        state: &mut AutoCommit,
+        state: &AutoCommit,
         hash: &str,
         existing: &crate::adopt::Existing,
     ) {
@@ -1619,7 +1643,7 @@ impl PdfApp {
             known.insert(comment.id);
         }
         let plan = crate::adopt::plan_import(hash, existing, &known);
-        self.perform_action(state, &crate::actions::import_existing_action(hash, &plan));
+        self.submit(&crate::actions::import_existing_action(hash, &plan));
         self.reload(state);
         self.dirty = true;
     }
@@ -1681,133 +1705,7 @@ impl PdfApp {
         }
     }
 
-    // ---- seeding + cache refresh ------------------------------------
-
-    #[allow(clippy::too_many_lines, reason = "one literal demonstration seed")]
-    fn seed(&mut self, state: &mut AutoCommit) {
-        PdfDoc::set_meta(state, &self.doc.title, &self.doc.author);
-
-        // Two highlights over the abstract, a sticky note, and a placed review
-        // signature — all on page 1 so the default screenshot shows real
-        // review markup anchored to real text (no free-floating scribble over
-        // empty whitespace).
-        let highlight = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::highlight(PtRect::new(64.0, 196.0, 420.0, 14.0)),
-            color: Swatch::Yellow,
-            author: "Bob".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let highlight2 = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::highlight(PtRect::new(64.0, 210.0, 300.0, 14.0)),
-            color: Swatch::Yellow,
-            author: "Bob".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let note = Annotation {
-            id: Annotation::new_id(),
-            page: 1,
-            kind: AnnoKind::Note { x: 506.0, y: 300.0 },
-            color: Swatch::Blue,
-            author: "Alice".into(),
-            chars: None,
-            created_ms: 0,
-            space: crate::model::GeomSpace::Page,
-        };
-        let sig = Signature {
-            id: Signature::new_id(),
-            page: 1,
-            rect: PtRect::new(318.0, 612.0, 218.0, 74.0),
-            signer: "Alice Example".into(),
-            date: SEED_DATE.into(),
-            ink: SignatureInk::Drawn {
-                strokes: sample_drawn_signature(),
-            },
-            space: crate::model::GeomSpace::Page,
-        };
-
-        let note_id = note.id.clone();
-        let hl_id = highlight.id.clone();
-        for a in [&highlight, &highlight2, &note] {
-            PdfDoc::add_annotation(state, a, None);
-        }
-        PdfDoc::add_signature(state, &sig, None);
-
-        // This comment stands in for the one the user "just placed": the
-        // demo view-state below selects its note and reveals it in the rail.
-        let focus_comment = Comment::new_id();
-        PdfDoc::add_comment(
-            state,
-            &Comment {
-                id: focus_comment.clone(),
-                anno_id: Some(note_id.clone()),
-                page: 1,
-                author: "Alice".into(),
-                body: "Should we spell out the Iroh relay and persistent-host fallback paths here?"
-                    .into(),
-                created: 1,
-                resolved: false,
-                replies: vec![
-                    Reply {
-                        id: Reply::new_id(),
-                        author: "Bob".into(),
-                        body: "Good catch — folded it into section 1.2.".into(),
-                        blocks: Vec::new(),
-                    },
-                    Reply {
-                        id: Reply::new_id(),
-                        author: "Alice".into(),
-                        body: "Perfect, thanks.".into(),
-                        blocks: Vec::new(),
-                    },
-                ],
-                blocks: Vec::new(),
-            },
-        );
-        PdfDoc::add_comment(
-            state,
-            &Comment {
-                id: Comment::new_id(),
-                anno_id: Some(hl_id),
-                page: 1,
-                author: "Bob".into(),
-                body: "This sentence is the thesis of the whole paper — let's keep it verbatim."
-                    .into(),
-                created: 2,
-                resolved: false,
-                replies: vec![],
-                blocks: Vec::new(),
-            },
-        );
-        PdfDoc::add_comment(
-            state,
-            &Comment {
-                id: Comment::new_id(),
-                anno_id: None,
-                page: 1,
-                author: "Carol".into(),
-                body: "Typography reads cleanly at fit-page zoom. Approved.".into(),
-                created: 3,
-                resolved: true,
-                replies: vec![],
-                blocks: Vec::new(),
-            },
-        );
-
-        // Land the demonstration view on the note's comment thread so the
-        // screenshot shows the review workflow; zoom stays at fit-page so no
-        // content is clipped.
-        self.selected_anno = Some(note_id);
-        self.sidebar_tab = SidebarTab::Comments;
-        self.sidebar_reveal = Some(focus_comment);
-    }
+    // ---- cache refresh ----------------------------------------------
 
     fn reload(&mut self, state: &AutoCommit) {
         if self.page_maps.len() != self.doc.page_count() {
@@ -2082,7 +1980,7 @@ impl PdfApp {
     /// Apply the events the shared page rail produced this gesture: selection
     /// jumps, drag-reorder, context-menu duplicate/move/delete, and the import
     /// affordance.
-    fn apply_sidebar_events(&mut self, state: &mut AutoCommit) {
+    fn apply_sidebar_events(&mut self, state: &mut ui::widget::Edits<'_>) {
         for ev in self.page_sidebar.take_events() {
             match ev {
                 PageSidebarEvent::Select(i) => self.go_to_page(i + 1),
@@ -2148,6 +2046,24 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    /// Add what opening the loaded document adds to its record, once per
+    /// document: its page plan, the source it pins, the markup taken over
+    /// from the PDF. A reader that may not write adds it once it may.
+    fn seed_record(&mut self, state: &AutoCommit) {
+        if self.read_only {
+            self.seed_pending = true;
+            return;
+        }
+        if !PdfDoc::has_page_plan(state) {
+            self.submit(&crate::actions::PdfViewerAction::EnsurePagePlan {
+                source_page_count: self.source_pages.len().max(1),
+            });
+        }
+        self.pin_source(state);
+        // Asked again on the next frame while the PDF owner cannot be asked.
+        self.seed_pending = !self.adopt_existing(state);
+    }
+
     /// Adopt the durable, collaboration-replayed page plan into whichever
     /// local renderer is available. A peer without source bytes still keeps
     /// the shared intent in its record; a renderer with the original source
@@ -2156,19 +2072,7 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "one pass per renderer keeps the plan adoption auditable"
     )]
-    fn reconcile_shared_page_plan(&mut self, state: &mut AutoCommit) {
-        let source_count = self.source_pages.len().max(1);
-        if self.actions.is_hosted() {
-            self.perform_action(
-                state,
-                &crate::actions::PdfViewerAction::EnsurePagePlan {
-                    source_page_count: source_count,
-                },
-            );
-        } else {
-            PdfDoc::ensure_page_plan(state, source_count);
-            PdfDoc::migrate_page_anchors(state);
-        }
+    fn reconcile_shared_page_plan(&mut self, state: &AutoCommit) {
         let plan = PdfDoc::list_page_plan(state);
         if plan.is_empty() {
             return;
@@ -2384,7 +2288,7 @@ impl PdfApp {
         reason = "the test-only legacy fixture and production worker admission are intentionally adjacent"
     )]
     #[cfg(test)]
-    pub fn import_file(&mut self, path: &std::path::Path, state: &mut AutoCommit) -> bool {
+    pub fn import_file(&mut self, path: &std::path::Path, state: &AutoCommit) -> bool {
         // Files are read and decoded by the session owner. The UI only
         // receives validated content-address metadata, then emits the normal
         // collaborative page-plan action on this thread.
@@ -2488,7 +2392,7 @@ impl PdfApp {
             .resource_page_ids
             .get(at.saturating_sub(1))
             .map(String::as_str);
-        self.perform_action(state, &crate::actions::import_pages_action(after, pages));
+        self.submit(&crate::actions::import_pages_action(after, pages));
         self.reconcile_shared_page_plan(state);
         self.go_to_page(at + 1);
         self.status_note = Some(
@@ -2499,7 +2403,7 @@ impl PdfApp {
     }
 
     #[cfg(not(test))]
-    pub fn import_file(&mut self, path: &std::path::Path, _state: &mut AutoCommit) -> bool {
+    pub fn import_file(&mut self, path: &std::path::Path, _state: &AutoCommit) -> bool {
         if self.pending_import.is_some() {
             self.status_note = Some("Another page import is already in progress".to_string());
             self.dirty = true;
@@ -2548,7 +2452,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    fn drain_portal_import(&mut self, state: &mut AutoCommit) {
+    fn drain_portal_import(&mut self, state: &AutoCommit) {
         let Some(rx) = self.portal_import_rx.as_ref() else {
             return;
         };
@@ -3065,30 +2969,42 @@ impl PdfApp {
     }
 
     fn finish_portal_action(&mut self, success: bool, error: Option<String>) {
-        let Some((invocation, _)) = self.portal_action.take() else {
+        let Some(reply) = self.portal_action.take() else {
             return;
         };
-        self.completed_portal_action = Some(if success {
-            tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            }
-        } else if let Some(message) = error {
-            tilo_actions::InvocationUpdate::Failed {
-                invocation,
-                error: tilo_actions::ActionFailure {
-                    code: "pdf.portal_failed".into(),
-                    message,
-                    details: None,
-                    retryable: false,
-                },
-            }
+        reply.finish(if success {
+            Ok(tilo_actions::ActionOutput::default())
         } else {
-            tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            }
+            Err(error.unwrap_or_else(|| "file selection cancelled".into()))
         });
+    }
+
+    /// The open or save effect waiting here was cancelled by its caller:
+    /// stop the picker, the PDF owner's work and the host's open.
+    fn follow_cancellation(&mut self) {
+        if !self
+            .portal_action
+            .as_ref()
+            .is_some_and(ui::framework::EffectReply::is_cancelled)
+        {
+            return;
+        }
+        self.portal_action = None;
+        self.portal_rx = None;
+        self.portal_contents_rx = None;
+        self.portal_save_rx = None;
+        // A document asked to open in this window's place is not opened.
+        if let Some((_, outcome)) = self.pending_reopen.take() {
+            outcome.withdraw();
+        }
+        self.cancel_pending_open();
+        if let Some(request) = self.pending_save.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.cancel_save(request).ok());
+        }
+        self.dirty = true;
     }
 
     /// Drain a completed portal *save* request, if any, and flatten the current
@@ -3300,7 +3216,7 @@ impl PdfApp {
         bands
     }
 
-    fn commit_drag(&mut self, state: &mut AutoCommit) {
+    fn commit_drag(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(d) = self.drag.take() else { return };
         match d.tool {
             Tool::Highlight => {
@@ -3360,7 +3276,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    fn create_note(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    fn create_note(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
         let anno_id = Annotation::new_id();
         self.created_counter += 1;
         let comment_id = Comment::new_id();
@@ -3485,7 +3401,7 @@ impl PdfApp {
     /// Write the active edit's text to its durable home and clear the edit.
     /// An emptied comment body (with no replies) removes the note entirely so
     /// an abandoned marker never litters the page.
-    fn commit_edit(&mut self, state: &mut AutoCommit) {
+    fn commit_edit(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(e) = self.editing.take() else { return };
         let text = e.text();
         let clips = e.clips();
@@ -3515,10 +3431,14 @@ impl PdfApp {
             EditTarget::Signer => {
                 let name = text.trim();
                 self.signer_name = if name.is_empty() {
-                    self.author.clone()
+                    self.author_name(&self.author)
                 } else {
                     name.to_string()
                 };
+                let action = crate::signature::SignatureAction::SetSigner {
+                    name: self.signer_name.clone(),
+                };
+                self.keep_signature(&action);
             }
             EditTarget::FormField(name) => {
                 let value = model::FormEntry::Text(text.trim_end().to_string());
@@ -3608,7 +3528,7 @@ impl PdfApp {
         }
     }
 
-    fn place_signature(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    fn place_signature(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
         // Refuse to stamp an empty drawn signature — the user must draw one
         // first (or switch to a typed signature).
         let Some(ink) = self.composed_ink() else {
@@ -3644,7 +3564,6 @@ impl PdfApp {
         self.selected_anno = None;
         // Land the user on the Signatures rail, scrolled to the new field.
         self.focus_sidebar(SidebarTab::Signatures, sig_id);
-        self.commit_pending = true;
         self.reload(state);
         self.dirty = true;
     }
@@ -3722,7 +3641,7 @@ impl PdfApp {
 
     /// Act on a click on a form widget: edit text, toggle a check box, pick
     /// a radio button, or step a choice field to its next option.
-    fn activate_field(&mut self, state: &mut AutoCommit, w: &FieldWidgetHit) {
+    fn activate_field(&mut self, state: &mut ui::widget::Edits<'_>, w: &FieldWidgetHit) {
         if w.read_only {
             self.status_note = Some(format!("“{}” is read-only", w.name));
             self.dirty = true;
@@ -3766,7 +3685,12 @@ impl PdfApp {
 
     /// A click on a page with the select tool: form widgets first, then
     /// markup.
-    pub(crate) fn click_page(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    pub(crate) fn click_page(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        page: usize,
+        pt: (f64, f64),
+    ) {
         if let Some(widget) = self.field_at(page, pt) {
             self.activate_field(state, &widget);
             return;
@@ -4026,7 +3950,7 @@ impl PdfApp {
 
     /// Record a free text box's current (card-space) box and size in its
     /// page's user space.
-    fn persist_free_text_box(&mut self, state: &mut AutoCommit, id: &str) {
+    fn persist_free_text_box(&mut self, state: &mut ui::widget::Edits<'_>, id: &str) {
         let Some(a) = self.annotations.iter().find(|a| a.id == id).cloned() else {
             return;
         };
@@ -4042,7 +3966,7 @@ impl PdfApp {
 
     /// Place a new free text box with its top-left corner at `pt` (card
     /// space) and start typing into it.
-    fn create_free_text(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
+    fn create_free_text(&mut self, state: &mut ui::widget::Edits<'_>, page: usize, pt: (f64, f64)) {
         const WIDTH: f64 = 180.0; // PDF points on the page, not UI spacing
         let size = model::FREE_TEXT_SIZE;
         let height = size * 1.2 * 2.0 + 4.0;
@@ -4084,7 +4008,7 @@ impl PdfApp {
     }
 
     /// Step a free text box's text size by `delta` points.
-    fn resize_free_text(&mut self, state: &mut AutoCommit, id: &str, delta: f64) {
+    fn resize_free_text(&mut self, state: &mut ui::widget::Edits<'_>, id: &str, delta: f64) {
         if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id)
             && let AnnoKind::FreeText { size, .. } = &mut a.kind
         {
@@ -4140,7 +4064,7 @@ impl PdfApp {
 
     /// Highlight the live text selection in `swatch` — one highlight annotation
     /// per selection band — then clear the selection.
-    fn highlight_selection(&mut self, state: &mut AutoCommit, swatch: Swatch) -> bool {
+    fn highlight_selection(&mut self, state: &mut ui::widget::Edits<'_>, swatch: Swatch) -> bool {
         let Some(sel) = self.selection else {
             return false;
         };
@@ -4176,7 +4100,7 @@ impl PdfApp {
 
     /// Attach a sticky note to the start of the live selection and open its
     /// editor (mirrors the ebook reader's note-from-selection flow).
-    fn note_from_selection(&mut self, state: &mut AutoCommit) -> bool {
+    fn note_from_selection(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         let bands = self.selection_page_bands();
         let Some(first) = bands.first().copied() else {
             return false;
@@ -4191,7 +4115,7 @@ impl PdfApp {
     }
 
     /// Route a shared-HUD action to this reader's commands.
-    fn apply_hud_action(&mut self, action: ui::HudAction, state: &mut AutoCommit) {
+    fn apply_hud_action(&mut self, action: ui::HudAction, state: &mut ui::widget::Edits<'_>) {
         match action {
             ui::HudAction::Copy => {
                 self.copy_selection();
@@ -4242,7 +4166,7 @@ impl PdfApp {
     /// selection that pointed at it, and force a redraw. Used by the Delete
     /// key, the sidebar item buttons, and the right-click context menu — so
     /// every delete affordance lands on the same model mutation.
-    fn delete_target(&mut self, target: &DeleteTarget, state: &mut AutoCommit) {
+    fn delete_target(&mut self, target: &DeleteTarget, state: &mut ui::widget::Edits<'_>) {
         match target {
             DeleteTarget::Annotation(id) => {
                 self.perform_action(state, &crate::actions::delete_annotation_action(id));
@@ -4279,7 +4203,7 @@ impl PdfApp {
     }
 
     /// Delete whichever markup the user currently has selected (Delete key).
-    fn delete_selected(&mut self, state: &mut AutoCommit) -> bool {
+    fn delete_selected(&mut self, state: &mut ui::widget::Edits<'_>) -> bool {
         if let Some(id) = self.selected_anno.clone() {
             self.delete_target(&DeleteTarget::Annotation(id), state);
             true
@@ -4364,16 +4288,24 @@ impl PdfApp {
                     return;
                 };
                 let name = file.name.clone();
-                let kept = (!crate::web_file::native_paths()).then(|| file.bytes.clone());
+                // A file chosen by its contents has no file identity to name
+                // a record of its own, so it opens only in a window that
+                // marks up nothing yet.
+                if self.holds_document() {
+                    let refusal = format!(
+                        "{name} keeps its markup in a window of its own; open it from Files"
+                    );
+                    self.status_note = Some(refusal.clone());
+                    self.dirty = true;
+                    self.finish_portal_action(false, Some(refusal));
+                    return;
+                }
                 match self
                     .raster_handle
                     .as_ref()
                     .map(|h| h.open_contents(&file.name, file.bytes))
                 {
                     Some(Ok(request)) => {
-                        if let Some(bytes) = kept {
-                            crate::web_file::remember(&name, &bytes);
-                        }
                         self.pending_open = Some(request);
                         self.status_note = Some("Opening PDF…".to_string());
                     }
@@ -4414,7 +4346,7 @@ impl PdfApp {
                 self.portal_rx = None;
                 match outcome {
                     PortalOutcome::Opened(path) => {
-                        self.load_path(&path, state);
+                        self.open_chosen(&path, state);
                         // The accepted open invocation settles only when its
                         // matching owner-worker completion arrives.  Treating
                         // “queued” as a failed open used to strand action
@@ -4443,31 +4375,99 @@ impl PdfApp {
         }
     }
 
-    /// The record holding the markup for the document identified as `file`
-    /// (its durable identity, [`ui::RecordId::identify_file`]) and found at
-    /// `path`.
-    ///
-    /// Two records and one reference: the file is a record whose identity is
-    /// its file record — kept through renames and moves, new for a copy —
-    /// and its markup is a record derived from it that references it.
-    /// Derived rather than minted so reopening the file next month, wherever
-    /// it now lives, finds the same annotations; separate from the file so
-    /// "share the document" and "share my notes on it" are different acts.
-    /// Both name their path-derived predecessors, so markup made before files
-    /// had durable identities is adopted by the first file-record identity
-    /// that reopens it.
-    fn markup_record_for(file: &ui::RecordId, path: &std::path::Path) -> ui::RecordCheckout {
-        let by_path = ui::RecordId::for_file(path);
-        let mut file_record = ui::RecordCheckout::new(file.clone(), ui::RecordKind::new("file"));
-        let mut markup = ui::RecordCheckout::new(
-            ui::RecordId::derived("annotations", file),
-            ui::RecordKind::new("annotation-set"),
-        );
-        if *file != by_path {
-            file_record = file_record.formerly(by_path.clone());
-            markup = markup.formerly(ui::RecordId::derived("annotations", &by_path));
+    /// Whether this window's record marks up a document already: it shows
+    /// one, is opening one, or has one pinned.
+    fn holds_document(&self) -> bool {
+        self.has_document || self.pending_open.is_some() || self.record_source.is_some()
+    }
+
+    /// Open the PDF the user chose at `path` on its own markup record, in
+    /// this window in place of the document shown: the record a launch on
+    /// the file opens, so its markup is the same however it was opened.
+    /// Outside a host (the reader on its own, in a test) it opens here.
+    fn open_chosen(&mut self, path: &std::path::Path, state: &AutoCommit) {
+        if self.source_path.as_deref() == Some(path) {
+            self.finish_portal_action(true, None);
+            return;
         }
-        markup.referencing(file_record, "marks-up")
+        if !self.ask_to_open_here(path) {
+            self.load_path(path, state);
+        }
+    }
+
+    /// Ask the host to show the PDF at `path` on its own markup record in
+    /// this window; the effect that asked is answered with the host's
+    /// answer ([`Self::follow_reopen`]). Whether a host can.
+    fn ask_to_open_here(&mut self, path: &std::path::Path) -> bool {
+        let Some(open_here) = self.open_here.clone() else {
+            return false;
+        };
+        let outcome = open_here.open(&[path.display().to_string()]);
+        self.pending_reopen = Some((path.to_path_buf(), outcome));
+        self.status_note = Some("Opening PDF…".to_string());
+        self.dirty = true;
+        true
+    }
+
+    /// Answer the open this window asked of its host: shown (this reader
+    /// closes next), or refused, which the person is told and the
+    /// operation that asked fails with.
+    fn follow_reopen(&mut self) {
+        let Some(answer) = self
+            .pending_reopen
+            .as_ref()
+            .and_then(|(_, outcome)| outcome.get())
+        else {
+            return;
+        };
+        let Some((path, _)) = self.pending_reopen.take() else {
+            return;
+        };
+        match self.opened_here(&path, answer) {
+            Ok(()) => self.finish_portal_action(true, None),
+            Err(error) => self.finish_portal_action(false, Some(error)),
+        }
+    }
+
+    /// Reopen the document the record's markup is made against from the
+    /// content store, when the window was not launched on a file: the same
+    /// document every window of this record shows.
+    fn reopen_pinned_source(&mut self) {
+        if self.reopen_requested || self.has_document || self.pending_open.is_some() {
+            return;
+        }
+        let Some(source) = self.record_source.clone() else {
+            return;
+        };
+        self.reopen_requested = true;
+        let name = if source.name.is_empty() {
+            "Document.pdf".to_string()
+        } else {
+            source.name.clone()
+        };
+        let Some(bytes) = self.content.read(&source.hash) else {
+            self.load_error = Some(format!("{name} is not on this device yet"));
+            self.dirty = true;
+            return;
+        };
+        match self
+            .raster_handle
+            .as_ref()
+            .map(|handle| handle.open_contents(&name, bytes))
+        {
+            Some(Ok(request)) => {
+                self.pending_open = Some(request);
+                self.status_note = Some("Opening PDF…".to_string());
+            }
+            Some(Err(error)) => {
+                self.record_open_failure(std::path::Path::new(&name), &error.to_string());
+            }
+            None => self.record_open_failure(
+                std::path::Path::new(&name),
+                "the PDF worker could not be started",
+            ),
+        }
+        self.dirty = true;
     }
 
     /// Load a real PDF from `path` into the running reader, replacing whatever
@@ -4528,21 +4528,12 @@ impl PdfApp {
                 self.reader_markup_hidden = false;
                 self.raster = Some(loaded.raster);
                 self.has_document = true;
+                self.seed_pending = true;
                 self.doc_name = loaded.name;
                 self.source_path = Some(path.to_path_buf());
                 self.load_error = None;
                 self.status_note = None;
-                // Point at the new document's markup record. The host checks
-                // it out before the next `sync`, so the caches are emptied
-                // here rather than the previous document's markup being
-                // deleted — which is what this used to do, and it was the
-                // one copy of the user's annotations.
-                self.markup_record = Some(Self::markup_record_for(&loaded.file, path));
-                self.annotations.clear();
-                self.comments.clear();
-                self.signatures.clear();
                 self.reload(state);
-                self.commit_pending = true;
                 // Reset per-peer view state for the fresh document.
                 self.fit = FitMode::Page;
                 self.viewport.set_scroll(0.0, 0.0);
@@ -4596,7 +4587,7 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "one exhaustive worker event boundary keeps stale-result filtering auditable"
     )]
-    fn drain_raster_events(&mut self, state: &mut AutoCommit) {
+    fn drain_raster_events(&mut self, state: &AutoCommit) {
         let events = self
             .raster_handle
             .as_ref()
@@ -4609,7 +4600,7 @@ impl PdfApp {
                     document,
                     name,
                     raster,
-                    file,
+                    ..
                 } if self
                     .pending_open
                     .as_ref()
@@ -4637,25 +4628,11 @@ impl PdfApp {
                     self.applied_worker_plan = None;
                     self.worker_plan_blobs.clear();
                     self.has_document = true;
+                    self.seed_pending = true;
                     self.doc_name = name;
                     self.source_path = Some(request.path.clone());
                     self.load_error = None;
                     self.status_note = None;
-                    self.markup_record = Some(Self::markup_record_for(&file, &request.path));
-                    self.awaiting_markup_record = true;
-                    self.annotations.clear();
-                    self.comments.clear();
-                    self.signatures.clear();
-                    // Existing provider handles share this catalogue. Remove
-                    // entries in place so none retain the outgoing PDF's text.
-                    for id in self.search_catalog_ids.drain() {
-                        self.search_catalog.remove(&id);
-                    }
-                    self.search_projection_revision = None;
-                    // The host checked out the outgoing record before this
-                    // sync began. Wait for its next record_tick before reading
-                    // the newly opened PDF's markup.
-                    self.commit_pending = true;
                     self.fit = FitMode::Page;
                     self.viewport.set_scroll(0.0, 0.0);
                     self.current_page = 1;
@@ -4898,10 +4875,10 @@ impl PdfApp {
                         })
                         .collect();
                     self.pending_import = None;
-                    self.perform_action(
-                        state,
-                        &crate::actions::import_pages_action(request.after.as_deref(), pages),
-                    );
+                    self.submit(&crate::actions::import_pages_action(
+                        request.after.as_deref(),
+                        pages,
+                    ));
                     self.reconcile_shared_page_plan(state);
                     self.go_to_page(request.at + 1);
                     self.status_note = Some(
@@ -5029,7 +5006,7 @@ impl PdfApp {
 
 impl Default for PdfApp {
     fn default() -> Self {
-        Self::new()
+        Self::empty()
     }
 }
 
@@ -5053,102 +5030,16 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource,
-        dyn ui::record::capability::RecordScoped,
-        dyn ui::undo::UndoPoints
-    );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::PDF_VIEWER_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .portal_action
-                .is_some_and(|(pending, _)| pending == invocation)
-        {
-            self.portal_action = None;
-            self.portal_rx = None;
-            self.portal_save_rx = None;
-            self.cancel_pending_open();
-            if let Some(request) = self.pending_save.take() {
-                let _ = self
-                    .raster_handle
-                    .as_ref()
-                    .and_then(|handle| handle.cancel_save(request).ok());
-            }
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file operation cancelled".into()),
-            });
-        }
-        if self
-            .completed_portal_action
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            return self.completed_portal_action.take();
-        }
-        None
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document_ref(state, path);
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
-        if let Some(wanted) = self.markup_record.as_ref()
-            && ui::record::identity(state).is_none_or(|active| wanted.id != active.id)
-        {
-            // Async open changes record_intent during sync. Do not reconcile
-            // the new PDF's pages or read markup against the outgoing record.
-            self.dirty = true;
-            self.awaiting_markup_record = true;
-            return;
-        }
-        self.awaiting_markup_record = false;
+        self.follow_cancellation();
+        self.follow_reopen();
+        self.follow_signature();
+        self.reopen_pinned_source();
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal(state);
@@ -5158,37 +5049,18 @@ impl Widget for PdfApp {
         // And any completed import (a PDF/image chosen to add as pages).
         self.drain_portal_import(state);
 
-        if !self.seeded {
-            // Demonstration markup is seeded only on the screenshot / test
-            // path; a user document opens with whatever markup the shared
-            // CRDT already holds.
-            if self.seed_sample && !PdfDoc::is_seeded(state) {
-                self.seed(state);
-            }
-            self.seeded = true;
-        }
         if self.has_document {
+            if std::mem::take(&mut self.seed_pending) {
+                self.seed_record(state);
+            }
             self.reconcile_shared_page_plan(state);
-            self.pin_source(state);
-            self.adopt_existing(state);
+        }
+        if std::mem::take(&mut self.staged_import) {
+            self.demo_import_image(state);
         }
         self.reload(state);
         self.sync_reader_markup(state);
-        self.refresh_search_catalog(state);
-
-        // Screenshot hook (never set at runtime): focus the first comment.
-        if self.shots_edit_first_comment {
-            if let Some(c) = self.comments.first() {
-                let (id, body) = (c.id.clone(), c.body.clone());
-                self.begin_edit(EditTarget::CommentBody(id), &body);
-            }
-            self.shots_edit_first_comment = false;
-        }
-        // Screenshot hook: land on the Signatures composer (the demo seed lands
-        // on Comments, so re-assert it after the seed).
-        if self.shots_sign {
-            self.sidebar_tab = SidebarTab::Signatures;
-        }
+        self.refresh_search_entries(state);
     }
 
     fn build_layout(
@@ -5249,9 +5121,6 @@ impl Widget for PdfApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.awaiting_markup_record {
-            return;
-        }
         if self.context_menu.is_some() {
             let (selected_target, still_open) = {
                 match self.context_menu.as_mut() {
@@ -5264,7 +5133,7 @@ impl Widget for PdfApp {
                 }
             };
             if let Some(target) = selected_target {
-                self.delete_target(&target, ctx.state);
+                self.delete_target(&target, &mut ctx.state);
                 self.context_menu = None;
                 *ctx.handled = true;
                 return;
@@ -5291,7 +5160,7 @@ impl Widget for PdfApp {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.handled,
         );
     }
@@ -5314,7 +5183,7 @@ impl Widget for PdfApp {
 
     /// The reader paints its document chrome and pages directly, so expose the
     /// otherwise invisible structure explicitly.  The navigation controls use
-    /// the same `PdfOperation` reducer as the toolbar and Ctrl+K resources;
+    /// the same `PdfEffect` handler as the toolbar and Ctrl+K resources;
     /// assistive technology never takes a separate, untested shortcut.
     #[allow(
         clippy::too_many_lines,
@@ -5332,11 +5201,8 @@ impl Widget for PdfApp {
                 .with_bounds(bounds)
                 .with_state(focusable())
         };
-        // A document is not open for interaction until the host admits its
-        // markup record: until then every event and action is refused, so it
-        // is still opening, not a page anyone can act on.
-        let opening = self.pending_open.is_some() || self.awaiting_markup_record;
-        if !self.has_document || self.awaiting_markup_record {
+        let opening = self.opening();
+        if !self.has_document {
             let mut children = vec![
                 AccessNode::new(Role::Heading { level: 1 })
                     .with_name(if opening { "Opening PDF" } else { "Open a PDF" })
@@ -5541,7 +5407,7 @@ impl Widget for PdfApp {
                             })
                             .with_description(format!(
                                 "{} on page {}; {} replies",
-                                comment.author,
+                                self.author_name(&comment.author),
                                 comment.page,
                                 comment.replies.len()
                             ))
@@ -5672,15 +5538,11 @@ impl Widget for PdfApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        use crate::actions::PdfOperation;
         use ui::a11y::Action as A11yAction;
         let (state, path) = ui::doc::document(state, path);
-        if self.awaiting_markup_record {
-            return false;
-        }
         if target.starts_with("context-menu:item:") {
             let Some(menu) = self.context_menu.as_mut() else {
                 return false;
@@ -5921,25 +5783,15 @@ impl Widget for PdfApp {
             }
             _ => {}
         }
-        let operation = match target {
-            "pdf.previous-page" => PdfOperation::PreviousPage,
-            "pdf.next-page" => PdfOperation::NextPage,
-            "pdf.zoom-in" => PdfOperation::ZoomIn,
-            "pdf.zoom-out" => PdfOperation::ZoomOut,
-            "pdf.toggle-sidebar" => PdfOperation::ToggleSidebar,
+        let effect = match target {
+            "pdf.previous-page" => PdfEffect::PreviousPage,
+            "pdf.next-page" => PdfEffect::NextPage,
+            "pdf.zoom-in" => PdfEffect::ZoomIn,
+            "pdf.zoom-out" => PdfEffect::ZoomOut,
+            "pdf.toggle-sidebar" => PdfEffect::ToggleSidebar,
             _ => return false,
         };
-        let Ok(payload) = serde_json::to_vec(&operation) else {
-            return false;
-        };
-        self.answer_resource_operation(
-            tilo_actions::OperationKind::View,
-            crate::actions::PDF_VIEWER_OPERATION_TYPE,
-            &payload,
-            state,
-            path,
-        )
-        .unwrap_or(false)
+        self.show(&effect)
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -5973,10 +5825,7 @@ impl Widget for PdfApp {
     }
 
     fn has_pending_visual_work(&self) -> bool {
-        self.pending_open.is_some()
-            || self.awaiting_markup_record
-            || self.pending_visuals
-            || self.pending_raster
+        self.pending_open.is_some() || self.pending_visuals || self.pending_raster
     }
 
     fn needs_redraw(&self) -> bool {
@@ -5995,6 +5844,7 @@ impl Widget for PdfApp {
         // leaving a button arrives as a real event, which repaints and clears
         // the popover on its own.
         let owner_busy = self.portal_contents_rx.is_some()
+            || self.pending_reopen.is_some()
             || self
                 .raster_handle
                 .as_ref()
@@ -6028,287 +5878,192 @@ impl Widget for PdfApp {
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        // The host's decision about this user's rights gates every edit this
-        // widget dispatches (see `perform_action`).
-        if &self.permissions != permissions {
-            self.permissions = permissions.clone();
-        }
-        // Root fills the whole window — never cull.
-        self.draw(scene, transform, text_renderer, theme, presence);
-    }
 }
 
-impl ui::undo::UndoPoints for PdfApp {
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-    }
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-    }
-}
-
-impl ui::record::capability::RecordScoped for PdfApp {
-    fn record_intent(&self) -> Option<ui::RecordCheckout> {
-        self.markup_record.clone()
-    }
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        if self.editing.is_some() {
-            return Err("Finish or cancel the active PDF edit before switching documents".into());
-        }
-        self.portal_rx = None;
-        self.portal_save_rx = None;
-        self.portal_import_rx = None;
-        self.cancel_pending_open();
-        self.pending_import = None;
-        if let Some(request) = self.pending_save.take() {
-            let _ = self
-                .raster_handle
-                .as_ref()
-                .and_then(|handle| handle.cancel_save(request).ok());
-        }
-        self.pending_worker_plan = None;
-        self.portal_action = None;
-        self.completed_portal_action = None;
-        Ok(())
-    }
-}
-
-impl ui::search::capability::SearchSource for PdfApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        (self.has_document && !self.awaiting_markup_record)
-            .then(|| {
-                Box::new(crate::search_provider::PdfSearchProvider::from_catalog(
-                    self.search_catalog.clone(),
-                )) as Box<dyn ui::search::SearchProvider>
-            })
-            .into_iter()
-            .collect()
-    }
-}
-
-impl ui::resources::PublishesResources for PdfApp {
-    /// Publish the open document + its markup so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // Framework [`tilo_resource::publish`] owns `pdf.document`, page/zoom
-        // Views, and markup children. Find hits are live presentation only —
-        // keep that same standalone slice when hosted, never a second root.
-        if self.actions.is_hosted() {
-            return self
-                .pdf_resource_ctx()
-                .map(|ctx| crate::actions::find_result_resources(&ctx))
-                .unwrap_or_default();
-        }
-        self.publish_resources(doc)
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // The framework root already publishes the document. The directory page
-        // keeps the same live find slice as `resources`, never a second root.
-        if self.actions.is_hosted() {
-            let resources = if cursor.is_empty() && max_results > 0 {
-                self.pdf_resource_ctx()
-                    .map(|ctx| crate::actions::find_result_resources(&ctx))
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources,
-                next_cursor: Vec::new(),
-                exhausted: true,
-            });
-        }
-        // The directory is the published document. Page, outline, and find
-        // rows stay on the full resource tree; listing them here would walk
-        // the open document just to name the root actions.
-        let mut resources = if cursor.is_empty() && max_results > 0 {
-            self.pdf_resource_ctx()
-                .map(|ctx| crate::actions::provide_resources(&ctx, doc))
-                .unwrap_or_default()
+impl PdfApp {
+    /// The search entries of the open document; none without one.
+    pub(crate) fn shown_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        if self.has_document {
+            self.search_entries.clone()
         } else {
             Vec::new()
-        };
-        if let Some(root) = resources.first_mut() {
-            root.children.clear();
         }
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted()
-            && self
-                .pdf_resource_ctx()
-                .is_some_and(|ctx| id == format!("pdf.document:{}", ctx.doc_id))
-        {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for PdfApp {
-    /// Hand the host the heads captured before an on-page affordance dispatched
-    /// its markup action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
     }
 }
 
 impl PdfApp {
-    fn answer_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::PdfOperation;
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            PdfOperation::PreviousPage => self.prev_page(),
-            PdfOperation::NextPage => self.next_page(),
-            PdfOperation::ZoomIn => self.zoom_by(1.15),
-            PdfOperation::ZoomOut => self.zoom_by(1.0 / 1.15),
-            PdfOperation::FitPage => self.fit_page(),
-            PdfOperation::FitWidth => self.fit_width(),
-            PdfOperation::ToggleSidebar => self.toggle_sidebar(),
-            PdfOperation::ToggleRail => self.toggle_rail(),
-            PdfOperation::OpenSearch => self.open_search(),
-            PdfOperation::GoToPage { page } => self.go_to_page(page),
-            PdfOperation::MarkupStyle { style } => {
-                if let Some(style) = model::MarkupStyle::parse(&style) {
-                    self.markup_style = style;
-                    self.tool = Tool::Highlight;
-                    self.dirty = true;
-                }
+    /// The open document's live rows: its outline and the current find
+    /// hits, read from the PDF and the find bar rather than the record.
+    pub(crate) fn document_rows(&self) -> Vec<ui::framework::LiveRow> {
+        self.pdf_resource_ctx()
+            .map(|ctx| crate::actions::live_rows(&ctx))
+            .unwrap_or_default()
+    }
+
+    /// The live row `id`, beyond the bounded page listed.
+    pub(crate) fn document_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        self.pdf_resource_ctx()
+            .and_then(|ctx| crate::actions::live_row(&ctx, id))
+    }
+
+    /// Answer a view effect: move through the document or change how it is
+    /// shown. Whether `effect` is one.
+    pub(crate) fn show(&mut self, effect: &PdfEffect) -> bool {
+        match effect {
+            PdfEffect::PreviousPage => self.prev_page(),
+            PdfEffect::NextPage => self.next_page(),
+            PdfEffect::ZoomIn => self.zoom_by(1.15),
+            PdfEffect::ZoomOut => self.zoom_by(1.0 / 1.15),
+            PdfEffect::FitPage => self.fit_page(),
+            PdfEffect::FitWidth => self.fit_width(),
+            PdfEffect::ToggleSidebar => self.toggle_sidebar(),
+            PdfEffect::TogglePages => self.toggle_rail(),
+            PdfEffect::Find => self.open_search(),
+            PdfEffect::GoTo { page } => self.go_to_page(*page),
+            PdfEffect::MarkHighlight | PdfEffect::MarkUnderline | PdfEffect::MarkStrikeout => {
+                self.markup_style = match effect {
+                    PdfEffect::MarkUnderline => model::MarkupStyle::Underline,
+                    PdfEffect::MarkStrikeout => model::MarkupStyle::StrikeOut,
+                    _ => model::MarkupStyle::Highlight,
+                };
+                self.tool = Tool::Highlight;
+                self.dirty = true;
             }
-            PdfOperation::GoToSearchResult {
+            PdfEffect::GoToMatch {
                 query,
                 whole_word,
                 case_sensitive,
                 index,
                 page,
-            } => self.go_to_search_result(&query, whole_word, case_sensitive, index, page),
-            PdfOperation::Open { .. } | PdfOperation::SaveAs { .. } => {
-                return Err("file operations require the lifecycle-capable operation host".into());
-            }
+            } => self.go_to_search_result(query, *whole_word, *case_sensitive, *index, *page),
+            PdfEffect::Open { .. } | PdfEffect::SaveAs { .. } => return false,
         }
-        Ok(true)
+        true
     }
 
-    fn admit_resource_operation(
+    /// Answer `effect`, invoked by a button, the palette or an agent. Opening
+    /// and saving wait on a picker, the PDF owner or the host and answer
+    /// through `reply` when they finish.
+    ///
+    /// # Errors
+    /// Returns why the effect cannot run now.
+    /// Open the PDF at `path`, or the one the person chooses, in this
+    /// window: on its own markup record, which the host shows in place of
+    /// this one, answered once it does or why it could not. Where files
+    /// have no paths the chosen bytes open here, in a window that marks up
+    /// nothing yet.
+    pub(crate) fn open_effect(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        path: Option<String>,
+        cx: &mut ui::framework::EffectCx<crate::PdfViewer, Self>,
+    ) -> ui::framework::EffectAnswer {
+        if self.portal_action.is_some()
+            || self.pending_open.is_some()
+            || self.pending_reopen.is_some()
+        {
+            return Err("another PDF open is already in progress".into());
+        }
+        if let Some(path) = path {
+            return self.open_here_effect(path.into(), cx);
+        }
+        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+            == tilo_paths::Availability::Available
+        {
+            return Ok(
+                cx.choose_path(pdf_open_request(), |app, chosen, cx| match chosen {
+                    Some(path) => app.open_here_effect(path, cx),
+                    None => Err("file selection cancelled".into()),
+                }),
+            );
+        }
+        self.answer_effect(&PdfEffect::Open { path: None }, || cx.reply())
+    }
+
+    /// Ask the host to show the PDF at `path` on its own markup record in
+    /// this window, and answer with whether it does.
+    fn open_here_effect(
+        &mut self,
+        path: std::path::PathBuf,
+        cx: &mut ui::framework::EffectCx<crate::PdfViewer, Self>,
+    ) -> ui::framework::EffectAnswer {
+        use ui::framework::Effected;
+        if self.source_path.as_deref() == Some(path.as_path()) {
+            return Ok(Effected::done());
+        }
+        let Some(open_here) = self.open_here.clone() else {
+            return Err("this window shows the document it was opened on".into());
         };
-        match operation {
-            PdfOperation::Open { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
-                self.load_path(std::path::Path::new(&file), doc);
-                if self.pending_open.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if !self.has_document {
-                    self.portal_action = None;
-                    return Err(self
-                        .load_error
-                        .clone()
-                        .unwrap_or_else(|| "PDF could not be opened".into()));
-                }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
-            PdfOperation::SaveAs { path: Some(file) } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
+        self.status_note = Some("Opening PDF…".to_string());
+        self.dirty = true;
+        let arguments = [path.display().to_string()];
+        Ok(cx.open_here(&open_here, &arguments, move |app, answer, _| {
+            app.opened_here(&path, answer).map(|()| Effected::done())
+        }))
+    }
+
+    /// Take up the host's answer to showing the PDF at `path` here: the
+    /// person is told why it could not, and the open fails with it.
+    fn opened_here(
+        &mut self,
+        path: &std::path::Path,
+        answer: Result<(), String>,
+    ) -> Result<(), String> {
+        self.dirty = true;
+        let Err(reason) = answer else {
+            return Ok(());
+        };
+        let error = format!("Could not open {}: {reason}", path.display());
+        if self.has_document {
+            self.status_note = Some(error.clone());
+        } else {
+            self.status_note = None;
+            self.load_error = Some(error.clone());
+        }
+        Err(error)
+    }
+
+    pub(crate) fn answer_effect(
+        &mut self,
+        effect: &PdfEffect,
+        reply: impl FnOnce() -> ui::framework::EffectReply,
+    ) -> ui::framework::EffectAnswer {
+        use ui::framework::Effected;
+        if self.show(effect) {
+            return Ok(Effected::done());
+        }
+        let opening = matches!(effect, PdfEffect::Open { .. });
+        if opening && (self.portal_action.is_some() || self.pending_open.is_some()) {
+            return Err("another PDF open is already in progress".into());
+        }
+        if !opening && (self.portal_action.is_some() || self.pending_save.is_some()) {
+            return Err("another PDF save is already in progress".into());
+        }
+        match effect {
+            PdfEffect::SaveAs { path: Some(file) } => {
                 let file = ensure_pdf_extension(file.into());
-                self.portal_action = Some((invocation, PortalActionKind::Save));
                 if !self.save_annotated_to(&file) {
-                    self.portal_action = None;
                     return Err("PDF could not be saved".into());
                 }
-                if self.pending_save.is_some() {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                if self.pending_save.is_none() {
+                    return Ok(Effected::done());
                 }
-                self.portal_action = None;
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
             }
-            PdfOperation::Open { path: None } => {
-                if self.portal_action.is_some() || self.pending_open.is_some() {
-                    return Err("another PDF open is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Open));
+            PdfEffect::Open { path: None } => {
                 self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.portal_action = None;
+                if self.portal_contents_rx.is_none() {
                     return Err("PDF picker could not be started".into());
                 }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            PdfOperation::SaveAs { path: None } => {
-                if self.portal_action.is_some() || self.pending_save.is_some() {
-                    return Err("another PDF save is already in progress".into());
-                }
-                self.portal_action = Some((invocation, PortalActionKind::Save));
+            PdfEffect::SaveAs { path: None } => {
                 self.request_save_via_portal();
                 if self.portal_save_rx.is_none() {
-                    self.portal_action = None;
                     return Err("PDF save picker could not be started".into());
                 }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
-            _ => self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+            _ => return Ok(Effected::done()),
         }
+        self.portal_action = Some(reply());
+        Ok(Effected::Pending)
     }
 }
 
@@ -6324,6 +6079,14 @@ mod links_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::search::SearchProvider as _;
+
+    /// The app's search source as the framework builds it from what the open
+    /// document says.
+    fn searched(app: &PdfApp) -> impl ui::search::SearchProvider + use<> {
+        ui::framework::testing::search_source::<crate::PdfViewer>(app.shown_search_entries())
+    }
+    use crate::model::Reply;
     use serial_test::serial;
     use ui::headless::{Framed, viewport};
 
@@ -6331,85 +6094,9 @@ mod tests {
     const HANG_BOUND: Duration = Duration::from_secs(30);
     use tilo_automerge::ApplyIncoming;
 
-    #[test]
-    fn owner_release_refuses_inline_draft_then_detaches_all_old_worker_requests() {
-        let mut app = PdfApp::loading_preview();
-        let selected = ui::RecordCheckout::new(
-            ui::RecordId::for_tab(9201),
-            ui::RecordKind::new("pdf-markup"),
-        );
-        app.markup_record = Some(selected.clone());
-        app.source_path = Some("selected.pdf".into());
-        app.begin_edit(EditTarget::Signer, "Draft signer");
-        assert!(ui::record::capability::release_record_scope(&mut app).is_err());
-        assert!(app.pending_open.is_some());
-        assert_eq!(app.markup_record, Some(selected.clone()));
-        assert_eq!(
-            app.source_path.as_deref(),
-            Some(std::path::Path::new("selected.pdf"))
-        );
-
-        app.editing = None;
-        app.portal_rx = Some({
-            let (answer, channel) = std::sync::mpsc::channel();
-            let _ = answer.send(PortalOutcome::Cancelled);
-            channel
-        });
-        app.portal_save_rx = Some({
-            let (answer, channel) = std::sync::mpsc::channel();
-            let _ = answer.send(PortalOutcome::Cancelled);
-            channel
-        });
-        app.portal_import_rx = Some({
-            let (answer, channel) = std::sync::mpsc::channel();
-            let _ = answer.send(PortalOutcome::Cancelled);
-            channel
-        });
-        app.pending_import = Some(ImportRequest {
-            id: 2,
-            document_id: 1,
-            path: "import.pdf".into(),
-            at: 0,
-            after: None,
-        });
-        app.pending_save = Some(SaveRequest {
-            id: 3,
-            document_id: 1,
-            markup: crate::source::ExportMarkup::default(),
-            path: "save.pdf".into(),
-        });
-        app.pending_worker_plan = Some(Vec::new());
-        let invocation = tilo_actions::InvocationId::new();
-        app.portal_action = Some((invocation, PortalActionKind::Open));
-        app.completed_portal_action = Some(tilo_actions::InvocationUpdate::Succeeded {
-            invocation,
-            output: tilo_actions::ActionOutput::default(),
-        });
-        ui::record::capability::release_record_scope(&mut app).unwrap();
-        assert!(app.portal_rx.is_none());
-        assert!(app.portal_save_rx.is_none());
-        assert!(app.portal_import_rx.is_none());
-        assert!(app.pending_open.is_none());
-        assert!(app.pending_import.is_none());
-        assert!(app.pending_save.is_none());
-        assert!(app.pending_worker_plan.is_none());
-        assert!(app.portal_action.is_none());
-        assert!(app.completed_portal_action.is_none());
-        assert_eq!(app.markup_record, Some(selected));
-        assert_eq!(
-            app.source_path.as_deref(),
-            Some(std::path::Path::new("selected.pdf"))
-        );
-    }
-
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
     /// markup reaching another, and the same path twice is one record.
-    /// The markup record the reader opens for the file at `path`.
-    fn markup_for(path: &std::path::Path) -> ui::RecordCheckout {
-        PdfApp::markup_record_for(&ui::RecordId::identify_file(path), path)
-    }
-
     fn two_documents() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
         let a = dir.path().join("a.pdf");
@@ -6420,255 +6107,157 @@ mod tests {
         (dir, a, b)
     }
 
-    /// One frame of the record-aware host: check out whatever record the
-    /// widget names, then sync. This is `ui::App::record_tick` +
-    /// `root_widget.sync` — the same `ui::record::tick` the App calls, not a
-    /// reimplementation of it.
-    fn record_frame(
-        app: &mut PdfApp,
-        st: &mut ui::State,
-        set: &mut ui::RecordSet,
-        room: &mut AutoCommit,
-    ) {
-        ui::record::tick(set, st, Some(room), &*app);
-        app.sync(&mut st.doc, &st.root);
-    }
-
-    /// Standalone fixture frames explicitly admit a file's record, just like
-    /// the live host. Multi-document tests retain their `RecordSet` separately.
+    /// One frame of the reader over its record.
     fn sync_fixture(app: &mut PdfApp, st: &mut ui::State) {
-        if let Some(want) = ui::record::capability::record_intent(app) {
-            if ui::record::identity(&st.doc).is_none() {
-                ui::RecordSet::in_memory().checkout(st, None, &want);
-            }
-            assert_eq!(ui::record::identity(&st.doc).unwrap().id, want.id);
-        }
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
     }
 
-    /// Place a highlight on page 1 through the drag path a user takes.
-    fn annotate(app: &mut PdfApp, st: &mut ui::State) {
-        app.tool = Tool::Highlight;
-        app.drag = Some(DragState {
-            tool: Tool::Highlight,
-            page: 1,
-            start: (70.0, 150.0),
-            cur: (360.0, 165.0),
-            points: vec![],
-        });
-        app.commit_drag(&mut st.doc);
+    /// The reader launched on `path` on a fresh profile, as
+    /// `pdf-viewer PATH` opens it.
+    fn launched(path: &std::path::Path) -> ui::framework::testing::TestApp<crate::PdfViewerShell> {
+        ui::framework::testing::TestApp::launched(&[path.to_str().expect("utf-8 path")])
+            .expect("the reader launches on the file")
+    }
+
+    /// A highlight on the first page of the open document, as the palette
+    /// or an agent adds one.
+    fn highlight_on_first_page() -> ui::tilo_resource::Invoke<crate::PdfViewer> {
+        ui::tilo_resource::Invoke::apply(&crate::actions::add_annotation_on(
+            &Annotation {
+                id: "launched-highlight".into(),
+                page: 1,
+                kind: AnnoKind::highlight(PtRect::new(70.0, 150.0, 290.0, 15.0)),
+                color: Swatch::Yellow,
+                author: "Ada".into(),
+                chars: None,
+                created_ms: 0,
+                space: crate::model::GeomSpace::Page,
+            },
+            Some("source-1"),
+        ))
+        .expect("a highlight action")
     }
 
     #[serial(pdfium)]
     #[test]
-    fn opening_documents_keeps_each_files_markup_and_context() {
-        // Opening a second document must not destroy the first document's
-        // markup. Annotations are per-document state; before records they lived
-        // in one document per `(app, room)` and the only way to stop one file's
-        // markup appearing over another was to delete it — which is data loss,
-        // not scoping.
-        eprintln!("phase annotating_one_document_survives_opening_another");
+    fn each_document_keeps_its_markup_in_a_record_of_its_own() {
+        // Opening a second document must not destroy or show the first
+        // document's markup: each file is launched on its own record.
+        eprintln!("phase launching_on_another_document_shows_none_of_the_first");
         {
             let (_dir, a, b) = two_documents();
-            let mut app = PdfApp::open(&a);
-            assert!(app.has_document, "a.pdf must load");
-            let mut st = ui::State::new();
-            let mut set = ui::RecordSet::in_memory();
-            let mut room = AutoCommit::new();
-            record_frame(&mut app, &mut st, &mut set, &mut room);
+            let mut app = launched(&a);
+            app.invoke(highlight_on_first_page())
+                .expect("the owner annotates");
+            assert_eq!(app.state().annotations.len(), 1);
+            let a_record = app.record().clone();
+            assert_eq!(
+                app.state().source.map(|source| source.name),
+                Some("a.pdf".to_string()),
+                "the record pins the document it marks up"
+            );
 
-            annotate(&mut app, &mut st);
-            let on_a = PdfDoc::list_annotations(&st.doc).len();
-            assert!(on_a > 0, "the highlight landed in a.pdf's document");
-
-            // Open the second document in place, the way the portal picker does.
-            app.load_path(&b, &st.doc);
-            record_frame(&mut app, &mut st, &mut set, &mut room);
+            let other = app.relaunch(&[b.to_str().unwrap()]).unwrap();
+            assert_ne!(other.record(), &a_record, "b.pdf is a record of its own");
             assert!(
-                PdfDoc::list_annotations(&st.doc).is_empty(),
-                "b.pdf opens with no markup — a.pdf's highlight is not its"
+                other.state().annotations.is_empty(),
+                "a.pdf's markup is not b.pdf's"
             );
 
-            // Back to the first document.
-            app.load_path(&a, &st.doc);
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            assert_eq!(
-                PdfDoc::list_annotations(&st.doc).len(),
-                on_a,
-                "a.pdf's annotations are still there after b.pdf was opened"
-            );
-            assert_eq!(
-                app.annotations.len(),
-                on_a,
-                "and the reader shows them again"
+            let again = other.relaunch(&[a.to_str().unwrap()]).unwrap();
+            assert_eq!(again.record(), &a_record);
+            assert_eq!(again.state().annotations.len(), 1, "a.pdf keeps its markup");
+
+            // Launched bare, the window reopens the record it showed last,
+            // and that record's document from the content store.
+            let mut bare = again.reopen().unwrap();
+            assert_eq!(bare.record(), &a_record);
+            assert!(
+                bare.harness()
+                    .wait_until(tilo_test_env::hang_bound(), |harness| {
+                        harness.a11y_node_named("Page 1 of 3").is_some()
+                    }),
+                "the pinned document reopens"
             );
         }
 
-        eprintln!("phase failed_replacement_open_keeps_the_previous_document_context");
+        eprintln!("phase the_apps_open_shows_the_chosen_document_on_its_own_record");
         {
-            let (dir, a, _b) = two_documents();
-            let mut app = PdfApp::open(&a);
-            let mut st = ui::State::new();
-            sync_fixture(&mut app, &mut st);
-            annotate(&mut app, &mut st);
-            assert!(app.markup_record.is_some());
-            assert!(!app.annotations.is_empty());
-
-            app.load_path(&dir.path().join("not-a-pdf.pdf"), &st.doc);
-
-            assert!(app.has_document);
-            assert!(app.markup_record.is_some());
-            assert!(!app.annotations.is_empty());
-            assert!(!app.resource_page_ids.is_empty());
-            assert!(app.load_error.is_none());
-            assert!(
-                app.status_note
-                    .as_deref()
-                    .is_some_and(|note| note.contains("Could not open"))
-            );
-        }
-
-        eprintln!("phase loading_a_second_document_shows_none_of_the_priors_markup");
-        {
-            // The property this has always protected: one document's markup must
-            // never appear over another. What changed is how — the second
-            // document is a different record, so there is nothing to clear, and
-            // the first document's markup is still its own (proved by
-            // `annotating_one_document_survives_opening_another`).
+            let open = |path: &std::path::Path| PdfEffect::Open {
+                path: Some(path.display().to_string()),
+            };
             let (_dir, a, b) = two_documents();
-            let mut app = PdfApp::open(&a);
-            let mut st = ui::State::new();
-            let mut set = ui::RecordSet::in_memory();
-            let mut room = AutoCommit::new();
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            annotate(&mut app, &mut st);
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            assert!(!app.annotations.is_empty(), "a.pdf has markup to bleed");
+            let mut app = launched(&a);
+            app.invoke(highlight_on_first_page())
+                .expect("the owner annotates");
+            let a_record = app.record().clone();
 
-            app.load_path(&b, &st.doc);
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            assert!(app.has_document, "the second document loads");
-            assert_eq!(app.doc_name, "b.pdf");
-            assert!(app.annotations.is_empty(), "no prior annotations shown");
-            assert!(app.comments.is_empty(), "no prior comments shown");
-            assert!(app.signatures.is_empty(), "no prior signatures shown");
-            assert!(
-                PdfDoc::list_annotations(&st.doc).is_empty(),
-                "and none in the document the reader is now editing"
+            app.effect_confirmed(&open(&b))
+                .expect("the app opens another document");
+            app.harness().relayout();
+            assert_ne!(
+                app.record(),
+                &a_record,
+                "b.pdf shows on a record of its own"
             );
-            assert!(PdfDoc::list_signatures(&st.doc).is_empty());
-            // View state resets for the fresh document.
-            assert_eq!(app.current_page, 1);
-            assert!(app.selected_anno.is_none() && app.selected_sig.is_none());
-        }
-    }
-
-    #[serial(pdfium)]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
-    #[test]
-    fn owner_worker_opens_settle_await_admission_and_ignore_stale_results() {
-        eprintln!("phase owner_worker_open_waits_for_the_new_markup_record");
-        {
-            let (_dir, a, b) = two_documents();
-            let mut app = PdfApp::sample();
-            app.seed_sample = false;
-            let mut st = ui::State::new();
-            let mut set = ui::RecordSet::in_memory();
-            let mut room = AutoCommit::new();
-            let a_record = markup_for(&a);
-            app.markup_record = Some(a_record.clone());
-            set.checkout(&mut st, Some(&mut room), &a_record);
-            PdfDoc::ensure_page_plan(&mut st.doc, 1);
-            annotate(&mut app, &mut st);
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
-            let provider = ui::search::capability::search_providers(&app).remove(0);
-            assert!(!provider.search("").is_empty());
-            let original = st.doc.get_heads();
-
-            // Exercise the production worker, not load_path's synchronous test
-            // substitute. The host checks out records before calling sync.
-            app.queue_worker_open(&b);
-            let deadline = tilo_test_env::hang_deadline();
-            while app.pending_open.is_some() && ui::time::now() < deadline {
-                record_frame(&mut app, &mut st, &mut set, &mut room);
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            assert!(app.pending_open.is_none(), "worker open must settle");
-            assert!(app.has_document, "fixture must open: {:?}", app.load_error);
-            assert_eq!(app.markup_record.as_ref().unwrap().id, markup_for(&b).id);
-            assert_eq!(ui::record::identity(&st.doc).unwrap().id, a_record.id);
-            assert_eq!(st.doc.get_heads(), original, "opening b must not edit a");
-            assert!(
-                app.annotations.is_empty(),
-                "a's markup must not appear on b"
-            );
-            assert!(
-                provider.search("").is_empty(),
-                "retained providers drop a's text"
-            );
-            assert!(ui::search::capability::search_providers(&app).is_empty());
-            assert!(ui::resources::resources(&app, &st.doc).is_empty());
-
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            assert!(PdfDoc::list_annotations(&st.doc).is_empty());
-            assert!(app.annotations.is_empty());
+            assert!(app.state().annotations.is_empty(), "without a.pdf's markup");
             assert_eq!(
-                PdfDoc::list_page_plan(&st.doc).len(),
-                app.source_pages.len()
+                app.state().source.map(|source| source.name),
+                Some("b.pdf".to_string())
             );
-            set.checkout(&mut st, Some(&mut room), &a_record);
-            assert!(!PdfDoc::list_annotations(&st.doc).is_empty());
-            assert_eq!(PdfDoc::list_page_plan(&st.doc).len(), 1);
+            let b_record = app.record().clone();
+
+            app.effect_confirmed(&open(&a)).expect("and back");
+            app.harness().relayout();
+            assert_eq!(app.record(), &a_record);
+            assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");
+
+            // A document that cannot be opened leaves the window as it is:
+            // the person is told why, and the operation fails with it.
+            let missing = a.with_file_name("gone.pdf");
+            let failure = app
+                .effect_confirmed(&open(&missing))
+                .expect_err("a missing document fails the open");
+            assert!(
+                failure.to_string().contains("gone.pdf"),
+                "the operation fails with the reason: {failure}"
+            );
+            app.harness().relayout();
+            assert_eq!(app.record(), &a_record, "the window keeps its record");
+            let note = app
+                .with_surface::<PdfApp, _>(|pdf| pdf.status_note.clone())
+                .flatten()
+                .expect("the person is told");
+            assert!(note.contains("gone.pdf"), "{note}");
+
+            // A bare window opening a file marks it up on the file's own
+            // record, the one a launch on the file opens.
+            let mut bare = app.relaunch(&[]).expect("a bare window");
+            bare.effect_confirmed(&open(&b))
+                .expect("the bare window opens b.pdf");
+            bare.harness().relayout();
+            assert_eq!(bare.record(), &b_record);
         }
 
-        eprintln!("phase owner_worker_first_open_waits_for_explicit_record_admission");
+        eprintln!("phase the_reader_on_its_own_opens_the_chosen_document_itself");
         {
-            let (_dir, path, _) = two_documents();
+            let (_dir, a, _b) = two_documents();
             let mut app = PdfApp::empty();
             let mut st = ui::State::new();
-            let original = st.doc.get_heads();
-            app.queue_worker_open(&path);
-            let deadline = tilo_test_env::hang_deadline();
-            while app.pending_open.is_some() && ui::time::now() < deadline {
-                app.sync(&mut st.doc, &st.root);
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            assert!(app.pending_open.is_none());
-            assert!(app.has_document, "fixture must open: {:?}", app.load_error);
-            // More frames are not evidence that the host admitted this record.
-            for _ in 0..3 {
-                app.sync(&mut st.doc, &st.root);
-                assert_eq!(st.doc.get_heads(), original);
-                assert!(app.awaiting_markup_record);
-                assert!(app.has_pending_visual_work());
-                assert!(ui::resources::resources(&app, &st.doc).is_empty());
-                let semantics = format!("{:?}", Widget::accessibility(&app));
-                assert!(
-                    semantics.contains("Opening PDF") && !semantics.contains("pdf.page:"),
-                    "a document awaiting its record offers no page to act on"
-                );
-                assert!(!app.perform_semantic_action(
-                    "pdf.tool:2",
-                    &ui::a11y::Action::Activate,
-                    &mut st.doc,
-                    &st.root,
-                ));
-                assert_eq!(st.doc.get_heads(), original);
-            }
-            let mut set = ui::RecordSet::in_memory();
-            let mut room = AutoCommit::new();
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            assert!(!app.awaiting_markup_record);
-            assert!(!ui::resources::resources(&app, &st.doc).is_empty());
-            assert!(app.perform_semantic_action(
-                "pdf.tool:2",
-                &ui::a11y::Action::Activate,
-                &mut st.doc,
-                &st.root,
-            ));
+            app.open_chosen(&a, &st.doc);
+            sync_fixture(&mut app, &mut st);
+            assert!(app.has_document);
+            assert_eq!(
+                PdfDoc::source(&st.doc).map(|(hash, ..)| hash),
+                app.source_blob.as_ref().map(|(hash, _)| hash.clone()),
+                "the window's record now marks up the chosen document"
+            );
         }
+    }
 
+    #[serial(pdfium)]
+    #[test]
+    fn owner_worker_opens_settle_and_ignore_stale_results() {
         eprintln!("phase owner_worker_failure_settles_the_matching_open_without_blocking");
         {
             let dir = tempfile::tempdir().expect("temporary PDFs");
@@ -6677,13 +6266,13 @@ mod tests {
                 .expect("write corrupt fixture");
             for path in [dir.path().join("missing.pdf"), corrupt] {
                 let mut app = PdfApp::empty();
-                let mut state = AutoCommit::new();
+                let state = AutoCommit::new();
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
                 let deadline = tilo_test_env::hang_deadline();
                 while app.pending_open.is_some() && ui::time::now() < deadline {
                     std::thread::sleep(Duration::from_millis(5));
-                    app.drain_raster_events(&mut state);
+                    app.drain_raster_events(&state);
                 }
                 assert!(app.pending_open.is_none(), "worker failure settles loading");
                 assert!(!app.has_document);
@@ -6698,7 +6287,7 @@ mod tests {
         eprintln!("phase owner_worker_stale_open_result_cannot_replace_the_latest_request");
         {
             let mut app = PdfApp::empty();
-            let mut state = AutoCommit::new();
+            let state = AutoCommit::new();
             let first = std::path::Path::new("/definitely/not/a/tilo-pdf-a.pdf");
             let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
             app.queue_worker_open(first);
@@ -6706,7 +6295,7 @@ mod tests {
             let deadline = ui::time::now() + HANG_BOUND;
             while ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
-                app.drain_raster_events(&mut state);
+                app.drain_raster_events(&state);
                 if app.pending_open.is_none() {
                     break;
                 }
@@ -6721,169 +6310,106 @@ mod tests {
     }
 
     #[serial(pdfium)]
-    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn markup_is_a_file_record_found_through_rename_move_and_the_room_index() {
-        // The markup of a document is a record of its own that *references* the
-        // document, rather than state living inside it. That is what makes
-        // "share the document without my notes" expressible at all: two
-        // records, one reference, and the sharing decision is which of them you
-        // hand over.
-        eprintln!("phase markup_is_a_record_referencing_the_document");
-        {
-            let (_dir, a, _b) = two_documents();
-            let mut app = PdfApp::open(&a);
-            let mut st = ui::State::new();
-            let mut set = ui::RecordSet::in_memory();
-            let mut room = AutoCommit::new();
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-
-            let file = ui::RecordId::identify_file(&a);
-            assert!(
-                file.file_record().is_some(),
-                "a local file gets a durable identity"
-            );
-            assert!(
-                ui::record::room::holds(&room, &file),
-                "the room references the file record it opened"
-            );
-            let refs = ui::record::references(&st.doc);
-            assert!(
-                refs.iter()
-                    .any(|r| r.target == file && r.relation == "marks-up"),
-                "the live markup record references the document it marks up, got {refs:?}"
-            );
-        }
-
+    fn markup_follows_the_file_through_rename_and_move_but_not_a_copy() {
         // Markup follows the file, not its path or its bytes: renaming and
         // moving the PDF reopens the same annotations; a copy starts clean.
-        eprintln!("phase markup_follows_the_file_through_rename_and_move_but_not_a_copy");
-        {
-            let dir = tempfile::tempdir().expect("temp dir");
-            let original = dir.path().join("paper.pdf");
-            let fixture = concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
-            );
-            std::fs::copy(fixture, &original).expect("copy the Typst fixture");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let original = dir.path().join("paper.pdf");
+        let fixture = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
+        );
+        std::fs::copy(fixture, &original).expect("copy the Typst fixture");
 
-            let mut app = PdfApp::open(&original);
-            let mut st = ui::State::new();
-            let mut set = ui::RecordSet::in_memory();
-            let mut room = AutoCommit::new();
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            annotate(&mut app, &mut st);
-            record_frame(&mut app, &mut st, &mut set, &mut room);
-            let markup = app.markup_record.clone().expect("a markup record");
-            let annotated = PdfDoc::list_annotations(&st.doc);
-            assert_eq!(annotated.len(), 1, "the highlight is recorded");
-            assert!(
-                markup.formerly.contains(&ui::RecordId::derived(
-                    "annotations",
-                    &ui::RecordId::for_file(&original)
-                )),
-                "markup made under the path identity is adopted: {markup:?}"
-            );
+        let mut app = launched(&original);
+        app.invoke(highlight_on_first_page())
+            .expect("the owner annotates");
+        let markup = app.record().clone();
 
-            let moved_dir = dir.path().join("reviewed");
-            std::fs::create_dir(&moved_dir).unwrap();
-            let moved = moved_dir.join("paper (final).pdf");
-            std::fs::rename(&original, &moved).unwrap();
-            let mut reopened = PdfApp::open(&moved);
-            assert_eq!(reopened.markup_record.as_ref().unwrap().id, markup.id);
-            record_frame(&mut reopened, &mut st, &mut set, &mut room);
-            assert_eq!(ui::record::identity(&st.doc).unwrap().id, markup.id);
-            assert_eq!(
-                reopened
-                    .annotations
-                    .iter()
-                    .map(|a| &a.id)
-                    .collect::<Vec<_>>(),
-                annotated.iter().map(|a| &a.id).collect::<Vec<_>>(),
-                "the renamed file shows its annotations"
-            );
+        let moved_dir = dir.path().join("reviewed");
+        std::fs::create_dir(&moved_dir).unwrap();
+        let moved = moved_dir.join("paper (final).pdf");
+        std::fs::rename(&original, &moved).unwrap();
+        let reopened = app.relaunch(&[moved.to_str().unwrap()]).unwrap();
+        assert_eq!(reopened.record(), &markup);
+        assert_eq!(
+            reopened.state().annotations.len(),
+            1,
+            "the renamed file shows its annotations"
+        );
 
-            let copy = dir.path().join("paper copy.pdf");
-            std::fs::copy(&moved, &copy).unwrap();
-            let mut copied = PdfApp::open(&copy);
-            assert_ne!(copied.markup_record.as_ref().unwrap().id, markup.id);
-            record_frame(&mut copied, &mut st, &mut set, &mut room);
-            assert!(
-                copied.annotations.is_empty(),
-                "a copy of the file starts with no markup"
-            );
-        }
+        let copy = dir.path().join("paper copy.pdf");
+        std::fs::copy(&moved, &copy).unwrap();
+        let copied = reopened.relaunch(&[copy.to_str().unwrap()]).unwrap();
+        assert_ne!(copied.record(), &markup);
+        assert!(
+            copied.state().annotations.is_empty(),
+            "a copy of the file starts with no markup"
+        );
+    }
 
-        // A collaborator can publish the annotation-set name before this device
-        // has ever opened its local replica.  On launch, the durable room index
-        // must make that exact deterministic PDF record discoverable without
-        // allocating it; opening the same file then checks out the discovered
-        // record rather than inventing a differently-addressed annotation set.
-        eprintln!("phase imported_room_index_discovers_pdf_markup_before_checkout");
-        {
-            let (_dir, a, _b) = two_documents();
-            let markup = markup_for(&a);
-            let mut collaborator_room = AutoCommit::new();
-            assert!(ui::record::room::reference(
-                &mut collaborator_room,
-                &markup.id,
-                &markup.kind
-            ));
-            for (target, _) in &markup.references {
-                assert!(ui::record::room::reference(
-                    &mut collaborator_room,
-                    &target.id,
-                    &target.kind
-                ));
+    /// The resource `id` as the palette, an agent or a search hit reaches it:
+    /// the record's published tree, a child it resolves beyond its listed
+    /// page, or a live row the reader adds beside it.
+    fn resolve(app: &PdfApp, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        fn find(resource: &tilo_actions::Resource, id: &str) -> Option<tilo_actions::Resource> {
+            if resource.id.as_str() == id {
+                return Some(resource.clone());
             }
-            let imported_room = AutoCommit::load(&collaborator_room.save())
-                .expect("a collaborator room index transfers as an Automerge document");
-
-            let mut records = ui::RecordSet::in_memory().with_home("shared-pdf-room");
-            let discovered = records.discover_room(&imported_room);
-            assert!(
-                discovered
-                    .iter()
-                    .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
-            );
-            assert!(
-                records
-                    .known_records()
-                    .iter()
-                    .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
-            );
-            assert!(
-                records.open_records().is_empty(),
-                "room discovery only admits identities; it must not materialize a local record"
-            );
-
-            let app = PdfApp::open(&a);
-            let mut state = ui::State::new();
-            let mut launch_room = imported_room;
-            ui::record::tick(&mut records, &mut state, Some(&mut launch_room), &app);
-            assert_eq!(records.active(), Some(&markup.id));
-            assert!(
-                records
-                    .open_records()
-                    .iter()
-                    .any(|entry| entry.id == markup.id && entry.kind == markup.kind)
-            );
-            assert!(
-                ui::record::room::holds(&launch_room, &markup.id),
-                "checkout retains the imported annotation-set room grant"
-            );
+            resource.children.iter().find_map(|child| find(child, id))
         }
+        let state = <crate::PdfViewer as ui::tilo_resource::Resource>::read(doc).ok()?;
+        let published =
+            ui::tilo_resource::publish::<crate::PdfViewer>("pdf.document", "PDF", &state);
+        find(&published, id)
+            .or_else(|| <crate::PdfViewer as ui::tilo_resource::Resource>::child(&state, id))
+            .or_else(|| {
+                app.document_row(id)
+                    .map(ui::framework::LiveRow::into_resource)
+            })
+    }
+
+    /// The empty reader staged as screenshot `scenario` shows it.
+    fn staged_empty(scenario: &str) -> PdfApp {
+        let mut app = PdfApp::empty();
+        app.stage(Some(scenario));
+        app
     }
 
     fn app_with_state() -> (PdfApp, ui::State) {
-        let mut app = PdfApp::sample();
-        let mut st = ui::State::new();
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = crate::scenarios::sample_state();
         sync_fixture(&mut app, &mut st);
         // Give it a viewport so geometry is meaningful.
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
         (app, st)
+    }
+
+    /// Opening a document adds its page plan once; later frames leave the
+    /// record alone.
+    #[test]
+    fn opening_seeds_the_record_once_not_every_frame() {
+        let mut app = crate::scenarios::sample_reader();
+        let mut st = ui::State::new();
+        sync_fixture(&mut app, &mut st);
+        assert!(PdfDoc::has_page_plan(&st.doc), "opening adds the page plan");
+        let seeded = st.doc.get_heads();
+        for _ in 0..3 {
+            sync_fixture(&mut app, &mut st);
+        }
+        assert_eq!(st.doc.get_heads(), seeded, "frames write nothing");
+
+        app.set_read_only(true);
+        app.set_read_only(false);
+        sync_fixture(&mut app, &mut st);
+        assert_eq!(
+            st.doc.get_heads(),
+            seeded,
+            "a record that has its plan gets nothing more when writing is allowed again"
+        );
     }
 
     fn any_access_node(
@@ -6924,7 +6450,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "pdf.toggle-sidebar",
                 &Action::Activate,
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &state.root,
             ));
             assert_ne!(app.show_sidebar, sidebar_before);
@@ -6942,7 +6468,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &format!("pdf.page:{target_id}"),
                 &Action::Activate,
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &state.root,
             ));
             assert_eq!(app.current_page, 3, "the addressed page, not ordinal 1");
@@ -6950,7 +6476,7 @@ mod tests {
                 !app.perform_semantic_action(
                     "pdf.page:deleted-page",
                     &Action::Activate,
-                    &mut state.doc,
+                    &mut Edits::lend(&mut state.doc),
                     &state.root,
                 ),
                 "unknown targets fail closed"
@@ -6960,10 +6486,7 @@ mod tests {
         eprintln!("phase global_search_pages_canonically_and_stale_page_hits_fail_closed");
         {
             let (mut app, mut state) = app_with_state();
-            let provider = ui::search::capability::search_providers(&app)
-                .into_iter()
-                .next()
-                .expect("the open PDF contributes a global search provider");
+            let provider = searched(&app);
             assert!(provider.search_page("", None, 0, 1).results.is_empty());
             let first = provider.search_page("", None, 1, 1);
             assert_eq!(first.inspected, 1);
@@ -6973,19 +6496,24 @@ mod tests {
                 .into_iter()
                 .find_map(|result| result.action_address())
                 .expect("page text is globally searchable by a canonical action");
-            assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &hit.resource).is_some()
-            );
+            assert!(resolve(&app, &state.doc, &hit.resource).is_some());
 
+            // The markup people made is searched through the resource, each
+            // entry opening the published child it names.
+            let markup = <crate::PdfViewer as ui::tilo_resource::Resource>::read(&state.doc)
+                .expect("the record reads");
+            let entries = <crate::PdfViewer as ui::tilo_resource::Resource>::search(&markup);
+            let markup_hit = |needle: &str| {
+                entries
+                    .iter()
+                    .find(|entry| entry.title.contains(needle) || entry.text.contains(needle))
+                    .and_then(|entry| entry.action.clone())
+                    .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"))
+            };
             for needle in ["highlight", "Iroh relay"] {
-                let address = provider
-                    .search(needle)
-                    .into_iter()
-                    .find_map(|result| result.action_address())
-                    .unwrap_or_else(|| panic!("{needle:?} should produce a canonical search hit"));
-                let resource =
-                    crate::app::PdfApp::publish_resource(&app, &state.doc, &address.resource)
-                        .expect("search door resolves the addressed annotation/comment resource");
+                let address = markup_hit(needle);
+                let resource = resolve(&app, &state.doc, &address.resource)
+                    .expect("search door resolves the addressed annotation/comment resource");
                 assert!(
                     resource
                         .actions
@@ -6999,84 +6527,66 @@ mod tests {
                 .filter_map(|result| result.action_address())
                 .find(|address| address.resource.starts_with("pdf.outline:"))
                 .expect("PDF bookmarks are globally searchable by their canonical action");
-            let bookmark_resource =
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &bookmark_address.resource)
-                    .expect("bookmark search result resolves to the current outline resource");
+            let bookmark_resource = resolve(&app, &state.doc, &bookmark_address.resource)
+                .expect("bookmark search result resolves to the current outline resource");
             assert!(
                 bookmark_resource
                     .actions
                     .iter()
                     .any(|action| action.id == bookmark_address.action)
             );
-            let reply_address = provider
-                .search("folded it")
-                .into_iter()
-                .find_map(|result| result.action_address())
-                .expect("reply text is globally searchable by its canonical action");
+            let reply_address = markup_hit("folded it");
             assert!(reply_address.resource.starts_with("pdf.reply:"));
             assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &reply_address.resource)
-                    .is_some(),
+                resolve(&app, &state.doc, &reply_address.resource).is_some(),
                 "a reply search hit resolves to the durable reply resource"
             );
 
             app.open_search();
             app.search_input.set_text("sandbox");
             app.recompute_matches();
-            app.sync(&mut state.doc, &state.root);
-            let find_provider = ui::search::capability::search_providers(&app)
-                .into_iter()
-                .next()
-                .expect("find projection is retained in global search");
+            app.sync_settled(&mut state.doc, &state.root);
+            let find_provider = searched(&app);
             let find_address = find_provider
                 .search("match 1")
                 .into_iter()
                 .filter_map(|result| result.action_address())
                 .find(|address| address.resource.starts_with("pdf.search-result:"))
                 .expect("bounded find result has a canonical global-search action");
-            let find_resource =
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
-                    .expect("current find-result address resolves");
+            let find_resource = resolve(&app, &state.doc, &find_address.resource)
+                .expect("current find-result address resolves");
             assert!(
                 find_resource
                     .actions
                     .iter()
-                    .any(|action| action.id == "open")
+                    .any(|action| action.id == "go-to-match")
             );
             app.search_input.set_text("filesystem");
             app.recompute_matches();
             assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &find_address.resource)
-                    .is_none(),
+                resolve(&app, &state.doc, &find_address.resource).is_none(),
                 "a stale find ordinal cannot be rebound to the next query"
             );
             // The changed find projection refreshes once; its settled successor
             // must remain retained without re-walking the corpus every frame.
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             let refreshes = app.search_projection_refreshes;
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(
                 app.search_projection_refreshes, refreshes,
                 "unchanged sync avoids corpus traversal"
             );
 
-            let stale_resource = "pdf.page:sample:source-1".to_string();
+            let stale_resource = "pdf.page:source-1".to_string();
             let action = crate::actions::delete_page_plan_action("source-1");
-            app.perform_action(&mut state.doc, &action);
-            app.sync(&mut state.doc, &state.root);
-            let restarted = ui::search::capability::search_providers(&app)[0].search_page(
-                "",
-                Some(&stale_cursor),
-                1,
-                1,
-            );
+            app.perform_action(&mut Edits::lend(&mut state.doc), &action);
+            app.sync_settled(&mut state.doc, &state.root);
+            let restarted = searched(&app).search_page("", Some(&stale_cursor), 1, 1);
             assert!(
                 restarted.results.len() <= 1,
                 "a stale cursor restarts against the new generation"
             );
-            assert!(
-                crate::app::PdfApp::publish_resource(&app, &state.doc, &stale_resource).is_none()
-            );
+            assert!(resolve(&app, &state.doc, &stale_resource).is_none());
         }
     }
 
@@ -7125,15 +6635,14 @@ mod tests {
 
             // Materialising the same shared plan gives both renderers the same
             // address space, independent of their local source/raster instances.
-            a.sync(&mut state_a.doc, &state_a.root);
-            b.sync(&mut state_b.doc, &state_b.root);
+            a.sync_settled(&mut state_a.doc, &state_a.root);
+            b.sync_settled(&mut state_b.doc, &state_b.root);
             assert_eq!(a.resource_page_ids, b.resource_page_ids);
-            let source_two_hits: Vec<tilo_actions::ActionAddress> =
-                ui::search::capability::search_providers(&a)[0]
-                    .search("Per-cluster sandboxing")
-                    .into_iter()
-                    .filter_map(|result| result.action_address())
-                    .collect();
+            let source_two_hits: Vec<tilo_actions::ActionAddress> = searched(&a)
+                .search("Per-cluster sandboxing")
+                .into_iter()
+                .filter_map(|result| result.action_address())
+                .collect();
             assert!(
                 source_two_hits
                     .iter()
@@ -7144,9 +6653,9 @@ mod tests {
                 "duplicate occurrences retain the immutable source page's searchable text"
             );
             let page_id = "source-1";
-            let resource_id = format!("pdf.page:sample:{page_id}");
+            let resource_id = format!("pdf.page:{page_id}");
             assert!(
-                crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_some(),
+                resolve(&a, &state_a.doc, &resource_id).is_some(),
                 "the durable page id resolves through the provider"
             );
             assert_eq!(
@@ -7165,10 +6674,10 @@ mod tests {
             let env = tilo_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
                 .expect("author delete");
             tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
-            a.sync(&mut state_a.doc, &state_a.root);
-            b.sync(&mut state_b.doc, &state_b.root);
-            assert!(crate::app::PdfApp::publish_resource(&a, &state_a.doc, &resource_id).is_none());
-            assert!(crate::app::PdfApp::publish_resource(&b, &state_b.doc, &resource_id).is_none());
+            a.sync_settled(&mut state_a.doc, &state_a.root);
+            b.sync_settled(&mut state_b.doc, &state_b.root);
+            assert!(resolve(&a, &state_a.doc, &resource_id).is_none());
+            assert!(resolve(&b, &state_b.doc, &resource_id).is_none());
 
             // Concurrent page-plan actions merge like the other markup actions.
             let mut left = AutoCommit::load(&base).expect("left replica");
@@ -7196,34 +6705,31 @@ mod tests {
             assert!(merged_ids.contains(&"copy-left".to_string()));
             assert!(merged_ids.contains(&"copy-right".to_string()));
 
-            // The host records page-plan dispatches as author-scoped history; undo
-            // rolls back the action boundary rather than silently mutating a local
-            // raster plan.
-            let (mut undo_app, mut undo_state) = app_with_state();
-            let before = crate::doc::PdfDoc::list_page_plan(&undo_state.doc);
+            // A page-plan edit is one undo step of its author's: undo rolls
+            // back the action rather than silently mutating a local raster plan.
+            let mut undo_app = ui::framework::testing::TestApp::<crate::PdfViewerShell>::new()
+                .expect("the reader");
+            undo_app
+                .invoke(
+                    ui::tilo_resource::Invoke::apply(&PdfViewerAction::EnsurePagePlan {
+                        source_page_count: 3,
+                    })
+                    .unwrap(),
+                )
+                .expect("the plan");
+            let before = undo_app.state().pages;
             let undo_action = PdfViewerAction::DuplicatePagePlan {
                 id: "source-1".into(),
                 new_id: "copy-undo".into(),
                 source_page: 1,
                 imported: None,
             };
-            undo_app.perform_action(&mut undo_state.doc, &undo_action);
-            let local_author = ui::collaboration::local_user_id();
-            let root: *mut dyn Widget = &mut undo_app;
-            assert!(ui::undo::record_dispatched_action(
-                &mut undo_state,
-                root,
-                &std::collections::HashMap::new(),
-                &local_author,
-            ));
-            assert_eq!(
-                crate::doc::PdfDoc::list_page_plan(&undo_state.doc).len(),
-                before.len() + 1
-            );
-            undo_state
-                .undo_as(Some(&local_author), None, None)
-                .expect("shared page action has an undo boundary");
-            assert_eq!(crate::doc::PdfDoc::list_page_plan(&undo_state.doc), before);
+            undo_app
+                .invoke(ui::tilo_resource::Invoke::apply(&undo_action).unwrap())
+                .expect("the owner duplicates a page");
+            assert_eq!(undo_app.state().pages.len(), before.len() + 1);
+            assert!(undo_app.undo(), "shared page action is an undo step");
+            assert_eq!(undo_app.state().pages, before);
         }
 
         eprintln!("phase imported_occurrence_keeps_markup_through_move_duplicate_and_delete");
@@ -7246,10 +6752,10 @@ mod tests {
                 rotation: 0,
             };
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(app.resource_page_ids[1], "imported-occurrence");
             assert!(
                 app.status_note
@@ -7267,12 +6773,15 @@ mod tests {
                 created_ms: 0,
                 space: crate::model::GeomSpace::Page,
             };
-            app.perform_action(&mut state.doc, &add_annotation_action(&annotation));
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
+                &add_annotation_action(&annotation),
+            );
+            app.perform_action(
+                &mut Edits::lend(&mut state.doc),
                 &move_page_plan_action("imported-occurrence", Some("source-3")),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(
                 app.annotations
                     .iter()
@@ -7283,7 +6792,7 @@ mod tests {
             );
 
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &PdfViewerAction::DuplicatePagePlan {
                     id: page.id.clone(),
                     new_id: "imported-copy".into(),
@@ -7300,10 +6809,10 @@ mod tests {
                 "duplicate retains content hash and source page"
             );
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &crate::actions::delete_page_plan_action("imported-occurrence"),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert!(
                 app.annotations
                     .iter()
@@ -7327,7 +6836,7 @@ mod tests {
             let mut app = PdfApp::open(path);
             let mut state = ui::State::new();
             app.perform_action(
-                &mut state.doc,
+                &mut Edits::lend(&mut state.doc),
                 &crate::actions::import_pages_action(
                     Some("source-1"),
                     vec![crate::doc::PagePlanEntry {
@@ -7467,7 +6976,7 @@ mod tests {
                 points: vec![],
             });
             let (reader, st) = Framed::split(&mut app);
-            reader.commit_drag(&mut st.doc);
+            reader.commit_drag(&mut Edits::lend(&mut st.doc));
             assert!(
                 app.annotations.len() > a0,
                 "a highlight drag adds an annotation"
@@ -7497,8 +7006,8 @@ mod tests {
         // Shots to `/tmp/pdf_repro`.
         eprintln!("phase drive_review_features_shots");
         {
-            let app = PdfApp::sample();
-            let st = ui::State::new();
+            let app = crate::scenarios::sample_reader();
+            let st = crate::scenarios::sample_state();
 
             // Default sample view — seeded highlights + note + signature on page 1.
             let mut app = framed(
@@ -7565,8 +7074,8 @@ mod tests {
                 .unwrap_or_else(|_| "/tmp/tilo_pdf_product_states".to_string());
             let shot = |name: &str| format!("{shot_dir}/{name}");
 
-            let narrow = PdfApp::sample();
-            let narrow_state = ui::State::new();
+            let narrow = crate::scenarios::sample_reader();
+            let narrow_state = crate::scenarios::sample_state();
             let mut narrow = framed(
                 narrow,
                 narrow_state,
@@ -7582,7 +7091,7 @@ mod tests {
             full_frame(&mut narrow, 390.0, 844.0, Some(&shot("narrow-search.png")));
             assert!(narrow.match_count() > 0, "find remains usable when compact");
 
-            let loading = PdfApp::loading_preview();
+            let loading = staged_empty("loading");
             let loading_state = ui::State::new();
             let loading = framed(
                 loading,
@@ -7598,14 +7107,14 @@ mod tests {
                 }),
                 "a pending open is progress, not a duplicate Open action"
             );
-            let error = PdfApp::error_preview();
+            let error = staged_empty("error");
             let error_state = ui::State::new();
             let error = framed(error, error_state, 1280.0, 800.0, Some(&shot("error.png")));
             assert!(
                 error.canvas_rect.height() > 700.0,
                 "the persistent error keeps the full empty-state canvas"
             );
-            let narrow_error = PdfApp::error_preview();
+            let narrow_error = staged_empty("error");
             let narrow_error_state = ui::State::new();
             framed(
                 narrow_error,
@@ -7615,8 +7124,8 @@ mod tests {
                 Some(&shot("narrow-error.png")),
             );
 
-            let contrast = PdfApp::sample();
-            let contrast_state = ui::State::new();
+            let contrast = crate::scenarios::sample_reader();
+            let contrast_state = crate::scenarios::sample_state();
             framed_with_theme(
                 contrast,
                 contrast_state,
@@ -7626,8 +7135,8 @@ mod tests {
                 ui::theme::Theme::high_contrast(),
             );
 
-            let mut reduced = PdfApp::sample();
-            let reduced_state = ui::State::new();
+            let mut reduced = crate::scenarios::sample_reader();
+            let reduced_state = crate::scenarios::sample_state();
             reduced.arm_shots_page_bubble();
             reduced.set_motion_reduced(true);
             let reduced = framed(
@@ -7689,9 +7198,9 @@ mod tests {
                 points: vec![],
             });
             let (reader, st) = Framed::split(&mut app);
-            reader.commit_drag(&mut st.doc);
+            reader.commit_drag(&mut Edits::lend(&mut st.doc));
             reader.signer_name = "Grace Hopper".into();
-            reader.place_signature(&mut st.doc, 1, (360.0, 520.0));
+            reader.place_signature(&mut Edits::lend(&mut st.doc), 1, (360.0, 520.0));
             app.go_to_page(1);
             let p_anno = shot("real_annotated.png");
             full_frame(&mut app, 1280.0, 800.0, Some(p_anno.as_str()));
@@ -7741,18 +7250,12 @@ mod tests {
     /// paint under high-contrast text/tokens as well as the default theme.
     fn framed_with_theme(
         app: PdfApp,
-        mut st: ui::State,
+        st: ui::State,
         w: f64,
         h: f64,
         out: Option<&str>,
         theme: Theme,
     ) -> Framed<PdfApp> {
-        if let Some(want) = ui::record::capability::record_intent(&app) {
-            if ui::record::identity(&st.doc).is_none() {
-                ui::RecordSet::in_memory().checkout(&mut st, None, &want);
-            }
-            assert_eq!(ui::record::identity(&st.doc).unwrap().id, want.id);
-        }
         let mut app = Framed::new(st, app, viewport((w, h)), theme);
         settle_and_shoot(&mut app, viewport((w, h)), out);
         app
@@ -7789,6 +7292,11 @@ mod tests {
     /// do it itself or the rail/second page would be half-rasterised), then
     /// write the PNG `out` names when `PDF_SHOTS=1`.
     fn settle_and_shoot(app: &mut Framed<PdfApp>, (w, h): (u32, u32), out: Option<&str>) {
+        // What the frame submitted lands, as a host applies it.
+        {
+            let (reader, st) = Framed::split(app);
+            reader.sync_settled(&mut st.doc, &st.root);
+        }
         for _ in 1..32 {
             if !app.pending_raster {
                 break;
@@ -7819,11 +7327,10 @@ mod tests {
     }
 
     #[test]
-    fn record_sync_seeds_markup_exactly_once() {
-        eprintln!("phase sync_seeds_markup_once");
+    fn review_markup_reads_back_once() {
+        eprintln!("phase the_review_reads_back");
         {
             let (app, _st) = app_with_state();
-            assert!(app.seeded);
             assert!(!app.annotations.is_empty(), "seed should add annotations");
             assert!(!app.comments.is_empty(), "seed should add comments");
             assert!(!app.signatures.is_empty(), "seed should add a signature");
@@ -7845,7 +7352,11 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             let n = app.annotations.len();
             sync_fixture(&mut app, &mut st);
-            assert_eq!(app.annotations.len(), n, "re-sync must not re-seed");
+            assert_eq!(
+                app.annotations.len(),
+                n,
+                "re-sync must not duplicate markup"
+            );
         }
     }
 
@@ -7881,7 +7392,7 @@ mod tests {
             };
             let before = hl(&st);
             // The shared HUD's swatch action highlights the run in that colour.
-            app.apply_hud_action(ui::HudAction::Highlight(1), &mut st.doc);
+            app.apply_hud_action(ui::HudAction::Highlight(1), &mut Edits::lend(&mut st.doc));
             assert!(
                 hl(&st) > before,
                 "highlighting the selection adds a highlight annotation"
@@ -7908,7 +7419,7 @@ mod tests {
                     .count()
             };
             let before = notes(&st);
-            app.apply_hud_action(ui::HudAction::Note, &mut st.doc);
+            app.apply_hud_action(ui::HudAction::Note, &mut Edits::lend(&mut st.doc));
             assert_eq!(
                 notes(&st),
                 before + 1,
@@ -7928,7 +7439,7 @@ mod tests {
                 app.selection_text().is_some(),
                 "the synthetic run yields text"
             );
-            app.apply_hud_action(ui::HudAction::Copy, &mut st.doc);
+            app.apply_hud_action(ui::HudAction::Copy, &mut Edits::lend(&mut st.doc));
             assert!(
                 app.status_note.as_deref().unwrap_or("").contains("Copied"),
                 "the HUD Copy action copies + toasts ({:?})",
@@ -8281,12 +7792,13 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             let a0 = app.annotations.len();
             let c0 = app.comments.len();
-            app.create_note(&mut st.doc, 2, (120.0, 200.0));
+            app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
             assert_eq!(app.annotations.len(), a0 + 1);
             assert_eq!(app.comments.len(), c0 + 1);
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_some(),
-                "creating a note dispatched an action and stashed one undo boundary"
+            assert_eq!(
+                PdfDoc::list_comments(&st.doc).len(),
+                c0 + 1,
+                "creating a note landed in the shared document"
             );
             assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
         }
@@ -8295,7 +7807,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             // A fresh note at a known page-point.
-            app.create_note(&mut st.doc, 1, (100.0, 100.0));
+            app.create_note(&mut Edits::lend(&mut st.doc), 1, (100.0, 100.0));
             app.reload(&st.doc);
             let id = app.selected_anno.clone().expect("the new note is selected");
             // Its marker is grabbable at its anchor (same target as clicking it).
@@ -8345,7 +7857,7 @@ mod tests {
                 cur: (300.0, 116.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0 + 1,
@@ -8364,7 +7876,7 @@ mod tests {
                 cur: (66.0, 101.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(app.annotations.len(), a0, "sub-threshold drag adds nothing");
         }
 
@@ -8400,7 +7912,7 @@ mod tests {
                 cur: (300.0, 220.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             // Two covered lines -> one highlight with two text-shaped bands (not
             // one free rectangle).
             assert_eq!(app.annotations.len(), a0 + 1, "one highlight");
@@ -8436,7 +7948,7 @@ mod tests {
                 cur: (300.0, 540.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0 + 1,
@@ -8461,7 +7973,7 @@ mod tests {
                     (240.0, 360.0),
                 ],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0 + 1,
@@ -8478,10 +7990,6 @@ mod tests {
                 }
                 _ => unreachable!(),
             }
-            assert!(
-                ui::undo::take_committed_action(&mut app).is_some(),
-                "ink dispatched an action and stashed one undo boundary"
-            );
             assert!(
                 PdfDoc::list_annotations(&st.doc)
                     .iter()
@@ -8502,7 +8010,7 @@ mod tests {
                 cur: (80.0, 300.0),
                 points: vec![(80.0, 300.0)],
             });
-            app.commit_drag(&mut st.doc);
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.annotations.len(),
                 a0,
@@ -8555,7 +8063,7 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             let s0 = app.signatures.len();
             app.signer_name = "Tester".into();
-            app.place_signature(&mut st.doc, 3, (10.0, 10.0)); // near corner
+            app.place_signature(&mut Edits::lend(&mut st.doc), 3, (10.0, 10.0)); // near corner
             assert_eq!(app.signatures.len(), s0 + 1);
             let last = app.signatures.iter().find(|s| s.page == 3).unwrap();
             assert!(last.rect.x >= MARGIN - 0.001);
@@ -8566,7 +8074,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             app.sidebar_tab = SidebarTab::Comments;
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             assert_eq!(app.sidebar_tab as u8, SidebarTab::Signatures as u8);
             assert!(app.show_sidebar);
             assert!(app.selected_sig.is_some(), "new signature is selected");
@@ -8580,7 +8088,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             app.sidebar_tab = SidebarTab::Signatures;
-            app.create_note(&mut st.doc, 2, (200.0, 300.0));
+            app.create_note(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
             assert!(app.show_sidebar);
             assert!(
@@ -8682,7 +8190,7 @@ mod tests {
                 .clone();
             let n = app.annotations.len();
             app.selected_anno = Some(hl.id.clone());
-            assert!(app.delete_selected(&mut st.doc));
+            assert!(app.delete_selected(&mut Edits::lend(&mut st.doc)));
             assert_eq!(app.annotations.len(), n - 1);
             assert!(!app.annotations.iter().any(|a| a.id == hl.id));
             assert!(app.selected_anno.is_none());
@@ -8693,7 +8201,10 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             let sig = app.signatures[0].clone();
             let n = app.signatures.len();
-            app.delete_target(&DeleteTarget::Signature(sig.id.clone()), &mut st.doc);
+            app.delete_target(
+                &DeleteTarget::Signature(sig.id.clone()),
+                &mut Edits::lend(&mut st.doc),
+            );
             assert_eq!(app.signatures.len(), n - 1);
             assert!(!app.signatures.iter().any(|s| s.id == sig.id));
         }
@@ -8714,7 +8225,10 @@ mod tests {
                 .find(|c| c.anno_id.as_deref() == Some(note.id.as_str()))
                 .unwrap()
                 .clone();
-            app.delete_target(&DeleteTarget::Comment(comment.id.clone()), &mut st.doc);
+            app.delete_target(
+                &DeleteTarget::Comment(comment.id.clone()),
+                &mut Edits::lend(&mut st.doc),
+            );
             assert!(!app.comments.iter().any(|c| c.id == comment.id));
             assert!(
                 !app.annotations.iter().any(|a| a.id == note.id),
@@ -8745,7 +8259,7 @@ mod tests {
         {
             let (mut app, mut st) = app_with_state();
             app.signer_name = "Grace Hopper".into();
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             let s = app.signatures.iter().find(|s| s.page == 2).unwrap().clone();
             // The stamp is the live system date, not the frozen demo/seed date.
             assert_eq!(
@@ -8754,7 +8268,8 @@ mod tests {
                 "runtime signature carries today's date"
             );
             assert_ne!(
-                s.date, SEED_DATE,
+                s.date,
+                crate::scenarios::SIGNED_ON,
                 "runtime date is not the hardcoded demo constant"
             );
             // And the real date is what durably lands in the shared CRDT.
@@ -8769,7 +8284,7 @@ mod tests {
             let (mut app, mut st) = app_with_state();
             app.sig_mode = SigMode::Type;
             app.signer_name = "Grace Hopper".into();
-            app.place_signature(&mut st.doc, 3, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 3, (200.0, 300.0));
             let placed = app
                 .signatures
                 .iter()
@@ -8800,7 +8315,7 @@ mod tests {
 
             // Empty pad → nothing is placed, and the user is told to draw first.
             let before = app.signatures.len();
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             assert_eq!(
                 app.signatures.len(),
                 before,
@@ -8816,7 +8331,7 @@ mod tests {
 
             // Draw a stroke, then place: the strokes are what land in the document.
             app.sig_strokes = vec![vec![(0.1, 0.5), (0.4, 0.2), (0.7, 0.6), (0.9, 0.4)]];
-            app.place_signature(&mut st.doc, 2, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 2, (200.0, 300.0));
             let placed = app
                 .signatures
                 .iter()
@@ -8843,14 +8358,14 @@ mod tests {
             // Type a real name into the signer identity field and commit it.
             app.begin_edit(EditTarget::Signer, &app.signer_name.clone());
             app.editing.as_mut().unwrap().set_text("Grace Hopper");
-            app.commit_edit(&mut st.doc);
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
             assert!(app.editing.is_none(), "committing closes the editor");
             assert_eq!(
                 app.signer_name, "Grace Hopper",
                 "signer name updates from the editor"
             );
             // A subsequent signature signs under the new identity.
-            app.place_signature(&mut st.doc, 4, (200.0, 300.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 4, (200.0, 300.0));
             assert_eq!(
                 app.signatures.iter().find(|s| s.page == 4).unwrap().signer,
                 "Grace Hopper"
@@ -8858,11 +8373,77 @@ mod tests {
             // Committing an empty name falls back to the app author identity.
             app.begin_edit(EditTarget::Signer, "whatever");
             app.editing.as_mut().unwrap().set_text("   ");
-            app.commit_edit(&mut st.doc);
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
             assert_eq!(
                 app.signer_name, app.author,
                 "an empty signer name falls back to the author"
             );
+        }
+
+        eprintln!("phase comment_authors_read_as_the_rosters_names");
+        {
+            let (mut app, mut st) = app_with_state();
+            app.author = "me-id".into();
+            app.attach_people(ui::framework::People::named(
+                Some("me-id"),
+                &[("peer-id", "Bob Builder")],
+            ));
+            app.create_note(&mut Edits::lend(&mut st.doc), 2, (120.0, 200.0));
+            let thread = PdfDoc::list_comments(&st.doc)
+                .into_iter()
+                .find(|comment| comment.page == 2)
+                .expect("the new note's thread");
+            assert_eq!(thread.author, "me-id", "the record keeps the id");
+            assert_eq!(app.author_name(&thread.author), "You");
+            assert_eq!(app.author_name("peer-id"), "Bob Builder");
+            assert_eq!(
+                app.author_name("Carol"),
+                "Carol",
+                "an unknown id reads as itself"
+            );
+            let described = format!("{:?}", Widget::accessibility(&app));
+            assert!(
+                described.contains("You on page 2"),
+                "assistive technology hears the name, not the id"
+            );
+        }
+
+        eprintln!("phase the_signature_is_the_persons_own_and_follows_them");
+        {
+            let mut host = ui::framework::testing::TestApp::<crate::PdfViewerShell>::for_person(
+                &"ad".repeat(32),
+            )
+            .expect("the reader for a person");
+            let record = host
+                .person::<crate::signature::SignatureProfile>()
+                .expect("the person's signature record");
+            let (mut app, mut st) = app_with_state();
+            app.attach_signature(record.clone());
+            app.begin_edit(EditTarget::Signer, "");
+            app.editing.as_mut().unwrap().set_text("Ada Lovelace");
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
+            app.sig_strokes = vec![vec![(0.1, 0.5), (0.9, 0.4)]];
+            app.keep_strokes();
+            assert_eq!(record.get().signer, "Ada Lovelace", "the signer is kept");
+            assert_eq!(
+                record.get().strokes,
+                app.sig_strokes,
+                "the strokes are kept"
+            );
+            assert!(
+                PdfDoc::list_signatures(&st.doc).is_empty()
+                    || PdfDoc::list_signatures(&st.doc)
+                        .iter()
+                        .all(|signature| signature.signer != "Ada Lovelace"),
+                "composing a signature writes nothing into the shared document"
+            );
+
+            // Another window of the same person composes with the same signature.
+            let (mut other, mut other_st) = app_with_state();
+            other.attach_signature(record);
+            sync_fixture(&mut other, &mut other_st);
+            assert_eq!(other.signer_name, "Ada Lovelace");
+            assert_eq!(other.sig_strokes, vec![vec![(0.1, 0.5), (0.9, 0.4)]]);
         }
     }
 
@@ -9371,7 +8952,7 @@ mod tests {
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
             let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && ui::time::now() < deadline {
-                app.sync(&mut st.doc, &st.root);
+                app.sync_settled(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
             }
             if !app.has_document {
@@ -9404,7 +8985,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
                 let (reader, st) = Framed::split(&mut app);
-                reader.sync(&mut st.doc, &st.root);
+                reader.sync_settled(&mut st.doc, &st.root);
             };
             let placement = placement.expect("the worker filled the viewport with tiles");
             assert!(
@@ -9651,12 +9232,12 @@ mod tests {
                 cur: (360.0, 165.0),
                 points: vec![],
             });
-            app.commit_drag(&mut st.doc);
-            app.create_note(&mut st.doc, 1, (120.0, 300.0));
+            app.commit_drag(&mut Edits::lend(&mut st.doc));
+            app.create_note(&mut Edits::lend(&mut st.doc), 1, (120.0, 300.0));
             app.editing.as_mut().unwrap().set_text("Check this claim");
-            app.commit_edit(&mut st.doc);
+            app.commit_edit(&mut Edits::lend(&mut st.doc));
             app.signer_name = "Grace Hopper".into();
-            app.place_signature(&mut st.doc, 1, (360.0, 520.0));
+            app.place_signature(&mut Edits::lend(&mut st.doc), 1, (360.0, 520.0));
             assert!(
                 app.annotations
                     .iter()
@@ -9851,10 +9432,11 @@ mod tests {
                 .expect("write the test PNG");
 
             assert!(
-                app.import_file(&png, &mut st.doc),
+                app.import_file(&png, &st.doc),
                 "import: {:?}",
                 app.status_note
             );
+            app.sync_settled(&mut st.doc, &st.root);
             assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
             assert!(app.pages_dirty());
 
@@ -9870,10 +9452,11 @@ mod tests {
             let n = app.doc.page_count();
             // Import the sample into itself: page count should exactly double.
             assert!(
-                app.import_file(std::path::Path::new(SAMPLE_PDF), &mut st.doc),
+                app.import_file(std::path::Path::new(SAMPLE_PDF), &st.doc),
                 "import: {:?}",
                 app.status_note
             );
+            app.sync_settled(&mut st.doc, &st.root);
             assert_eq!(
                 app.doc.page_count(),
                 n * 2,
@@ -9980,7 +9563,7 @@ mod tests {
         // maximum accessibility scale.
         eprintln!("phase high_text_comment_editor_reply_and_history_do_not_overlap");
         {
-            let app = PdfApp::sample();
+            let app = crate::scenarios::sample_reader();
             let mut tr = ui::text_render::TextRenderer::new();
             tr.set_text_scale(2.0);
             let cm = Comment {
