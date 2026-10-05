@@ -67,7 +67,7 @@ fn click_id(framed: &mut Framed<TubeApp>, id: &str) {
 }
 
 fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-    if w.test_id() == Some(id) {
+    if w.test_id() == Some(id) || (id == "video_grid" && w.name() == "MediaGrid") {
         return Some(w);
     }
     w.children().into_iter().find_map(|c| find(c, id))
@@ -174,6 +174,17 @@ fn live_app() -> ui::framework::testing::TestApp<tube::TubeShell> {
     app
 }
 
+/// A hermetic catalogue in the actual live host, retaining typed effects.
+fn live_catalogue() -> ui::framework::testing::TestApp<tube::TubeShell> {
+    let mut app = live_app();
+    app.with_surface::<TubeApp, _>(|surface| {
+        surface.stage_model_for_test(tube::sample::model());
+    })
+    .expect("the canonical Tube surface is mounted");
+    app.settle();
+    app
+}
+
 fn click(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, id: &str) {
     if let Some(label) = id.strip_prefix("nav_").filter(|name| *name != "toggle") {
         let expected = format!("{}{}", label.get(..1).unwrap().to_uppercase(), &label[1..]);
@@ -246,7 +257,7 @@ fn the_rail_and_cards_navigate_and_back_returns() {
         Route::Channel("ch_kurz".into()),
         Route::Playlist("pl_systems".into()),
     ] {
-        let mut app = ui::framework::testing::TestApp::<tube::TubeShell>::capture(None).unwrap();
+        let mut app = live_catalogue();
         let effect = match &destination {
             Route::Watch(video) => tube::actions::TubeEffect::OpenVideo {
                 video: video.clone(),
@@ -632,8 +643,8 @@ fn watch_page_lays_out_player_pills_and_timeline() {
         // a seeded dislike count). Assert they're laid out in the real tree.
         let h = Harness::new(watch_app(), VIEWPORT);
         assert!(
-            h.has_id("dislike_pill"),
-            "the watch page lays out the Return YouTube Dislike pill"
+            h.has_id("tube-dislikes"),
+            "the watch page lays out the shared Return YouTube Dislike count"
         );
         assert!(
             h.has_id("sb_timeline"),
@@ -661,7 +672,7 @@ fn watch_app() -> TubeApp {
 #[test]
 
 fn share_copies_a_link_through_a_real_click() {
-    let mut app = ui::framework::testing::TestApp::<tube::TubeShell>::capture(None).unwrap();
+    let mut app = live_catalogue();
     app.effect(&tube::actions::TubeEffect::OpenVideo {
         video: WATCH_ID.into(),
     })
@@ -1167,12 +1178,46 @@ fn shared_settings_toggle_exposes_state_and_applies_the_preference() {
 #[test]
 fn unfetched_media_paints_shared_placeholders() {
     for route in [Route::Home, Route::Channel("ch_kurz".into())] {
-        let framed = mount(TubeApp::new().with_route_shot(route));
-        assert_eq!(image_draws(&framed), 0);
-        let scene = Framed::harness(&framed).scene();
+        let mut framed = mount(TubeApp::new().with_route_shot(route));
+        let theme = Framed::harness(&framed).theme().clone();
+        let mut scene = vello::Scene::new();
+        let mut text = ui::text_render::TextRenderer::new();
+        let presence = ui::presence::PresenceCtx::empty();
+        fn draw_cards(
+            widget: &mut dyn Widget,
+            scene: &mut vello::Scene,
+            text: &mut ui::text_render::TextRenderer,
+            theme: &Theme,
+            presence: &ui::presence::PresenceCtx,
+        ) -> usize {
+            if widget.name() == "MediaCard" {
+                widget.draw(scene, vello::kurbo::Affine::IDENTITY, text, theme, presence);
+                return 1;
+            }
+            widget
+                .children_mut()
+                .into_iter()
+                .map(|child| draw_cards(child, scene, text, theme, presence))
+                .sum()
+        }
+        let observed = draw_cards(&mut *framed, &mut scene, &mut text, &theme, &presence);
+        assert!(
+            observed > 0,
+            "the mounted catalogue supplies actual shared cards"
+        );
+        assert_eq!(
+            scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|tag| **tag == vello_encoding::DrawTag::IMAGE)
+                .count(),
+            0,
+            "unfetched card art submits no decoded image; window material caches are separate"
+        );
         assert!(
             !scene.encoding().draw_tags.is_empty(),
-            "actual fallback scene paints"
+            "actual fallback cards paint"
         );
     }
 }

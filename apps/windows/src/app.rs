@@ -551,6 +551,16 @@ impl WindowsApp {
         effect: &actions::WindowsEffect,
         cx: &mut ui::framework::EffectCx<crate::resource::Windows, Self>,
     ) -> ui::framework::EffectAnswer {
+        if let actions::WindowsEffect::Show { app } = effect {
+            let index = self
+                .catalogue
+                .apps
+                .iter()
+                .position(|item| item.id == *app)
+                .ok_or_else(|| "the application is no longer in the catalogue".to_owned())?;
+            self.apply_intent(Intent::SelectApp(index));
+            return Ok(ui::framework::Effected::done());
+        }
         if self.resource_reply.is_some() {
             return Err("another Windows operation is still running".into());
         }

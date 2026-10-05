@@ -4851,7 +4851,9 @@ mod responsive_body_tests {
         h.right_press();
         let labels = h.open_menu_labels();
         assert!(
-            labels.iter().any(|l| l == "Remove from Favourites"),
+            labels
+                .iter()
+                .any(|l| l == &ui::i18n!("files-menu-remove-favourite")),
             "the favourite's own menu is shown: {labels:?}",
         );
         assert!(

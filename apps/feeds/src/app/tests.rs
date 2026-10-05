@@ -633,6 +633,7 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
         assert_eq!(a.active_filter(), Filter::Folder(folder));
         // The managed record owns Undo; a detached view has no writer history.
         let mut host = ui::prelude::TestApp::<crate::resource::FeedsShell>::new().unwrap();
+        let versions_before = host.versions().len();
         host.with_widget(|app: &mut FeedsApp| {
             app.core_mut().open_add_folder();
             app.take_pending_modal();
@@ -656,7 +657,7 @@ fn the_add_dialog_field_is_native_and_submits_a_subscription() {
         );
         assert_eq!(
             host.versions().len(),
-            1,
+            versions_before + 1,
             "the dialog submits one canonical action"
         );
         assert!(host.undo(), "the record owns the undo step");
@@ -866,6 +867,7 @@ fn opml_portal_import_and_export_report_honestly() {
             a.core().next_wake_deadline().is_some(),
             "an open chooser wakes the loop"
         );
+        a.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
         a.sync(&mut doc, &automerge::ROOT);
         assert!(a.core().import_rx.is_none());
         assert_eq!(a.core().store.feeds.len(), before);

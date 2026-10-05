@@ -3804,7 +3804,16 @@ impl<Row: 'static> Widget for DataTable<Row> {
                         };
                         let mut cell = AccessNode::new(role)
                             .with_name(crate::i18n::I18nManager::lookup_plain(&col.header))
-                            .with_position(ci.saturating_add(1), col_count);
+                            .with_position(ci.saturating_add(1), col_count)
+                            .with_key(ci as u64);
+                        if col.checked.is_some()
+                            && let Some(identity) = self.row_identity_at(ri)
+                        {
+                            cell = cell.with_action_target(format!(
+                                "cell:{}:{}:{}",
+                                identity.value, identity.occurrence, col.key
+                            ));
+                        }
                         if let Some(TableRowState::Ready(row)) = row_state
                             && let Some(checked) = &col.checked
                         {
@@ -3980,6 +3989,34 @@ impl<Row: 'static> Widget for DataTable<Row> {
     ) -> bool {
         use crate::a11y::Action;
 
+        if let Some(cell) = target.strip_prefix("cell:") {
+            let mut parts = cell.splitn(3, ':');
+            let (Some(value), Some(occurrence), Some(column)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
+                return false;
+            };
+            let Some(row) = self.semantic_row_index(&format!("row:{value}:{occurrence}")) else {
+                return false;
+            };
+            let Some(column) = self
+                .columns
+                .iter()
+                .position(|candidate| candidate.key == column)
+            else {
+                return false;
+            };
+            return if matches!(action, Action::Activate | Action::ToggleCheck) {
+                self.selectable && self.toggle_check(row, column)
+            } else {
+                self.perform_semantic_action(
+                    &format!("row:{value}:{occurrence}"),
+                    action,
+                    _state,
+                    _path,
+                )
+            };
+        }
         let Some(index) = self.semantic_row_index(target) else {
             return false;
         };
@@ -7084,6 +7121,58 @@ mod content_edge_tests {
             table.sort_indicator.as_ref().map(|(k, a)| (k.as_str(), *a)),
             Some(("name", true))
         );
+    }
+
+    #[test]
+    fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
+        let checks = Rc::new(RefCell::new(Vec::new()));
+        let seen = Rc::clone(&checks);
+        let activations = Rc::new(Cell::new(0));
+        let activated = Rc::clone(&activations);
+        let mut table = DataTable::new(vec![
+            ColumnDef::checkbox("on", "On", |r: &Item| r.on),
+            name_col(),
+        ])
+        .with_row_key(|row: &Item| u64::from(*row.name.as_bytes().last().unwrap()))
+        .selectable(true)
+        .on_check(move |row, on| seen.borrow_mut().push((row, on)))
+        .on_activate(move |_| activated.set(activated.get() + 1));
+        table.set_rows(items(2));
+        let mut harness =
+            crate::headless::FrameHarness::new(crate::State::new(), Box::new(table), (400, 300));
+        let cells: Vec<_> = harness
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == crate::accesskit::Role::CheckBox)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(cells.len(), 2);
+        harness
+            .perform_a11y_action(cells[1], &crate::a11y::Action::Focus)
+            .unwrap();
+        assert!(
+            checks.borrow().is_empty(),
+            "focus does not toggle a checkbox"
+        );
+        harness
+            .perform_a11y_action(cells[1], &crate::a11y::Action::ToggleCheck)
+            .unwrap();
+        harness
+            .perform_a11y_action(cells[0], &crate::a11y::Action::Activate)
+            .unwrap();
+        assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
+        assert_eq!(activations.get(), 0, "a checkbox never activates its row");
+        harness
+            .with_widget_mut::<DataTable<Item>, _>(|table| table.set_rows(vec![item("item 1")]))
+            .unwrap();
+        harness.relayout();
+        assert!(
+            harness
+                .perform_a11y_action(cells[0], &crate::a11y::Action::ToggleCheck)
+                .is_err(),
+            "a removed record's retained checkbox must be refused"
+        );
+        assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
     }
 
     #[test]

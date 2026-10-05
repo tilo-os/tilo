@@ -799,9 +799,17 @@ fn watch_details(ui: Ui<'_>, v: &Video) -> Column {
     if model.settings.return_dislike_enabled
         && let Some(dislikes) = model.dislikes_of(&v.id)
     {
-        fact(t_args(
-            "tube-dislikes",
-            &[arg("count", dislikes), arg("shown", human_count(dislikes))],
+        facts = facts.push(Box::new(
+            text(
+                &t_args(
+                    "tube-dislikes",
+                    &[arg("count", dislikes), arg("shown", human_count(dislikes))],
+                ),
+                TextRole::Caption,
+            )
+            .numeric()
+            .dimmed()
+            .with_id("tube-dislikes"),
         ));
     }
 

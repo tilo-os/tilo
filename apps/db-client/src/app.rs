@@ -1780,7 +1780,7 @@ mod tests {
                 }
                 has_schema(&app.harness().resources())
             });
-            app.effect_confirmed(&DbEffect::Query {
+            app.start_effect(&DbEffect::Query {
                 sql: "SELECT 1".into(),
             })
             .unwrap();

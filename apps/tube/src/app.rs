@@ -294,7 +294,7 @@ impl TubeApp {
         let bus = Rc::clone(bus);
         NavShell::new()
             .with_id("tube_shell")
-            .mode(NavMode::Docked)
+            .mode(NavMode::Overlay)
             .on_back(move || can.get(), move || action::push(&bus, Action::Back))
     }
 
@@ -760,9 +760,17 @@ impl TubeApp {
     /// from real yt-dlp data) so an offscreen render shows real content.
     #[must_use]
     pub fn with_model_for_test(mut self, model: TubeModel) -> Self {
+        self.stage_model_for_test(model);
+        self
+    }
+
+    /// Supply a deterministic catalogue in a hosted test without changing its
+    /// dispatcher, effect admission, or shared library. Live launch stays empty.
+    pub fn stage_model_for_test(&mut self, model: TubeModel) {
         self.search_query.set(model.search_query.clone());
         self.model = model;
-        self
+        self.online = false;
+        self.shell_stale = true;
     }
 
     pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {

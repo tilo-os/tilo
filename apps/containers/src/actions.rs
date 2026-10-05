@@ -76,7 +76,7 @@ mod tests {
         host.call_on(
             &format!("container:{expected}"),
             "select-container",
-            serde_json::json!({"id": expected.clone()}),
+            serde_json::json!({}),
         )
         .unwrap();
         host.with_widget::<ContainersApp, _>(|app| {

@@ -435,7 +435,12 @@ fn editor(cx: &ViewCx<Studio>, ui: &Ui, raw: &str) -> Element {
                         ui.open(Page::Gallery);
                     })
             };
-            Box::new(ui::row![apply, export, duplicate, reset, delete])
+            // Keep the primary effects together and the editing/lifecycle
+            // commands on a second line so phone-sized editors retain targets.
+            Box::new(ui::column![
+                ui::row![apply, export],
+                ui::row![duplicate, reset, delete]
+            ])
         })
     };
 

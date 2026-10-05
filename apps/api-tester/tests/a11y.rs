@@ -98,13 +98,7 @@ fn every_control_is_a_focusable_accessible_node() {
     );
 
     // Labels / values a screen reader announces.
-    for name in [
-        "Send",
-        "Save request",
-        "New collection",
-        "Search",
-        "Hide sidebar",
-    ] {
+    for name in ["Send", "Save", "New collection", "Search", "Hide sidebar"] {
         assert!(
             nodes
                 .iter()
@@ -295,7 +289,7 @@ fn tab_traverses_every_control_in_order() {
         Some(&Role::TextInput),
         "second stop is the URL field"
     );
-    assert_eq!(stops[2].1.as_deref(), Some("Save request"));
+    assert_eq!(stops[2].1.as_deref(), Some("Save"));
     assert_eq!(stops[3].1.as_deref(), Some("Send"));
     assert_eq!(
         roles.get(4),
@@ -417,7 +411,7 @@ fn composition_params_fit_rows_and_divider_adjusts_with_keyboard() {
     let top = d.targets()["api.send"].y0;
     assert!(
         before.y0 - top < 300.0,
-        "three parameter rows fit above the response"
+        "three parameter rows fit above the response: divider {before:?}, send y={top}"
     );
     d.perform_named("api.request-divider", &ui::a11y::Action::Focus)
         .unwrap();
@@ -553,7 +547,11 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
     let d = app.harness();
     act_named(d, "Rename collection Users API", &ui::a11y::Action::Focus);
     d.key("Enter");
-    assert!(d.targets().contains_key("api.form-name"));
+    assert!(
+        d.targets().contains_key("api.form-name"),
+        "focused collection action must open its form: {}",
+        d.dump_json()
+    );
     d.click_named("api.form-name").unwrap();
     d.key("Home");
     d.type_text("Edited ");

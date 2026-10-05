@@ -423,13 +423,26 @@ impl App {
         &self,
         resources: &[tilo_actions::Resource],
     ) -> Vec<ControlBindingCoverage> {
+        // Shared chrome invokes doors served by this host, rather than by
+        // the app's resource provider. Audit those exact declarations too.
+        let mut host_resources = vec![crate::search::search_resource()];
+        if let Some(history) = &self.history {
+            host_resources.push(history.door_resource());
+        } else if self.history_chrome_enabled {
+            host_resources.push(crate::standalone_history_host::history_resource(
+                true,
+                self.document_history.is_open(),
+            ));
+        }
         let mut seen = std::collections::HashSet::new();
         crate::widget::controls::control_action_bindings(self.root_widget.as_ref())
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
                     crate::widget::ControlBindingKind::Action(address) => {
-                        if tilo_actions::door::resolve(resources, address).is_none() {
+                        if tilo_actions::door::resolve(resources, address).is_none()
+                            && tilo_actions::door::resolve(&host_resources, address).is_none()
+                        {
                             ControlBindingStatus::StaleAddress
                         } else if !seen.insert(address.clone()) {
                             ControlBindingStatus::SharedAddress
@@ -3985,6 +3998,10 @@ impl App {
         let Ok(request) = request else {
             return false;
         };
+        if self.actions.action_palette.is_none() {
+            self.actions.ordinary_palette_return_focus =
+                crate::widget::layout::CompositionFocus::capture_live(self.root_widget.as_ref());
+        }
         self.open_action_palette();
         self.bindings.clear();
         self.layout.node_map.clear();
@@ -4089,11 +4106,24 @@ impl App {
     }
 
     pub fn close_action_palette(&mut self) {
+        let return_focus = self.actions.ordinary_palette_return_focus.take();
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
         self.layout.structure_dirty = true;
         self.actions.action_palette = None;
+        if let Some(focus) = return_focus {
+            self.rebuild_action_palette_admission();
+            // SAFETY: admission rebuilt the exclusive background tree and its
+            // custody map. Restore requires one eligible identity in that tree.
+            self.focused_node = unsafe {
+                focus.restore(
+                    &self.layout.node_map,
+                    &self.bindings,
+                    Some(&self.focusable_order),
+                )
+            };
+        }
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {

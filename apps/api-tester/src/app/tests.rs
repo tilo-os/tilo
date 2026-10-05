@@ -608,6 +608,7 @@ fn resource_send_performs_a_real_http_round_trip() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
+    let (release_response, response_ready) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || {
         let deadline = tilo_test_env::hang_deadline();
         let mut stream = loop {
@@ -649,6 +650,9 @@ fn resource_send_performs_a_real_http_round_trip() {
                 .contains("x-tilo-probe: native\r\n"),
             "{request}"
         );
+        response_ready
+            .recv_timeout(tilo_test_env::hang_bound())
+            .expect("the admitted pending job is released by its caller");
         let body = "{\"result\":\"Grün\"}";
         write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     });
@@ -663,12 +667,24 @@ fn resource_send_performs_a_real_http_round_trip() {
     app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
         .unwrap();
     assert!(app.state().history.is_empty());
-    app.start_effect(&ApiTesterEffect::Send).unwrap();
+    let admitted = app.start_effect(&ApiTesterEffect::Send).unwrap();
     assert!(
-        app.effect_progress()
-            .iter()
-            .any(|update| matches!(update, tilo_actions::InvocationUpdate::Accepted { .. })),
-        "the host admits the real HTTP job instead of completing at queue time"
+        !app.effect_progress().iter().any(|update| matches!(
+            update,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+                | tilo_actions::InvocationUpdate::Failed { .. }
+                | tilo_actions::InvocationUpdate::Cancelled { .. }
+        )),
+        "admitted HTTP invocation {admitted:?} has not completed at queue time"
+    );
+    assert!(
+        app.with_surface::<ApiTesterApp, _>(|surface| surface.sending)
+            .unwrap(),
+        "the backend has not answered the displayed HTTP job"
+    );
+    assert!(
+        app.state().history.is_empty(),
+        "admission is not a completed request record"
     );
     // A later edit cannot change the history record of the request already sent.
     app.invoke(
@@ -687,6 +703,9 @@ fn resource_send_performs_a_real_http_round_trip() {
         .unwrap(),
     )
     .unwrap();
+    release_response
+        .send(())
+        .expect("release the held HTTP backend");
     tilo_test_env::wait_until("the HTTP worker to complete the request", || {
         app.settle();
         app.effect_progress()
@@ -853,7 +872,7 @@ fn rereading_the_document_keeps_the_order_on_screen() {
 #[test]
 fn long_navigation_labels_fit_the_shared_rows() {
     fn find(widget: &mut dyn Widget, theme: &Theme, text: &mut ui::TextRenderer) -> usize {
-        if widget.name() == "NavList" || widget.name() == "TreeView" {
+        if widget.name() == "RequestsNav" {
             let rect = widget.get_rect();
             let mut scene = vello::Scene::new();
             widget.draw(

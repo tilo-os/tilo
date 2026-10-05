@@ -990,6 +990,7 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             h.key(Key::Named(NamedKey::ArrowDown), None);
+            h.layout(1280.0, 720.0);
             let second = h.app.core.borrow().model.locations[1].name.clone();
             // The column titles are the header row's headings.
             fn headings(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {

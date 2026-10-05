@@ -1879,39 +1879,27 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         ));
         view.sync(&doc, &ROOT);
         assert!(view.find_is_open());
-        fn query(widget: &dyn ui::widget::Widget) -> Option<ui::a11y::AccessNode> {
-            fn input(node: ui::a11y::AccessNode) -> Option<ui::a11y::AccessNode> {
-                if node.role == Role::TextInput {
-                    return Some(node);
-                }
-                node.children.into_iter().find_map(input)
-            }
-            widget
-                .accessibility()
-                .and_then(input)
-                .or_else(|| widget.children().into_iter().find_map(query))
-        }
-        let query = query(&view).expect("discoverable Find query in the retained scope");
-        assert!(view.perform_semantic_action(
-            query.action_target.as_deref().expect("query target"),
-            &Action::SetValue("private search".into()),
-            &mut ui::widget::Edits::lend(&mut doc),
-            &ROOT,
-        ));
+        let mut state = State::new();
+        assert!(state.adopt_doc(doc));
+        let mut framed = ui::headless::Framed::new(state, view, (800, 480), ui::Theme::dark());
+        ui::headless::Framed::harness_mut(&mut framed)
+            .perform_named("find-query", &Action::SetValue("private search".into()))
+            .expect("the hosted Find query owns its text-edit action");
         assert!(
             drain_writes(&writes).is_empty(),
             "Find never writes shell commands"
         );
+        let (view, state) = ui::headless::Framed::split(&mut framed);
         assert_eq!(
             heads_before,
-            doc.get_heads(),
+            state.doc.get_heads(),
             "Find remains private local view state"
         );
         assert!(
             !view.terminal_mut().perform_semantic_action(
                 transcript.action_target.as_deref().unwrap(),
                 &Action::SetValue("unreviewed command".into()),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &ROOT,
             ),
             "transcript actions still cannot execute arbitrary text"

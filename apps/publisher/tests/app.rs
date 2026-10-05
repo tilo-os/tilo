@@ -200,10 +200,8 @@ fn applying_reports_what_the_registry_answered() {
     );
     app.harness()
         .wait_until(Duration::from_secs(10), |driver| {
-            driver.a11y_nodes().iter().any(|(_, node)| {
-                node.label()
-                    .is_some_and(|label| label.contains("127.0.0.1:9"))
-            })
+            notice_detail(&driver.inspection().root)
+                .is_some_and(|detail| detail.contains("127.0.0.1:9"))
         })
         .then_some(())
         .expect("an unreachable registry is named in the notice");

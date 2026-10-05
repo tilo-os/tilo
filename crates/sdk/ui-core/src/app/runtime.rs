@@ -106,6 +106,8 @@ impl InputRuntime {
 pub(super) struct ActionRuntime {
     pub(super) published_invocations: crate::invocation_scope::PublishedInvocationRuntime,
     pub(super) action_palette: Option<crate::action_palette::ActionPalette>,
+    /// Stable opener identity, never a node or pointer from the modal's old tree.
+    pub(super) ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
@@ -187,6 +189,7 @@ impl ActionRuntime {
         Self {
             published_invocations: Default::default(),
             action_palette: None,
+            ordinary_palette_return_focus: None,
             action_registry: tilo_actions::ActionRegistry::new(),
             action_registry_generation: 0,
             action_transport: Box::new(tilo_actions::LocalTransport::new()),

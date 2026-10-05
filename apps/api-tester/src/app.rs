@@ -70,12 +70,13 @@ fn pane(slot: Swap, below_divider: bool) -> Column {
     } else {
         column.with_extra_bottom_padding(gap)
     };
-    column.push(Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_fill_remaining_height()
-            .push(Box::new(slot)),
-    ))
+    let body = Column::new().with_no_padding();
+    let body = if below_divider {
+        body.with_fill_remaining_height()
+    } else {
+        body
+    };
+    column.push(Box::new(body.push(Box::new(slot))))
 }
 
 /// Preserve the shared divider across request-view replacements, with an

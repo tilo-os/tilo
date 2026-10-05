@@ -212,6 +212,13 @@ pub enum ApiTesterAction {
     SetBodyMode { mode: BodyMode },
     /// Add or replace a param, header or form row, keyed by its id.
     SetRow { section: RowSection, row: KeyValue },
+    /// Edit one public row field without replacing the other fields.
+    EditRowField {
+        section: RowSection,
+        row_id: String,
+        field: String,
+        value: String,
+    },
     /// Remove a param, header or form row by id.
     RemoveRow { section: RowSection, row_id: String },
 
@@ -373,6 +380,53 @@ impl Action for ApiTesterAction {
                     match rows.iter_mut().find(|existing| existing.id == row.id) {
                         Some(existing) => *existing = row.clone(),
                         None => rows.push(row.clone()),
+                    }
+                });
+            }
+            ApiTesterAction::EditRowField {
+                section,
+                row_id,
+                field,
+                value,
+            } => {
+                if !matches!(field.as_str(), "key" | "value" | "enabled")
+                    || Uuid::parse_str(row_id).is_err()
+                {
+                    return Err(ActionError::Refused("invalid request row field".into()));
+                }
+                let enabled =
+                    if field == "enabled" {
+                        Some(value.parse::<bool>().map_err(|_| {
+                            ActionError::Refused("invalid row inclusion value".into())
+                        })?)
+                    } else {
+                        None
+                    };
+                ApiDoc::update_request(doc, &root, |request| {
+                    let rows = section.rows(request);
+                    let index = if let Some(index) = rows.iter().position(|row| row.id == *row_id) {
+                        index
+                    } else {
+                        if value.is_empty() || enabled.is_some() {
+                            return;
+                        }
+                        rows.push(KeyValue {
+                            id: row_id.clone(),
+                            key: String::new(),
+                            value: String::new(),
+                            enabled: true,
+                            secret: false,
+                        });
+                        rows.len().saturating_sub(1)
+                    };
+                    if let Some(row) = rows.get_mut(index) {
+                        if let Some(enabled) = enabled {
+                            row.enabled = enabled;
+                        } else if field == "key" {
+                            row.key = value.clone();
+                        } else {
+                            row.value = value.clone();
+                        }
                     }
                 });
             }
@@ -1430,6 +1484,34 @@ mod tests {
         assert_eq!(request.url, "https://x.test");
         assert_eq!(request.params, vec![row.clone()]);
         assert_eq!(request.body_mode, BodyMode::Json);
+        apply(
+            &mut doc,
+            &ApiTesterAction::EditRowField {
+                section: RowSection::Params,
+                row_id: row.id.clone(),
+                field: "key".into(),
+                value: "limit".into(),
+            },
+        );
+        assert_eq!(
+            state(&doc).request.params[0].value,
+            "1",
+            "editing the key preserves the current value"
+        );
+        apply(
+            &mut doc,
+            &ApiTesterAction::EditRowField {
+                section: RowSection::Params,
+                row_id: row.id.clone(),
+                field: "value".into(),
+                value: "50".into(),
+            },
+        );
+        assert_eq!(
+            state(&doc).request.params[0].key,
+            "limit",
+            "editing the value preserves the prior field edit"
+        );
         apply(
             &mut doc,
             &ApiTesterAction::RemoveRow {

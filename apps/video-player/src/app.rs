@@ -3484,7 +3484,7 @@ mod tests {
                 .expect("queued row placed")
         });
         app.harness()
-            .click_at(row.row.x0 + 20.0, row.row.center().y);
+            .click_at(row.play.center().x, row.play.center().y);
         app.settle();
         assert_eq!(
             surface(&mut app, |player| player.current_queue_id.clone()),
