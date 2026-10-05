@@ -622,6 +622,62 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
                 && w[2] == format!("{mount}/lib")),
             "LD_LIBRARY_PATH not pointed at the shared-lib dir: {argv:?}"
         );
+
+        // Phase `an_app_built_for_another_runtime_is_refused_before_bwrap`.
+        // The same app rebuilt against a different libstd: the installed
+        // bundle carries `libstd-abc123.so`, the app needs another hash. The
+        // launch fails with the library named instead of dying in the loader
+        // inside the sandbox with only a stderr line to show for it.
+        let payload = tempfile::tempdir().unwrap();
+        let entry = payload.path().join("bin/thin");
+        std::fs::create_dir_all(entry.parent().unwrap()).unwrap();
+        std::fs::write(
+            &entry,
+            launcher::loader_preflight::elf_fixture(
+                &["libruntime_dylib.so", "libstd-55999f89fc36b51f.so"],
+                None,
+            ),
+        )
+        .unwrap();
+        let data_home = tempfile::tempdir().unwrap();
+        let opts = RunOptions {
+            no_services: true,
+            landlock_enforce: false,
+            ..isolated_options(data_home.path())
+        };
+        let err = run_with(&m, payload.path(), &opts).unwrap_err();
+        match &err {
+            RunError::RuntimeLibraryMissing {
+                package,
+                runtime,
+                library,
+                searched,
+            } => {
+                assert_eq!(package, "so.tilo.thin");
+                assert_eq!(runtime, &format!("tilo-runtime/{version}"));
+                assert_eq!(library, "libstd-55999f89fc36b51f.so");
+                assert_eq!(searched.first(), Some(&bundle_dir.join("lib")));
+            }
+            other => panic!("expected RuntimeLibraryMissing, got {other:?}"),
+        }
+        let message = err.to_string();
+        for needle in [
+            "built for a different Tilo runtime",
+            "libstd-55999f89fc36b51f.so",
+            "tilo-runtime/thin-smoke-1",
+            "`app update so.tilo.thin`",
+            "`app install so.tilo.thin`",
+            "`app remove so.tilo.thin`",
+        ] {
+            assert!(
+                message.contains(needle),
+                "{needle:?} missing from: {message}"
+            );
+        }
+        assert!(
+            !message.contains('\n'),
+            "one stderr line for the shell: {message}"
+        );
     }
     // Phase `configured_runtime_root_wins_over_the_installed_fallback`.
     {

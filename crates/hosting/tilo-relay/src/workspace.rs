@@ -924,13 +924,10 @@ impl WorkspaceRuntime {
         false
     }
 
-    /// Deliver a directed live envelope to the subscriber `target` only, or
-    /// drop it when that subscriber's queue is full: like presence, a busy
-    /// reader loses the envelope, never its connection.
-    pub fn route_lossy(&self, target: &[u8; 32], envelope: Envelope) -> bool {
-        self.subscribers
-            .get(target)
-            .is_some_and(|sub| sub.tx.try_send(envelope).is_ok())
+    /// The outbound queue of the live subscriber `target`, for a caller
+    /// that waits for room in it rather than dropping what does not fit.
+    pub fn subscriber_queue(&self, target: &[u8; 32]) -> Option<mpsc::Sender<Envelope>> {
+        self.subscribers.get(target).map(|sub| sub.tx.clone())
     }
 }
 

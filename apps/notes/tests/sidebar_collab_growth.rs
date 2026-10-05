@@ -70,7 +70,7 @@ fn sidebar_survives_remote_page_added_between_layout_and_draw() {
             id: uuid::Uuid::new_v4(),
             title: "Remote Page".into(),
             parent: None,
-            order: 1,
+            order: "b".into(),
         },
     );
 

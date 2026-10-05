@@ -5,6 +5,12 @@
 //! their SHA-256 identity; only then can a signed runtime extension and model
 //! become eligible for a typed vLLM launch. There is no generic
 //! command, URL, tag, or package-install API.
+//!
+//! Some signed models run in the process that uses them instead (an ONNX
+//! graph a per-user service loads on the CPU). They go through the same
+//! verified download and licence record, but nothing is started: once
+//! installed, [`installed_in_process_model`] finds the verified object by
+//! capability, reading only the store under [`user_model_root`].
 
 #![cfg_attr(
     test,
@@ -23,6 +29,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
+pub use agent_provider_config::local::InProcessCapability;
 use agent_provider_config::local::{
     LocalEndpoint, LocalModelRelease, LocalModelStatus, ModelArtifactFormat, PinnedArtifact,
     RuntimeRelease,
@@ -156,6 +163,124 @@ pub struct ManagedModel {
     pub model_sha256: String,
     pub status: LocalModelStatus,
     pub process: Option<ProcessHandle>,
+    /// Present only for a model that runs in the process using it. It holds
+    /// what [`installed_in_process_model`] answers without the signed catalog,
+    /// copied from the release that was installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_process: Option<InProcessRecord>,
+}
+
+/// The installed facts of an in-process model, recorded with its state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InProcessRecord {
+    pub revision: String,
+    pub license_id: String,
+    pub size_bytes: u64,
+    pub capabilities: Vec<InProcessCapability>,
+    /// When this release was recorded, so the newest of two installed models
+    /// with one capability wins.
+    pub recorded_at_unix_ms: u64,
+}
+
+impl ManagedModel {
+    fn for_release(model: &LocalModelRelease, status: LocalModelStatus) -> Self {
+        Self {
+            model_sha256: model.artifact.sha256.clone(),
+            status,
+            process: None,
+            in_process: model.runs_in_process().then(|| InProcessRecord {
+                revision: model.version.clone(),
+                license_id: model.license_id.clone(),
+                size_bytes: model.artifact.size_bytes,
+                capabilities: model.in_process_capabilities(),
+                recorded_at_unix_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| {
+                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                    }),
+            }),
+        }
+    }
+}
+
+/// An installed in-process model, as [`installed_in_process_model`] finds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledInProcessModel {
+    /// Signed catalog id (`u2net-subject`).
+    pub id: String,
+    /// Immutable signed revision.
+    pub revision: String,
+    /// SHA-256 of the object at `path`, verified when it was installed.
+    pub sha256: String,
+    /// The content-addressed object file: `<root>/sha256/<sha256>`.
+    pub path: PathBuf,
+    /// SPDX licence id the person accepted it under.
+    pub license_id: String,
+}
+
+/// The per-user model store every Tilo model service shares:
+/// `$XDG_DATA_HOME/tilo/models`.
+pub fn user_model_root() -> PathBuf {
+    xdg_paths::xdg::data_home()
+        .unwrap_or_else(|| PathBuf::from("/tmp/.local/share"))
+        .join("tilo/models")
+}
+
+/// Find the installed in-process model that provides `capability` in the
+/// store at `root` (normally [`user_model_root`]). Reads `state.json` and
+/// checks the object only on the filesystem; it never touches the network,
+/// the signed catalog or the model manager.
+///
+/// Only a model whose state is `installed` counts, and only when its object
+/// is still a regular file of the recorded size. The bytes were hashed when
+/// they were installed and the object is never rewritten, so this does not
+/// hash 176 MB on every lookup. With several, the most recently installed
+/// wins.
+///
+/// # Errors
+/// Returns an I/O or decode error for an unreadable state file, or
+/// [`ServiceError::UnsafeStatePath`] when it is a symlink.
+pub fn installed_in_process_model(
+    root: &Path,
+    capability: InProcessCapability,
+) -> Result<Option<InstalledInProcessModel>, ServiceError> {
+    let state = load_state(&root.join(STATE_FILE))?;
+    let mut found: Option<(u64, InstalledInProcessModel)> = None;
+    for (id, managed) in state.models {
+        let Some(record) = managed.in_process else {
+            continue;
+        };
+        if managed.status != LocalModelStatus::Installed
+            || !record.capabilities.contains(&capability)
+            || validate_sha256(&managed.model_sha256).is_err()
+        {
+            continue;
+        }
+        let path = root.join("sha256").join(&managed.model_sha256);
+        let intact = fs::symlink_metadata(&path).is_ok_and(|metadata| {
+            metadata.file_type().is_file() && metadata.len() == record.size_bytes
+        });
+        if !intact {
+            continue;
+        }
+        if found
+            .as_ref()
+            .is_some_and(|(recorded, _)| *recorded > record.recorded_at_unix_ms)
+        {
+            continue;
+        }
+        found = Some((
+            record.recorded_at_unix_ms,
+            InstalledInProcessModel {
+                id,
+                revision: record.revision,
+                sha256: managed.model_sha256,
+                path,
+                license_id: record.license_id,
+            },
+        ));
+    }
+    Ok(found.map(|(_, model)| model))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -228,7 +353,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     fn model_path(&self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
         match model.artifact_format {
             ModelArtifactFormat::HfSnapshotTarZst => self.snapshot_path(&model.artifact.sha256),
-            ModelArtifactFormat::VllmGguf => self.object_path(&model.artifact.sha256),
+            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::OnnxFile => {
+                self.object_path(&model.artifact.sha256)
+            }
         }
     }
 
@@ -302,7 +429,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
     fn materialize_model(&mut self, model: &LocalModelRelease) -> Result<PathBuf, ServiceError> {
         let object = self.fetch_verified(&model.artifact)?;
         match model.artifact_format {
-            ModelArtifactFormat::VllmGguf => Ok(object),
+            ModelArtifactFormat::VllmGguf | ModelArtifactFormat::OnnxFile => Ok(object),
             ModelArtifactFormat::HfSnapshotTarZst => self.extract_snapshot(&object, model),
         }
     }
@@ -354,11 +481,7 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         self.materialize_model(model)?;
         self.state.models.insert(
             model.id.clone(),
-            ManagedModel {
-                model_sha256: model.artifact.sha256.clone(),
-                status: LocalModelStatus::Installed,
-                process: None,
-            },
+            ManagedModel::for_release(model, LocalModelStatus::Installed),
         );
         self.persist()?;
         Ok(LocalModelStatus::Installed)
@@ -400,10 +523,44 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         let archive = self.fetch_verified(&runtime.release.artifact)?;
         self.supervisor
             .install_runtime_image(&archive, &runtime.release.oci_image)?;
+        self.install_model_with_progress(model)
+    }
+
+    /// Background-worker install of a model that runs in the process using
+    /// it: the same verified, resumable download and licence check, with no
+    /// runtime image and nothing to start. It ends `Installed`.
+    ///
+    /// # Errors
+    /// Returns [`ServiceError::NotInProcess`] for a runtime-served model, and
+    /// otherwise as [`Self::install_with_runtime_progress`].
+    pub fn install_in_process_with_progress(
+        &mut self,
+        model: &LocalModelRelease,
+    ) -> Result<LocalModelStatus, ServiceError> {
+        if !model.runs_in_process() {
+            return Err(ServiceError::NotInProcess(model.id.clone()));
+        }
+        self.require_license_acceptance(model)?;
+        self.install_model_with_progress(model)
+    }
+
+    fn install_model_with_progress(
+        &mut self,
+        model: &LocalModelRelease,
+    ) -> Result<LocalModelStatus, ServiceError> {
         let mut published = self.state.clone();
         let state_path = self.root.join(STATE_FILE);
         let model_id = model.id.clone();
         let total = model.artifact.size_bytes;
+        published.models.entry(model_id.clone()).or_insert_with(|| {
+            ManagedModel::for_release(
+                model,
+                LocalModelStatus::Downloading {
+                    received_bytes: 0,
+                    total_bytes: total,
+                },
+            )
+        });
         let mut progress_error = None;
         let transfer = {
             let mut progress = |event: TransferEvent| {
@@ -433,9 +590,10 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
             let archive = self.object_path(&model.artifact.sha256)?;
             self.extract_snapshot(&archive, model)?;
         }
-        if let Some(managed) = published.models.get_mut(&model_id) {
-            managed.status = LocalModelStatus::Installed;
-        }
+        published.models.insert(
+            model_id,
+            ManagedModel::for_release(model, LocalModelStatus::Installed),
+        );
         persist_state(&state_path, &published)?;
         self.state = published;
         Ok(LocalModelStatus::Installed)
@@ -504,14 +662,13 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         self.require_license_acceptance(model)?;
         self.state.models.insert(
             model.id.clone(),
-            ManagedModel {
-                model_sha256: model.artifact.sha256.clone(),
-                status: LocalModelStatus::Downloading {
+            ManagedModel::for_release(
+                model,
+                LocalModelStatus::Downloading {
                     received_bytes: 0,
                     total_bytes: model.artifact.size_bytes,
                 },
-                process: None,
-            },
+            ),
         );
         self.persist()
     }
@@ -600,6 +757,9 @@ impl<T: HttpsTransport, P: ProcessSupervisor> LocalModelService<T, P> {
         model: &LocalModelRelease,
         port: u16,
     ) -> Result<LocalEndpoint, ServiceError> {
+        if model.runs_in_process() {
+            return Err(ServiceError::InProcessModel(model.id.clone()));
+        }
         runtime.validate()?;
         if port == 0 {
             return Err(ServiceError::InvalidPort);
@@ -978,6 +1138,10 @@ pub enum ServiceError {
     ModelNotInstalled(String),
     #[error("model license has not been accepted for this exact release: {0}")]
     LicenseNotAccepted(String),
+    #[error("model runs in the process that uses it and is never started: {0}")]
+    InProcessModel(String),
+    #[error("model is served by a runtime, not loaded in-process: {0}")]
+    NotInProcess(String),
     #[error("invalid port")]
     InvalidPort,
     #[error("invalid local endpoint")]
@@ -1021,6 +1185,28 @@ mod tests {
             context_window: 1,
             vision: false,
             face_recognition: false,
+            segmentation: false,
+        }
+    }
+    fn onnx_model(bytes: &[u8]) -> LocalModelRelease {
+        LocalModelRelease {
+            id: "subject".into(),
+            label: "Subject".into(),
+            description: "A tiny segmentation test model".into(),
+            version: "c".repeat(64),
+            artifact: artifact(bytes),
+            artifact_format: ModelArtifactFormat::OnnxFile,
+            license_id: "Apache-2.0".into(),
+            license_url: "https://catalog.example.invalid/license".into(),
+            requires_acceptance: true,
+            installed_size_bytes: bytes.len() as u64,
+            allowed_runtimes: std::collections::BTreeSet::new(),
+            required_memory_mib: 1,
+            required_accelerator_mib: 0,
+            context_window: 0,
+            vision: false,
+            face_recognition: false,
+            segmentation: true,
         }
     }
 
@@ -1288,6 +1474,77 @@ mod tests {
             ));
             assert!(!service.model_path(&release).unwrap().exists());
         }
+    }
+
+    fn service_for(root: &Path, bytes: &[u8]) -> LocalModelService<Transport, Supervisor> {
+        LocalModelService::open(
+            root,
+            Transport {
+                bytes: bytes.to_vec(),
+                starts: vec![],
+            },
+            Supervisor {
+                command: None,
+                stopped: vec![],
+            },
+        )
+        .unwrap()
+    }
+
+    /// An in-process model installs through the verified download and the
+    /// licence record alone, is found by capability from the store on disk,
+    /// is never started, and disappears from the lookup once removed.
+    #[test]
+    fn in_process_models_install_without_a_runtime_and_are_found_by_capability() {
+        let bytes = b"onnx graph";
+        let dir = tempfile::tempdir().unwrap();
+        let release = onnx_model(bytes);
+        let mut service = service_for(dir.path(), bytes);
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None
+        );
+        assert!(matches!(
+            service.install_in_process_with_progress(&release),
+            Err(ServiceError::LicenseNotAccepted(_))
+        ));
+        assert!(matches!(
+            service.install_in_process_with_progress(&model(bytes)),
+            Err(ServiceError::NotInProcess(_))
+        ));
+
+        service.record_license_acceptance(&release).unwrap();
+        service.queue_install(&release).unwrap();
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None,
+            "a queued download is not an installed model"
+        );
+        assert_eq!(
+            service.install_in_process_with_progress(&release).unwrap(),
+            LocalModelStatus::Installed
+        );
+        assert!(service.supervisor.command.is_none());
+
+        let found = installed_in_process_model(dir.path(), InProcessCapability::Segmentation)
+            .unwrap()
+            .expect("installed segmentation model");
+        assert_eq!(found.id, "subject");
+        assert_eq!(found.revision, "c".repeat(64));
+        assert_eq!(found.sha256, release.artifact.sha256);
+        assert_eq!(found.license_id, "Apache-2.0");
+        assert_eq!(
+            found.path,
+            dir.path().join("sha256").join(&release.artifact.sha256)
+        );
+        assert_eq!(fs::read(&found.path).unwrap(), bytes);
+
+        service.remove("subject").unwrap();
+        assert!(!found.path.exists());
+        assert_eq!(
+            installed_in_process_model(dir.path(), InProcessCapability::Segmentation).unwrap(),
+            None
+        );
     }
 
     /// Acceptance is pinned to the exact model release, status persists and removal stops the supervised

@@ -55,6 +55,18 @@ pub enum ManifestError {
     DuplicateCapability(String),
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
+    #[error("only kind=runtime packages declare `package.provides`")]
+    ProvidesOnNonRuntime,
+    #[error(
+        "a native kind=runtime package (one with `[package.isa]`) requires `package.provides`, \
+         the runtime it is, e.g. `tilo-runtime/<release>+native.<32 hex>`"
+    )]
+    RuntimeWithoutProvides,
+    #[error(
+        "package.provides {0:?} is neither `<name>/<release>+native.<32 hex>` nor \
+         `<name>/<version>`"
+    )]
+    BadProvides(String),
     #[error("package.optional-runtimes lists {0:?} more than once, or as package.runtime as well")]
     DuplicateOptionalRuntime(String),
     #[error("package.optional-runtimes lists more than {MAX_OPTIONAL_RUNTIMES} runtimes")]
@@ -73,6 +85,8 @@ pub enum ManifestError {
     BadProviderScheme(String),
     #[error("invalid resource kind {0:?}")]
     BadResourceKind(String),
+    #[error("sandbox.services: {0}")]
+    BadService(String),
     #[error("publisher.identity: {0}")]
     BadPublisherIdentity(String),
     #[error("publisher.signature: {0}")]
@@ -210,6 +224,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
             // applies a default, not an error here.
         }
     }
+    validate_provides(m)?;
 
     match m.package.kind {
         Kind::App => {
@@ -338,6 +353,10 @@ fn validate_declarations(m: &Manifest) -> Result<(), ManifestError> {
             return Err(ManifestError::BadResourceKind(kind.clone()));
         }
     }
+    for (name, req) in &m.sandbox.services {
+        registry_types::InterfaceRequirement::new(name, req.version)
+            .map_err(|error| ManifestError::BadService(error.to_string()))?;
+    }
     Ok(())
 }
 
@@ -350,6 +369,7 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: Some(target.runtime.clone()),
+        interfaces: Vec::new(),
     };
     registry_target
         .validate()
@@ -598,7 +618,26 @@ fn validate_optional_runtimes(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
+/// `package.provides` belongs to a native runtime package and names the
+/// runtime it is: the exact build of the runtime thin apps link
+/// (`<name>/<release>+native.<digest>`), or an engine runtime an app mounts
+/// as an optional runtime (`<name>/<version>`).
+fn validate_provides(m: &Manifest) -> Result<(), ManifestError> {
+    match (&m.package.kind, &m.package.provides) {
+        (Kind::Runtime, Some(provides)) => validate_runtime_string(provides)
+            .map_err(|_| ManifestError::BadProvides(provides.clone())),
+        (Kind::Runtime, None) if !m.package.isa.is_empty() && m.target.is_none() => {
+            Err(ManifestError::RuntimeWithoutProvides)
+        }
+        (_, Some(_)) => Err(ManifestError::ProvidesOnNonRuntime),
+        (_, None) => Ok(()),
+    }
+}
+
 fn validate_runtime_string(raw: &str) -> Result<(), ManifestError> {
+    if registry_types::parse_native_runtime(raw).is_ok() {
+        return Ok(());
+    }
     let (name, ver) = raw
         .split_once('/')
         .ok_or_else(|| ManifestError::BadRuntimeForm(raw.to_string()))?;
@@ -749,6 +788,46 @@ mode = "off"
                 "expected app-entrypoint error, got {e:?}"
             );
         }
+        // phase: an_app_names_the_exact_runtime_build
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.kind = Kind::App;
+            m.package.runtime =
+                Some("tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef".into());
+            let e = validate_manifest(&m).unwrap_err();
+            assert!(
+                matches!(e, ManifestError::AppMissingEntrypoint),
+                "expected app-entrypoint error, got {e:?}"
+            );
+        }
+        // phase: a_native_runtime_package_provides_one_build
+        {
+            let mut m = minimal_runtime_manifest();
+            m.package.isa.aarch64 = Some(crate::manifest::AArch64Level::Armv8A);
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::RuntimeWithoutProvides)
+            );
+            m.package.provides = Some("tilo-runtime".into());
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::BadProvides("tilo-runtime".into()))
+            );
+            m.package.provides = Some("tilo-runtime/2026.10.0-chromium".into());
+            assert_eq!(validate_manifest(&m), Ok(()));
+            m.package.provides =
+                Some("tilo-runtime/2026.07+native.0123456789abcdef0123456789abcdef".into());
+            assert_eq!(validate_manifest(&m), Ok(()));
+            assert_eq!(
+                m.package.native_runtime_binding(),
+                m.package.provides.as_deref()
+            );
+            m.package.kind = Kind::Service;
+            assert_eq!(
+                validate_manifest(&m),
+                Err(ManifestError::ProvidesOnNonRuntime)
+            );
+        }
         // phase: browser_manifest_names_its_engine_runtime
         {
             let source = include_str!("../../../../apps/browser/tilo-app.toml");
@@ -805,6 +884,47 @@ mode = "off"
             validate_manifest(&m),
             Err(ManifestError::TooManyOptionalRuntimes)
         );
+    }
+
+    #[test]
+    fn required_services_are_the_interfaces_a_package_needs() {
+        use crate::manifest::{Requirement, ServiceReq};
+        let service = |requirement, version| ServiceReq {
+            protocol: String::new(),
+            requirement,
+            version,
+        };
+        let mut m = minimal_runtime_manifest();
+        m.sandbox.services = [
+            ("system".to_owned(), service(Requirement::Required, 2)),
+            ("collab".to_owned(), service(Requirement::Optional, 1)),
+            (
+                "model-gateway".to_owned(),
+                service(Requirement::Required, 1),
+            ),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(validate_manifest(&m), Ok(()));
+        assert_eq!(
+            m.required_interface_wire(),
+            vec!["model-gateway@1".to_owned(), "system@2".to_owned()]
+        );
+        m.sandbox
+            .services
+            .insert("Bad Name".to_owned(), service(Requirement::Optional, 1));
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::BadService(_))
+        ));
+        m.sandbox.services.remove("Bad Name");
+        m.sandbox
+            .services
+            .insert("system".to_owned(), service(Requirement::Required, 0));
+        assert!(matches!(
+            validate_manifest(&m),
+            Err(ManifestError::BadService(_))
+        ));
     }
 
     #[test]

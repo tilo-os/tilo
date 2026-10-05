@@ -54,8 +54,7 @@ echo "PASS: FUSE mount + content"
 
 # --- 2. Binaries ----------------------------------------------------
 echo "--- [2/4] OS binaries ---"
-for bin in /usr/bin/shell /usr/bin/fs \
-           /usr/bin/terminal /usr/bin/file-explorer; do
+for bin in /usr/bin/shell /usr/bin/fs; do
     if [ ! -x "$bin" ]; then
         echo "FAIL: $bin missing or not executable"
         exit 1

@@ -146,7 +146,13 @@ included, at the device's largest storage binding. `CEILING` puts lines and
 segments at 8M x 24 bytes = 192 MiB and the lines floor grows with the path
 tag count, both past WebGPU's default 128 MiB; a bind group past the limit
 fails the device, where a clamped buffer drops geometry the shaders report
-through `BumpAllocators::failed`. `BudgetTracker::set_device_limits` sets it
+through `BumpAllocators::failed`.
+
+`segments` is reserved separately from `seg_counts` here, where upstream sizes
+them alike so its `seg_counts` check covered both. `coarse.wgsl` therefore
+checks its `segments` allocation against `segments_size` and reports an
+overflow as `STAGE_COARSE`; without it a frame whose segments outgrew their
+reservation reported `failed=0` and was presented with geometry missing. `BudgetTracker::set_device_limits` sets it
 from `device.limits()`, rounded down to a size class the engine's buffer pool
 allocates exactly, since the pool rounds requests up and binds whole buffers.
 
@@ -272,6 +278,16 @@ backend. wgpu-hal's GLES device holds its single context lock for every
 pipeline compile, so parallel initialisation gains nothing there, and on a
 slow driver a queued worker thread exceeds the context lock timeout and
 panics.
+
+## `vendor/vello/src/lib.rs`, `wgpu_engine.rs`: images without CPU pixels
+
+An image whose blob is empty is drawn, on a renderer without an
+`override_image` texture for it, from the process's `ExternalImageSource`
+(`set_external_image_source`, keyed by blob id) instead of panicking, and
+transparent when the source has nothing. The compositor keeps Wayland
+client frames on the GPU and draws them on its presenting renderer from
+their textures; screenshots, recordings and renderers on other devices
+reach the same frames through the source, which reads them back on demand.
 
 ## zlink-macros
 

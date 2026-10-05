@@ -40,6 +40,23 @@ pub fn validate_payload_shape(meta: &TappMeta) -> Result<()> {
             missing.len()
         );
     }
+    validate_payload_shape_with(meta, |hash| tapp.carried.get(hash).copied())
+}
+
+/// [`validate_payload_shape`] for a package that may be thin: `len_of`
+/// reports the verified length of each payload blob, carried or held
+/// elsewhere, and `None` for one that is unknown.
+///
+/// # Errors
+///
+/// Returns an error when a blob's length is unknown, the manifest does not
+/// fit the payload, or the decoded application exceeds the materialization
+/// limits.
+pub fn validate_payload_shape_with(
+    meta: &TappMeta,
+    len_of: impl FnMut(&tilo_app_package::BlobHash) -> Option<u64>,
+) -> Result<()> {
+    let tapp = &meta.tapp;
     let payload_paths: Vec<std::path::PathBuf> = tapp
         .meta
         .collection
@@ -49,11 +66,7 @@ pub fn validate_payload_shape(meta: &TappMeta) -> Result<()> {
         .collect();
     tilo_app_package::validate_manifest_with_payload(&meta.manifest, &payload_paths)
         .map_err(|error| anyhow!("manifest/payload validation: {error}"))?;
-    tilo_app_package::validate_materialized_payload(
-        &meta.manifest,
-        &tapp.meta.collection,
-        |hash| tapp.carried.get(hash).copied(),
-    )?;
+    tilo_app_package::validate_materialized_payload(&meta.manifest, &tapp.meta.collection, len_of)?;
     Ok(())
 }
 

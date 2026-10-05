@@ -149,6 +149,20 @@ pub enum RunError {
         runtime: String,
         paths: Vec<PathBuf>,
     },
+    #[error(
+        "`{package}` was built for a different Tilo runtime than the one installed, so it cannot \
+         start: it needs the library `{library}`, which the installed runtime `{runtime}` does \
+         not provide (looked in {searched}). Update it with `app update {package}` or reinstall \
+         it with `app install {package}`, which also fetches the runtime it needs, or remove it \
+         with `app remove {package}` to go back to the system build.",
+        searched = display_paths(.searched)
+    )]
+    RuntimeLibraryMissing {
+        package: String,
+        runtime: String,
+        library: String,
+        searched: Vec<PathBuf>,
+    },
     #[error("manifest declares runtime `{0}` but the value is not in `<name>/<version>` form")]
     RuntimeReferenceMalformed(String),
     #[error(
@@ -180,6 +194,12 @@ pub enum RunError {
     },
     #[error("refusing URI open: {0}")]
     InvalidOpenUri(String),
+    #[error(
+        "refusing to launch {package}: it needs system interfaces this Tilo does not provide: \
+         {unmet}. It was built for another version of Tilo. `app remove {package}` goes back to \
+         the copy the system ships, if it ships one."
+    )]
+    InterfacesUnmet { package: String, unmet: String },
     #[error("refusing managed-service launch: {0}")]
     InvalidServiceLaunch(String),
     #[error(
@@ -219,6 +239,14 @@ impl RunError {
             _ => 1,
         }
     }
+}
+
+fn display_paths(paths: &[PathBuf]) -> String {
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Where a launch finds the identity record it brokers to the app.
@@ -384,6 +412,48 @@ fn validate_open_uri(manifest: &MinimalManifest, opts: &RunOptions) -> Result<()
     Ok(())
 }
 
+/// The system interfaces `manifest` requires that `provided` does not serve.
+fn interfaces_unmet(
+    manifest: &MinimalManifest,
+    provided: Option<&tilo_app_package::interfaces::ProvidedInterfaces>,
+) -> Vec<tilo_app_package::interfaces::Unmet> {
+    let Some(provided) = provided else {
+        return Vec::new();
+    };
+    let required: Vec<_> = manifest
+        .sandbox
+        .services
+        .iter()
+        .filter_map(
+            |(name, raw)| match crate::manifest::ServiceReq::parse(raw) {
+                Ok(crate::manifest::ServiceReq::Required(version)) => {
+                    Some(tilo_app_package::interfaces::InterfaceRequirement {
+                        name: name.clone(),
+                        version,
+                    })
+                }
+                _ => None,
+            },
+        )
+        .collect();
+    provided.unmet(&required)
+}
+
+/// Refuse a package built against system interface versions this OS does
+/// not serve. The catalog already runs the image's copy instead of such an
+/// update; this is the same rule for every other way into a launch.
+fn validate_interfaces(manifest: &MinimalManifest) -> Result<(), RunError> {
+    let provided = package_store::interfaces::system_interfaces();
+    let unmet = interfaces_unmet(manifest, provided.as_ref());
+    if unmet.is_empty() {
+        return Ok(());
+    }
+    Err(RunError::InterfacesUnmet {
+        package: manifest.package_id.clone(),
+        unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
+    })
+}
+
 fn validate_launch_mode(manifest: &MinimalManifest, opts: &RunOptions) -> Result<(), RunError> {
     if let LaunchMode::Host { desktop_id } = &opts.mode {
         return Err(RunError::HostAppNotAPackage {
@@ -503,6 +573,37 @@ mod resource_claim_tests {
             splice_game_ntsync(&mut ordinary, false).unwrap();
             assert_eq!(ordinary, ["/app/browser"]);
         }
+    }
+}
+
+#[cfg(test)]
+mod interface_tests {
+    use super::*;
+    use tilo_app_package::interfaces::ProvidedInterfaces;
+
+    #[test]
+    fn a_build_needing_an_interface_the_os_lacks_is_refused() {
+        let settings: MinimalManifest = toml::from_str(
+            "[package]\nid = \"so.tilo.settings\"\nversion = \"2\"\nkind = \"app\"\n\
+             [entrypoint]\nbin = \"bin/settings\"\n\
+             [sandbox.services]\nsystem = \"required@2\"\ncollab = \"optional@3\"\n",
+        )
+        .unwrap();
+        let old_os = ProvidedInterfaces::new([("system", &[1][..]), ("collab", &[1][..])]);
+        let new_os = ProvidedInterfaces::new([("system", &[1, 2][..])]);
+        let unmet = interfaces_unmet(&settings, Some(&old_os));
+        assert_eq!(unmet.len(), 1, "an optional service is never a requirement");
+        assert_eq!(unmet[0].requirement, "system@2");
+        assert!(interfaces_unmet(&settings, Some(&new_os)).is_empty());
+        assert!(interfaces_unmet(&settings, None).is_empty());
+
+        let message = RunError::InterfacesUnmet {
+            package: "so.tilo.settings".into(),
+            unmet: tilo_app_package::interfaces::describe_unmet(&unmet),
+        }
+        .to_string();
+        assert!(message.contains("system@2 (this system provides system@1)"));
+        assert!(message.contains("app remove so.tilo.settings"));
     }
 }
 
@@ -1577,7 +1678,7 @@ fn splice_session_settings(argv: &mut Vec<String>, package_id: &str) -> Result<(
 /// system-bus proxy alive and must outlive the child.
 fn splice_system_authority(
     argv: &mut Vec<String>,
-    package_id: &str,
+    manifest: &MinimalManifest,
 ) -> Result<
     (
         Option<crate::system_authority::SystemAuthorityPlan>,
@@ -1585,7 +1686,11 @@ fn splice_system_authority(
     ),
     RunError,
 > {
-    let Some((plan, guard)) = crate::system_authority::resolve(package_id, current_uid()) else {
+    let Some((plan, guard)) = crate::system_authority::resolve(
+        &manifest.package_id,
+        &manifest.sandbox.services,
+        current_uid(),
+    ) else {
         return Ok((None, None));
     };
     let entry = pop_entry(argv)?;
@@ -2095,6 +2200,72 @@ type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 /// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
 /// `cli_bin()` (falling back to `bin`) and splices `TILO_CLI_COMMAND` /
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
+/// The payload-relative binary a launch in `mode` executes; `None` for a host
+/// application, which has no payload.
+fn launch_entry_bin<'a>(manifest: &'a MinimalManifest, mode: &LaunchMode) -> Option<&'a str> {
+    match mode {
+        LaunchMode::Gui => Some(
+            manifest
+                .entrypoint
+                .gui_bin()
+                .unwrap_or(&manifest.entrypoint.bin),
+        ),
+        LaunchMode::Cli { .. } | LaunchMode::Service { .. } => Some(
+            manifest
+                .entrypoint
+                .cli_bin()
+                .unwrap_or(&manifest.entrypoint.bin),
+        ),
+        LaunchMode::Host { .. } => None,
+    }
+}
+
+/// Refuse a launch whose entrypoint links against a library the sandboxed
+/// loader will not find in the runtime bundle, the payload or the host's
+/// library directories. Without this the app dies in the loader before
+/// `main`, and the only trace is one loader line on stderr. Only a launch on
+/// a runtime bundle is checked: the host-library modes have no bundle the app
+/// could have been built against.
+fn preflight_runtime_libraries(
+    manifest: &MinimalManifest,
+    payload_root: &Path,
+    opts: &RunOptions,
+    runtime: Option<(&Path, &str)>,
+) -> Result<(), RunError> {
+    let Some((runtime_root, version)) = runtime else {
+        return Ok(());
+    };
+    let Some(entry_bin) = launch_entry_bin(manifest, &opts.mode) else {
+        return Ok(());
+    };
+    let payload_mount = crate::sandbox::payload_mount_for(&manifest.package_id);
+    let runtime_mount = crate::sandbox::runtime_mount_for(version);
+    let view = crate::loader_preflight::LoaderView::for_sandbox(
+        (&payload_mount, payload_root),
+        (&runtime_mount, runtime_root),
+        vec![crate::sandbox::runtime_library_path(version)],
+    );
+    view.check(&payload_mount.join(entry_bin))
+        .map_err(|missing| {
+            tracing::error!(
+                package = %manifest.package_id,
+                library = %missing.library,
+                needed_by = %missing.needed_by.display(),
+                runtime = %runtime_root.display(),
+                "app links against a library its runtime does not provide"
+            );
+            RunError::RuntimeLibraryMissing {
+                package: manifest.package_id.clone(),
+                runtime: manifest
+                    .runtime
+                    .clone()
+                    .unwrap_or_else(|| format!("tilo-runtime/{version}")),
+                library: missing.library,
+                searched: missing.searched,
+            }
+        })
+}
+
 fn build_initial_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2125,9 +2296,7 @@ fn build_initial_argv(
             command,
             passthrough_argv,
         } => {
-            let entry_bin_owned = manifest
-                .entrypoint
-                .cli_bin()
+            let entry_bin_owned = launch_entry_bin(manifest, &opts.mode)
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string();
             let v = crate::sandbox::build_bwrap_argv_for_entry(
@@ -2147,9 +2316,7 @@ fn build_initial_argv(
             ))
         }
         LaunchMode::Service { passthrough_argv } => {
-            let entry_bin_owned = manifest
-                .entrypoint
-                .cli_bin()
+            let entry_bin_owned = launch_entry_bin(manifest, &opts.mode)
                 .unwrap_or(&manifest.entrypoint.bin)
                 .to_string();
             let argv = crate::sandbox::build_bwrap_argv_for_entry(
@@ -2221,6 +2388,7 @@ fn run_with_context(
     // from quietly converging. Managed-service constraints are shared with
     // the captured path below: capture must never become a bypass.
     validate_launch_mode(manifest, opts)?;
+    validate_interfaces(manifest)?;
 
     // 0. Policy: a manifest naming a filesystem path is refused before
     // anything else exists — silently dropping it would surface as an app
@@ -2285,6 +2453,7 @@ fn run_with_context(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+    preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
 
     // The app's one writable directory, for the room it's opened into.
     // Created here since bwrap can only bind what exists.
@@ -2358,8 +2527,7 @@ fn run_with_context(
     }
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
-    let (system_authority, _system_bus_guard) =
-        splice_system_authority(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     splice_net_gate_bind(&mut argv, net_gate.as_ref())?;
@@ -2870,6 +3038,7 @@ fn run_with_capture_spawn<T>(
     // Same refusals as `run_with`: this is a second entry into the sandbox
     // builder, and a policy with one enforced door is a door beside it.
     validate_launch_mode(manifest, opts)?;
+    validate_interfaces(manifest)?;
     crate::manifest::enforce_fs_policy(manifest)?;
 
     // Service sockets.
@@ -2914,6 +3083,7 @@ fn run_with_capture_spawn<T>(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+    preflight_runtime_libraries(manifest, payload_root, opts, runtime_arg)?;
     // D-Bus plan (same decision path as `run_with`).
     let (dbus_plan, _dbus_guards) =
         resolve_dbus_bind(&manifest.sandbox.portals, opts.wayland_socket.is_some());
@@ -2950,8 +3120,7 @@ fn run_with_capture_spawn<T>(
     let app_dir = resolve_app_dir(manifest, opts)?;
     splice_app_dir(&mut argv, &app_dir, &capabilities)?;
     splice_session_settings(&mut argv, &manifest.package_id)?;
-    let (system_authority, _system_bus_guard) =
-        splice_system_authority(&mut argv, &manifest.package_id)?;
+    let (system_authority, _system_bus_guard) = splice_system_authority(&mut argv, manifest)?;
     splice_trusted_identities(&mut argv, manifest, opts)?;
     let wayland_bind = splice_wayland(&mut argv, opts)?;
     let gpu = splice_gpu(&mut argv, manifest, opts, &capabilities)?;

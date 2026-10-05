@@ -1231,6 +1231,7 @@ impl DeviceFabricRuntime {
     const POLICY_STORE_POLL_INTERVAL: Duration = Duration::from_millis(750);
 
     pub fn new(network: &ShellNetwork, notification_bridge: NotificationBridge) -> Self {
+        crate::shell::device_unlock_runtime::spawn_enrol_socket();
         let counter = network.device_fabric().max_counter();
         Self {
             counter,
@@ -1259,6 +1260,49 @@ impl DeviceFabricRuntime {
             policy: None,
             policy_store_stamp: None,
             last_policy_store_check: None,
+        }
+    }
+
+    /// Tell the person how their request to wake a device ended.
+    fn notify_wake_outcomes(&self) {
+        use crate::shell::device_fabric::WakeOutcome;
+        for event in crate::shell::device_wake::drain_events() {
+            let device = event.label.as_str();
+            let (summary, body) = match event.outcome {
+                WakeOutcome::Sent { .. } => continue,
+                WakeOutcome::Rejoined => (
+                    crate::shell::i18n::t_args(
+                        "device-wake-rejoined",
+                        &[("device", device.into())],
+                    ),
+                    String::new(),
+                ),
+                WakeOutcome::NotRejoined => (
+                    crate::shell::i18n::t_args(
+                        "device-wake-not-rejoined",
+                        &[("device", device.into())],
+                    ),
+                    crate::shell::i18n::t("device-wake-not-rejoined-body"),
+                ),
+                WakeOutcome::NotOnTargetLan | WakeOutcome::SendFailed => (
+                    crate::shell::i18n::t_args("device-wake-failed", &[("device", device.into())]),
+                    crate::shell::i18n::t("device-wake-failed-body"),
+                ),
+            };
+            self.notification_bridge
+                .push_incoming(crate::notifications::IncomingNotification {
+                    dbus_id: self.notification_bridge.alloc_id(),
+                    app_name: crate::shell::i18n::t("device-wake-app-name"),
+                    summary,
+                    body,
+                    actions: Vec::new(),
+                    expire_timeout: -1,
+                    urgency: 1,
+                    caller: None,
+                    badge_count: None,
+                    contact_endpoint: None,
+                    sound: None,
+                });
         }
     }
 
@@ -1347,6 +1391,8 @@ impl DeviceFabricRuntime {
             unix_now_ms(),
         );
         pump_device_health(network, policy);
+        crate::shell::device_wake::pump(network);
+        self.notify_wake_outcomes();
         pump_fabric_clock(network, policy);
         if policy.permits(ContinuityCapability::Media) {
             self.remote_capture.pump(network, policy);
@@ -1414,6 +1460,12 @@ impl DeviceFabricRuntime {
             &tentative_stamp,
             policy,
         );
+        candidate.presence.wake_routes = crate::shell::device_wake::local_routes(
+            previous
+                .as_ref()
+                .map(|snapshot| snapshot.presence.wake_routes.as_slice())
+                .unwrap_or_default(),
+        );
         let neutral_stamp = FabricStamp {
             counter: 0,
             device: device.clone(),
@@ -1443,6 +1495,7 @@ impl DeviceFabricRuntime {
             }
         }
         self.merge_remote_state(network, selection, &device, policy);
+        crate::shell::device_unlock_runtime::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
         {
@@ -1606,6 +1659,9 @@ impl DeviceFabricRuntime {
                 continue;
             }
             if handle_device_health_action(network, &envelope) {
+                continue;
+            }
+            if crate::shell::device_wake::handle_action(network, &envelope) {
                 continue;
             }
             if handle_fabric_clock_action(network, &envelope, received_monotonic_us) {
@@ -3336,6 +3392,10 @@ fn handle_spatial_action(
         | PersonalFabricAction::SpeakerListen { .. }
         | PersonalFabricAction::SpeakerHeard { .. }
         | PersonalFabricAction::WindowViews { .. }
+        | PersonalFabricAction::WakeDevice { .. }
+        | PersonalFabricAction::WakeReport { .. }
+        | PersonalFabricAction::WakeProbe { .. }
+        | PersonalFabricAction::WakeProbeReply { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }
@@ -5666,6 +5726,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         revertible_calibrations,
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
         remote_capture: crate::shell::remote_capture::runtime::active_view(),
+        device_unlocks: crate::shell::device_unlock_runtime::pending_device_unlocks(),
     }
 }
 
@@ -6267,6 +6328,7 @@ fn build_local_snapshot(
             capabilities: policy_capabilities(policy, local),
             online: true,
             last_seen_unix_ms: 0,
+            wake_routes: Vec::new(),
             stamp: stamp.clone(),
         },
         media,
@@ -6274,6 +6336,8 @@ fn build_local_snapshot(
         settings,
         wifi,
         display,
+        // Enrolments are authored once, by `device_unlock_runtime`, and kept.
+        unlock: previous.map_or_else(Default::default, |state| state.unlock.clone()),
         speakers: crate::shell::speaker_group_runtime::authored_state(
             device,
             previous.map(|state| &state.speakers),
@@ -7061,6 +7125,7 @@ mod tests {
                 capabilities: FabricCapabilities::default(),
                 online: true,
                 last_seen_unix_ms: counter,
+                wake_routes: Vec::new(),
                 stamp: stamp.clone(),
             },
             media: Vec::new(),
@@ -7075,6 +7140,7 @@ mod tests {
                 .collect(),
             wifi: Vec::new(),
             display: None,
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }
@@ -7626,6 +7692,7 @@ mod tests {
                     capabilities: FabricCapabilities::default(),
                     online: true,
                     last_seen_unix_ms: 0,
+                    wake_routes: Vec::new(),
                     stamp: FabricStamp {
                         counter: 0,
                         device: device.clone(),
@@ -7636,6 +7703,7 @@ mod tests {
                 settings: Vec::new(),
                 wifi: Vec::new(),
                 display: None,
+                unlock: crate::shell::device_unlock::UnlockFabricState::default(),
                 speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
             };
             let stamp = FabricStamp { counter: 9, device };
@@ -7660,6 +7728,7 @@ mod tests {
                     capabilities: FabricCapabilities::default(),
                     online: true,
                     last_seen_unix_ms: 0,
+                    wake_routes: Vec::new(),
                     stamp: old_stamp.clone(),
                 },
                 media: Vec::new(),
@@ -7671,6 +7740,7 @@ mod tests {
                 }],
                 wifi: Vec::new(),
                 display: None,
+                unlock: crate::shell::device_unlock::UnlockFabricState::default(),
                 speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
             };
             let next_stamp = FabricStamp { counter: 9, device };

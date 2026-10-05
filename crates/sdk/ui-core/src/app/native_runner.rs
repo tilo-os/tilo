@@ -80,6 +80,12 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
+    /// Where the pointer last moved over the primary window, until it left.
+    last_pointer: Option<PhysicalPosition<f64>>,
+    /// The widgets moved or were rebuilt since the pointer last moved: a
+    /// control now under a still pointer has never seen it arrive, so a
+    /// press there replays the position first instead of being lost.
+    pointer_unsettled: bool,
     /// Per-window state handed to the next in-place reload. Keyed by the
     /// window id that stays for the life of the process.
     dev_window_state: std::collections::HashMap<String, Vec<u8>>,
@@ -1507,7 +1513,10 @@ impl AppHandler {
             if let Err(reason) = self.init_render(window) {
                 // Retrying every redraw would only spin.
                 crate::diag!("tilo: {reason}");
-                event_loop.exit();
+                stop_abnormally(
+                    event_loop,
+                    format!("its renderer could not start: {reason}"),
+                );
                 return;
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
@@ -1588,8 +1597,9 @@ impl AppHandler {
             }
         }
         if surface_gone {
-            tracing::info!("drawing surface is gone; closing the window");
-            event_loop.exit();
+            let reason = crate::render_thread::take_surface_loss()
+                .unwrap_or_else(|| "its drawing surface was lost".to_owned());
+            stop_abnormally(event_loop, reason);
             return;
         }
         // Do not consume sync/layout/dirty state unless a finite render buffer
@@ -1602,8 +1612,7 @@ impl AppHandler {
             Ok(true) => {}
             Ok(false) => return,
             Err(_) => {
-                tracing::error!("ui-render thread died; closing window");
-                event_loop.exit();
+                stop_abnormally(event_loop, "its render thread stopped".to_owned());
                 return;
             }
         }
@@ -1739,6 +1748,7 @@ impl AppHandler {
         };
         mark_first_frame("first-frame-layout-done");
         full_redraw_required |= structure_rebuilt || geometry_changed;
+        self.pointer_unsettled |= structure_rebuilt || geometry_changed;
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
@@ -1748,8 +1758,7 @@ impl AppHandler {
         // wait on GPU work; aborted layouts retain it in the handle for retry.
         let __prof_pool_wait = app.profiler.as_ref().map(|_| crate::time::now());
         let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
-            tracing::error!("ui-render thread died; closing window");
-            event_loop.exit();
+            stop_abnormally(event_loop, "its render thread stopped".to_owned());
             return;
         };
         if let Some(p) = app.profiler.as_mut() {
@@ -2024,10 +2033,9 @@ impl AppHandler {
                 );
             }
             if send_result.is_err() {
-                tracing::error!(
-                    "ui-render thread stopped; exiting (a lost drawing surface is logged above)"
-                );
-                event_loop.exit();
+                let reason = crate::render_thread::take_surface_loss()
+                    .unwrap_or_else(|| "its render thread stopped".to_owned());
+                stop_abnormally(event_loop, reason);
                 return;
             }
             mark_first_frame("first-frame-submitted");
@@ -2639,6 +2647,51 @@ impl AppHandler {
 
 impl AppHandler {
     /// `UserEvent` injection keeps the ordinary window dispatch after admission.
+    /// Before a press on the primary window, the pointer's last position
+    /// once more when the widgets moved or were rebuilt since it moved:
+    /// controls learn they are under the pointer from its moves, and one
+    /// swapped in under a still pointer would otherwise drop the click.
+    fn replay_unsettled_pointer(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: &WindowEvent,
+    ) {
+        if self
+            .window
+            .as_ref()
+            .is_none_or(|window| window.id() != window_id)
+        {
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_pointer = Some(*position);
+                self.pointer_unsettled = false;
+            }
+            WindowEvent::CursorLeft { .. } => self.last_pointer = None,
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                ..
+            } if self.pointer_unsettled => {
+                self.pointer_unsettled = false;
+                if let Some(position) = self.last_pointer {
+                    self.route_window_event(
+                        event_loop,
+                        window_id,
+                        WindowEvent::CursorMoved {
+                            device_id: *device_id,
+                            position,
+                        },
+                        native_input_isolation::EventOrigin::Platform,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn injected_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -3218,6 +3271,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.text_input_touched = true;
         }
         self.note_host_appearance_event(&event);
+        self.replay_unsettled_pointer(event_loop, window_id, &event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -3951,6 +4005,8 @@ impl App {
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
+            last_pointer: None,
+            pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
             native_input_origin: None,
@@ -3982,7 +4038,44 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+        // The app and its state are dropped (and saved) before the process
+        // reports how its window ended.
+        drop(handler);
+        if let Some(reason) = take_abnormal_stop() {
+            report_window_lost_and_exit(&reason);
+        }
     }
+}
+
+/// Why the window is stopping, when no one asked it to close.
+static ABNORMAL_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Stop the event loop because the window cannot go on, keeping why. The
+/// process then exits non-zero instead of looking like a deliberate quit.
+fn stop_abnormally(event_loop: &ActiveEventLoop, reason: String) {
+    tracing::error!(%reason, "{}", super::WINDOW_LOST);
+    ABNORMAL_STOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(reason);
+    event_loop.exit();
+}
+
+fn take_abnormal_stop() -> Option<String> {
+    ABNORMAL_STOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+#[allow(
+    clippy::exit,
+    reason = "the native app's lifecycle ends here; a window that stopped on \
+              its own must not report the clean exit a deliberate quit does"
+)]
+fn report_window_lost_and_exit(reason: &str) -> ! {
+    eprintln!("error: {}: {reason}", super::WINDOW_LOST);
+    std::process::exit(super::WINDOW_LOST_EXIT_CODE);
 }
 
 impl AppHandler {

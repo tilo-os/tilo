@@ -25,7 +25,16 @@
 #   4. Signing out and in again resumes after the identity: no identity choice,
 #      no recovery screen, and the identity verifies at login unchanged.
 #
-# Usage: os/dev/test-nearby-pairing.sh DISK_QCOW2 [--out DIR] [--display gl|2d]
+# With --unlock (a dev disk carrying tilo-control), B's root then moves onto
+# LUKS2 with a sibling-unlock slot, and B reboots several times
+# (os/dev/nearby-unlock-phase.sh):
+#   8. A approves B's unlock through `device.unlock`, and B boots without a
+#      passphrase.
+#   9. A denial, a replay of the approved exchange, a boot key that was never
+#      certified, and B's removal from the fleet each leave B at the
+#      passphrase prompt, with the attempt in A's history.
+#
+# Usage: os/dev/test-nearby-pairing.sh DISK_QCOW2 [--out DIR] [--display gl|2d] [--unlock]
 #
 # DISK_QCOW2 is never booted or modified; each VM boots its own overlay.
 set -euo pipefail
@@ -36,10 +45,12 @@ base="${1:?usage: test-nearby-pairing.sh DISK_QCOW2 [--out DIR] [--display gl|2d
 shift
 out="$PWD/nearby-pairing-artifacts"
 display="${TILO_VM_DISPLAY:-gl}"
+unlock=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:?--out needs a directory}"; shift 2 ;;
     --display) display="${2:?--display needs gl or 2d}"; shift 2 ;;
+    --unlock) unlock=1; shift ;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
@@ -72,6 +83,12 @@ vm_a() {
   TILO_RUN="$run_a" TILO_SSH_PORT="${TILO_NEARBY_SSH_A:-2231}" \
     TILO_VM_LAN_PORT=23901 TILO_VM_LAN_PEER=23902 TILO_VM_LAN_MAC="$mac_a" \
     "$vm" "$@"
+}
+# Wait until B's onboarding shows a node whose name contains each fragment.
+# `vm.sh ssh` hands its words to the guest's shell, so each fragment is quoted
+# for it.
+b_shows() {
+  vm_b ssh "/usr/libexec/tilo/native-atspi-smoke.sh oobe-text $(printf '%q ' "$@")"
 }
 vm_b() {
   TILO_RUN="$run_b" TILO_SSH_PORT="${TILO_NEARBY_SSH_B:-2232}" \
@@ -113,6 +130,9 @@ trap cleanup EXIT
 # --- boot both machines -------------------------------------------------------
 qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_a/disk.qcow2" >/dev/null
 qemu-img create -f qcow2 -F qcow2 -b "$base" "$run_b/disk.qcow2" >/dev/null
+# --unlock moves B's root onto a new LUKS2 partition at least its own size;
+# the overlay stays sparse, so only the data actually copied takes host space.
+[ "$unlock" = 0 ] || qemu-img resize -q "$run_b/disk.qcow2" "+$(qemu-img info --output=json "$base" | jq -r '."virtual-size"')"
 vm_a boot "--$display" --disk "$run_a/disk.qcow2"
 vm_b boot "--$display" --disk "$run_b/disk.qcow2"
 vm_a wait
@@ -253,13 +273,13 @@ no_privileged_pairing() {
 sudo_b 'chmod 2750 /var/lib/tilo/enrollment-commits'
 vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "${code:0:3} ${code:3:3}"
+b_shows "${code:0:3} ${code:3:3}"
 approve_from_a "$code" refused || note "A's approval did not complete, as expected for a refused commit"
 failed="$(await_state failed 150)"
 printf '%s\n' "$failed" > "$out/b-status-failed.json"
 jq -e '.error | test("Permission denied")' <<<"$failed" >/dev/null \
   || die "the failed status does not carry the helper's error: $failed"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "Permission denied" "Try again"
+b_shows "Permission denied" "Try again"
 for attempt in $(seq 1 30); do
   vm_b ssh '! pgrep -u "$(id -u)" -x tilo-enroll >/dev/null' && break
   [ "$attempt" -lt 30 ] || die "the failed pairing helper is still running on B"
@@ -274,7 +294,7 @@ vm_b shot negative-error >/dev/null && cp -f "$run_b/negative-error.png" "$out/"
 sudo_b 'chmod 2770 /var/lib/tilo/enrollment-commits'
 vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-nearby
 code="$(await_code)"
-vm_b ssh /usr/libexec/tilo/native-atspi-smoke.sh oobe-text "${code:0:3} ${code:3:3}"
+b_shows "${code:0:3} ${code:3:3}"
 approve_from_a "$code" paired || {
   cat "$out/paired-approve.txt" >&2
   die "A's approval failed"
@@ -381,5 +401,10 @@ vm_b ssh 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus /usr/bin/she
 [ "$(vm_b ssh 'od -An -v -tx1 /var/lib/tilo/user-identity/pubkey.bin' | tr -d ' \n')" = "$identity" ] \
   || die "signing in again changed B's identity"
 no_privileged_pairing
-printf 'PASS\n' > "$out/verdict.txt"
 note "B joined A's identity from first-boot onboarding"
+
+if [ "$unlock" = 1 ]; then
+  # shellcheck source=os/dev/nearby-unlock-phase.sh
+  source "$dev_dir/nearby-unlock-phase.sh"
+fi
+printf 'PASS\n' > "$out/verdict.txt"

@@ -47,6 +47,12 @@ fn fixture() -> (
         live: true,
     }]);
     let receiver = state.capture_invocations_for_test(7);
+    // This fixture consumes the full InvocationEnvelope UUID, like a stable subscriber.
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(7);
     let caller = Caller::local_person("a1".repeat(32))
         .in_room(room)
         .in_new_execution();
@@ -243,6 +249,11 @@ async fn eighty_synthetic_runs_keep_exact_record_and_invocation_identity() {
     surfaces.push(second);
     state.replace_published_surfaces_for_test(surfaces);
     let mut second_app = state.capture_invocations_for_test(8);
+    state
+        .stable_invocation_subscribers
+        .lock()
+        .unwrap()
+        .insert(8);
     let mut events = state.subscribe_execution_activity();
     let mut pending = Vec::new();
     let mut runs = std::collections::HashSet::new();
@@ -507,4 +518,124 @@ async fn failed_terminal_journal_barrier_cannot_publish_success() {
         events.try_recv(),
         Err(tokio::sync::broadcast::error::TryRecvError::Closed)
     ));
+}
+
+#[test]
+fn same_principal_runs_receive_distinct_host_owned_participant_views() {
+    let (state, first, mut app) = fixture();
+    let second = first.clone().in_new_execution();
+    let forged = tilo_actions::ParticipantId::new("person-window-forged").unwrap();
+    let mut participants = Vec::new();
+    for caller in [&first, &second, &first] {
+        let mut request = request();
+        request.context = Some(tilo_actions::ActionContext::default().with_invoker(
+            tilo_actions::ActionInvoker::actor("a1".repeat(32)).with_participant(forged.clone()),
+        ));
+        assert!(matches!(
+            state
+                .action_invoke(caller, None, None, &request)
+                .poll_ready(),
+            PendingPoll::Ready(Ok(_))
+        ));
+        let delivery = app.try_recv().unwrap();
+        let invoker =
+            tilo_actions::ActionInvoker::delivered(&delivery.actor, delivery.context.as_ref());
+        assert_eq!(invoker.actor, "a1".repeat(32));
+        let participant = invoker.participant.expect("a run owns a participant view");
+        assert_ne!(participant, forged);
+        participants.push(participant);
+    }
+    assert_ne!(participants[0], participants[1]);
+    assert_eq!(participants[0], participants[2]);
+    first.retire_execution();
+    assert!(matches!(
+        state
+            .action_invoke(&first, None, None, &request())
+            .poll_ready(),
+        PendingPoll::Ready(Err(_))
+    ));
+    assert!(
+        app.try_recv().is_err(),
+        "closed run cannot fall back to the person's view"
+    );
+}
+
+#[test]
+fn retired_execution_cannot_query_observe_or_cancel_but_legacy_callers_can() {
+    let (state, caller, mut app) = fixture();
+    let scoped_request = request();
+    assert!(matches!(
+        state
+            .action_invoke(&caller, None, None, &scoped_request)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let delivered = app.try_recv().unwrap();
+    assert!(
+        state
+            .action_observe(&caller, &scoped_request.invocation)
+            .is_some()
+    );
+    assert!(matches!(
+        state
+            .action_query(&caller, &CatalogueQuery::default())
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let retained = caller.clone();
+    caller.retire_execution();
+    assert!(matches!(
+        state
+            .action_query(&retained, &CatalogueQuery::default())
+            .poll_ready(),
+        PendingPoll::Ready(Err(_))
+    ));
+    assert!(
+        state
+            .action_observe(&retained, &scoped_request.invocation)
+            .is_none()
+    );
+    assert!(
+        state
+            .action_cancel(&retained, &scoped_request.invocation)
+            .is_err()
+    );
+    assert!(
+        state
+            .remote_job(&retained, &scoped_request.invocation)
+            .is_none()
+    );
+    assert!(
+        state.pending_invocations.lock().unwrap()[&delivered.id]
+            .cancellation_requested_at
+            .is_none(),
+        "retirement and refused cancellation must not cancel an admitted job"
+    );
+
+    let legacy = Caller::local_person("a1".repeat(32)).in_room(caller.room().unwrap());
+    legacy.retire_execution();
+    assert!(matches!(
+        state
+            .action_query(&legacy, &CatalogueQuery::default())
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    let legacy_request = request();
+    assert!(matches!(
+        state
+            .action_invoke(&legacy, None, None, &legacy_request)
+            .poll_ready(),
+        PendingPoll::Ready(Ok(_))
+    ));
+    app.try_recv().unwrap();
+    assert!(
+        state
+            .action_observe(&legacy, &legacy_request.invocation)
+            .is_some()
+    );
+    assert!(
+        state
+            .action_cancel(&legacy, &legacy_request.invocation)
+            .is_ok()
+    );
 }

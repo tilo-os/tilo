@@ -3,6 +3,8 @@
 //! This is a narrow OpenAI-compatible/Anthropic relay for a profile-selected
 //! planning call. It does not include a general `LiteLLM` control plane.
 
+mod subject;
+
 use std::fs;
 #[cfg(test)]
 use std::io::{BufRead, Read};
@@ -62,6 +64,7 @@ const HANDOFF_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(
 const SETTINGS_APP: &str = "so.tilo.settings";
 const AGENT_APP: &str = "so.tilo.agent";
 const PHOTOS_APP: &str = "so.tilo.photos";
+const CANVAS_APP: &str = "so.tilo.canvas";
 const MAX_VISION_IMAGE_BYTES: usize = 1024 * 1024;
 /// Face batches are intentionally small.  A large library is scanned as
 /// bounded background batches by Photos, never materialized into one giant
@@ -367,7 +370,8 @@ async fn read_handoff(stream: &mut tokio::net::UnixStream) -> Result<Handoff, St
     if handoff.protocol != 1
         || (handoff.app_id != SETTINGS_APP
             && handoff.app_id != AGENT_APP
-            && handoff.app_id != PHOTOS_APP)
+            && handoff.app_id != PHOTOS_APP
+            && handoff.app_id != CANVAS_APP)
     {
         return Err("launcher is not authorized for the model gateway".into());
     }
@@ -470,6 +474,12 @@ async fn handle_streaming(
             .map(output),
         Request::ClusterFaces { .. } => {
             Err("only Photos may request fixed local face clustering".into())
+        }
+        Request::SegmentSubject { image } if app_id == CANVAS_APP || app_id == PHOTOS_APP => {
+            blocking(move || subject::segment(&image)).await.map(output)
+        }
+        Request::SegmentSubject { .. } => {
+            Err("only Canvas and Photos may find a picture's subject".into())
         }
         Request::SecretStatus { profile_id } if app_id == SETTINGS_APP => {
             blocking(move || secret_status(&profile_id))

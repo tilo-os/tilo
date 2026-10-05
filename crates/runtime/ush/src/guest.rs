@@ -274,8 +274,8 @@ pub fn build_argv(plan: &GuestPlan, seccomp_fd: Option<std::os::fd::RawFd>) -> V
     a
 }
 
-/// `--clearenv`, the namespace/identity flags, and the hostname — the part
-/// of the argv that exists before any filesystem is touched.
+/// `--clearenv` and the namespace/identity flags — the part of the argv
+/// that exists before any filesystem is touched.
 fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     let push = |a: &mut Vec<OsString>, s: &str| a.push(OsString::from(s));
 
@@ -298,8 +298,9 @@ fn push_namespace_flags(a: &mut Vec<OsString>, plan: &GuestPlan) {
     push(a, "--unshare-uts");
     push(a, "--unshare-ipc");
     push(a, "--unshare-cgroup-try");
-    push(a, "--hostname");
-    push(a, "ush");
+    // The guest keeps the host's name in a namespace of its own: naming it
+    // takes `sethostname`, which a container's seccomp profile refuses, and
+    // bwrap then starts no shell at all.
     // The guest must not outlive the supervisor. Without this a crashed
     // supervisor leaves a shell running in a namespace nothing is watching.
     push(a, "--die-with-parent");
@@ -670,6 +671,17 @@ mod tests {
 
     fn path(p: &Path) -> String {
         p.display().to_string()
+    }
+
+    #[test]
+    fn the_guest_has_its_own_uts_namespace_without_renaming_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let argv = strings(&build_argv(&plan_in(dir.path()), Some(9)));
+        assert!(argv.iter().any(|arg| arg == "--unshare-uts"));
+        assert!(
+            !argv.iter().any(|arg| arg == "--hostname"),
+            "a container's seccomp profile refuses sethostname"
+        );
     }
 
     #[test]

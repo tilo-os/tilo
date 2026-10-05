@@ -200,7 +200,7 @@ class AppCollectionPublicationTests(unittest.TestCase):
             stop = script.index("[[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0")
             self.assertLess(script.index("build-thin-apps.sh\"\n"), stop)
             self.assertLess(stop, script.index("key generate"))
-            self.assertLess(stop, script.index("RUNTIME_VERSION="))
+            self.assertLess(stop, script.index("RUNTIME_RELEASE="))
 
 
 class DesktopPayloadPublicationTests(unittest.TestCase):
