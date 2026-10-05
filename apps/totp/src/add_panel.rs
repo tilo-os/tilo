@@ -2067,7 +2067,7 @@ fn field_ctx<'b>(ctx: &'b mut EventCtx<'_>, focus: &'b mut Option<NodeId>) -> Ev
     EventCtx {
         scale_factor: ctx.scale_factor,
         modifiers: ctx.modifiers,
-        state: &mut *ctx.state,
+        state: ctx.state.reborrow(),
         path: ctx.path,
         handled: &mut *ctx.handled,
         focus_target: focus,
@@ -2407,7 +2407,7 @@ mod tests {
             &mut EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut None,

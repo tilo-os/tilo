@@ -290,7 +290,6 @@ pub struct BackupsApp {
     shots_status: bool,
     /// Retained complete recovery-point index. The visible resource snapshot
     /// stays bounded, while Ctrl+K searches every already-loaded version.
-    search_index: crate::search_provider::BackupsSearchIndex,
     source_path: Option<PathBuf>,
     destination_path: Option<PathBuf>,
     /// A persisted local configuration can outlive an unplugged drive or a
@@ -336,7 +335,6 @@ impl BackupsApp {
     }
 
     fn with_catalog(catalog: Catalog) -> Self {
-        let search_index = crate::search_provider::BackupsSearchIndex::new(&catalog);
         Self {
             catalog,
             ui: UiCache::default(),
@@ -366,7 +364,6 @@ impl BackupsApp {
             status_bubble: ui::StatusBubble::new(),
             status_shown: String::new(),
             shots_status: false,
-            search_index,
             source_path: None,
             destination_path: None,
             repository_error: None,
@@ -376,10 +373,6 @@ impl BackupsApp {
         }
     }
 
-    fn sync_search_index(&self) {
-        self.search_index.sync(&self.catalog);
-    }
-
     /// Take part in the resource: edits and effects go through the
     /// dispatcher, and the repository shown is this device's (a live
     /// window) or the scenario's (a capture).
@@ -387,7 +380,6 @@ impl BackupsApp {
         self.dispatcher = Some(cx.dispatcher());
         if let Some(demo) = cx.fixture::<DemoRepository>() {
             self.catalog = demo.catalog.clone();
-            self.sync_search_index();
             self.source_path.clone_from(&demo.location.source);
             self.destination_path.clone_from(&demo.location.destination);
             self.repository_error.clone_from(&demo.error);
@@ -430,7 +422,6 @@ impl BackupsApp {
                 );
             }
         }
-        self.sync_search_index();
     }
 
     /// Reload the repository after a job changed it.
@@ -444,7 +435,6 @@ impl BackupsApp {
             error
         })?;
         self.catalog = Catalog::from_local(source, destination, &manifests);
-        self.sync_search_index();
         Ok(())
     }
 
@@ -4806,9 +4796,7 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
-    ui::provides!(dyn ui::search::capability::SearchSource);
-
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // Another window, or the Settings app, moved this device's backup
         // location: show the repository there.
         if let Some(location) = self.location.as_ref().map(Setting::get)
@@ -5082,7 +5070,7 @@ impl Widget for BackupsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, A11yAction::Activate | A11yAction::ToggleCheck) {
@@ -5105,12 +5093,6 @@ impl Widget for BackupsApp {
         self.toast.is_some()
             || self.drawer.is_animating()
             || self.status_bubble.needs_frame(ui::time::now())
-    }
-}
-
-impl ui::search::capability::SearchSource for BackupsApp {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 }
 
@@ -5487,7 +5469,7 @@ mod tests {
         /// repopulates `hits` from the current state).
         fn draw(&mut self) {
             self.tr.set_text_scale(self.theme.text_scale);
-            self.app.sync(&mut self.state.doc, &self.state.root);
+            self.app.sync(&self.state.doc, &self.state.root);
             let mut scene = Scene::new();
             self.app
                 .render(&mut scene, Affine::IDENTITY, &mut self.tr, &self.theme);
@@ -5525,7 +5507,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &m,
-                    state: &mut self.state.doc,
+                    state: ui::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5542,7 +5524,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &m,
-                    state: &mut self.state.doc,
+                    state: ui::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -5583,7 +5565,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &m,
-                        state: &mut self.state.doc,
+                        state: ui::widget::Edits::lend(&mut self.state.doc),
                         path: &self.state.root,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -5932,7 +5914,7 @@ mod tests {
         assert!(f.app.perform_semantic_action(
             "backups.hit:Tab(Destinations)",
             &A11yAction::Activate,
-            &mut f.state.doc,
+            &mut ui::widget::Edits::lend(&mut f.state.doc),
             &f.state.root,
         ));
         assert_eq!(f.view(), View::Destinations);
@@ -6088,8 +6070,8 @@ mod tests {
     fn first_run_has_a_reachable_setup_action() {
         let mut app = BackupsApp::with_catalog(Catalog::empty());
         app.rect = Rect::new(0.0, 0.0, 1000.0, 700.0);
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        let state = ui::State::new();
+        app.sync(&state.doc, &state.root);
         let mut scene = Scene::new();
         app.render(
             &mut scene,
@@ -6193,8 +6175,8 @@ mod tests {
         use automerge::ReadDoc;
         use ui::widget::Widget;
         let mut app = BackupsApp::new();
-        let mut state = ui::State::new();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
+        let state = ui::State::new();
+        Widget::sync(&mut app, &state.doc, &state.root);
         assert!(
             state
                 .doc

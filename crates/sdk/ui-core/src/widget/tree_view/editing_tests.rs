@@ -45,7 +45,7 @@ fn dispatch_with<T: 'static, M: TreeModel + 'static>(
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::from(modifiers),
-            state: &mut doc,
+            state: crate::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -83,7 +83,13 @@ fn typed(text: &str) -> WindowEvent {
 
 fn semantic(view: &mut TreeView<()>, target: &str, action: &Action) -> bool {
     let mut doc = AutoCommit::new();
-    Widget::perform_semantic_action(view, target, action, &mut doc, &automerge::ROOT)
+    Widget::perform_semantic_action(
+        view,
+        target,
+        action,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    )
 }
 
 /// Visible `(id, depth)` pairs.
@@ -487,8 +493,8 @@ fn pointer_drops_target_leaves_and_seams_with_a_lifted_scrolling_preview() {
         );
         let before = view.scroll_offset();
         view.last_tick = Some(crate::time::now() - Duration::from_millis(50));
-        let mut doc = AutoCommit::new();
-        view.update(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        view.update(&doc, &automerge::ROOT);
         assert!(
             view.scroll_offset() > before,
             "holding a drag at the bottom edge reveals rows below"

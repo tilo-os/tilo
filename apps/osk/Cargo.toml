@@ -42,7 +42,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
-# W7 — text injection into the focused surface via the Wayland
+# Text injection into the focused surface via the Wayland
 # `virtual-keyboard-v1` protocol (wtype-style). The injector opens its own,
 # second wayland-client connection, independent of the one winit owns.
 wayland-client.workspace = true
@@ -52,11 +52,11 @@ libc.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
-tilo-automerge.workspace = true
-tempfile.workspace = true
 # Compile the synthetic keymap with libxkbcommon so tests validate generated
 # keymaps and symbol resolution.
 xkbcommon = "0.8"
+tempfile.workspace = true
+tilo-automerge.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [[test]]

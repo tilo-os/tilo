@@ -73,7 +73,10 @@ pub mod system_sounds;
 pub mod watch;
 
 pub use session::{SessionPaths, SessionSettings};
-pub use source::{HostDocument, SettingsSource, install_source, installed_source, merge_section};
+pub use source::{
+    ChangeSignal, HostDocument, Listener, SettingsSource, install_source, installed_source,
+    merge_section,
+};
 
 /// The file name under the Tilo config root.
 const FILE: &str = "settings.json";

@@ -570,6 +570,9 @@ pub struct State {
     /// A streamed window the person focused from another device. It holds
     /// this seat's keyboard until they use this device's own input again.
     personal_keyboard_focus: Option<SurfaceId>,
+    /// Workspace hosts controlling this headless session's streamed windows.
+    headless_host_viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    headless_keyboard_focus: Option<(MsgPeerId, SurfaceId)>,
     /// Another device of the person last moved this seat's pointer, to a
     /// window it shows. That moves no cursor here: the host's cursor stays
     /// where its own input left it and keeps its own image, and its next
@@ -1194,6 +1197,8 @@ impl State {
             legacy_stream_routes: HashMap::new(),
             personal_stream_viewers: std::collections::HashSet::new(),
             personal_keyboard_focus: None,
+            headless_host_viewers: std::collections::HashSet::new(),
+            headless_keyboard_focus: None,
             personal_pointer_hold: false,
             capture_placeholder_fill: crate::shell::capture_protection::placeholder_fill_rgba8(
                 &ui::theme::Theme::default(),
@@ -1961,6 +1966,64 @@ impl State {
             .any(|(_, streamed)| *streamed == surface)
     }
 
+    /// Only headless sessions populate this from the active room's trusted
+    /// workspace hosts. Ordinary desktop shares keep the local focus policy.
+    pub fn set_headless_host_viewers(
+        &mut self,
+        viewers: std::collections::HashSet<(MsgPeerId, SurfaceId)>,
+    ) {
+        self.headless_host_viewers = viewers;
+        if self
+            .headless_keyboard_focus
+            .is_some_and(|focus| !self.headless_host_viewers.contains(&focus))
+        {
+            self.headless_keyboard_focus = None;
+        }
+    }
+
+    pub(crate) fn headless_keyboard_focus(&self) -> Option<SurfaceId> {
+        self.headless_keyboard_focus.and_then(|(peer, surface)| {
+            (self.headless_host_viewers.contains(&(peer, surface))
+                && self.client_input.surface(surface).is_some())
+            .then_some(surface)
+        })
+    }
+
+    /// Called only after the share, visibility, host overrides and event
+    /// budget accepted a focus packet. The trusted workspace host chooses
+    /// which window its headless session types into; regular shares do not.
+    fn apply_headless_host_focus(
+        &mut self,
+        peer: MsgPeerId,
+        surface: SurfaceId,
+        event: &InputEvent,
+    ) {
+        let InputEvent::KeyboardFocus { focused, .. } = event else {
+            return;
+        };
+        if !focused {
+            if self.headless_keyboard_focus == Some((peer, surface)) {
+                self.headless_keyboard_focus = None;
+            }
+            return;
+        }
+        if !self.headless_host_viewers.contains(&(peer, surface)) {
+            if self.personal_stream_viewers.contains(&(peer, surface)) {
+                self.headless_keyboard_focus = None;
+            }
+            return;
+        }
+        self.personal_keyboard_focus = None;
+        self.headless_keyboard_focus = Some((peer, surface));
+        if !self.remote_input_firewall.view().chrome_captures_input() {
+            self.set_activated_toplevel(Some(surface));
+            self.set_client_keyboard_focus(Some(surface));
+            // A key can follow focus in the same packet, before the next
+            // frame publishes its view. Preserve all other firewall gates.
+            self.remote_input_firewall.set_keyboard_focus(Some(surface));
+        }
+    }
+
     /// The streamed window the person last focused from another device,
     /// which takes this seat's keyboard ahead of the local tiles.
     pub(crate) fn personal_keyboard_focus(&self) -> Option<SurfaceId> {
@@ -1971,6 +2034,7 @@ impl State {
     /// The person is using this device's own keyboard or pointer again.
     pub(crate) fn release_personal_keyboard_focus(&mut self) {
         self.personal_keyboard_focus = None;
+        self.headless_keyboard_focus = None;
     }
 
     /// Whether another device of the person holds this seat's pointer, and
@@ -2128,6 +2192,9 @@ impl State {
     /// key or stale caret focus. Reference counting ensures releases still
     /// held by another collaborator are suppressed.
     fn release_remote_focus_for_surface(&mut self, peer: MsgPeerId, surface: SurfaceId) {
+        if self.headless_keyboard_focus == Some((peer, surface)) {
+            self.headless_keyboard_focus = None;
+        }
         let (owns_focus, owns_pointer) =
             self.remote_seats.seat(peer).map_or((false, false), |seat| {
                 (
@@ -2883,6 +2950,7 @@ impl State {
         };
 
         // Can't pass `self` twice (`&ShareRegistry` and `&mut RemoteInputSink`), so the routing decision is inlined above and the sink call made directly on ourselves.
+        self.apply_headless_host_focus(peer, surface, &injectable);
         RemoteInputSink::apply(self, peer, surface, injectable);
         Ok(())
     }
@@ -3414,11 +3482,27 @@ impl RemoteInputSink for State {
                 focused,
             } => {
                 if focused {
+                    if self
+                        .remote_seats
+                        .seat(peer)
+                        .is_some_and(|seat| seat.focused_surface != Some(target))
+                    {
+                        self.release_remote_inputs_for_peer(peer);
+                    }
                     let _ = self.remote_seats.seat_mut(peer).enter(target);
                     return;
                 }
-                let _ = self.remote_seats.seat_mut(peer).leave();
-                self.release_remote_inputs_for_peer(peer);
+                // Streams have independent transport queues. A previous
+                // window's blur may arrive after this peer focused another
+                // window; it must not retire that newer focus or its keys.
+                if self
+                    .remote_seats
+                    .seat(peer)
+                    .is_some_and(|seat| seat.focused_surface == Some(target))
+                {
+                    let _ = self.remote_seats.seat_mut(peer).leave();
+                    self.release_remote_inputs_for_peer(peer);
+                }
             }
             InputEvent::PointerAxis { dx, dy } => {
                 self.restore_remote_pointer(peer, surface, serial, time);
@@ -7092,6 +7176,89 @@ mod tick_hook_tests {
             "a window no longer shared ends its stream"
         );
         frames.forget(SURFACE);
+    }
+
+    #[test]
+    fn delayed_blur_of_previous_stream_preserves_current_remote_focus() {
+        use crate::network::input_firewall::ShellView;
+        use crate::network::streaming::StreamingShare;
+        use vello::kurbo::Rect;
+
+        const PEER: PeerId = 9;
+        const OLD: SurfaceId = 81;
+        const CURRENT: SurfaceId = 82;
+        const SHIFT: u32 = 42;
+        let mut state = make_state();
+        for surface in [OLD, CURRENT] {
+            state
+                .share_registry
+                .insert(PEER, surface, StreamingShare::new());
+        }
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![
+                (OLD, Rect::new(0.0, 0.0, 400.0, 600.0)),
+                (CURRENT, Rect::new(400.0, 0.0, 800.0, 600.0)),
+            ],
+            Some(CURRENT),
+            false,
+            false,
+        ));
+        for surface in [OLD, CURRENT] {
+            assert!(state.apply_remote_input(
+                PEER,
+                surface,
+                InputEvent::KeyboardFocus {
+                    surface,
+                    focused: true
+                }
+            ));
+        }
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::Key {
+                keysym: SHIFT,
+                pressed: true,
+                modifiers: 0
+            }
+        ));
+        assert!(state.apply_remote_input(
+            PEER,
+            OLD,
+            InputEvent::KeyboardFocus {
+                surface: OLD,
+                focused: false
+            }
+        ));
+        assert_eq!(
+            state.remote_seats.seat(PEER).unwrap().focused_surface,
+            Some(CURRENT),
+            "the previous stream's late blur cannot cancel the newly focused stream"
+        );
+        assert_eq!(
+            state.remote_seats.key_holder_count(SHIFT),
+            1,
+            "the previous stream's blur cannot release a key held on the current stream"
+        );
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0
+            }
+        ));
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::KeyboardFocus {
+                surface: CURRENT,
+                focused: false
+            }
+        ));
+        assert_eq!(state.remote_seats.seat(PEER).unwrap().focused_surface, None);
+        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 0);
     }
 
     #[test]

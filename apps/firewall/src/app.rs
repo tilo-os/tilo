@@ -14,10 +14,12 @@
 //! [`crate::resource`]), so two instances on one record edit the same
 //! ruleset.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1375,7 +1377,7 @@ impl FirewallApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         taffy: &TaffyTree<()>,
     ) -> bool {
@@ -1386,7 +1388,7 @@ impl FirewallApp {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut ft,
@@ -1425,7 +1427,7 @@ fn selected_on(ground: Color) -> (Color, Color) {
 }
 
 impl Widget for FirewallApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(status) = self.outcome.borrow_mut().take() {
             self.status = status;
         }
@@ -1519,7 +1521,7 @@ impl Widget for FirewallApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                 );
@@ -1528,7 +1530,7 @@ impl Widget for FirewallApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                 );
@@ -1537,7 +1539,7 @@ impl Widget for FirewallApp {
                 self.handle_key(
                     event,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.handled,
                     ctx.taffy,
@@ -1559,7 +1561,7 @@ impl Widget for FirewallApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                 );
@@ -1568,7 +1570,7 @@ impl Widget for FirewallApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.taffy,
                 );
@@ -1714,7 +1716,7 @@ impl Widget for FirewallApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
@@ -1968,7 +1970,7 @@ impl FirewallApp {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
         taffy: &TaffyTree<()>,
@@ -2315,7 +2317,7 @@ impl FirewallApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
@@ -2329,7 +2331,7 @@ impl FirewallApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.taffy,
             );
@@ -3999,7 +4001,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "firewall.zone:home",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.selected_zone, ZoneKind::Home);
@@ -4042,7 +4044,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.selected_rule, Some(id));
@@ -4050,7 +4052,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &delete_target,
                 &A11yAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.pending_delete, Some(id));
@@ -4385,7 +4387,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     "firewall.service.toggle:public:ssh",
                     &A11yAction::ToggleCheck,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
             }

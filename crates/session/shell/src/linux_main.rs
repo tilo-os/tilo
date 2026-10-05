@@ -337,8 +337,30 @@ fn install_session_settings() {
         tracing::warn!("no config directory; settings are not kept this session");
         return;
     };
+    let copy = paths.copy.clone();
     match settings_store::SessionSettings::open(paths) {
-        Ok(session) => settings_store::install_source(Some(std::sync::Arc::new(session))),
+        Ok(session) => {
+            let session = std::sync::Arc::new(session);
+            // Another process writing the copy (Settings, a CLI) is taken in
+            // as it lands, which wakes every app following its settings.
+            let taken_in = std::sync::Arc::downgrade(&session);
+            match settings_store::watch::watch_settings_at(&copy, move || {
+                if let Some(session) = taken_in.upgrade() {
+                    session.refresh();
+                }
+            }) {
+                Ok(watch) => {
+                    static COPY_WATCH: std::sync::OnceLock<settings_store::watch::SettingsWatch> =
+                        std::sync::OnceLock::new();
+                    let _ = COPY_WATCH.set(watch);
+                }
+                Err(error) => tracing::warn!(
+                    %error,
+                    "settings copy watch unavailable; other processes' writes reach apps when the session next reads"
+                ),
+            }
+            settings_store::install_source(Some(session));
+        }
         Err(error) => tracing::error!(
             %error,
             "cannot open the settings records; this session reads and writes settings.json itself"

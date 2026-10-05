@@ -106,7 +106,7 @@ impl Artwork {
 }
 
 impl Widget for Artwork {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if self.image.is_none()
             && !self.url.is_empty()
             && let Some(store) = &self.store

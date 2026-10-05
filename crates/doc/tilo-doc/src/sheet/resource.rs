@@ -245,6 +245,7 @@ impl Resource for WorkbookDoc {
                 title: sheet.name.clone(),
                 text: sheet.name.clone(),
                 action: None,
+                ..Default::default()
             })
             .collect()
     }

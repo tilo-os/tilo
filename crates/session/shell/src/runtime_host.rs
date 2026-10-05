@@ -131,6 +131,11 @@ impl Session {
         self._membership.clone()
     }
 
+    /// The identity service an app this session connects joins with.
+    pub fn identity_socket(&self) -> &Path {
+        &self.identity_socket
+    }
+
     /// Read document media an app in this session's room stored, through
     /// the same scoped capability the app holds.
     /// # Errors

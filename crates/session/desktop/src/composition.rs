@@ -136,6 +136,7 @@ pub fn build_group(
             let checked = matches!(
                 &resolution,
                 crate::resolver::TileResolution::Component(_)
+                    | crate::resolver::TileResolution::App(..)
                     | crate::resolver::TileResolution::Retained(_)
             );
             let mut host = resolution.mount(failures, wake.clone());
@@ -734,6 +735,7 @@ impl DesktopSurface {
                                     let checked = matches!(
                                         &other,
                                         crate::resolver::TileResolution::Component(_)
+                                            | crate::resolver::TileResolution::App(..)
                                             | crate::resolver::TileResolution::Retained(_)
                                     );
                                     let mut host = other.mount(&mut failures, wake_sink.clone());
@@ -787,6 +789,7 @@ impl DesktopSurface {
                         let checked = matches!(
                             &resolution,
                             crate::resolver::TileResolution::Component(_)
+                                | crate::resolver::TileResolution::App(..)
                                 | crate::resolver::TileResolution::Retained(_)
                         );
                         let mut host = resolution.mount(&mut failures, wake_sink.clone());
@@ -948,7 +951,7 @@ impl Widget for DesktopSurface {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         let wake = self.take_component_wake();
         self.root.update(doc, path) || wake
     }

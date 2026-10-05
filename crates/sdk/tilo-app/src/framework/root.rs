@@ -5,19 +5,28 @@
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
+use ui_core::automerge::transaction::Transactable;
 use ui_core::widget::{AppModel, ModelPath};
 
 use tilo_resource::{Resource, SearchEntry};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::PresencePayload;
+use ui_core::application_view::{
+    ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
+};
 use ui_core::automerge::AutoCommit;
 use ui_core::permissions::{LivePermissions, PermissionScope};
 use ui_core::presence::{PresenceCtx, PresenceKey};
 use ui_core::record::RecordSaveStatus;
-use ui_core::search::{SearchProvider, SearchResult};
+use ui_core::search::{
+    DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT, SearchCursor, SearchPage,
+    SearchProvider, SearchResult,
+};
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
+use ui_core::view::ThawError;
+use ui_core::widget::capability::{capability, capability_mut};
 use ui_core::widget::{AppKind, AppWidget, Decorator, Element, IconDescriptor, Widget};
 use ui_core::{LocalState, Theme};
 
@@ -49,19 +58,24 @@ pub(crate) struct ResourceRoot<R: Resource> {
     stages: Stages,
     feeds: super::history::HistoryFeeds,
     /// What the view was built for, and the fixtures a capture's views read.
-    run: Run,
+    pub(crate) run: Run,
     /// The settings the view follows, re-read when their document changes.
-    storage: Rc<super::settings::ViewStorage>,
+    pub(crate) storage: Rc<super::settings::ViewStorage>,
     /// Edits the views bound to their local state.
     bindings: Bindings<R>,
     /// The effect handlers and projection drains the view registered.
     effects: Effects<R>,
-    content: Element,
+    /// The app's view: the custom surface itself when the view is one.
+    pub(crate) content: Element,
+    /// The store the view keeps the bytes its record names in, where
+    /// `render` keeps its picture.
+    #[allow(dead_code, reason = "read only by render, which is native-only")]
+    store: Option<tilo_content::ContentStore>,
     /// View and effect operations of the app's presentation, attached to the
     /// published resource. Document specs are dropped.
     presentation: Vec<tilo_actions::ActionSpec>,
-    /// The resource's search entries at one live revision, indexed.
-    search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
+    /// The resource's and its surfaces' search entries, indexed.
+    search: std::cell::RefCell<Option<SearchCache>>,
     /// The view operation types of the nested resources at one live revision.
     nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// The palette the view was last drawn in, which `render` draws it in.
@@ -191,9 +205,9 @@ fn read<R: Resource>(
 
 /// The revision a picture shows: the document's heads.
 #[allow(dead_code, reason = "called only by render, which is native-only")]
-fn revision(doc: &mut AutoCommit) -> String {
+fn revision(doc: &AutoCommit) -> String {
     let mut heads: Vec<String> = doc
-        .get_heads()
+        .base_heads()
         .iter()
         .map(|head| head.to_string().chars().take(12).collect())
         .collect();
@@ -212,10 +226,12 @@ impl<R: Resource> ResourceRoot<R> {
         alive: Rc<()>,
         content: Element,
     ) -> Self {
+        let store = cx.content();
         Self {
             title,
             icon,
             label,
+            store,
             live: cx.live,
             updaters: cx.updaters,
             followed: std::cell::Cell::new(0),
@@ -277,6 +293,9 @@ impl<R: Resource> ResourceRoot<R> {
         permissions: Option<LivePermissions>,
         write: PermissionScope,
     ) -> Self {
+        if let Some(permissions) = &permissions {
+            self.dispatch.follow(permissions.clone());
+        }
         self.permissions = permissions;
         self.write = Some(write);
         self
@@ -292,6 +311,11 @@ impl<R: Resource> ResourceRoot<R> {
 
     pub(crate) fn live(&self) -> &Live<R> {
         &self.live
+    }
+
+    /// What the launch that opened the window named.
+    pub(crate) fn launch(&self) -> super::launch::LaunchInput<'_> {
+        self.run.launch()
     }
 
     /// Every hosted surface of this resource in the view, in tree order.
@@ -310,17 +334,45 @@ impl<R: Resource> ResourceRoot<R> {
         walk(self.content.as_ref(), visit);
     }
 
+    /// Bind the edits surfaces offer on the row `row` names
+    /// ([`ResourceSurface::row_declarations`](super::ResourceSurface::row_declarations)).
+    fn bind_row_declarations(&self, row: &mut tilo_actions::Resource) {
+        let mut decls = Vec::new();
+        self.surfaces(&mut |surface| decls.extend(surface.row_declarations(row.id.as_str())));
+        for decl in decls {
+            let bound = std::mem::replace(row, tilo_actions::Resource::new("", "", ""));
+            *row = tilo_resource::bind_declaration(bound, &decl);
+        }
+    }
+
     /// The resource as published: its own actions and children, the edits
     /// views and surfaces bound to where the user is, the live rows surfaces
     /// show, and the framework's operations every app answers.
     fn publication(&self) -> tilo_actions::Resource {
-        let state = self.live.get();
+        self.publication_of(&self.live.get())
+    }
+
+    /// [`Self::publication`] of the resource as `doc` holds it now, which a
+    /// change from another window or participant may have moved past what
+    /// this view last synced.
+    fn current_publication(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+        if !self.live.follows(doc)
+            && let Ok(current) = R::read(doc)
+        {
+            return self.publication_of(&current);
+        }
+        self.publication()
+    }
+
+    fn publication_of(&self, state: &R::State) -> tilo_actions::Resource {
         let mut resource =
-            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, &state);
-        let mut bound = self.bindings.declarations(&state);
+            tilo_resource::publish::<R>(self.dispatch.resource_id(), &self.label, state);
+        let mut bound = self.bindings.declarations(state);
         let mut rows = Vec::new();
+        let mut availability = Vec::new();
         self.surfaces(&mut |surface| {
             bound.extend(surface.bound_declarations());
+            availability.extend(surface.availability());
             rows.extend(
                 surface
                     .live_rows()
@@ -329,15 +381,21 @@ impl<R: Resource> ResourceRoot<R> {
             );
         });
         for decl in bound {
-            if !resource
+            resource = tilo_resource::bind_declaration(resource, &decl);
+        }
+        for status in &availability {
+            for spec in resource
                 .actions
-                .iter()
-                .any(|existing| existing.id == decl.id)
+                .iter_mut()
+                .filter(|spec| spec.id == status.id())
             {
-                resource = resource.with_action(tilo_resource::declaration_spec(&decl));
+                status.overlay(spec);
             }
         }
         merge(&mut resource.children, rows);
+        for child in &mut resource.children {
+            self.bind_row_declarations(child);
+        }
         for spec in &self.presentation {
             if spec.kind == tilo_actions::OperationKind::Document {
                 continue;
@@ -350,6 +408,20 @@ impl<R: Resource> ResourceRoot<R> {
                 continue;
             }
             resource = resource.with_action(spec.clone());
+        }
+        // The app's own effects come before the framework's history and
+        // render operations: an app answering `diff` its own way is asked.
+        for spec in self.effects.specs() {
+            let shadowed = resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == spec.id);
+            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
+            if shadowed {
+                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
+                continue;
+            }
+            resource = resource.with_action(spec);
         }
         if cfg!(not(target_family = "wasm"))
             && !resource
@@ -376,18 +448,7 @@ impl<R: Resource> ResourceRoot<R> {
                 resource = resource.with_action(spec);
             }
         }
-        for spec in self.effects.specs() {
-            let shadowed = resource
-                .actions
-                .iter()
-                .any(|existing| existing.id == spec.id);
-            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
-            if shadowed {
-                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
-                continue;
-            }
-            resource = resource.with_action(spec);
-        }
+        resource.children.extend(self.storage.person_resources());
         resource
     }
 
@@ -431,7 +492,7 @@ impl<R: Resource> ResourceRoot<R> {
     fn render(
         &mut self,
         payload: &[u8],
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
     ) -> Result<tilo_actions::ActionOutput, String> {
         let args: serde_json::Value =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -463,6 +524,7 @@ impl<R: Resource> ResourceRoot<R> {
                 .ok_or_else(|| "this view cannot show another version".to_owned())?;
             let heads = ui_core::history_source::steps::resolve(doc, version)?;
             let past = doc
+                .clone()
                 .fork_at(&heads)
                 .map_err(|error| format!("version {version} is not in this document: {error}"))?;
             let bounds = ui_core::vello::kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height());
@@ -497,7 +559,10 @@ impl<R: Resource> ResourceRoot<R> {
         let rgba = offscreen.try_render_resilient(&scene, theme.bg_app)?;
         let png =
             ui_core::png::encode_rgba8(width, height, &rgba).map_err(|error| error.to_string())?;
-        let hash = tilo_content::ContentStore::for_app()
+        let hash = self
+            .store
+            .clone()
+            .unwrap_or_else(tilo_content::ContentStore::memory)
             .put(&png)
             .map_err(|error| format!("the picture could not be stored: {error}"))?;
         let address = tilo_actions::content_resource(&hash)
@@ -529,7 +594,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Follow the document when it moved — a local action, a
     /// collaborator's change, an undo or a restore — reading only what the
     /// change touched.
-    fn refresh(&self, doc: &mut AutoCommit) {
+    fn refresh(&self, doc: &AutoCommit) {
         if let Err(error) = self.live.sync(doc) {
             tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }
@@ -542,35 +607,120 @@ impl<R: Resource> ResourceRoot<R> {
         self.feeds.refresh(doc);
         self.live
             .with(|state| self.effects.drain_projections(state, revision));
+        self.effects.poll_jobs();
+    }
+}
+
+/// How many search entries are indexed away from the UI thread rather than
+/// in the frame that asks for them.
+const OFF_THREAD_ENTRIES: usize = 1024;
+
+/// The index of the resource's search entries and its surfaces', as of one
+/// revision of the resource and one set of surface entries.
+struct SearchCache {
+    revision: u64,
+    shown: Vec<SearchEntry>,
+    indexed: Arc<IndexedEntries>,
+    /// An index of newer entries being built away from the UI thread: the
+    /// revision and surface entries it is of, and where it arrives.
+    building: Option<(
+        u64,
+        Vec<SearchEntry>,
+        std::sync::mpsc::Receiver<IndexedEntries>,
+    )>,
+}
+
+/// A [`SearchText`](tilo_resource::SearchText), as the index reads it.
+struct BodyText(Arc<dyn tilo_resource::SearchText>);
+
+impl tilo_search::BodySource for BodyText {
+    fn segment_count(&self) -> usize {
+        self.0.segment_count()
+    }
+
+    fn piece_count(&self, segment: usize) -> usize {
+        self.0.piece_count(segment)
+    }
+
+    fn piece(&self, segment: usize, piece: usize) -> Option<tilo_search::BodyPiece<'_>> {
+        self.0
+            .piece(segment, piece)
+            .map(|piece| tilo_search::BodyPiece {
+                text: piece.text,
+                space_before: piece.space_before,
+            })
+    }
+
+    fn locates(&self, segment: usize) -> bool {
+        self.0.locates(segment)
     }
 }
 
 /// A resource's search entries and their index, keyed by position.
-struct IndexedEntries {
+pub(crate) struct IndexedEntries {
     entries: Vec<SearchEntry>,
     index: SearchIndex,
+    /// Which build of the entries this is: a page cursor from another build
+    /// starts over rather than skipping or repeating.
+    generation: u64,
 }
 
 impl IndexedEntries {
-    fn new(entries: Vec<SearchEntry>) -> Self {
+    pub(crate) fn built(entries: Vec<SearchEntry>, generation: u64) -> Self {
         // Entry titles are names a person half remembers: typos match too.
         let mut index = SearchIndex::new(Matching::LOOSE);
         index.replace_all(entries.iter().enumerate().map(|(at, entry)| {
-            Document::new(at as u64)
+            let mut document = Document::new(at as u64)
                 .field(entry.title.as_str(), FieldWeight::TITLE)
                 .field(entry.text.as_str(), FieldWeight::BODY)
+                .field(
+                    entry.subtitle.as_deref().unwrap_or_default(),
+                    FieldWeight::SUBTITLE,
+                );
+            for (text, weight) in &entry.fields {
+                document = document.field(text.as_str(), field_weight(*weight));
+            }
+            match &entry.body {
+                Some(body) => document.body(Arc::new(BodyText(body.shared()))),
+                None => document,
+            }
         }));
         if let Err(error) = index.commit() {
             tracing::warn!(%error, "could not index resource search entries");
         }
-        Self { entries, index }
+        Self {
+            entries,
+            index,
+            generation,
+        }
+    }
+}
+
+/// The index's weight for a field an entry ranks as `weight`.
+fn field_weight(weight: tilo_resource::SearchWeight) -> FieldWeight {
+    use tilo_resource::SearchWeight;
+    match weight {
+        SearchWeight::Title => FieldWeight::TITLE,
+        SearchWeight::Identity => FieldWeight::IDENTITY,
+        SearchWeight::Subtitle => FieldWeight::SUBTITLE,
+        SearchWeight::Metadata => FieldWeight::METADATA,
+        SearchWeight::Body => FieldWeight::BODY,
+        SearchWeight::Unranked => FieldWeight::UNRANKED,
     }
 }
 
 /// A search provider over one snapshot of the resource's entries.
-struct ResourceSearch {
+pub(crate) struct ResourceSearch {
     name: &'static str,
     indexed: Arc<IndexedEntries>,
+}
+
+impl ResourceSearch {
+    /// The search source over `indexed`, listed under `name` unless an
+    /// entry names its own group.
+    pub(crate) fn new(name: &'static str, indexed: Arc<IndexedEntries>) -> Self {
+        Self { name, indexed }
+    }
 }
 
 impl SearchProvider for ResourceSearch {
@@ -579,34 +729,114 @@ impl SearchProvider for ResourceSearch {
     }
 
     fn search(&self, query: &str) -> Vec<SearchResult> {
-        self.search_limited(query, usize::MAX)
+        self.search_limited(query, DEFAULT_SEARCH_RESULT_LIMIT)
     }
 
+    // No caller materialises more than one interactive page in one turn;
+    // complete discovery goes through `search_page`'s cursor.
     fn search_limited(&self, query: &str, limit: usize) -> Vec<SearchResult> {
-        self.indexed
-            .index
-            .search(query, Page::first(limit))
+        self.results(query, Page::first(limit.min(DEFAULT_SEARCH_RESULT_LIMIT)))
+            .0
+    }
+
+    fn action_directory_generation(&self) -> Option<u64> {
+        Some(self.indexed.generation)
+    }
+
+    fn action_directory_cursor_is_current(&self, cursor: &SearchCursor) -> bool {
+        cursor.opaque_parts().0 == self.indexed.generation
+    }
+
+    // Every entry stays findable however many there are: a page continues
+    // where the last one stopped, within the caller's budgets.
+    fn search_page(
+        &self,
+        query: &str,
+        cursor: Option<&SearchCursor>,
+        work_budget: usize,
+        result_limit: usize,
+    ) -> SearchPage {
+        let limit = work_budget
+            .min(DEFAULT_SEARCH_CANDIDATE_LIMIT)
+            .min(result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT));
+        let folded = ui_core::search::normalize_search_text(query);
+        let offset = cursor
+            .map(SearchCursor::opaque_parts)
+            .filter(|(generation, at_query, _, _)| {
+                *generation == self.indexed.generation && *at_query == folded
+            })
+            .and_then(|(_, _, _, offset)| usize::try_from(offset?).ok())
+            .unwrap_or(0);
+        if limit == 0 {
+            return SearchPage {
+                results: Vec::new(),
+                next: None,
+                inspected: 0,
+            };
+        }
+        let (results, more) = self.results(query, Page { offset, limit });
+        let inspected = results.len();
+        let next = more.then(|| {
+            SearchCursor::opaque(
+                self.indexed.generation,
+                folded,
+                None,
+                u64::try_from(offset.saturating_add(inspected)).ok(),
+            )
+        });
+        SearchPage {
+            results,
+            next,
+            inspected,
+        }
+    }
+}
+
+impl ResourceSearch {
+    /// One page of hits for `query`, and whether more follow it.
+    fn results(&self, query: &str, page: Page) -> (Vec<SearchResult>, bool) {
+        let found = self.indexed.index.search(query, page);
+        let results = found
             .hits
             .into_iter()
             .filter_map(|hit| {
-                let entry = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
-                let result = match &entry.action {
-                    Some(action) => {
-                        SearchResult::for_action(self.name, entry.title.clone(), action)
+                let parent = self.indexed.entries.get(usize::try_from(hit.key).ok()?)?;
+                // A match in a located segment of a body is that location's
+                // hit, listed with its entry unless it names its own group.
+                let located = hit.segment.and_then(|segment| {
+                    let mut location = parent.body.as_ref()?.text().location(segment)?;
+                    if location.group.is_none() {
+                        location.group.clone_from(&parent.group);
                     }
+                    Some(location)
+                });
+                let entry = located.as_ref().unwrap_or(parent);
+                let group = entry.group.as_deref().unwrap_or(self.name);
+                let mut result = match &entry.action {
+                    Some(action) => SearchResult::for_action(group, entry.title.clone(), action),
                     None => SearchResult::new(
-                        self.name,
+                        group,
                         entry.title.clone(),
                         entry.anchor.clone().unwrap_or_default(),
                     ),
                 };
-                Some(
-                    result
-                        .with_preview(entry.text.clone())
-                        .with_score(hit.rank.unwrap_or(0)),
-                )
+                if let Some(subtitle) = &entry.subtitle {
+                    result = result.with_subtitle(subtitle.clone());
+                }
+                if let Some(icon) = entry
+                    .icon
+                    .as_deref()
+                    .and_then(ui_core::icons::Icon::from_name)
+                {
+                    result = result.with_icon(icon);
+                }
+                if !entry.text.is_empty() {
+                    result = result.with_preview(entry.text.clone());
+                }
+                Some(result.with_score(hit.rank.unwrap_or(0).saturating_add(entry.boost)))
             })
-            .collect()
+            .collect();
+        (results, found.more)
     }
 }
 
@@ -615,7 +845,7 @@ impl SearchProvider for ResourceSearch {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl<R: Resource> Decorator for ResourceRoot<R> {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource; inner = content);
+    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::widget::controls::ActionControls, dyn ui_core::resources::PublishesResources, dyn ui_core::search::capability::SearchSource, dyn ui_core::history_mode::capability::DocumentHistory; inner = content);
 
     type Inner = dyn Widget;
 
@@ -627,27 +857,22 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.as_mut()
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut ui_core::taffy::TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<ui_core::taffy::NodeId, *mut dyn Widget>,
-    ) -> ui_core::taffy::NodeId {
-        let node = self.content.build_layout(taffy, theme, node_map);
-        let content = (
-            std::ptr::from_ref(self.content.as_ref()).cast::<()>(),
-            self.content.concrete_type_name(),
-        );
-        super::surface::stand_in(node_map, node, content, self);
-        node
+    fn record_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner> {
+        let mut owners = self.storage.person_owners();
+        owners.extend(self.content.record_owners());
+        owners
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui_core::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui_core::doc::document_ref(state, path);
         self.refresh_access();
         self.refresh(state);
         self.storage.refresh();
         self.content.sync(state, path);
+    }
+
+    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+        self.content.settle(edits, path);
     }
 
     fn draw(
@@ -672,6 +897,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             None,
             &self.content.get_rect(),
         );
+        self.run.people.follow(presence);
         self.content.draw(scene, transform, text, theme, presence);
     }
 
@@ -725,6 +951,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             handlers.insert(RENDER_TYPE.to_owned());
         }
         handlers.insert(super::history::VIEW_TYPE.to_owned());
+        handlers.insert(super::person::HISTORY_TYPE.to_owned());
+        // Opening another app is routed by the host to the workspace
+        // broker, whichever resource offers it.
+        handlers.insert(tilo_actions::remote::ApplicationLaunch::TYPE.to_owned());
         if R::READABLE {
             handlers.insert(READ_TYPE.to_owned());
         }
@@ -758,35 +988,48 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        op: &ui_core::host_operation::ResourceOperation<'_>,
+        doc: &mut ui_core::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
         #[cfg(not(target_family = "wasm"))]
         if let Some(request) = op.unscoped()
             && request.type_id == RENDER_TYPE
         {
             let output = self.render(request.payload, doc)?;
-            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                output,
-            )));
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
         }
         if R::READABLE
             && let Some(request) = op.unscoped()
             && request.type_id == READ_TYPE
         {
             let output = read::<R>(&self.live.get(), doc, request.payload)?;
-            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                output,
-            )));
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
         }
         if let Some(request) = op.unscoped()
             && request.type_id == super::history::VIEW_TYPE
         {
             let output = super::history::answer(doc, request.payload)?;
-            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                output,
-            )));
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        if let Some(request) = op.unscoped()
+            && request.type_id == super::person::HISTORY_TYPE
+        {
+            let output = self.storage.person_history(request.payload)?;
+            return Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(output),
+            ));
+        }
+        // An effect reads the resource as the document stands, though no
+        // frame has run since a collaborator's change arrived.
+        if let Err(error) = self.live.sync(doc) {
+            tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }
         if let Some(started) = self.effects.start(op)? {
             return Ok(Some(started));
@@ -810,37 +1053,99 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
             || self.nested_views().contains(request.type_id);
         if known {
-            Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+            Ok(Some(
+                ui_core::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ))
         } else {
             Ok(None)
         }
     }
 }
 
+impl<R: Resource> ResourceRoot<R> {
+    /// The index of the resource's entries at `revision` and the surfaces'
+    /// `shown` ones. A large set of entries (a browsing history, a store
+    /// catalogue) or one with prose bodies (whole books) is indexed away
+    /// from the UI thread: until that index arrives, search answers from the
+    /// one before it.
+    fn current_search_index(&self, revision: u64, shown: Vec<SearchEntry>) -> Arc<IndexedEntries> {
+        let mut cached = self.search.borrow_mut();
+        if let Some(cache) = cached.as_mut()
+            && let Some((at, entries_shown, arriving)) = cache.building.take()
+        {
+            match arriving.try_recv() {
+                Ok(indexed) => {
+                    cache.revision = at;
+                    cache.shown = entries_shown;
+                    cache.indexed = Arc::new(indexed);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    cache.building = Some((at, entries_shown, arriving));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        if let Some(cache) = cached.as_ref() {
+            let current = cache.revision == revision && cache.shown == shown;
+            let arriving = cache
+                .building
+                .as_ref()
+                .is_some_and(|(at, building, _)| *at == revision && *building == shown);
+            if current || arriving {
+                return Arc::clone(&cache.indexed);
+            }
+        }
+        let generation = cached
+            .as_ref()
+            .map_or(0, |cache| cache.indexed.generation.wrapping_add(1));
+        let mut entries = R::search(&self.live.get());
+        entries.extend(shown.iter().cloned());
+        if entries.len() >= OFF_THREAD_ENTRIES || entries.iter().any(|entry| entry.body.is_some()) {
+            let (send, arriving) = std::sync::mpsc::channel();
+            let building = entries.clone();
+            let spawned = ui_core::background::Background::current().spawn(
+                "resource-search-index",
+                move || {
+                    let _ = send.send(IndexedEntries::built(building, generation));
+                },
+            );
+            if spawned.is_ok() {
+                let cache = cached.get_or_insert_with(|| SearchCache {
+                    revision,
+                    shown: Vec::new(),
+                    indexed: Arc::new(IndexedEntries::built(Vec::new(), generation)),
+                    building: None,
+                });
+                cache.building = Some((revision, shown, arriving));
+                return Arc::clone(&cache.indexed);
+            }
+        }
+        let indexed = Arc::new(IndexedEntries::built(entries, generation));
+        *cached = Some(SearchCache {
+            revision,
+            shown,
+            indexed: Arc::clone(&indexed),
+            building: None,
+        });
+        indexed
+    }
+}
+
 impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> {
     fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        // The resource's entries change with its revision; what the surfaces
+        // show (a page's text, live rows) changes on their own, so their
+        // entries are read now and the index rebuilt only when either moved.
         let revision = self.live.revision();
-        let indexed = {
-            let mut cached = self.search.borrow_mut();
-            match cached.as_ref() {
-                Some((at, indexed)) if *at == revision => Arc::clone(indexed),
-                _ => {
-                    let indexed = Arc::new(IndexedEntries::new(R::search(&self.live.get())));
-                    *cached = Some((revision, Arc::clone(&indexed)));
-                    indexed
-                }
-            }
-        };
-        let mut providers: Vec<Box<dyn SearchProvider>> = vec![Box::new(ResourceSearch {
-            name: R::LABEL,
-            indexed,
-        })];
-        providers.extend(ui_core::search::capability::search_providers(
-            self.content.as_ref(),
-        ));
-        providers
+        let mut shown = Vec::new();
+        self.surfaces(&mut |surface| shown.extend(surface.search_entries()));
+        let indexed = self.current_search_index(revision, shown);
+        // The app's one search source: what its content widgets show beside
+        // the resource reaches it as their surfaces' entries, never as a
+        // provider of their own.
+        vec![Box::new(ResourceSearch::new(R::LABEL, indexed))]
     }
 }
 
@@ -853,7 +1158,12 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
-        let mut resource = self.publication();
+        // What surfaces bind to where someone is, they bind to this
+        // participant's view.
+        let _viewer = participant
+            .cloned()
+            .map(ui_core::invocation_scope::ViewerScope::enter);
+        let mut resource = self.current_publication(doc);
         // The content may add live external entities beside the resource,
         // never a document action: those are the resource's own. A hosted
         // surface has already admitted what it adds. One naming the resource
@@ -886,15 +1196,29 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
     /// child the resource resolves by id, or a live row a surface resolves.
     fn resource_for(
         &self,
-        _participant: Option<&tilo_actions::ParticipantId>,
-        _doc: &AutoCommit,
+        participant: Option<&tilo_actions::ParticipantId>,
+        doc: &AutoCommit,
         id: &str,
     ) -> Option<tilo_actions::Resource> {
-        if let Some(published) = find(&[self.publication()], id) {
+        let _viewer = participant
+            .cloned()
+            .map(ui_core::invocation_scope::ViewerScope::enter);
+        // A change from another window or participant may not have reached
+        // this view yet: an item it removed is gone, one it made is there.
+        if let Some(published) = find(&[self.current_publication(doc)], id) {
             return Some(published);
         }
-        if let Some(child) = R::child(&self.live.get(), id) {
-            return Some(child);
+        let current = if self.live.follows(doc) {
+            None
+        } else {
+            R::read(doc).ok()
+        };
+        let child = match &current {
+            Some(current) => R::child(current, id),
+            None => R::child(&self.live.get(), id),
+        };
+        if child.is_some() {
+            return child;
         }
         let mut row = None;
         self.surfaces(&mut |surface| {
@@ -902,7 +1226,15 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
                 row = surface.live_row(id).map(super::LiveRow::into_resource);
             }
         });
-        row
+        if let Some(mut row) = row {
+            self.bind_row_declarations(&mut row);
+            return Some(row);
+        }
+        // Last, what the content resolves by id beyond what it publishes (a
+        // place, a record past the published page), without a document
+        // action: those are the resource's own.
+        ui_core::resources::resource_for(self.content.as_ref(), None, doc, id)
+            .map(super::rows::resolved_outside_document)
     }
     fn document_action_result(
         &self,
@@ -924,9 +1256,15 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
 
 impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.dispatch
-            .take()
-            .or_else(|| ui_core::widget::controls::take_control_invocation(self.content.as_mut()))
+        self.take_attributed_control_invocation()
+            .map(|(invocation, _)| invocation)
+    }
+    fn take_attributed_control_invocation(
+        &mut self,
+    ) -> Option<ui_core::widget::controls::AttributedControlInvocation> {
+        self.dispatch.take_attributed().or_else(|| {
+            ui_core::widget::controls::take_attributed_control_invocation(self.content.as_mut())
+        })
     }
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a
@@ -935,7 +1273,7 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::widget::ResourceOperationStart, tilo_actions::DoorError>,
+        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
     ) {
         // The resource itself, or a child its dispatcher edits through it.
         let ours = address.resource == self.dispatch.resource_id()
@@ -960,6 +1298,67 @@ impl<R: Resource> ui_core::widget::controls::ActionControls for ResourceRoot<R> 
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending()
             || ui_core::widget::controls::has_pending_control_invocation(self.content.as_ref())
+    }
+}
+
+// The root owns the file whose history it shows beside the resource's (the
+// runner checks the source it registered is this root's); everything else
+// about History is its content's, as before.
+impl<R: Resource> ui_core::history_mode::capability::DocumentHistory for ResourceRoot<R> {
+    fn history_registration(
+        &self,
+    ) -> Result<
+        Option<ui_core::history_mode::HistoryRegistration>,
+        ui_core::history_mode::HistoryRegistrationError,
+    > {
+        match &self.run.file_history {
+            Some((source, definition)) => {
+                let scopes = definition.scopes.iter().map(|scope| {
+                    ui_core::history_mode::HistorySourceRegistration::CheckedFiles {
+                        scope: scope.key,
+                        source: source.clone(),
+                    }
+                });
+                ui_core::history_mode::HistoryRegistration::new(definition, scopes.collect())
+                    .map(Some)
+            }
+            None => ui_core::history_mode::capability::history_registration(self.content.as_ref()),
+        }
+    }
+
+    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
+        ui_core::widget::capability::capability::<
+            dyn ui_core::history_mode::capability::DocumentHistory,
+        >(self.content.as_ref())
+        .map_or(Ok(()), |content| content.history_restore_readiness(scope))
+    }
+
+    fn document_history_definition(
+        &self,
+    ) -> Option<&'static ui_core::history_mode::HistoryDefinition> {
+        ui_core::history_mode::capability::document_history_definition(self.content.as_ref())
+    }
+
+    fn provides_document_history(&self) -> bool {
+        ui_core::widget::capability::capability::<
+            dyn ui_core::history_mode::capability::DocumentHistory,
+        >(self.content.as_ref())
+        .is_some_and(ui_core::history_mode::capability::DocumentHistory::provides_document_history)
+    }
+
+    fn document_action_applied(
+        &mut self,
+        action: &tilo_actions::EncodedAction,
+        before: &[ui_core::automerge::ChangeHash],
+        doc: &ui_core::automerge::AutoCommit,
+        path: &ui_core::automerge::ObjId,
+    ) {
+        if let Some(content) = ui_core::widget::capability::capability_mut::<
+            dyn ui_core::history_mode::capability::DocumentHistory,
+        >(self.content.as_mut())
+        {
+            content.document_action_applied(action, before, doc, path);
+        }
     }
 }
 
@@ -989,8 +1388,47 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
         None
     }
 
+    fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
+        fn take<R: Resource>(widget: &mut dyn Widget) -> Option<ui_core::widget::AppHostIntent> {
+            if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)
+                && let Some(intent) = surface.take_host_intent()
+            {
+                return Some(intent);
+            }
+            widget.children_mut().into_iter().find_map(take::<R>)
+        }
+        take::<R>(self.content.as_mut())
+    }
+
     fn record_save_status(&mut self, status: RecordSaveStatus) {
         self.saved.set(status);
+    }
+
+    // A surface that keeps presentation of its own across restarts (the
+    // open item, the caret) saves it as the window's.
+    fn capture_application_view(&self) -> Result<Option<ApplicationLocalView>, ThawError> {
+        capability::<dyn ApplicationViewState>(self.content.as_ref())
+            .map_or(Ok(None), ApplicationViewState::capture_application_view)
+    }
+
+    fn restore_application_view(
+        &mut self,
+        local: &ApplicationLocalView,
+        doc: &AutoCommit,
+    ) -> Result<ApplicationFocusRestore, ThawError> {
+        match capability_mut::<dyn ApplicationViewState>(self.content.as_mut()) {
+            Some(view) => view.restore_application_view(local, doc),
+            None => Err(ThawError::State(
+                "application-local restoration unsupported".into(),
+            )),
+        }
+    }
+
+    fn finish_application_view_restore(&mut self) -> Result<(), ThawError> {
+        capability_mut::<dyn ApplicationViewState>(self.content.as_mut()).map_or(
+            Ok(()),
+            ApplicationViewState::finish_application_view_restore,
+        )
     }
 }
 
@@ -1003,10 +1441,13 @@ mod tests {
         let open = tilo_actions::ActionAddress::new("notes.page:1", "open");
         let search = ResourceSearch {
             name: "Notes",
-            indexed: Arc::new(IndexedEntries::new(vec![
-                SearchEntry::new("Groceries", "milk and eggs").invoking(open.clone()),
-                SearchEntry::new("Garden", "roses").anchored("page:2"),
-            ])),
+            indexed: Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Groceries", "milk and eggs").invoking(open.clone()),
+                    SearchEntry::new("Garden", "roses").anchored("page:2"),
+                ],
+                0,
+            )),
         };
         let groceries = search.search("groceries");
         assert_eq!(groceries.len(), 1);
@@ -1015,5 +1456,191 @@ mod tests {
         assert_eq!(garden.len(), 1);
         assert_eq!(garden[0].action_address(), None);
         assert_eq!(garden[0].action_id, "page:2");
+    }
+
+    #[test]
+    fn a_search_entry_reads_as_its_group_subtitle_and_icon() {
+        let reveal = tilo_actions::ActionAddress::new("video.marker:1", "reveal");
+        let search = ResourceSearch {
+            name: "Project",
+            indexed: Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Sunset", "the last light")
+                        .invoking(reveal)
+                        .grouped("Timeline markers")
+                        .subtitled("0:21 · Drone")
+                        .with_icon("star")
+                        .boosted(5),
+                    SearchEntry::new("Sunset take", ""),
+                ],
+                0,
+            )),
+        };
+        let hits = search.search("sunset");
+        let marker = hits
+            .iter()
+            .find(|hit| hit.title == "Sunset")
+            .expect("the marker is found");
+        assert_eq!(marker.kind, "Timeline markers");
+        assert_eq!(marker.subtitle.as_deref(), Some("0:21 · Drone"));
+        assert_eq!(marker.icon, Some(ui_core::icons::Icon::Star));
+        let plain = hits
+            .iter()
+            .find(|hit| hit.title == "Sunset take")
+            .expect("the plain entry is found");
+        assert_eq!(plain.kind, "Project", "an ungrouped hit is the resource's");
+        assert!(plain.preview.is_none(), "no text, no preview");
+        // Subtitles are searched too: a marker is found by the shot it is on.
+        assert!(
+            search
+                .search("drone")
+                .iter()
+                .any(|hit| hit.title == "Sunset")
+        );
+    }
+
+    #[test]
+    fn every_entry_stays_findable_page_by_page() {
+        let search = ResourceSearch::new(
+            "Tracks",
+            Arc::new(IndexedEntries::built(
+                (0..257)
+                    .map(|n| SearchEntry::new(format!("Common track {n}"), ""))
+                    .collect(),
+                0,
+            )),
+        );
+        let mut cursor = None;
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let page = search.search_page("common", cursor.as_ref(), 17, 5);
+            assert!(page.results.len() <= 5);
+            for hit in &page.results {
+                assert!(seen.insert(hit.title.clone()), "{} came twice", hit.title);
+            }
+            let Some(next) = page.next else { break };
+            assert!(search.action_directory_cursor_is_current(&next));
+            cursor = Some(next);
+        }
+        assert_eq!(seen.len(), 257, "every match is reachable");
+    }
+
+    #[test]
+    fn no_caller_materialises_more_than_one_page_at_once() {
+        let search = ResourceSearch::new(
+            "Tables",
+            Arc::new(IndexedEntries::built(
+                (0..300)
+                    .map(|n| SearchEntry::new(format!("table {n}"), ""))
+                    .collect(),
+                0,
+            )),
+        );
+        assert_eq!(
+            search.search_limited("", usize::MAX).len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
+        assert_eq!(
+            search
+                .search_page("", None, usize::MAX, usize::MAX)
+                .results
+                .len(),
+            DEFAULT_SEARCH_RESULT_LIMIT
+        );
+    }
+
+    /// A chapter of a book: one paragraph per segment, each opening the
+    /// book where it is.
+    struct Chapter(Vec<&'static str>);
+
+    impl tilo_resource::SearchText for Chapter {
+        fn segment_count(&self) -> usize {
+            self.0.len()
+        }
+
+        fn piece_count(&self, segment: usize) -> usize {
+            usize::from(segment < self.0.len())
+        }
+
+        fn piece(&self, segment: usize, piece: usize) -> Option<tilo_resource::SearchPiece<'_>> {
+            let text = self.0.get(segment)?;
+            (piece == 0).then_some(tilo_resource::SearchPiece {
+                text,
+                space_before: segment > 0,
+            })
+        }
+
+        fn locates(&self, _segment: usize) -> bool {
+            true
+        }
+
+        fn location(&self, segment: usize) -> Option<SearchEntry> {
+            Some(
+                SearchEntry::new(format!("Paragraph {}", segment.saturating_add(1)), "").invoking(
+                    tilo_actions::ActionAddress::new(format!("book.location:{segment}"), "open"),
+                ),
+            )
+        }
+    }
+
+    #[test]
+    fn a_match_in_a_body_is_the_place_it_is_in() {
+        let body = tilo_resource::SearchBody::new(Arc::new(Chapter(vec![
+            "It was a dark and stormy night.",
+            "The lighthouse keeper counted the waves.",
+        ])));
+        let search = ResourceSearch::new(
+            "Library",
+            Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Storm Tales", "")
+                        .invoking(tilo_actions::ActionAddress::new("book:1", "open"))
+                        .grouped("Books")
+                        .with_body(body.clone()),
+                ],
+                0,
+            )),
+        );
+        let hits = search.search("lighthouse keeper");
+        let place = hits
+            .iter()
+            .find(|hit| hit.title == "Paragraph 2")
+            .expect("the paragraph the words are in is a hit");
+        assert_eq!(
+            place.action_address(),
+            Some(tilo_actions::ActionAddress::new("book.location:1", "open"))
+        );
+        assert_eq!(place.kind, "Books", "a location is listed with its book");
+        assert!(
+            search
+                .search("storm tales")
+                .iter()
+                .any(|hit| hit.title == "Storm Tales"),
+            "the book itself is found by its title"
+        );
+        assert_eq!(body, body.clone(), "a body is the text it shares");
+    }
+
+    #[test]
+    fn a_field_ranks_by_its_own_weight() {
+        use tilo_resource::SearchWeight;
+        let search = ResourceSearch::new(
+            "Mail",
+            Arc::new(IndexedEntries::built(
+                vec![
+                    SearchEntry::new("Lunch plans", "")
+                        .field("ada@example.org", SearchWeight::Metadata),
+                    SearchEntry::new("Quarterly report", "")
+                        .field("ada@example.org", SearchWeight::Identity),
+                ],
+                0,
+            )),
+        );
+        let hits = search.search("ada@example.org");
+        assert_eq!(hits.len(), 2, "both are found by the address");
+        assert_eq!(
+            hits[0].title, "Quarterly report",
+            "a match in an identity outranks one in metadata"
+        );
     }
 }

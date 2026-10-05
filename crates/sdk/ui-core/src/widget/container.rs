@@ -5,7 +5,7 @@ use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::{AppModel, ModelPath};
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -247,21 +247,20 @@ impl Container {
 impl Widget for Container {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::undo::UndoPoints
+        dyn crate::presence::capability::PublishesPresence
     );
 
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         // This container owns no operation handler: offer each child once.
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
             None => false,
@@ -505,19 +504,6 @@ impl Widget for Container {
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
-        }
-    }
-}
-
-impl crate::undo::UndoPoints for Container {
-    fn needs_commit(&self) -> bool {
-        self.children()
-            .iter()
-            .any(|c| crate::undo::needs_commit(*c))
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            crate::undo::on_commit(child);
         }
     }
 }

@@ -69,6 +69,7 @@ struct Client {
     shift: bool,
     text: String,
     repeat_rate: Option<i32>,
+    focus: Option<wl_surface::WlSurface>,
 }
 
 impl Dispatch<wl_registry::WlRegistry, ()> for Client {
@@ -101,6 +102,8 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for Client {
         _: &QueueHandle<Self>,
     ) {
         match event {
+            wl_keyboard::Event::Enter { surface, .. } => state.focus = Some(surface),
+            wl_keyboard::Event::Leave { .. } => state.focus = None,
             wl_keyboard::Event::Modifiers { mods_depressed, .. } => {
                 state.shift = mods_depressed & 1 != 0;
             }
@@ -354,4 +357,185 @@ fn a_remote_participant_types_exactly_its_text_and_repeats_only_as_its_sender_do
     }
     h.pump();
     assert_eq!(h.client.repeat_rate, Some(configured));
+}
+
+#[test]
+fn headless_workspace_host_focus_reaches_the_requested_wayland_window() {
+    let mut h = Harness::new();
+    let _registry = h.conn.display().get_registry(&h.queue.handle(), ());
+    h.pump();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 1);
+    let seat = h.bind::<wl_seat::WlSeat>("wl_seat", 9);
+    let _keyboard = seat.get_keyboard(&h.queue.handle(), ());
+    let qh = h.queue.handle();
+    let mut windows = Vec::new();
+    for app in ["org.example.Browser", "org.example.Writer"] {
+        let surface = compositor.create_surface(&qh, ());
+        let xdg = wm.get_xdg_surface(&surface, &qh, ());
+        let toplevel = xdg.get_toplevel(&qh, ());
+        toplevel.set_app_id(app.into());
+        windows.push((surface, xdg, toplevel));
+    }
+    h.pump();
+    let old = foreign_id(&h.state, "org.example.Browser");
+    let current = foreign_id(&h.state, "org.example.Writer");
+    let host = 9;
+    for surface in [old, current] {
+        h.state
+            .share_registry
+            .insert(host, surface, StreamingShare::new());
+    }
+    h.state
+        .set_headless_host_viewers([(host, old), (host, current)].into_iter().collect());
+    h.state.set_client_keyboard_focus(Some(old));
+    h.state.remote_input_firewall.publish_view(ShellView::new(
+        vec![
+            (old, Rect::new(0.0, 0.0, 400.0, 600.0)),
+            (current, Rect::new(400.0, 0.0, 800.0, 600.0)),
+        ],
+        Some(old),
+        false,
+        false,
+    ));
+    assert!(h.state.apply_remote_input(
+        host,
+        old,
+        InputEvent::KeyboardFocus {
+            surface: old,
+            focused: true
+        }
+    ));
+    assert!(h.state.apply_remote_input(host, old, key(SHIFT, true)));
+    assert!(h.state.apply_remote_input(
+        host,
+        current,
+        InputEvent::KeyboardFocus {
+            surface: current,
+            focused: true
+        }
+    ));
+    h.pump();
+    assert_eq!(
+        h.client.focus.as_ref(),
+        Some(&windows[1].0),
+        "the accepted headless host focus must enter the window it names"
+    );
+    assert!(
+        !h.client.shift,
+        "held modifiers from the previous window must be retired"
+    );
+    assert!(h.state.apply_remote_input(
+        host,
+        old,
+        InputEvent::KeyboardFocus {
+            surface: old,
+            focused: false
+        }
+    ));
+    let text = "MiXeD aaBB1122,!?";
+    for c in text.chars() {
+        let (code, shift) = stroke(c);
+        if shift {
+            assert!(h.state.apply_remote_input(host, current, key(SHIFT, true)));
+        }
+        assert!(h.state.apply_remote_input(host, current, key(code, true)));
+        assert!(h.state.apply_remote_input(host, current, key(code, false)));
+        if shift {
+            assert!(h.state.apply_remote_input(host, current, key(SHIFT, false)));
+        }
+    }
+    h.pump();
+    assert_eq!(
+        h.client.text, text,
+        "the new window receives each stroke exactly"
+    );
+    assert_host_focus_permissions(&mut h, [old, current], &windows[1].0, host);
+}
+
+fn assert_host_focus_permissions(
+    h: &mut Harness,
+    windows: [u64; 2],
+    expected_focus: &wl_surface::WlSurface,
+    host: u64,
+) {
+    let [old, current] = windows;
+    let ordinary = 10;
+    h.state
+        .share_registry
+        .insert(ordinary, old, StreamingShare::new());
+    assert!(h.state.apply_remote_input(
+        ordinary,
+        old,
+        InputEvent::KeyboardFocus {
+            surface: old,
+            focused: true
+        }
+    ));
+    assert!(
+        !h.state.apply_remote_input(ordinary, old, key(30, true)),
+        "a regular share cannot move the local seat to another window"
+    );
+    h.pump();
+    assert_eq!(h.client.focus.as_ref(), Some(expected_focus));
+
+    let read_only = 11;
+    let mut share = StreamingShare::new();
+    share.read_only = true;
+    h.state.share_registry.insert(read_only, old, share);
+    let unshared = 12;
+    let hidden = 999;
+    h.state
+        .share_registry
+        .insert(host, hidden, StreamingShare::new());
+    h.state.set_headless_host_viewers(
+        [
+            (host, old),
+            (host, current),
+            (host, hidden),
+            (read_only, old),
+            (unshared, old),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    for (peer, surface) in [(read_only, old), (unshared, old), (host, hidden)] {
+        assert!(
+            !h.state.apply_remote_input(
+                peer,
+                surface,
+                InputEvent::KeyboardFocus {
+                    surface,
+                    focused: true
+                }
+            ),
+            "headless host focus still requires write permission and a visible share"
+        );
+    }
+    h.pump();
+    assert_eq!(h.client.focus.as_ref(), Some(expected_focus));
+
+    h.state.remote_input_firewall.publish_view(ShellView::new(
+        vec![
+            (old, Rect::new(0.0, 0.0, 400.0, 600.0)),
+            (current, Rect::new(400.0, 0.0, 800.0, 600.0)),
+        ],
+        Some(current),
+        true,
+        false,
+    ));
+    assert!(h.state.apply_remote_input(
+        host,
+        old,
+        InputEvent::KeyboardFocus {
+            surface: old,
+            focused: true
+        }
+    ));
+    assert!(
+        !h.state.apply_remote_input(host, old, key(30, true)),
+        "trusted chrome still mutes headless-host typing"
+    );
+    h.pump();
+    assert_eq!(h.client.focus.as_ref(), Some(expected_focus));
 }

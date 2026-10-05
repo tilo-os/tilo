@@ -362,7 +362,21 @@ impl Tracker {
         doc: &mut Doc,
         locate: &dyn Fn(&ObjId) -> Option<Path>,
     ) -> Delta {
-        let heads = doc.get_heads();
+        // Closes the open transaction, so its edits are part of the delta.
+        doc.get_heads();
+        self.committed_delta_located(doc, locate)
+    }
+
+    /// [`Self::delta_located`] up to the committed document, read through a
+    /// shared reference: edits of a transaction still open come with the
+    /// delta after it closes.
+    pub fn committed_delta_located(
+        &mut self,
+        doc: &Doc,
+        locate: &dyn Fn(&ObjId) -> Option<Path>,
+    ) -> Delta {
+        let heads = doc.committed_heads();
+        let committed = doc.committed_document();
         let Some(previous) = self.heads.replace(heads.clone()) else {
             return Delta::everything();
         };
@@ -372,11 +386,11 @@ impl Tracker {
         // A version this document does not have: it was replaced wholesale.
         if previous
             .iter()
-            .any(|hash| doc.get_change_meta_by_hash(hash).is_none())
+            .any(|hash| committed.get_change_meta_by_hash(hash).is_none())
         {
             return Delta::everything();
         }
-        let metas = doc.get_changes_meta(&previous);
+        let metas = committed.get_changes_meta(&previous);
         let ops: u64 = metas
             .iter()
             .map(|meta| meta.max_op.saturating_add(1).saturating_sub(meta.start_op))
@@ -387,7 +401,7 @@ impl Tracker {
         let hashes: Vec<ChangeHash> = metas.iter().map(|meta| meta.hash).collect();
         let mut changes = Vec::with_capacity(hashes.len());
         for hash in &hashes {
-            match doc.get_change_by_hash(hash) {
+            match committed.get_change_by_hash(hash) {
                 Some(change) => changes.push(change),
                 None => return Delta::everything(),
             }
