@@ -532,6 +532,23 @@ files = [
   { link = "../libexec/tilo-vmd", to = "/usr/bin/tilo-vmd" },
 ]
 
+# tilo-vmd's requests over the peer network, for a device beyond the LAN
+# (docs/device-reach.md). os/dev-image/ carries its unit,
+# tilo-device-admin.service, which os/Containerfile.dev enables; `tilo-vm`
+# runs `tilo-device-admin id` over SSH to record the route, hence the PATH
+# link. A developer's machine runs the same binary's `dial`.
+[[component]]
+name = "device-admin"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-device-admin"]
+bins = ["tilo-device-admin"]
+layer = "dev-tools"
+files = [
+  { from = "tilo-device-admin", to = "/usr/libexec/tilo-device-admin", mode = "0755" },
+  { link = "../libexec/tilo-device-admin", to = "/usr/bin/tilo-device-admin" },
+]
+
 # A signed app registry on loopback offering newer versions of an installed
 # app, for os/tests/booted_app_update.sh: the system image's apps update and
 # roll back through `app` like any other.
