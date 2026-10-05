@@ -502,30 +502,56 @@ impl TimelineInteraction {
                 .iter()
                 .find(|event| event.day == *day && event.all_day)
             {
-                let tinted = colors.tinted_chip_on(
-                    colors.surfaces.content,
-                    event.color.color(theme),
-                    crate::draw_util::ALL_DAY_WASH,
-                    SMALL_TEXT_MIN_CONTRAST,
-                );
-                card(
-                    ctx.scene,
-                    ctx.transform,
-                    strip,
-                    f64::from(theme.tokens.radii.detail),
-                    tinted.fill,
-                );
-                text_in_band(
-                    ctx,
-                    event.title,
-                    &ty.strip,
-                    tinted.ink,
-                    strip.x0 + s1 + s1 / 2.0,
-                    strip,
-                    strip.width() - 3.0 * s1,
-                );
+                Self::draw_all_day_chip(ctx, ty, strip, event, geom.density);
                 hits.push((strip, TimelineEffect::Select(event.id)));
             }
+        }
+    }
+
+    /// An all-day event's chip in its day's strip: a deeper wash of the
+    /// calendar colour, its title wrapped over the lines the density gives
+    /// the strip and centred as one block.
+    fn draw_all_day_chip(
+        ctx: &mut PaintCtx<'_>,
+        ty: &TimelineType,
+        strip: Rect,
+        event: &TimelineRenderEvent<'_>,
+        density: ui::widget::TimelineDensity,
+    ) {
+        let theme = ctx.theme;
+        let colors = &theme.tokens.colors;
+        let s1 = f64::from(theme.tokens.spacing.s1);
+        let tinted = colors.tinted_chip_on(
+            colors.surfaces.content,
+            event.color.color(theme),
+            crate::draw_util::ALL_DAY_WASH,
+            SMALL_TEXT_MIN_CONTRAST,
+        );
+        card(
+            ctx.scene,
+            ctx.transform,
+            strip,
+            f64::from(theme.tokens.radii.detail),
+            tinted.fill,
+        );
+        let width = strip.width() - 3.0 * s1;
+        let lines = wrap_lines(ctx, event.title, &ty.strip, width, density.chip_lines());
+        let strip_h = line_height(ctx, &ty.strip);
+        #[allow(clippy::cast_precision_loss, reason = "at most two lines")]
+        let block_h = strip_h * lines.len() as f64;
+        let mut y = strip.center().y - block_h / 2.0;
+        for line in &lines {
+            let band = Rect::new(strip.x0, y, strip.x1, y + strip_h);
+            text_in_band(
+                ctx,
+                line,
+                &ty.strip,
+                tinted.ink,
+                strip.x0 + s1 + s1 / 2.0,
+                band,
+                width,
+            );
+            y += strip_h;
         }
     }
 
@@ -792,7 +818,7 @@ impl TimelineInteraction {
     /// Geometry at the viewport's measured type, so paint, hit-testing and
     /// drag mapping all read one description of the header / strip / body.
     fn geometry(&self, area: Rect) -> TimelineGeom {
-        TimelineViewport::geometry_for(area, &self.viewport.tokens())
+        TimelineViewport::geometry_for(area, &self.viewport.tokens(), self.viewport.days_len())
     }
 
     /// Measure the theme's type so header, strip and block heights grow
@@ -822,8 +848,8 @@ impl TimelineInteraction {
             .block_rect(area, days_len, geom, col, start_min, end_min)
     }
 
-    pub fn layout(&mut self, area: Rect, initial_hour: f64) {
-        self.viewport.layout(area, initial_hour);
+    pub fn layout(&mut self, area: Rect, initial_hour: f64, days_len: usize) {
+        self.viewport.layout(area, initial_hour, days_len);
     }
 
     pub fn pin_hour(&mut self, hour: f64) {
@@ -914,7 +940,7 @@ mod tests {
     use uuid::Uuid;
 
     fn area() -> Rect {
-        Rect::new(100.0, 40.0, 900.0, 640.0)
+        Rect::new(100.0, 40.0, 1300.0, 640.0)
     }
 
     fn days() -> Vec<NaiveDate> {

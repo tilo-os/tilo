@@ -7,7 +7,7 @@ use ui::Widget;
 use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::Scrollable;
+use ui::widget::{Scrollable, TimelineDensity};
 
 use crate::input_context::InputContext;
 
@@ -61,7 +61,11 @@ pub(super) struct TimelineTokens {
     s1: f64,
     s2: f64,
     s3: f64,
-    min_hour_h: f64,
+    /// The day column width below which the grid is narrow, and the
+    /// shortest hour at each density ([`TimelineDensity`]).
+    narrow_below: f64,
+    min_hour_regular: f64,
+    min_hour_narrow: f64,
 }
 
 impl TimelineTokens {
@@ -71,16 +75,19 @@ impl TimelineTokens {
             f64::from(text.measure_style("Ag", None, style).1)
         };
         let sp = &theme.tokens.spacing;
+        let title_h = line(text, &ty.title);
         Self {
             weekday_h: line(text, &ty.weekday),
             day_h: line(text, &ty.day),
             strip_h: line(text, &ty.strip),
-            title_h: line(text, &ty.title),
+            title_h,
             hour_w: f64::from(text.measure_style("00:00", None, &ty.hour).0),
             s1: f64::from(sp.s1),
             s2: f64::from(sp.s2),
             s3: f64::from(sp.s3),
-            min_hour_h: f64::from(theme.tokens.metrics.panel_row_height),
+            narrow_below: TimelineDensity::narrow_below(theme),
+            min_hour_regular: TimelineDensity::Regular.min_hour_height(theme, title_h),
+            min_hour_narrow: TimelineDensity::Narrow.min_hour_height(theme, title_h),
         }
     }
 }
@@ -104,6 +111,8 @@ pub(super) struct TimelineGeom {
     pub hour_h: f64,
     pub content_h: f64,
     pub grid_right: f64,
+    /// How much each day column shows (its width against the type).
+    pub density: TimelineDensity,
     /// Smallest painted block; a one-line title fits at the current scale.
     pub min_block_h: f64,
     /// How far a block stands in from its column's edges.
@@ -120,6 +129,8 @@ pub(super) struct TimelineViewport {
     scroll: Scrollable,
     seeded: bool,
     pinned_hour: Option<f64>,
+    /// How many day columns the last layout laid out.
+    days_len: usize,
     /// The measured type and spacing of the theme of the app's last layout
     /// pass, so header / strip / block heights follow the type they hold.
     tokens: TimelineTokens,
@@ -131,6 +142,7 @@ impl TimelineViewport {
             scroll: Scrollable::new_vertical().always_visible(),
             seeded: false,
             pinned_hour: None,
+            days_len: 7,
             tokens: TimelineTokens::default(),
         }
     }
@@ -147,24 +159,42 @@ impl TimelineViewport {
         self.tokens
     }
 
-    /// Geometry in the default dark theme, used by tests.
+    /// The day columns of the last layout.
+    pub fn days_len(&self) -> usize {
+        self.days_len
+    }
+
+    /// Geometry of a week in the default dark theme, used by tests.
     #[cfg(test)]
     pub fn geometry(area: Rect) -> TimelineGeom {
-        Self::geometry_for(area, &TimelineTokens::default())
+        Self::geometry_for(area, &TimelineTokens::default(), 7)
     }
 
     /// Geometry from the measured `tokens`: the header holds the weekday and
     /// the day number with `s2` above and below, the all-day strip one
     /// caption line in its padding, the smallest block a title line, and the
-    /// gutter an hour label with `s3` either side.
-    pub fn geometry_for(area: Rect, t: &TimelineTokens) -> TimelineGeom {
+    /// gutter an hour label with `s3` either side. `days_len` columns share
+    /// the width, which decides the [`TimelineDensity`]: a narrow grid
+    /// gives a half hour two title lines and the all-day strip two.
+    pub fn geometry_for(area: Rect, t: &TimelineTokens, days_len: usize) -> TimelineGeom {
+        let gutter = (t.hour_w + 2.0 * t.s3).ceil();
+        let column = (area.width() - gutter - t.s3) / days_len.max(1) as f64;
+        let density = if column < t.narrow_below {
+            TimelineDensity::Narrow
+        } else {
+            TimelineDensity::Regular
+        };
+        let min_hour_h = match density {
+            TimelineDensity::Regular => t.min_hour_regular,
+            TimelineDensity::Narrow => t.min_hour_narrow,
+        };
         let head_h = (2.0 * t.s2 + t.weekday_h + t.day_h).ceil();
-        let allday_h = (t.strip_h + 3.0 * t.s1).ceil();
+        let allday_h = (t.strip_h * density.chip_lines() as f64 + 3.0 * t.s1).ceil();
         let min_block_h = (t.title_h + t.s1).ceil();
         let body_top = area.y0 + head_h + allday_h;
-        let body_bottom = (area.y1 - t.s2).max(body_top + t.min_hour_h);
-        let viewport_h = (body_bottom - body_top).max(t.min_hour_h);
-        let hour_h = (viewport_h / 24.0).max(t.min_hour_h);
+        let body_bottom = (area.y1 - t.s2).max(body_top + min_hour_h);
+        let viewport_h = (body_bottom - body_top).max(min_hour_h);
+        let hour_h = (viewport_h / 24.0).max(min_hour_h);
         let content_h = hour_h * 24.0;
         // The scrollbar lane is one `s3` wide when the day overflows.
         let grid_right = if content_h > viewport_h + 0.5 {
@@ -173,7 +203,7 @@ impl TimelineViewport {
             area.x1
         };
         TimelineGeom {
-            gutter: (t.hour_w + 2.0 * t.s3).ceil(),
+            gutter,
             head_h,
             allday_h,
             body_top,
@@ -181,6 +211,7 @@ impl TimelineViewport {
             hour_h,
             content_h,
             grid_right,
+            density,
             min_block_h,
             block_inset: t.s1 / 2.0,
         }
@@ -234,8 +265,9 @@ impl TimelineViewport {
         )
     }
 
-    pub fn layout(&mut self, area: Rect, initial_hour: f64) {
-        let geom = Self::geometry_for(area, &self.tokens);
+    pub fn layout(&mut self, area: Rect, initial_hour: f64, days_len: usize) {
+        self.days_len = days_len.max(1);
+        let geom = Self::geometry_for(area, &self.tokens, self.days_len);
         self.scroll.set_viewport_rect(geom.body(area.x0, area.x1));
         self.scroll
             .set_content_size(area.width() as f32, geom.content_h as f32);
@@ -335,7 +367,7 @@ mod tests {
                 TimelineTokens::of(&large, text)
             });
             let one = TimelineViewport::geometry(area);
-            let two = TimelineViewport::geometry_for(area, &tokens);
+            let two = TimelineViewport::geometry_for(area, &tokens, 7);
             for value in [two.head_h, two.allday_h, two.min_block_h, two.gutter] {
                 assert_eq!(value.fract(), 0.0, "scaled rows land on whole pixels");
             }
@@ -356,7 +388,7 @@ mod tests {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.23);
+            viewport.layout(area, 7.23, 7);
             assert!(viewport.vertical_overflows());
             assert!((f64::from(viewport.offset_y()) - 7.0 * geom.hour_h).abs() < 0.01);
             // The 07:00 rule is at the body top; the label below it is inside.
@@ -381,7 +413,7 @@ mod tests {
             );
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 22.0);
+            viewport.layout(area, 22.0, 7);
             let offset = f64::from(viewport.offset_y());
             assert!(
                 (offset / geom.hour_h).fract().abs() < 1e-6,
@@ -399,7 +431,7 @@ mod tests {
             let area = Rect::new(0.0, 60.0, 1000.0, 560.0);
             let geom = TimelineViewport::geometry(area);
             let mut viewport = TimelineViewport::new();
-            viewport.layout(area, 7.0);
+            viewport.layout(area, 7.0, 7);
             viewport.set_offset_y((geom.hour_h * 2.0) as f32);
             assert_eq!(viewport.minute_at(geom, geom.body_top), 120);
             let block = viewport.block_rect(area, 7, geom, 2, 120, 180);

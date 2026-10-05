@@ -123,9 +123,20 @@ fn theme_metrics_follow_the_hig_density_table_and_scale_only_with_ui_scale() {
         let text_only = Theme::dark().with_text_scale(2.0);
         assert_eq!(
             text_only.tokens.metrics,
-            Metrics::BASE,
-            "text scale grows type, never targets or panel widths"
+            Metrics::BASE.with_icons_scaled(Metrics::icon_growth(2.0)),
+            "text scale grows type and the glyphs beside it, never targets or panel widths"
         );
+        let unit = text_only.at_unit_text_scale().tokens.metrics;
+        for (back, base) in [
+            (unit.icon_sm, Metrics::BASE.icon_sm),
+            (unit.icon_md, Metrics::BASE.icon_md),
+            (unit.icon_lg, Metrics::BASE.icon_lg),
+        ] {
+            assert!(
+                (back - base).abs() < 1e-3,
+                "taking the text scale back out returns the glyphs to their 1x sizes"
+            );
+        }
     }
 
     // Case `text_growth_follows_larger_text_and_never_shrinks`.

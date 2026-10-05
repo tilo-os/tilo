@@ -3158,7 +3158,7 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         // The reported bug: a short window squashed the fixed 06:00–21:00 slots
         // and hid everything outside them. Fixed: every hour keeps at least the
         // legible minimum, the grid spans the full 24h, and the body scrolls.
-        let mut h = Harness::new(1000, 560);
+        let mut h = Harness::new(1400, 560);
         h.app.shots_show_calendar();
         h.app.view = View::Week;
         h.relayout();

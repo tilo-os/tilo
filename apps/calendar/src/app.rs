@@ -3040,7 +3040,7 @@ impl CalendarApp {
         } else {
             working
         };
-        self.timeline.layout(area, focus_hour);
+        self.timeline.layout(area, focus_hour, days.len());
     }
 
     /// Names of locally-known events that overlap the edited event's first

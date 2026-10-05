@@ -254,6 +254,7 @@ impl CalendarApp {
         let radius = f64::from(theme.tokens.radii.detail);
         let pad = f64::from(sp.s1);
         let dot_r = (m.chip_h / 8.0).round().max(2.0);
+        let density = ui::widget::TimelineDensity::of(cell.width(), theme);
         let mut y = cell.y0 + m.chips_top;
         for (i, event) in events.iter().enumerate() {
             let chip = Rect::new(cell.x0 + m.inset, y, cell.x1 - m.inset, y + m.chip_h);
@@ -295,14 +296,22 @@ impl CalendarApp {
             } else {
                 let tinted = c.tinted_chip_on(cell_ground, color, 0.18, SMALL_TEXT_MIN_CONTRAST);
                 card(ctx.scene, ctx.transform, chip, radius, tinted.fill);
-                let dot = Point::new(chip.x0 + pad + dot_r, chip.center().y);
-                crate::draw_util::disc(ctx, dot, dot_r, color);
-                let text_x = dot.x + dot_r + pad;
+                // A narrow cell gives the marker's room to the title: the
+                // chip's tint already carries the calendar's colour.
+                let text_x = if density.chip_marker() {
+                    let dot = Point::new(chip.x0 + pad + dot_r, chip.center().y);
+                    crate::draw_util::disc(ctx, dot, dot_r, color);
+                    dot.x + dot_r + pad
+                } else {
+                    chip.x0 + pad
+                };
                 // The start time leads when the chip has room for it; a
                 // narrow cell keeps the title, which says more.
                 let timed = format!("{} {}", date::fmt_time(&event.start), event.title);
                 let room = chip.x1 - pad - text_x;
-                let label = if f64::from(ctx.text.measure_style(&timed, None, &m.chip).0) <= room {
+                let label = if density.chip_marker()
+                    && f64::from(ctx.text.measure_style(&timed, None, &m.chip).0) <= room
+                {
                     timed
                 } else {
                     event.title.clone()
