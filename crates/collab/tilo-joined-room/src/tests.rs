@@ -373,6 +373,69 @@ fn typed_task_queue_and_exact_retry_survive_owner_restart() {
 }
 
 #[test]
+fn run_bound_steering_refuses_stale_epoch_and_revision_without_owner_write() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    let request = |invocation, epoch, after_revision| OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(invocation),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: epoch,
+                after_revision,
+                text: "Prioritize compatibility changes".into(),
+            },
+        },
+    };
+    let before = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request(93, 2, 0), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let exact = request(94, 1, 0);
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(exact.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(&exact).unwrap();
+    let saved = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request(95, 1, 0), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), saved);
+    let reopened = open_file(&joined.path).unwrap();
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let control = state.controls.get(&task_id).unwrap();
+    assert_eq!(control.directions.len(), 1);
+    assert_eq!(control.directions[0].revision, 1);
+    assert_eq!(
+        control
+            .active_run
+            .as_ref()
+            .unwrap()
+            .applied_direction_revision,
+        0
+    );
+    let retry = reopened
+        .commit_workspace_task_command(exact, joined.now)
+        .unwrap();
+    assert_eq!(retry.binding, receipt.binding);
+    assert_eq!(retry.generation, receipt.generation);
+    assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
+    assert_eq!(std::fs::read(&joined.path).unwrap(), saved);
+}
+
+#[test]
 fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
     let joined = enrolled();
     let (task_id, caller) = queued_and_started_task(&joined);
@@ -412,8 +475,10 @@ fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
                 operation: CommitOperation::WorkspaceTaskCommand {
                     invocation: uuid::Uuid::from_u128(93),
                     authority: WorkspaceTaskAuthority::Person { caller },
-                    command: WorkspaceTaskCommand::Direction {
+                    command: WorkspaceTaskCommand::DirectionForRun {
                         task_id: direction_task,
+                        run_epoch: 1,
+                        after_revision: 0,
                         text: "Keep the migration warning prominent".into(),
                     },
                 },
