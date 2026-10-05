@@ -12,6 +12,7 @@ use std::rc::Rc;
 use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{SpacingStep, TextRole};
+use ui::widget::data_table::{CellAlign, ColumnDef, ColumnWidth, DataTable, TableSort};
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Actions, Badge, Button, ButtonRole, ChipStyle, Column, Container as Well, Element, EmptyState,
@@ -137,8 +138,12 @@ pub(crate) fn sidebar(
     connected: bool,
     intents: &Intents,
 ) -> Element {
-    let status = if connected {
+    // Only an engine that answered is connected; the bundled sample says
+    // that it is one.
+    let status = if connected && engine.live {
         StatusLine::active("Connected")
+    } else if connected {
+        StatusLine::idle("Sample data")
     } else {
         StatusLine::warning("Not connected")
     };
@@ -262,46 +267,97 @@ fn row_action(
     row.action(icon, label, intents.on(intent))
 }
 
-/// The containers, with their state and the verbs that apply to each.
+/// One container as the list shows it.
+#[derive(Clone)]
+struct ContainerRow {
+    id: String,
+    name: String,
+    image: String,
+    status: ContainerStatus,
+}
+
+/// Running containers first, then the ones paused or on their way, then
+/// the stopped ones.
+fn status_rank(status: ContainerStatus) -> u8 {
+    match status {
+        ContainerStatus::Running => 0,
+        ContainerStatus::Restarting | ContainerStatus::Paused | ContainerStatus::Created => 1,
+        ContainerStatus::Exited => 2,
+        ContainerStatus::Dead => 3,
+    }
+}
+
+/// The containers in a table: name, image and state, sortable from the
+/// headers in the order `sort` keeps. A row opens its container; its
+/// lifecycle verbs are the detail's.
 pub(crate) fn container_list(
     engine: &Engine,
     selected: Option<&str>,
-    controls: bool,
+    sort: &ui::LocalState<Option<TableSort>>,
     intents: &Intents,
 ) -> Element {
     let listed = listed_containers(engine);
     if listed.is_empty() {
         return containers_empty(engine.live, intents);
     }
-    let rows: Vec<Element> = listed
+    let rows: Vec<ContainerRow> = listed
         .iter()
-        .map(|c| {
-            // The state in words beside its dot, so it never rests on
-            // colour alone.
-            let mut row = ListRow::new(format!("container-{}", c.id), c.name.clone())
-                .secondary(c.image.clone())
-                .meta(c.status.label())
-                .selected(selected == Some(c.id.as_str()))
-                .on_activate(intents.on(Intent::Select(Some(c.id.clone()))));
-            row = with_status(row, c.status);
-            if controls {
-                for action in lifecycle(c.status) {
-                    row = row_action(
-                        row,
-                        action_icon(action),
-                        format!("{} {}", action.label(), c.name),
-                        Intent::Lifecycle {
-                            id: c.id.clone(),
-                            action,
-                        },
-                        intents,
-                    );
-                }
-            }
-            Box::new(row) as Element
+        .map(|c| ContainerRow {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            // The image by its own name; its registry and path are in the
+            // detail, and would leave the narrow column only an ellipsis.
+            image: c
+                .image
+                .rsplit_once('/')
+                .map_or(c.image.as_str(), |(_, name)| name)
+                .to_owned(),
+            status: c.status,
         })
         .collect();
-    list_column(Box::new(Section::new(rows)))
+    let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
+    let select = intents.clone();
+    let open = intents.clone();
+    let opened = ids.clone();
+    let mut table = DataTable::new(vec![
+        ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
+            .sortable(true)
+            .with_text(|row: &ContainerRow| row.name.clone()),
+        ColumnDef::new("image", "Image", ColumnWidth::Flex(1.0))
+            .sortable(true)
+            .priority(1)
+            .with_kind(TextKind::Identifier)
+            .with_text(|row: &ContainerRow| row.image.clone()),
+        // The state in words on its tone, so it never rests on colour.
+        ColumnDef::new("state", "State", ColumnWidth::Auto)
+            .sorted_by(|a: &ContainerRow, b: &ContainerRow| {
+                status_rank(a.status).cmp(&status_rank(b.status))
+            })
+            .with_align(CellAlign::Center)
+            .with_badge(|row: &ContainerRow| {
+                (row.status.label().to_string(), status_tone(row.status))
+            }),
+    ])
+    .with_id("containers-list")
+    .with_accessible_name("Containers")
+    .with_sort_state(sort)
+    .selectable(true)
+    .on_row_click(move |index, _, _| {
+        if let Some(id) = ids.get(index) {
+            select.push(Intent::Select(Some(id.clone())));
+        }
+    })
+    .on_activate(move |index| {
+        if let Some(id) = opened.get(index) {
+            open.push(Intent::Select(Some(id.clone())));
+        }
+    });
+    let chosen = selected.and_then(|id| rows.iter().position(|row| row.id == id));
+    table.set_rows(rows);
+    if let Some(index) = chosen {
+        table.select_row(index);
+    }
+    list_column(Box::new(table))
 }
 
 /// A list in the list column: its rows' text on the column's content edge
@@ -356,8 +412,6 @@ struct Stack {
     inset_y: SpacingStep,
     /// Inset sideways by the column gutter instead of `inset_x`.
     column_edge: bool,
-    /// As wide as its widest child instead of its parent.
-    hug: bool,
 }
 
 impl Stack {
@@ -372,7 +426,6 @@ impl Stack {
             inset_x: SpacingStep::S0,
             inset_y: SpacingStep::S0,
             column_edge: false,
-            hug: false,
         }
     }
 
@@ -392,13 +445,6 @@ impl Stack {
     /// starts the column's title.
     fn on_column_edge(mut self) -> Self {
         self.column_edge = true;
-        self
-    }
-
-    /// Take the width of the widest child, so lines inside a sideways
-    /// scroll keep their length instead of wrapping to the viewport.
-    fn hugging(mut self) -> Self {
-        self.hug = true;
         self
     }
 }
@@ -430,16 +476,7 @@ impl ui::widget::Decorator for Stack {
         self.column = std::mem::take(&mut self.column).with_horizontal_padding(x, x);
         self.column.set_vertical_padding(y);
         self.column.set_gap(spacing.step(self.gap));
-        let node = self.column.build_layout(taffy, theme, node_map);
-        if self.hug
-            && let Ok(style) = taffy.style(node)
-        {
-            let mut style = style.clone();
-            style.size.width = ui::taffy::Dimension::auto();
-            style.flex_shrink = 0.0;
-            let _ = taffy.set_style(node, style);
-        }
-        node
+        self.column.build_layout(taffy, theme, node_map)
     }
 }
 
@@ -614,18 +651,15 @@ fn logs(c: &Container) -> Element {
     output(c.logs.iter().map(String::as_str))
 }
 
-/// Output as the process wrote it, in a well: one line per line, never
-/// broken inside a word. A line wider than the column scrolls sideways.
+/// Output as the process wrote it, in a well: one entry per line, a line
+/// wider than the column wrapping onto the next rather than scrolling
+/// sideways, so every line reads whole at any width.
 fn output<'a>(lines: impl Iterator<Item = &'a str>) -> Element {
-    // A line wider than the well scrolls sideways; the scroll view keeps
-    // the bar's lane under the last line while it does.
     let lines: Vec<Element> = lines.map(log_line).collect();
     Box::new(
-        Well::new().with_background().with_child(Box::new(
-            Scrollable::new_horizontal()
-                .fit_content_height()
-                .with_child(Box::new(Stack::new(SpacingStep::S0, lines).hugging())),
-        )),
+        Well::new()
+            .with_background()
+            .with_child(Box::new(Stack::new(SpacingStep::S0, lines))),
     )
 }
 
@@ -1181,6 +1215,8 @@ pub(crate) struct Parts {
     pub pane: ui::LocalState<ui::widget::NavPane>,
     pub intents: Intents,
     pub offsets: Offsets,
+    /// The container table's order, which the table keeps here.
+    pub sort: ui::LocalState<Option<TableSort>>,
 }
 
 /// The window: a shell per section, its columns rebuilt from the model.
@@ -1277,6 +1313,7 @@ fn sidebar_view(parts: &Parts) -> Element {
                     e.distroboxes.len(),
                 ],
                 e.connection.clone(),
+                e.live,
                 m.connected,
             )
         },
@@ -1298,6 +1335,7 @@ fn scrolling(view: Element, offset: &Rc<Cell<(f32, f32)>>) -> Element {
 
 fn list_view(parts: &Parts) -> Element {
     let intents = parts.intents.clone();
+    let sort = parts.sort.clone();
     let view = Box::new(ModelView::from_state_by(
         &parts.model,
         |m: &Model| {
@@ -1312,7 +1350,7 @@ fn list_view(parts: &Parts) -> Element {
             if m.missing {
                 return engine_missing(&intents);
             }
-            container_list(&m.engine, m.view.selected.as_deref(), m.controls, &intents)
+            container_list(&m.engine, m.view.selected.as_deref(), &sort, &intents)
         },
     ));
     scrolling(view, &parts.offsets.list)

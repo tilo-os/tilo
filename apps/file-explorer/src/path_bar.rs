@@ -263,6 +263,8 @@ impl Widget for PathBar {
                         resolve_location(&value, self.edit_home.as_deref(), &self.edit_current);
                     push(&self.sink, FileCommand::OpenPath(resolved));
                     self.end_edit();
+                    // Going there is what the key did.
+                    *ctx.handled = true;
                 }
                 AutocompleteOutcome::Cancelled => self.end_edit(),
                 AutocompleteOutcome::None => {}
