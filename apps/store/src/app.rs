@@ -641,6 +641,7 @@ pub struct StoreApp {
     /// helper.
     flatpak_available: bool,
     flatpak_error: Option<String>,
+    flatpak_checking: bool,
     /// Which item the user has expanded in the responsive detail sheet.
     /// Keyed by [`StoreItem::id`] and retained across window rebuilds so the
     /// document-backed route does not disappear during a responsive reflow.
@@ -721,6 +722,7 @@ impl StoreApp {
             operation_error: None,
             flatpak_available: false,
             flatpak_error: Some(ui::i18n!("store-flatpak-checking")),
+            flatpak_checking: true,
             focused_detail: None,
             structure_dirty: true,
             rect: Rect::ZERO,
@@ -995,6 +997,7 @@ impl StoreApp {
     pub fn set_flatpak_available(&mut self, available: bool) {
         self.flatpak_available = available;
         self.flatpak_error = None;
+        self.flatpak_checking = false;
         self.structure_dirty = true;
     }
 
@@ -3721,7 +3724,9 @@ impl StoreApp {
                 self.items
                     .iter()
                     .find(|item| item.id == id)
-                    .map(|item| inspect_item(item, self.flatpak_available))
+                    .map(|item| {
+                        inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref())
+                    })
                     .ok_or_else(|| "App is not in the current catalogue.".to_string())
             })
             .transpose()?;
@@ -3732,7 +3737,7 @@ impl StoreApp {
             .iter()
             .skip(page.saturating_mul(PAGE_SIZE))
             .take(PAGE_SIZE)
-            .map(|item| inspect_item(item, self.flatpak_available))
+            .map(|item| inspect_item(item, self.flatpak_available, self.flatpak_error.as_deref()))
             .collect::<Vec<_>>();
         let remotes = self
             .remotes
@@ -3754,6 +3759,8 @@ impl StoreApp {
             "category": self.active_category, "page": page, "pages": pages,
             "total": self.items.len(), "matching": visible.len(), "items": items,
             "detail": detail, "selected_app": self.focused_detail, "flatpak_available": self.flatpak_available,
+            "flatpak_checking": self.flatpak_checking,
+            "flatpak_error": self.flatpak_error.as_deref().map(resource_detail_excerpt),
             "worker_attached": self.worker.is_some(), "worker_busy": self.worker_busy,
             "pending_jobs": self.pending_jobs,
             "status": resource_detail_excerpt(&self.status_line),
@@ -4494,11 +4501,7 @@ impl StoreApp {
     }
 
     fn package_label(&self, action: ActionKind) -> String {
-        if action == ActionKind::NeedsFlatpakHost && self.flatpak_error.is_some() {
-            ui::i18n!("store-flatpak-unavailable")
-        } else {
-            action.label().to_owned()
-        }
+        package_action_label(action, self.flatpak_error.as_deref())
     }
 
     fn remote_live_row(&self, remote: &crate::flathub_client::Remote) -> LiveRow {
@@ -4645,7 +4648,19 @@ fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
     }
 }
 
-fn inspect_item(item: &StoreItem, flatpak_available: bool) -> serde_json::Value {
+fn package_action_label(action: ActionKind, error: Option<&str>) -> String {
+    if action == ActionKind::NeedsFlatpakHost && error.is_some() {
+        ui::i18n!("store-flatpak-unavailable")
+    } else {
+        action.label().to_owned()
+    }
+}
+
+fn inspect_item(
+    item: &StoreItem,
+    flatpak_available: bool,
+    error: Option<&str>,
+) -> serde_json::Value {
     serde_json::json!({
         "resource": format!("app:{}", item.id), "id": item.id,
         "name": resource_detail_excerpt(&item.name),
@@ -4655,7 +4670,7 @@ fn inspect_item(item: &StoreItem, flatpak_available: bool) -> serde_json::Value 
         "trust": item.trust,
         "latest_version": resource_detail_excerpt(item.latest_version()),
         "installed": !matches!(item.installed, crate::InstalledState::Not),
-        "primary_action": item.action_kind(flatpak_available).label(),
+        "primary_action": package_action_label(item.action_kind(flatpak_available), error),
     })
 }
 
@@ -4683,6 +4698,55 @@ mod tests {
             .set("TILO_STORE_HTTP_TIMEOUT", "1");
         let app = ui::framework::testing::TestApp::<crate::resource::StoreShell>::new().unwrap();
         (environment, directory, app)
+    }
+
+    #[test]
+    fn flathub_account_control_is_enabled_on_the_live_owner_surface_and_inspection_is_truthful() {
+        let (_environment, _directory, mut app) = inspected_store();
+        app.with_surface(|store: &mut StoreApp| {
+            store.worker = None;
+            store.show_capture_catalogue(crate::fixture::fixture_catalog());
+            store.set_remotes(vec![crate::flathub_client::Remote {
+                name: "flathub".into(),
+                title: "Flathub".into(),
+                url: "https://dl.flathub.org/repo/".into(),
+                disabled: false,
+                user_managed: false,
+            }]);
+            store.set_flatpak_available(false);
+            store.flatpak_error = Some("The app service is unavailable.".into());
+        })
+        .unwrap();
+        let control = app
+            .harness()
+            .controls()
+            .into_iter()
+            .find(|control| {
+                control.name.as_deref() == Some(ui::i18n!("store-flathub-account").as_str())
+            })
+            .unwrap();
+        assert!(
+            !control.disabled,
+            "the normal owner can use the declared account setup control"
+        );
+        let snapshot = app
+            .effect(&StoreEffect::InspectCatalogue { app: None })
+            .unwrap()
+            .value
+            .unwrap();
+        assert_eq!(snapshot["flatpak_error"], "The app service is unavailable.");
+        assert_eq!(snapshot["flatpak_checking"], false);
+        assert_eq!(snapshot["flatpak_available"], false);
+        let flatpak = snapshot["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["source"] == "Flatpak")
+            .unwrap();
+        assert_eq!(
+            flatpak["primary_action"],
+            ui::i18n!("store-flatpak-unavailable")
+        );
     }
 
     #[test]
