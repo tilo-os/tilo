@@ -4057,7 +4057,7 @@ mod tests {
                 &mut vp,
                 "transport.play-pause",
                 &Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(vp.is_playing());
@@ -4065,7 +4065,7 @@ mod tests {
                 &mut vp,
                 "audio.volume",
                 &Action::SetValue("25%".into()),
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!((vp.volume() - 0.25).abs() < 1e-6);

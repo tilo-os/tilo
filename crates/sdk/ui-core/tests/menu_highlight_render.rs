@@ -92,7 +92,7 @@ fn dispatch(widget: &mut dyn Widget, event: &WindowEvent) {
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut doc),
+            state: tilo_ui::widget::Edits::lend(&mut doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut focus,

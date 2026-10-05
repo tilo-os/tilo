@@ -3630,9 +3630,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let path = path
-            .downcast_ref::<automerge::ObjId>()
-            .expect("document path");
+        let (state, path) = crate::doc::document(state, path);
 
         self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
@@ -6272,7 +6270,7 @@ mod tests {
                 &mut view,
                 "node:5",
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(*activated.borrow(), [5]);

@@ -126,7 +126,7 @@ fn owner_execution_scope_spans_probes_and_closed_or_cross_record_policies_never_
     assert!(ran > 0);
     other
         .callback_binding()
-        .with_document(&mut AutoCommit::new(), |_, _| solve())
+        .with_document(&mut automerge::AutoCommit::new(), |_, _| solve())
         .unwrap();
     assert_eq!(calls.get(), ran, "cross-record execution ran a policy");
     binding.closing.set(true);

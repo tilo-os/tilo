@@ -682,7 +682,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s.url,
                 &crate::a11y::Action::SetValue(url.clone()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(s.url(), url, "the value landed in the shared field");

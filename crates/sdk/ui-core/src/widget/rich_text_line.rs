@@ -1243,9 +1243,7 @@ impl Widget for RichTextLine {
         state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let path = path
-            .downcast_ref::<automerge::ObjId>()
-            .expect("document path");
+        let (state, path) = crate::doc::document(state, path);
         let handled = Widget::perform_action(&mut self.inner, action, state, path);
         if handled && matches!(action, crate::a11y::Action::SetValue(_)) {
             self.marks.clear();
@@ -2051,7 +2049,7 @@ mod tests {
                     anchor: 0,
                     focus: 4
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let _ = line.take_dirty(); // Selection has its own presentation edge.
@@ -2066,7 +2064,7 @@ mod tests {
                     anchor: 4,
                     focus: 4
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let _ = line.take_dirty(); // Selection has its own presentation edge.

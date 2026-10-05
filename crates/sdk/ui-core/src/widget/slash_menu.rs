@@ -1006,7 +1006,7 @@ mod tests {
                 &mut menu,
                 &target,
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(menu.take_selected_kind(), Some(BlockKind::Heading(2)));

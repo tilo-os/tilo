@@ -33,7 +33,7 @@ fn slash_menu_and_tooltips_are_semantic_and_viewport_bounded() {
         assert!(editor.perform_semantic_action(
             &heading,
             &crate::a11y::Action::Activate,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(matches!(editor.blocks[0].kind, BlockKind::Heading(1)));

@@ -1166,7 +1166,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("21:07:09".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|value| *value), expected);
@@ -1175,7 +1175,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut picker,
                 &crate::a11y::Action::SetValue("24:00".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(state.with(|value| *value), expected);

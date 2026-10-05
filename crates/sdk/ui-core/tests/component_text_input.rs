@@ -592,7 +592,7 @@ impl Widget for WithdrawableResource {
     fn start_operation(
         &mut self,
         _: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut automerge::AutoCommit,
+        _: &mut tilo_ui::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);

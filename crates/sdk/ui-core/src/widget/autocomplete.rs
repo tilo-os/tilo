@@ -910,9 +910,7 @@ impl Widget for Autocomplete {
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
-        let path = path
-            .downcast_ref::<automerge::ObjId>()
-            .expect("document path");
+        let (state, path) = crate::doc::document(state, path);
         match action {
             Action::Focus | Action::Expand => {
                 self.begin_edit();
@@ -995,21 +993,31 @@ mod tests {
             let mut state = AutoCommit::new();
             assert!(ac.perform_action(
                 &Action::SetValue("al".into()),
-                &mut state,
+                &mut crate::widget::Edits::lend(&mut state),
                 &automerge::ROOT
             ));
             assert_eq!(ac.suggestions().len(), 2);
             let node = ac.accessibility().unwrap();
             assert_eq!(node.children[1].name.as_deref(), Some("album"));
             let key = hash_key(&("autocomplete-suggestion", "album"));
-            assert!(ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+            assert!(ac.perform_action_at(
+                &Action::Activate,
+                &[key],
+                &mut crate::widget::Edits::lend(&mut state),
+                &automerge::ROOT
+            ));
             assert_eq!(ac.text(), "album");
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
             );
             assert!(!ac.is_open());
-            assert!(!ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+            assert!(!ac.perform_action_at(
+                &Action::Activate,
+                &[key],
+                &mut crate::widget::Edits::lend(&mut state),
+                &automerge::ROOT
+            ));
         }
 
         fn typing_recomputes_and_opens_the_dropdown() {

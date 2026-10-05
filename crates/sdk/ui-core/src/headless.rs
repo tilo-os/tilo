@@ -11143,7 +11143,7 @@ mod undo_driver_tests {
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             use automerge::{ReadDoc, transaction::Transactable};
 
-            let doc = ctx.state.doc();
+            let doc = ctx.state.document_mut();
             let WindowEvent::KeyboardInput { event: ke, .. } = event else {
                 return;
             };
@@ -11417,7 +11417,7 @@ mod dispatched_action_driver_tests {
         }
 
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-            let doc = ctx.state.doc();
+            let doc = ctx.state.document_mut();
             let handled = &mut *ctx.handled;
             let text = match event {
                 WindowEvent::KeyboardInput { event: ke, .. }
@@ -11467,7 +11467,7 @@ mod dispatched_action_driver_tests {
                 return false;
             }
             self.actions.dispatch(
-                doc,
+                doc.document_mut(),
                 APPEND,
                 &Append {
                     text: "!".to_string(),
@@ -11879,7 +11879,7 @@ mod prepared_driver_tests {
                     .unwrap()
                     .to_owned();
                 ctx.state
-                    .doc()
+                    .document_mut()
                     .put(ROOT, "body", format!("{before}{text}"))
                     .unwrap();
                 *ctx.handled = true;
@@ -12235,7 +12235,7 @@ pub(crate) mod legacy_control_feedback_tests {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            _: &mut automerge::AutoCommit,
+            _: &mut crate::widget::Edits<'_>,
             _: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             let Some(request) = op

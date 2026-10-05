@@ -758,7 +758,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut first,
             &crate::a11y::Action::SetValue("Lin".into()),
-            &mut document,
+            &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
         assert_eq!(state.get(), "Lin", "user edits publish typed state");
@@ -786,7 +786,7 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("after".into()),
-            &mut document,
+            &mut crate::widget::Edits::lend(&mut document),
             &automerge::ROOT,
         ));
         assert_eq!(state.get(), "after");
@@ -2085,7 +2085,11 @@ fn secret_field_carries_a_focusable_show_hide_control() {
             .into_iter()
             .next()
             .unwrap()
-            .perform_action(&Action::Activate, &mut doc, &automerge::ROOT);
+            .perform_action(
+                &Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            );
         assert!(activated, "Enter/Space and AT activation toggle");
         assert!(ti.is_revealed());
         assert_eq!(ti.display_text(), "hunter2");
@@ -2107,7 +2111,11 @@ fn secret_field_carries_a_focusable_show_hide_control() {
             .into_iter()
             .next()
             .unwrap()
-            .perform_action(&Action::Activate, &mut doc, &automerge::ROOT);
+            .perform_action(
+                &Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            );
         assert!(!ti.is_revealed(), "a second activation hides it again");
     }
 
@@ -2255,7 +2263,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
                 anchor: 1,
                 focus: 2,
             },
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(
@@ -2267,7 +2275,7 @@ fn accessibility_exposes_role_name_value_and_grapheme_actions() {
         assert!(Widget::perform_action(
             &mut ti,
             &Action::SetValue("new value".into()),
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(ti.value(), "new value");
@@ -2311,7 +2319,7 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
             anchor: 0,
             focus: 0,
         },
-        &mut document,
+        &mut crate::widget::Edits::lend(&mut document),
         &automerge::ROOT,
     ));
     assert_eq!(input.value(), "Draft", "moving the caret changes no text");
@@ -2319,7 +2327,7 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     assert!(Widget::perform_action(
         &mut input,
         &Action::SetValue("Project Atlas".into()),
-        &mut document,
+        &mut crate::widget::Edits::lend(&mut document),
         &automerge::ROOT,
     ));
     assert_eq!(
@@ -2554,7 +2562,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
         assert!(Widget::perform_action(
             &mut input,
             &crate::a11y::Action::SetValue("Project Atlas".into()),
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(doc.text(&object).unwrap(), "");
@@ -3716,7 +3724,7 @@ fn clearing_without_a_binding_is_a_noop_for_local_users() {
     assert!(Widget::perform_action(
         &mut local_input,
         &crate::a11y::Action::SetValue("updated".into()),
-        &mut doc,
+        &mut crate::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     assert_eq!(state.get(), "updated");

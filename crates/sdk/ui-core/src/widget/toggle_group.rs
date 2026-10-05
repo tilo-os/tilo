@@ -1960,7 +1960,7 @@ mod tests {
                 &mut group,
                 "segment:1",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(group.selected(), 1);
@@ -1991,7 +1991,7 @@ mod tests {
                 &mut group,
                 "appearance:segment:1",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -2017,7 +2017,7 @@ mod tests {
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             )
             .map(|started| started.and_then(crate::widget::ResourceOperationStart::completed))

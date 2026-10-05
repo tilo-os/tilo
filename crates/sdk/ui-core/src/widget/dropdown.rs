@@ -1989,7 +1989,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &crate::a11y::Action::SetValue(String::from("Europe/Amsterdam")),
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), "Europe/Amsterdam");
@@ -2079,21 +2079,21 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Expand,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(dropdown.is_open());
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &Action::Collapse,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert!(!dropdown.is_open());
             assert!(!Widget::perform_action(
                 &mut dropdown,
                 &Action::SetValue(String::from("not an option")),
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &root,
             ));
             assert_eq!(dropdown.selected(), "UTC");
@@ -2199,7 +2199,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut dropdown,
                 &crate::a11y::Action::SetValue("Asia/Tokyo".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());

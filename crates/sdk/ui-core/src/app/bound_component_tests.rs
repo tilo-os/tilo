@@ -230,7 +230,7 @@ impl Widget for Probe {
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
+        doc: &mut crate::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
         let Some(crate::host_operation::OperationRequest { type_id, .. }) = op.unscoped() else {
@@ -238,7 +238,8 @@ impl Widget for Probe {
         };
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
-                self.actions.dispatch(doc, "bound.apply", &FollowUp);
+                self.actions
+                    .dispatch(doc.document_mut(), "bound.apply", &FollowUp);
             }
             Self::capture("bound-view");
             return Ok(Some(crate::widget::ResourceOperationStart::Completed(
@@ -253,12 +254,12 @@ impl Widget for Probe {
         );
         let mode = COMPOUND_MODE.get();
         if matches!(mode, 3 | 4 | 6) {
-            doc.put(ROOT, "raw-before", true).unwrap();
+            doc.document_mut().put(ROOT, "raw-before", true).unwrap();
         }
         match mode {
             2 | 3 => {}
             7 => self.actions.dispatch_with_context(
-                doc,
+                doc.document_mut(),
                 "bound.apply",
                 &FollowUp,
                 tilo_actions::ActionContext::for_resource(
@@ -269,27 +270,33 @@ impl Widget for Probe {
                 ),
             ),
             8 => {
-                let mut queue = tilo_actions::OptimisticQueue::new(doc);
+                let mut queue = tilo_actions::OptimisticQueue::new(doc.document_mut());
                 self.actions
-                    .dispatch_optimistic(doc, &mut queue, "bound.apply", &FollowUp)
+                    .dispatch_optimistic(doc.document_mut(), &mut queue, "bound.apply", &FollowUp)
                     .unwrap();
             }
             9 | 10 => {
                 assert_eq!(
                     self.actions
-                        .try_dispatch(doc, "bound.empty", &EmptyFollowUp { refuse: mode == 10 })
+                        .try_dispatch(
+                            doc.document_mut(),
+                            "bound.empty",
+                            &EmptyFollowUp { refuse: mode == 10 }
+                        )
                         .is_err(),
                     mode == 10
                 );
             }
             11 => {
-                doc.put(ROOT, "raw-unwind", true).unwrap();
+                doc.document_mut().put(ROOT, "raw-unwind", true).unwrap();
                 panic!("controlled compound unwind");
             }
-            _ => self.actions.dispatch(doc, "bound.apply", &FollowUp),
+            _ => self
+                .actions
+                .dispatch(doc.document_mut(), "bound.apply", &FollowUp),
         }
         if matches!(mode, 5 | 6) {
-            doc.put(ROOT, "raw-after", true).unwrap();
+            doc.document_mut().put(ROOT, "raw-after", true).unwrap();
         }
         Self::capture("mutable-operation");
         Ok(Some(crate::widget::ResourceOperationStart::Accepted))
@@ -398,7 +405,7 @@ impl Widget for Probe {
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some("child")
         );
-        doc.put(ROOT, "action", true).unwrap();
+        doc.document_mut().put(ROOT, "action", true).unwrap();
         Self::capture("action");
         true
     }
@@ -421,7 +428,7 @@ impl crate::search::capability::SearchSource for Probe {
     ) {
         let (doc, _) = crate::doc::document(doc, path);
         assert_eq!(id, "opaque");
-        doc.put(ROOT, "navigation", true).unwrap();
+        doc.document_mut().put(ROOT, "navigation", true).unwrap();
     }
 }
 

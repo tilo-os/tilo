@@ -1443,7 +1443,7 @@ mod tests {
             assert_eq!(back.name.as_deref(), Some("Go back"));
             assert!(shell.back.perform_action(
                 &crate::a11y::Action::Activate,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             dispatch_view_actions(&mut shell, &mut document);
@@ -1621,7 +1621,7 @@ mod tests {
                         &encoded.type_id,
                         &encoded.payload
                     ),
-                    doc,
+                    &mut crate::widget::Edits::lend(doc),
                     &automerge::ROOT
                 )
                 .expect("Back view action succeeds")

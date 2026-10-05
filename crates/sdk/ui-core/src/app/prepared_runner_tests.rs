@@ -1063,7 +1063,11 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
             "probe.pending",
             &[],
         )
-        .start(&mut tile, &mut state.doc, &state.root)
+        .start(
+            &mut tile,
+            &mut crate::widget::Edits::lend(&mut state.doc),
+            &state.root,
+        )
         .unwrap();
         assert!(matches!(
             started,

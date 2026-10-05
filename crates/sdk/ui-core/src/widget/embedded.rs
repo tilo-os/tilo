@@ -305,7 +305,7 @@ mod tests {
         // A click where the box is drawn lands in it.
         click(
             &mut host,
-            &mut doc,
+            &mut crate::widget::Edits::lend(&mut doc),
             Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
         );
         assert!(host.widget().is_focused(), "the click reached the box");

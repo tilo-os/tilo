@@ -1892,7 +1892,11 @@ mod tests {
             "tilo.ui.control.invoke",
             payload,
         )
-        .start(&mut column, &mut doc, &automerge::ROOT)
+        .start(
+            &mut column,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &automerge::ROOT,
+        )
         .unwrap();
         assert!(
             started

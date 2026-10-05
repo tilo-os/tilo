@@ -1999,7 +1999,7 @@ mod tests {
                 &mut list,
                 "key:20",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(list.focused_key, Some(20));
@@ -2007,7 +2007,7 @@ mod tests {
                 &mut list,
                 "key:20",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(list.selection().is_selected(&20));
@@ -2144,7 +2144,7 @@ mod tests {
                 &mut list,
                 "key:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(Widget::needs_animation_frame(&list));
@@ -2171,7 +2171,7 @@ mod tests {
                 &mut list,
                 "key:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
 

@@ -545,7 +545,11 @@ mod tests {
         assert_eq!(node.value.as_deref(), Some("Use an encrypted backup file"));
 
         let mut doc = AutoCommit::new();
-        assert!(card.perform_action(&crate::a11y::Action::Activate, &mut doc, &ROOT));
+        assert!(card.perform_action(
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT
+        ));
         assert_eq!(crate::testing::clicks("setup.restore"), 1);
         assert!(doc.get_heads().is_empty(), "the choice writes nothing");
 
@@ -558,7 +562,11 @@ mod tests {
         .with_enabled(false);
         assert!(!disabled.is_enabled());
         let mut doc = AutoCommit::new();
-        assert!(!disabled.perform_action(&crate::a11y::Action::Activate, &mut doc, &ROOT));
+        assert!(!disabled.perform_action(
+            &crate::a11y::Action::Activate,
+            &mut crate::widget::Edits::lend(&mut doc),
+            &ROOT
+        ));
     }
 
     #[test]

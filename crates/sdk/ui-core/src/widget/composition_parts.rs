@@ -212,7 +212,9 @@ mod tests {
             assert_eq!(request.payload, b"payload");
             self.calls.borrow_mut().push(request.invocation);
             if self.accepts {
-                doc.put(path, "admitted", "mutable follow-up").unwrap();
+                doc.document_mut()
+                    .put(path, "admitted", "mutable follow-up")
+                    .unwrap();
                 Ok(Some(ResourceOperationStart::Accepted))
             } else {
                 Ok(None)
@@ -250,7 +252,11 @@ mod tests {
                 "mutable.effect",
                 b"payload",
             )
-            .start(root.as_mut(), &mut doc, &path)
+            .start(
+                root.as_mut(),
+                &mut crate::widget::Edits::lend(&mut doc),
+                &path,
+            )
             .unwrap();
             assert_eq!(
                 &*calls.borrow(),

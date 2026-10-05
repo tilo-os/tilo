@@ -449,7 +449,11 @@ mod tests {
             let mut link = Link::new("https://w3.org");
             let mut doc = AutoCommit::new();
             let handled = crate::host::scoped(&services, || {
-                link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT)
+                link.perform_action(
+                    &crate::a11y::Action::Activate,
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                )
             });
             assert!(handled, "Activate is handled");
             work.run_pending();

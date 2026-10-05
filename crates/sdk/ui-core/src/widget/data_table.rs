@@ -2987,7 +2987,7 @@ mod tests {
                 &mut table,
                 "row:99999999:0",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(table.model_selection().primary(), Some(&99_999_999));
@@ -3472,7 +3472,7 @@ mod tests {
                 &mut table,
                 "row:98:0",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(table.selection().primary(), Some(1));
@@ -3480,7 +3480,7 @@ mod tests {
                 &mut table,
                 "row:98:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(&*activated.borrow(), &[1]);
@@ -3536,7 +3536,7 @@ mod tests {
                 &mut t,
                 &crate::a11y::Action::Activate,
                 &[7],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert!(!handled, "a vanished row cannot be activated");

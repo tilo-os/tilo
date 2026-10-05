@@ -3275,7 +3275,7 @@ mod tests {
                 &mut picker,
                 &Action::Activate,
                 &[PickerFocus::Confirm.id()],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &path,
             ));
             assert!(picker.replace_prompt().is_some());
@@ -3284,7 +3284,7 @@ mod tests {
                     &mut picker,
                     &Action::Activate,
                     &[PickerFocus::Confirm.id()],
-                    &mut doc,
+                    &mut crate::widget::Edits::lend(&mut doc),
                     &path,
                 ),
                 "the picker behind the prompt cannot be operated"
@@ -3295,7 +3295,7 @@ mod tests {
                 &mut picker,
                 &Action::Activate,
                 &[prompt.key.expect("prompt key"), replace],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &path,
             ));
             assert_eq!(

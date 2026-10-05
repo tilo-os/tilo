@@ -112,7 +112,7 @@ impl RetainedCode {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut self.doc),
+                state: tilo_ui::widget::Edits::lend(&mut self.doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,

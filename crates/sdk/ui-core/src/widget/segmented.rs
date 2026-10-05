@@ -1023,7 +1023,7 @@ mod tests {
                 &mut tri,
                 "segment:0",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(tri.selected(), 0);
@@ -1034,7 +1034,7 @@ mod tests {
                 &mut picker,
                 "swatch:5",
                 &crate::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(picker.take_choice(), Some(5));
@@ -1078,7 +1078,7 @@ mod tests {
                 &mut picker,
                 "swatch:1",
                 &crate::a11y::Action::Focus,
-                &mut AutoCommit::new(),
+                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(

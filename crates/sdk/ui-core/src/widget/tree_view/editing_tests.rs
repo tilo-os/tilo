@@ -83,7 +83,13 @@ fn typed(text: &str) -> WindowEvent {
 
 fn semantic(view: &mut TreeView<()>, target: &str, action: &Action) -> bool {
     let mut doc = AutoCommit::new();
-    Widget::perform_semantic_action(view, target, action, &mut doc, &automerge::ROOT)
+    Widget::perform_semantic_action(
+        view,
+        target,
+        action,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    )
 }
 
 /// Visible `(id, depth)` pairs.

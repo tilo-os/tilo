@@ -2917,7 +2917,8 @@ mod legacy_owner_routing_tests {
             }
             match action {
                 crate::a11y::Action::Activate => {
-                    doc.put(ROOT, "selected", format!("{} named", self.label))
+                    doc.document_mut()
+                        .put(ROOT, "selected", format!("{} named", self.label))
                         .unwrap();
                     true
                 }
@@ -2936,7 +2937,8 @@ mod legacy_owner_routing_tests {
             if keys != [7] || !matches!(action, crate::a11y::Action::Activate) {
                 return false;
             }
-            doc.put(ROOT, "selected", format!("{} keyed", self.label))
+            doc.document_mut()
+                .put(ROOT, "selected", format!("{} keyed", self.label))
                 .unwrap();
             true
         }
@@ -3419,14 +3421,18 @@ pub(crate) mod ordinary_confirmation_tests {
         fn start_operation(
             &mut self,
             op: &crate::widget::ResourceOperation<'_>,
-            doc: &mut automerge::AutoCommit,
+            doc: &mut crate::widget::Edits<'_>,
             path: &automerge::ObjId,
         ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
             let Some(request) = op
                 .unscoped()
                 .filter(|request| request.type_id == "fixture.control")
             else {
-                return self.child.start_operation(op, doc, path);
+                return self.child.start_operation(
+                    op,
+                    &mut crate::widget::Edits::lend(doc.document_mut()),
+                    path,
+                );
             };
             self.ledger
                 .borrow_mut()

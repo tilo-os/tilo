@@ -938,7 +938,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!(c.is_checked, "ToggleCheck flips to checked");
@@ -946,7 +946,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut c,
                 &Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!(!c.is_checked, "Activate flips back");
@@ -960,7 +960,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut c,
                 &Action::ToggleCheck,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!(!c.is_checked, "a disabled checkbox must not toggle");
@@ -1047,7 +1047,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             crate::widget::controls::refresh_control_action_availability(
@@ -1061,7 +1061,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut checkbox,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
@@ -1129,7 +1129,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::ToggleCheck,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert!(!state.get(), "user activation publishes typed state");

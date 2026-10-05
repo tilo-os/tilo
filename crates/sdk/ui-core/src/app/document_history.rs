@@ -1674,7 +1674,11 @@ mod tests {
             );
             let handled = moved
                 .dispatch_node(toolbar, |widget, document, path| {
-                    widget.perform_action(&crate::a11y::Action::Activate, document, path)
+                    widget.perform_action(
+                        &crate::a11y::Action::Activate,
+                        &mut crate::widget::Edits::lend(document),
+                        path,
+                    )
                 })
                 .unwrap();
             assert!(handled);

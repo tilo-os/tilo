@@ -233,7 +233,8 @@ mod tests {
             {
                 return Ok(None);
             }
-            doc.put(automerge::ROOT, "written", true)
+            doc.document_mut()
+                .put(automerge::ROOT, "written", true)
                 .map_err(|error| error.to_string())?;
             Ok(Some(ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -260,18 +261,29 @@ mod tests {
         let mut widget = Writer {
             inner: Button::new("probe", "Probe"),
         };
-        let mut doc = AutoCommit::new();
+        let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "typing", "pending").unwrap();
         let pending = doc.pending_ops();
 
-        assert_eq!(offer(&mut widget, &mut doc, "probe.other"), Ok(false));
+        assert_eq!(
+            offer(
+                &mut widget,
+                &mut crate::widget::Edits::lend(&mut doc),
+                "probe.other"
+            ),
+            Ok(false)
+        );
         assert_eq!(
             doc.pending_ops(),
             pending,
             "observing the document must not commit the caller's open transaction"
         );
 
-        let refused = offer(&mut widget, &mut doc, "probe.write");
+        let refused = offer(
+            &mut widget,
+            &mut crate::widget::Edits::lend(&mut doc),
+            "probe.write",
+        );
         assert!(refused.is_err(), "a handler that wrote must be refused");
         assert!(
             doc.pending_ops() > pending,

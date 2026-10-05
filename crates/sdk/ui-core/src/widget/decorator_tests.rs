@@ -344,7 +344,8 @@ impl Widget for Recorder {
             return Ok(None);
         }
         self.note("start_operation");
-        doc.put(path, "admitted", true)
+        doc.document_mut()
+            .put(path, "admitted", true)
             .map_err(|error| error.to_string())?;
         Ok(Some(ResourceOperationStart::Accepted))
     }
@@ -392,6 +393,10 @@ fn start(widget: &mut dyn Widget, doc: &mut AutoCommit) -> Option<ResourceOperat
         "test.effect",
         b"{}",
     )
-    .start(widget, doc, &automerge::ROOT)
+    .start(
+        widget,
+        &mut crate::widget::Edits::lend(doc),
+        &automerge::ROOT,
+    )
     .expect("admission succeeds")
 }
