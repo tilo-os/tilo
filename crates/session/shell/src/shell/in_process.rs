@@ -335,7 +335,7 @@ mod tests {
         };
         let room = crate::shell::state::RoomId::new();
         let request = tilo_desktop::resolver::TileRequest { room, tab: &tab };
-        let Some(tilo_desktop::resolver::TileResolution::Component(component)) =
+        let Some(tilo_desktop::resolver::TileResolution::App(component)) =
             crate::shell::mount_in_process(&request, inputs)
         else {
             panic!("the tab mounts its app's own component");
@@ -487,5 +487,78 @@ mod tests {
             }),
             "the Editor tab opened the file it was opened on"
         );
+    }
+
+    /// A Notes tab shown as an app of its own runs what its launch queued:
+    /// a Markdown file it is opened on becomes a note in the tab's notebook.
+    #[test]
+    fn a_notes_tab_runs_its_launch_and_keeps_the_note_it_opened() {
+        let profile = tempfile::tempdir().unwrap();
+        let mut apps = InProcessApps::at(profile.path(), "test-person").unwrap();
+        let (file, _receipt) = ui::application::OpenFile::new(
+            "Harbour plan.md",
+            "text/markdown",
+            b"Moor at the east quay.".to_vec(),
+        )
+        .unwrap();
+        let component = apps
+            .mount(
+                notes::definition(),
+                ROOM,
+                81,
+                RecordId::for_tab(81),
+                |context| {
+                    context.provide_open_file(file);
+                },
+            )
+            .unwrap();
+        let mut app = tilo_desktop::resolver::app_tile(component, |_| {}).unwrap();
+        let mut taffy = taffy::TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let theme = ui::theme::Theme::default();
+        let node = app.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(900.0),
+                    height: taffy::AvailableSpace::Definite(600.0),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
+        let mut text = ui::text_render::TextRenderer::new();
+        for _ in 0..3 {
+            let mut scene = vello::Scene::new();
+            app.draw(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &ui::presence::PresenceCtx::empty(),
+            );
+        }
+        let _reports = ui::component_lifecycle::close_components(app.as_mut());
+
+        let records = apps.owners.open(notes::definition().app_id, ROOM).unwrap();
+        records
+            .try_open_record(&RecordCheckout::new(
+                RecordId::for_tab(81),
+                notes::definition().record_kind.clone(),
+            ))
+            .expect("the tab's record was kept");
+        let titles = records
+            .with(&RecordId::for_tab(81), |doc| {
+                notes::Notebook::read(doc).map(|state| {
+                    state
+                        .pages()
+                        .iter()
+                        .map(|page| page.title.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+            .expect("the tab's notebook is open")
+            .unwrap();
+        assert_eq!(titles, vec!["Harbour plan".to_owned()]);
     }
 }

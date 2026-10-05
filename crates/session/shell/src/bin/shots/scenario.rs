@@ -1337,14 +1337,19 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
                     .join("\n\n");
                 match inputs.mount_note(&room, tab, "Complete capture.md", &body) {
                     Some(Ok(component)) => {
-                        if let Some(host) = driver
-                            .host_mut()
-                            .group_at_for_tests(strip_id, *group_idx)
-                            .and_then(|group| group.active_host_mut())
-                        {
-                            let _closed = host.replace_component(component);
+                        match tilo_desktop::resolver::app_tile(component, |_| {}) {
+                            Ok(app) => {
+                                if let Some(host) = driver
+                                    .host_mut()
+                                    .group_at_for_tests(strip_id, *group_idx)
+                                    .and_then(|group| group.active_host_mut())
+                                {
+                                    host.replace_content(ui::widget::TileContent::App(app));
+                                }
+                                driver.relayout();
+                            }
+                            Err(error) => eprintln!("shots: the long note did not mount: {error}"),
                         }
-                        driver.relayout();
                     }
                     Some(Err(error)) => eprintln!("shots: the long note did not mount: {error}"),
                     None => eprintln!("shots: this host mounts no Notes"),

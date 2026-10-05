@@ -447,7 +447,7 @@ mod tests {
             tab: &tab,
         };
         crate::shell::mount_in_process(&request, inputs).map(|resolution| match resolution {
-            tilo_desktop::resolver::TileResolution::Component(component) => Ok(component),
+            tilo_desktop::resolver::TileResolution::App(component) => Ok(component),
             tilo_desktop::resolver::TileResolution::Failed(error) => Err(error),
             _ => Err(ui::launch::LaunchError::Operation("not a component".into())),
         })
