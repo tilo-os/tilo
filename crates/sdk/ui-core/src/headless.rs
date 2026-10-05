@@ -3301,28 +3301,7 @@ impl FrameHarness {
                 .as_ref()
                 .and_then(|history| history.review_layout_node())
                 .unwrap_or(self.child_node);
-            let mut pending = vec![root];
-            while let Some(node) = pending.pop() {
-                if crate::history_mode::embedded::allows_focus(
-                    self.root.as_ref(),
-                    node,
-                    &self.taffy,
-                ) && self.history.as_ref().is_none_or(|history| {
-                    !history.captures_input() || history.owns_node(node, &self.taffy)
-                }) && self
-                    .inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled())
-                    .unwrap_or(false)
-                {
-                    order.push(node);
-                }
-                pending.extend(
-                    self.taffy
-                        .children(node)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .rev(),
-                );
-            }
+            order = self.history_app_focus_order(root).0;
         } else {
             order =
                 crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy).0;
@@ -3330,34 +3309,48 @@ impl FrameHarness {
         order
     }
 
+    fn history_app_focus_order(&self, root: NodeId) -> (Vec<NodeId>, bool) {
+        crate::focus_navigation::mapped_order(root, &self.taffy, |node| {
+            let allowed =
+                crate::history_mode::embedded::allows_focus(self.root.as_ref(), node, &self.taffy)
+                    && self.history.as_ref().is_none_or(|history| {
+                        !history.captures_input() || history.owns_node(node, &self.taffy)
+                    });
+            self.inspect_node(node, |widget| {
+                (
+                    allowed && widget.is_focusable() && widget.is_enabled(),
+                    allowed && widget.traps_focus(),
+                    widget.accessibility().is_some_and(|node| node.state.hidden),
+                )
+            })
+            .unwrap_or((false, false, false))
+        })
+    }
+
     fn update_focus_trap(
         &mut self,
         before_layout: Option<crate::widget::layout::CompositionFocus>,
     ) {
-        if self.history.is_some() || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
+        let (mut order, trapped) = if self.history.is_some()
+            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
         {
-            // A generic modal can hide retained editors with framework history.
-            // Returning to those editors must restore the exact prior owner;
-            // a resource/workspace switch cannot match an absent owner.
-            if self.focus_trap_active
-                && let Some(saved) = self.focus_before_trap.take()
-            {
-                let order = self.focus_order();
-                if let Some(target) =
-                    unsafe { saved.restore(&self.node_map, &self.bindings, Some(&order)) }
-                {
-                    self.set_focused(Some(target));
-                }
-            }
-            self.focus_trap_active = self
+            let root = self
                 .history
                 .as_ref()
-                .is_some_and(|history| history.review_is_open());
-            self.focus_before_trap = None;
-            return;
-        }
-        let (mut order, trapped) =
-            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy);
+                .and_then(|history| history.review_layout_node())
+                .unwrap_or(self.child_node);
+            let (order, app_trap) = self.history_app_focus_order(root);
+            (
+                order,
+                app_trap
+                    || self
+                        .history
+                        .as_ref()
+                        .is_some_and(|history| history.review_is_open()),
+            )
+        } else {
+            crate::focus_navigation::order(self.child_node, self.root.as_ref(), &self.taffy)
+        };
         if !self.focus_trap_active && trapped {
             // Capture a stable semantic/owner identity, never carry a stale Taffy id
             // through the portable host's complete layout rebuilds.
@@ -3373,21 +3366,7 @@ impl FrameHarness {
             // Bound component delegates can be absent from Widget::children's
             // generic order. Eligibility comes from this newly admitted layout,
             // with the same embedded-history restrictions as mapped traversal.
-            let mut allowed = Vec::new();
-            let mut pending = vec![self.child_node];
-            while let Some(node) = pending.pop() {
-                if crate::history_mode::embedded::allows_focus(
-                    self.root.as_ref(),
-                    node,
-                    &self.taffy,
-                ) && self
-                    .inspect_node(node, |widget| widget.is_focusable() && widget.is_enabled())
-                    .unwrap_or(false)
-                {
-                    allowed.push(node);
-                }
-                pending.extend(self.taffy.children(node).unwrap_or_default());
-            }
+            let (allowed, _) = self.history_app_focus_order(self.child_node);
             let restored = self.focus_before_trap.take().and_then(|saved| unsafe {
                 saved.restore(&self.node_map, &self.bindings, Some(&allowed))
             });
@@ -6524,6 +6503,9 @@ impl FrameHarness {
             .map(|(target, intent)| (target, intent, None))
             .chain(bound.pending)
         {
+            if on_behalf_of.is_none() && self.take_search_invocation(&intent) {
+                continue;
+            }
             self.dispatch_bound_control(target, &intent, on_behalf_of);
         }
 

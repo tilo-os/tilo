@@ -2477,13 +2477,21 @@ fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
         h.relayout();
 
         let g = TimelineInteraction::test_geometry(h.app.view_rect());
+        // The visible seven-day grid is narrow after navigation takes its
+        // column. Its minimum reserves two caption lines per half hour.
+        let theme = &h.app.layout_theme;
+        let minimum = ui::text_render::with_layout_renderer(theme.text_scale, |text| {
+            let title = theme.text(ui::tokens::TextRole::Caption).strong();
+            ui::widget::TimelineDensity::Narrow
+                .min_hour_height(theme, f64::from(text.measure_style("Ag", None, &title).1))
+        });
         assert!(
-            (g.hour_h - TIMELINE_MIN_HOUR_H).abs() < 0.001,
+            (g.hour_h - minimum).abs() < 0.001,
             "a short window pins the hour height to the legible minimum, got {}",
             g.hour_h
         );
         assert!(
-            (g.content_h - 24.0 * TIMELINE_MIN_HOUR_H).abs() < 0.001,
+            (g.content_h - 24.0 * minimum).abs() < 0.001,
             "the grid content spans the full 24 hours, got {}",
             g.content_h
         );

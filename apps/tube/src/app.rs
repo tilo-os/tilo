@@ -3023,8 +3023,7 @@ mod tests {
         }
         // Case `choosing_a_destination_invokes_its_navigation_action`.
         {
-            let mut app =
-                ui::prelude::TestApp::<crate::resource::TubeShell>::capture(None).unwrap();
+            let mut app = ui::prelude::TestApp::<crate::resource::TubeShell>::new().unwrap();
             app.effect(&TubeEffect::ShowScreen {
                 screen: "settings".into(),
             })

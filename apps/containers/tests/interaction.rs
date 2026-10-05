@@ -446,8 +446,16 @@ fn keyboard_pointer_and_semantic_navigation() {
         d.key(winit::keyboard::NamedKey::Escape);
         d.frame();
         assert!(d.app().selected().is_none(), "selection cleared");
-        // Click the first list row (below the header, in the list area).
-        d.click(300.0, 140.0);
+        // Click the real laid-out first container row, whose position moves
+        // with the shared list header and theme.
+        let label = d.app().engine.containers[0].name.clone();
+        let bounds = d
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some(label.as_str()))
+            .and_then(|(_, node)| node.bounds())
+            .expect("the first container row is laid out");
+        d.click((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
         d.frame();
         assert!(
             d.app().selected().is_some(),

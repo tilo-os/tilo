@@ -18,6 +18,7 @@ pub(crate) struct Sink {
         Rc<RefCell<Option<ui::framework::Dispatcher<crate::resource::ApiTester>>>>,
     pub(crate) actions: Rc<RefCell<Option<ui::framework::Actions<crate::resource::ApiTester>>>>,
     pub(crate) method: ui::LocalState<String>,
+    pub(crate) reset_area: ui::LocalState<bool>,
 }
 impl Sink {
     pub(crate) fn borrow(&self) -> std::cell::Ref<'_, Vec<Cmd>> {
@@ -86,7 +87,6 @@ pub(crate) enum Cmd {
         row: String,
         edit: RowEdit,
     },
-    EditAuth(AuthField, String),
     PickEnvironment(String),
     OpenForm(FormMode, FormTarget),
     SubmitForm,
@@ -174,6 +174,7 @@ impl Default for Sink {
             dispatcher: Rc::default(),
             actions: Rc::default(),
             method: ui::LocalState::new(String::new()),
+            reset_area: ui::LocalState::new(false),
         }
     }
 }

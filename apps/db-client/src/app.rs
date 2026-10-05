@@ -1757,7 +1757,29 @@ mod tests {
         // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
         {
             use ui::framework::testing::TestApp;
+            let _keyring = ui::secrets::scope_thread(ui::secrets::memory_backend());
+            let directory = tempfile::tempdir().unwrap();
+            let database = directory.path().join("pending-query.sqlite");
+            rusqlite::Connection::open(&database).unwrap();
             let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();
+            let mut profile = ConnectionProfile::new("Query worker", Engine::Sqlite);
+            profile.file_path = database.to_string_lossy().into_owned();
+            app.invoke(
+                ui::tilo_resource::Invoke::apply(&crate::actions::add_connection_action(&profile))
+                    .unwrap(),
+            )
+            .unwrap();
+            let connection = crate::resource::connection_resource_id(profile.id);
+            app.call_on(&connection, "connect", serde_json::json!({}))
+                .unwrap();
+            tilo_test_env::wait_until("the query fixture connection to open", || {
+                app.settle();
+                fn has_schema(rows: &[Resource]) -> bool {
+                    rows.iter()
+                        .any(|row| row.kind == "database.schema" || has_schema(&row.children))
+                }
+                has_schema(&app.harness().resources())
+            });
             app.effect_confirmed(&DbEffect::Query {
                 sql: "SELECT 1".into(),
             })

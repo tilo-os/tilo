@@ -2456,8 +2456,10 @@ mod tests {
         }
         // Case `platform_search_finds_apps_by_name_and_opens_them`.
         {
-            let app = WindowsApp::new_offline();
-            let providers = ui::search::capability::search_providers(&app);
+            let mut app =
+                ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
+                    .unwrap();
+            let providers = ui::search::capability::search_providers(app.harness().root_widget());
             let hit = providers
                 .iter()
                 .flat_map(|provider| provider.search("cyberpunk"))
@@ -2468,9 +2470,6 @@ mod tests {
                 .expect("a hit invokes a published action");
             assert_eq!(address, crate::search::show_app_address("cyberpunk-2077"));
 
-            let mut app =
-                ui::prelude::TestApp::<crate::resource::WindowsShell>::capture(Some("wide"))
-                    .unwrap();
             app.call_on(&address.resource, &address.action, serde_json::json!({}))
                 .expect("the hit's show action runs");
             app.settle();

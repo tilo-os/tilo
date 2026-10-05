@@ -688,6 +688,8 @@ pub struct FileExplorerWidget {
     /// The row the person last chose in the places list itself, so the
     /// navigation that follows does not rebuild a list that already shows it.
     places_choice: Rc<RefCell<Option<String>>>,
+    /// A shared places row asked for its own context menu.
+    places_context: Rc<RefCell<Option<(PathBuf, Point)>>>,
     /// A capture shows a favourite being dragged in the places list.
     stage_favorite_drag: bool,
     /// Per-user config dir for persisting favourites + zoom (`None` when the
@@ -1620,6 +1622,16 @@ impl FileExplorerWidget {
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
+        let retry = retry_row();
+        let binding = retry.actions.first().and_then(|action| {
+            ui::tilo_actions::ActionBinding::static_json(&retry, action, serde_json::Map::new())
+                .ok()
+        });
+        let state_retry = Button::new("files.retry", &t("files-try-again"));
+        let state_retry = match binding {
+            Some(binding) => state_retry.on_action(binding),
+            None => state_retry.with_enabled(false),
+        };
         Self {
             services,
             startup_accounts,
@@ -1665,10 +1677,7 @@ impl FileExplorerWidget {
             toolbar,
             status_bubble: ui::StatusBubble::new(),
             state_spinner: Spinner::new(),
-            state_retry: Button::new("files.retry", &t("files-try-again")).on_effect({
-                let sink = cmds.clone();
-                move || crate::command::push(&sink, FileCommand::Refresh)
-            }),
+            state_retry,
             shots_status: false,
             staged_hover: None,
             staged_move_drag: false,
@@ -1688,6 +1697,7 @@ impl FileExplorerWidget {
             favs: places_sidebar::new_store(favorites),
             places_shown: None,
             places_choice: Rc::new(RefCell::new(None)),
+            places_context: Rc::default(),
             stage_favorite_drag: false,
             zoom_level,
             show_hidden,
@@ -2409,7 +2419,14 @@ impl FileExplorerWidget {
         let drag = std::mem::take(&mut self.stage_favorite_drag)
             .then(|| places.favorite_drag())
             .flatten();
-        let mut list = places.nav_list(&self.cmds, &self.places_choice);
+        let context = Rc::clone(&self.places_context);
+        let mut list = places
+            .nav_list(&self.cmds, &self.places_choice)
+            .on_context_menu(move |id, _, at| {
+                if let Some(path) = id.strip_prefix("fav:") {
+                    *context.borrow_mut() = Some((PathBuf::from(path), at));
+                }
+            });
         if let Some((dragged, before)) = drag {
             list.stage_drag(&dragged, &before);
         }
@@ -7726,9 +7743,29 @@ impl FileExplorerWidget {
             },
         );
         self.drain_commands();
-        // The places list has no context menu of its own: a right-press over
-        // it is the list's, never the file view's.
-        if !self.in_places_list(self.last_cursor) {
+        let place = self.places_context.borrow_mut().take();
+        if let Some((path, at)) = place {
+            let removable = self
+                .favs
+                .borrow()
+                .favorites
+                .iter()
+                .any(|favorite| favorite.path == path && !favorite.is_home);
+            let mut spec = vec![(
+                t("files-menu-open"),
+                Some(FileCommand::Navigate(path.clone())),
+                None,
+            )];
+            if removable {
+                spec.push((
+                    t("files-menu-remove-favourite"),
+                    Some(FileCommand::RemoveFavorite(path)),
+                    None,
+                ));
+            }
+            // Use the same shared, viewport-constrained menu as the toolbar.
+            self.open_menu_right_aligned(spec, at, at.y);
+        } else if !self.in_places_list(self.last_cursor) {
             self.open_context_menu(self.last_cursor);
         }
         *ctx.handled = true;

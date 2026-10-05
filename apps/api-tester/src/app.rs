@@ -78,6 +78,29 @@ fn pane(slot: Swap, below_divider: bool) -> Column {
     ))
 }
 
+/// Preserve the shared divider across request-view replacements, with an
+/// explicit local reset requested by the published header control.
+struct RequestSplit {
+    split: ResizableSplit<Column, Column>,
+    reset: LocalState<bool>,
+}
+impl ui::widget::Decorator for RequestSplit {
+    type Inner = ResizableSplit<Column, Column>;
+    fn inner(&self) -> &Self::Inner {
+        &self.split
+    }
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.split
+    }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.reset.get() {
+            self.reset.set(false);
+            self.split.reset_to_content_size();
+        }
+        self.split.sync(state, path);
+    }
+}
+
 /// What stands where a sheet goes while none is open.
 fn no_dialog() -> Element {
     Box::new(Spacer::token(ui::tokens::SpacingStep::S0))
@@ -245,6 +268,13 @@ impl ApiTesterApp {
         );
 
         let content = Self::content(request_slot, response_slot, dialog_slot, &env_vars, &sink);
+        let reset = sink.reset_area.clone();
+        let reset_area = ui::widget::Button::icon_only(
+            "api.reset-request-area",
+            ui::icons::Icon::RotateCcw,
+            "Reset request area",
+        )
+        .on_view(move || reset.set(true));
         let nav = NavShell::new()
             .with_id("api.shell")
             .sidebar(sidebar::frame(Box::new(env_slot), Box::new(lists_slot)))
@@ -252,9 +282,12 @@ impl ApiTesterApp {
             .content(content)
             .content_header(
                 model.request.name.clone(),
-                vec![Box::new(ui::search::search_button(
-                    ui::search::SearchRequest::this_app(),
-                ))],
+                vec![
+                    Box::new(ui::search::search_button(
+                        ui::search::SearchRequest::this_app(),
+                    )),
+                    Box::new(reset_area),
+                ],
             );
 
         let app = Self {
@@ -314,7 +347,8 @@ impl ApiTesterApp {
             pane(response, true),
             SplitOrientation::Vertical,
         )
-        .with_split_position(0.5)
+        .with_content_sized_first()
+        .with_divider_id("api.request-divider")
         .with_divider_label("Resize the request and the response");
         Box::new(
             Stack::new()
@@ -326,7 +360,10 @@ impl ApiTesterApp {
                             Column::new()
                                 .with_no_padding()
                                 .with_fill_remaining_height()
-                                .push(Box::new(split)),
+                                .push(Box::new(RequestSplit {
+                                    split,
+                                    reset: sink.reset_area.clone(),
+                                })),
                         )),
                 ))
                 .push(Box::new(dialog)),
@@ -391,7 +428,10 @@ impl ApiTesterApp {
         let known = match scenario {
             "default" => true,
             "empty" => {
-                *self = Self::new();
+                self.response = None;
+                self.sending = false;
+                self.error = None;
+                self.stale.response = true;
                 true
             }
             "error" => {
@@ -523,16 +563,13 @@ impl ApiTesterApp {
             &ENVIRONMENT_COMMANDS[..1]
         };
         options.extend(commands.iter().map(|(label, _)| (*label).to_owned()));
-        let sink = sink.clone();
-        Box::new(
-            Dropdown::from_state(options, state)
-                .with_id("api.env")
-                .caption("Environment")
-                .on_change(move |choice| {
-                    sink.borrow_mut()
-                        .push(Cmd::PickEnvironment(choice.to_owned()));
-                }),
-        )
+        let picker = Dropdown::from_state(options, state)
+            .with_id("api.env")
+            .caption("Environment");
+        Box::new(match sink.actions.borrow().as_ref() {
+            Some(actions) => actions.bind_effect(picker, ApiTesterEffect::PICK_ENVIRONMENT),
+            None => picker.with_enabled(false),
+        })
     }
 
     fn refresh_env_vars(&self) {
@@ -805,7 +842,6 @@ impl ApiTesterApp {
                 Cmd::LoadRequest(ci, ri) => self.load_request(state, path, ci, ri),
                 Cmd::ReplayHistory(hi) => self.replay_history(state, path, hi),
                 Cmd::Edit { table, row, edit } => self.edit_rows(table, &row, edit),
-                Cmd::EditAuth(field, text) => self.edit_auth(field, text),
                 Cmd::PickEnvironment(choice) => self.pick_environment(state, path, &choice),
                 Cmd::OpenForm(mode, target) => self.open_form(mode, target),
                 Cmd::CancelForm => self.close_form(),
@@ -1353,7 +1389,10 @@ impl ui::widget::Decorator for ApiTesterApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.sending || !self.sink.borrow().is_empty() || self.nav.needs_idle_sync()
+        self.sending
+            || self.sink.reset_area.get()
+            || !self.sink.borrow().is_empty()
+            || self.nav.needs_idle_sync()
     }
 
     fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
@@ -1420,6 +1459,21 @@ impl ApiTesterApp {
         cx: &mut EffectCx<ApiTester, Self>,
     ) -> EffectAnswer {
         match effect {
+            ApiTesterEffect::EditAuthField { field, value } => {
+                let field = match field.as_str() {
+                    "username" => AuthField::Username,
+                    "header" => AuthField::Header,
+                    _ => return Err("no such authentication metadata field".into()),
+                };
+                self.edit_auth(field, value);
+                self.dirty = true;
+                Ok(Effected::done())
+            }
+            ApiTesterEffect::PickEnvironment { choice } => {
+                self.sink.borrow_mut().push(Cmd::PickEnvironment(choice));
+                self.dirty = true;
+                Ok(Effected::done())
+            }
             ApiTesterEffect::Send => {
                 let method = self.request.method;
                 let out = self.outgoing();
@@ -1586,9 +1640,7 @@ impl ApiTesterApp {
         self.credentials.clear();
     }
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        self.response = scenario
-            .filter(|s| *s != "empty")
-            .map(|_| http::sample_response());
+        self.response = (scenario != Some("empty")).then(http::sample_response);
         if let Some(name) = scenario {
             let mapped = if name == "rail-open" { "drawer" } else { name };
             self.stage(mapped);

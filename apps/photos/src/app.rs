@@ -5721,7 +5721,12 @@ impl PhotosApp {
                 .with_hashed_key("photos:canvas")
         };
         let mut children = vec![canvas];
-        children.extend(self.empty_state.as_ref().and_then(Widget::accessibility));
+        children.extend(
+            self.empty_state
+                .as_ref()
+                .and_then(Widget::accessibility)
+                .map(|node| node.with_hashed_key("photos:empty-state")),
+        );
         children.extend(self.chrome_semantics());
         if let Some(notice) = self.notice.as_deref() {
             children.push(

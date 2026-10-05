@@ -985,8 +985,8 @@ mod tests {
             );
             let smart = window
                 .harness()
-                .a11y_node_named("SMART")
-                .expect("the SMART tab");
+                .a11y_node_named("Health")
+                .expect("the drive health tab");
             window
                 .harness()
                 .perform_a11y_action(smart, &ui::a11y::Action::Activate)

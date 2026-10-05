@@ -406,6 +406,17 @@ impl ResourceApp for App {
         &["no-key", "unreadable", "applied", "failed", "copied"]
     }
 
+    fn fixture(fixture: &mut ui::framework::Fixture<Publisher>) {
+        let key = match fixture.scenario() {
+            Some("no-key") => KeyState::Missing,
+            Some("unreadable") => KeyState::Unreadable,
+            _ => KeyState::Present {
+                public: "a1".repeat(32),
+            },
+        };
+        fixture.provide(key);
+    }
+
     /// A capture never reads this machine's key file or settings: the claims
     /// are filled in here, the key and the last outcome in [`staged`].
     fn scenario(name: Option<&str>) -> Vec<Invoke<Publisher>> {
@@ -508,7 +519,18 @@ impl ResourceApp for App {
         );
         let key =
             ModelView::from_state_by(&pane, Clone::clone, move |pane| key_section(pane, &actions));
-        Box::new(ui::column![key, form, apply_button])
+        let notice = ModelView::from_state_by(&pane, Clone::clone, |pane| {
+            let mut column = Column::new().with_no_padding().with_intrinsic_height();
+            if let Some(notice) = &pane.notice {
+                let mut banner = Banner::new(notice.kind, &notice.title).with_id("notice");
+                if let Some(message) = &notice.message {
+                    banner = banner.with_message(message);
+                }
+                column = column.push(Box::new(banner));
+            }
+            Box::new(column)
+        });
+        Box::new(ui::column![key, form, apply_button, notice])
     }
 }
 

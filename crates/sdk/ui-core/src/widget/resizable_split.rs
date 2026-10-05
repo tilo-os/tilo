@@ -142,6 +142,8 @@ pub struct SplitHandle {
     focused: bool,
     cursor: Point,
     label: String,
+    test_id: Option<String>,
+    layout_dirty: bool,
 }
 
 impl SplitHandle {
@@ -158,6 +160,8 @@ impl SplitHandle {
             focused: false,
             cursor: Point::ZERO,
             label: "Resize panes".to_string(),
+            test_id: None,
+            layout_dirty: false,
         }
     }
 
@@ -398,6 +402,123 @@ impl SplitHandle {
     }
 }
 
+impl SplitHandle {
+    fn layout_style(&self) -> Style {
+        let mut style = Style {
+            position: taffy::Position::Absolute,
+            ..Style::default()
+        };
+        match self.orientation {
+            SplitOrientation::Horizontal => {
+                style.size.width = length((self.hit_half * 2.0) as f32);
+                style.size.height = percent(1.0_f32);
+                style.inset.left = percent(self.ratio.position());
+                style.inset.top = length(0.0_f32);
+                style.margin.left = length(-self.hit_half as f32);
+            }
+            SplitOrientation::Vertical => {
+                style.size.width = percent(1.0_f32);
+                style.size.height = length((self.hit_half * 2.0) as f32);
+                style.inset.left = length(0.0_f32);
+                style.inset.top = percent(self.ratio.position());
+                style.margin.top = length(-self.hit_half as f32);
+            }
+        }
+        style
+    }
+}
+
+impl Widget for SplitHandle {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.leaf_node(self.layout_style());
+        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let style = self.layout_style();
+        if taffy.style(node).is_ok_and(|current| *current != style) {
+            return taffy.set_style(node, style).is_ok();
+        }
+        false
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.layout_dirty
+    }
+
+    // The split owns the whole pane bounds needed to place this divider.
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.paint(
+            scene,
+            transform,
+            theme.tokens.colors.surfaces.content,
+            theme,
+        );
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.layout_dirty |= SplitHandle::handle_event(self, event, ctx);
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        _state: &mut crate::widget::Edits<'_>,
+        _path: &crate::widget::ModelPath,
+    ) -> bool {
+        let moved = SplitHandle::perform_action(self, action);
+        self.layout_dirty |= moved;
+        moved
+    }
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+    fn set_focus(&mut self, focused: bool) {
+        self.set_focused(focused);
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        self.is_dragging()
+    }
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        SplitHandle::cursor_shape(self, point)
+    }
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        let mut node = SplitHandle::accessibility(self);
+        if let Some(id) = &self.test_id {
+            node = node.with_semantic_key(id);
+        }
+        Some(node)
+    }
+    fn get_rect(&self) -> Rect {
+        self.divider
+    }
+    fn test_id(&self) -> Option<&str> {
+        self.test_id.as_deref()
+    }
+    fn name(&self) -> &'static str {
+        "SplitHandle"
+    }
+}
+
 /// Two panes and the divider between them.
 pub struct ResizableSplit<L: Widget, R: Widget> {
     left: L,
@@ -406,6 +527,8 @@ pub struct ResizableSplit<L: Widget, R: Widget> {
     handle: SplitHandle,
     /// The first pane takes its content's size until the divider is moved.
     content_sized_first: bool,
+    /// The first pane's declared axis size, before ratio layout overrides it.
+    first_content_size: taffy::Dimension,
     /// The ratio moved since the panes were last laid out.
     layout_dirty: bool,
     rect: Rect,
@@ -419,6 +542,7 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             orientation,
             handle: SplitHandle::new(orientation, SplitRatio::default()),
             content_sized_first: false,
+            first_content_size: taffy::Dimension::auto(),
             layout_dirty: false,
             rect: Rect::ZERO,
         }
@@ -455,6 +579,13 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         self
     }
 
+    /// Give the actual divider a stable identity for accessibility and input tests.
+    #[must_use]
+    pub fn with_divider_id(mut self, id: impl Into<String>) -> Self {
+        self.handle.test_id = Some(id.into());
+        self
+    }
+
     pub fn split_position(&self) -> f32 {
         self.handle.ratio().position()
     }
@@ -465,6 +596,13 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             self.content_sized_first = false;
             self.layout_dirty = true;
         }
+    }
+
+    /// Restore the first pane's natural content size after manual resizing.
+    pub fn reset_to_content_size(&mut self) {
+        self.content_sized_first = true;
+        self.layout_dirty = true;
+        self.handle.layout_dirty = false;
     }
 
     /// The first (leading or top) pane.
@@ -578,8 +716,14 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
                 // its own size along the split.
                 if sized_by_content {
                     match self.orientation {
-                        SplitOrientation::Horizontal => style.size.height = cross.height,
-                        SplitOrientation::Vertical => style.size.width = cross.width,
+                        SplitOrientation::Horizontal => {
+                            style.size.width = self.first_content_size;
+                            style.size.height = cross.height;
+                        }
+                        SplitOrientation::Vertical => {
+                            style.size.width = cross.width;
+                            style.size.height = self.first_content_size;
+                        }
                     }
                     style.flex_basis = taffy::Dimension::auto();
                 } else {
@@ -624,11 +768,17 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     ) -> NodeId {
         let left_node = self.left.build_layout(taffy, theme, node_map);
         let right_node = self.right.build_layout(taffy, theme, node_map);
+        if let Ok(style) = taffy.style(left_node) {
+            self.first_content_size = match self.orientation {
+                SplitOrientation::Horizontal => style.size.width,
+                SplitOrientation::Vertical => style.size.height,
+            };
+        }
         self.handle.set_rect(self.rect, theme);
-        // The layout tree has exactly the two children returned by
-        // `Widget::children`. The divider is painted and hit-tested by this
-        // container instead of masquerading as a third widget-less child;
-        // keeping those trees aligned is required by focus/action traversal.
+        let mut children = vec![left_node, right_node];
+        if self.handle.test_id.is_some() {
+            children.push(self.handle.build_layout(taffy, theme, node_map));
+        }
         self.style_panes(taffy, left_node, right_node);
         let node = taffy.parent_node(
             Style {
@@ -643,7 +793,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 },
                 ..Default::default()
             },
-            &[left_node, right_node],
+            &children,
         );
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -657,11 +807,21 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         let (Some(&left), Some(&right)) = (children.first(), children.get(1)) else {
             return false;
         };
-        self.style_panes(taffy, left, right)
+        if std::mem::take(&mut self.handle.layout_dirty) {
+            self.moved();
+        }
+        let mut changed = self.style_panes(taffy, left, right);
+        if let Some(&divider) = children.get(2) {
+            changed |= self.handle.adjust_layout_style(taffy, divider);
+        }
+        changed
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.layout_dirty || self.left.is_layout_dirty() || self.right.is_layout_dirty()
+        self.layout_dirty
+            || self.handle.layout_dirty
+            || self.left.is_layout_dirty()
+            || self.right.is_layout_dirty()
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -681,6 +841,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         if let Some(&n) = children.get(1) {
             self.right.apply_layout(taffy, n, new_origin);
         }
+        let mut divider_followed_content = false;
         if self.content_sized_first {
             // The divider sits where the content-sized pane ends.
             let first = self.left.get_rect();
@@ -692,9 +853,9 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 SplitOrientation::Horizontal => self.rect.x0,
                 SplitOrientation::Vertical => self.rect.y0,
             };
-            self.handle.ratio_mut().follow(along, start, extent);
+            divider_followed_content = self.handle.ratio_mut().follow(along, start, extent);
         }
-        self.layout_dirty = false;
+        self.layout_dirty = divider_followed_content && self.handle.test_id.is_some();
         self.handle.set_bounds(self.rect);
     }
 
@@ -721,9 +882,21 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let was_dragging = self.handle.is_dragging();
-        if self.handle.handle_event(event, ctx) {
+        let divider = ctx
+            .taffy
+            .children(ctx.node_id)
+            .ok()
+            .and_then(|children| children.get(2).copied());
+        let moved = if let Some(node) = divider {
+            self.handle
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node))
+        } else {
+            self.handle.handle_event(event, ctx)
+        };
+        if moved {
             self.moved();
         }
+
         if *ctx.handled || was_dragging {
             return;
         }
@@ -731,7 +904,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn is_focusable(&self) -> bool {
-        true
+        self.handle.test_id.is_none()
     }
 
     fn set_focus(&mut self, focused: bool) {
@@ -743,7 +916,11 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(self.handle.accessibility())
+        if self.handle.test_id.is_some() {
+            Some(crate::a11y::AccessNode::new(crate::a11y::Role::Group))
+        } else {
+            Some(self.handle.accessibility())
+        }
     }
 
     fn perform_action(
@@ -760,19 +937,28 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.left, &self.right]
+        let mut children: Vec<&dyn Widget> = vec![&self.left, &self.right];
+        if self.handle.test_id.is_some() {
+            children.push(&self.handle);
+        }
+        children
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         visitor(&self.left);
         visitor(&self.right);
+        if self.handle.test_id.is_some() {
+            visitor(&self.handle);
+        }
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![
-            &mut self.left as &mut (dyn Widget + '_),
-            &mut self.right as &mut (dyn Widget + '_),
-        ]
+        let named = self.handle.test_id.is_some();
+        let mut children: Vec<&mut dyn Widget> = vec![&mut self.left, &mut self.right];
+        if named {
+            children.push(&mut self.handle);
+        }
+        children
     }
 
     fn get_rect(&self) -> Rect {
@@ -1021,6 +1207,92 @@ mod tests {
 
     fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {
         ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), orientation)
+    }
+
+    #[test]
+    fn named_divider_targets_the_separator_and_resizes_through_host_input() {
+        for orientation in [SplitOrientation::Horizontal, SplitOrientation::Vertical] {
+            let mut harness = crate::headless::FrameHarness::for_root(
+                crate::State::new(),
+                split(orientation).with_divider_id("request-divider"),
+                (400, 300),
+                Theme::dark(),
+            );
+            let divider = harness.targets()["request-divider"];
+            let along = match orientation {
+                SplitOrientation::Horizontal => {
+                    assert!(divider.width() < 400.0 / 10.0);
+                    assert_eq!(divider.height(), 300.0);
+                    divider.center().x
+                }
+                SplitOrientation::Vertical => {
+                    assert!(divider.height() < 300.0 / 10.0);
+                    assert_eq!(divider.width(), 400.0);
+                    divider.center().y
+                }
+            };
+            assert_eq!(
+                along,
+                if orientation == SplitOrientation::Horizontal {
+                    200.0
+                } else {
+                    150.0
+                }
+            );
+            let root = harness.root::<ResizableSplit<TestLeaf, TestLeaf>>();
+            let separator = root.children()[2];
+            assert_eq!(separator.test_id(), Some("request-divider"));
+            assert_eq!(
+                separator.accessibility().unwrap().role,
+                crate::a11y::Role::Separator
+            );
+            assert!(!root.is_focusable());
+            harness.click_named("request-divider").unwrap();
+            harness.key(if orientation == SplitOrientation::Horizontal {
+                "ArrowRight"
+            } else {
+                "ArrowDown"
+            });
+            assert!(
+                (harness
+                    .root::<ResizableSplit<TestLeaf, TestLeaf>>()
+                    .split_position()
+                    - 0.55)
+                    .abs()
+                    < f32::EPSILON
+            );
+            let moved = harness.targets()["request-divider"].center();
+            assert_eq!(
+                if orientation == SplitOrientation::Horizontal {
+                    moved.x
+                } else {
+                    moved.y
+                },
+                if orientation == SplitOrientation::Horizontal {
+                    220.0
+                } else {
+                    165.0
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn reset_restores_content_sized_first_pane_after_resizing() {
+        let mut left = TestLeaf::new();
+        left.width = Some(120.0);
+        let mut split = ResizableSplit::new(left, TestLeaf::new(), SplitOrientation::Horizontal)
+            .with_content_sized_first()
+            .with_divider_id("request-divider");
+        let (mut tree, node) = solve(&mut split, 400.0, 300.0);
+        assert_eq!(split.left().get_rect().width(), 120.0);
+        split.set_split_position(0.7);
+        relayout(&mut split, &mut tree, node, 400.0, 300.0);
+        assert_eq!(split.left().get_rect().width(), 280.0);
+        split.reset_to_content_size();
+        relayout(&mut split, &mut tree, node, 400.0, 300.0);
+        assert_eq!(split.left().get_rect().width(), 120.0);
+        assert_eq!(split.handle.hit_rect().center().x, 120.0);
     }
 
     #[test]

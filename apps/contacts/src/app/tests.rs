@@ -1471,11 +1471,13 @@ impl Harness {
 
     fn press_right(&mut self, p: Point) -> bool {
         self.move_to(p);
-        self.dispatch(&WindowEvent::MouseInput {
+        let handled = self.dispatch(&WindowEvent::MouseInput {
             device_id: device_id(),
             state: ElementState::Pressed,
             button: MouseButton::Right,
-        })
+        });
+        self.app.settle();
+        handled
     }
 
     /// First visible list row's center point.
@@ -1540,13 +1542,8 @@ impl Harness {
     /// focused, driving the production `handle_event` → `TextInput` path
     /// (NOT `set_text`), so the live edit semantics are what's exercised.
     fn type_text(&mut self, s: &str) {
-        for ch in s.chars() {
-            let buf = ch.to_string();
-            self.dispatch_key_mods(
-                &key_input_event(Key::Character(SmolStr::new(&buf)), Some(&buf)),
-                ModifiersState::empty(),
-            );
-        }
+        self.app.harness_mut().type_text(s);
+        self.app.settle();
     }
 
     /// Value currently held in the focused/edit form field for `slot`.
@@ -1571,7 +1568,12 @@ impl Harness {
         if rect.width() <= 0.0 {
             return false;
         }
-        self.press_left(rect.center());
+        // The ordinary host applies the control's requested focus; raw
+        // root dispatch deliberately only reports that request.
+        self.app
+            .harness_mut()
+            .click_at(rect.center().x, rect.center().y);
+        self.app.settle();
         form_widget(&self.app, slot).is_some_and(Widget::is_focused)
     }
 }

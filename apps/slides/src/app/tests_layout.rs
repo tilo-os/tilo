@@ -305,8 +305,12 @@ fn chrome_density_follows_measured_text_at_every_width() {
             let inspector_controls: Vec<Rect> = chrome
                 .buttons
                 .iter()
-                .filter(|b| in_inspector(b.rect))
-                .map(|b| b.rect)
+                .enumerate()
+                .filter(|(index, b)| {
+                    chrome.button_zone(*index) == super::editor_chrome::Zone::Inspector
+                        && !matches!(b.hit, Hit::EditNotes)
+                })
+                .map(|(_, b)| b.rect)
                 .chain([font_input, notes])
                 .collect();
             for (i, a) in inspector_controls.iter().enumerate() {

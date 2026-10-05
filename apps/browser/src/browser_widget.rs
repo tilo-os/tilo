@@ -2054,6 +2054,7 @@ impl BrowserWidget {
             Box::new(
                 SettingsPane::with_settings(&self.settings)
                     .with_presentation(self.settings_presentation.clone())
+                    .with_autofill_request(self.credentials.open_request())
                     .with_action_bindings(self.settings_action_bindings())
                     .with_history_clear_error(self.history_clear_error.clone())
                     .with_notices(notices),
@@ -5189,7 +5190,7 @@ mod architecture_tests {
             }
             // The overflow menu's commands queue the same canonical actions.
             for (resource, action) in [
-                ("browser.session", "toggle-history-pause"),
+                ("browser.session", "toggle-pause"),
                 ("browser.page", "picture-in-picture"),
                 ("browser.settings", "show"),
             ] {
@@ -5208,6 +5209,11 @@ mod architecture_tests {
 
             let mut library = BrowserWidget::new_headless();
             library.debug_show_library("history");
+            library
+                .perform_browser_operation(BrowserOperation::SetLibraryFilter {
+                    query: "history".into(),
+                })
+                .unwrap();
             compose(&mut library);
             assert_no_document_control_paths(&library);
             assert_action_binding(
@@ -5760,6 +5766,11 @@ mod architecture_tests {
         {
             let mut widget = BrowserWidget::new_headless();
             widget.debug_show_library("bookmarks");
+            widget
+                .perform_browser_operation(BrowserOperation::SetLibraryFilter {
+                    query: "rust".into(),
+                })
+                .unwrap();
             compose(&mut widget);
             assert_action_binding(
                 &widget,
@@ -6278,9 +6289,15 @@ mod tests {
     }
 
     /// Press the left button at `point`, as a person would.
-    fn click_at(widget: &mut BrowserWidget, tree: &TaffyTree<()>, node: NodeId, point: Point) {
+    fn click_at(
+        widget: &mut BrowserWidget,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        point: Point,
+    ) -> bool {
         let mut state = AutoCommit::new();
         let root = automerge::ROOT;
+        let mut release_handled = false;
         for event in [
             WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
@@ -6312,7 +6329,9 @@ mod tests {
                     taffy: tree,
                 },
             );
+            release_handled = handled;
         }
+        release_handled
     }
 
     /// Panels open beside the control that opened them, and a dismissed
@@ -6763,7 +6782,7 @@ mod tests {
                 &widget,
                 "browser.library.clear-filter",
                 "browser.library",
-                "clear-filter",
+                "clear-library-filter",
             );
             widget
                 .perform_browser_operation(BrowserOperation::ClearLibraryFilter)
@@ -7388,9 +7407,12 @@ mod tests {
                     assert!(
                         widget
                             .start_encoded(
-                                OperationKind::Effect,
-                                "tilo.ui.control.invoke",
-                                &serde_json::to_vec("browser.site.connection").unwrap(),
+                                OperationKind::View,
+                                "tilo.ui.segmented.select",
+                                &serde_json::to_vec(
+                                    &serde_json::json!({"control":"browser.site.pages", "index":1})
+                                )
+                                .unwrap(),
                                 &mut doc,
                                 &root
                             )
@@ -7902,34 +7924,34 @@ mod tests {
                 started: ui::time::now(),
                 persistent: false,
             }));
-            // The note's button queues the choice; the next sync acts on it.
-            w.pip_choice.set(Some(PipChoice::SelectArea));
-            w.apply_panel_events();
-
-            let (mut state, root) = synced(&mut w);
-            let mut tree = TaffyTree::<()>::new();
-            let node = tree.new_leaf(Style::default()).expect("test leaf");
-            let mut handled = false;
-            let mut focus = None;
-            w.handle_event(
-                &WindowEvent::MouseInput {
-                    device_id: winit::event::DeviceId::dummy(),
-                    state: ElementState::Released,
-                    button: MouseButton::Left,
-                },
-                &mut ui::widget::EventCtx {
-                    scale_factor: 1.0,
-                    modifiers: &winit::event::Modifiers::default(),
-                    state: Edits::lend(&mut state),
-                    path: &root,
-                    handled: &mut handled,
-                    focus_target: &mut focus,
-                    node_id: node,
-                    taffy: &tree,
-                },
+            let (tree, node) = layout_keeping_tree(&mut w, 1000.0, 700.0, &Theme::dark());
+            let choose = w
+                .find_rect("browser.pip.select-area")
+                .expect("shared selection control");
+            assert!(
+                click_at(&mut w, &tree, node, choose.center()),
+                "the real selection control handles its complete click"
             );
-
-            assert!(handled);
+            let invocation = ui::widget::controls::take_control_invocation(&mut w)
+                .expect("pointer emits its canonical control invocation");
+            assert_eq!(
+                invocation.address.resource,
+                "tilo.control:browser.pip.select-area"
+            );
+            assert_eq!(invocation.address.action, "invoke");
+            let (mut state, root) = synced(&mut w);
+            assert!(
+                w.start_encoded(
+                    OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec("browser.pip.select-area").unwrap(),
+                    &mut state,
+                    &root
+                )
+                .unwrap()
+                .is_some()
+            );
+            w.sync(&state, &root);
             assert_eq!(
                 w.take_capture_studio_request(),
                 Some(ui::widget::CaptureMode::Pip)

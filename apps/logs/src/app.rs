@@ -982,7 +982,17 @@ mod tests {
     use ui::prelude::TestApp;
 
     fn captured(viewport: (u32, u32)) -> TestApp<LogsShell> {
-        TestApp::capture_at(None, viewport).unwrap()
+        let mut app = TestApp::new().unwrap();
+        surface(&mut app, |viewer| {
+            // Exercise live effect admission with a deterministic local journal.
+            viewer.reads = false;
+            viewer.reading = None;
+            viewer.source_loading = false;
+            viewer.show_entries(sample_entries());
+        });
+        app.harness().resize(viewport).unwrap();
+        app.settle();
+        app
     }
     fn surface<T>(app: &mut TestApp<LogsShell>, visit: impl FnOnce(&mut LogsApp) -> T) -> T {
         app.with_surface(visit)
@@ -1176,7 +1186,8 @@ mod tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
         ui::host::scoped(&services, || {
-            app.effect(&JournalEffect::ExportFilteredJsonl).unwrap()
+            app.start_effect(&JournalEffect::ExportFilteredJsonl)
+                .unwrap()
         });
         assert_eq!(
             recorder.pick_requests()[0].suggested_name(),
@@ -1200,7 +1211,8 @@ mod tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(PortalOutcome::Opened(std::env::temp_dir()));
         ui::host::scoped(&services, || {
-            app.effect(&JournalEffect::ExportFilteredJsonl).unwrap()
+            app.start_effect(&JournalEffect::ExportFilteredJsonl)
+                .unwrap()
         });
         finish_job(&mut app);
         assert_eq!(

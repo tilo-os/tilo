@@ -2743,6 +2743,9 @@ impl Widget for CodeApp {
         self.check_disk_staleness();
         self.refresh_find();
         self.refresh_header();
+        self.header.sync(state, path);
+        self.search_button.sync(state, path);
+        self.panel_toggle.sync(state, path);
         self.refresh_diagnostics(state);
         self.refresh_status();
         let chrome = (self.panel_visible, self.panel.active_tab(), self.find_open);

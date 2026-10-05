@@ -153,6 +153,9 @@ impl ApiDoc {
 
     pub fn delete_environment(doc: &mut AutoCommit, root: &ObjId, id: &str) {
         Self::write_tombstone(doc, root, ENVIRONMENT_TOMBSTONES_KEY, id);
+        if Self::active_env(doc, root).as_deref() == Some(id) {
+            Self::set_active_env(doc, root, None);
+        }
     }
 
     /// Write one variable directly at its stable row address.  Variable values

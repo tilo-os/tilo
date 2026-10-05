@@ -178,7 +178,7 @@ impl PdfApp {
         Some(ToolbarHit::Inert)
     }
 
-    fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut ui::widget::Edits<'_>) {
+    fn apply_toolbar(&mut self, hit: &ToolbarHit) {
         match hit {
             ToolbarHit::Tool(t) => self.set_tool(*t),
             ToolbarHit::MarkerColour => self.open_marker_colours(),
@@ -304,14 +304,14 @@ impl PdfApp {
             *ctx.handled
         })
         .unwrap_or(false);
-        self.drain_toolbar(state);
+        self.drain_toolbar();
         took
     }
 
     /// Run the command the toolbar activated last, if any.
-    fn drain_toolbar(&mut self, state: &mut ui::widget::Edits<'_>) {
+    fn drain_toolbar(&mut self) {
         if let Some(hit) = self.toolbar.take_activated().and_then(toolbar_command) {
-            self.apply_toolbar(&hit, state);
+            self.apply_toolbar(&hit);
         }
         self.dirty = true;
     }
@@ -927,7 +927,7 @@ impl PdfApp {
                 ui::widget::Widget::set_focus(&mut self.zoom_input, true);
                 self.route_zoom_input(event, scale_factor, modifiers, state);
             }
-            self.apply_toolbar(&hit, state);
+            self.apply_toolbar(&hit);
             *handled = true;
             return true;
         }
@@ -1280,6 +1280,10 @@ impl PdfApp {
         state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
+        if self.toolbar.shown_menu().is_some() {
+            *handled = self.route_toolbar(event, scale, modifiers, state);
+            return;
+        }
         if self.on_key_editing(event, key_event, modifiers, scale, state, handled) {
             return;
         }
@@ -1832,11 +1836,11 @@ mod event_tests {
 
     #[test]
     fn toolbar_arms_tools_recolours_and_lays_out_symmetric_wrapping_rows() {
-        let (mut app, mut st) = sample_app();
+        let (mut app, _st) = sample_app();
         let lay = app.toolbar_layout();
         for (tool, r) in lay.tools {
             let hit = app.toolbar_hit(centre(r)).expect("a toolbar hit");
-            app.apply_toolbar(&hit, &mut Edits::lend(&mut st.doc));
+            app.apply_toolbar(&hit);
             assert_eq!(app.tool, tool, "clicking {tool:?} should arm it");
         }
 
@@ -1944,10 +1948,10 @@ mod event_tests {
     fn narrow_toolbar_keeps_the_tools_and_moves_file_commands_into_more() {
         // The colour well stands beside the tools and opens the colour
         // popover.
-        let (mut app, mut st) = sample_app();
+        let (mut app, _st) = sample_app();
         let well = app.toolbar_layout().colour.expect("the colour well");
         let hit = app.toolbar_hit(centre(well)).expect("a toolbar hit");
-        app.apply_toolbar(&hit, &mut ui::widget::Edits::lend(&mut st.doc));
+        app.apply_toolbar(&hit);
         assert!(app.marker_colours.is_some(), "the well opens the popover");
 
         // An 800px window keeps every tool and the colour in the row; Open
@@ -2596,7 +2600,7 @@ mod event_tests {
         );
         let (services, recorder) = ui::host::HostServices::recording();
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
+            app.apply_toolbar(&ToolbarHit::Open);
         });
         assert!(
             app.portal_rx.is_some(),
@@ -2621,7 +2625,7 @@ mod event_tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Opened(path));
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
+            app.apply_toolbar(&ToolbarHit::Open);
         });
         app.sync_settled(&mut st.doc, &st.root);
         assert!(
@@ -2642,7 +2646,7 @@ mod event_tests {
         let (services, recorder) = ui::host::HostServices::recording();
         recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
         ui::host::scoped(&services, || {
-            app.apply_toolbar(&ToolbarHit::Open, &mut Edits::lend(&mut st.doc));
+            app.apply_toolbar(&ToolbarHit::Open);
         });
         assert!(
             app.portal_rx.is_some(),

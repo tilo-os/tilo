@@ -69,7 +69,7 @@ fn click(app: &mut Framed<StoreApp>, at: Point) {
 #[test]
 fn a_remote_rows_action_invokes_the_remotes_own_remove_action() {
     let mut app = lay_out(staged("remotes"));
-    let row = rect_of(&*app, "store.remote.flathub");
+    let row = rect_of(&*app, "store.remote:flathub");
     // The row reveals its action while the pointer is on it.
     cursor(&mut app, row.center());
     let action = Point::new(row.x1 - 24.0, row.center().y);

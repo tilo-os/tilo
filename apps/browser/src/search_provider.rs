@@ -373,7 +373,10 @@ mod tests {
             let provider = index.provider();
             let hit = provider.search_limited("Tilo-SDK", 1).pop().unwrap();
             let address = hit.action_address().unwrap();
-            assert_eq!(address.resource, "browser.download.stable-download");
+            assert_eq!(
+                address.resource,
+                format!("{}/stable-download", crate::actions::DOWNLOADS_SCOPE)
+            );
             assert_eq!(address.action, "show-download");
             let resource = provider.resolve_action_resource(&address).unwrap();
             assert_eq!(resource.kind, "browser.download");

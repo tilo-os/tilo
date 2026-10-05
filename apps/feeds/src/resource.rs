@@ -736,7 +736,7 @@ mod tests {
                 .harness()
                 .inspection_json()
                 .unwrap()
-                .contains("Back to articles")
+                .contains("nav-shell-back")
         );
 
         let settings = TestApp::<FeedsShell>::capture(Some("reader-settings")).unwrap();

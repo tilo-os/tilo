@@ -243,7 +243,7 @@ impl Studio {
     pub fn new_theme(
         &mut self,
         #[param("Id for the new theme")] id: String,
-        #[param("The preset or theme to start from")] base: String,
+        #[param("The preset or theme to start from", example = "dark-graphite")] base: String,
     ) -> Result<(), Refusal> {
         let id = Id::from_raw(id);
         if self.themes.contains(&id) || Preset::find(id.as_str()).is_some() {

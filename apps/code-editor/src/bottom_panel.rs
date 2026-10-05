@@ -658,11 +658,14 @@ mod tests {
                 .map(|tab| tab.title.clone())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(titles(&panel), ["Problems", "Terminal"]);
+        assert_eq!(titles(&panel), ["Problems", "Terminal", "Search results"]);
         panel.set_problems(vec![diagnostic(Severity::Error, 3)]);
-        assert_eq!(titles(&panel), ["Problems (1)", "Terminal"]);
+        assert_eq!(
+            titles(&panel),
+            ["Problems (1)", "Terminal", "Search results"]
+        );
         panel.set_problems(Vec::new());
-        assert_eq!(titles(&panel), ["Problems", "Terminal"]);
+        assert_eq!(titles(&panel), ["Problems", "Terminal", "Search results"]);
     }
 
     #[test]

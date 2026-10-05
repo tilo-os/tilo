@@ -726,8 +726,8 @@ mod tests {
 
             let error = parse_path_detailed(&bad).expect_err("a corrupt EPUB does not import");
             assert!(
-                error.contains("open epub zip"),
-                "the UI receives the actual parse reason, not a generic failure: {error}"
+                error == crate::epub::OpenProblem::Damaged.to_string(),
+                "the UI receives the specific plain-language damaged-container reason: {error}"
             );
         }
     }

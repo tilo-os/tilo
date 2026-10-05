@@ -992,16 +992,26 @@ mod interaction_tests {
             h.key(Key::Named(NamedKey::ArrowDown), None);
             let second = h.app.core.borrow().model.locations[1].name.clone();
             // The column titles are the header row's headings.
-            let headings: Vec<_> = h
-                .app
-                .nav
-                .children()
-                .iter()
-                .filter_map(|child| child.accessibility())
-                .filter(|node| matches!(node.role, ui::a11y::Role::Heading { .. }))
-                .collect();
+            fn headings(widget: &dyn Widget, out: &mut Vec<ui::a11y::AccessNode>) {
+                fn semantic(node: ui::a11y::AccessNode, out: &mut Vec<ui::a11y::AccessNode>) {
+                    if matches!(node.role, ui::a11y::Role::Heading { .. }) {
+                        out.push(node.clone());
+                    }
+                    for child in node.children {
+                        semantic(child, out);
+                    }
+                }
+                if let Some(node) = widget.accessibility() {
+                    semantic(node, out);
+                }
+                for child in widget.children() {
+                    headings(child, out);
+                }
+            }
+            let mut headings_found = Vec::new();
+            headings(&h.app.nav, &mut headings_found);
             assert!(
-                headings
+                headings_found
                     .iter()
                     .any(|heading| heading.name.as_deref() == Some(second.as_str())),
                 "the forecast's header names the selected place"

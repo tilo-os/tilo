@@ -1879,13 +1879,19 @@ fn find_in_terminal_is_local_discoverable_and_reflows() {
         ));
         view.sync(&doc, &ROOT);
         assert!(view.find_is_open());
-        let semantics = view.accessibility().expect("terminal with Find");
-        let query = semantics
-            .children
-            .iter()
-            .flat_map(|child| &child.children)
-            .find(|child| child.role == Role::TextInput)
-            .expect("discoverable query");
+        fn query(widget: &dyn ui::widget::Widget) -> Option<ui::a11y::AccessNode> {
+            fn input(node: ui::a11y::AccessNode) -> Option<ui::a11y::AccessNode> {
+                if node.role == Role::TextInput {
+                    return Some(node);
+                }
+                node.children.into_iter().find_map(input)
+            }
+            widget
+                .accessibility()
+                .and_then(input)
+                .or_else(|| widget.children().into_iter().find_map(query))
+        }
+        let query = query(&view).expect("discoverable Find query in the retained scope");
         assert!(view.perform_semantic_action(
             query.action_target.as_deref().expect("query target"),
             &Action::SetValue("private search".into()),

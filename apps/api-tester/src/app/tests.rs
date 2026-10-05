@@ -10,7 +10,6 @@ use automerge::ROOT;
 use ui::Theme;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Invoke, Resource as _};
-const METHOD_PATH: &str = "method";
 
 /// A demo app whose workspace has been seeded into a fresh document.
 
@@ -116,7 +115,10 @@ fn request_builder_resolves_environment_and_loads_saved_requests() {
     assert_eq!(a.request.body_mode, BodyMode::Json);
     assert_eq!(a.selected, Some((0, 2)));
     assert_eq!(ApiDoc::read_text(&doc, &ROOT, "url"), "{{base_url}}/users");
-    assert_eq!(ApiDoc::read_text(&doc, &ROOT, METHOD_PATH), "POST");
+    assert_eq!(
+        ApiDoc::request(&doc, &ROOT).unwrap().method,
+        HttpMethod::Post
+    );
     assert!(ApiDoc::read_text(&doc, &ROOT, "body").contains("Grace Hopper"));
     assert_eq!(a.active_tab, RequestTab::Params);
 }
@@ -351,8 +353,17 @@ fn sheets_dispatch_canonical_actions_for_the_row_they_were_opened_on() {
 fn saving_a_request_files_it_and_selects_it() {
     let (mut a, mut doc) = demo();
     ApiDoc::set_text(&mut doc, &ROOT, "url", "{{base_url}}/health");
-    a.request = Request::new("Health");
-    a.selected = None;
+    let mut request = Request::new("Health");
+    request.url = "{{base_url}}/health".into();
+    a.dispatcher
+        .as_ref()
+        .unwrap()
+        .apply_now(
+            &mut ui::widget::Edits::lend(&mut doc),
+            &ApiTesterAction::OpenRequest { request },
+        )
+        .unwrap();
+    resync(&mut a, &doc);
     a.open_form(FormMode::SaveRequest, FormTarget::default());
     push(&a, Cmd::SubmitForm);
     drain(&mut a, &mut doc);
@@ -485,16 +496,34 @@ fn key_value_tables_edit_the_request() {
 #[test]
 
 fn auth_fields_edit_the_request() {
-    let mut app = TestApp::<ApiTesterShell>::capture(None).unwrap();
-    app.with_surface::<ApiTesterApp, _>(|surface| push(surface, Cmd::SetAuthKind(2)))
-        .unwrap();
-    app.settle();
-    app.with_surface::<ApiTesterApp, _>(|surface| {
-        push(surface, Cmd::EditAuth(AuthField::Username, "ada".into()));
-        push(surface, Cmd::EditAuth(AuthField::Password, "secret".into()));
-        push(surface, Cmd::EditAuth(AuthField::Token, "ignored".into()));
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    app.invoke(
+        Invoke::<ApiTester>::apply(&ApiTesterAction::SetAuth {
+            auth: Auth::Basic {
+                username: String::new(),
+                password: String::new(),
+            },
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    app.effect(&ApiTesterEffect::EditAuthField {
+        field: "username".into(),
+        value: "ada".into(),
     })
     .unwrap();
+    app.effect(&ApiTesterEffect::SetCredential {
+        secret: "secret".into(),
+    })
+    .unwrap();
+    assert!(
+        app.effect(&ApiTesterEffect::EditAuthField {
+            field: "token".into(),
+            value: "ignored".into()
+        })
+        .is_err(),
+        "a credential cannot enter through the shared metadata door"
+    );
     app.settle();
     assert_eq!(
         app.with_surface::<ApiTesterApp, _>(|surface| surface.request.auth.clone())
@@ -512,8 +541,16 @@ fn auth_fields_edit_the_request() {
         },
         "the authoritative document holds the auth scheme and username, with no credential"
     );
-    app.with_surface::<ApiTesterApp, _>(|surface| push(surface, Cmd::SetAuthKind(3)))
-        .unwrap();
+    app.invoke(
+        Invoke::<ApiTester>::apply(&ApiTesterAction::SetAuth {
+            auth: Auth::ApiKey {
+                header: "X-Api-Key".into(),
+                value: String::new(),
+            },
+        })
+        .unwrap(),
+    )
+    .unwrap();
     app.settle();
     assert!(
         matches!(app.state().request.auth, Auth::ApiKey { ref header, .. } if header == "X-Api-Key")
@@ -626,7 +663,7 @@ fn resource_send_performs_a_real_http_round_trip() {
     app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
         .unwrap();
     assert!(app.state().history.is_empty());
-    app.effect(&ApiTesterEffect::Send).unwrap();
+    app.start_effect(&ApiTesterEffect::Send).unwrap();
     assert!(
         app.effect_progress()
             .iter()
@@ -730,7 +767,7 @@ fn a_failed_request_is_shown_in_the_response_pane() {
     request.url = format!("http://{address}/unreachable");
     app.invoke(Invoke::apply(&ApiTesterAction::OpenRequest { request }).unwrap())
         .unwrap();
-    app.effect(&ApiTesterEffect::Send).unwrap();
+    app.start_effect(&ApiTesterEffect::Send).unwrap();
     tilo_test_env::wait_until("the failed HTTP worker", || {
         app.settle();
         app.effect_progress()
@@ -816,7 +853,7 @@ fn rereading_the_document_keeps_the_order_on_screen() {
 #[test]
 fn long_navigation_labels_fit_the_shared_rows() {
     fn find(widget: &mut dyn Widget, theme: &Theme, text: &mut ui::TextRenderer) -> usize {
-        if widget.name() == "NavList" {
+        if widget.name() == "NavList" || widget.name() == "TreeView" {
             let rect = widget.get_rect();
             let mut scene = vello::Scene::new();
             widget.draw(

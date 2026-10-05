@@ -1185,11 +1185,11 @@ impl StoreApp {
     /// shows. Without a worker (a capture, a past version) nothing is
     /// fetched.
     fn request_from_worker(&mut self) {
-        let search = self.pending_search.take();
-        let detail = self.pending_detail.take();
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
+        let search = self.pending_search.take();
+        let detail = self.pending_detail.take();
         if let Some(query) = search {
             worker.request(Request::Search(query));
         }

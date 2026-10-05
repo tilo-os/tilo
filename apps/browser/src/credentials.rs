@@ -54,6 +54,7 @@ pub(crate) struct Credentials {
     delete: Option<String>,
     notice: String,
     action: LocalState<Option<Action>>,
+    opening: LocalState<Option<bool>>,
 }
 impl Credentials {
     pub fn new(private: bool) -> Self {
@@ -74,6 +75,7 @@ impl Credentials {
             delete: None,
             notice: String::new(),
             action: LocalState::new(None),
+            opening: LocalState::new(None),
         }
     }
     fn request(&mut self, action: CredentialAction) -> Vec<CredentialRequest> {
@@ -340,8 +342,19 @@ impl Credentials {
             engine.send(WebViewCommand::Credentials(request));
         }
     }
+    pub fn open_request(&self) -> LocalState<Option<bool>> {
+        self.opening.clone()
+    }
+
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
         let mut dirty = false;
+        if let Some(addresses) = self.opening.get() {
+            self.opening.set(None);
+            self.address_mode = addresses;
+            let requests = self.open(engine.supports_native_filtering());
+            Self::send(engine, requests);
+            dirty = true;
+        }
         if let Some(action) = self.action.get() {
             self.action.set(None);
             dirty = true;

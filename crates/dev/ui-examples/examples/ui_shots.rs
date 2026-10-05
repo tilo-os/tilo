@@ -24,6 +24,7 @@ registry::scenario_modules! {
     scrollbar_shots, "scrollbar_shots.rs", "scrollbar states";
     search_showcase, "search_showcase.rs", "search-field states and results";
     soft_shadow_shots, "soft_shadow_shots.rs", "soft-shadow rendering";
+    table_shots, "table_shots.rs", "editable table insertion and deletion";
     text_shots, "text_shots.rs", "typography rendering";
     textinput_ext_shots, "textinput_ext_shots.rs", "extended text input states";
     undo_controls_shots, "undo_controls_shots.rs", "undo and redo availability states";

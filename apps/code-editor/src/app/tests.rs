@@ -393,10 +393,22 @@ fn quick_open_and_go_to_line_open_the_host_palette() {
     sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("p");
     assert_eq!(
-        ui::host_palette::take(),
-        Some(ui::host_palette::PaletteRequest::Search(String::new())),
-        "quick open is the host palette over the project's search entries"
+        sample
+            .app
+            .harness()
+            .focused_access_node()
+            .expect("host search focus")
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Search"))
+            .expect("host search query")
+            .role,
+        ui::a11y::Role::TextInput,
+        "quick open exposes the platform search query over project entries"
     );
+    sample.app.harness().set_modifiers(&[]);
+    sample.app.harness().key("Escape");
+    sample.app.harness().set_modifiers(&["ctrl".to_owned()]);
     sample.app.harness().key("g");
     sample.app.harness().set_modifiers(&[]);
     assert_eq!(
@@ -862,10 +874,10 @@ fn buffer_lines(app: &CodeApp, doc: &AutoCommit, node: TreeId) -> Vec<String> {
 /// editor's highlight layer, and stepping to a match selects it.
 fn find_highlights_and_navigates_matches() {
     let mut sample = synced_sample();
-    sample.with_doc(|app, _doc| {
+    sample.with_doc(|app, doc| {
         app.open_find();
         app.find.set_query("primes");
-        app.refresh_find();
+        app.drive_find(doc);
 
         assert!(
             app.find_matches.len() >= 2,
@@ -1176,9 +1188,7 @@ fn retained_dock_trigger_shares_tab_chrome_and_uses_pointer_and_keyboard_routes(
     // same line, and never overlaps it.
     assert!(
         (trigger.center().y - header.center().y).abs() < 1.0,
-        "trigger and file name share the chrome row: {} vs {}",
-        trigger.center().y,
-        header.center().y
+        "trigger and file name share the chrome row: {trigger:?} vs {header:?}"
     );
     assert!(
         header.x1 <= trigger.x0,

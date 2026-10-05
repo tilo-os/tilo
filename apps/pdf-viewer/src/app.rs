@@ -5669,7 +5669,7 @@ impl Widget for PdfApp {
                 state,
                 path,
             );
-            self.drain_toolbar(state);
+            self.drain_toolbar();
             return handled;
         }
         if target.starts_with("find-") {
