@@ -5598,7 +5598,7 @@ mod tests {
             None,
             "nothing drawn, nothing stale"
         );
-        assert!(!bar.update(&mut (), &()));
+        assert!(!bar.update(&(), &()));
 
         lay_out_and_draw(&mut bar, 1200.0);
         let now = Instant::now();
@@ -5606,7 +5606,7 @@ mod tests {
             .next_wake_deadline()
             .expect("a drawn clock wakes when its minute ends");
         assert!(wake > now && wake <= now + Duration::from_secs(60));
-        assert!(!bar.update(&mut (), &()), "the minute has not turned yet");
+        assert!(!bar.update(&(), &()), "the minute has not turned yet");
 
         let overdue = Instant::now()
             .checked_sub(Duration::from_millis(1))
@@ -5618,7 +5618,7 @@ mod tests {
             "an overdue wake must not hold the loop at a zero timeout"
         );
         assert!(
-            bar.update(&mut (), &()),
+            bar.update(&(), &()),
             "the turned minute marks the bar dirty so the frame repaints it"
         );
         assert!(
@@ -5626,7 +5626,7 @@ mod tests {
                 .is_some_and(|next| next > Instant::now()),
             "the next minute is scheduled"
         );
-        assert!(!bar.update(&mut (), &()), "one repaint per minute");
+        assert!(!bar.update(&(), &()), "one repaint per minute");
     }
 
     fn floating_clock() -> TopBarChrome {
