@@ -553,9 +553,14 @@ impl WindowGroup {
         let before = spring.value();
         spring.step(dt);
         self.last_width_step = Some(now);
-        if (spring.value() - before).abs() > 0.05 {
-            self.style_dirty = true;
+        if (spring.value() - before).abs() <= 0.05 {
+            // The spring is only stepped while the layout is rebuilt, and a
+            // step this small asks for no rebuild: the rest of the motion,
+            // well under a pixel, would never be taken and the group would
+            // ask for animation frames forever. Finish it now.
+            spring.snap(spring.target());
         }
+        self.style_dirty = true;
         if spring.is_settled() && !self.is_closing() {
             self.width_spring = None;
         }
@@ -2524,21 +2529,21 @@ impl Widget for WindowGroup {
                 .is_some_and(super::Widget::wants_pointer_capture)
     }
     fn take_structure_dirty(&mut self) -> bool {
-        // `fold`, not `any`: every child's flag must be drained even if
-        // an earlier one already reported dirty.
+        // Every child's flag is drained, but only the active host's counts:
+        // inactive hosts have no layout nodes (see `is_layout_dirty`), and
+        // selecting one rebuilds through `active_switched` anyway.
         let bar = self.bar.take_structure_dirty();
-        #[allow(
-            clippy::unnecessary_fold,
-            reason = "all host dirty flags must be drained without short-circuiting"
-        )]
-        let hosts = self
-            .hosts
-            .iter_mut()
-            .map(|(_, h)| h.take_structure_dirty())
-            .fold(false, |acc, d| acc || d);
+        let active = self.bar.active_id();
+        let mut active_host = false;
+        for (id, host) in &mut self.hosts {
+            let dirty = host.take_structure_dirty();
+            if *id == active {
+                active_host = dirty;
+            }
+        }
         let style = std::mem::take(&mut self.style_dirty);
-        let active_switched = self.built_active != Some(self.bar.active_id());
-        bar || hosts || style || active_switched
+        let active_switched = self.built_active != Some(active);
+        bar || active_host || style || active_switched
     }
     fn needs_redraw(&self) -> bool {
         // Redraw follows the presentation tree. Retained inactive hosts still
@@ -3073,6 +3078,101 @@ mod tests {
         fn permission_hint(&self) -> Option<AppKind> {
             None
         }
+    }
+
+    /// An app that asks for a new layout tree every time it is asked.
+    struct Restructuring {
+        drained: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+
+    impl Widget for Restructuring {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _t: &crate::theme::Theme,
+            _m: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            taffy.leaf_node(taffy::Style::default())
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _th: &crate::theme::Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn name(&self) -> &'static str {
+            "Restructuring"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn take_structure_dirty(&mut self) -> bool {
+            self.drained.set(self.drained.get() + 1);
+            true
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for Restructuring {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Files
+        }
+        fn app_title(&self) -> &'static str {
+            "Restructuring"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("R")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    #[test]
+    fn an_inactive_tab_does_not_rebuild_the_group_layout() {
+        let drained = std::rc::Rc::new(std::cell::Cell::new(0));
+        let tabs: Vec<(TabDescriptor, TileContent)> = vec![
+            (
+                TabDescriptor::new(1, "Shown"),
+                TileContent::Stub {
+                    kind: AppKind::Settings,
+                    label: "shown".into(),
+                },
+            ),
+            (
+                TabDescriptor::new(2, "Behind"),
+                TileContent::App(Box::new(Restructuring {
+                    drained: drained.clone(),
+                })),
+            ),
+        ];
+        let mut g = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        for frame in 0..3 {
+            assert!(
+                !g.take_structure_dirty(),
+                "frame {frame}: a tab with no layout nodes rebuilt the group's layout"
+            );
+        }
+        assert_eq!(drained.get(), 3, "the inactive tab's flag is still drained");
+
+        assert!(g.cycle_active_tab(1));
+        assert!(
+            g.take_structure_dirty(),
+            "selecting the tab builds its layout"
+        );
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = g.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        assert!(
+            g.take_structure_dirty(),
+            "the active tab's own requests still reach the host"
+        );
     }
 
     fn group_opening(title: &str, presented: bool, opening: bool) -> WindowGroup {
@@ -4722,6 +4822,35 @@ mod tests {
                     .is_some_and(|s| s.target() < px_f32(mid)),
                 "Narrow on a 1200 px strip is smaller than the mid-open width",
             );
+        }
+
+        // Case `an_opening_slot_settles_when_only_its_own_rebuilds_step_it`.
+        {
+            // The row steps the slot spring only while it rebuilds the
+            // layout, and rebuilds only when a group asks for it. Frames at
+            // 60 and at 20 a second must both end the motion.
+            for frame_ms in [16, 50] {
+                let mut g = group_opening("Files", true, false);
+                g.set_strip_usable_px(1200.0);
+                g.start_spawn_animation();
+                let mut rebuilds = 0;
+                while std::mem::take(&mut g.style_dirty) && rebuilds < 200 {
+                    g.last_width_step = g.last_width_step.map(|_| instant_ago_ms(frame_ms));
+                    g.step_width_spring();
+                    rebuilds += 1;
+                }
+                assert!(
+                    g.width_spring.is_none(),
+                    "{frame_ms} ms frames: the slot spring stalled at {:?} after {rebuilds} rebuilds",
+                    g.width_spring
+                        .as_ref()
+                        .map(|s| (s.value(), s.target(), s.velocity())),
+                );
+                assert!(
+                    (g.layout_width_px() - g.resolved_width_px()).abs() < 0.5,
+                    "{frame_ms} ms frames: the slot ends at its width",
+                );
+            }
         }
 
         // Case `closing_collapses_the_slot_and_keeps_drawing`.

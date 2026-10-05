@@ -11,7 +11,10 @@
 # them under the CI builder, silently, and a missing module here is a root
 # that cannot be unlocked. Naming them makes dracut fail instead of omit.
 # Tilo installs only onto a local block device and supports passphrase,
-# TPM2, and FIDO2 unlock. Network roots and network-bound disk encryption
+# TPM2, FIDO2 and sibling unlock. The last one (tilo-sibling-unlock) carries
+# the image's NetworkManager to reach the owner's other devices, but starts
+# it only for a root whose LUKS2 header enrolled that factor; it parses no
+# network-root command line and pulls in no network-root module. Network roots and network-bound disk encryption
 # add DHCP/TLS/NFS/iSCSI parsers plus startup work to every signed UKI with
 # no supported way to use them. The supported roots are Btrfs and Ext4;
 # Ext4 must be available before pivot_root for an Ext4 installation. Keep
@@ -40,14 +43,14 @@ sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' 
 # diagnostics while disabling the distro's default syslog sink.
 printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf
 omit_modules="network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh"
-required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"
+required_modules="crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"
 log="$(mktemp /tmp/tilo-dracut.XXXXXX)"
 trap 'rm -f -- "$log"' EXIT
 dracut --force --reproducible --compress zstd -v --kver "$kver" \
     --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
     --omit-drivers "amdgpu nouveau xe xfs" \
     --add-drivers ext4 \
-    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback" \
+    --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock" \
     "/usr/lib/modules/$kver/initramfs.img" > "$log" 2>&1 \
   || { cat "$log" >&2; exit 1; }
 test -s "/usr/lib/modules/$kver/initramfs.img"
@@ -70,3 +73,7 @@ for m in $omit_modules; do
   ! grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || {
     echo "unsupported initramfs module $m was included" >&2; exit 1; }
 done
+# A board image (one with a hardware-profile definition) also reads its
+# initramfs back: the profile's firmware and boot modules, and the Wi-Fi pieces
+# sibling unlock installs only optionally. Generic images skip this.
+python3 -B "$(dirname "${BASH_SOURCE[0]}")/verify-board-initramfs.py" "$kver"

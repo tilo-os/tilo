@@ -847,6 +847,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }

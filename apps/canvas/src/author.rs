@@ -1,5 +1,6 @@
 //! What only the window that authors an action can find: colour as the
-//! artwork shows it, for the magic wand and selecting by colour.
+//! artwork shows it, for the magic wand and selecting by colour, and the
+//! picture's subject and edges (`crate::subject`).
 //!
 //! Like `set-reference` reading a file where the action is authored, such an
 //! action is resolved to plain geometry before it is applied, so every
@@ -53,6 +54,17 @@ pub fn see(renderer: &Rc<RefCell<Renderer>>, art: &Rc<Artwork>) {
     });
 }
 
+thread_local! {
+    static LATEST: RefCell<Option<Rc<Artwork>>> = const { RefCell::new(None) };
+}
+
+/// The artwork as last read from its document. An action authored right
+/// after another (an agent opening a photo, then selecting its subject)
+/// must find what it names in that, not in what the window showed before.
+pub fn read(art: &Artwork) {
+    LATEST.with_borrow_mut(|latest| *latest = Some(Rc::new(art.clone())));
+}
+
 /// What to find by colour.
 #[derive(Clone, Debug, Default)]
 pub struct ColourQuery {
@@ -76,12 +88,39 @@ pub struct ColourQuery {
 /// # Errors
 /// Returns why the colour cannot be found: no window shows the artwork, or
 /// the query is malformed.
-pub fn resolve(select: &mut Select) -> Result<(), String> {
+pub fn resolve(mut select: Select) -> Result<crate::actions::CanvasAction, String> {
+    use crate::actions::CanvasAction;
     if !select.looks() {
         if select.layer.is_some() {
-            return Err("layer names where at or colour is found; give at or colour".into());
+            return Err("layer names where at, colour or subject is found; give one".into());
         }
-        return Ok(());
+        return Ok(CanvasAction::Select(Box::new(select)));
+    }
+    if select.subject == Some(true) || select.refine.is_some() {
+        let (found, matte) = with_sight(|renderer, text, art| {
+            if let Some(layer) = &select.layer
+                && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
+            {
+                return Err(format!(
+                    "there is no layer {layer:?} to find the subject on; the layers are {}",
+                    crate::actions::layer_list(art)
+                ));
+            }
+            crate::subject::find(&select, renderer, text, art)
+        })?;
+        let found = match &select.d {
+            Some(d) => Region::of_path(&ui::vello::kurbo::BezPath::from_svg(d).unwrap_or_default())
+                .combine(&found, Op::Union),
+            None => found,
+        };
+        select.d = Some(path_data(&found.to_path()));
+        select.at = None;
+        select.subject = None;
+        select.refine = None;
+        select.layer = None;
+        select.tolerance = None;
+        select.matte = matte;
+        return Ok(CanvasAction::Select(Box::new(select)));
     }
     let colour = match &select.colour {
         Some(text) => Some(
@@ -139,7 +178,7 @@ pub fn resolve(select: &mut Select) -> Result<(), String> {
     select.colour = None;
     select.tolerance = None;
     select.layer = None;
-    Ok(())
+    Ok(CanvasAction::Select(Box::new(select)))
 }
 
 /// Run `look` with what the canvas shows.
@@ -157,7 +196,9 @@ pub fn with_sight<T>(
             .renderer
             .upgrade()
             .ok_or("colour is found in the artwork as a window shows it; none is open")?;
-        let art = Rc::clone(&sight.art);
+        let art = LATEST
+            .with_borrow(Clone::clone)
+            .unwrap_or_else(|| Rc::clone(&sight.art));
         let text = sight.text.get_or_insert_with(TextRenderer::new);
         let mut renderer = renderer
             .try_borrow_mut()
@@ -174,6 +215,21 @@ pub fn with_sight<T>(
 /// # Errors
 /// Returns a point outside the artwork, or a render failure.
 pub fn colour_region(
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    query: &ColourQuery,
+) -> Result<Region, String> {
+    // Colour is found in the pictures themselves, never in the placeholder
+    // the canvas shows while a just-opened photo is still being decoded.
+    let patient = std::mem::replace(&mut renderer.pictures.patient, true);
+    let found = look_for_colour(renderer, text, art, query);
+    renderer.pictures.patient = patient;
+    found
+}
+
+/// [`colour_region`], its pictures waited for.
+fn look_for_colour(
     renderer: &mut Renderer,
     text: &mut TextRenderer,
     art: &Artwork,

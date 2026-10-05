@@ -258,6 +258,75 @@ test('a member the host lets drive the window clicks, scrolls, types and pastes 
   m.layer.close();
 });
 
+test('typing reaches the window as every stroke in order, and a held key repeats as the browser repeats it', async () => {
+  const m = await controlled({control: true});
+  m.canvas.dispatch('pointerdown', {button: 0, clientX: 210, clientY: 168});
+  m.canvas.dispatch('pointerup', {button: 0});
+  const SHIFTED = {'!': 'Digit1', ':': 'Semicolon', '?': 'Slash'};
+  const code = c => SHIFTED[c] ?? ({' ': 'Space', '.': 'Period', ',': 'Comma', '/': 'Slash', ';': 'Semicolon'}[c]
+    ?? (/[0-9]/.test(c) ? `Digit${c}` : `Key${c.toUpperCase()}`));
+  const text = 'Hello, World! example.com';
+  for (const c of text) {
+    const shift = c in SHIFTED || /[A-Z]/.test(c);
+    if (shift) m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+    m.canvas.dispatch('keydown', {code: code(c), shiftKey: shift});
+    m.canvas.dispatch('keyup', {code: code(c), shiftKey: shift});
+    if (shift) m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
+  }
+  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true});
+  m.canvas.dispatch('keydown', {code: 'ShiftLeft', shiftKey: true, repeat: true});
+  m.canvas.dispatch('keyup', {code: 'ShiftLeft'});
+  m.canvas.dispatch('keydown', {code: 'KeyO'});
+  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.canvas.dispatch('keydown', {code: 'KeyO', repeat: true});
+  m.canvas.dispatch('keyup', {code: 'KeyO'});
+  m.canvas.dispatch('keydown', {code: 'KeyP', repeat: true});
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  const strokes = [];
+  for (const c of text) {
+    const shift = c in SHIFTED || /[A-Z]/.test(c);
+    const keysym = evdevKey(code(c));
+    if (shift) strokes.push([42, true]);
+    strokes.push([keysym, true], [keysym, false]);
+    if (shift) strokes.push([42, false]);
+  }
+  assert.deepEqual(keys, [...strokes, [42, true], [42, false], [24, true], [24, true], [24, true], [24, false]],
+    'every press and release in order; a held letter repeats, a held modifier and a key not held do not');
+  m.layer.close();
+});
+
+test('character modifier snapshots reach the window as shift edges even without a shift key event', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  for (const [code, shiftKey] of [['KeyM', true], ['KeyI', false], ['Slash', true], ['Digit7', true], ['KeyA', false]]) {
+    m.canvas.dispatch('keydown', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+    m.canvas.dispatch('keyup', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+  }
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [
+    [42, true], [50, true], [50, false], [42, false], [23, true], [23, false],
+    [42, true], [53, true], [53, false], [8, true], [8, false],
+    [42, false], [30, true], [30, false],
+  ], 'Mi?&a retains capitals and shifted punctuation without duplicate modifier presses');
+  m.layer.close();
+});
+
+test('a shortcut held before focus is restored and its modifier is released on blur', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  m.canvas.dispatch('keydown', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('keyup', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('blur');
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [[29, true], [38, true], [38, false], [29, false]]);
+  m.layer.close();
+});
+
 test('the window the desktop focuses takes the keyboard, and a click focuses its desktop window', async () => {
   const focused = [];
   let desktop = 0;

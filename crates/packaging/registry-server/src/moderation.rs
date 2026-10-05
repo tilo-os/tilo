@@ -1112,6 +1112,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: timestamp,
@@ -1347,6 +1348,7 @@ mod tests {
             architecture: registry_types::WASM32_ARCHITECTURE.into(),
             isa: "wasm32-mvp+bulk-memory+sign-ext".into(),
             runtime: Some("tilo-runtime/2026.07+wasm.00112233445566778899aabbccddeeff".into()),
+            interfaces: Vec::new(),
         };
         with_web.versions.push(web);
         assert!(validate_version_history(&with_web, Some(&current), &official).is_ok());
@@ -1379,6 +1381,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             };
             with_android.versions.push(android);
         }

@@ -347,6 +347,9 @@ async fn maintain_legacy(legacy: Arc<legacy::LegacyWindows>, context: crate::dae
     }
 }
 
+/// How long one input request waits for room in the session's queue.
+const LEGACY_INPUT_DELIVERY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Forward a member's input to the session streaming the window, if the
 /// member may drive it: admitted to the room now and, in a room this relay
 /// governs, its owner or an editor (a viewer only watches); in a room it
@@ -423,23 +426,34 @@ async fn legacy_input(
             std::time::Instant::now(),
         )
         .map_err(|_| status(StatusCode::NOT_FOUND, "no such window"))?;
-    let workspace = workspace.lock().await;
-    for payload in payloads {
-        let delivered = workspace.route_lossy(
-            &publisher,
-            crate::Envelope::Presence {
+    let unreachable = || {
+        status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the window's session is not reachable",
+        )
+    };
+    let queue = workspace
+        .lock()
+        .await
+        .subscriber_queue(&publisher)
+        .ok_or_else(unreachable)?;
+    // Every event, in order: a key-up lost or a batch cut short leaves keys
+    // held or typed text missing letters. A busy session is waited for.
+    let delivered = tokio::time::timeout(LEGACY_INPUT_DELIVERY, async {
+        for payload in payloads {
+            let envelope = crate::Envelope::Presence {
                 workspace_id,
                 payload,
-            },
-        );
-        if !delivered {
-            return Err(status(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "the window's session is not reachable",
-            ));
+            };
+            queue.send(envelope).await.ok()?;
         }
+        Some(())
+    })
+    .await;
+    match delivered {
+        Ok(Some(())) => Ok(reply(StatusCode::NO_CONTENT, Vec::new())),
+        Ok(None) | Err(_) => Err(unreachable()),
     }
-    Ok(reply(StatusCode::NO_CONTENT, Vec::new()))
 }
 
 /// Browser presence frames the live relay forwarded, waiting to reach iroh

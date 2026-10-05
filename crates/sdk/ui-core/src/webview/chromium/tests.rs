@@ -1197,13 +1197,14 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request: PageRequest::Fill {
                 element: "d2e7".into(),
                 text: "ada@example.test".into(),
+                secret: false,
             },
         };
         assert!(command_within_limits(&command));
         assert_eq!(
             encode_command(command),
             Some(
-                json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test"})
+                json!({"op":"page","request_id":4,"action":"fill","element":"d2e7","text":"ada@example.test","secret":false})
             )
         );
         for invalid in [
@@ -1244,6 +1245,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
                     url: "https://shop.test/cart".into(),
                     message: "Clicked".into(),
                     outline: None,
+                    data: None,
                     navigated: true,
                     loading: true,
                 }),
@@ -1272,6 +1274,7 @@ fn page_requests_are_encoded_bounded_and_always_answered() {
             request_id: 8,
             request: PageRequest::Submit {
                 element: "not a ref".into(),
+                cross_origin: false,
             },
         });
         let answered = engine.drain_events().into_iter().any(|event| {

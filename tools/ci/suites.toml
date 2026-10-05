@@ -152,6 +152,7 @@ suites = [
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_verify_board_initramfs.py",
   "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
@@ -318,6 +319,7 @@ suites = [
   "dist/ci/tests/test_package_source_transfer.py",
   "dist/dev/tests/fedora44-vm-iterate-test.sh",
   "dist/local-models/smolvlm2-500m/contract-test.sh",
+  "dist/local-models/u2net-subject/contract-test.sh",
   "dist/rpm/test-app-collection.sh",
   "dist/rpm/test-app-store-stage.sh",
   "dist/rpm/test-build-target-dir.sh",
@@ -346,7 +348,13 @@ suites = [
 [[group]]
 name = "vm-acceptance"
 inputs = ["scripts/vm-acceptance/"]
-suites = ["scripts/vm-acceptance/test_apps.py", "scripts/vm-acceptance/test_frames.py"]
+suites = [
+  "scripts/vm-acceptance/test_apps.py",
+  "scripts/vm-acceptance/test_app_startup.py",
+  "scripts/vm-acceptance/test_ci_select.py",
+  "scripts/vm-acceptance/test_frames.py",
+  "scripts/vm-acceptance/test_provenance.py",
+]
 
 [[group]]
 name = "perf-tools"
@@ -534,8 +542,8 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
+readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
 
 [[cargo]]
 package = "tilo-vm"
@@ -919,7 +927,12 @@ workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots two VMs (KVM) from the gated dev disk; with --wake (os/dev/nearby-wake-phase.sh) suspends and wakes one"
+reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-slow-frame-launch.sh"
+reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
 workflow = "build-image.yml"
 
 [[unrequired]]
@@ -1074,6 +1087,11 @@ reason = "needs squashfs-tools, absent from the ci-fast image"
 [[unrequired]]
 suite = "os/tests/installer-render-smoke.sh"
 reason = "needs a built tilo-installer binary"
+
+[[unrequired]]
+suite = "os/tests/installed-admin-actions.sh"
+reason = "runs inside a booted guest as its device admin, after first login"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"

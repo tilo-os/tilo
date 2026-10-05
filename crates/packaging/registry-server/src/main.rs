@@ -36,7 +36,7 @@ use tracing_subscriber::EnvFilter;
 use registry_server::{
     AppState, InspectionPolicy, ModerationService, PromotionJournal, PruneReport,
     PublisherAllowlist, PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage,
-    default_data_dir, inspect_bytes, run_server,
+    default_data_dir, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -640,7 +640,13 @@ fn collect_submission_artifacts(
         // advertised URL stops serving them. They pass the same inspection.
         let inspection =
             if let Some(bytes) = storage.find_staged_artifact(&version.tapp_blake3_hex)? {
-                inspect_bytes(&pending.change.entry, version, &bytes)?
+                registry_server::inspect_stored_bytes(
+                    storage,
+                    &pending.change.entry,
+                    version,
+                    &bytes,
+                    Some(policy),
+                )?
             } else {
                 let (inspection, bytes) = registry_server::review_version_bytes(
                     storage,
@@ -937,7 +943,13 @@ fn cmd_publish_staged_first_party(
                 );
             };
             let bytes = storage.load_staged_artifact(&artifact.blake3_hex)?;
-            let _inspection = inspect_bytes(&pending.change.entry, version, &bytes)?;
+            let _inspection = registry_server::inspect_stored_bytes(
+                storage,
+                &pending.change.entry,
+                version,
+                &bytes,
+                None,
+            )?;
         }
     }
     let expected_artifacts: usize = staged
@@ -1917,6 +1929,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: architecture.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let shared_bytes = b"same verified tapp".to_vec();
             let digest = blake3::hash(&shared_bytes).to_hex().to_string();
@@ -2098,6 +2111,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
             let mut entry = publisher_entry(&key);
@@ -2189,6 +2203,7 @@ mod tests {
                     architecture: "x86_64".into(),
                     isa: "x86_64-v3".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 1,
