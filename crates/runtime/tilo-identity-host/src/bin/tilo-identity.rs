@@ -1098,7 +1098,11 @@ mod unix {
             .arg(context.identity_root())
             .arg("--identity-dir")
             .arg(&context.identity_dir)
-            .args(["--label", label, "--timeout", &timeout.to_string()]);
+            .args(["--label", label, "--timeout", &timeout.to_string()])
+            // The join runs as root but writes this account's identity
+            // directory only as this account.
+            // SAFETY: geteuid has no preconditions and cannot fail.
+            .args(["--person-uid", &unsafe { libc::geteuid() }.to_string()]);
         if !context.json {
             eprintln!(
                 "Waiting up to {timeout}s. On a device that already has this identity, on the \

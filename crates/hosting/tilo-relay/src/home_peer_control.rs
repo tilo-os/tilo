@@ -616,6 +616,38 @@ fn enrollment_command_result(
     bail!("{incomplete}: {detail}")
 }
 
+/// The `tilo-enroll approve-device` command line for the person `uid`.
+fn approve_device_args(
+    identity_root: &Path,
+    identity_dir: &Path,
+    uid: u32,
+    home: &Path,
+    expected_device: &str,
+    expected_service: &str,
+    timeout: u64,
+) -> Vec<std::ffi::OsString> {
+    [
+        "approve-device".into(),
+        "--identity-root".into(),
+        identity_root.into(),
+        "--identity-dir".into(),
+        identity_dir.into(),
+        "--expected-device".into(),
+        expected_device.into(),
+        "--expected-service".into(),
+        expected_service.into(),
+        "--timeout".into(),
+        timeout.to_string().into(),
+        "--personal-rooms".into(),
+        home.join(".local/state/tilo")
+            .join(tilo_relay_protocol::personal_devices::ROOMS_FILE)
+            .into(),
+        "--person-uid".into(),
+        uid.to_string().into(),
+    ]
+    .into()
+}
+
 /// Run `tilo-enroll approve-device` for the person who invoked this helper,
 /// with their privileges (or the identity root owner's, for a seed-backed
 /// root), and return its output for `tilo-identity` and Settings.
@@ -631,24 +663,19 @@ fn approve_personal_device(
     let identity_root = validate_identity_root(identity_root, uid, &account.home)?;
     let identity_dir = validate_identity_dir(identity_dir, uid, &account.home)?;
     let mut command = Command::new("/usr/bin/tilo-enroll");
-    command
-        .arg("approve-device")
-        .arg("--identity-root")
-        .arg(&identity_root)
-        .arg("--identity-dir")
-        .arg(identity_dir)
-        .args(["--expected-device", expected_device])
-        .args(["--expected-service", expected_service])
-        .args(["--timeout", &timeout.to_string()])
-        .arg("--personal-rooms")
-        .arg(
-            account
-                .home
-                .join(".local/state/tilo")
-                .join(tilo_relay_protocol::personal_devices::ROOMS_FILE),
-        );
+    command.args(approve_device_args(
+        &identity_root,
+        &identity_dir,
+        uid,
+        &account.home,
+        expected_device,
+        expected_service,
+        timeout,
+    ));
     // A seed under the identity root is opened by whoever owns that root, as
-    // before. Without one the approval signs with the person's record.
+    // before; that run reads and writes the person's identity directory and
+    // room list only as the person (`--person-uid`). Without a seed the
+    // approval signs with the person's record and runs entirely as them.
     if tilo_user_identity::IdentityPaths::under(&identity_root)
         .user_privkey
         .exists()
@@ -673,6 +700,10 @@ fn main() -> anyhow::Result<std::process::ExitCode> {
 
 fn run() -> anyhow::Result<()> {
     require_root()?;
+    // The requester's umask reaches this helper through pkexec; nothing it
+    // or its children create is group- or world-writable because of it.
+    // SAFETY: umask has no preconditions.
+    unsafe { libc::umask(0o022) };
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),
         BrokerCommand::ApproveEnrollment {
@@ -712,6 +743,29 @@ fn run() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn a_root_run_approval_names_the_person_whose_home_it_touches() {
+        let args = approve_device_args(
+            Path::new("/var/lib/tilo"),
+            Path::new("/home/p/.local/share/tilo/identities"),
+            1000,
+            Path::new("/home/p"),
+            &"11".repeat(32),
+            &"22".repeat(32),
+            60,
+        );
+        let position = args.iter().position(|arg| arg == "--person-uid").unwrap();
+        assert_eq!(args[position + 1], "1000");
+        let rooms = args
+            .iter()
+            .position(|arg| arg == "--personal-rooms")
+            .unwrap();
+        assert_eq!(
+            args[rooms + 1],
+            "/home/p/.local/state/tilo/personal-rooms.json"
+        );
+    }
 
     #[test]
     fn the_requesting_account_comes_from_polkit_or_sudo_and_is_never_root() {

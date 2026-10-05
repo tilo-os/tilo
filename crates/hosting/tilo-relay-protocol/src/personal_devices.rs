@@ -271,13 +271,22 @@ fn lock_list(path: &Path, owner: u32) -> io::Result<advisory_lock::FileLock> {
     if !trusted_by(&metadata, owner) {
         return Err(refused("device list lock belongs to another account"));
     }
+    // Only the person, or root acting for them, takes this lock: it is
+    // theirs alone, whatever umask created it.
     #[cfg(unix)]
-    if current_uid() == 0 && owner != 0 {
+    {
         use std::os::fd::AsRawFd as _;
-        // SAFETY: the descriptor is open for the call; a gid of -1 leaves
-        // the group.
-        if unsafe { libc::fchown(file.as_raw_fd(), owner, libc::gid_t::MAX) } != 0 {
-            return Err(io::Error::last_os_error());
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        if current_uid() == 0 && owner != 0 {
+            // SAFETY: the descriptor is open for the call; a gid of -1
+            // leaves the group.
+            if unsafe { libc::fchown(file.as_raw_fd(), owner, libc::gid_t::MAX) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let me = current_uid();
+        if (me == 0 || metadata.uid() == me) && metadata.permissions().mode() & 0o7777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
     }
     advisory_lock::FileLock::exclusive(file)
