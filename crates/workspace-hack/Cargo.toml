@@ -199,6 +199,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 toml_parser = { version = "1" }
+tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
@@ -416,6 +417,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io"] }
 toml_parser = { version = "1" }
+tracing = { version = "0.1" }
 tracing-core = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ttf-parser = { version = "0.25", features = ["gvar-alloc", "no-std-float"] }
@@ -477,7 +479,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -518,7 +520,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -559,7 +561,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
@@ -600,7 +602,7 @@ tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tracing = { version = "0.1", features = ["log"] }
+tracing = { version = "0.1", default-features = false, features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }

@@ -369,6 +369,7 @@ suites = [
   "scripts/perf/collect_settings_native_test.py",
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
+  "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/main_stages_test.py",
   "scripts/perf/native_app_capture_test.py",
   "scripts/perf/native_delivery_test.py",

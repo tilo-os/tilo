@@ -752,6 +752,8 @@ impl KeyEvent {
             orbital_platform,
         ))]
         let platform_specific = platform_impl::KeyEventExtra {
+            #[cfg(any(x11_platform, wayland_platform))]
+            wayland_stamp: None,
             text_with_all_modifiers,
             key_without_modifiers,
         };
