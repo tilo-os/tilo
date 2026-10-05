@@ -462,14 +462,35 @@ impl StoreItem {
 /// search bar can start empty). `index` keeps the items indexed while they
 /// stay the same.
 pub fn relevance(index: &ListIndex, needle: &str, items: &[&StoreItem]) -> Vec<Option<i32>> {
-    index.ranks(
-        needle,
-        items.iter().map(|item| {
-            [
-                (item.name.as_str(), FieldWeight::TITLE),
-                (item.description.as_str(), FieldWeight::BODY),
-            ]
-        }),
+    index.ranks(needle, items.iter().map(|item| searchable_fields(item)))
+}
+
+/// Catalogue metadata searched by both the app's list/worker and the system
+/// directory. Names keep their title rank; identities and categories remain
+/// discoverable without outranking the app a person named.
+pub(crate) fn searchable_fields(item: &StoreItem) -> impl Iterator<Item = (&str, FieldWeight)> {
+    let source_name = match &item.source {
+        StoreSource::Tilo { registry_name } => registry_name.as_str(),
+        StoreSource::Flathub => "Flathub",
+        StoreSource::FlatpakRemote { name, .. } => name.as_str(),
+    };
+    [
+        (item.name.as_str(), FieldWeight::TITLE),
+        (item.id.as_str(), FieldWeight::IDENTITY),
+        (item.description.as_str(), FieldWeight::BODY),
+        (item.tagline.as_str(), FieldWeight::SUBTITLE),
+        (
+            item.publisher_pubkey_hex.as_deref().unwrap_or(""),
+            FieldWeight::IDENTITY,
+        ),
+        (source_name, FieldWeight::METADATA),
+        (item.source.distribution_name(), FieldWeight::METADATA),
+    ]
+    .into_iter()
+    .chain(
+        item.categories
+            .iter()
+            .map(|category| (category.as_str(), FieldWeight::METADATA)),
     )
 }
 

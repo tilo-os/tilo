@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use tilo_actions::ActionAddress;
 use ui::tilo_resource::SearchEntry;
 
-use crate::{StoreItem, StoreSource};
+use crate::StoreItem;
 
 #[derive(Default)]
 struct DirectoryState {
@@ -133,33 +133,19 @@ fn resource_id(item: &StoreItem) -> String {
 }
 
 fn searchable_text(item: &StoreItem) -> String {
-    let source = match &item.source {
-        StoreSource::Tilo { registry_name } => registry_name.as_str(),
-        StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => item.source.distribution_name(),
-    };
-    format!(
-        "{} {} {} {} {} {} {}",
-        item.name,
-        item.id,
-        item.description,
-        item.categories.join(" "),
-        source,
-        item.trust.label(),
-        item.latest_version(),
-    )
+    let trust = item.trust.label();
+    crate::model::searchable_fields(item)
+        .map(|(text, _)| text)
+        .chain([trust.as_str(), item.latest_version()])
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn catalogue_revision(items: &[StoreItem]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
     for item in items {
-        hasher.update(item.id.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(item.name.as_bytes());
-        hasher.update(&[0]);
-        hasher.update(item.description.as_bytes());
-        hasher.update(&[0]);
-        for category in &item.categories {
-            hasher.update(category.as_bytes());
+        for (text, _) in crate::model::searchable_fields(item) {
+            hasher.update(text.as_bytes());
             hasher.update(&[0]);
         }
         hasher.update(item.latest_version().as_bytes());
@@ -173,7 +159,7 @@ fn catalogue_revision(items: &[StoreItem]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{InstalledState, StoreItemVersion, StoreTrust};
+    use crate::{InstalledState, StoreItemVersion, StoreSource, StoreTrust};
     use std::sync::mpsc;
     use ui::search::SearchProvider;
 
@@ -267,6 +253,28 @@ mod tests {
         assert_eq!(address.resource, "app:dev.example.app7");
         assert_eq!(address.action, "show-details");
         assert!(directory.app("dev.example.app7").is_some());
+    }
+
+    #[test]
+    fn publisher_metadata_refreshes_the_search_directory() {
+        let mut app = item(7);
+        let directory = StoreDirectory::default();
+        directory.sync(&[app.clone()]);
+        assert!(
+            source(&directory)
+                .search_limited("a1b2c3d4e5f6", 1)
+                .is_empty()
+        );
+        app.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
+        directory.sync(&[app]);
+        let hit = source(&directory)
+            .search_limited("a1b2c3d4e5f6", 1)
+            .pop()
+            .unwrap();
+        assert_eq!(
+            hit.action_address().unwrap().resource,
+            "app:dev.example.app7"
+        );
     }
 
     /// Malformed rebuilds withdraw and older stages never publish after newer ones.
