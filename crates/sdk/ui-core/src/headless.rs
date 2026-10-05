@@ -5231,7 +5231,11 @@ impl FrameHarness {
             let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
             self.discard_layout_tree();
             self.relayout();
-            if let Some(focus) = focus {
+            if self.focused.is_none()
+                && let Some(focus) = focus
+            {
+                // A surviving live focus outranks a captured identity: generic
+                // control names may be shared by unrelated retained controls.
                 // SAFETY: the relayout admitted this fresh, exclusively owned tree.
                 self.focused =
                     unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
@@ -9086,6 +9090,9 @@ mod tests {
     }
 
     impl Widget for StructureReplacingEditor {
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
         crate::testing::delegate_widget_methods!(
             current: build_layout,
             apply_layout,
@@ -9138,6 +9145,57 @@ mod tests {
         fn take_structure_dirty(&mut self) -> bool {
             std::mem::take(&mut self.structure_dirty)
         }
+    }
+
+    #[test]
+    fn idle_recomposition_keeps_live_focus_when_control_names_are_shared() {
+        let current = Column::new()
+            .push(Box::new(Button::new("shared-control", "First")))
+            .push(Box::new(Button::new("shared-control", "Second")));
+        let root = StructureReplacingEditor {
+            current: Box::new(current),
+            ..StructureReplacingEditor::new("unused")
+        };
+        let mut driver = Driver::new(State::new(), Box::new(root), (400, 200));
+        let first = driver
+            .node_map
+            .keys()
+            .copied()
+            .find(|&node| {
+                driver
+                    .inspect_node(node, |widget| {
+                        widget
+                            .accessibility()
+                            .and_then(|access| access.name)
+                            .as_deref()
+                            == Some("First")
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap();
+        driver.set_focused(Some(first));
+        driver
+            .widget_mut::<StructureReplacingEditor>()
+            .unwrap()
+            .structure_dirty = true;
+        driver.idle_control_tick();
+        assert_eq!(
+            driver
+                .focused_access_node()
+                .and_then(|access| access.name)
+                .as_deref(),
+            Some("First"),
+            "a live focused control survives retirement of its old layout even when its generic name is shared"
+        );
+        assert_eq!(
+            driver
+                .focus_access_nodes()
+                .iter()
+                .filter(|access| access.state.focused)
+                .count(),
+            1,
+            "recomposition must not focus the unrelated control with the same name"
+        );
     }
 
     #[test]
