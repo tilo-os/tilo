@@ -375,6 +375,9 @@ async fn run(
             },
             _ = tick.tick() => {
                 if shared.cancel.load(Ordering::Acquire) { break; }
+                if session.is_invalid() {
+                    shared.update(|state| { state.error = Some("Spotify streaming session ended. Check Premium eligibility and sign in again.".into()); state.playing = false; }); break;
+                }
                 if pending_started.is_some_and(|started| started.elapsed() > Duration::from_secs(30)) {
                     shared.update(|state| state.error = Some("Spotify did not start the next queued track".into())); break;
                 }

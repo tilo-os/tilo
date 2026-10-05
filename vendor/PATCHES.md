@@ -1,5 +1,17 @@
 # Patches against upstream
 
+## Spotify dependencies
+
+`librespot-core` 0.8.0 and `hyper-proxy2` 0.1.0 are checksum-verified MIT
+registry releases. The former moves to quick-xml 0.41 and invalidates a
+non-Premium session without exiting Music. The latter reuses the workspace's
+current Rustls/ring dependencies and Tilo's fixed-path native-root loader,
+removing the old certificate-validation and OpenSSL-probing chain. Their
+upstream TLS defaults remain untouched; Music explicitly selects Rustls.
+Both directories contain `PROVENANCE.md`, licences and focused regression
+tests. No insecure verifier, alternative trust loader or policy exception is
+introduced.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
@@ -299,4 +311,3 @@ per process and made every build of a binary that expands the macro different.
 It is not part of the Tilo workspace. The OS image's bootc build uses it
 through `[patch.crates-io]` (os/external-assets/bootc-runtime/0002-*.patch), so
 bootc builds reproducibly.
-

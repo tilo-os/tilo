@@ -152,33 +152,46 @@ artwork, icon, assets, client identity or authentication workaround was copied.
 - [Spotify playlist items](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
 - [librespot](https://github.com/librespot-org/librespot)
 
-## Exact-head CI and blocked dependency repair
+## Dependency repair and verification
 
-At head `5fd8fb3c7d`, lint run 71190 reported the new librespot dependency chain:
-`librespot-core -> quick-xml 0.38.4` violates the repository's parser ban, and
-`hyper-proxy2 0.1.0 -> rustls 0.22/rustls-webpki 0.102.8` fails certificate
-validation advisories. The same old proxy chain adds `rustls-native-certs 0.7.3`,
-which makes CI's package-name selector ambiguous with Tilo's patched 0.8.3
-member; check run 71188 reported that separately. Its other failure was the
-Chromium cancellation test reproduced on clean base `aad1bd2997`.
+CI at `bc10f53dad` exposed librespot's old dependency chain: banned quick-xml
+0.38.4, Rustls/webpki certificate-validation advisories, unlicensed webpki
+metadata and OpenSSL path probing through native-certs 0.7.3. The old native-certs
+version also made CI's package selector ambiguous.
 
-Automatic approval review rejected vendoring/dependency/TLS/lock changes as
-insufficiently authorized or validated. No such changes were applied. A narrower
-repair is proposed, not executed: preserve Rustls and Tilo's fixed-path trust
-root loader; vendor the MIT librespot-core 0.8.0 release with quick-xml 0.41 and
-vendor the MIT hyper-proxy2 release with Tokio-Rustls 0.26/Hyper-Rustls 0.27,
-remove its unused old webpki edge, and use native-certs 0.8. Preserve licence and
-provenance files, update only these package lock edges, and run cargo-deny,
-focused upstream/parser/TLS tests and the Music/native checks before pushing.
-Spotifast's maintained proxy dependency uses the modern Rustls generations too.
-The downloaded unmodified core archive matches the committed registry checksum
-`168bbe1c416980ddd9a969ebd6b50fb6c924eb1a3ded194285fa8ec0e2b1c68b`.
+The explicitly approved repair vendors checksum-verified MIT librespot-core
+0.8.0 and hyper-proxy2 0.1.0. Core uses quick-xml 0.41, preserving its prior XML
+content normalization. Proxy dependencies reuse the already locked modern
+Rustls/ring stack and Tilo's unchanged fixed-path native-root loader. The unused
+old webpki edge and obsolete TLS/probing packages are removed. Upstream TLS
+feature defaults are retained; Music still disables defaults and explicitly
+selects Rustls with native roots. No native-TLS switch, insecure verifier,
+certificate-policy exception or alternative trust loader is introduced.
 
-Upstream librespot-core 0.8.0 also calls `exit(1)` on non-Premium product data.
-Before deployment, that handler must return a session failure without exiting
-Music. The current strict subscription preflight does not certify safety against
-later provider subscription changes. This is an additional required upstream
-repair, not a reason to relax Premium eligibility.
+Non-Premium product updates now invalidate the session and return a recoverable
+permission error instead of upstream's process-wide `exit(1)`. Both attribute
+setters also fail closed, rejected sessions cannot be revived by later
+attributes, and Music stops output with an error when a session becomes invalid.
+Malformed product XML cannot replace previously accepted attributes.
+
+Four focused vendor tests passed: actual product-info dispatch, both attribute
+setters, malformed XML, and real local CONNECT/TLS handshakes that reject an
+unknown issuer and a wrong hostname but accept a valid certificate. Testing
+used temporary vendor workspace membership, then restored the production
+manifest and audited lock before the 107-test Music/native regression run.
+Cargo-deny passed advisories, bans, licences and sources without exceptions.
+The lock introduces no package version and moves no unrelated dependency;
+ten obsolete dependency packages are removed. Vendor `PROVENANCE.md` files
+record archives, checksums, licences and the exact modifications.
+
+The earlier broad proposal to switch TLS providers was rejected by automatic
+approval review and never applied. The user subsequently authorized only this
+narrower Rustls-preserving repair. The PR remains draft and on hold.
+
+Chromium's cancellation failure was reproduced on clean base `aad1bd2997`.
+A later owner-commit CI timeout passed when tested alone on both base and
+`bc10f53dad`; that timeout is unexplained, not classified as a base failure.
+Neither test was ignored or weakened. New-head CI remains required.
 
 ## Live acceptance setup (not started)
 
