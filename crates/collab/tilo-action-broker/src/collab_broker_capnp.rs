@@ -7384,6 +7384,19 @@ impl channel_handle::Server for CapnpChannelHandle {
                 "invocation subscriber registry unavailable".into(),
             ));
         }
+        // The app the launcher attested, else the one this channel names.
+        let (app, room) = self
+            .lease
+            .as_ref()
+            .and_then(|lease| lease.local_media.as_ref())
+            .map_or_else(
+                || {
+                    let route = self.route();
+                    (route.app_id, route.cluster_id)
+                },
+                |app| (app.app_id.clone(), app.workspace_id.clone()),
+            );
+        let delivered = invocation_delivery_notice(&self.state.services, app, room);
         let client: invocation_stream::Client = capnp_rpc::new_client(InvocationStreamServer {
             host_guard: HostWorkerReadGuard::for_channel(
                 &self.state,
@@ -7391,6 +7404,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                 &self.verified_identity,
             ),
             rx: Rc::new(AsyncMutex::new(rx)),
+            delivered,
         });
         results.get().set_stream(client);
         Promise::ok(())
@@ -9310,9 +9324,22 @@ impl realtime_stream::Server for RealtimeStreamServer {
     }
 }
 
+/// What the host is told each time an invocation is handed to `app` in
+/// `room`; nothing when no launcher hosts it.
+fn invocation_delivery_notice(
+    services: &HostServices,
+    app: String,
+    room: String,
+) -> Option<Box<dyn Fn()>> {
+    let launcher = services.launcher.clone().filter(|_| !app.is_empty())?;
+    Some(Box::new(move || launcher.note_acted_on(&app, &room)))
+}
+
 struct InvocationStreamServer {
     host_guard: Option<HostWorkerReadGuard>,
     rx: Rc<AsyncMutex<mpsc::UnboundedReceiver<InvocationEnvelope>>>,
+    /// Told each time an invocation is handed to the app.
+    delivered: Option<Box<dyn Fn()>>,
 }
 
 struct TaskRunStreamServer {
@@ -9376,6 +9403,9 @@ impl invocation_stream::Server for InvocationStreamServer {
             })?;
             drop(guard);
             HostWorkerReadGuard::check(self.host_guard.as_ref())?;
+            if let Some(delivered) = &self.delivered {
+                delivered();
+            }
             let mut result = results.get();
             result.set_id(invocation.id);
             result.set_invocation_uuid(invocation.invocation.0.as_bytes());
@@ -14207,6 +14237,7 @@ pub mod tests {
                             capnp_rpc::new_client(InvocationStreamServer {
                                 host_guard: None,
                                 rx: rx.clone(),
+                                delivered: None,
                             });
                         let response = stream.read_request().send().promise.await.unwrap();
                         assert_eq!(response.get().unwrap().get_id(), wire_id);
@@ -14347,6 +14378,7 @@ pub mod tests {
                         capnp_rpc::new_client(InvocationStreamServer {
                             host_guard: None,
                             rx: rx.clone(),
+                            delivered: None,
                         });
                     let response = stream.read_request().send().promise.await.unwrap();
                     let delivered = response.get().unwrap();
@@ -14668,6 +14700,74 @@ pub mod tests {
                 );
                 assert!(fixture.invocation_rx.try_recv().is_err());
             }
+        }
+
+        /// An agent, a device admin or another device drives an app through
+        /// its actions. The host learns of each invocation the app is handed,
+        /// so a window the app closes because of it is not taken for one it
+        /// lost.
+        #[tokio::test(flavor = "current_thread")]
+        async fn the_host_learns_each_invocation_an_app_is_handed() {
+            struct Recording(Mutex<Vec<(String, String)>>);
+            impl crate::services::LauncherServices for Recording {
+                fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+                    Vec::new()
+                }
+                fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+                    Err("this host launches nothing".into())
+                }
+                fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+                    false
+                }
+                fn note_acted_on(&self, app: &str, room: &str) {
+                    self.0.lock().unwrap().push((app.into(), room.into()));
+                }
+            }
+            tokio::task::LocalSet::new()
+                .run_until(async {
+                    let recording = Arc::new(Recording(Mutex::new(Vec::new())));
+                    let services = HostServices {
+                        launcher: Some(recording.clone()),
+                        ..Default::default()
+                    };
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let stream: invocation_stream::Client =
+                        capnp_rpc::new_client(InvocationStreamServer {
+                            host_guard: None,
+                            rx: Rc::new(AsyncMutex::new(rx)),
+                            delivered: invocation_delivery_notice(
+                                &services,
+                                "so.tilo.notes".into(),
+                                "room-7".into(),
+                            ),
+                        });
+                    assert!(recording.0.lock().unwrap().is_empty());
+                    tx.send(InvocationEnvelope {
+                        id: 1,
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::from_u128(1)),
+                        resource: "window".into(),
+                        action: "close".into(),
+                        argument: None,
+                        actor: "agent:assistant".into(),
+                        context: None,
+                    })
+                    .unwrap();
+                    stream.read_request().send().promise.await.unwrap();
+                    assert_eq!(
+                        *recording.0.lock().unwrap(),
+                        vec![("so.tilo.notes".to_owned(), "room-7".to_owned())]
+                    );
+                    assert!(
+                        invocation_delivery_notice(
+                            &HostServices::default(),
+                            "a".into(),
+                            "r".into()
+                        )
+                        .is_none(),
+                        "a host without a launcher has no one to tell"
+                    );
+                })
+                .await;
         }
 
         #[tokio::test(flavor = "current_thread")]
