@@ -67,6 +67,23 @@ pub enum ChatEffect {
         #[param("Path of the file on this device")]
         path: String,
     },
+    /// Share live Chat context
+    ///
+    /// Opt in to publishing the open conversation, thread and scroll position.
+    #[effect(device_only, idempotent)]
+    ShareLiveContext,
+    /// Stop sharing live Chat context
+    #[effect(device_only, idempotent)]
+    StopSharingLiveContext,
+    /// Live context status
+    #[effect(device_only, idempotent, returns)]
+    LiveContextStatus,
+    /// Open Slack channel in browser
+    #[effect(device_only)]
+    OpenSlackChannel { workspace: String, channel: String },
+    /// Open Discord channel in browser
+    #[effect(device_only)]
+    OpenDiscordChannel { server: String, channel: String },
     /// Join call
     #[effect(row, device_only)]
     JoinCall { channel: String },
@@ -80,7 +97,10 @@ pub enum ChatEffect {
     #[effect(row, device_only)]
     Unmute { channel: String },
     /// Call status
-    #[effect(row, idempotent, device_only)]
+    ///
+    /// Requests a refresh and returns the last reported service state.
+    /// The response is explicitly a cached report, never microphone consent.
+    #[effect(row, idempotent, device_only, returns)]
     CallStatus { channel: String },
     /// Start a call
     ///
@@ -139,6 +159,32 @@ impl ChatApp {
                     return Err("attachment import was not accepted".into());
                 }
             }
+            ChatEffect::ShareLiveContext => {
+                if !self.channels.iter().any(|channel| {
+                    channel.id == self.active_channel
+                        && channel.kind == ChannelKind::Text
+                        && !channel.archived
+                }) {
+                    return Err("Open a conversation before sharing its context".into());
+                }
+                self.sharing_context = true;
+                self.request_relayout();
+            }
+            ChatEffect::StopSharingLiveContext => {
+                self.sharing_context = false;
+                self.request_relayout();
+            }
+            ChatEffect::LiveContextStatus => {
+                return Ok(Effected::value(serde_json::json!({
+                    "sharing": self.sharing_context,
+                    "following": self.following_context,
+                    "channel": self.active_channel,
+                    "videoCapture": false,
+                })));
+            }
+            ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
+                return Err("Browser handoff requires the owning host".into());
+            }
             ChatEffect::JoinCall { channel } => {
                 let channel_id = channel.clone();
                 self.native_voice_command(&channel, Command::Join { channel_id })?;
@@ -154,6 +200,11 @@ impl ChatApp {
             }
             ChatEffect::CallStatus { channel } => {
                 self.native_voice_command(&channel, Command::Status)?;
+                return Ok(Effected::value(serde_json::json!({
+                    "channel": self.native_voice.channel,
+                    "reported": self.native_voice.snapshot,
+                    "refreshRequested": true,
+                })));
             }
             ChatEffect::StartCall => self.start_call(None)?,
             ChatEffect::StartVideoCall => return Err(video_call_unavailable_reason()),
@@ -393,6 +444,7 @@ impl ChatApp {
             "edited": message.edited,
             "text": message.text,
             "work": message.work,
+            "reference": message.reference,
         }))
     }
 }

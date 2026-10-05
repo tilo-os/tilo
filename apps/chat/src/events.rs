@@ -929,6 +929,10 @@ impl ChatApp {
             Hit::StartCall if self.call_allows(crate::call::CallAction::Join) => {
                 self.on_hit_start_call(doc);
             }
+            Hit::StopSharingLiveContext => {
+                // The same device-local handler the public effect reaches.
+                let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
+            }
             Hit::CloseThread => {
                 self.close_thread();
             }

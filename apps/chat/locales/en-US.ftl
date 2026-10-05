@@ -93,3 +93,9 @@ chat-thread-replies = { $count ->
     [one] 1 reply
    *[other] { $count } replies
     }
+
+chat-context-sharing = Sharing live Chat context
+chat-context-following = Following live Chat context · Stop following in workspace controls
+chat-context-stop = Stop sharing
+chat-header-call-open = Open call
+chat-header-voice-call = Voice call

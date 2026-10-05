@@ -272,6 +272,7 @@ fn message_resource(
         text: message.text,
         pinned: message.pinned,
         parent: message.parent,
+        reference: message.reference,
     }
 }
 
@@ -289,6 +290,7 @@ const SCENARIOS: &[&str] = &[
     "people",
     "thread-narrow",
     "collaboration",
+    "live-context",
     "context",
     "msgmenu",
     "attach",
@@ -504,7 +506,13 @@ impl ResourceSurface<Chat, ChatEffect> for ChatApp {
         self.stage_scenario(scenario.unwrap_or_default());
     }
 
-    fn effect(&mut self, effect: ChatEffect, _cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
+    fn effect(&mut self, effect: ChatEffect, cx: &mut EffectCx<Chat, Self>) -> EffectAnswer {
+        if let Some(url) = crate::external::browser_destination(&effect)? {
+            return Ok(cx.thread(
+                move |_| ui::widget::try_open_external_url(&url).map_err(|error| error.to_string()),
+                |_: &mut Self, opened, _| opened.map(|()| ui::framework::Effected::done()),
+            ));
+        }
         self.answer_effect(effect)
     }
 
@@ -526,6 +534,152 @@ fn draft_keys(doc: &Doc) -> Vec<String> {
 mod tests {
     use super::*;
     use ui::framework::testing::TestApp;
+
+    #[test]
+    fn shared_space_visible_stop_button_uses_the_same_consent_handler() {
+        let mut app = TestApp::<ChatShell>::capture(Some("live-context")).unwrap();
+        assert!(app.surface_mut::<crate::ChatApp>().sharing_context);
+        assert!(app.harness().a11y_node_named("Stop sharing").is_some());
+        let target = app
+            .surface_mut::<crate::ChatApp>()
+            .hits
+            .iter()
+            .find(|(_, hit)| matches!(hit, crate::app::Hit::StopSharingLiveContext))
+            .expect("the painted stop control has a pointer target")
+            .0;
+        app.harness().click_at(target.center().x, target.center().y);
+        assert!(!app.surface_mut::<crate::ChatApp>().sharing_context);
+        assert!(app.harness().a11y_node_named("Stop sharing").is_none());
+        assert!(ui::view::capability::view_state(app.harness().root_widget()).is_none());
+    }
+
+    #[test]
+    fn shared_space_context_consent_is_local_and_relaunch_starts_private() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        app.call("share-live-context", serde_json::json!({}))
+            .unwrap();
+        let state = app
+            .call("live-context-status", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(state["sharing"], true);
+        assert_eq!(state["videoCapture"], false);
+        let view = ui::view::capability::view_state(app.harness().root_widget()).unwrap();
+        assert!(
+            view.view_mode.unwrap().starts_with("chat-context-v1:"),
+            "the framework root forwards presence"
+        );
+        app.call("stop-sharing-live-context", serde_json::json!({}))
+            .unwrap();
+        assert!(ui::view::capability::view_state(app.harness().root_widget()).is_none());
+        app.call("share-live-context", serde_json::json!({}))
+            .unwrap();
+        app = app.relaunch(&[]).unwrap();
+        let state = app
+            .call("live-context-status", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state["sharing"], false,
+            "consent is never restored from persistence"
+        );
+    }
+
+    #[test]
+    fn shared_space_call_status_returns_a_report_and_never_claims_live_capture() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let status = app
+            .call_on("chat.call:c_lounge", "call-status", serde_json::json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(status["refreshRequested"], true);
+        assert_eq!(status["reported"]["capture_active"], false);
+        assert_eq!(status["reported"]["muted"], true);
+        assert_eq!(status["channel"], serde_json::Value::Null);
+        assert_eq!(app.state().messages().count(), 0);
+    }
+
+    #[test]
+    fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        let reference = serde_json::json!({
+            "kind": "word_processor.block", "id": "word_processor.block:paragraph-7",
+            "label": "Proposal", "span": {"start": 2, "end": 9, "unit": "Chars"}
+        });
+        app.call_on(
+            "chat.channel:c_general",
+            "share-resource",
+            serde_json::json!({"reference": reference, "text": "Discuss this paragraph"}),
+        )
+        .unwrap();
+        app.settle();
+        let state = app.state();
+        let message = state
+            .messages()
+            .find(|m| m.text == "Discuss this paragraph")
+            .unwrap();
+        assert_eq!(serde_json::to_value(&message.reference).unwrap(), reference);
+        let id = message.id.clone();
+        let author = message.author.clone();
+        let result = app
+            .call_on(
+                &format!("chat.message:{id}"),
+                "read-message",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(result["reference"], reference);
+        assert_eq!(result["author"], author);
+        app.set_role(ui::permissions::Role::Viewer);
+        assert!(
+            app.call_on(
+                "chat.channel:c_general",
+                "share-resource",
+                serde_json::json!({"reference": reference})
+            )
+            .is_err()
+        );
+        assert_eq!(app.state().messages().count(), 1);
+        let read = app
+            .call_on(
+                &format!("chat.message:{id}"),
+                "read-message",
+                serde_json::json!({}),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            read["reference"], reference,
+            "viewers can inspect an address, with no grant to its target"
+        );
+    }
+
+    #[test]
+    fn shared_space_invalid_resource_never_posts_and_voice_has_no_timeline() {
+        let mut app = TestApp::<ChatShell>::new().unwrap();
+        for id in [
+            "/home/person/private",
+            "https://example.test",
+            "block\nsecret",
+            "",
+        ] {
+            assert!(
+                app.call_on(
+                    "chat.channel:c_general",
+                    "share-resource",
+                    serde_json::json!({
+                        "reference": {"kind": "word_processor.block", "id": id, "label": "Proposal"}
+                    })
+                )
+                .is_err()
+            );
+        }
+        assert!(app.call_on("chat.channel:c_lounge", "share-resource", serde_json::json!({
+            "reference": {"kind": "word_processor.block", "id": "block-7", "label": "Proposal"}
+        })).is_err());
+        assert_eq!(app.state().messages().count(), 0);
+    }
 
     #[test]
     fn a_new_room_record_starts_with_its_creators_workspace() {
