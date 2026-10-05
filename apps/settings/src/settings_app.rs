@@ -101,6 +101,8 @@ pub struct SettingsApp {
     /// Process-local navigation request written by a sidebar row. This keeps
     /// current-pane selection out of collaboration, persistence and undo.
     sidebar_selection: ui::LocalState<Option<Category>>,
+    /// Local navigation position survives row selection and shell rebuilds.
+    sidebar_scroll: ScrollOffset,
     /// Each pane's scroll offset. The content scroller is rebuilt whenever the
     /// pane's structure changes (a control applied, a category opened), so the
     /// offset lives here, per category, rather than in the rebuilt widget.
@@ -178,6 +180,7 @@ impl SettingsApp {
             width_hint: None,
             search_query: String::new(),
             sidebar_selection: ui::LocalState::new(None),
+            sidebar_scroll: ScrollOffset::default(),
             pane_scroll: std::cell::RefCell::default(),
             search_state: ui::LocalState::new(String::new()),
             search_provider: crate::search_provider::SettingsSearchProvider::new(),
@@ -699,7 +702,12 @@ impl SettingsApp {
     /// search and the seeded shot state, for `shell_text_scale` (see
     /// [`Self::shell_scale`]).
     fn build_shell(&self) -> AppShell {
-        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+        let nav = sidebar::build_with_scroll(
+            self.selected,
+            &self.search_query,
+            &self.sidebar_selection,
+            std::rc::Rc::clone(&self.sidebar_scroll),
+        );
         let content = self.build_content();
         // A narrow (phone) layout keeps the selected category's CONTENT on
         // screen — the category list is one back-tap away, never the default a
@@ -724,7 +732,12 @@ impl SettingsApp {
     /// query. No-op before the shell exists (the first `build_layout` will
     /// build them fresh).
     fn refresh_shell_children(&mut self) {
-        let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+        let nav = sidebar::build_with_scroll(
+            self.selected,
+            &self.search_query,
+            &self.sidebar_selection,
+            std::rc::Rc::clone(&self.sidebar_scroll),
+        );
         let content = self.build_content();
         if let Some(shell) = &mut self.shell {
             shell.set_nav(nav);
@@ -1908,7 +1921,12 @@ impl Widget for SettingsApp {
             // Filtering changes only navigation. Reconstructing the active
             // pane here would discard its transient state and reseed its
             // document bindings on every search character.
-            let nav = sidebar::build(self.selected, &self.search_query, &self.sidebar_selection);
+            let nav = sidebar::build_with_scroll(
+                self.selected,
+                &self.search_query,
+                &self.sidebar_selection,
+                std::rc::Rc::clone(&self.sidebar_scroll),
+            );
             if let Some(shell) = &mut self.shell {
                 shell.set_nav(nav);
             }
@@ -2865,6 +2883,51 @@ mod tests {
             ui::headless::viewport((w, h)),
             theme.clone(),
         )
+    }
+
+    #[test]
+    fn selecting_a_scrolled_sidebar_row_keeps_the_navigation_in_place() {
+        fn row_rect(widget: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
+            if widget.test_id() == Some(name) {
+                return Some(widget.get_rect());
+            }
+            widget
+                .children()
+                .into_iter()
+                .find_map(|child| row_rect(child, name))
+        }
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let mut app = layout_at(config.app(), 1200.0, 520.0);
+        let original = row_rect(&*app, "About").expect("actual navigation row");
+        let harness = Framed::harness_mut(&mut app);
+        harness.send(&winit::event::WindowEvent::CursorMoved {
+            device_id: winit::event::DeviceId::dummy(),
+            position: winit::dpi::PhysicalPosition::new(100.0, 300.0),
+        });
+        harness.scroll(0.0, -40.0);
+        let scrolled = row_rect(&*app, "About").expect("scrolled navigation row");
+        assert!(
+            scrolled.y0 < original.y0,
+            "the real wheel route scrolled the sidebar"
+        );
+        assert!(
+            scrolled.y0 >= 0.0 && scrolled.y1 <= 520.0,
+            "About is visible before activation: {scrolled:?}"
+        );
+        Framed::harness_mut(&mut app)
+            .click_named("About")
+            .expect("activate the real sidebar row");
+        assert_eq!(
+            app.selected(),
+            Category::About,
+            "pending sidebar request: {:?}",
+            app.sidebar_selection.with(|request| *request)
+        );
+        let selected = row_rect(&*app, "About").expect("selected navigation row");
+        assert_eq!(
+            selected, scrolled,
+            "selection must retain the navigation's scroll offset"
+        );
     }
 
     /// The app opens on the default category unless told otherwise; a real
