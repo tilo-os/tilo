@@ -20,7 +20,7 @@ WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 def matrix_script() -> str:
     workflow = WORKFLOW.read_text()
     marker = "      - name: Select validation or native publication lanes\n"
-    block = workflow.split(marker, 1)[1].split("\n\n  signing-preflight:", 1)[0]
+    block = workflow.split(marker, 1)[1].split("\n      - name:", 1)[0].split("\n\n  signing-preflight:", 1)[0]
     return textwrap.dedent(block.split("        run: |\n", 1)[1])
 
 
@@ -246,7 +246,7 @@ class OsDevLaneTests(unittest.TestCase):
         self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
         self.assertIn(".forgejo/workflows/release-apps.yml", step)
         self.assertIn("index.json | jq -r '.source // empty'", step)
-        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+        self.assertLess(step.index("[[ $source != \"$COLLECTION_SOURCE\" ]]"),
                         step.index("echo 'TILO_PREBUILT_APPS=1'"))
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))
