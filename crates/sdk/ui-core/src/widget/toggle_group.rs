@@ -3156,7 +3156,7 @@ mod tests {
             dispatch(&mut g, &mouse_press());
             assert_eq!(state.get(), 0);
             state.set(1);
-            g.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            g.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(g.selected(), 1);
         }
 

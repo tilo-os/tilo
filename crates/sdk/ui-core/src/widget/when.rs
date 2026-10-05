@@ -334,8 +334,8 @@ mod tests {
             "hidden: nothing to visit"
         );
         state.set(true);
-        let mut doc = automerge::AutoCommit::new();
-        Widget::sync(&mut when, &mut doc, &automerge::ROOT);
+        let doc = automerge::AutoCommit::new();
+        Widget::sync(&mut when, &doc, &automerge::ROOT);
         assert!(when.is_shown());
         assert!(Widget::take_structure_dirty(&mut when));
         assert!(

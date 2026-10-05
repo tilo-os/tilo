@@ -1665,7 +1665,7 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
     fn take_save_retry(&mut self) -> bool {
         fn take<R: Resource>(widget: &mut dyn Widget) -> bool {
             let own = capability_mut::<dyn SurfacePublication<R>>(widget)
-                .is_some_and(|surface| surface.take_save_retry());
+                .is_some_and(SurfacePublication::take_save_retry);
             // Consume every surface's one-shot even when another requested it.
             widget
                 .children_mut()

@@ -3478,7 +3478,7 @@ mod tests {
             let mut button = Button::new("save", "Save").enabled_from(&can_save);
             assert!(!Widget::is_enabled(&button));
             can_save.set(true);
-            Widget::sync(&mut button, &mut AutoCommit::new(), &automerge::ROOT);
+            Widget::sync(&mut button, &AutoCommit::new(), &automerge::ROOT);
             assert!(Widget::is_enabled(&button));
             button.apply_layout_external(Rect::new(4.0, 8.0, 84.0, 40.0));
             let node = Widget::accessibility(&button).expect("semantics");

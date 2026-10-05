@@ -3426,13 +3426,13 @@ mod control_row_tests {
             &root
         ));
         assert_eq!(chosen.with(Clone::clone), "oil");
-        Widget::sync(&mut ink, &mut doc, &root);
+        Widget::sync(&mut ink, &doc, &root);
         assert!(!ink.is_selected() && oil.is_selected());
 
         // A part of the row (its mask) keeps the row chosen, and choosing
         // the row again does not take the part's place.
         chosen.set("oil-mask".to_owned());
-        Widget::sync(&mut oil, &mut doc, &root);
+        Widget::sync(&mut oil, &doc, &root);
         assert!(oil.is_selected());
         Widget::perform_action(
             &mut oil,

@@ -3112,7 +3112,7 @@ mod tests {
         fn a_short_list_jumps_instead_of_filtering() {
             let mut dd = Dropdown::new(opts(), "tz");
             let (mut doc, root) = doc_with_tz("UTC");
-            dd.sync(&mut doc, &root);
+            dd.sync(&doc, &root);
             dd.set_focus(true);
             dd.do_open();
             assert_eq!(dd.highlight_index(), 0);

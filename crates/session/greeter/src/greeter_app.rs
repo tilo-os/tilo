@@ -1265,7 +1265,7 @@ impl GreeterApp {
             let requests = Rc::clone(&self.requests);
             form.push(Box::new(
                 Button::new("greeter.cancel-authentication", &t("greeter-auth-cancel"))
-                    .ghost()
+                    .role(ButtonRole::Plain)
                     .with_enabled(
                         self.auth_session
                             .as_ref()

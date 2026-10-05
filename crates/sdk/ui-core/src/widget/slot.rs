@@ -231,8 +231,8 @@ mod tests {
             Some("Loading"),
             "not before the sync"
         );
-        let mut doc = automerge::AutoCommit::new();
-        Widget::sync(&mut slot, &mut doc, &automerge::ROOT);
+        let doc = automerge::AutoCommit::new();
+        Widget::sync(&mut slot, &doc, &automerge::ROOT);
         assert_eq!(
             Widget::accessibility(&slot).and_then(|n| n.name).as_deref(),
             Some("Ready")
@@ -255,15 +255,15 @@ mod tests {
                 Box::new(TextInput::local().with_id(&format!("tab-{tab}"))) as Element
             },
         );
-        let mut doc = automerge::AutoCommit::new();
+        let doc = automerge::AutoCommit::new();
         assert_eq!(builds.get(), 1);
         tab.set(1);
-        Widget::sync(&mut switch, &mut doc, &automerge::ROOT);
+        Widget::sync(&mut switch, &doc, &automerge::ROOT);
         assert_eq!(builds.get(), 2);
         assert!(Widget::take_structure_dirty(&mut switch));
         assert_eq!(switch.current().test_id(), Some("tab-1"));
         tab.set(0);
-        Widget::sync(&mut switch, &mut doc, &automerge::ROOT);
+        Widget::sync(&mut switch, &doc, &automerge::ROOT);
         assert_eq!(builds.get(), 2, "the first part was kept, not rebuilt");
         assert_eq!(switch.current().test_id(), Some("tab-0"));
         assert!(switch.part(&1).is_some());

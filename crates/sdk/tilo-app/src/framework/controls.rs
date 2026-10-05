@@ -76,7 +76,7 @@ impl<R: Resource> Clone for Actions<R> {
 impl<R: Resource> Actions<R> {
     pub(crate) fn new(published: Rc<tilo_actions::Resource>) -> Self {
         Self {
-            published: Rc::new(RefCell::new((*published).clone())),
+            published: Rc::new(RefCell::new(Rc::unwrap_or_clone(published))),
             marker: PhantomData,
         }
     }
