@@ -55,6 +55,9 @@ pub struct PersonalWorkspaces {
     device: [u8; 32],
     /// This device's name for the person's other devices.
     label: Option<String>,
+    /// Whether this device may steward the channels of rooms it mints: a
+    /// device of the person that owns workspaces and is no host.
+    may_steward: bool,
     /// The workspaces this device held at the last reconciliation.
     agreed: BTreeMap<RoomId, Listed>,
     /// Their order at the last reconciliation.
@@ -202,6 +205,7 @@ impl PersonalWorkspaces {
             directory: WorkspaceDirectory::new(user, device),
             device,
             label: None,
+            may_steward: true,
             agreed: BTreeMap::new(),
             agreed_order: Vec::new(),
             store: None,
@@ -246,6 +250,14 @@ impl PersonalWorkspaces {
         self
     }
 
+    /// Whether this device may steward the channels of rooms it mints.
+    #[must_use]
+    pub fn with_stewardship(mut self, may_steward: bool) -> Self {
+        self.may_steward = may_steward;
+        self.published = None;
+        self
+    }
+
     /// Write what changed in `tree` since the last agreement into the
     /// directory: new and renamed workspaces, ones deleted here, and a new
     /// order. Returns whether the directory changed, which is when the
@@ -285,26 +297,7 @@ impl PersonalWorkspaces {
             .filter_map(|(_, entry)| entry.order)
             .fold(0.0_f64, f64::max);
         let mut appended = 0.0;
-        let stewards = self.stewards();
         for (room, entry) in listed {
-            // A room minted here and owned by the person: this device
-            // stewards its channels unless the list already names a steward.
-            if entry.governor.is_none()
-                && tree.room_authority(*room) == RoomAuthority::Local
-                && !stewards.contains_key(room)
-            {
-                match self
-                    .directory
-                    .add_room_workspace(entry_id(*room), &room.to_string(), &entry.name)
-                    .and_then(|()| self.directory.claim_steward(entry_id(*room), self.device))
-                {
-                    Ok(()) => changed = true,
-                    Err(error) => {
-                        complete = false;
-                        tracing::warn!(%error, %room, "channel steward could not be claimed");
-                    }
-                }
-            }
             let fresh = !self.agreed.contains_key(room);
             // Enrollment gives us a room ID before its real name arrives.
             // Do not publish that provisional name as a rename on the owner's
@@ -340,6 +333,11 @@ impl PersonalWorkspaces {
                 }
             }
         }
+        if self.may_steward {
+            let (claimed, failed) = self.claim_stewardship(tree, listed);
+            changed |= claimed;
+            complete &= !failed;
+        }
         // A workspace held at the last agreement and gone from this tree was
         // deleted (or left) here.
         let present: std::collections::BTreeSet<RoomId> =
@@ -362,6 +360,39 @@ impl PersonalWorkspaces {
         // A write that failed is tried again on the next call.
         self.published = complete.then_some(inputs);
         changed
+    }
+
+    /// Name this device the steward of the channels of each listed room it
+    /// minted and the person owns, unless the list names one already.
+    /// Returns whether the directory changed and whether a claim failed.
+    fn claim_stewardship(
+        &mut self,
+        tree: &WorkspaceTree,
+        listed: &BTreeMap<RoomId, Listed>,
+    ) -> (bool, bool) {
+        let stewards = self.stewards();
+        let in_directory: std::collections::BTreeSet<RoomId> = entries_of(&self.directory)
+            .into_iter()
+            .map(|(room, _)| room)
+            .collect();
+        let (mut changed, mut failed) = (false, false);
+        for (room, entry) in listed {
+            if entry.governor.is_some()
+                || tree.room_authority(*room) != RoomAuthority::Local
+                || stewards.contains_key(room)
+                || !in_directory.contains(room)
+            {
+                continue;
+            }
+            match self.directory.claim_steward(entry_id(*room), self.device) {
+                Ok(()) => changed = true,
+                Err(error) => {
+                    failed = true;
+                    tracing::warn!(%error, %room, "channel steward could not be claimed");
+                }
+            }
+        }
+        (changed, failed)
     }
 
     /// Give the workspaces this tree holds positions in the directory that

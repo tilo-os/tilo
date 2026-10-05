@@ -907,12 +907,9 @@ fn open_session_services(
     }
     if mls_authority.is_some() && channel_encryption.is_some() {
         set_content_sync_blocked(None);
-    } else if channel_encryption.is_none()
-        && content_sync_blocked().is_none()
-        && membership.is_some()
-    {
+    } else if content_sync_blocked().is_none() && membership.is_some() {
         set_content_sync_blocked(Some(
-            "channel encryption did not start (see the session log)".into(),
+            "record encryption did not start (see the session log)".into(),
         ));
     }
     (mls_authority, channel_encryption)

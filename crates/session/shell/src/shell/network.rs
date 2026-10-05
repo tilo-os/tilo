@@ -1574,7 +1574,9 @@ pub struct InboundSnapshotRequest {
 }
 
 /// How often one record's snapshot is passed on to a local app for peers.
-const SNAPSHOT_ANSWER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const SNAPSHOT_ANSWER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+/// Records whose snapshot was passed on within the interval, at most.
+const MAX_SNAPSHOT_ANSWERS: usize = 256;
 
 /// One received cooperative-scrollback response, translated by the
 /// broker's drainer into a `CollabEvent::ScrollbackBatch`.
@@ -1751,7 +1753,11 @@ impl ShellNetwork {
                     identity.device_cert.device_public_key,
                     personal_workspaces_path(keypair_path),
                 )
-                .with_label(identity.device_cert.device_label.clone()),
+                .with_label(identity.device_cert.device_label.clone())
+                .with_stewardship(
+                    identity.device_cert.capabilities.can_own_workspaces
+                        && !identity.device_cert.capabilities.can_act_as_host,
+                ),
             )
         });
         let (cmd_tx, _join) = Actor::spawn_reporting_addrs(
@@ -3254,6 +3260,9 @@ impl ShellNetwork {
             return;
         }
         answered.retain(|_, at| now.duration_since(*at) < SNAPSHOT_ANSWER_INTERVAL);
+        if answered.len() >= MAX_SNAPSHOT_ANSWERS {
+            return;
+        }
         answered.insert(key.clone(), now);
         drop(answered);
         let (app_id, cluster_id, record_id) = key;
@@ -6303,6 +6312,7 @@ impl ShellNetwork {
                 NeighbourMsg::SyncReq { .. }
                     | NeighbourMsg::SyncResp { .. }
                     | NeighbourMsg::AppDocument { .. }
+                    | NeighbourMsg::DocumentSnapshotRequest { .. }
                     | NeighbourMsg::IdentityAnnouncement { .. }
                     | NeighbourMsg::IdentityAnnouncementV2 { .. }
             )
@@ -6483,9 +6493,16 @@ impl ShellNetwork {
                 cluster_id,
                 record_id,
             } => {
-                // The transport authenticated the asker and the room allows
-                // it to read; whatever answers is published to the room like
-                // any edit, sealed where the record's channel is.
+                // The transport authenticated the asker. Only a device that
+                // may write the room makes this device's apps publish: the
+                // answer is a write to every member, sealed where the
+                // record's channel is.
+                if self.require_peer_identity
+                    && !self.peer_room_allows(&origin, ws, crate::shell::state::Verb::Write, false)
+                {
+                    tracing::debug!(peer = %peer, "snapshot request from a device that may not write the room");
+                    return;
+                }
                 let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id)
                 else {
                     return;

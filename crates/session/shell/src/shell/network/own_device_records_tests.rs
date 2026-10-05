@@ -369,8 +369,6 @@ fn a_persons_devices_exchange_sealed_record_edits() {
     devices.until("the person's list to name the room's steward", || {
         (second.tree.read().channel_stewards.get(&room) == Some(&first.device())).then_some(())
     });
-    assert!(first.tree.read().stewards_channels(room, &first.device()));
-    assert!(!second.tree.read().stewards_channels(room, &second.device()));
 
     devices.ready(first, "the steward's channel keys");
     let second_keys = devices.ready(second, "the other device to be admitted to the channel");

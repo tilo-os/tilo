@@ -264,6 +264,7 @@ impl ChannelEncryption {
     /// governs the room) or starts asking the steward for access. The caller
     /// has already decided the endpoint may read the route.
     pub fn access(&mut self, room: RoomId, channel: ChannelId, now: Instant) -> ChannelAccess {
+        self.follow_steward(room, channel);
         if self.directory.governs(room) {
             if !self.stewards.contains_key(&channel)
                 && let Err(error) = self.open_steward(room, channel)
@@ -284,7 +285,19 @@ impl ChannelEncryption {
         if !self.members.contains_key(&channel) {
             match self.open_member(room, channel, now) {
                 Ok(true) => {}
-                Ok(false) => return ChannelAccess::Unavailable,
+                Ok(false) => {
+                    // Nobody here can admit this device yet, but the route
+                    // is an encrypted channel all the same: plaintext for it
+                    // is refused meanwhile.
+                    self.register_gate(
+                        channel,
+                        channel_crypto::ChannelGate {
+                            encryption_required: true,
+                            head_epoch: None,
+                        },
+                    );
+                    return ChannelAccess::Unavailable;
+                }
                 Err(error) => {
                     tracing::warn!(%error, %room, "channel member state could not be created");
                     return ChannelAccess::Unavailable;
@@ -309,6 +322,49 @@ impl ChannelEncryption {
                 ChannelAccess::Removed
             }
         }
+    }
+
+    /// Keep this device's role in `channel` equal to who stewards `room`
+    /// now. A device that became the steward stops being a member; one that
+    /// no longer is stops stewarding; a member bound to a steward that is no
+    /// longer the room's starts over with the current one, so it never keeps
+    /// sealing for a group the room no longer uses.
+    fn follow_steward(&mut self, room: RoomId, channel: ChannelId) {
+        let governs = self.directory.governs(room);
+        if governs {
+            if self
+                .members
+                .get(&channel)
+                .is_some_and(|entry| entry.room == room)
+            {
+                self.members.remove(&channel);
+                self.bump();
+            }
+            return;
+        }
+        if self
+            .stewards
+            .get(&channel)
+            .is_some_and(|entry| entry.room == room)
+        {
+            self.stewards.remove(&channel);
+            self.bump();
+        }
+        let steward = self.directory.steward_of(room);
+        let Some(entry) = self.members.get(&channel) else {
+            return;
+        };
+        // A steward this device cannot name right now is no change.
+        if entry.room != room || steward.is_none_or(|steward| steward == entry.member.steward()) {
+            return;
+        }
+        tracing::info!(%room, "the channel's steward changed; asking the new one for access");
+        self.members.remove(&channel);
+        let dir = self.config.root.join(room.to_string()).join("member");
+        for suffix in ["member", "mirror"] {
+            let _ = std::fs::remove_file(dir.join(format!("{}.{suffix}", channel.0)));
+        }
+        self.bump();
     }
 
     /// Observe a current key without opening a channel, requesting access or
@@ -1642,6 +1698,141 @@ mod tests {
         assert!(
             waiting.renew_sealed(room_id, &write).is_err(),
             "a device still waiting for access renews nothing"
+        );
+    }
+
+    /// Who stewards a room as the room's directory says now.
+    struct MovingSteward {
+        me: u8,
+        steward: Arc<Mutex<Option<u8>>>,
+        policy: Policy,
+    }
+
+    impl ChannelDirectory for MovingSteward {
+        fn governs(&self, _: RoomId) -> bool {
+            *self.steward.lock().unwrap() == Some(self.me)
+        }
+        fn steward_of(&self, _: RoomId) -> Option<Ed25519PublicKey> {
+            self.steward
+                .lock()
+                .unwrap()
+                .filter(|steward| *steward != self.me)
+                .map(public)
+        }
+        fn allowed_devices(&self, _: RoomId, _: u64) -> BTreeSet<Ed25519PublicKey> {
+            self.policy.allowed.lock().unwrap().clone()
+        }
+    }
+
+    /// A member follows the room's steward: when another device takes the
+    /// channels over, the member asks it and seals for its group, the old
+    /// steward stops stewarding, and a steward nobody can name is no change.
+    /// Until anyone can admit a device, the channel refuses plaintext.
+    #[test]
+    fn members_follow_the_rooms_steward() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = collab_types::ArtifactId::new();
+        let policy = Policy::default();
+        for seed in [31, 32, 33] {
+            policy.allowed.lock().unwrap().insert(public(seed));
+        }
+        let steward = Arc::new(Mutex::new(None));
+        let dirs: Vec<_> = (0..3).map(|_| tempfile::tempdir().unwrap()).collect();
+        let mut devices: Vec<Device> = [31_u8, 32, 33]
+            .into_iter()
+            .enumerate()
+            .map(|(id, seed)| {
+                room.queues.lock().unwrap().entry(id).or_default();
+                let broker = Arc::new(Mutex::new(BrokerChannels::default()));
+                let service = ChannelEncryption::open(
+                    ChannelEncryptionConfig {
+                        root: dirs[id].path().join("channels"),
+                        vault: VaultKey::new([seed; 32]),
+                        device_key: key(seed),
+                    },
+                    Box::new(MovingSteward {
+                        me: seed,
+                        steward: Arc::clone(&steward),
+                        policy: policy.clone(),
+                    }),
+                    Arc::clone(&broker),
+                )
+                .unwrap();
+                Device {
+                    service,
+                    broker,
+                    endpoint: Endpoint {
+                        room: Arc::clone(&room),
+                        id,
+                        room_id,
+                    },
+                }
+            })
+            .collect();
+        let mut now = Instant::now();
+
+        assert!(matches!(
+            devices[1].service.access(room_id, channel, now),
+            ChannelAccess::Unavailable
+        ));
+        assert!(refuses_plaintext(&devices[1], channel));
+
+        *steward.lock().unwrap() = Some(31);
+        devices[0].service.access(room_id, channel, now);
+        devices[1].service.access(room_id, channel, now);
+        if let [first, second, _] = devices.as_mut_slice() {
+            run(&mut [first, second], &mut now, 5);
+        }
+        let ChannelAccess::Ready(old_keys) = devices[1].service.access(room_id, channel, now)
+        else {
+            panic!("admitted by the first steward");
+        };
+
+        // Nobody can name a steward for a while: nothing changes.
+        *steward.lock().unwrap() = None;
+        assert!(ready_epoch(&devices[1].service.access(room_id, channel, now)).is_some());
+
+        // The third device takes the channels over.
+        *steward.lock().unwrap() = Some(33);
+        devices[2].service.access(room_id, channel, now);
+        assert!(!matches!(
+            devices[0].service.access(room_id, channel, now),
+            ChannelAccess::Ready(_)
+        ));
+        assert!(matches!(
+            devices[1].service.access(room_id, channel, now),
+            ChannelAccess::Waiting
+        ));
+        // Later than every request the first steward saw, as on a clock.
+        for wall in 2_000..2_020 {
+            now = now.checked_add(Duration::from_millis(250)).unwrap();
+            for device in &mut devices[1..] {
+                device.service.pump(&device.endpoint, now, wall);
+            }
+        }
+        let access = devices[1].service.access(room_id, channel, now);
+        let ChannelAccess::Ready(new_keys) = access else {
+            panic!("admitted by the new steward: {access:?}");
+        };
+        let ChannelAccess::Ready(steward_keys) = devices[2].service.access(room_id, channel, now)
+        else {
+            panic!("the new steward's keys");
+        };
+        let (metadata, payload) = new_keys
+            .seal_content(artifact, collab_types::ContentRetention::Delta, b"after")
+            .unwrap();
+        assert!(
+            steward_keys
+                .open_content(artifact, &metadata, &payload)
+                .is_ok()
+        );
+        assert!(
+            old_keys
+                .open_content(artifact, &metadata, &payload)
+                .is_err(),
+            "the old group's keys open nothing written for the new one"
         );
     }
 }

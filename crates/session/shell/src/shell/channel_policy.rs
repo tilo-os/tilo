@@ -110,15 +110,80 @@ pub fn fleet_devices(
     devices
 }
 
+impl WorkspaceChannelDirectory {
+    /// The device that stewards the channels of `room`, a room this
+    /// identity governs: the device the person's workspace list names,
+    /// while it may steward; before the list names one, the device that
+    /// minted the room. When the named steward no longer may (revoked,
+    /// expired, or a host), its successor: the lowest-keyed device of the
+    /// fleet that may, the same on every device that holds the same fleet.
+    /// `None` while this device cannot know yet.
+    fn steward(&self, room: RoomId) -> Option<[u8; 32]> {
+        let tree = self.tree.read();
+        if !tree.rooms().contains(&room) || !tree.governs_room(room) {
+            return None;
+        }
+        let named = tree.channel_stewards.get(&room).copied();
+        let minted_here = tree.room_authority(room) == RoomAuthority::Local;
+        let person = tree.local_person;
+        drop(tree);
+        // A session without an identity has no other devices: the room it
+        // minted is its own to steward.
+        let Some(person) = person else {
+            return minted_here.then_some(self.device);
+        };
+        let now_ns = tilo_clock::unix_now_ns();
+        let fleet = (self.own_devices)(room);
+        let may_steward = |device: &[u8; 32]| {
+            let listed = fleet
+                .iter()
+                .find(|(cert, _)| cert.device_public_key == *device);
+            match listed {
+                Some((cert, revoked)) => !revoked && stewardable(cert, &person, now_ns),
+                // This device runs under its own certificate even where
+                // the fleet does not list it yet.
+                None => *device == self.device,
+            }
+        };
+        let known = |device: &[u8; 32]| {
+            *device == self.device
+                || fleet
+                    .iter()
+                    .any(|(cert, _)| cert.device_public_key == *device)
+        };
+        match named {
+            Some(named) if may_steward(&named) => Some(named),
+            // A steward this fleet does not know yet may still be valid:
+            // wait for its certificate rather than found a second group.
+            Some(named) if !known(&named) => None,
+            Some(_) => fleet
+                .iter()
+                .map(|(cert, _)| cert.device_public_key)
+                .chain(std::iter::once(self.device))
+                .filter(|device| may_steward(device))
+                .min(),
+            None => minted_here.then_some(self.device),
+        }
+    }
+}
+
+/// Whether `cert` may steward the channels of `person`'s rooms: a current,
+/// root-signed device of that person that owns workspaces and is no host.
+fn stewardable(cert: &tilo_user_identity::DeviceCert, person: &[u8; 32], now_ns: u64) -> bool {
+    cert.user_public_key == *person
+        && cert.capabilities.can_own_workspaces
+        && !cert.capabilities.can_act_as_host
+        && !cert.is_expired_at(now_ns)
+        && tilo_user_identity::verify_device_cert(cert).is_ok()
+}
+
 impl ChannelDirectory for WorkspaceChannelDirectory {
     fn governs(&self, room: RoomId) -> bool {
-        let tree = self.tree.read();
-        tree.rooms().contains(&room) && tree.stewards_channels(room, &self.device)
+        self.steward(room) == Some(self.device)
     }
 
-    /// Someone else's room: its pinned governor. A room the person owns:
-    /// the device of theirs the workspace list names, while it is a
-    /// certified device of this identity that is not revoked.
+    /// Someone else's room: its pinned governor. A room this identity
+    /// governs: [`Self::steward`], when that is another device.
     fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
         let authority = self.tree.read().room_authority(room);
         if let RoomAuthority::Peer(origin) = authority {
@@ -126,22 +191,9 @@ impl ChannelDirectory for WorkspaceChannelDirectory {
             let endpoint = endpoint.parse::<iroh::EndpointId>().ok()?;
             return Some(Ed25519PublicKey::from_bytes(*endpoint.as_bytes()));
         }
-        let steward = *self.tree.read().channel_stewards.get(&room)?;
-        if steward == self.device {
-            return None;
-        }
-        let certified = (self.own_devices)(room)
-            .iter()
-            .any(|(cert, revoked)| cert.device_public_key == steward && !revoked);
-        if !certified {
-            tracing::warn!(
-                %room,
-                steward = %hex::encode(steward),
-                "the device stewarding this room's channels is not a certified device of this identity; its records stay closed here"
-            );
-            return None;
-        }
-        Some(Ed25519PublicKey::from_bytes(steward))
+        self.steward(room)
+            .filter(|steward| *steward != self.device)
+            .map(Ed25519PublicKey::from_bytes)
     }
 
     fn allowed_devices(&self, room: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey> {
@@ -382,5 +434,83 @@ mod tests {
             BTreeSet::from([device_key(10)])
         );
         assert!(allowed_devices(&tree, RoomId::new(), 1_000, &own).is_empty());
+    }
+
+    /// In a room the person owns, the device the person's list names
+    /// stewards its channels while it may; a host named there never does,
+    /// and once the named steward is revoked, the lowest-keyed device of
+    /// the fleet that may takes over on every device. Before the list names
+    /// one, only the device that minted the room stewards.
+    #[test]
+    fn one_device_of_the_person_stewards_a_room_they_own() {
+        let person_root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let person = person_root.verifying_key().to_bytes();
+        let primary = cert(&person_root, 1, false);
+        let board = cert(&person_root, 2, false);
+        let host = cert(&person_root, 3, true);
+        let mut tree = WorkspaceTree::default();
+        let workspace = tree.append_empty_workspace("Home");
+        let room = tree.room_of(workspace).unwrap();
+        tree.local_person = Some(person);
+        tree.room_authority
+            .insert(room, RoomAuthority::Person(person));
+        let tree = tree.shared();
+        let revoked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<[u8; 32]>::new()));
+        let directory = |device: &tilo_user_identity::DeviceCert| {
+            let fleet = [primary.clone(), board.clone(), host.clone()];
+            let revoked = std::sync::Arc::clone(&revoked);
+            WorkspaceChannelDirectory::new(
+                tree.clone(),
+                Box::new(move |_| {
+                    let revoked = revoked.lock().unwrap();
+                    fleet
+                        .iter()
+                        .map(|cert| (cert.clone(), revoked.contains(&cert.device_public_key)))
+                        .collect()
+                }),
+                device.device_public_key,
+            )
+        };
+        let (on_primary, on_board) = (directory(&primary), directory(&board));
+        let key = |cert: &tilo_user_identity::DeviceCert| {
+            Some(Ed25519PublicKey::from_bytes(cert.device_public_key))
+        };
+
+        // Nobody named yet, and neither minted the room here.
+        assert!(!on_primary.governs(room) && !on_board.governs(room));
+        assert_eq!(on_board.steward_of(room), None);
+
+        tree.write()
+            .channel_stewards
+            .insert(room, primary.device_public_key);
+        assert!(on_primary.governs(room));
+        assert!(!on_board.governs(room));
+        assert_eq!(on_board.steward_of(room), key(&primary));
+
+        tree.write()
+            .channel_stewards
+            .insert(room, host.device_public_key);
+        let successor = primary.device_public_key.min(board.device_public_key);
+        assert_eq!(
+            (on_primary.governs(room), on_board.governs(room)),
+            (
+                successor == primary.device_public_key,
+                successor == board.device_public_key
+            ),
+            "a host never stewards; the fleet's successor does, the same on every device"
+        );
+
+        tree.write()
+            .channel_stewards
+            .insert(room, primary.device_public_key);
+        revoked.lock().unwrap().push(primary.device_public_key);
+        assert!(on_board.governs(room), "the revoked steward's successor");
+        assert!(!on_primary.governs(room));
+        assert_eq!(on_primary.steward_of(room), key(&board));
+
+        // A steward this fleet does not know yet is waited for.
+        tree.write().channel_stewards.insert(room, [9; 32]);
+        assert!(!on_board.governs(room));
+        assert_eq!(on_board.steward_of(room), None);
     }
 }

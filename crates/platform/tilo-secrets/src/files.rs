@@ -58,8 +58,15 @@ pub(crate) struct SystemCredentials;
 impl SystemCredentials {
     fn run(verb: &str, input: &[u8]) -> Result<Vec<u8>, SecretError> {
         use std::process::{Command, Stdio};
+        // Sealed to the TPM without a PCR policy: a firmware or Secure Boot
+        // update must not make the store's key unopenable.
+        let mut args = vec!["--user", verb, "--name", CREDENTIAL_NAME];
+        if verb == "encrypt" {
+            args.push("--tpm2-pcrs=");
+        }
+        args.extend(["-", "-"]);
         let mut child = Command::new(SYSTEMD_CREDS)
-            .args(["--user", verb, "--name", CREDENTIAL_NAME, "-", "-"])
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
