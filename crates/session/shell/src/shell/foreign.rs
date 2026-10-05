@@ -741,6 +741,7 @@ struct ForeignEntry {
     /// fewer than were queued; the newest one finished is what counts.
     shm_queued: u64,
     shm_done: u64,
+    activated_capture: Option<u64>,
     /// The image description the client attached (`wp_color_management`),
     /// read when a 10-bit or YUV buffer is converted for display.
     colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
@@ -788,6 +789,7 @@ impl ForeignEntry {
             ready_captures: HashMap::new(),
             shm_queued: 0,
             shm_done: 0,
+            activated_capture: None,
         }
     }
 }
@@ -1001,6 +1003,8 @@ pub struct ChildFrame {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+    painted_frames: Mutex<HashMap<SurfaceId, u64>>,
+    presentation_viewport: Mutex<Option<Rect>>,
     children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
     /// Transient toplevels drawn on their parent's tile, bottom to top.
     sheets: Mutex<Vec<SheetLink>>,
@@ -1594,6 +1598,66 @@ impl ForeignFrameStore {
             .any(|(id, entry)| id.wrapping_shr(32) == u64::from(client_index) && entry.capturing())
     }
 
+    pub fn capture_seq_for_token(&self, id: SurfaceId, token: u64) -> Option<u64> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.get(&id)?;
+        let result = (entry.activated_capture == Some(token) && entry.last_error.is_none())
+            .then_some(entry.seq);
+        drop(entries);
+        result
+    }
+
+    /// Exact completed pixel generation; pending/superseded captures are not proof.
+    pub fn presentation_pixels(&self, id: SurfaceId) -> Option<(u64, u64)> {
+        let entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = entries.get(&id)?;
+        let result =
+            (!entry.capturing() && entry.last_error.is_none() && entry.mapped && entry.seq != 0)
+                .then_some((entry.seq, entry.shm_done));
+        drop(entries);
+        result
+    }
+
+    pub fn begin_presentation_frame(&self, viewport: Rect) {
+        *self
+            .presentation_viewport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(viewport);
+        self.painted_frames
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+    }
+
+    pub fn take_painted_frames(&self) -> HashMap<SurfaceId, u64> {
+        std::mem::take(
+            &mut *self
+                .painted_frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    fn note_painted_frame(&self, id: SurfaceId, seq: u64, bounds: Rect) {
+        let visible = self
+            .presentation_viewport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some_and(|viewport| bounds.intersect(viewport).area() > 0.0);
+        if visible && !crate::shell::capture_protection::painting_for_capture() {
+            self.painted_frames
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(id, seq);
+        }
+    }
+
     pub fn import_count(&self) -> u64 {
         self.imports.load(Ordering::Relaxed)
     }
@@ -1718,7 +1782,7 @@ impl ForeignFrameStore {
     }
 
     #[cfg(target_os = "linux")]
-    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> bool {
+    pub fn prepare_shm_capture(&self, id: SurfaceId, frame: OwnedShmFrame) -> Option<u64> {
         let worker = ASYNC_SHM_CAPTURE.get_or_init(AsyncShmCapture::spawn);
         match worker {
             Ok(worker) => {
@@ -1731,11 +1795,11 @@ impl ForeignFrameStore {
                     generation,
                     payload: frame,
                 });
-                true
+                Some(generation)
             }
             Err(reason) => {
                 self.note_failure(id, reason.clone());
-                false
+                None
             }
         }
     }
@@ -1831,6 +1895,7 @@ impl ForeignFrameStore {
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
+                entry.activated_capture = Some(token);
                 entry.last_error = None;
                 let outcome = match route {
                     CaptureRoute::Dmabuf(route) => CaptureOutcome::Dmabuf {
@@ -2763,6 +2828,10 @@ impl ForeignSurfaceWidget {
         }
         self.cached_seq = seq;
         let frame = store().frame_image(self.surface_id);
+        if store().frame_seq(self.surface_id) != seq {
+            self.cached_seq = 0;
+            return false;
+        }
         self.cached_hdr = frame.as_ref().and_then(|(_, hdr)| hdr.clone());
         self.cached = frame.map(|(image, _)| image);
         self.sheet_images = store()
@@ -3029,6 +3098,11 @@ impl Widget for ForeignSurfaceWidget {
         if let Some(image) = self.cached.clone()
             && let Some(dst) = self.fit_rect(image.width, image.height)
         {
+            store().note_painted_frame(
+                self.surface_id,
+                self.cached_seq,
+                transform.transform_rect_bbox(self.rect),
+            );
             let sx = dst.width() / f64::from(image.width);
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
@@ -4806,7 +4880,9 @@ mod tests {
         store().forget(id);
         let _ = take_published_shm_frames();
         assert!(
-            store().prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+            store()
+                .prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+                .is_some()
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while !take_published_shm_frames() {

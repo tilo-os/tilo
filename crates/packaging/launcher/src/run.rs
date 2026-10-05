@@ -274,6 +274,9 @@ pub enum IdentitySource {
               state — grouping them into an enum would not make any combination less valid"
 )]
 pub struct RunOptions {
+    /// Original signed package root selected by a host launch. A different
+    /// installation must fail before any services or sandbox are constructed.
+    pub expected_package_hash: Option<String>,
     /// Skip all service-socket resolution.
     pub no_services: bool,
     /// Explicit override for the tilo-runtime bundle directory; wins over
@@ -349,6 +352,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
+            expected_package_hash: None,
             no_services: false,
             runtime_root: None,
             bwrap_bin: None,
@@ -1252,7 +1256,7 @@ fn trusted_publisher_pin_from_file() -> Option<String> {
 /// Read the trusted-publisher list from disk, ignoring blank/`#` lines.
 /// `None` when neither the (developer-build) env override nor the default
 /// file exists.
-fn load_trusted_publisher_list() -> Option<Vec<String>> {
+pub(crate) fn load_trusted_publisher_list() -> Option<Vec<String>> {
     let path = trusted_publishers_path_from(crate::dev_env::dev_override(
         crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
     ));
@@ -1338,8 +1342,61 @@ pub fn run(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
-    let manifest = read_manifest(manifest_path)?;
-    run_with(&manifest, payload_root, opts)
+    let manifest = if let Some(expected) = opts.expected_package_hash.as_deref() {
+        verified_original_manifest(manifest_path, payload_root, opts, expected)?
+    } else {
+        read_manifest(manifest_path)?
+    };
+    run_with_context(&manifest, payload_root, opts, None)
+}
+
+fn verified_original_manifest(
+    manifest_path: &Path,
+    payload_root: &Path,
+    opts: &RunOptions,
+    expected: &str,
+) -> Result<MinimalManifest, RunError> {
+    let refusal =
+        || RunError::InvalidServiceLaunch("original signed package launch changed".into());
+    let app = opts.app_id.as_deref().ok_or_else(refusal)?;
+    let installed = package_store::find_installed(app)
+        .map_err(|_| refusal())?
+        .ok_or_else(refusal)?;
+    verified_launch_installation(&installed, manifest_path, payload_root, expected)
+}
+
+pub(crate) fn verified_launch_installation(
+    installed: &package_store::InstalledPackage,
+    manifest_path: &Path,
+    payload_root: &Path,
+    expected: &str,
+) -> Result<MinimalManifest, RunError> {
+    let refusal =
+        || RunError::InvalidServiceLaunch("original signed package launch changed".into());
+    if installed.package_id_hex != expected
+        || installed.manifest_path != manifest_path
+        || installed.payload_root != payload_root
+    {
+        return Err(refusal());
+    }
+    let report =
+        package_store::integrity::verify(installed, payload_root).map_err(|_| refusal())?;
+    if !report.is_intact() {
+        return Err(refusal());
+    }
+    let record = package_store::integrity::read_record(
+        &package_store::integrity::record_dir(installed),
+        &installed.id,
+        expected,
+    )
+    .map_err(|_| refusal())?;
+    let manifest: MinimalManifest =
+        toml::from_str(std::str::from_utf8(&record.manifest_bytes).map_err(|_| refusal())?)
+            .map_err(|_| refusal())?;
+    if manifest.package_id != installed.id {
+        return Err(refusal());
+    }
+    Ok(manifest)
 }
 
 /// Launch mode — which of the entrypoint binaries we're targeting
@@ -2392,6 +2449,11 @@ pub fn run_with(
     payload_root: &Path,
     opts: &RunOptions,
 ) -> Result<ExitStatus, RunError> {
+    if opts.expected_package_hash.is_some() {
+        return Err(RunError::InvalidServiceLaunch(
+            "original signed package requires manifest-backed run".into(),
+        ));
+    }
     run_with_context(manifest, payload_root, opts, None)
 }
 
@@ -3073,6 +3135,11 @@ fn run_with_capture_spawn<T>(
         IdentityBrokerHandles,
     ) -> Result<T, RunError>,
 ) -> Result<T, RunError> {
+    if opts.expected_package_hash.is_some() {
+        return Err(RunError::InvalidServiceLaunch(
+            "original signed package requires manifest-backed run".into(),
+        ));
+    }
     validate_open_uri(manifest, opts)?;
     // Same refusals as `run_with`: this is a second entry into the sandbox
     // builder, and a policy with one enforced door is a door beside it.

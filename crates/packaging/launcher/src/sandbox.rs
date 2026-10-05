@@ -194,6 +194,15 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push(value.to_string_lossy().into_owned());
     }
     push_accessibility_environment(argv);
+    // A boolean content-free presentation observer, not an input injector or
+    // output path. Keep arbitrary profiling/scenario environment stripped.
+    if std::env::var("TILO_PROFILE_PRESENTATION").is_ok_and(|value| value == "1") {
+        argv.extend([
+            "--setenv".into(),
+            "TILO_PROFILE_PRESENTATION".into(),
+            "1".into(),
+        ]);
+    }
 }
 
 /// Env var publishing the compositor's privileged Wayland socket.
@@ -1336,6 +1345,44 @@ mod tests {
         argv.windows(3)
             .find(|w| w[0] == "--setenv" && w[1] == key)
             .map(|w| w[2].as_str())
+    }
+
+    #[test]
+    fn normal_sandbox_forwards_only_the_exact_presentation_observer_boolean() {
+        for value in ["1", "0", "true", "1\n", "/private/log", ""] {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_PROFILE_PRESENTATION", value)
+                .set("TILO_NATIVE_SCENARIO", "/private/input.json")
+                .set("TILO_NATIVE_INPUT_GATE", "private-approval")
+                .set("TILO_PROFILE_OUT", "/private/log")
+                .set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+            let argv = build_bwrap_argv(
+                &mk_manifest("off"),
+                Path::new("/host/pkg"),
+                None,
+                &[],
+                None,
+                None,
+                &CapabilityPlan::empty(),
+            );
+            assert!(argv.iter().any(|arg| arg == "--clearenv"));
+            assert_eq!(
+                setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
+                (value == "1").then_some("1")
+            );
+            for key in [
+                "TILO_NATIVE_SCENARIO",
+                "TILO_NATIVE_INPUT_GATE",
+                "TILO_PROFILE_OUT",
+                "VELLO_GPU_DISPATCH_TIMESTAMPS",
+            ] {
+                assert_eq!(
+                    setenv_value(&argv, key),
+                    None,
+                    "must not inject input or paths"
+                );
+            }
+        }
     }
 
     #[test]

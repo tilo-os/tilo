@@ -24,26 +24,32 @@
 #   4. With A's link cut, A does not answer; once restored, the session that
 #      was open when it was cut answers again, and tilo-vm reaches it anew.
 #
-# Usage: os/dev/test-device-admin-reach.sh DEV_DISK_QCOW2 [--out DIR] [--display gl|2d]
+# Usage: os/dev/test-device-admin-reach.sh DEV_DISK_QCOW2 [--out DIR] [--display gl|2d] [--bootstrap-cli PATH]
 #
 # DEV_DISK_QCOW2 (a dev disk: tilo-vmd, tilo-device-admin, tilo-vm) is never
 # booted or modified; each VM boots its own overlay.
-set -euo pipefail
+set -Eeuo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
-base="${1:?usage: test-device-admin-reach.sh DEV_DISK_QCOW2 [--out DIR] [--display gl|2d]}"
+base="${1:?usage: test-device-admin-reach.sh DEV_DISK_QCOW2 [--out DIR] [--display gl|2d] [--bootstrap-cli PATH]}"
 shift
 out="$PWD/device-admin-reach-artifacts"
 display="${TILO_VM_DISPLAY:-gl}"
+bootstrap_cli=""
+bootstrap_state=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="${2:?--out needs a directory}"; shift 2 ;;
     --display) display="${2:?--display needs gl or 2d}"; shift 2 ;;
+    --bootstrap-cli) bootstrap_cli="${2:?--bootstrap-cli needs the host tilo-vm executable}"; shift 2 ;;
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 case "$display" in gl|2d) ;; *) echo '--display must be gl or 2d' >&2; exit 2 ;; esac
+[ -z "$bootstrap_cli" ] || [ -x "$bootstrap_cli" ] || {
+  echo '--bootstrap-cli must name an executable host tilo-vm' >&2; exit 2;
+}
 [ -f "$base" ] || { printf 'disk not found: %s\n' "$base" >&2; exit 1; }
 base="$(cd "$(dirname "$base")" && pwd)/$(basename "$base")"
 command -v jq >/dev/null || { echo 'jq is required' >&2; exit 1; }
@@ -77,8 +83,14 @@ vm_c() {
     TILO_VM_HOSTFWD="hostfwd=tcp:127.0.0.1:$relay_port-:3340" "$vm" "$@"
 }
 # Root on a guest for test setup only. The account is in wheel; sudo takes
-# the password's line from stdin and the shell it starts reads the script.
-as_root() { local each=$1; printf '%s\n%s\n' "$TILO_PASS" "$2" | "$each" ssh "sudo -S -p '' sh -s"; }
+# the password's line from stdin; the script is a shell argument.
+as_root() {
+  local each=$1 script=$2
+  # The password must never become the first script statement when sudo
+  # has cached authentication or a fixture account has a NOPASSWD grant.
+  script="'${script//\'/\'\\\'\'}'"
+  printf '%s\n' "$TILO_PASS" | "$each" ssh "sudo -S -p '' sh -c $script"
+}
 
 collect() {
   local label=$1 run=$2 each=$3
@@ -99,11 +111,13 @@ cleanup() {
   vm_a stop >/dev/null 2>&1 || true
   vm_b stop >/dev/null 2>&1 || true
   vm_c stop >/dev/null 2>&1 || true
+  [ -z "$bootstrap_state" ] || rm -rf -- "$bootstrap_state"
   rm -f -- "$run_a/disk.qcow2" "$run_b/disk.qcow2" "$run_c/disk.qcow2"
   printf '%s\n' "$rc" > "$out/exit-status.txt"
   exit "$rc"
 }
 trap cleanup EXIT
+trap 'printf "device-admin reach: failed at scenario line %s\n" "$LINENO" >&2' ERR
 
 # --- three machines, three networks --------------------------------------------
 for run in "$run_a" "$run_b" "$run_c"; do
@@ -124,9 +138,36 @@ wait_ssh vm_c
 wait_ssh vm_a
 wait_ssh vm_b
 for each in vm_a vm_b vm_c; do
-  "$each" ssh 'command -v tilo-device-admin tilo-vmd tilo-enroll tilo-vm' >/dev/null \
-    || die "$each: not a dev disk with tilo-device-admin, tilo-vmd, tilo-enroll and tilo-vm"
+  "$each" ssh 'command -v tilo-device-admin tilo-vmd tilo-enroll' >/dev/null \
+    || die "$each: not a dev disk with tilo-device-admin, tilo-vmd and tilo-enroll"
 done
+
+# Older gated dev disks have the daemon and peer service but no developer
+# CLI. Optional bootstrap uses a real, provenanced VM-wide component swap;
+# only this disposable laptop receives a fresh fixture SSH key/sudo grant.
+# No binaries are copied over the scenario's setup SSH connection.
+if [ -n "$bootstrap_cli" ]; then
+  bootstrap_state="$(mktemp -d "${TMPDIR:-/var/tmp}/tilo-reach-bootstrap.XXXXXXXX")"
+  chmod 0700 "$bootstrap_state"
+  ssh-keygen -q -t ed25519 -N '' -f "$bootstrap_state/key"
+  fixture_key="$(cat "$bootstrap_state/key.pub")"
+  vm_b ssh "umask 077; mkdir -p ~/.ssh; printf '%s\n' '$fixture_key' >> ~/.ssh/authorized_keys"
+  as_root vm_b "set -eu
+    printf '%s\n' '$TILO_USER ALL=(root) NOPASSWD: ALL' > /etc/sudoers.d/tilo-reach-bootstrap
+    chmod 0440 /etc/sudoers.d/tilo-reach-bootstrap
+    visudo -c -f /etc/sudoers.d/tilo-reach-bootstrap" > "$out/bootstrap-sudo.txt"
+  # An explicit private registry and VM selection keep the host's developer
+  # registry, identity and unrelated running VMs out of the scenario.
+  TILO_VM_CONFIG="$bootstrap_state/vms.toml" "$bootstrap_cli" vm add reach-bootstrap \
+    --ssh "$TILO_USER@127.0.0.1:${TILO_REACH_SSH_B:-2242}" --key "$bootstrap_state/key" \
+    > "$out/bootstrap-add.txt" 2>&1
+  TILO_VM_CONFIG="$bootstrap_state/vms.toml" TILO_VM=reach-bootstrap \
+    "$bootstrap_cli" swap --slot vm vm-cli --builder host --profile dev \
+    > "$out/bootstrap-swap.txt" 2>&1
+  as_root vm_b 'rm -f /etc/sudoers.d/tilo-reach-bootstrap'
+  vm_b ssh "sed -i '\|$fixture_key|d' ~/.ssh/authorized_keys"
+fi
+vm_b ssh 'command -v tilo-vm' >/dev/null || die 'VM B has no developer CLI; use --bootstrap-cli with a host build'
 
 # The relay, on C only. Its desktop firewall zone accepts this port; the rule
 # is added anyway, so a stricter zone does not fail the run for the wrong reason.
@@ -231,7 +272,9 @@ jq -e '.next | any(test("enrol-admin --via"))' <<<"$unenrolled" >/dev/null \
 # The owner certifies the machine's key, as on the device that holds the identity.
 vm_b ssh "tilo-enroll certify --root-key ~/reach/root.key --device $admin_device \
   --label 'laptop (tilo-vm)' --capability admin --out ~/reach/admin.cert"
-enrolled="$(tilo_vm admin vm enrol-admin --cert ~/reach/admin.cert --json)"
+# Keep the tilde literal until the guest shell receives the certificate path.
+enrolled="$(tilo_vm admin vm enrol-admin --cert '~/reach/admin.cert' --json)" \
+  || die "VM B could not install its administrator certificate: $enrolled"
 printf '%s\n' "$enrolled" > "$out/b-enrol-after.json"
 [ "$(jq -r .enrolled <<<"$enrolled")" = true ] && [ "$(jq -r .identity <<<"$enrolled")" = "$identity" ] \
   || die "vm enrol-admin --cert did not enrol the machine: $enrolled"
@@ -263,7 +306,7 @@ setup_config stranger
 stranger_device="$(tilo_vm stranger vm enrol-admin --json | jq -r .device)"
 vm_b ssh "tilo-enroll certify --root-key ~/reach/stranger.key --device $stranger_device \
   --label stranger --capability admin --out ~/reach/stranger.cert"
-tilo_vm stranger vm enrol-admin --cert ~/reach/stranger.cert --json >/dev/null
+tilo_vm stranger vm enrol-admin --cert '~/reach/stranger.cert' --json >/dev/null
 # A certificate that claims the owner's identity but that the owner never
 # signed: the stranger's, with the owner's public key written over its own.
 setup_config forged
@@ -342,10 +385,11 @@ vm_b ssh 'test "$(wc -l < ~/reach/session.out)" -ge 3' \
   || die "the session before the cut did not answer hello and status: $(vm_b ssh 'cat ~/reach/session.out ~/reach/session.err')"
 vm_a cmd "set_link $nic_a off" >/dev/null
 note "A's link ($nic_a) is cut"
-set +e
-cut="$(vm_b ssh "printf '%s\n' '$hello' | timeout 60 tilo-device-admin dial --identity-root ~/reach/admin/admin-identity --endpoint $endpoint_a --device $device_a --relay $relay_url --wait 10" 2>&1)"
-cut_status=$?
-set -e
+if cut="$(vm_b ssh "printf '%s\n' '$hello' | timeout 60 tilo-device-admin dial --identity-root ~/reach/admin/admin-identity --endpoint $endpoint_a --device $device_a --relay $relay_url --wait 10" 2>&1)"; then
+  cut_status=0
+else
+  cut_status=$?
+fi
 printf 'exit %s\n%s\n' "$cut_status" "$cut" > "$out/b-dial-while-cut.txt"
 [ "$cut_status" = 2 ] || die "A answered with its link cut (exit $cut_status): $cut"
 # Long enough for the open connection to time out, so the session has to

@@ -14,6 +14,7 @@ use std::{
 use tilo_peer_state::{
     NeighbourMsg, TransportOrigin,
     owner_commit::{CommitOperation, OwnerCommitRequest},
+    workspace_task::{WorkspaceTaskAuthority, WorkspaceTaskCommand, WorkspaceTaskCommandId},
 };
 
 struct Enrolled {
@@ -55,6 +56,114 @@ fn enrolled() -> Enrolled {
 
 fn member() -> SigningKey {
     SigningKey::from_bytes(&[63; 32])
+}
+
+fn admit_test_agent(joined: &Enrolled, agent: &str) {
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    let key = SigningKey::from_bytes(&[61; 32]);
+    let messages = joined
+        .owner
+        .with_current(joined.room, |view| {
+            let before = view.peer().clone();
+            let mut candidate = before.clone();
+            candidate.put_governed_capabilities(
+                &[
+                    CapOverride::grant(Subject::agent(agent), Scope::Workspace, Verb::Write)
+                        .with_id(format!("test-agent-{agent}")),
+                ],
+                &key,
+                joined.now,
+            )?;
+            candidate.durable_mutation_messages(
+                &before,
+                &key,
+                joined.now,
+                view.generation().checked_add(1).unwrap(),
+            )
+        })
+        .unwrap();
+    let governor = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.governor().device_public_key))
+        .unwrap();
+    for message in messages {
+        joined
+            .owner
+            .receive(
+                joined.room,
+                TransportOrigin::RetainedRelayDelta(governor),
+                message,
+                joined.now,
+            )
+            .unwrap();
+    }
+}
+
+fn queued_and_started_task(joined: &Enrolled) -> (String, tilo_user_identity::DeviceCert) {
+    admit_test_agent(joined, "scribe");
+    let (caller, host) = joined
+        .owner
+        .with_current(joined.room, |view| {
+            Ok((
+                view.device().clone(),
+                view.host().ok_or("test room has no pinned host")?.clone(),
+            ))
+        })
+        .unwrap();
+    let queue_invocation = uuid::Uuid::from_u128(91);
+    joined
+        .owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: queue_invocation,
+                    authority: WorkspaceTaskAuthority::Person {
+                        caller: caller.clone(),
+                    },
+                    command: WorkspaceTaskCommand::Queue {
+                        title: "Prepare the release notes".into(),
+                        assigned_agent: "scribe".into(),
+                        route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                        resource: None,
+                    },
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    let result = joined
+        .owner
+        .workspace_task_result(
+            joined.room,
+            WorkspaceTaskCommandId {
+                device: caller.device_public_key,
+                invocation: queue_invocation,
+            },
+        )
+        .unwrap()
+        .unwrap();
+    let tilo_desktop_model::WorkspaceTaskMutationResult::Queued { task_id } = result else {
+        panic!("queue result")
+    };
+    joined
+        .owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::from_u128(92),
+                    authority: WorkspaceTaskAuthority::Host { attestor: host },
+                    command: WorkspaceTaskCommand::StartRun {
+                        task_id: task_id.clone(),
+                        agent_id: "scribe".into(),
+                    },
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    (task_id, caller)
 }
 
 fn edit(owner: &NativeWorkspaceOwner, room: RoomId, now: SystemTime) -> OwnerCommitRequest {
@@ -124,6 +233,309 @@ fn a_joined_room_is_kept_in_its_own_private_file_and_reopens() {
             .mode();
         assert_eq!(mode & 0o077, 0, "the record is owner-only");
     }
+}
+
+#[test]
+fn chat_task_retry_after_owner_restart_keeps_one_executable_task() {
+    let joined = enrolled();
+    admit_test_agent(&joined, "scribe");
+    let caller = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let parent = uuid::Uuid::from_u128(901);
+    let mut request = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(91),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::Queue {
+                title: "Release notes".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: Some(Box::new(tilo_desktop_model::WorkspaceTaskResource {
+                    app_id: Some("so.tilo.chat".into()),
+                    app_label: Some("Chat".into()),
+                    id: format!("chat.message:m_{parent}"),
+                    kind: "chat.message".into(),
+                    label: "Agent request".into(),
+                    agent_request: Some(tilo_desktop_model::WorkspaceAgentRequest {
+                        chat_record: "chat-record".into(),
+                        channel_id: "agent-dm".into(),
+                        message_id: format!("m_{parent}"),
+                        instruction: "Prepare complete release notes".into(),
+                        invocation: serde_json::from_value(serde_json::json!(parent)).unwrap(),
+                    }),
+                })),
+            },
+        },
+    };
+    joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    let first = joined.owner.workspace_task_snapshot(joined.room).unwrap();
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    if let CommitOperation::WorkspaceTaskCommand { invocation, .. } = &mut request.operation {
+        *invocation = uuid::Uuid::from_u128(92);
+    }
+    let receipt = reopened
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(&request).unwrap();
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(state.tasks, first.tasks);
+    assert_eq!(state.controls.values().next().unwrap().receipts.len(), 2);
+    let result = reopened
+        .workspace_task_result(
+            joined.room,
+            WorkspaceTaskCommandId {
+                device: caller.device_public_key,
+                invocation: uuid::Uuid::from_u128(92),
+            },
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        result,
+        tilo_desktop_model::WorkspaceTaskMutationResult::Queued {
+            task_id: first.tasks[0].id.clone(),
+        }
+    );
+    let durable = open_file(&joined.path)
+        .unwrap()
+        .workspace_task_snapshot(joined.room)
+        .unwrap();
+    assert_eq!(durable.tasks, state.tasks);
+    assert_eq!(durable.controls, state.controls);
+}
+
+#[test]
+fn typed_task_queue_and_exact_retry_survive_owner_restart() {
+    let joined = enrolled();
+    admit_test_agent(&joined, "scribe");
+    let caller = joined
+        .owner
+        .with_current(joined.room, |view| Ok(view.device().clone()))
+        .unwrap();
+    let invocation = uuid::Uuid::from_u128(91);
+    let request = OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation,
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::Queue {
+                title: "Prepare the release notes".into(),
+                assigned_agent: "scribe".into(),
+                route: tilo_desktop_model::WorkspaceTaskRoute::Model,
+                resource: None,
+            },
+        },
+    };
+    let first = joined
+        .owner
+        .commit_workspace_task_command(request.clone(), joined.now)
+        .unwrap();
+    let retry = joined
+        .owner
+        .commit_workspace_task_command(request, joined.now)
+        .unwrap();
+    assert_eq!(first.binding, retry.binding);
+    assert_eq!(first.generation, retry.generation);
+    assert_eq!(first.aggregate_hash, retry.aggregate_hash);
+    let id = WorkspaceTaskCommandId {
+        device: caller.device_public_key,
+        invocation,
+    };
+    assert!(
+        joined
+            .owner
+            .workspace_task_result(joined.room, id)
+            .unwrap()
+            .is_some()
+    );
+    drop(joined.owner);
+    let reopened = open_file(&joined.path).unwrap();
+    let snapshot = reopened.workspace_task_snapshot(joined.room).unwrap();
+    assert_eq!(snapshot.tasks.len(), 1);
+    assert_eq!(snapshot.tasks[0].assigned_agent.as_deref(), Some("scribe"));
+    assert!(
+        reopened
+            .workspace_task_result(joined.room, id)
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[test]
+fn run_bound_steering_refuses_stale_epoch_and_revision_without_owner_write() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    let request = |invocation, epoch, after_revision| OwnerCommitRequest {
+        room: ROOM.into(),
+        operation: CommitOperation::WorkspaceTaskCommand {
+            invocation: uuid::Uuid::from_u128(invocation),
+            authority: WorkspaceTaskAuthority::Person {
+                caller: caller.clone(),
+            },
+            command: WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: epoch,
+                after_revision,
+                text: "Prioritize compatibility changes".into(),
+            },
+        },
+    };
+    let before = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request(93, 2, 0), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), before);
+    let exact = request(94, 1, 0);
+    let receipt = joined
+        .owner
+        .commit_workspace_task_command(exact.clone(), joined.now)
+        .unwrap();
+    receipt.validate_for(&exact).unwrap();
+    let saved = std::fs::read(&joined.path).unwrap();
+    assert!(
+        joined
+            .owner
+            .commit_workspace_task_command(request(95, 1, 0), joined.now)
+            .is_err()
+    );
+    assert_eq!(std::fs::read(&joined.path).unwrap(), saved);
+    let reopened = open_file(&joined.path).unwrap();
+    let state = reopened.workspace_task_snapshot(joined.room).unwrap();
+    let control = state.controls.get(&task_id).unwrap();
+    assert_eq!(control.directions.len(), 1);
+    assert_eq!(control.directions[0].revision, 1);
+    assert_eq!(
+        control
+            .active_run
+            .as_ref()
+            .unwrap()
+            .applied_direction_revision,
+        0
+    );
+    let retry = reopened
+        .commit_workspace_task_command(exact, joined.now)
+        .unwrap();
+    assert_eq!(retry.binding, receipt.binding);
+    assert_eq!(retry.generation, receipt.generation);
+    assert_eq!(retry.aggregate_hash, receipt.aggregate_hash);
+    assert_eq!(std::fs::read(&joined.path).unwrap(), saved);
+}
+
+#[test]
+fn task_action_admission_and_direction_commit_are_one_serialized_owner_turn() {
+    let joined = enrolled();
+    let (task_id, caller) = queued_and_started_task(&joined);
+    let admission_owner = joined.owner.clone();
+    let nested_read_owner = joined.owner.clone();
+    let room = joined.room;
+    let admission_task = task_id.clone();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let admission = std::thread::spawn(move || {
+        admission_owner.with_task_action_admission(
+            room,
+            &admission_task,
+            "scribe",
+            1,
+            0,
+            move || {
+                nested_read_owner.workspace_task_snapshot(room)?;
+                entered_tx.send(()).map_err(|error| error.to_string())?;
+                release_rx.recv().map_err(|error| error.to_string())?;
+                Ok(())
+            },
+        )
+    });
+    entered_rx.recv().unwrap();
+
+    let direction_owner = joined.owner.clone();
+    let direction_task = task_id.clone();
+    let now = joined.now;
+    let (attempted_tx, attempted_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let direction = std::thread::spawn(move || {
+        attempted_tx.send(()).unwrap();
+        let result = direction_owner.commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::from_u128(93),
+                    authority: WorkspaceTaskAuthority::Person { caller },
+                    command: WorkspaceTaskCommand::DirectionForRun {
+                        task_id: direction_task,
+                        run_epoch: 1,
+                        after_revision: 0,
+                        text: "Keep the migration warning prominent".into(),
+                    },
+                },
+            },
+            now,
+        );
+        finished_tx.send(result.is_ok()).unwrap();
+    });
+    attempted_rx.recv().unwrap();
+    assert!(matches!(
+        finished_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    release_tx.send(()).unwrap();
+    admission.join().unwrap().unwrap();
+    direction.join().unwrap();
+    assert!(finished_rx.recv().unwrap());
+
+    assert!(
+        joined
+            .owner
+            .with_task_action_admission(joined.room, &task_id, "scribe", 1, 0, || Ok(()))
+            .is_err()
+    );
+    let host = joined
+        .owner
+        .with_current(joined.room, |view| {
+            view.host()
+                .cloned()
+                .ok_or_else(|| "test room has no pinned host".to_owned())
+        })
+        .unwrap();
+    joined
+        .owner
+        .commit_workspace_task_command(
+            OwnerCommitRequest {
+                room: ROOM.into(),
+                operation: CommitOperation::WorkspaceTaskCommand {
+                    invocation: uuid::Uuid::from_u128(94),
+                    authority: WorkspaceTaskAuthority::Agent {
+                        attestor: host,
+                        agent_id: "scribe".into(),
+                    },
+                    command: WorkspaceTaskCommand::AppliedAck {
+                        task_id: task_id.clone(),
+                        run_epoch: 1,
+                        revision: 1,
+                    },
+                },
+            },
+            joined.now,
+        )
+        .unwrap();
+    joined
+        .owner
+        .with_task_action_admission(joined.room, &task_id, "scribe", 1, 1, || Ok(()))
+        .unwrap();
 }
 
 #[test]

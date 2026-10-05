@@ -132,7 +132,9 @@ fn action_code(action: ActionKind) -> &'static str {
 fn short_publisher(item: &StoreItem) -> String {
     item.publisher_pubkey_hex.as_deref().map_or_else(
         || match item.source {
-            crate::StoreSource::Flathub => "Flathub / upstream metadata".into(),
+            crate::StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
+                format!("{} / upstream metadata", item.source.distribution_name())
+            }
             crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
         },
         |key| {
@@ -145,7 +147,9 @@ fn short_publisher(item: &StoreItem) -> String {
 fn full_publisher(item: &StoreItem) -> String {
     item.publisher_pubkey_hex.as_deref().map_or_else(
         || match item.source {
-            crate::StoreSource::Flathub => "Flathub / upstream metadata".into(),
+            crate::StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
+                format!("{} / upstream metadata", item.source.distribution_name())
+            }
             crate::StoreSource::Tilo { .. } => "Not disclosed".into(),
         },
         |key| format!("ed25519:{key}"),
@@ -177,9 +181,23 @@ fn device_state_label(item: &StoreItem) -> String {
                 "Not kept · cache may be reclaimed"
             }
         ),
-        (crate::StoreSource::Flathub, crate::InstalledState::Not) => "Not installed".into(),
         (
-            crate::StoreSource::Flathub,
+            crate::StoreSource::Flathub | crate::StoreSource::FlatpakRemote { .. },
+            crate::InstalledState::Installed {
+                version,
+                user_managed: false,
+                ..
+            },
+        ) => ui::i18n::I18nManager::format(
+            "store-device-provided-version",
+            &[("version", ui::i18n::ArgValue::Text(version.clone()))],
+        ),
+        (
+            crate::StoreSource::Flathub | crate::StoreSource::FlatpakRemote { .. },
+            crate::InstalledState::Not,
+        ) => "Not installed".into(),
+        (
+            crate::StoreSource::Flathub | crate::StoreSource::FlatpakRemote { .. },
             crate::InstalledState::Installed {
                 version, available, ..
             },
@@ -411,7 +429,7 @@ fn report_envelope(report: &ReportProjection, item: Option<&StoreItem>) -> Repor
         publisher_fingerprint: item.and_then(|item| item.publisher_pubkey_hex.clone()),
         catalogue_trust_claim: item.map_or_else(
             || "Catalogue item no longer available".into(),
-            |item| item.trust.label().into(),
+            |item| item.trust.label(),
         ),
         evidence_note: report.note.chars().take(16_384).collect(),
     }
@@ -465,7 +483,7 @@ fn needing_flatpak(spec: ActionSpec, action: ActionKind, flatpak_available: bool
 fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
     let source = match &item.source {
         StoreSource::Tilo { .. } => "Tilo verified",
-        StoreSource::Flathub => "Flathub",
+        StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => item.source.distribution_name(),
     };
     // The row feeds system search, history and assistive clients, which do
     // not see the card layout. Keep its summary short rather than exporting
@@ -491,7 +509,12 @@ fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
         .chain(item.remove_action());
     for action in actions {
         let spec = StoreEffect::package(action, item.id.clone()).bound();
-        row = row.operation(needing_flatpak(spec, action, flatpak_available));
+        let spec = if let Some((code, reason)) = item.unavailable_action(action) {
+            spec.unavailable(code, reason)
+        } else {
+            needing_flatpak(spec, action, flatpak_available)
+        };
+        row = row.operation(spec);
     }
     for version in item.versions.iter().take(32) {
         let label = if version.version.is_empty() {
@@ -512,17 +535,29 @@ fn app_row(item: &StoreItem, flatpak_available: bool) -> LiveRow {
     ))
 }
 
-fn review_label(item: &StoreItem) -> &'static str {
+fn review_label(item: &StoreItem) -> String {
     match item.trust {
-        crate::StoreTrust::PublisherSigned => "Signature verified · no independent review",
-        crate::StoreTrust::Flathub => "Flathub distribution · no Tilo review",
+        crate::StoreTrust::PublisherSigned => {
+            "Signature verified · no independent review".to_string()
+        }
+        crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
+        crate::StoreTrust::Flathub => "Flathub distribution · no Tilo review".to_string(),
     }
 }
 
 /// The publisher an app's row is grouped under: its key, or Flathub.
 fn publisher_of(item: &StoreItem) -> (String, String) {
     item.publisher_pubkey_hex.as_ref().map_or_else(
-        || ("flathub".to_owned(), "Flathub distribution".to_owned()),
+        || {
+            (
+                match &item.source {
+                    StoreSource::Flathub => "flathub".to_string(),
+                    StoreSource::FlatpakRemote { name, .. } => format!("flatpak:{name}"),
+                    StoreSource::Tilo { registry_name } => format!("registry:{registry_name}"),
+                },
+                format!("{} distribution", item.source.distribution_name()),
+            )
+        },
         |key| (key.clone(), format!("Publisher {}", short_publisher(item))),
     )
 }
@@ -723,7 +758,7 @@ impl StoreApp {
         if self.worker.is_some() {
             return;
         }
-        self.flatpak_available = crate::flathub_client::flatpak_available();
+        // Host capabilities arrive with the worker snapshot, never a sandbox subprocess.
         self.images = Some(crate::images::image_store());
         // The first presented frame is the catalogue chrome ("Loading
         // apps…"), not a cleared swapchain: the worker is already in flight.
@@ -780,6 +815,7 @@ impl StoreApp {
                     url: "https://dl.flathub.org/repo/".into(),
                     title: "Flathub".into(),
                     disabled: false,
+                    user_managed: true,
                 }]);
             }
             Some("progress") => {
@@ -1223,7 +1259,9 @@ impl StoreApp {
             .iter()
             .map(|item| match &item.source {
                 StoreSource::Tilo { .. } => "Tilo catalogue",
-                StoreSource::Flathub => "Flathub",
+                StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
+                    item.source.distribution_name()
+                }
             })
             .collect::<std::collections::BTreeSet<_>>()
             .len();
@@ -1267,10 +1305,10 @@ impl StoreApp {
                     )),
             ));
         }
-        self.operation_error.as_ref().map(|_| {
+        self.operation_error.as_ref().map(|error| {
             Box::new(
                 Banner::error("The last operation failed")
-                    .with_message(visible_operation_status(&self.status_line)),
+                    .with_message(visible_operation_status(error)),
             ) as Box<dyn Widget>
         })
     }
@@ -1317,11 +1355,14 @@ impl StoreApp {
     fn build_desktop_detail(&self, item: &StoreItem, theme: &Theme) -> Box<dyn Widget> {
         let source = match &item.source {
             StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
-            StoreSource::Flathub => "Flatpak · Flathub".to_string(),
+            StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
+                format!("Flatpak · {}", item.source.distribution_name())
+            }
         };
         let trust_label = match item.trust {
-            crate::StoreTrust::PublisherSigned => "Publisher signature verified",
-            crate::StoreTrust::Flathub => "Distributed by Flathub",
+            crate::StoreTrust::PublisherSigned => "Publisher signature verified".to_string(),
+            crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
+            crate::StoreTrust::Flathub => "Distributed by Flathub".to_string(),
         };
         let action = item.action_kind(self.flatpak_available);
         let operation_active = self
@@ -1393,10 +1434,13 @@ impl StoreApp {
         }
         let trust_explanation = match item.trust {
             crate::StoreTrust::PublisherSigned => {
-                "Identity and package integrity are verified. This is not an independent quality review."
+                "Identity and package integrity are verified. This is not an independent quality review.".to_string()
+            }
+            crate::StoreTrust::ConfiguredRemote => {
+                ui::i18n!("store-remote-trust-explanation")
             }
             crate::StoreTrust::Flathub => {
-                "This app is distributed by Flathub. Tilo has not independently reviewed it."
+                "This app is distributed by Flathub. Tilo has not independently reviewed it.".to_string()
             }
         };
         let mut report = ui::widget::Button::new(
@@ -1500,7 +1544,7 @@ impl StoreApp {
                     .with_color(theme.text_dim),
             ))
             .push(Box::new(
-                Text::new(trust_label)
+                Text::new(&trust_label)
                     .with_scaled_size(13.0)
                     .with_weight(TextWeight::Semibold),
             ));
@@ -1579,7 +1623,7 @@ impl StoreApp {
                 ))
                 .push(Box::new(Text::new(&installed).with_scaled_size(14.0)))
                 .push(Box::new(
-                    Text::new(trust_explanation)
+                    Text::new(&trust_explanation)
                         .with_scaled_size(13.0)
                         .with_color(theme.text_dim),
                 ))
@@ -1657,21 +1701,26 @@ impl StoreApp {
         }
         let source = match &item.source {
             crate::StoreSource::Tilo { registry_name } => format!("Tilo · {registry_name}"),
-            crate::StoreSource::Flathub => "Flatpak · Flathub".to_string(),
+            crate::StoreSource::Flathub | StoreSource::FlatpakRemote { .. } => {
+                format!("Flatpak · {}", item.source.distribution_name())
+            }
         };
         let locally_retained = matches!(
             &item.source,
             crate::StoreSource::Tilo { registry_name } if registry_name == "Installed on this device"
         );
         let trust_summary = if locally_retained {
-            "Verified when installed. Current registry metadata is unavailable, so update availability is unknown."
+            "Verified when installed. Current registry metadata is unavailable, so update availability is unknown.".to_string()
         } else {
             match item.trust {
                 crate::StoreTrust::PublisherSigned => {
-                    "Publisher identity and package integrity are verified. This is not an independent quality review."
+                    "Publisher identity and package integrity are verified. This is not an independent quality review.".to_string()
+                }
+                crate::StoreTrust::ConfiguredRemote => {
+                    ui::i18n!("store-remote-trust-explanation")
                 }
                 crate::StoreTrust::Flathub => {
-                    "Distributed by Flathub. Tilo has not independently reviewed this app."
+                    "Distributed by Flathub. Tilo has not independently reviewed this app.".to_string()
                 }
             }
         };
@@ -1734,13 +1783,18 @@ impl StoreApp {
         let trust_lines = if self.compact_layout() {
             vec![
                 match item.trust {
-                    crate::StoreTrust::PublisherSigned => "Publisher signature verified".into(),
-                    crate::StoreTrust::Flathub => "Distributed by Flathub".into(),
+                    crate::StoreTrust::PublisherSigned => {
+                        "Publisher signature verified".to_string()
+                    }
+                    crate::StoreTrust::ConfiguredRemote => {
+                        ui::i18n!("store-remote-trust")
+                    }
+                    crate::StoreTrust::Flathub => "Distributed by Flathub".to_string(),
                 },
                 "No independent quality review".into(),
             ]
         } else {
-            vec![trust_summary.to_string()]
+            vec![trust_summary]
         };
         let actions: Box<dyn Widget> = if self.compact_layout() {
             let mut column = Column::new().with_no_padding().with_intrinsic_height();
@@ -1772,8 +1826,9 @@ impl StoreApp {
             if self.compact_layout() { 56.0 } else { 88.0 },
         ));
         let trust_label = match item.trust {
-            crate::StoreTrust::PublisherSigned => "Publisher verified",
-            crate::StoreTrust::Flathub => "Flathub distribution",
+            crate::StoreTrust::PublisherSigned => "Publisher verified".to_string(),
+            crate::StoreTrust::ConfiguredRemote => ui::i18n!("store-remote-trust"),
+            crate::StoreTrust::Flathub => "Flathub distribution".to_string(),
         };
         let summary: Box<dyn Widget> = if self.compact_layout() {
             // Keep the compact identity stack intrinsic and separate from the
@@ -1790,7 +1845,7 @@ impl StoreApp {
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(
-                        Text::new(trust_label)
+                        Text::new(&trust_label)
                             .with_scaled_size(12.0)
                             .with_color(theme.text_tertiary),
                     )),
@@ -1811,7 +1866,7 @@ impl StoreApp {
                             .with_color(theme.text_dim),
                     ))
                     .push(Box::new(
-                        Text::new(trust_label)
+                        Text::new(&trust_label)
                             .with_scaled_size(12.0)
                             .with_color(theme.text_tertiary),
                     )),
@@ -1881,12 +1936,15 @@ impl StoreApp {
                                             .with_gap(theme.tokens.spacing.s2)
                                             .push(actions)
                                             .push(Box::new(
-                                                Text::new(match item.trust {
+                                                Text::new(&match item.trust {
                                                     crate::StoreTrust::PublisherSigned => {
-                                                        "Publisher verified"
+                                                        "Publisher verified".to_string()
+                                                    }
+                                                    crate::StoreTrust::ConfiguredRemote => {
+                                                        ui::i18n!("store-remote-trust-short")
                                                     }
                                                     crate::StoreTrust::Flathub => {
-                                                        "Flathub distribution"
+                                                        "Flathub distribution".to_string()
                                                     }
                                                 })
                                                 .with_scaled_size(12.0)
@@ -2294,6 +2352,7 @@ impl StoreApp {
         reason = "the machine-scoped remote editor and its canonical remove controls are deliberately composed together so their responsive layouts cannot diverge"
     )]
     fn build_remotes(&self, theme: &Theme) -> Box<dyn Widget> {
+        crate::resource::STORE_CATALOG.ensure();
         let mut back = ui::widget::Button::new("store.remotes.back", "Back to apps");
         if let Some(binding) = bindings::effect(&StoreEffect::ShowCatalogue) {
             back = back.on_action(binding);
@@ -2305,8 +2364,8 @@ impl StoreApp {
         );
         let header = secondary_page_header(
             back,
-            "Flatpak remotes",
-            "Repositories are machine-scoped and every change runs through the package worker.",
+            &ui::i18n!("store-remotes-title"),
+            &ui::i18n!("store-remotes-description"),
             theme,
         );
         // The body separates its groups — add form, configured list — by one
@@ -2319,7 +2378,7 @@ impl StoreApp {
         let mut remote_rows: Vec<Box<dyn Widget>> = Vec::new();
         for remote in &self.remotes {
             let mut remove = ui::widget::Button::new(
-                &format!("store.remote.{}.remove", remote.name),
+                &format!("store.{}.remove", remote.resource_id()),
                 "Remove remote",
             );
             if let Some(binding) = bindings::remove_remote(remote) {
@@ -2327,9 +2386,27 @@ impl StoreApp {
             }
             let remove = Box::new(
                 remove
+                    .with_enabled(remote.user_managed)
                     .danger()
                     .fit_content(40.0)
                     .tooltip(format!("Remove {} from this machine", remote.title)),
+            );
+            let mut browse = ui::widget::Button::new(
+                &format!("store.{}.browse", remote.resource_id()),
+                &ui::i18n::I18nManager::lookup_plain("store-remote-browse"),
+            )
+            .fit_content(40.0)
+            .with_enabled(!remote.disabled);
+            if let Some(binding) = bindings::effect(&StoreEffect::BrowseRemote {
+                remote: remote.resource_id(),
+            }) {
+                browse = browse.on_action(binding);
+            }
+            let controls = Box::new(
+                Row::new()
+                    .with_gap(theme.tokens.spacing.s2)
+                    .push(Box::new(browse))
+                    .push(remove),
             );
             let remote_row: Box<dyn Widget> = if self.compact_layout() {
                 Box::new(
@@ -2345,15 +2422,11 @@ impl StoreApp {
                                     .with_color(theme.text_dim),
                             ))
                             .push(Box::new(
-                                Text::new(if remote.disabled {
-                                    "Disabled"
-                                } else {
-                                    "Enabled"
-                                })
-                                .with_scaled_size(12.0)
-                                .with_color(theme.text_dim),
+                                Text::new(&remote_state_label(remote))
+                                    .with_scaled_size(12.0)
+                                    .with_color(theme.text_dim),
                             ))
-                            .push(remove),
+                            .push(controls),
                     )),
                 )
             } else {
@@ -2378,17 +2451,13 @@ impl StoreApp {
                                                 .with_color(theme.text_dim),
                                         ))
                                         .push(Box::new(
-                                            Text::new(if remote.disabled {
-                                                "Disabled"
-                                            } else {
-                                                "Enabled"
-                                            })
-                                            .with_scaled_size(12.0)
-                                            .with_color(theme.text_dim),
+                                            Text::new(&remote_state_label(remote))
+                                                .with_scaled_size(12.0)
+                                                .with_color(theme.text_dim),
                                         )),
                                 )),
                         ))
-                        .push(remove),
+                        .push(controls),
                 )
             };
             remote_rows.push(remote_row);
@@ -3586,6 +3655,7 @@ impl StoreApp {
             if let Some(detail) = snap.detail {
                 self.set_detail_from_worker(detail);
             }
+            self.set_flatpak_available(snap.flatpak_available);
             self.set_remotes(snap.remotes);
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
@@ -3654,6 +3724,34 @@ impl StoreApp {
                     return Err("search query is too long".into());
                 }
                 self.set_query(query);
+            }
+            StoreEffect::BrowseRemote { remote } => {
+                let source = self
+                    .remotes
+                    .iter()
+                    .find(|source| source.resource_id() == remote && !source.disabled)
+                    .ok_or_else(|| "Unknown or disabled Flatpak repository.".to_string())?;
+                let title = source.title.clone();
+                self.reserve_job()?;
+                self.status_line = ui::i18n::I18nManager::format(
+                    "store-remote-loading",
+                    &[("name", ui::i18n::ArgValue::Text(title))],
+                );
+                self.operation_error = None;
+                self.focused_detail = None;
+                self.remotes_open = false;
+                self.safety_open = false;
+                self.set_query(String::new());
+                // This job supplies the repository result itself. An empty
+                // global search queued here would replace it immediately.
+                self.pending_search = None;
+                self.pending_detail = None;
+                self.catalog_page = 0;
+                self.scroll_offset.set((0.0, 0.0));
+                self.set_active_filter(SourceFilter::All);
+                self.set_active_category(None);
+                self.structure_dirty = true;
+                return Ok(Job::admitted(Request::BrowseRemote(remote), Finish::Status));
             }
             StoreEffect::SetSource { source } => {
                 self.set_active_filter_from_local(&source);
@@ -3756,6 +3854,16 @@ impl StoreApp {
             }
             StoreEffect::RemoveRemote { name } => {
                 validate_remote_name(&name)?;
+                if !self
+                    .remotes
+                    .iter()
+                    .any(|remote| remote.name == name && remote.user_managed)
+                {
+                    return Err(
+                        "This repository is provided by the device and cannot be removed here."
+                            .into(),
+                    );
+                }
                 self.reserve_job()?;
                 return Ok(Job::admitted(Request::RemoteRemove(name), Finish::Status));
             }
@@ -4210,11 +4318,11 @@ impl StoreApp {
             let item = self.items.iter().find(|item| publisher_of(item).0 == key)?;
             return Some(LiveRow::new(id, "store.publisher", publisher_of(item).1));
         }
-        if let Some(name) = id.strip_prefix("remote:") {
+        if id.starts_with("remote:") {
             return self
                 .remotes
                 .iter()
-                .find(|remote| remote.name == name)
+                .find(|remote| remote.resource_id() == id)
                 .map(remote_row);
         }
         match id {
@@ -4320,15 +4428,57 @@ const REMOTES_ID: &str = "store:remotes";
 const LATEST_JOB_ID: &str = "store:latest-job";
 const CATALOGUE_SNAPSHOT_ID: &str = "store:catalogue-snapshot";
 
-fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
-    LiveRow::new(
-        format!("remote:{}", remote.name),
-        "store.remote",
-        remote.title.clone(),
-    )
-    .effect(&StoreEffect::RemoveRemote {
-        name: remote.name.clone(),
+fn remote_scope_label(remote: &crate::flathub_client::Remote) -> String {
+    crate::resource::STORE_CATALOG.ensure();
+    ui::i18n!(if remote.user_managed {
+        "store-remote-user"
+    } else {
+        "store-remote-system"
     })
+}
+
+fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
+    ui::i18n::I18nManager::format(
+        "store-remote-state",
+        &[
+            (
+                "scope",
+                ui::i18n::ArgValue::Text(remote_scope_label(remote)),
+            ),
+            (
+                "state",
+                ui::i18n::ArgValue::Text(ui::i18n!(if remote.disabled {
+                    "store-remote-disabled"
+                } else {
+                    "store-remote-enabled"
+                })),
+            ),
+        ],
+    )
+}
+
+fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
+    let scope = remote_scope_label(remote);
+    let title = ui::i18n::I18nManager::format(
+        "store-remote-title",
+        &[
+            ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
+            ("scope", ui::i18n::ArgValue::Text(scope)),
+        ],
+    );
+    let mut row = LiveRow::new(remote.resource_id(), "store.remote", title);
+    if !remote.disabled {
+        row = row.effect(&StoreEffect::BrowseRemote {
+            remote: remote.resource_id(),
+        });
+    }
+    if remote.user_managed {
+        row.effect(&StoreEffect::RemoveRemote {
+            name: remote.name.clone(),
+        })
+    } else {
+        row
+    }
 }
 
 fn operation_error_summary() -> &'static str {
@@ -4346,6 +4496,7 @@ mod tests {
         let trust = match &source {
             StoreSource::Tilo { .. } => StoreTrust::PublisherSigned,
             StoreSource::Flathub => StoreTrust::Flathub,
+            StoreSource::FlatpakRemote { .. } => StoreTrust::ConfiguredRemote,
         };
         StoreItem {
             id: format!("id.{}", name.to_ascii_lowercase()),
@@ -4406,6 +4557,165 @@ mod tests {
     /// Installed apps with a newer catalogue version, the system image's
     /// among them, are listed under Updates and updated by one job.
     #[test]
+    fn system_remotes_have_distinct_resources_and_no_user_remove_action() {
+        let mut app = seeded_app();
+        let system = crate::flathub_client::Remote {
+            name: "flathub".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            title: "Flathub".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        app.set_remotes(vec![system.clone()]);
+        let resource = app
+            .live_row("remote:system:flathub")
+            .unwrap()
+            .into_resource();
+        assert!(
+            !resource
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::RemoveRemote {
+                name: "flathub".into()
+            })
+            .is_err()
+        );
+        let mut user = system;
+        user.user_managed = true;
+        app.set_remotes(vec![
+            user.clone(),
+            crate::flathub_client::Remote {
+                user_managed: false,
+                ..user
+            },
+        ]);
+        assert!(
+            app.live_row("remote:flathub")
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        assert!(app.live_row("remote:system:flathub").is_some());
+    }
+
+    #[test]
+    fn configured_remote_resources_offer_read_browse_and_honest_mutations() {
+        let mut app = seeded_app();
+        app.set_flatpak_available(true);
+        let remote = crate::flathub_client::Remote {
+            name: "tools".into(),
+            title: "Example tools".into(),
+            url: "https://tools.example/repo".into(),
+            disabled: false,
+            user_managed: false,
+        };
+        app.set_remotes(vec![remote.clone()]);
+        let row = app.live_row("remote:system:tools").unwrap().into_resource();
+        assert!(
+            row.actions
+                .iter()
+                .any(|action| action.id == "browse-remote")
+        );
+        assert!(
+            !row.actions
+                .iter()
+                .any(|action| action.id == "remove-remote")
+        );
+        app.set_query("old search".into());
+        app.catalog_page = 4;
+        let job = admitted_job(
+            &mut app,
+            StoreEffect::BrowseRemote {
+                remote: remote.resource_id(),
+            },
+        );
+        assert!(
+            matches!(job.request, Request::BrowseRemote(ref id) if id == "remote:system:tools")
+        );
+        assert!(!app.remotes_open);
+        assert_eq!(app.query(), "");
+        assert_eq!(app.catalog_page, 0);
+        assert!(
+            app.pending_search.is_none(),
+            "a global empty search must not overwrite repository browsing"
+        );
+
+        let remote_item = crate::sources::remote_catalogue_items(
+            "org.example.Editor\tEditor\tEdit documents\t2.0\tstable\ttools\n",
+            &remote,
+            &[],
+        )
+        .remove(0);
+        app.set_items(vec![remote_item]);
+        let row = app
+            .live_row("app:org.example.Editor")
+            .unwrap()
+            .into_resource();
+        let install = row
+            .actions
+            .iter()
+            .find(|action| action.id == "flatpak-install")
+            .unwrap();
+        assert!(
+            matches!(&install.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_managed_repository")
+        );
+        assert!(
+            app.admit(StoreEffect::FlatpakInstall {
+                app: "org.example.Editor".into()
+            })
+            .is_err()
+        );
+        let mut disabled = remote;
+        disabled.disabled = true;
+        app.set_remotes(vec![disabled]);
+        assert!(
+            !app.live_row("remote:system:tools")
+                .unwrap()
+                .into_resource()
+                .actions
+                .iter()
+                .any(|action| action.id == "browse-remote")
+        );
+        assert!(
+            app.admit(StoreEffect::BrowseRemote {
+                remote: "remote:system:tools".into()
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn unsupported_device_version_has_no_invocable_open_offer() {
+        let mut app = seeded_app();
+        let mut unsupported = item(
+            "Foreign",
+            StoreSource::Tilo {
+                registry_name: "Tilo".into(),
+            },
+            "Tools",
+            InstalledState::Not,
+        );
+        unsupported.versions.clear();
+        let id = unsupported.id.clone();
+        app.set_items(vec![unsupported]);
+        let row = app.live_row(&format!("app:{id}")).unwrap().into_resource();
+        let open = row
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .unwrap();
+        assert!(
+            matches!(&open.contract.availability, ui::tilo_actions::Availability::Unavailable { code, .. } if code == "device_version_unavailable")
+        );
+        assert!(app.admit(StoreEffect::Open { app: id }).is_err());
+    }
+
+    #[test]
     fn update_all_queues_every_app_with_an_update() {
         let mut app = seeded_app();
         let installed = |version: &str, available: &str, user_managed| InstalledState::Installed {
@@ -4451,6 +4761,46 @@ mod tests {
             current.admit(StoreEffect::UpdateAll).is_err(),
             "nothing to update"
         );
+    }
+
+    #[test]
+    fn declared_search_finds_categories_publishers_and_configured_repositories() {
+        let mut app = seeded_app();
+        let mut items = app.items().to_vec();
+        let native = items.iter_mut().find(|item| item.name == "Notes").unwrap();
+        native.categories = vec!["Research".into()];
+        native.tagline = "Chalkboard projects".into();
+        native.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
+        let native_id = native.id.clone();
+        let remote = items.iter_mut().find(|item| item.name == "Chess").unwrap();
+        remote.source = StoreSource::FlatpakRemote {
+            name: "community-tools".into(),
+            title: "Community repository".into(),
+            branch: "stable".into(),
+            user_managed: true,
+        };
+        let remote_id = remote.id.clone();
+        app.set_items(items);
+        for (query, expected) in [
+            ("Research", native_id.as_str()),
+            ("Chalkboard", native_id.as_str()),
+            ("a1b2c3d4e5f6", native_id.as_str()),
+            (native_id.as_str(), native_id.as_str()),
+            ("Community repository", remote_id.as_str()),
+            ("community-tools", remote_id.as_str()),
+        ] {
+            app.admit(StoreEffect::SetSearch {
+                query: query.into(),
+            })
+            .unwrap();
+            let hits: Vec<_> = app
+                .visible_items()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect();
+            assert_eq!(hits, vec![expected], "declared search query {query}");
+            assert!(app.live_row(&format!("app:{expected}")).is_some());
+        }
     }
 
     /// Source, installed and category filters, search ranking and the category list.
@@ -4647,6 +4997,7 @@ mod tests {
                 url: "https://dl.flathub.org/repo/".into(),
                 title: "Flathub".into(),
                 disabled: false,
+                user_managed: true,
             }]);
             for id in [REMOTES_ID, "remote:flathub", crate::resource::MODERATION_ID] {
                 assert!(app.live_row(id).is_some(), "{id} resolves");

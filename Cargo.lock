@@ -538,6 +538,7 @@ dependencies = [
 name = "app-host"
 version = "0.1.0"
 dependencies = [
+ "app-cli",
  "anyhow",
  "app-registry",
  "bounded-command",
@@ -14007,7 +14008,6 @@ dependencies = [
  "app-cli",
  "app-host",
  "blake3",
- "bounded-command",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
  "hex",
@@ -16287,6 +16287,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-presentation"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tilo-clock",
+ "tilo-winit",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-process"
 version = "0.1.0"
 dependencies = [
@@ -16928,6 +16938,7 @@ dependencies = [
  "tilo-media",
  "tilo-paint-stream",
  "tilo-paths",
+ "tilo-presentation",
  "tilo-process",
  "tilo-resource",
  "tilo-rt",

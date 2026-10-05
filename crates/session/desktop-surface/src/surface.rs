@@ -252,6 +252,20 @@ impl DesktopHandle {
         shared.changed();
     }
 
+    /// The room snapshot, excluding process-local stream proxies and
+    /// device presentation. Durable profile saves still use the full tree.
+    pub fn shared_tree(&self) -> DesktopTree {
+        self.read(|tree| crate::shared_tree::projection(tree.clone()))
+    }
+
+    /// Apply room topology without replacing this device's stream bindings
+    /// or focus. Only `local_tabs` survive omission from the shared snapshot;
+    /// removed workspaces and strips still retire their contents.
+    pub fn replace_shared_tree(&self, tree: DesktopTree, local_tabs: &[TabId]) {
+        let tree = self.read(|local| crate::shared_tree::receive(local, tree, local_tabs));
+        self.replace_tree(tree);
+    }
+
     /// Ask the [`TileSource`] for `tab`'s content again on a coming update
     /// pass, as when the tab was first shown: for a host whose first answer
     /// was a notice (its record had not arrived). The host schedules a frame.
@@ -1943,6 +1957,72 @@ mod tests {
             .collect();
         let tree = seed_tree(&mut minter, "Desk", tabs);
         DesktopSurface::new(tree, 7, Box::new(Notices))
+    }
+
+    #[test]
+    fn shared_snapshot_keeps_stream_tab_and_focus_but_applies_real_closes() {
+        let (mut surface, handle) = desktop(3);
+        let state = AutoCommit::new();
+        surface.update(&state, &ui::automerge::ROOT);
+        let mut local = handle.read(Clone::clone);
+        let strip = &mut local.workspaces[0].strips[0];
+        let stream = strip.window_groups[2].tabs[0].id;
+        strip.window_groups[2].tabs[0].tile = tilo_desktop_model::TileContent::PeerWindow {
+            app_id: "so.tilo.terminal".into(),
+            label: "Terminal".into(),
+            note: String::new(),
+            missing: None,
+        };
+        let removed = strip.window_groups[1].tabs[0].id;
+        handle.replace_tree(local.clone());
+        surface.update(&state, &ui::automerge::ROOT);
+        assert!(handle.focus_tab(stream));
+        surface.update(&state, &ui::automerge::ROOT);
+
+        let projected = handle.shared_tree();
+        assert!(projected.active_group.is_empty());
+        assert!(
+            projected.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .flat_map(|g| &g.tabs)
+                .all(|t| t.id != stream)
+        );
+        assert!(handle.focus_tab(removed));
+        surface.update(&state, &ui::automerge::ROOT);
+        assert_eq!(
+            serde_json::to_value(handle.shared_tree()).unwrap(),
+            serde_json::to_value(projected).unwrap()
+        );
+        assert!(handle.focus_tab(stream));
+        surface.update(&state, &ui::automerge::ROOT);
+        let before = handle.snapshot("g", vec![]).active;
+        let mut incoming = local;
+        incoming.remove_tab(stream);
+        incoming.remove_tab(removed);
+        incoming.workspaces[0].name = "Shared rename".into();
+        // Reproduce the browser's inbound snapshot replacement.
+        handle.replace_shared_tree(incoming, &[stream]);
+        surface.update(&state, &ui::automerge::ROOT);
+        assert_eq!(handle.snapshot("g", vec![]).active, before);
+        handle.read(|tree| {
+            assert_eq!(tree.workspaces[0].name, "Shared rename");
+            let tabs: Vec<_> = tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .flat_map(|group| &group.tabs)
+                .map(|tab| tab.id)
+                .collect();
+            assert!(tabs.contains(&stream));
+            assert!(!tabs.contains(&removed));
+        });
+        // Removal of the containing workspace still retires the stream.
+        let mut incoming = handle.shared_tree();
+        incoming.workspaces.clear();
+        handle.replace_shared_tree(incoming, &[stream]);
+        surface.update(&state, &ui::automerge::ROOT);
+        assert!(handle.snapshot("g", vec![]).active.is_none());
+        assert!(handle.read(|tree| tree.workspaces.is_empty()));
     }
 
     struct RetainedHistory {

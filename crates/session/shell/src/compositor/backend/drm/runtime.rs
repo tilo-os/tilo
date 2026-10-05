@@ -2158,7 +2158,12 @@ impl DrmDispatchState {
     /// Super mask flips, followed by the `KeyboardInput` itself. No-op when the xkb keymap failed to load.
     ///
     /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
-    fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+    fn handle_keyboard_key(
+        &mut self,
+        keycode: xkb::Keycode,
+        pressed: bool,
+        input_time_ns: Option<u64>,
+    ) {
         let evdev = keycode.raw().saturating_sub(8);
         let now = std::time::Instant::now();
         if self.accessibility.bounce_keys {
@@ -2194,7 +2199,7 @@ impl DrmDispatchState {
             }
             self.process_keyboard_key(keycode, true);
         }
-        self.process_keyboard_key(keycode, pressed);
+        self.process_keyboard_key_timed(keycode, pressed, input_time_ns);
         if pressed {
             if self
                 .keyboard
@@ -2278,6 +2283,15 @@ impl DrmDispatchState {
     }
 
     fn process_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        self.process_keyboard_key_timed(keycode, pressed, None);
+    }
+
+    fn process_keyboard_key_timed(
+        &mut self,
+        keycode: xkb::Keycode,
+        pressed: bool,
+        input_time_ns: Option<u64>,
+    ) {
         // Scope the `&mut self.keyboard` borrow so we can push onto `self.events` afterwards without aliasing.
         let outcome = {
             let Some(kbd) = self.keyboard.as_mut() else {
@@ -2309,7 +2323,13 @@ impl DrmDispatchState {
         if let Some(input) = outcome.input {
             let consumes_sticky =
                 self.accessibility.sticky_keys && pressed && !self.sticky_latched.is_empty();
-            self.events.push(BackendEvent::Input(input));
+            self.events.push(match input_time_ns {
+                Some(input_time_ns) => BackendEvent::PhysicalKey {
+                    event: input,
+                    input_time_ns,
+                },
+                None => BackendEvent::Input(input),
+            });
             if consumes_sticky {
                 self.sticky_latched = ModifiersState::empty();
                 self.events
@@ -2658,7 +2678,8 @@ impl DrmDispatchState {
                 if pressed {
                     self.note_input_used(ui::InputModality::Keyboard);
                 }
-                self.handle_keyboard_key(event.key_code(), pressed);
+                // libinput time_usec is the original kernel monotonic event time.
+                self.handle_keyboard_key(event.key_code(), pressed, event.time().checked_mul(1000));
             }
             InputEvent::GestureSwipeBegin { .. }
             | InputEvent::GestureSwipeUpdate { .. }
@@ -7017,6 +7038,46 @@ mod tests {
         assert_eq!(at(&state, "eDP-1"), ((2560, 0), 1.25));
     }
 
+    #[test]
+    fn physical_key_timestamp_survives_translation_but_not_synthetic_repeat() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings::default());
+        let a = xkb::Keycode::new(38);
+        let origin = 123_456_789_000;
+        state.handle_keyboard_key(a, true, Some(origin));
+        assert!(state.events.iter().any(|event| matches!(event,
+            BackendEvent::PhysicalKey { event: WindowEvent::KeyboardInput { event, .. }, input_time_ns }
+                if *input_time_ns == origin && event.state == ElementState::Pressed)));
+        state.events.clear();
+        state.process_keyboard_key(a, false);
+        assert!(state.events.iter().any(|event| matches!(
+            event,
+            BackendEvent::Input(WindowEvent::KeyboardInput { .. })
+        )));
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::PhysicalKey { .. }))
+        );
+        state.key_repeat.press(
+            a,
+            std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .expect("fixture clock permits an earlier repeat deadline"),
+            std::time::Duration::from_millis(1),
+            25,
+        );
+        state.events.clear();
+        state.pump_keyboard_repeat(std::time::Instant::now());
+        assert!(state.events.iter().any(|event| matches!(event, BackendEvent::Input(WindowEvent::KeyboardInput { event, .. }) if event.repeat)));
+        assert!(
+            !state
+                .events
+                .iter()
+                .any(|event| matches!(event, BackendEvent::PhysicalKey { .. }))
+        );
+    }
+
     fn keyboard_dispatch(accessibility: AccessibilityInputSettings) -> DrmDispatchState {
         let (mut state, _rx) = dispatch_with_channel();
         state.keyboard = Some(
@@ -7043,14 +7104,14 @@ mod tests {
             ..Default::default()
         });
         let a = xkb::Keycode::new(38); // KEY_A + 8
-        state.handle_keyboard_key(a, true);
-        state.handle_keyboard_key(a, false);
+        state.handle_keyboard_key(a, true, None);
+        state.handle_keyboard_key(a, false, None);
         assert_eq!(typed_keys(&state), 2, "the first keystroke is real");
         state.events.clear();
 
         // Pressed again well inside the 300 ms default window.
-        state.handle_keyboard_key(a, true);
-        state.handle_keyboard_key(a, false);
+        state.handle_keyboard_key(a, true, None);
+        state.handle_keyboard_key(a, false, None);
         assert_eq!(typed_keys(&state), 0, "press and release both swallowed");
         assert_eq!(
             state
@@ -7070,8 +7131,8 @@ mod tests {
             ..Default::default()
         });
         let kp5 = xkb::Keycode::new(76 + 8);
-        state.handle_keyboard_key(kp5, true);
-        state.handle_keyboard_key(kp5, false);
+        state.handle_keyboard_key(kp5, true, None);
+        state.handle_keyboard_key(kp5, false, None);
         let clicks: Vec<_> = state
             .events
             .iter()
@@ -7093,8 +7154,8 @@ mod tests {
 
         state.events.clear();
         state.accessibility.mouse_keys = false;
-        state.handle_keyboard_key(kp5, true);
-        state.handle_keyboard_key(kp5, false);
+        state.handle_keyboard_key(kp5, true, None);
+        state.handle_keyboard_key(kp5, false, None);
         assert_eq!(
             typed_keys(&state),
             2,
@@ -7109,7 +7170,7 @@ mod tests {
             ..Default::default()
         });
         let kp0 = xkb::Keycode::new(82 + 8);
-        state.handle_keyboard_key(kp0, true);
+        state.handle_keyboard_key(kp0, true, None);
         state.events.clear();
         state.release_mouse_keys();
         assert!(state.events.iter().any(|e| matches!(
@@ -7328,8 +7389,8 @@ mod tests {
                     .expect("the default test keymap must compile"),
             );
 
-            state.handle_keyboard_key(xkb::Keycode::new(50), true); // KEY_LEFTSHIFT + 8
-            state.handle_keyboard_key(xkb::Keycode::new(22), true); // KEY_BACKSPACE + 8
+            state.handle_keyboard_key(xkb::Keycode::new(50), true, None); // KEY_LEFTSHIFT + 8
+            state.handle_keyboard_key(xkb::Keycode::new(22), true, None); // KEY_BACKSPACE + 8
             assert!(
                 state
                     .keyboard
@@ -7360,7 +7421,7 @@ mod tests {
             );
 
             state.events.clear();
-            state.handle_keyboard_key(xkb::Keycode::new(38), true); // KEY_A + 8
+            state.handle_keyboard_key(xkb::Keycode::new(38), true, None); // KEY_A + 8
             assert!(
                 !state
                     .events
