@@ -1241,7 +1241,10 @@ impl AppHandler {
                 crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
-                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop => {}
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
+                | crate::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
+                    ..
+                } => {}
             }
         }
         changed

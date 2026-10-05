@@ -51,6 +51,10 @@ pub const HOST_READ_PATHS: &[&str] = &[
     "/usr/sbin",
     "/usr/libexec",
     "/etc",
+    // systemctl, timedatectl and localectl probe sd_booted() before opening
+    // their bus connection. This empty marker identifies the systemd host;
+    // it grants neither its PID namespace nor its private manager socket.
+    "/run/systemd/system",
     package_store::layout::SYSTEM_DATA_DIR,
 ];
 
@@ -411,6 +415,32 @@ mod tests {
                 "/run/tilo/app/.local/share/tilo-apps",
             ]
         );
+    }
+
+    #[test]
+    fn systemd_clients_receive_the_boot_marker_without_the_manager_socket() {
+        let plan = SystemAuthorityPlan {
+            read_paths: HOST_READ_PATHS.iter().map(PathBuf::from).collect(),
+            ..SystemAuthorityPlan::default()
+        };
+        let mut binds = Vec::new();
+        push_binds(&mut binds, &plan);
+        assert!(
+            binds.windows(3).any(|args| {
+                args == ["--ro-bind", "/run/systemd/system", "/run/systemd/system"]
+            })
+        );
+        let mut rules = Vec::new();
+        push_landlock_rules(&mut rules, &plan);
+        assert!(
+            rules
+                .windows(2)
+                .any(|args| args == ["--ro", "/run/systemd/system"])
+        );
+        for private in ["/run/systemd/private", "/run/systemd", "/run/dbus"] {
+            assert!(!binds.iter().any(|arg| arg == private));
+            assert!(!rules.iter().any(|arg| arg == private));
+        }
     }
 
     #[test]

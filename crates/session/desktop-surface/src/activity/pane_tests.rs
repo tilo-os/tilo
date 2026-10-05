@@ -674,9 +674,9 @@ mod tests {
         let audit = task_audit_line(&task.audit[0], event_time, event_time);
         let accessible = task_accessibility_description(&task, event_time);
 
-        assert_eq!(byline, "▣ AGENT · scribe");
+        assert_eq!(byline, "Agent · scribe");
         assert!(audit.starts_with("scribe · Agent · Reviewed section 2"));
-        assert!(accessible.contains("▣ AGENT · scribe"));
+        assert!(accessible.contains("Agent · scribe"));
         assert!(accessible.contains("scribe · Agent"));
         for rendered in [&byline, &audit, &accessible] {
             assert!(

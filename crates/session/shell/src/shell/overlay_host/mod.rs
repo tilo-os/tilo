@@ -4270,6 +4270,17 @@ impl ShellOverlayHost {
     /// Drain app-owned requests for shell chrome after the app's event path
     /// has run. The request carries stable resource identity, so opening
     /// Activity does not depend on a file's current path or display label.
+    pub fn request_native_host_shell_allow(&mut self, writer: std::sync::mpsc::Sender<Vec<u8>>) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let (prompt, pending) = crate::shell::host_shell_allow::native_prompt(writer);
+        let mut chrome = chrome.borrow_mut();
+        chrome.pending_grants.push_back(prompt);
+        chrome.bump();
+        self.host_shell_allows.push(pending);
+    }
+
     fn drain_app_host_intents(&mut self) {
         self.host_shell_allows.retain_mut(|pending| !pending.poll());
         let mut intents = Vec::new();
