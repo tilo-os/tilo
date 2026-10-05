@@ -1850,6 +1850,18 @@ mod component_adapter {
             _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
         ) {
         }
+        fn has_pending_control_invocation(&self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            !binding.queued_controls.borrow().is_empty()
+                || self
+                    .component
+                    .root
+                    .as_deref()
+                    .is_some_and(|root| crate::widget::controls::has_pending_control_invocation(root))
+        }
         fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {

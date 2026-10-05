@@ -90,18 +90,16 @@ impl NoteDateIndex {
         self.dates.get(&page).copied().unwrap_or_default()
     }
 
-    pub fn sync(&mut self, doc: &mut AutoCommit) {
-        let heads = doc.get_heads();
+    pub fn sync(&mut self, doc: &AutoCommit) {
+        let heads = doc.committed_heads();
         if heads == self.heads {
             return;
         }
         // Undo or switching documents can remove our prior heads. Rebuild the
         // projection instead of leaking dates from a discarded history branch.
-        if self
-            .heads
-            .iter()
-            .any(|hash| doc.get_change_by_hash(hash).is_none())
-        {
+        if self.heads.iter().any(|hash| {
+            automerge::ReadDoc::get_change_by_hash(doc.committed_document(), hash).is_none()
+        }) {
             *self = Self::default();
         }
         for op in schema_operations_since(doc, &self.heads) {
