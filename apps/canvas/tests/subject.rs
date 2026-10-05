@@ -190,3 +190,81 @@ fn a_refine_right_after_an_edit_sees_that_edit_before_the_window_does() {
         "the disc, not the empty sheet: {refined}"
     );
 }
+
+#[test]
+fn the_wand_finds_a_pictures_colour_and_leaves_the_canvas_renderer_impatient() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    // The canvas's own renderer shows a placeholder while a picture
+    // decodes; the wand waits for the picture instead.
+    let mut renderer = Renderer::impatient();
+    let query = canvas::author::ColourQuery {
+        at: Some(ui::vello::kurbo::Point::new(100.0, 100.0)),
+        tolerance: 0.15,
+        ..canvas::author::ColourQuery::default()
+    };
+    let found = canvas::author::colour_region(
+        &mut renderer,
+        &mut ui::TextRenderer::new(),
+        &app.state(),
+        &query,
+    )
+    .unwrap();
+    let area = found.area();
+    assert!(
+        (area - 11_690.0).abs() < 900.0,
+        "the red disc, not the placeholder's frame: {area}"
+    );
+    assert!(
+        !renderer.pictures.patient,
+        "the canvas's renderer stays impatient"
+    );
+}
+
+#[test]
+fn a_cleaned_jpeg_photograph_stays_a_jpeg_of_about_its_size() {
+    use base64::Engine as _;
+    let mut app = TestApp::<App>::new().unwrap();
+    let png = disc();
+    let decoded = image::load_from_memory(
+        &base64::engine::general_purpose::STANDARD
+            .decode(png.trim_start_matches("data:image/png;base64,"))
+            .unwrap(),
+    )
+    .unwrap()
+    .to_rgb8();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 90)
+        .encode_image(&decoded)
+        .unwrap();
+    let src = format!(
+        "data:image/jpeg;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&jpeg)
+    );
+    call(
+        &mut app,
+        "draw",
+        json!({"marks": [{"id": "photo", "shape": {"kind": "image", "src": src, "x": 0, "y": 0, "width": 200, "height": 200}}]}),
+    );
+    let renderer = Rc::new(RefCell::new(Renderer::default()));
+    call(&mut app, "select", json!({"ellipse": [38, 38, 124, 124]}));
+    shown(&app, &renderer);
+    call(&mut app, "select", json!({"refine": 4}));
+    shown(&app, &renderer);
+    call(&mut app, "use-selection", json!({"do": "mask"}));
+    let art = app.state();
+    let Shape::Image { src, .. } = &art.mark("photo").unwrap().shape else {
+        panic!("the photo is a picture");
+    };
+    let bytes = canvas::picture::bytes_of(src).expect("the cleaned photo is stored");
+    assert_eq!(
+        image::guess_format(&bytes).unwrap(),
+        image::ImageFormat::Jpeg
+    );
+    assert!(
+        bytes.len() < jpeg.len() * 2,
+        "{} vs {}",
+        bytes.len(),
+        jpeg.len()
+    );
+}
