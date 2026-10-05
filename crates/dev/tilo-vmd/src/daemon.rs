@@ -549,6 +549,17 @@ impl Daemon {
                 let _locks = self.slot_locks(&p.slot)?;
                 to_value(&self.install_app(&p.slot, p.source)?)
             }
+            Request::NetworkWake(p) => {
+                let status = match p.enabled {
+                    Some(enabled) => os_actions::network_wake::configure(&p.profile, enabled),
+                    None => os_actions::network_wake::status(&p.profile),
+                }
+                .map_err(|detail| DaemonError::Apply {
+                    step: "network wake".into(),
+                    detail,
+                })?;
+                to_value(&status)
+            }
             Request::Awake(p) => {
                 let change = match (p.off, p.seconds) {
                     (true, _) => Some(awake::Change::Off),
@@ -1516,6 +1527,37 @@ impl Daemon {
 mod tests {
     use super::*;
     use crate::apply::session_unit;
+
+    #[test]
+    fn network_wake_requires_the_normal_protocol_handshake() {
+        let root = tempfile::tempdir().unwrap();
+        let mut daemon = Daemon::new(
+            root.path(),
+            Box::new(RecordingApply::default()),
+            None,
+            BaseInfo::default(),
+        );
+        let request = Request::NetworkWake(tilo_vm_protocol::NetworkWake {
+            profile: "--invalid".into(),
+            enabled: Some(true),
+        });
+        assert!(matches!(
+            daemon.handle(request.clone()),
+            Err(DaemonError::HelloRequired)
+        ));
+        daemon
+            .handle(Request::Hello(tilo_vm_protocol::Hello {
+                protocol: PROTOCOL_VERSION,
+                client_version: String::new(),
+            }))
+            .unwrap();
+        let error = daemon.handle(request).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid NetworkManager profile UUID")
+        );
+    }
 
     /// Every connection's hello takes the keep-awake lease; `awake` holds it
     /// longer, reports it, and releases it, and the next hello takes it again.

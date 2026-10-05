@@ -15,6 +15,7 @@ name = "tilo-vmd"
 path = "src/main.rs"
 
 [dependencies]
+os-actions = { path = "../../system/os-actions" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }

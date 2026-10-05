@@ -1831,3 +1831,12 @@ settings-printers-read-error = Can't list printers: { $error }
 settings-printers-jobs-read-error = Can't list print jobs: { $error }
 settings-printers-scanners-read-error = Can't list scanners: { $error }
 agent-key-read-error = Can't tell whether a key is saved: { $error }
+
+net-wake-network = Wake over { $name }
+net-wake-disabled = Enable magic-packet wake for this connection. Whether this machine resumes must be tested separately.
+net-wake-unverified = Magic-packet wake is saved and enabled in the driver. Waking this machine has not been verified.
+net-wake-connect-first = Connect to this network to check its device and apply wake settings.
+net-wake-unsupported = This connection's driver does not report magic-packet wake support.
+net-wake-unavailable = Wake settings could not be read.
+net-wake-pending = The wake setting is saved, but applying it to this connection needs attention.
+net-wake-saved = Wake configuration saved. Physical wake remains unverified.
