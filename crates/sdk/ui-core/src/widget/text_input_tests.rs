@@ -749,8 +749,8 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         let mut document = AutoCommit::new();
 
         state.set(String::from("Grace"));
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        Widget::sync(&mut first, &document, &automerge::ROOT);
+        Widget::sync(&mut second, &document, &automerge::ROOT);
         assert_eq!(first.value(), "Grace");
         assert_eq!(second.value(), "Grace");
         assert_eq!(first.take_dirty(), None, "model updates are not user edits");
@@ -763,13 +763,13 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         ));
         assert_eq!(state.get(), "Lin", "user edits publish typed state");
 
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &document, &automerge::ROOT);
         assert_eq!(second.value(), "Lin", "sibling input follows the model");
         assert_eq!(second.take_dirty(), None);
 
         first.set_text("programmatic");
         assert_eq!(state.get(), "programmatic");
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
+        Widget::sync(&mut second, &document, &automerge::ROOT);
         assert_eq!(second.value(), "programmatic");
         assert_eq!(first.take_dirty(), None);
     }
@@ -801,8 +801,8 @@ fn value_bindings_publish_user_edits_but_not_model_updates() {
         assert!(!Widget::layout_needs_measure(&input));
 
         state.set(String::from("a much longer line\nwith another row"));
-        let mut document = AutoCommit::new();
-        Widget::sync(&mut input, &mut document, &automerge::ROOT);
+        let document = AutoCommit::new();
+        Widget::sync(&mut input, &document, &automerge::ROOT);
 
         assert!(Widget::layout_needs_measure(&input));
         assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
@@ -1874,7 +1874,7 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
         let _ = doc.splice_text(&obj_id, 0, 0, "hunter2");
         ti.bind_text(obj_id);
 
-        ti.sync(&mut doc, &automerge::ROOT);
+        ti.sync(&doc, &automerge::ROOT);
         assert_eq!(ti.text, "hunter2", "stored value must be the real secret");
 
         assert_eq!(ti.display_text(), "•••••••");
@@ -1895,8 +1895,8 @@ fn secret_input_masks_rendering_and_accessibility_but_keeps_the_value() {
             .with_secret(true);
         input.text = "correct horse battery staple".into();
         input.dirty = true;
-        let mut document = AutoCommit::new();
-        input.sync(&mut document, &automerge::ROOT);
+        let document = AutoCommit::new();
+        input.sync(&document, &automerge::ROOT);
 
         assert_eq!(&*buffer.lock().unwrap(), "correct horse battery staple");
         assert!(document.keys(&automerge::ROOT).next().is_none());
@@ -2298,7 +2298,7 @@ fn a_bound_text_is_only_read_and_edits_wait_for_the_owner() {
     document.splice_text(&title, 0, 0, "Draft").unwrap();
     let mut input = TextInput::local();
     input.bind_text(title.clone());
-    input.sync(&mut document, &automerge::ROOT);
+    input.sync(&document, &automerge::ROOT);
     assert_eq!(input.value(), "Draft");
     assert!(
         input.take_dirty().is_none(),
@@ -2514,7 +2514,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
             .expect("seed note text");
         let mut input = TextInput::local();
         input.bind_text(text.clone());
-        input.sync(&mut doc, &automerge::ROOT);
+        input.sync(&doc, &automerge::ROOT);
         input.set_focus(true);
         input.set_cursor_pos("before".len());
 
@@ -2565,7 +2565,7 @@ fn action_bindings_own_edits_and_accessibility_set_value() {
             "Project Atlas"
         );
         doc.splice_text(&object, 0, 0, "Remote title").unwrap();
-        Widget::sync(&mut input, &mut doc, &automerge::ROOT);
+        Widget::sync(&mut input, &doc, &automerge::ROOT);
         assert_eq!(input.value(), "Remote title");
     }
 }
@@ -2858,7 +2858,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
 
         let mut input = TextInput::local().multiline(true);
         input.bind_text(text_obj.clone());
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        Widget::sync(&mut input, &state.doc, &state.root);
         let mut renderer = TextRenderer::new();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -2893,7 +2893,7 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
             )
             .expect("replace with wrapping text");
         state.commit_action(None, None);
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        Widget::sync(&mut input, &state.doc, &state.root);
         assert_eq!(input.take_dirty(), None, "model sync is not a user edit");
         assert!(
             Widget::layout_needs_measure(&input),
@@ -2903,13 +2903,13 @@ fn multiline_measurement_matches_draw_scale_and_invalidation() {
         assert!(long_height > short_height * 1.8, "long text wraps at 2x");
 
         state.undo(None, None).expect("undo long text");
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        Widget::sync(&mut input, &state.doc, &state.root);
         assert!(Widget::layout_needs_measure(&input));
         let undo_height = measure(&mut input, &mut renderer);
         assert!((undo_height - short_height).abs() < 0.1);
 
         state.redo(None, None).expect("redo long text");
-        Widget::sync(&mut input, &mut state.doc, &state.root);
+        Widget::sync(&mut input, &state.doc, &state.root);
         assert!(Widget::layout_needs_measure(&input));
         let redo_height = measure(&mut input, &mut renderer);
         assert!((redo_height - long_height).abs() < 0.1);
@@ -3666,7 +3666,7 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
         .expect("seed stale text");
     let mut input = TextInput::local();
     input.bind_text(stale.clone());
-    input.sync(&mut doc, &automerge::ROOT);
+    input.sync(&doc, &automerge::ROOT);
     input.set_focus(true);
     input.core.set_selection(1, 4);
     input.core.set_preedit("編", Some((0, "編".len())));
@@ -3692,7 +3692,7 @@ fn clearing_direct_binding_preserves_interaction_and_cannot_write_stale_object()
 
     doc.splice_text(&stale, 0, 5, "historical")
         .expect("replace stale text");
-    input.sync(&mut doc, &automerge::ROOT);
+    input.sync(&doc, &automerge::ROOT);
     assert_eq!(input.value(), "draft", "sync ignores the stale object");
 
     input.core.clear_preedit();
@@ -3978,7 +3978,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
     state.commit_action(None, None);
     let mut line = crate::widget::RichTextLine::new();
     line.bind_text(text.clone());
-    line.sync(&mut state.doc, &state.root);
+    line.sync(&state.doc, &state.root);
     line.set_marks(vec![MarkSpan::new(0..3, Mark::Bold)]);
     line.apply_layout_external(Rect::new(0.0, 0.0, 400.0, 60.0));
     let theme = Theme::dark().with_text_scale(2.0);
@@ -3993,7 +3993,7 @@ fn attributed_single_line_sync_undo_redo_rebuilds_runs() {
         if step == 2 {
             state.redo(None, None).unwrap();
         }
-        line.sync(&mut state.doc, &state.root);
+        line.sync(&state.doc, &state.root);
         let _ = line.take_dirty(); // preserve direct-binding reconciliation semantics
         assert!(line.layout_needs_measure());
         draw_rich_line_for_test(&mut line, &theme);

@@ -1051,9 +1051,11 @@ impl MusicApp {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
-        if let Err(error) =
-            dispatcher.apply_now_with(state, action, crate::actions::history_context(action))
-        {
+        if let Err(error) = dispatcher.apply_now_with(
+            &mut ui::widget::Edits::lend(state),
+            action,
+            crate::actions::history_context(action),
+        ) {
             self.toast = Some((error.to_string(), ui::time::now()));
         }
     }

@@ -24,7 +24,7 @@ fn open_links() -> Option<(PdfApp, ui::State)> {
         return None;
     }
     let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    app.sync_settled(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
     app.recompute_regions();
     app.sync_viewport_frame();
@@ -145,7 +145,7 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
         // Move the appendix (source page 3) to the front: it is now page 1 and
         // the link's own page is page 2.
         app.perform_action(&mut state.doc, &move_page_plan_action("source-3", None));
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         assert_eq!(app.resource_page_sources, vec![3, 1, 2, 4]);
         app.go_to_page(2);
         let at = link_centre(&mut app, 2, is_internal);
@@ -154,7 +154,7 @@ fn internal_links_show_a_pointer_and_navigate_through_the_page_plan() {
 
         // Delete the appendix: the link says so instead of jumping anywhere.
         app.perform_action(&mut state.doc, &delete_page_plan_action("source-3"));
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         assert_eq!(app.resource_page_sources, vec![1, 2, 4]);
         app.go_to_page(1);
         let at = link_centre(&mut app, 1, is_internal);

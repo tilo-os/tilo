@@ -80,7 +80,7 @@ impl RichTextSource for DraftField {
         self.read_only || self.field.read_only()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit) {
+    fn sync(&mut self, doc: &AutoCommit) {
         self.field.sync(doc);
     }
 
@@ -96,13 +96,17 @@ impl RichTextSource for DraftField {
         self.field.with_state(read)
     }
 
-    fn apply(&mut self, doc: &mut AutoCommit, edit: &RichTextAction) -> Result<(), ActionError> {
+    fn apply(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
         if self.read_only {
             return Err(ActionError::Refused(
                 "this conversation is open to view only".into(),
             ));
         }
-        self.field.apply(doc, edit)
+        self.field.apply(edits, edit)
     }
 
     // Chat keys collaborators' carets by draft itself (`composer_presence`).
@@ -314,7 +318,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
     }
 
     /// Bring the editor up to date with the document.
-    pub fn sync(&mut self, doc: &mut AutoCommit) {
+    pub fn sync(&mut self, doc: &AutoCommit) {
         self.host.sync(doc, &automerge::ROOT);
     }
 
@@ -343,7 +347,9 @@ impl<S: RichTextSource + 'static> Composer<S> {
     pub fn insert_text(&mut self, doc: &mut AutoCommit, text: &str) {
         self.host.sync(doc, &automerge::ROOT);
         self.caret_somewhere();
-        self.host.widget_mut().insert_text(doc, text);
+        self.host
+            .widget_mut()
+            .insert_text(&mut ui::widget::Edits::lend(doc), text);
         self.host.sync(doc, &automerge::ROOT);
     }
 
@@ -360,7 +366,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         self.caret_somewhere();
         let surface = self.host.widget_mut();
         surface.editor_mut().select_before_caret(query_len);
-        surface.insert_mention(doc, id, label);
+        surface.insert_mention(&mut ui::widget::Edits::lend(doc), id, label);
         self.host.sync(doc, &automerge::ROOT);
     }
 

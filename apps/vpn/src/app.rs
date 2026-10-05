@@ -3114,7 +3114,7 @@ fn synth_logs(
 }
 
 impl Widget for VpnApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if self.mode.is_live() {
             self.probe_device();
             self.apply_pending_tool_intent();

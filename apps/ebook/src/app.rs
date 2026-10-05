@@ -3362,7 +3362,7 @@ impl BooksApp {
     /// nothing, and the dispatcher says why.
     fn edit(&self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
         let _ = self.dispatch.apply_now_with(
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             action,
             tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
         );
@@ -4442,7 +4442,7 @@ impl Widget for BooksApp {
         clippy::too_many_lines,
         reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
     )]
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, path) = ui::doc::document(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.

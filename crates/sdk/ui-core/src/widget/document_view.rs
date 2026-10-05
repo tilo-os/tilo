@@ -204,14 +204,14 @@ where
         dyn crate::view::capability::ViewState
     );
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        let (state, path) = crate::doc::document(state, path);
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.update(state, path)
     }
@@ -478,18 +478,18 @@ mod tests {
             let mut doc = AutoCommit::new();
             doc.put(&ROOT, "selection", "alpha").unwrap();
 
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 1);
             assert!(view.take_structure_dirty());
             assert!(!view.take_structure_dirty(), "the signal is edge-triggered");
 
             doc.put(&ROOT, "unrelated", 42).unwrap();
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 1, "equal keys retain the existing subtree");
             assert!(!view.take_structure_dirty());
 
             doc.put(&ROOT, "selection", "beta").unwrap();
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 2);
             assert!(view.take_structure_dirty());
             assert_eq!(
@@ -508,7 +508,7 @@ mod tests {
             )
             .autofocus_on_change(true);
 
-            view.sync(&mut state.doc, &ROOT);
+            view.sync(&state.doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("list")
@@ -517,14 +517,14 @@ mod tests {
 
             state.doc.put(&ROOT, "mode", "detail").unwrap();
             state.commit_action(None, None);
-            view.sync(&mut state.doc, &ROOT);
+            view.sync(&state.doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("detail")
             );
 
             state.undo(None, None).unwrap();
-            view.sync(&mut state.doc, &ROOT);
+            view.sync(&state.doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("list")
@@ -534,15 +534,15 @@ mod tests {
         fn typed_state_selects_arbitrary_subtrees() {
             let state = crate::LocalState::new(String::from("loading"));
             let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("loading")
             );
             state.set(String::from("ready"));
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
                 Some("ready")
@@ -581,13 +581,13 @@ mod tests {
                     Box::new(Text::new(label))
                 },
             );
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             state.set(LoadState::Ready(Project {
                 title: String::from("First"),
             }));
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 2);
             assert_eq!(
                 view.children()[0].accessibility().unwrap().name.as_deref(),
@@ -597,7 +597,7 @@ mod tests {
             state.set(LoadState::Ready(Project {
                 title: String::from("Updated without structural replacement"),
             }));
-            view.sync(&mut doc, &ROOT);
+            view.sync(&doc, &ROOT);
             assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
         }
 

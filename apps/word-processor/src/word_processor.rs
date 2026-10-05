@@ -901,7 +901,9 @@ impl WordProcessor {
             return false;
         };
         let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", &action);
-        dispatch.apply_now_with(state, &action, context).is_ok()
+        dispatch
+            .apply_now_with(&mut ui::widget::Edits::lend(state), &action, context)
+            .is_ok()
     }
 
     fn action_region(&self) -> crate::actions::RegionKind {

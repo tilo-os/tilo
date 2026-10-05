@@ -488,25 +488,29 @@ impl Leaf {
         });
         TASKS.with_borrow_mut(|tasks| tasks.push(tilo_ui::LatestTask::new(0)));
     }
-    fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
+    /// Check `doc` is this leaf's record and note the callback `label`.
+    fn observe(&self, doc: &AutoCommit, label: &'static str) {
         assert_eq!(
             doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
             Some(self.record.as_str())
         );
-        doc.put(ROOT, "last_callback", label).unwrap();
         self.capture(label);
+    }
+    fn edit(&self, doc: &mut AutoCommit, label: &'static str) {
+        self.observe(doc, label);
+        doc.put(ROOT, "last_callback", label).unwrap();
     }
 }
 impl Widget for Leaf {
     tilo_ui::provides!(dyn tilo_ui::resources::PublishesResources);
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "sync");
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, _) = tilo_ui::doc::document_ref(doc, path);
+        self.observe(doc, "sync");
     }
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
-        self.edit(doc, "update");
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        let (doc, _) = tilo_ui::doc::document_ref(doc, path);
+        self.observe(doc, "update");
         false
     }
     fn build_layout(
@@ -767,10 +771,10 @@ impl Widget for Root {
         ))
     }
 
-    fn sync(&mut self, d: &mut AppModel, p: &ModelPath) {
+    fn sync(&mut self, d: &AppModel, p: &ModelPath) {
         self.0.sync(d, p);
     }
-    fn update(&mut self, d: &mut AppModel, p: &ModelPath) -> bool {
+    fn update(&mut self, d: &AppModel, p: &ModelPath) -> bool {
         self.0.update(d, p)
     }
     fn build_layout(
@@ -1890,7 +1894,7 @@ thread_local! { static PANIC_VIEW: Cell<bool> = const { Cell::new(false) }; }
 
 struct ReplacingHost(TileHost, std::rc::Rc<Cell<bool>>);
 impl Widget for ReplacingHost {
-    fn update(&mut self, doc: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
         if self.1.replace(false) {
             self.0
                 .replace_content(tilo_ui::widget::TileContent::Notice {
@@ -1948,7 +1952,7 @@ impl Widget for ReplacingHost {
 #[repr(transparent)]
 struct SameNameUnregisteredWrapper(Button);
 impl Widget for SameNameUnregisteredWrapper {
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,

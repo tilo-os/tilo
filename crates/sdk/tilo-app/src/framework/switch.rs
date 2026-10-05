@@ -58,12 +58,12 @@ impl<K: Clone + PartialEq + 'static> Switch<K> {
 }
 
 impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.reconcile();
         self.part.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.part.update(state, path)
     }
 

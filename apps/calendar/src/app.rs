@@ -1446,7 +1446,11 @@ impl CalendarApp {
                 "the calendar is not attached to a window".into(),
             ));
         };
-        dispatcher.apply_now_with(doc, action, crate::actions::history_context(action))
+        dispatcher.apply_now_with(
+            &mut ui::widget::Edits::lend(doc),
+            action,
+            crate::actions::history_context(action),
+        )
     }
 
     fn record_remote_binding(
@@ -5925,7 +5929,7 @@ enum Open<'a> {
 impl Widget for CalendarApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.adopt_person_accounts();
         if !self.seeded {

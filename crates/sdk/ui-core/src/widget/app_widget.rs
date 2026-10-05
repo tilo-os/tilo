@@ -790,35 +790,49 @@ mod component_adapter {
             };
             root.set_interaction_environment(environment);
         }
-        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
-            let (state, _) = crate::doc::document(state, path);
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+            let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.sync(document, record_root);
-                    let _ = binding.drain_owned_tree(root, document);
+                .read_document(state, |document, record_root| {
+                    if let Some(root) = self.component.root.as_deref_mut() {
+                        root.sync(document, record_root);
+                    }
                 })
                 .unwrap_or(());
             self.component.project_record_save_status();
         }
-        fn update(
-            &mut self,
-            state: &mut crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) -> bool {
-            let (state, _) = crate::doc::document(state, path);
+        fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, _path: &ObjId) {
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
+                .with_document(edits.document_mut(), |document, record_root| {
                     let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
+                        return;
                     };
-                    let updated = root.update(document, record_root);
+                    let before = crate::widget::settle_mark(document);
+                    root.settle(&mut crate::widget::Edits::lend(document), record_root);
                     let _ = binding.drain_owned_tree(root, document);
-                    updated
+                    // What it wrote shows in this same frame.
+                    if crate::widget::settle_mark(document) != before {
+                        root.update(document, record_root);
+                        root.sync(document, record_root);
+                    }
+                })
+                .unwrap_or(());
+        }
+        fn update(
+            &mut self,
+            state: &crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) -> bool {
+            let (state, _) = crate::doc::document_ref(state, path);
+            let binding = self.component.callback_binding();
+            binding
+                .read_document(state, |document, record_root| {
+                    self.component
+                        .root
+                        .as_deref_mut()
+                        .is_some_and(|root| root.update(document, record_root))
                 })
                 .unwrap_or(false)
         }
@@ -1244,17 +1258,17 @@ mod component_adapter {
         fn on_nav_gesture(
             &mut self,
             dir: crate::gesture::NavDirection,
-            state: &mut crate::widget::AppModel,
+            state: &crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
-            let (state, _) = crate::doc::document(state, path);
+            let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
             binding
-                .with_document(state, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return false;
-                    };
-                    root.on_nav_gesture(dir, document, record_root)
+                .read_document(state, |document, record_root| {
+                    self.component
+                        .root
+                        .as_deref_mut()
+                        .is_some_and(|root| root.on_nav_gesture(dir, document, record_root))
                 })
                 .unwrap_or(false)
         }
@@ -1858,6 +1872,16 @@ mod component_adapter {
             _: &tilo_actions::ActionAddress,
             _: &Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError>,
         ) {
+        }
+        fn has_pending_control_invocation(&self) -> bool {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return false;
+            };
+            !binding.queued_controls.borrow().is_empty()
+                || self.component.root.as_deref().is_some_and(|root| {
+                    crate::widget::controls::has_pending_control_invocation(root)
+                })
         }
         fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
             let binding = self.component.callback_binding();

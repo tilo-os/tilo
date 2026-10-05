@@ -1880,7 +1880,7 @@ impl Widget for GreeterApp {
     /// Take what the controls reported since the last pass. The document is
     /// only lent on to the composed controls; the greeter itself neither
     /// reads nor writes it.
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // The minute turned over (the wake deadline brought us here), or the
         // machine's state changed: rebuild once to show it.
         if !self.clock_pinned {

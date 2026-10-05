@@ -6,7 +6,6 @@
 //! and is confirmed saved, never the key; and install output passes through
 //! [`redact_recovery_material`] before any line of it is reported.
 
-use automerge::{AutoCommit, ObjId};
 use console_control::{Request, catalog, wire};
 use serde_json::{Value, json};
 
@@ -65,18 +64,18 @@ impl InstallerApp {
     }
 
     /// Answer every queued console request, in order.
-    pub(super) fn serve_console(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(super) fn serve_console(&mut self) {
         let Some(console) = self.console.clone() else {
             return;
         };
         for pending in console.take_pending() {
-            let reply = self.answer_console(pending.line(), state, root);
+            let reply = self.answer_console(pending.line());
             pending.respond(reply);
         }
     }
 
     /// One request line in, one reply line out.
-    pub fn answer_console(&mut self, line: &str, state: &mut AutoCommit, root: &ObjId) -> String {
+    pub fn answer_console(&mut self, line: &str) -> String {
         match wire::parse(line) {
             Err(error) => wire::error("parse_error", &error.0),
             Ok(Request::Unsupported { op }) => wire::unsupported(&op),
@@ -88,7 +87,7 @@ impl InstallerApp {
                 let resources = self.publish();
                 match console_control::admit(PROVIDER, &resources, &provider, &id, &args) {
                     Err(refusal) => wire::error(refusal.code, &refusal.message),
-                    Ok(admitted) => match self.apply_encoded(&admitted.encoded, state, root) {
+                    Ok(admitted) => match self.apply_encoded(&admitted.encoded) {
                         Ok(output) => wire::answer(&json!({
                             "provider": PROVIDER,
                             "id": id,
@@ -161,7 +160,7 @@ impl InstallerApp {
             "steps": STEP_LABELS,
             "status": self.status,
             "keyboard": {
-                "layout": self.keymap.trim(),
+                "layout": self.keymap().trim(),
                 "xkb_layout": layout.xkb_layout,
                 "xkb_variant": layout.variant_or_empty(),
             },
@@ -192,8 +191,8 @@ impl InstallerApp {
                 "filesystem": FILESYSTEMS.get(self.selected_fs).copied().unwrap_or("btrfs"),
                 "security_key": self.fido2,
                 "hostname": local_text(&self.hostname).trim(),
-                "locale": self.locale.trim(),
-                "timezone": self.timezone.trim(),
+                "locale": self.locale().trim(),
+                "timezone": self.timezone().trim(),
                 "encryption": self.encryption_summary(),
             },
             "review": {

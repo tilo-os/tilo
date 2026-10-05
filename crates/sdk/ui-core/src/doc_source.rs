@@ -1,9 +1,8 @@
-//! Control bindings into the app's Automerge document: a value kept under a
-//! key of the object the control is synced against.
+//! Read sources for controls backed by the app document. User edits are
+//! submitted by the control owner as resource actions.
 
 use std::marker::PhantomData;
 
-use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 
 use crate::widget::binding::{BoxedBinding, Pulled, ValueBinding};
@@ -13,7 +12,6 @@ use crate::widget::{AppModel, ModelPath};
 trait Codec: 'static {
     type Value;
     fn read(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<Self::Value>;
-    fn write(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &Self::Value);
 }
 
 fn scalar(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<ScalarValue> {
@@ -34,10 +32,6 @@ impl Codec for Bool {
             _ => None,
         }
     }
-
-    fn write(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &bool) {
-        let _ = doc.put(obj, key, ScalarValue::Boolean(*value));
-    }
 }
 
 struct Number;
@@ -57,14 +51,9 @@ impl Codec for Number {
             _ => None,
         }
     }
-
-    fn write(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &f64) {
-        let _ = doc.put(obj, key, ScalarValue::F64(*value));
-    }
 }
 
-/// Collaborative text: an Automerge `Text` edited by splicing the changed
-/// span. A plain string scalar reads as well.
+/// Collaborative text: an Automerge `Text` read from a document text object. A plain string scalar reads as well.
 struct Text;
 
 impl Codec for Text {
@@ -80,21 +69,9 @@ impl Codec for Text {
             _ => None,
         }
     }
-
-    fn write(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &String) {
-        let text = match doc.get(obj, key) {
-            Ok(Some((Value::Object(ObjType::Text), text))) => Some(text),
-            _ => doc.put_object(obj, key, ObjType::Text).ok(),
-        };
-        if let Some(text) = text {
-            crate::doc::splice_text_diffed(doc, &text, value);
-        } else {
-            let _ = doc.put(obj, key, value.as_str());
-        }
-    }
 }
 
-/// A whole string replaced on each write.
+/// A string scalar.
 struct Str;
 
 impl Codec for Str {
@@ -106,10 +83,6 @@ impl Codec for Str {
             _ => None,
         }
     }
-
-    fn write(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &String) {
-        let _ = doc.put(obj, key, value.as_str());
-    }
 }
 
 struct DocKey<C> {
@@ -118,14 +91,9 @@ struct DocKey<C> {
 }
 
 impl<C: Codec> ValueBinding<C::Value> for DocKey<C> {
-    fn pull(&mut self, model: &mut AppModel, path: &ModelPath) -> Pulled<C::Value> {
-        let (doc, obj) = crate::doc::document(model, path);
+    fn pull(&mut self, model: &AppModel, path: &ModelPath) -> Pulled<C::Value> {
+        let (doc, obj) = crate::doc::document_ref(model, path);
         C::read(doc, obj, &self.key).map_or(Pulled::Missing, Pulled::Value)
-    }
-
-    fn push(&mut self, model: &mut AppModel, path: &ModelPath, value: &C::Value) {
-        let (doc, obj) = crate::doc::document(model, path);
-        C::write(doc, obj, &self.key, value);
     }
 
     fn document_key(&self) -> Option<&str> {
@@ -150,12 +118,12 @@ pub fn number_key(key_name: &str) -> BoxedBinding<f64> {
     key::<Number>(key_name)
 }
 
-/// Collaborative text under `key`, spliced on each edit.
+/// Collaborative text under `key`.
 pub fn text_key(key_name: &str) -> BoxedBinding<String> {
     key::<Text>(key_name)
 }
 
-/// A string under `key`, replaced whole on each edit.
+/// A string scalar under `key`.
 pub fn str_key(key_name: &str) -> BoxedBinding<String> {
     key::<Str>(key_name)
 }

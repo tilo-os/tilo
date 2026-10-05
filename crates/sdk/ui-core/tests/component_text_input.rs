@@ -38,12 +38,12 @@ impl Widget for Page {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![self.0.as_mut()]
     }
-    fn sync(&mut self, state: &mut tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
         self.0.sync(state, path);
     }
     fn update(
         &mut self,
-        state: &mut tilo_ui::widget::AppModel,
+        state: &tilo_ui::widget::AppModel,
         path: &tilo_ui::widget::ModelPath,
     ) -> bool {
         self.0.update(state, path)

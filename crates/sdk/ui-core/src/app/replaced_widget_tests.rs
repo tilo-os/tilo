@@ -27,7 +27,7 @@ struct Swapper {
 }
 
 impl Widget for Swapper {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if self.swap.replace(false) {
             self.child = Box::new(Text::new("after"));
             self.replaced = true;

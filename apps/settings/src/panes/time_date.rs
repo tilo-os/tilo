@@ -1076,7 +1076,7 @@ impl TimeDatePane {
 }
 
 impl Widget for TimeDatePane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let applied = self.applied.get();
         if applied != self.applied_seen {
             self.applied_seen = applied;

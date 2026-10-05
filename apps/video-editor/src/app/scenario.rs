@@ -368,7 +368,7 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "the exhaustive deterministic screenshot scenario table is kept together so visual fixtures cannot drift across setup paths"
     )]
-    pub(super) fn apply_shot_scenario(&mut self, state: &mut AutoCommit) {
+    pub(super) fn apply_shot_scenario(&mut self, state: &AutoCommit) {
         match self.shot_scenario {
             ShotScenario::Live => {}
             ShotScenario::HelpSheet => self.navigation.help_open = true,
@@ -586,8 +586,8 @@ impl VideoEditorApp {
                 self.project_path = Some(path);
                 // Saved *as it stands*, so the badge is off — which is the
                 // half of the button this scenario exists to show.
-                self.saved_heads = Some(state.get_heads());
-                self.doc_heads = state.get_heads();
+                self.saved_heads = Some(state.committed_heads());
+                self.doc_heads = state.committed_heads();
             }
             ShotScenario::SelectedFilters => {
                 // Select the graded drone clip on V1 and park the playhead a

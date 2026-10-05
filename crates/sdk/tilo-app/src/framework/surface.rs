@@ -650,7 +650,11 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         Some(&mut self.surface)
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ObjId) {
+        self.surface.settle(edits, path);
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let read_only = self.dispatch.read_only();
         if read_only != self.read_only {
             self.read_only = read_only;
@@ -665,8 +669,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
             self.surface.stage(scenario.as_deref());
         }
         self.jobs.poll(&mut self.surface);
-        let surface = &mut self.surface;
-        only_through_actions(state, path, "sync", |state, path| surface.sync(state, path));
+        self.surface.sync(state, path);
         if self.effects.is_some() {
             let now = self.surface.effects();
             if *self.statuses.borrow() != now {
@@ -696,13 +699,8 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> Decorator
         started
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
-        let surface = &mut self.surface;
-        let mut changed = false;
-        only_through_actions(state, path, "update", |state, path| {
-            changed = surface.update(state, path);
-        });
-        changed
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.surface.update(state, path)
     }
 
     fn handle_event(

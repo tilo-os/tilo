@@ -205,7 +205,7 @@ impl Decorator for OskSurface {
         &mut self.keyboard
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(focus) = &mut self.focus {
             for transition in focus.take() {
                 self.keyboard.follow_input_method(transition);

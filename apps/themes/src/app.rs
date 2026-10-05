@@ -447,7 +447,7 @@ impl ThemesApp {
         };
         match doc {
             Some(doc) => {
-                let _ = dispatch.apply_now(doc, action);
+                let _ = dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action);
             }
             None => dispatch.apply(action),
         }
@@ -1240,8 +1240,8 @@ impl ThemesApp {
 }
 
 impl Widget for ThemesApp {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         if let Some(preview) = self.narrow_view_request.take() {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(preview);

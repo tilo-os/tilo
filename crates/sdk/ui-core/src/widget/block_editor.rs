@@ -1710,7 +1710,7 @@ impl BlockEditor {
         clippy::indexing_slicing,
         reason = "the restored focus index is clamped to the non-empty rebuilt projection"
     )]
-    fn rebuild_from_doc(&mut self, state: &mut AutoCommit, list: &ObjId, doc_len: usize) {
+    fn rebuild_from_doc(&mut self, state: &AutoCommit, list: &ObjId, doc_len: usize) {
         let saved_focus = self.focused;
         let saved_id = self
             .focused
@@ -7270,8 +7270,8 @@ impl BlockEditor {
 impl Widget for BlockEditor {
     crate::provides!(dyn crate::presence::capability::PublishesPresence);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = crate::doc::document_ref(state, path);
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             // Unbound (examples / tests): local-mode, nothing to sync.

@@ -487,8 +487,8 @@ fn pointer_drops_target_leaves_and_seams_with_a_lifted_scrolling_preview() {
         );
         let before = view.scroll_offset();
         view.last_tick = Some(crate::time::now() - Duration::from_millis(50));
-        let mut doc = AutoCommit::new();
-        view.update(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        view.update(&doc, &automerge::ROOT);
         assert!(
             view.scroll_offset() > before,
             "holding a drag at the bottom edge reveals rows below"

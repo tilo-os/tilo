@@ -764,7 +764,7 @@ impl AppearancePane {
 }
 
 impl Widget for AppearancePane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.prefs.refresh() {
             self.shown.show(self.prefs.get());
             // The schedule's rows and the applied theme follow the values.

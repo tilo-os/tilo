@@ -1043,7 +1043,7 @@ impl PdfApp {
     /// Screenshot helper: import a distinctive generated image as a new page
     /// after the current one, so a still frame shows an imported image page
     /// in the rail + canvas. No-op when no PDF is open.
-    fn demo_import_image(&mut self, state: &mut AutoCommit) {
+    fn demo_import_image(&mut self, state: &AutoCommit) {
         self.show_rail = true;
         if !self.raster_active() {
             return;
@@ -1242,6 +1242,31 @@ impl PdfApp {
     /// with the Ctrl+K palette — applied to the document this event received,
     /// so the reader reads it back at once. One event's actions are one undo
     /// step.
+    /// Test-only: one frame's sync, then what it submitted applied to `doc`
+    /// as the host applies it, and shown in the same frame.
+    #[cfg(test)]
+    pub(crate) fn sync_settled(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
+        Widget::sync(self, doc, root);
+        let Some(dispatcher) = self.dispatcher.clone() else {
+            return;
+        };
+        if !ui::framework::testing::resolve(&dispatcher, doc)
+            .expect("submitted edits apply")
+            .is_empty()
+        {
+            Widget::sync(self, doc, root);
+        }
+    }
+
+    /// Submit `action` through the resource's dispatcher to be applied
+    /// after this pass, from a pass that only reads the document (a frame's
+    /// sync, a worker's answer). A refusal is reported by the dispatcher.
+    pub(crate) fn submit(&mut self, action: &crate::actions::PdfViewerAction) {
+        if let Some(dispatcher) = self.dispatcher.as_ref() {
+            dispatcher.apply(action);
+        }
+    }
+
     pub(crate) fn perform_action(
         &mut self,
         state: &mut AutoCommit,
@@ -1256,7 +1281,7 @@ impl PdfApp {
             return;
         }
         if let Err(error) = dispatcher.apply_now_with(
-            state,
+            &mut ui::widget::Edits::lend(state),
             action,
             tilo_actions::ActionContext::for_action(APP_ID, "PDF Viewer", action),
         ) {
@@ -1428,13 +1453,13 @@ impl PdfApp {
     /// Rebuild the search entries only when the shared document or durable
     /// page occurrence projection changed. Searching never traverses
     /// document text or markup.
-    fn refresh_search_entries(&mut self, state: &mut AutoCommit) {
+    fn refresh_search_entries(&mut self, state: &AutoCommit) {
         let Some(ctx) = self.pdf_resource_ctx() else {
             return;
         };
         let revision = SearchProjectionRevision {
             doc_id: ctx.doc_id.clone(),
-            heads: state.get_heads(),
+            heads: state.committed_heads(),
             page_ids: ctx.page_ids.clone(),
             page_sources: ctx.page_sources.clone(),
             search_token: ctx.search_token.clone(),
@@ -1523,14 +1548,14 @@ impl PdfApp {
 
     /// Pin the open document's bytes in its record the first time the
     /// record meets them; say so when the file no longer matches.
-    fn pin_source(&mut self, state: &mut AutoCommit) {
+    fn pin_source(&mut self, state: &AutoCommit) {
         let Some((hash, len)) = self.source_blob.clone() else {
             return;
         };
         match PdfDoc::source(state) {
             None if !self.read_only => {
                 let action = crate::actions::pin_source_action(&hash, len, &self.doc_name);
-                self.perform_action(state, &action);
+                self.submit(&action);
             }
             Some((pinned, _, _)) if pinned != hash => {
                 self.status_note = Some(
@@ -1552,12 +1577,16 @@ impl PdfApp {
             reason = "the synchronous test backend records the import at once"
         )
     )]
-    fn adopt_existing(&mut self, state: &mut AutoCommit) -> bool {
+    fn adopt_existing(&mut self, state: &AutoCommit) -> bool {
         let Some((hash, _)) = self.source_blob.clone() else {
             return true;
         };
+        let Some((pinned, _, _)) = PdfDoc::source(state) else {
+            // The source is pinned first; its markup is taken over after.
+            return self.read_only;
+        };
         if self.read_only
-            || PdfDoc::source(state).is_none_or(|(pinned, _, _)| pinned != hash)
+            || pinned != hash
             || PdfDoc::imported_source(state).as_deref() == Some(hash.as_str())
             || self.existing_request.as_deref() == Some(hash.as_str())
         {
@@ -1590,7 +1619,7 @@ impl PdfApp {
     /// Record the markup `existing` (read from the bytes hashed `hash`).
     fn finish_adoption(
         &mut self,
-        state: &mut AutoCommit,
+        state: &AutoCommit,
         hash: &str,
         existing: &crate::adopt::Existing,
     ) {
@@ -1612,7 +1641,7 @@ impl PdfApp {
             known.insert(comment.id);
         }
         let plan = crate::adopt::plan_import(hash, existing, &known);
-        self.perform_action(state, &crate::actions::import_existing_action(hash, &plan));
+        self.submit(&crate::actions::import_existing_action(hash, &plan));
         self.reload(state);
         self.dirty = true;
     }
@@ -2018,18 +2047,15 @@ impl PdfApp {
     /// Add what opening the loaded document adds to its record, once per
     /// document: its page plan, the source it pins, the markup taken over
     /// from the PDF. A reader that may not write adds it once it may.
-    fn seed_record(&mut self, state: &mut AutoCommit) {
+    fn seed_record(&mut self, state: &AutoCommit) {
         if self.read_only {
             self.seed_pending = true;
             return;
         }
         if !PdfDoc::has_page_plan(state) {
-            self.perform_action(
-                state,
-                &crate::actions::PdfViewerAction::EnsurePagePlan {
-                    source_page_count: self.source_pages.len().max(1),
-                },
-            );
+            self.submit(&crate::actions::PdfViewerAction::EnsurePagePlan {
+                source_page_count: self.source_pages.len().max(1),
+            });
         }
         self.pin_source(state);
         // Asked again on the next frame while the PDF owner cannot be asked.
@@ -2260,7 +2286,7 @@ impl PdfApp {
         reason = "the test-only legacy fixture and production worker admission are intentionally adjacent"
     )]
     #[cfg(test)]
-    pub fn import_file(&mut self, path: &std::path::Path, state: &mut AutoCommit) -> bool {
+    pub fn import_file(&mut self, path: &std::path::Path, state: &AutoCommit) -> bool {
         // Files are read and decoded by the session owner. The UI only
         // receives validated content-address metadata, then emits the normal
         // collaborative page-plan action on this thread.
@@ -2364,7 +2390,7 @@ impl PdfApp {
             .resource_page_ids
             .get(at.saturating_sub(1))
             .map(String::as_str);
-        self.perform_action(state, &crate::actions::import_pages_action(after, pages));
+        self.submit(&crate::actions::import_pages_action(after, pages));
         self.reconcile_shared_page_plan(state);
         self.go_to_page(at + 1);
         self.status_note = Some(
@@ -2375,7 +2401,7 @@ impl PdfApp {
     }
 
     #[cfg(not(test))]
-    pub fn import_file(&mut self, path: &std::path::Path, _state: &mut AutoCommit) -> bool {
+    pub fn import_file(&mut self, path: &std::path::Path, _state: &AutoCommit) -> bool {
         if self.pending_import.is_some() {
             self.status_note = Some("Another page import is already in progress".to_string());
             self.dirty = true;
@@ -2424,7 +2450,7 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    fn drain_portal_import(&mut self, state: &mut AutoCommit) {
+    fn drain_portal_import(&mut self, state: &AutoCommit) {
         let Some(rx) = self.portal_import_rx.as_ref() else {
             return;
         };
@@ -4554,7 +4580,7 @@ impl PdfApp {
         clippy::too_many_lines,
         reason = "one exhaustive worker event boundary keeps stale-result filtering auditable"
     )]
-    fn drain_raster_events(&mut self, state: &mut AutoCommit) {
+    fn drain_raster_events(&mut self, state: &AutoCommit) {
         let events = self
             .raster_handle
             .as_ref()
@@ -4842,10 +4868,10 @@ impl PdfApp {
                         })
                         .collect();
                     self.pending_import = None;
-                    self.perform_action(
-                        state,
-                        &crate::actions::import_pages_action(request.after.as_deref(), pages),
-                    );
+                    self.submit(&crate::actions::import_pages_action(
+                        request.after.as_deref(),
+                        pages,
+                    ));
                     self.reconcile_shared_page_plan(state);
                     self.go_to_page(request.at + 1);
                     self.status_note = Some(
@@ -4997,8 +5023,8 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document_ref(state, path);
         // Drain the dedicated PDF owner before any portal/action work.  This
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
@@ -6076,7 +6102,7 @@ mod tests {
 
     /// One frame of the reader over its record.
     fn sync_fixture(app: &mut PdfApp, st: &mut ui::State) {
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
     }
 
     /// The reader launched on `path` on a fresh profile, as
@@ -6512,7 +6538,7 @@ mod tests {
             app.open_search();
             app.search_input.set_text("sandbox");
             app.recompute_matches();
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             let find_provider = searched(&app);
             let find_address = find_provider
                 .search("match 1")
@@ -6536,9 +6562,9 @@ mod tests {
             );
             // The changed find projection refreshes once; its settled successor
             // must remain retained without re-walking the corpus every frame.
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             let refreshes = app.search_projection_refreshes;
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(
                 app.search_projection_refreshes, refreshes,
                 "unchanged sync avoids corpus traversal"
@@ -6547,7 +6573,7 @@ mod tests {
             let stale_resource = "pdf.page:source-1".to_string();
             let action = crate::actions::delete_page_plan_action("source-1");
             app.perform_action(&mut state.doc, &action);
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             let restarted = searched(&app).search_page("", Some(&stale_cursor), 1, 1);
             assert!(
                 restarted.results.len() <= 1,
@@ -6602,8 +6628,8 @@ mod tests {
 
             // Materialising the same shared plan gives both renderers the same
             // address space, independent of their local source/raster instances.
-            a.sync(&mut state_a.doc, &state_a.root);
-            b.sync(&mut state_b.doc, &state_b.root);
+            a.sync_settled(&mut state_a.doc, &state_a.root);
+            b.sync_settled(&mut state_b.doc, &state_b.root);
             assert_eq!(a.resource_page_ids, b.resource_page_ids);
             let source_two_hits: Vec<tilo_actions::ActionAddress> = searched(&a)
                 .search("Per-cluster sandboxing")
@@ -6641,8 +6667,8 @@ mod tests {
             let env = tilo_actions::apply_local(&mut state_a.doc, &delete, encode(&delete))
                 .expect("author delete");
             tilo_actions::replay(&mut state_b.doc, &env, &registry).expect("replay delete");
-            a.sync(&mut state_a.doc, &state_a.root);
-            b.sync(&mut state_b.doc, &state_b.root);
+            a.sync_settled(&mut state_a.doc, &state_a.root);
+            b.sync_settled(&mut state_b.doc, &state_b.root);
             assert!(resolve(&a, &state_a.doc, &resource_id).is_none());
             assert!(resolve(&b, &state_b.doc, &resource_id).is_none());
 
@@ -6722,7 +6748,7 @@ mod tests {
                 &mut state.doc,
                 &crate::actions::import_pages_action(Some("source-1"), vec![page.clone()]),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(app.resource_page_ids[1], "imported-occurrence");
             assert!(
                 app.status_note
@@ -6745,7 +6771,7 @@ mod tests {
                 &mut state.doc,
                 &move_page_plan_action("imported-occurrence", Some("source-3")),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(
                 app.annotations
                     .iter()
@@ -6776,7 +6802,7 @@ mod tests {
                 &mut state.doc,
                 &crate::actions::delete_page_plan_action("imported-occurrence"),
             );
-            app.sync(&mut state.doc, &state.root);
+            app.sync_settled(&mut state.doc, &state.root);
             assert!(
                 app.annotations
                     .iter()
@@ -7256,6 +7282,11 @@ mod tests {
     /// do it itself or the rail/second page would be half-rasterised), then
     /// write the PNG `out` names when `PDF_SHOTS=1`.
     fn settle_and_shoot(app: &mut Framed<PdfApp>, (w, h): (u32, u32), out: Option<&str>) {
+        // What the frame submitted lands, as a host applies it.
+        {
+            let (reader, st) = Framed::split(app);
+            reader.sync_settled(&mut st.doc, &st.root);
+        }
         for _ in 1..32 {
             if !app.pending_raster {
                 break;
@@ -8905,7 +8936,7 @@ mod tests {
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
             let deadline = tilo_test_env::hang_deadline();
             while app.pending_open.is_some() && ui::time::now() < deadline {
-                app.sync(&mut st.doc, &st.root);
+                app.sync_settled(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
             }
             if !app.has_document {
@@ -8938,7 +8969,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
                 let (reader, st) = Framed::split(&mut app);
-                reader.sync(&mut st.doc, &st.root);
+                reader.sync_settled(&mut st.doc, &st.root);
             };
             let placement = placement.expect("the worker filled the viewport with tiles");
             assert!(
@@ -9389,6 +9420,7 @@ mod tests {
                 "import: {:?}",
                 app.status_note
             );
+            app.sync_settled(&mut st.doc, &st.root);
             assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
             assert!(app.pages_dirty());
 
@@ -9408,6 +9440,7 @@ mod tests {
                 "import: {:?}",
                 app.status_note
             );
+            app.sync_settled(&mut st.doc, &st.root);
             assert_eq!(
                 app.doc.page_count(),
                 n * 2,

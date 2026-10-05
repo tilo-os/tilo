@@ -488,9 +488,11 @@ impl SnippetsApp {
         };
         let stored = SnippetsDoc::get(doc, id).map(|snippet| snippet.body);
         let applied = match (&self.body_edits, &stored) {
-            (Some(edits), Some(stored)) => {
-                splice_between(stored, &text).is_none_or(|edit| edits.apply_now(doc, &edit).is_ok())
-            }
+            (Some(edits), Some(stored)) => splice_between(stored, &text).is_none_or(|edit| {
+                edits
+                    .apply_now(&mut ui::widget::Edits::lend(doc), &edit)
+                    .is_ok()
+            }),
             _ => false,
         };
         if !applied {
@@ -926,7 +928,7 @@ impl ui::widget::Widget for SnippetsApp {
         dyn ui::undo::UndoPoints
     );
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.sync_body_editor();
     }
 
@@ -1119,7 +1121,7 @@ impl ui::widget::Widget for SnippetsApp {
             || self.push.is_animating(SplitLayout::Docked)
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Advance the sidebar reveal + the push (list↔detail) slide toward
         // their targets. Frame-rate-independent; the host re-pumps frames
         // while `needs_animation_frame` stays true.

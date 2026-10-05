@@ -201,7 +201,7 @@ impl Widget for Staged {
         self.inner.apply_layout(taffy, node, origin);
     }
 
-    fn sync(&mut self, state: &mut tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_app::widget::AppModel, path: &tilo_app::widget::ModelPath) {
         if self.decoding > 0 {
             self.decoding = self.decoding.saturating_sub(1);
             if self.decoding == 0 {

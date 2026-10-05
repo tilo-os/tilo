@@ -569,7 +569,7 @@ impl ContainersApp {
         };
         let edits = crate::resource::create_field_dispatcher(dispatcher, field);
         if let Err(error) = edits.apply_now(
-            doc,
+            &mut ui::widget::Edits::lend(doc),
             &TextEdit::ReplaceText {
                 text: text.to_owned(),
             },
@@ -582,7 +582,10 @@ impl ContainersApp {
     /// Empty the draft, once a container was created from it.
     fn clear_create(&self, doc: &mut AutoCommit) {
         if let Some(dispatcher) = &self.dispatcher {
-            let _ = dispatcher.apply_now(doc, &crate::resource::ContainersAction::ClearCreate);
+            let _ = dispatcher.apply_now(
+                &mut ui::widget::Edits::lend(doc),
+                &crate::resource::ContainersAction::ClearCreate,
+            );
         }
     }
 
@@ -1873,7 +1876,7 @@ impl ContainersApp {
 impl Widget for ContainersApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(doc, path);
         self.drain_bg();
         // Periodically re-probe the engine for fresh stats / state. Controlled

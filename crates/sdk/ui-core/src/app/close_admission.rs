@@ -475,7 +475,7 @@ mod tests {
             dyn crate::component_lifecycle::ComponentLifecycle
         );
 
-        fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.text.sync(doc, path);
         }
         fn build_layout(

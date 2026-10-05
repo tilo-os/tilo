@@ -6017,8 +6017,8 @@ impl Widget for VideoEditorApp {
         clippy::too_many_lines,
         reason = "the per-frame sync reads as the ordered list of things a frame reconciles"
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document_ref(state, path);
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
@@ -6037,7 +6037,7 @@ impl Widget for VideoEditorApp {
         }
         // The project arrives through `present`; the document's heads say
         // whether it has changed since it was saved.
-        self.track_saved_heads(state.get_heads());
+        self.track_saved_heads(state.committed_heads());
         // While a clip-editing drag is in flight, the live preview lives only
         // in the in-memory project — the document isn't written until the
         // drag commits — so a project presented meanwhile waits, and lands

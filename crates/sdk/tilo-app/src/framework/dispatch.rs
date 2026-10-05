@@ -10,10 +10,11 @@ use tilo_actions::{
     ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation,
     PermissionRequirement,
 };
-use tilo_resource::{Doc, Effect, Invoke, Resource};
+use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
 use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
+use ui_core::widget::Edits;
 use ui_core::widget::controls::AttributedControlInvocation;
 
 /// Submits a view's edits. Cloneable; clones share one queue.
@@ -21,7 +22,8 @@ use ui_core::widget::controls::AttributedControlInvocation;
 /// Two doors, one path. [`invoke`](Self::invoke) and [`apply`](Self::apply)
 /// queue an invocation the host resolves after the event, exactly as a
 /// control bound to an action would. [`apply_now`](Self::apply_now) applies
-/// one typed action immediately, inside the event, for an editor that must
+/// one typed action immediately, inside the event or the settle pass
+/// ([`Widget::settle`](ui_core::widget::Widget::settle)), for an editor that must
 /// see the result of its own edit before the next keystroke (the paragraph a
 /// split created, the cell a table insert made). Both check the
 /// participant's permission, apply through the replayable executor with
@@ -44,7 +46,7 @@ use ui_core::widget::controls::AttributedControlInvocation;
 ///
 /// // In the surface's `handle_event`:
 /// WindowEvent::CursorMoved { .. } if self.dragging => {
-///     let _ = self.dispatch.apply_now(ctx.state, &Action::SetLevel(level));
+///     let _ = self.dispatch.apply_now(&mut ctx.edits(), &Action::SetLevel(level));
 /// }
 /// WindowEvent::MouseInput { state: ElementState::Released, .. } => {
 ///     self.dragging = false;
@@ -104,11 +106,12 @@ type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> PermissionRequirem
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
-/// Applies one typed action to a document through the host.
+/// Applies one typed action to the document a pass may change, through
+/// the host.
 type SubmitNow<R> = Rc<
     dyn Fn(
         &mut ui_core::action_host::ActionHost,
-        &mut Doc,
+        &mut Edits<'_>,
         &<R as Resource>::Action,
         ActionContext,
     ) -> Result<(), ActionError>,
@@ -157,8 +160,8 @@ impl<R: Resource> Dispatcher<R> {
             permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
             host: Rc::default(),
-            submit_now: Rc::new(|host, doc, action, context| {
-                host.try_dispatch_with_context(doc, R::ACTION_TYPE, action, context)
+            submit_now: Rc::new(|host, edits, action, context| {
+                edits.apply(host, R::ACTION_TYPE, action, context)
             }),
             serial: Rc::default(),
             last: Rc::default(),
@@ -448,8 +451,8 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
-    /// Apply one typed action to `doc` — the document the surface's event
-    /// handler received — now, attributed to the participant and labelled
+    /// Apply one typed action to the document `edits` lends — an event's,
+    /// or a settle pass's — now, attributed to the participant and labelled
     /// after the action (its declared label when it names a declared one).
     /// One event's actions are one undo step, and an action that continues
     /// the previous one ([`Resource::coalesces`], the next letter of a word)
@@ -458,12 +461,12 @@ impl<R: Resource> Dispatcher<R> {
     /// # Errors
     /// Returns [`ActionError::Refused`] for a participant who may only view,
     /// and the action's own refusal; nothing is written either way.
-    pub fn apply_now(&self, doc: &mut Doc, action: &R::Action) -> Result<(), ActionError> {
+    pub fn apply_now(&self, edits: &mut Edits<'_>, action: &R::Action) -> Result<(), ActionError> {
         let label = tilo_resource::action_label::<R>(action)
             .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
         let context =
             ActionContext::for_resource(label, self.resource_id.as_ref(), R::KIND, R::LABEL);
-        self.apply_now_with(doc, action, context)
+        self.apply_now_with(edits, action, context)
     }
 
     /// [`apply_now`](Self::apply_now) with the history context the surface
@@ -473,7 +476,7 @@ impl<R: Resource> Dispatcher<R> {
     /// As [`apply_now`](Self::apply_now).
     pub fn apply_now_with(
         &self,
-        doc: &mut Doc,
+        edits: &mut Edits<'_>,
         action: &R::Action,
         context: ActionContext,
     ) -> Result<(), ActionError> {
@@ -491,7 +494,7 @@ impl<R: Resource> Dispatcher<R> {
             named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
         }
         let context = context.enriched_by(&named);
-        (self.submit_now)(&mut self.host.borrow_mut(), doc, action, context)?;
+        (self.submit_now)(&mut self.host.borrow_mut(), edits, action, context)?;
         // Content from outside is nobody's step: it neither continues the
         // open one nor ends it.
         if !tilo_actions::Action::change_kind(action).is_step() {
@@ -556,8 +559,8 @@ impl<R: Resource> Dispatcher<R> {
             host: Rc::clone(&self.host),
             // History names the child and its edit; what applies is the
             // parent's action carrying it.
-            submit_now: Rc::new(move |host, doc, action: &C::Action, context| {
-                parent(host, doc, &wrap(action.clone()), context)
+            submit_now: Rc::new(move |host, edits, action: &C::Action, context| {
+                parent(host, edits, &wrap(action.clone()), context)
             }),
             serial: Rc::clone(&self.serial),
             last: Rc::default(),

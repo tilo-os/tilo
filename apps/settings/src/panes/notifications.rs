@@ -1039,7 +1039,7 @@ impl NotificationsPane {
 }
 
 impl Widget for NotificationsPane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if self.prefs.refresh() {
             self.shown.show(self.prefs.get());
             // The status pill and the per-app captions follow the values.

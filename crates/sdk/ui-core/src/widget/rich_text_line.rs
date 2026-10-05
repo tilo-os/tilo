@@ -915,8 +915,8 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.inner.is_layout_dirty()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
@@ -1803,7 +1803,7 @@ mod tests {
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
             // The root arg is unused once a Text is bound.
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert_eq!(line.value(), "hello");
         }
 
@@ -1863,7 +1863,7 @@ mod tests {
 
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert!(
                 line.author_runs().iter().any(|(_, _, a)| a == "alice"),
                 "expected an alice author run, got {:?}",

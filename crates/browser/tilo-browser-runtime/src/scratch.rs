@@ -159,7 +159,7 @@ impl Widget for Page {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![self.root.as_mut()]
     }
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         {
             let (doc, root) = ui::doc::document(state, path);
             let stored = ui::doc::read_text(&*doc, root, TITLE).unwrap_or_default();
@@ -169,7 +169,7 @@ impl Widget for Page {
         }
         self.root.sync(state, path);
     }
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         self.root.update(state, path)
     }
     fn handle_event(

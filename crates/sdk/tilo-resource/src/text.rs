@@ -44,19 +44,7 @@ pub fn mark_authored(
     else {
         return Ok(());
     };
-    if inserted.is_empty() {
-        return Ok(());
-    }
-    let len = match doc.text_encoding() {
-        automerge::TextEncoding::Utf8CodeUnit => inserted.len(),
-        automerge::TextEncoding::Utf16CodeUnit => inserted.encode_utf16().count(),
-        _ => inserted.chars().count(),
-    };
-    doc.mark(
-        obj,
-        automerge::marks::Mark::new(AUTHOR_MARK.to_owned(), author, at, at.saturating_add(len)),
-        automerge::marks::ExpandMark::None,
-    )
+    tilo_automerge::mark_text_author(doc, obj, at, inserted, &author)
 }
 
 /// The registry type id [`TextEdit`]s replay under.

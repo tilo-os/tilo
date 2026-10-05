@@ -88,7 +88,7 @@ fn native_history_surface_composes_installs_and_keeps_editor_state() {
         app.root_widget = Box::new(crate::widget::Column::new().push(Box::new(
             crate::widget::TextInput::local().with_id("draft-editor"),
         )));
-        app.root_widget.sync(&mut app.state.doc, &ROOT);
+        app.root_widget.sync(&app.state.doc, &ROOT);
         layout(&mut app);
         let editor = node_for_test_id(&app, "draft-editor");
         app.set_focused_node(Some(editor));
@@ -2337,7 +2337,7 @@ fn legacy_ids_and_effects_cannot_reach_a_replacement_owner() {
         unsafe {
             (*tile_pointer).bind_record(b.clone(), checkout.clone());
         }
-        app.root_widget.sync(&mut app.state.doc, &ROOT);
+        app.root_widget.sync(&app.state.doc, &ROOT);
         app.rebuild_structure();
         let new_node = app
             .layout
@@ -3845,7 +3845,7 @@ impl crate::widget::Widget for PaletteHistoryOwner {
     fn test_id(&self) -> Option<&str> {
         Some("palette-history-owner")
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -4437,7 +4437,7 @@ impl crate::widget::Widget for ComponentControlOwner {
     fn name(&self) -> &str {
         &self.id
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -4643,7 +4643,7 @@ impl crate::widget::Widget for ComponentControlRoot {
     fn name(&self) -> &str {
         "Controlled component root"
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.text.sync(doc, path);
     }
     fn build_layout(
@@ -5854,7 +5854,7 @@ impl crate::widget::Widget for CustodyDeniedRoot {
     fn name(&self) -> &str {
         "Controlled component boundary"
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
     }
     fn build_layout(

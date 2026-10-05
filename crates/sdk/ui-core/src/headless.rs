@@ -2482,10 +2482,30 @@ impl FrameHarness {
         // Select the current record before update, then observe a first
         // asynchronous open before sync can accidentally edit the room index.
         self.tick_records();
-        self.root.update(&mut self.state.doc, &self.state.root);
+        self.root.update(&self.state.doc, &self.state.root);
         self.tick_records();
         let t_sync = self.profiler.as_ref().map(|_| crate::time::now());
-        self.root.sync(&mut self.state.doc, &self.state.root);
+        // What the widgets took up since the last frame (an edit a child
+        // made on its own) is written before the document is read again.
+        self.root.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        self.root.sync(&self.state.doc, &self.state.root);
+        // A sync reads the document only. What it took up is written now,
+        // through actions, and shown in this same frame.
+        let before = crate::widget::settle_mark(&self.state.doc);
+        self.root.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
+        if settled || submitted {
+            self.idle_control_tick();
+            self.root.update(&self.state.doc, &self.state.root);
+            self.root.sync(&self.state.doc, &self.state.root);
+        }
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Sync, t_sync);
         }
@@ -2605,7 +2625,7 @@ impl FrameHarness {
                 };
                 // Newly composed controls need sync. If it replaces delegates,
                 // discard these raw maps without admitting or measuring them.
-                self.root.sync(&mut self.state.doc, &self.state.root);
+                self.root.sync(&self.state.doc, &self.state.root);
                 let history_invalidated = self.invalidate_unsupported_history_owner();
                 if self.take_composition_dirty() || history_invalidated {
                     self.node_map.clear();
@@ -4969,7 +4989,7 @@ impl FrameHarness {
         if let Some(direction) = crate::interaction::mouse_nav_direction(event)
             && self
                 .root
-                .on_nav_gesture(direction, &mut self.state.doc, &self.state.root)
+                .on_nav_gesture(direction, &self.state.doc, &self.state.root)
         {
             return;
         }
@@ -8253,8 +8273,7 @@ mod tests {
     }
 
     impl Widget for DemandProbe {
-        fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
-        }
+        fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -8927,7 +8946,7 @@ mod tests {
             "StructureReplacingEditor"
         }
 
-        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             if std::mem::take(&mut self.replace_during_sync) {
                 let value = self.current.accessibility().unwrap().value.unwrap();
                 let current = std::mem::replace(&mut self.current, Self::editor(&value));
@@ -11672,7 +11691,7 @@ mod prepared_driver_tests {
                 local.writer().set("initial callback".into());
             }
         }
-        fn sync(&mut self, _: &mut crate::widget::AppModel, _: &crate::widget::ModelPath) {
+        fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {
             self.observed
                 .syncs
                 .set(self.observed.syncs.get().saturating_add(1));
@@ -12319,7 +12338,7 @@ mod framed_tests {
     }
 
     impl Widget for Probe {
-        fn sync(&mut self, _state: &mut crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
             self.syncs = self.syncs.saturating_add(1);
         }
 

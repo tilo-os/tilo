@@ -406,8 +406,8 @@ pub struct HistoryVersion {
 const AGENT_RUN: &str = "agent-run";
 
 /// The last `last` versions, oldest first, as [`HistoryVersion`]s.
-pub(crate) fn recent(doc: &mut AutoCommit, last: usize) -> Vec<HistoryVersion> {
-    let versions = tilo_resource::history::versions(doc);
+pub(crate) fn recent(doc: &AutoCommit, last: usize) -> Vec<HistoryVersion> {
+    let versions = tilo_resource::history::committed_versions(doc);
     let undone = steps::undone(doc);
     let checkpoints = steps::checkpoints(doc);
     let total = versions.len();
@@ -474,13 +474,13 @@ impl HistoryFeeds {
     }
 
     /// Show the versions up to `doc`'s heads, when they moved.
-    pub(crate) fn refresh(&self, doc: &mut AutoCommit) {
+    pub(crate) fn refresh(&self, doc: &AutoCommit) {
         let mut list = self.0.borrow_mut();
         list.feeds.retain(|(alive, _, _)| alive.strong_count() > 0);
         if list.feeds.is_empty() {
             return;
         }
-        let heads = doc.get_heads();
+        let heads = doc.committed_heads();
         if list.heads == heads {
             return;
         }

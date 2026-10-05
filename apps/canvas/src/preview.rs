@@ -47,9 +47,9 @@ impl VersionPreview {
     }
 
     /// The artwork at `version`, a change id or a checkpoint name.
-    fn read(doc: &mut AutoCommit, version: &str) -> Option<Artwork> {
+    fn read(doc: &AutoCommit, version: &str) -> Option<Artwork> {
         let heads = ui::history_source::steps::resolve(doc, version).ok()?;
-        let past = doc.fork_at(&heads).ok()?;
+        let past = doc.committed_fork_at(&heads).ok()?;
         Some(crate::doc::read(&past))
     }
 
@@ -155,10 +155,10 @@ impl ui::widget::Decorator for VersionPreview {
         "VersionPreview"
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let wanted = self.preview.with(Clone::clone);
         if wanted.as_deref() != self.shown.as_ref().map(|(version, _)| version.as_str()) {
-            let (doc, _) = ui::doc::document(state, path);
+            let (doc, _) = ui::doc::document_ref(state, path);
             self.shown = wanted.and_then(|version| {
                 let art = Self::read(doc, &version)?;
                 Some((version, art))

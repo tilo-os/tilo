@@ -1956,7 +1956,7 @@ fn csv_field(value: &str) -> String {
 impl Widget for DbClientApp {
     ui::provides!(dyn ui::undo::UndoPoints);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         self.drain_query_resize_actions();
         // Accessibility activation is delivered directly to the focused child;
@@ -2401,7 +2401,7 @@ impl Widget for DbClientApp {
 
     /// The schema browser eases wheel scrolling and row transitions on its
     /// own clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.schema_in_tree() && self.tree.update(state, path)
     }
 

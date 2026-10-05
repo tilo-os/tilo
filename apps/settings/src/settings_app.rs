@@ -810,7 +810,7 @@ impl Widget for SettingsApp {
             "original_pending_ops": state.pending_ops(),
         }))
     }
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Background work an effect started finishes whether or not its pane
         // is open.
         self.updates.poll();

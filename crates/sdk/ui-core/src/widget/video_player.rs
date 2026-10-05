@@ -2419,7 +2419,7 @@ impl FullscreenProvider for VideoPlayer {
 impl Widget for VideoPlayer {
     crate::provides!(dyn crate::widget::FullscreenProvider);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.pump_engine();
     }
 
@@ -3325,9 +3325,9 @@ mod tests {
                 url: "https://x/v.mp4".into(),
             });
             let mut vp = VideoPlayer::new().with_engine(engine);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            vp.sync(&mut doc, &root);
+            vp.sync(&doc, &root);
             assert!(
                 vp.latest_frame().is_some(),
                 "engine frame pulled into the surface"

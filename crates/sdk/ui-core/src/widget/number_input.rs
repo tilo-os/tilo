@@ -492,7 +492,7 @@ impl Widget for NumberInput {
         self.plus_hover &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // Don't clobber the field while the user is mid-edit; the model is
         // adopted as soon as editing ends.
         if self.field.is_focused() {
@@ -1338,8 +1338,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(24.0);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(first.value(), 24.0);
             assert_eq!(second.value(), 24.0);
             assert_eq!(first.take_changed(), None, "model sync is not user intent");
@@ -1352,13 +1352,13 @@ mod tests {
             ));
             assert_eq!(state.get(), 25.0);
             assert_eq!(first.take_changed(), Some(25.0));
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.value(), 25.0);
 
             second.set_value(30.0);
             assert_eq!(state.get(), 30.0);
             assert_eq!(second.take_changed(), None);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert_eq!(first.value(), 30.0);
         }
     }

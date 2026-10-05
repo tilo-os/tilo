@@ -60,7 +60,7 @@ impl Toggle {
             enabled: true,
             id_override: None,
             accessible_name: Some(crate::widget::humanize_control_id(id)),
-            binding: Some(crate::doc_binding::bool_key(on_toggle_path)),
+            binding: Some(crate::doc_source::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -126,12 +126,12 @@ impl Toggle {
         }
     }
 
-    fn commit_user_toggle(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn commit_user_toggle(&mut self, _state: &AppModel, _root: &ModelPath) {
         let checked = !self.is_checked;
         if let Some(action) = &mut self.action {
             let _ = action.emit(checked);
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &checked);
+            binding.publish(&checked);
         }
         self.is_checked = checked;
         if self.action.is_none()
@@ -502,7 +502,7 @@ impl Widget for Toggle {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding {
             match binding.pull(state, root) {
                 Pulled::Value(checked) => self.is_checked = checked,
@@ -1037,8 +1037,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(true);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert!(second.is_checked());
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1052,12 +1052,12 @@ mod tests {
             assert!(!state.get(), "user activation publishes typed state");
             assert_eq!(&*changes.borrow(), &[false]);
 
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert!(!second.is_checked(), "sibling follows the shared model");
 
             second.set_checked(true);
             assert!(state.get(), "programmatic mutation publishes typed state");
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert!(first.is_checked());
             assert_eq!(
                 &*changes.borrow(),
@@ -1072,15 +1072,15 @@ mod tests {
             let root = automerge::ROOT;
             let mut toggle = Toggle::new("any", "enabled");
             doc.put(&root, "enabled", true).unwrap();
-            Widget::sync(&mut toggle, &mut doc, &root);
+            Widget::sync(&mut toggle, &doc, &root);
             assert!(toggle.is_checked());
 
             doc.delete(&root, "enabled").unwrap();
-            Widget::sync(&mut toggle, &mut doc, &root);
+            Widget::sync(&mut toggle, &doc, &root);
             assert!(!toggle.is_checked(), "a removed path means off");
 
             doc.put(&root, "enabled", "not-a-boolean").unwrap();
-            Widget::sync(&mut toggle, &mut doc, &root);
+            Widget::sync(&mut toggle, &doc, &root);
             assert!(!toggle.is_checked(), "a mistyped path cannot stay stale");
         }
 

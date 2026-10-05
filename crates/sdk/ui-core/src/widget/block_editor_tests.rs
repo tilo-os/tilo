@@ -1994,7 +1994,7 @@ fn canonical_existing_list_restore_and_empty_baseline() {
         for _ in 0..3 {
             editor.begin_edit();
             assert!(editor.take_edit_ops().is_empty());
-            editor.sync(&mut doc, &automerge::ROOT);
+            editor.sync(&doc, &automerge::ROOT);
             assert_eq!(editor.blocks()[0].id, id);
             assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
             assert_eq!(editor.focused_index(), Some(0));
@@ -2014,12 +2014,12 @@ fn canonical_existing_list_restore_and_empty_baseline() {
         doc.delete(&list, 0).unwrap();
         doc.commit();
         let before = (doc.base_heads(), doc.pending_ops());
-        editor.sync(&mut doc, &automerge::ROOT);
+        editor.sync(&doc, &automerge::ROOT);
         let placeholder = editor.blocks()[0].id.clone();
         for _ in 0..3 {
             editor.begin_edit();
             assert!(editor.take_edit_ops().is_empty());
-            editor.sync(&mut doc, &automerge::ROOT);
+            editor.sync(&doc, &automerge::ROOT);
             assert_eq!(editor.blocks()[0].id, placeholder);
             assert_eq!(editor.focused_index(), Some(0));
             assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
@@ -2047,7 +2047,7 @@ fn canonical_existing_list_restore_and_empty_baseline() {
         let heads = (doc.base_heads(), doc.pending_ops());
         let mut canonical = BlockEditor::new();
         canonical.bind_existing_blocks(&doc, list).unwrap();
-        canonical.sync(&mut doc, &automerge::ROOT);
+        canonical.sync(&doc, &automerge::ROOT);
         assert_eq!(canonical.blocks()[0].text(), "retained");
         assert_eq!((doc.base_heads(), doc.pending_ops()), heads);
     }
@@ -2185,7 +2185,7 @@ fn canonical_existing_list_first_edits_preserve_every_insert() {
             .bind_existing_block_objects(&doc, &[second, first.clone()])
             .unwrap();
         editor.focus_block(1, CursorPlacement::Byte(3));
-        editor.sync(&mut doc, &automerge::ROOT);
+        editor.sync(&doc, &automerge::ROOT);
         assert_eq!(
             editor.blocks().iter().map(Block::text).collect::<Vec<_>>(),
             ["second", "first"]

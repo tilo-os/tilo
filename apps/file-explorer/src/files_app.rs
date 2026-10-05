@@ -8392,13 +8392,13 @@ impl Widget for FileExplorerWidget {
         Some(self.native_input_snapshot_impl(doc, path))
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Service calls finishing on the app runtime wake the event loop.
         let received = self.poll_received_share();
         self.poll_share_result() | received
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.adopt_preferences();
         // A control a caller invoked through the door (a toolbar button)
         // queued its command; apply it before this frame is laid out.

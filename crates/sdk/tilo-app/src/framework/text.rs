@@ -125,7 +125,7 @@ impl<W: EditsText> TextControl<W> {
 
     /// Bind the text `locate` finds now in `doc`: for a host outside the
     /// widget tree, before it reads the control each frame.
-    pub fn pull(&mut self, doc: &mut Doc) {
+    pub fn pull(&mut self, doc: &Doc) {
         self.follow(doc);
         self.control.sync(doc, &ui_core::automerge::ROOT);
         self.stored = self.control.shown_text().to_owned();
@@ -133,7 +133,7 @@ impl<W: EditsText> TextControl<W> {
 
     /// Submit the control's edit since the last call as one splice: for a
     /// host outside the widget tree, after it handed the control an event.
-    pub fn submit(&mut self, doc: &mut Doc) {
+    pub fn submit(&mut self, edits: &mut ui_core::widget::Edits<'_>) {
         let Some(edited) = self.control.take_edited() else {
             return;
         };
@@ -141,7 +141,7 @@ impl<W: EditsText> TextControl<W> {
             return;
         };
         let applied = match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, &edit),
+            Some(dispatch) => dispatch.apply_now(edits, &edit),
             None => Err(tilo_actions::ActionError::Refused(
                 "this text is open to view only".into(),
             )),
@@ -184,9 +184,9 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         &mut self.control
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         {
-            let (doc, _) = ui_core::doc::document(state, path);
+            let (doc, _) = ui_core::doc::document_ref(state, path);
             self.follow(doc);
         }
         self.control.sync(state, path);
@@ -195,7 +195,7 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.control.handle_event(event, ctx);
-        self.submit(ctx.state);
+        self.submit(&mut ctx.edits());
     }
 
     fn perform_action(
@@ -205,7 +205,9 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         path: &ModelPath,
     ) -> bool {
         let handled = self.control.perform_action(action, state, path);
-        self.submit(ui_core::doc::document(state, path).0);
+        self.submit(&mut ui_core::widget::Edits::lend(
+            ui_core::doc::document(state, path).0,
+        ));
         handled
     }
 
@@ -219,7 +221,9 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         let handled = self
             .control
             .perform_action_at(action, key_path, state, path);
-        self.submit(ui_core::doc::document(state, path).0);
+        self.submit(&mut ui_core::widget::Edits::lend(
+            ui_core::doc::document(state, path).0,
+        ));
         handled
     }
 
@@ -233,7 +237,9 @@ impl<W: EditsText + 'static> Decorator for TextControl<W> {
         let handled = self
             .control
             .perform_semantic_action(target, action, state, path);
-        self.submit(ui_core::doc::document(state, path).0);
+        self.submit(&mut ui_core::widget::Edits::lend(
+            ui_core::doc::document(state, path).0,
+        ));
         handled
     }
 }

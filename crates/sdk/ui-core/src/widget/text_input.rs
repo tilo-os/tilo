@@ -3785,8 +3785,8 @@ impl Widget for TextInput {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, _) = crate::doc::document(state, root);
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        let (state, _) = crate::doc::document_ref(state, root);
         let local_value = self
             .local_state
             .as_mut()

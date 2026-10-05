@@ -91,7 +91,7 @@ impl Slider {
             is_dragging: false,
             is_focused: false,
             value: 0.5,
-            binding: Some(crate::doc_binding::number_key(on_change_path)),
+            binding: Some(crate::doc_source::number_key(on_change_path)),
             on_change: None,
             settles: false,
             drag_from: None,
@@ -248,7 +248,7 @@ impl Slider {
     /// Commit a new value to the CRDT iff it differs from the cached
     /// `value` by more than a frame-of-noise epsilon. Returns `true` if
     /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn commit_value(&mut self, new_value: f64, _state: &AppModel, _root: &ModelPath) -> bool {
         if (new_value - self.value).abs() <= 0.001 {
             return false;
         }
@@ -264,10 +264,10 @@ impl Slider {
                 // The value a drag will settle on, shown to whatever reads
                 // the control's local state (a label, a live preview) before
                 // the action is invoked at release.
-                binding.push(state, root, &self.value);
+                binding.publish(&self.value);
             }
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &self.value);
+            binding.publish(&self.value);
         }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
@@ -500,7 +500,7 @@ impl Widget for Slider {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(value) = binding.pull(state, root)
         {
@@ -1017,8 +1017,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(0.5);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.5);
             assert_eq!(second.value(), 0.5);
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1031,12 +1031,12 @@ mod tests {
             ));
             assert_eq!(state.get(), 0.55);
             assert_eq!(&*changes.borrow(), &[0.55]);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.value(), 0.55);
 
             second.set_value(0.8);
             assert_eq!(state.get(), 0.8);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.8);
             assert_eq!(&*changes.borrow(), &[0.55]);
         }
