@@ -2372,11 +2372,15 @@ mod tests {
         let mut buttons: Vec<_> = Framed::harness(&frame)
             .controls()
             .into_iter()
-            .filter(|control| control.name.as_deref() == Some("More"))
+            .filter(|control| control.name.as_deref() == Some("More commands"))
             .map(|control| control.bounds.expect("actual overflow button bounds"))
             .collect();
         buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
         assert_eq!(buttons.len(), 2);
+        assert!(
+            buttons.iter().all(|rect| rect.area() > 0.0),
+            "both actual exported overflow buttons have physical bounds"
+        );
         for (index, expected, absent) in [
             (
                 1,
