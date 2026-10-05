@@ -4685,6 +4685,63 @@ impl ShellNetwork {
         Ok(changed)
     }
 
+    /// The person whose devices form this device's personal fabric.
+    pub fn personal_user_public_key(&self) -> Option<[u8; 32]> {
+        self.personal_continuity_user
+    }
+
+    /// Delete everything `device` published to the personal fabric, here and
+    /// in the persisted checkpoint, once it has left the person's fleet.
+    pub fn forget_device_fabric(&self, device: &crate::shell::personal_continuity::DeviceId) {
+        let Ok(mut fabric) = self.device_fabric.lock() else {
+            return;
+        };
+        if fabric.remove_device(device)
+            && self
+                .device_fabric_path
+                .as_deref()
+                .is_some_and(|path| !persist_device_fabric(path, &fabric))
+        {
+            tracing::warn!("device fabric persistence failed");
+        }
+    }
+
+    /// Change this device's disk-unlock state in its own snapshot and
+    /// publish it. `update` receives the stamp the change is published under.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this device has no fabric identity or presence
+    /// yet, or the changed snapshot is invalid.
+    pub fn update_local_unlock_state(
+        &self,
+        update: impl FnOnce(
+            &mut crate::shell::device_unlock::UnlockFabricState,
+            &crate::shell::device_fabric::FabricStamp,
+        ),
+    ) -> Result<(), String> {
+        let local = self
+            .personal_continuity_device
+            .clone()
+            .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-no-identity"))?;
+        let fabric = self.device_fabric();
+        let mut snapshot = fabric
+            .snapshots()
+            .get(&local)
+            .cloned()
+            .ok_or_else(|| crate::shell::i18n::t("wifi-share-error-no-presence"))?;
+        let stamp = crate::shell::device_fabric::FabricStamp {
+            counter: fabric.max_counter().saturating_add(1).max(1),
+            device: local,
+        };
+        update(&mut snapshot.unlock, &stamp);
+        snapshot.presence.stamp = stamp;
+        snapshot.presence.last_seen_unix_ms = now_unix_seconds().saturating_mul(1000);
+        self.upsert_local_device_fabric(snapshot)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
     /// Encrypt and publish a newly learned Wi-Fi passphrase to the local
     /// device plus every non-revoked home device in the enrollment registry.
     ///
@@ -8832,6 +8889,7 @@ mod tests {
             settings: Vec::new(),
             wifi: Vec::new(),
             display: None,
+            unlock: crate::shell::device_unlock::UnlockFabricState::default(),
             speakers: crate::shell::speaker_group::SpeakerFabricState::default(),
         }
     }

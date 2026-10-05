@@ -103,3 +103,89 @@ fn the_published_surface_validates_as_the_host_checks_it() {
     let two = app.harness().component_contract_violations();
     assert!(two.is_empty(), "notebook with two notes: {two:#?}");
 }
+
+/// The headless way to edit a note: nothing is clicked or focused, a script or
+/// agent creates a note over the notebook's actions and then edits it over the
+/// note's own. The note's edits stay published once it exists, and running
+/// one changes the note.
+#[test]
+fn a_note_made_over_actions_publishes_its_edits_and_they_edit_it() {
+    let mut app = fresh();
+    app.call("new-page", serde_json::json!({ "value": "Groceries" }))
+        .unwrap();
+    app.settle();
+    let violations = app.harness().component_contract_violations();
+    assert!(violations.is_empty(), "one note: {violations:#?}");
+
+    let page = app.read_document(NotesDoc::list_pages)[0].id;
+    let note = notes::actions::page_resource_id(page);
+    let surface = app.agent_surface();
+    let published = |resource: &str, action: &str| {
+        surface.as_array().unwrap().iter().any(|row| {
+            row["resource"] == resource && row["action"] == action && row["operation"] == "Document"
+        })
+    };
+    for action in ["rename", "delete", "new-child"] {
+        assert!(
+            published(&note, action),
+            "{note} publishes {action}: {surface:#}"
+        );
+    }
+    let body = format!("notes.notebook/page/{page}/body");
+    assert!(
+        published(&body, "insert-block"),
+        "{body} publishes its edits: {surface:#}"
+    );
+
+    app.call_on(
+        &note,
+        "rename",
+        serde_json::json!({ "value": "Groceries for Sunday" }),
+    )
+    .unwrap();
+    app.settle();
+    assert_eq!(
+        app.read_document(NotesDoc::list_pages)[0].title,
+        "Groceries for Sunday"
+    );
+    let violations = app.harness().component_contract_violations();
+    assert!(violations.is_empty(), "after the edit: {violations:#?}");
+}
+
+/// A script creating several notes in a row, each before the notebook
+/// republishes, appends each after the last. Every create used to take the
+/// first place, so the second left two notes at one position and the app
+/// refused to show the notebook at all.
+#[test]
+fn notes_made_one_after_another_over_actions_stay_in_order() {
+    let mut app = fresh();
+    for title in ["First", "Second", "Third"] {
+        app.call("new-page", serde_json::json!({ "value": title }))
+            .unwrap();
+    }
+    app.settle();
+    let mut pages = app.read_document(NotesDoc::list_pages);
+    pages.sort_by_key(|page| page.order);
+    assert_eq!(
+        pages
+            .iter()
+            .map(|page| (page.title.as_str(), page.order))
+            .collect::<Vec<_>>(),
+        vec![("First", 0), ("Second", 1), ("Third", 2)]
+    );
+    let surface = app.agent_surface();
+    for page in &pages {
+        let note = notes::actions::page_resource_id(page.id);
+        assert!(
+            surface
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["resource"] == note.as_str() && row["action"] == "rename"),
+            "{} stays published: {surface:#}",
+            page.title
+        );
+    }
+    let violations = app.harness().component_contract_violations();
+    assert!(violations.is_empty(), "three notes: {violations:#?}");
+}

@@ -3901,14 +3901,15 @@ impl SheetsApp {
         let editing = self.grid.is_editing();
         Self::draw_formula_field_chrome(scene, transform, theme, ff_shape, editing);
 
-        let content = self.grid.active_display_raw();
+        let bar = self.grid.formula_bar();
+        let content = bar.text.as_str();
         let base = self.metrics.base;
         let text_x0 = self.formula_field_rect.x0 + self.metrics.s2;
         // Rebuild the per-character x boundaries for click/caret mapping. This
         // is derived from exactly the text being drawn, so a click maps to the
         // same glyph the user sees (whether it's the live edit buffer or the
         // active cell's stored input).
-        self.formula_char_x = char_boundaries(tr, &content, base, text_x0);
+        self.formula_char_x = char_boundaries(tr, content, base, text_x0);
         let origin = Point::new(
             text_x0,
             ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base),
@@ -3920,9 +3921,10 @@ impl SheetsApp {
             transform,
             &ff_shape,
         );
-        self.draw_formula_selection(scene, transform, theme, editing, text_x0);
-        Self::draw_formula_content(scene, transform, tr, theme, &content, base, origin);
-        self.draw_formula_caret(scene, transform, theme, editing, text_x0);
+        self.draw_formula_selection(scene, transform, theme, bar.selection, text_x0);
+        Self::draw_formula_content(scene, transform, tr, theme, content, base, origin);
+        self.draw_formula_preedit(scene, transform, theme, bar.preedit, text_x0);
+        self.draw_formula_caret(scene, transform, theme, bar.caret, text_x0);
         scene.pop_layer();
     }
 
@@ -3981,11 +3983,11 @@ impl SheetsApp {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        editing: bool,
+        selection: Option<(usize, usize)>,
         text_x0: f64,
     ) {
         let colors = &theme.tokens.colors;
-        if editing && let Some((s, e)) = self.grid.edit_selection() {
+        if let Some((s, e)) = selection {
             let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
             let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
             // The highlight spans exactly the text's line box.
@@ -4030,17 +4032,43 @@ impl SheetsApp {
         }
     }
 
+    /// The cell's input-method composition, underlined in the bar until the
+    /// input method commits it.
+    fn draw_formula_preedit(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        preedit: Option<(usize, usize)>,
+        text_x0: f64,
+    ) {
+        let Some((s, e)) = preedit else {
+            return;
+        };
+        let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
+        let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
+        let top = ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base);
+        let uy = top + self.metrics.lh_base;
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.text_primary,
+            None,
+            &Line::new((x0, uy), (x1, uy)),
+        );
+    }
+
     /// Caret in the formula bar while editing.
     fn draw_formula_caret(
         &self,
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        editing: bool,
+        caret: Option<usize>,
         text_x0: f64,
     ) {
         let colors = &theme.tokens.colors;
-        if editing && let Some(caret) = self.grid.edit_caret() {
+        if let Some(caret) = caret {
             let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
             let top = ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base);
             scene.stroke(
@@ -6524,7 +6552,7 @@ impl SheetsApp {
                 self.grid.begin_edit_in_place();
             }
             let idx = self.formula_caret_at_x(p.x);
-            self.grid.set_edit_caret(idx, shift);
+            self.grid.set_edit_caret_shown(idx, shift);
             self.formula_bar_selecting = true;
             self.pending.redraw = true;
             *handled = true;
@@ -6785,7 +6813,7 @@ impl SheetsApp {
         // selection there, not the grid selection.
         if self.formula_bar_selecting {
             let idx = self.formula_caret_at_x(self.last_mouse.x);
-            self.grid.set_edit_caret(idx, true);
+            self.grid.set_edit_caret_shown(idx, true);
             self.pending.redraw = true;
             *handled = true;
             return;
@@ -9608,6 +9636,62 @@ pub(crate) mod tests {
         app.grid.set_edit_caret(3, true);
         assert!(ime(&mut app, &mut doc, Ime::Commit("x".into())));
         assert_eq!(app.grid.active_display_raw(), "ax");
+    }
+
+    /// While a cell composes, the formula bar draws the cell editor's display
+    /// text: the composition at the caret, underlined, with the caret inside
+    /// it; the committed text only changes on commit.
+    #[test]
+    fn formula_bar_shows_the_cells_composition() {
+        use winit::event::Ime;
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        app.refresh_chrome_metrics(&mut tr, &theme);
+        app.grid.select_only((0, 20)); // A21, empty
+        for typed in ["a", "b"] {
+            assert!(feed(
+                &mut app,
+                &mut doc,
+                &char_event(typed),
+                Modifiers::default()
+            ));
+        }
+        app.grid.set_edit_caret(1, false);
+        let ime = WindowEvent::Ime(Ime::Preedit("にほ".into(), Some((3, 3))));
+        assert!(feed(&mut app, &mut doc, &ime, Modifiers::default()));
+
+        let bar = app.grid.formula_bar();
+        assert_eq!(bar.text, "aにほb", "the bar shows the composition in place");
+        assert_eq!(bar.preedit, Some((1, 3)), "underlined over the composition");
+        assert_eq!(bar.caret, Some(2), "the caret sits inside it");
+        assert_eq!(app.grid.active_display_raw(), "ab", "nothing is typed yet");
+
+        let mut scene = Scene::new();
+        app.draw_formula_field(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert_eq!(
+            app.formula_char_x.len(),
+            "aにほb".chars().count() + 1,
+            "the bar laid out the composed text"
+        );
+        assert!(
+            app.formula_char_x[3] > app.formula_char_x[1] + 1.0,
+            "the committed 'b' draws after the composition"
+        );
+
+        // A click past the composition lands on the committed text it shows.
+        app.grid.set_edit_caret_shown(4, false);
+        assert_eq!(app.grid.edit_caret(), Some(2), "after the 'b' of \"ab\"");
+        app.grid.set_edit_caret(1, false);
+
+        let commit = WindowEvent::Ime(Ime::Commit("日本".into()));
+        assert!(feed(&mut app, &mut doc, &commit, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本b");
+        let bar = app.grid.formula_bar();
+        assert_eq!(bar.text, "a日本b");
+        assert_eq!((bar.preedit, bar.caret), (None, Some(3)));
     }
 
     /// Ctrl+K opens the palette, which captures arrows and handles go-to-cell.

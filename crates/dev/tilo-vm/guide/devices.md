@@ -135,7 +135,9 @@ someone is using:
   everyone and restart the owner's desktop too; the greeter's restarts
   greetd, which ends the owner's login.
 
-On a laptop, building on the device is fine: release layers link without LTO
+When `vms.toml` names a remote builder for the laptop's architecture, swaps
+build there by default (Builds, below). Building on the device
+(`--builder vm`) works too: release layers link without LTO
 (`tilo-vm guide swapping`), and a laptop has the memory. Slots, layers and
 generations live in `/var` and survive image upgrades.
 
@@ -182,24 +184,35 @@ work on a device too, beside the device's session.
   upload either when the device still holds that layer (after a rollback, say). The aarch64
   lane builds the newest main commit only, so check that a commit has arm64
   first (`skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-vm:main-<sha7>-ci`).
-- **Your worktree on a builder of the device's architecture**
-  (`--builder host` with `TILO_VM_CARGO`): any cargo drop-in that builds for
-  aarch64 and leaves the binaries in the target dir `cargo metadata` names
-  (set `CARGO_TARGET_DIR` to where the drop-in puts them). The layer's target
-  and rustc are read from the binary it built, and the device refuses any
-  other architecture. With a drop-in `$CARGO_AARCH64` that runs cargo on an
-  aarch64 machine and brings the binaries back:
+- **Your worktree on a remote builder of the device's architecture**
+  (`--builder remote`, the default for a device whose architecture has a
+  `[remote_builders]` entry in `vms.toml`): the builder builds and lays out
+  the layer, and it streams through this host into the device's upload.
+  Neither the binaries nor the layer are written to this host's disk. Set it
+  up once with any cargo drop-in whose `run` runs the program on an aarch64
+  machine in this worktree (`tilo-vm guide swapping`):
+
+  ```toml
+  [remote_builders]
+  aarch64 = ["remote-cargo", "--on-builder"]
+  ```
 
   ```sh
-  CARGO_TARGET_DIR=$PWD/target/aarch64 TILO_VM_CARGO=$CARGO_AARCH64 \
-    tilo-vm swap --slot device shell --builder host
+  tilo-vm swap --slot device shell                    # builds on the aarch64 builder, streams to the device
+  tilo-vm swap --slot device shell --builder remote   # the same, said explicitly
   ```
+
+  Do not build for a device with `--builder host` and a `TILO_VM_CARGO`
+  drop-in that brings the binaries back: every swap copies them (a release
+  shell is about 165 MB) into `target/`, and that has filled this host's disk
+  before. The layer's target and rustc are read from the binary on the
+  builder, and the device refuses any other architecture.
 - **Your worktree on the device** (`--builder vm`, the default when the
   device's image can build): the slot's `release` profile with the
   manifest's features and `dev-overrides`, so `control` and `shot` work. A
   board with little memory (the Orange Pi) builds only small components or
-  `--profile dev` there; build the shell with the drop-in above, or take
-  CI's. A laptop builds it on the device.
+  `--profile dev` there: build the shell on a remote builder (above), or take
+  CI's.
 
 Each layer records its provenance (`authority = "ci"` for CI builds, `local`
 for everything built from a worktree), which `slot show --json` and the

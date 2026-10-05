@@ -536,6 +536,7 @@ pub fn look(
         marks: None,
         selection: true,
         detail: None,
+        live: false,
     };
     let picture = render(renderer, text, art, (region, scale), &options, jpeg)?;
     let info = json!({

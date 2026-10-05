@@ -114,8 +114,11 @@ the recovery key always remains (`tilo-disk-encrypt`).
   boot chain Tilo signed.
 - **A sibling's consent over the network.** A LUKS slot opens with a key
   derived from two halves:
-  - The device half lives on the machine, sealed to the TPM where there is
-    one, otherwise in the boot partition.
+  - The device half lives on the machine, in a token in the volume's own
+    LUKS2 header beside the slot it opens: sealed to the TPM where there is
+    one, otherwise in the clear. Like the boot partition, the header is
+    readable by anyone holding the disk, and early boot reads it without
+    mounting anything.
   - The sibling half is sealed to the person's root-derived secret-sync key
     and held by their other devices.
 
@@ -131,10 +134,20 @@ the recovery key always remains (`tilo-disk-encrypt`).
   copied boot partition alone gets nothing.
 - **The passphrase or recovery key** at the keyboard, as today.
 
-Wi-Fi-only machines need the network in early boot: the image's
-NetworkManager in the initramfs, plus the credentials of the networks the
-machine last used, stored beside the device half. Those credentials unlock
-nothing on their own.
+Wi-Fi-only machines need the network in early boot. The initramfs runs the
+image's NetworkManager, only for a root enrolled for sibling unlock: wired
+links come up with DHCP, plus the networks the owner chose for unlocking
+(`tilo-disk-encrypt enrol --sibling --network NAME`), and no others. Their
+credentials are stored with the device half: sealed to the TPM where there is
+one, otherwise in the clear, readable by anyone holding the disk, which
+Settings tells the owner when they choose them (`tilo-sibling-unlock status`
+reports the sealing). They unlock nothing on their own.
+
+The prompt for the passphrase is up while early boot asks; whichever answers
+first opens the volume. The client answers systemd-cryptsetup's passphrase
+request as a password agent, and only with a key it has already checked
+against the slot, so a failed or refused attempt costs the person nothing and
+leaves the prompt as it was.
 
 The Lenovo Yoga Slim 7x has no TPM Linux can use yet. Its firmware TPM sits
 behind Qualcomm's TEE, and the driver for it (`tpm_qcom` on QCOMTEE) is still
@@ -156,5 +169,7 @@ passphrase.
 - On hardware, a board on Ethernet and a laptop on Wi-Fi each run a swap and a
   rollback through the `device` slot, then sleep and are woken by name.
 - A VM with an encrypted disk reboots and is unlocked by its paired sibling
-  after `device.unlock` is approved. A request that is denied, or comes from
-  a boot key that was never certified, leaves it at the passphrase prompt.
+  after `device.unlock` is approved (`os/dev/test-nearby-pairing.sh
+  --unlock`). A denied request, a replayed earlier exchange, a boot key that
+  was never certified, and a device removed from the fleet each leave it at
+  the passphrase prompt, with the attempt in the owner's history.

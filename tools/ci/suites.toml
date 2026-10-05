@@ -539,8 +539,8 @@ readers = ["crates/session/greeter/src/greeter_app.rs"]
 
 [[cargo]]
 package = "launcher"
-inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf"]
-readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs"]
+inputs = ["apps/*/tilo-app.toml", "os/usr/lib/tilo/jit-entitled.conf", "os/usr/lib/tilo/web-engine-entitled.conf", "os/usr/share/tilo/system-interfaces.toml"]
+readers = ["crates/packaging/launcher/src/manifest.rs", "crates/packaging/launcher/src/seccomp.rs", "crates/packaging/launcher/src/services.rs"]
 
 [[cargo]]
 package = "tilo-vm"
@@ -924,7 +924,7 @@ workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots two VMs (KVM) from the gated dev disk"
+reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock"
 workflow = "build-image.yml"
 
 [[unrequired]]

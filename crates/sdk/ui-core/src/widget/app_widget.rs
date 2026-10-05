@@ -1356,12 +1356,11 @@ mod component_adapter {
                 return None;
             };
             let root = self.component.root.as_deref()?;
-            // A due deadline runs sync, which samples the record's
-            // durability again (see `sync` above).
-            root.next_wake_deadline()
-                .into_iter()
-                .chain(self.component.record_save_deadline())
-                .min()
+            let saving = self.component.save_status_wake_deadline();
+            match (root.next_wake_deadline(), saving) {
+                (Some(own), Some(saving)) => Some(own.min(saving)),
+                (own, saving) => own.or(saving),
+            }
         }
         fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
             let binding = self.component.callback_binding();
@@ -1376,10 +1375,11 @@ mod component_adapter {
             let Ok(_entry) = binding.enter() else {
                 return false;
             };
+            let save_status_changed = self.component.take_save_status_changed();
             let Some(root) = self.component.root.as_deref_mut() else {
                 return false;
             };
-            root.take_structure_dirty()
+            root.take_structure_dirty() | save_status_changed
         }
         fn needs_redraw(&self) -> bool {
             let binding = self.component.callback_binding();

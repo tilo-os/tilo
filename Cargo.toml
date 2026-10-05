@@ -184,6 +184,7 @@ members = [
 
     # Media
     "crates/media/ocr",
+    "crates/media/segment",
     "crates/media/thumbnail",
     "crates/media/vision",
     "crates/media/wet-media",
@@ -241,6 +242,7 @@ members = [
     "crates/platform/tilo-process",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
+    "crates/platform/tilo-subject",
     "crates/platform/tilo-sandbox",
     "crates/platform/tilo-typst-fonts",
 
@@ -321,6 +323,7 @@ members = [
     "crates/system/tilo-native-certs",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
+    "crates/system/tilo-sibling-unlock",
     "crates/system/tilo-startup-metrics",
     "crates/system/tinker",
     "crates/system/tts",
@@ -664,6 +667,23 @@ opt-level = 3
 [profile.dev.package.tiny-skia]
 opt-level = 3
 [profile.test.package.tiny-skia]
+opt-level = 3
+# Refining a selection's edge filters every pixel of a photograph, and the
+# subject model runs a network: unoptimised, select subject takes many
+# seconds in a dev build. rten's kernels are its own crates.
+[profile.dev.package.tilo-segment]
+opt-level = 3
+[profile.test.package.tilo-segment]
+opt-level = 3
+[profile.dev.package.rten]
+opt-level = 3
+[profile.dev.package.rten-gemm]
+opt-level = 3
+[profile.dev.package.rten-vecmath]
+opt-level = 3
+[profile.dev.package.rten-simd]
+opt-level = 3
+[profile.dev.package.rten-tensor]
 opt-level = 3
 
 # Hashing, signature verification and font parsing run on every fixture in
