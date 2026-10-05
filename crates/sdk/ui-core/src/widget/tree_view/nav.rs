@@ -569,7 +569,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let is_caption = |at: usize| {
             matches!(
                 self.index.row_at(&self.model, at),
-                Some((TreeRowKey::Node(id), _)) if matches!(self.nav_spec(id), Some(NavRowSpec::Caption))
+                Some((TreeRowKey::Node(id), _)) if matches!(self.nav_spec(id), Some(NavRowSpec::Caption | NavRowSpec::Section { collapsible: false, .. }))
             )
         };
         let mut at = index;

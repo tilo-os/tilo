@@ -18,11 +18,19 @@ fn clickable(app: &mut TestApp<SettingsShell>, name: &str, role: AkRole) -> bool
     })
 }
 
-fn activate(app: &mut TestApp<SettingsShell>, name: &str) {
-    let node = app
-        .harness()
-        .a11y_node_named(name)
-        .unwrap_or_else(|| panic!("{name:?} is exported"));
+fn activate(app: &mut TestApp<SettingsShell>, name: &str, role: AkRole) {
+    // A pane heading and its category can share a label. Operate the same
+    // actionable node contract that `clickable` proves, never a plain heading.
+    let mut nodes = app.harness().a11y_nodes().into_iter().filter(|(_, node)| {
+        node.label() == Some(name) && node.role() == role && node.supports_action(AkAction::Click)
+    });
+    let (node, _) = nodes
+        .next()
+        .unwrap_or_else(|| panic!("{name:?} is exported as an actionable {role:?}"));
+    assert!(
+        nodes.next().is_none(),
+        "{name:?} has one actionable {role:?}"
+    );
     app.harness()
         .perform_a11y_action(node, &ui::a11y::Action::Activate)
         .unwrap_or_else(|error| panic!("{name:?} activates: {error}"));
@@ -50,13 +58,13 @@ fn choosing_the_open_category_from_the_narrow_list_shows_it() {
         "the category list is one screen back"
     );
 
-    activate(&mut app, "Back");
+    activate(&mut app, "Back", AkRole::Button);
     assert!(
         clickable(&mut app, "Network", AkRole::TreeItem),
         "Back shows the category list"
     );
 
-    activate(&mut app, "Network");
+    activate(&mut app, "Network", AkRole::TreeItem);
     assert!(
         clickable(&mut app, "Back", AkRole::Button)
             && !clickable(&mut app, "Network", AkRole::TreeItem),
@@ -102,7 +110,7 @@ fn the_manifest_scenario_names_are_on_the_narrow_list() {
         .resize(NARROW)
         .expect("settings lays out narrow");
     app.settle();
-    activate(&mut app, "Back");
+    activate(&mut app, "Back", AkRole::Button);
     let exposed: Vec<String> = app
         .harness()
         .a11y_nodes()

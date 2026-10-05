@@ -2367,6 +2367,31 @@ impl NavShell {
     /// takes no input and is not exposed. The header row stays live.
     fn part_inert(&self, part: Part) -> bool {
         let g = &self.geometry;
+        // Both screens remain laid out during a push animation, but only
+        // the chosen screen is operable. AT and keyboard routing must switch
+        // immediately, without waiting for the outgoing pixels to slide away.
+        let column = match part {
+            Part::Body(column)
+            | Part::Title(column)
+            | Part::Leading(column)
+            | Part::Action(column, _)
+            | Part::More(column) => Some(column),
+            _ => None,
+        };
+        if !g.side_by_side
+            && let Some(column) = column
+        {
+            let pane = match column {
+                Column::Sidebar => Some(NavPane::Sidebar),
+                Column::Overview => Some(NavPane::Overview),
+                Column::Content => Some(NavPane::Content),
+                Column::Inspector => None,
+            };
+            if pane.is_some_and(|pane| g.stack.contains(&pane) && self.inputs.borrow().pane != pane)
+            {
+                return true;
+            }
+        }
         if !g.modal() {
             return false;
         }
@@ -2547,7 +2572,7 @@ impl NavShell {
 
     /// The person chose a destination in the sidebar or a row of the
     /// overview: a narrow window moves on to what they chose.
-    fn follow_navigation(&mut self) {
+    fn follow_navigation(&mut self) -> bool {
         let from_sidebar = self
             .sidebar
             .as_deref_mut()
@@ -2579,6 +2604,7 @@ impl NavShell {
         {
             self.show(NavPane::Content);
         }
+        from_sidebar || from_rail || from_overview
     }
 
     /// Advance the slides by the time since the last frame.
@@ -3262,6 +3288,7 @@ impl Widget for NavShell {
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = self.take_requests();
         self.for_each_owned_mut(|child| changed |= child.update(state, path));
+        changed |= self.follow_navigation();
         changed || self.animating
     }
 

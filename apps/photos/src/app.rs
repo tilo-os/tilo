@@ -11031,15 +11031,34 @@ impl Widget for PhotosApp {
         // those pointers alive until the next tree replaces them.
         self.refresh_people_controls();
 
+        // The painted header still needs admitted layout owners for its
+        // retained controls: accessibility invokes their actual action doors.
+        let mut header_controls = vec![self.chrome.search.build_layout(taffy, theme, node_map)];
+        if self.header_back_visible() {
+            header_controls.push(self.chrome.back.build_layout(taffy, theme, node_map));
+        }
+        if let Some(history) = self.chrome.history.button_mut() {
+            header_controls.push(history.build_layout(taffy, theme, node_map));
+        }
+        for &control in &header_controls {
+            if let Ok(style) = taffy.style(control) {
+                let mut style = style.clone();
+                style.position = taffy::Position::Absolute;
+                let _ = taffy.set_style(control, style);
+            }
+        }
         let header = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::length(chrome::header_height(theme) as f32),
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::length(chrome::header_height(theme) as f32),
+                    },
+                    flex_shrink: 0.0,
+                    ..Default::default()
                 },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
+                &header_controls,
+            )
             .unwrap();
         let canvas = self.build_canvas_node(taffy, theme, node_map);
         let status = self.build_status_node(taffy, theme);

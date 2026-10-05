@@ -829,18 +829,33 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
     let mut h = harness(shell, 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     h.root_mut::<NavShell>().mark_drawn();
-    let before = h
-        .root_mut::<NavShell>()
-        .content_mut::<crate::widget::Scrollable>()
-        .unwrap()
-        .children()[0]
-        .get_rect();
+    h.relayout_at((1280, 800)).expect("draw state republished");
+    let text_rect = |h: &FrameHarness| {
+        h.root::<NavShell>()
+            .children()
+            .into_iter()
+            .find(|child| {
+                child.concrete_type_name() == std::any::type_name::<crate::widget::Scrollable>()
+            })
+            .expect("retained scroll pane")
+            .children()[0]
+            .get_rect()
+    };
+    let before = text_rect(&h);
+    let center = h.root::<NavShell>().geometry().content_column.center();
+    h.dispatch_to_root(&WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+    });
     crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
     for _ in 0..4 {
-        h.root_mut::<NavShell>()
-            .content_mut::<crate::widget::Scrollable>()
-            .unwrap()
-            .scroll_by(0.0, 20.0);
+        h.dispatch_to_root(&WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
+                0.0, -20.0,
+            )),
+            phase: winit::event::TouchPhase::Moved,
+        });
         assert!(h.root::<NavShell>().is_layout_dirty());
         assert!(
             !h.root::<NavShell>().layout_needs_measure(),
@@ -848,12 +863,7 @@ fn scrolling_reuses_measured_panes_without_reloading_fonts() {
         );
         h.relayout_at((1280, 800)).expect("scroll repositioned");
     }
-    let after = h
-        .root_mut::<NavShell>()
-        .content_mut::<crate::widget::Scrollable>()
-        .unwrap()
-        .children()[0]
-        .get_rect();
+    let after = text_rect(&h);
     assert_eq!(after.x0, before.x0);
     assert_eq!(after.y0, before.y0 - 80.0);
     assert_eq!(
@@ -985,6 +995,10 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
             .as_deref(),
         Some("inbox")
     );
+    // Mutable typed access retires the host's raw layout maps, even when
+    // used only to inspect a value. Publish a fresh admitted frame for AT.
+    h.relayout_at((560, 800))
+        .expect("typed inspection republished");
     let inbox = h
         .a11y_node_named("Inbox")
         .expect("published navigation row");

@@ -815,6 +815,8 @@ struct NavShared {
     on_delete: Callback<String>,
     on_menu: Option<Box<dyn FnMut(&str, Rect, Point)>>,
     binding: Option<LocalBinding<Option<String>>>,
+    /// The chosen key, including quiet app-driven reconciliation.
+    selected: Option<String>,
     /// The person chose a destination since the shell last asked.
     navigated: bool,
 }
@@ -856,6 +858,10 @@ impl NavList {
                     return;
                 };
                 shared.navigated = true;
+                if shared.selected.as_deref() == Some(key.as_str()) {
+                    return;
+                }
+                shared.selected = Some(key.clone());
                 if let Some(binding) = shared.binding.as_mut() {
                     binding.publish(&Some(key.clone()));
                 }
@@ -1252,6 +1258,9 @@ impl NavList {
         if let Some(node) = node {
             self.tree.set_focused(Some(node));
         }
+        self.shared.borrow_mut().selected = node
+            .and_then(|node| self.tree.model().key(node))
+            .map(str::to_owned);
         node
     }
 

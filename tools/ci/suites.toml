@@ -514,8 +514,6 @@ readers = [
   "crates/sdk/ui-core/src/app/close_admission.rs",
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
-  "crates/sdk/ui-core/tests/design_token_audit.rs",
-  "crates/sdk/ui-core/tests/spacing_token_audit.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
 ]
 # App, shell and framework sources are read only by the look ratchets in the
@@ -535,6 +533,7 @@ readers = [
   "crates/dev/ui-examples/examples/gallery_shots.rs",
   "crates/dev/ui-examples/examples/type_specimen_shots.rs",
   "crates/dev/ui-examples/examples/distinct_letters_shots.rs",
+  "crates/dev/ui-examples/examples/distinct_letters_specimen.rs",
   "crates/dev/ui-examples/examples/reading_face_shots.rs",
 ]
 
