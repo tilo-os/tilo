@@ -149,6 +149,7 @@ impl Machine {
             Some(package_store::SystemStore {
                 data_dir: self.image_store(),
                 payload_dir: self.root.path().join("usr/lib/tilo-apps"),
+                interfaces: None,
             }),
         );
         let row = catalog.find(APP).unwrap().unwrap();

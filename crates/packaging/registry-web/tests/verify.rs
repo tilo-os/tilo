@@ -143,6 +143,7 @@ type = "gui"
             architecture: target.architecture.clone(),
             isa: target.isa.clone(),
             runtime: Some(target.runtime.clone()),
+            interfaces: Vec::new(),
         },
     };
     Built {
@@ -291,6 +292,7 @@ fn fake_version(version: &str, isa: &str, runtime: &str, root: u8) -> RegistryVe
             architecture: "wasm32".into(),
             isa: isa.into(),
             runtime: Some(runtime.into()),
+            interfaces: Vec::new(),
         },
     }
 }
@@ -305,6 +307,7 @@ fn selection_takes_the_newest_version_the_host_runs() {
         architecture: "x86_64".into(),
         isa: "x86_64-v3".into(),
         runtime: None,
+        interfaces: Vec::new(),
     };
     let versions = vec![
         fake_version("1.0.0", mvp, ABI, 1),

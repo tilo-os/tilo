@@ -2907,6 +2907,11 @@ COPY --from=native-builder-payload \
 # image build, and claims nothing more.
 COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
 COPY --from=native-builder-payload /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
+# The system interfaces this image serves. What lets an app from the registry
+# update past the copy above only to a build this OS can run, and what makes
+# the copy above the fallback for one it cannot
+# (crates/packaging/package-store/src/interfaces.rs).
+COPY os/usr/share/tilo/system-interfaces.toml /usr/share/tilo/system-interfaces.toml
 # The shell and the browser engine must resolve every library they load from
 # this rootfs: a gap is a loader error at the first launch, on a device.
 ARG CHROMIUM_RUNTIME_VERSION
