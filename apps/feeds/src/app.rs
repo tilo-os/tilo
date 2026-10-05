@@ -396,10 +396,6 @@ pub(crate) struct Core {
     pub(crate) anchors: HashMap<Anchor, Rect>,
     /// The first feed's sidebar row (its lift), as last painted.
     pub(crate) first_feed_row: Option<(Id, Rect)>,
-    /// How far menus stay inside the window's edges, and from the row they
-    /// open under.
-    pub(crate) floating_inset: f64,
-    pub(crate) menu_gap: f64,
 }
 
 impl Core {
@@ -436,8 +432,6 @@ impl Core {
             show_pane: None,
             anchors: HashMap::new(),
             first_feed_row: None,
-            floating_inset: 0.0,
-            menu_gap: 0.0,
         };
         if demo {
             core.select_featured();
@@ -975,16 +969,17 @@ impl Core {
         });
     }
 
-    /// Where menus may open: the window, less the floating inset.
+    /// Where menus may open: the window; a menu keeps its own air from its
+    /// edges.
     pub(crate) fn menu_bounds(&self) -> Rect {
-        self.window.inset(-self.floating_inset)
+        self.window
     }
 
     /// The menu of one feed, under its sidebar row (`row` is the row's lift),
-    /// sharing the row's leading edge.
+    /// sharing the row's leading edge. The menu keeps its own air from the
+    /// row it opens under.
     pub(crate) fn open_feed_menu(&mut self, feed_id: Id, row: Rect) {
-        let anchor = row.inflate(0.0, self.menu_gap);
-        self.open_feed_menu_on(feed_id, row, anchor);
+        self.open_feed_menu_on(feed_id, row, row);
     }
 
     /// The menu of one feed, opened by a right click at `at` on its row.
@@ -1813,8 +1808,6 @@ pub struct FeedsApp {
     /// How many layouts in a row gave the window the same rect.
     settled_layouts: u32,
     mount: Option<OverlayMount>,
-    /// How far floating panels stay inside the window's edges.
-    floating_inset: f64,
     /// Anchors of search hits picked in the framework host.
     opened: Rc<RefCell<Vec<String>>>,
 }
@@ -1867,7 +1860,6 @@ impl FeedsApp {
             pending_scenario: None,
             settled_layouts: 0,
             mount: None,
-            floating_inset: 0.0,
             opened: Rc::default(),
         }
     }
@@ -2189,7 +2181,7 @@ impl FeedsApp {
             )
         };
         self.core.borrow_mut().menu = None;
-        let window = Widget::get_rect(&self.shell).inset(-self.floating_inset);
+        let window = Widget::get_rect(&self.shell);
         self.settings_panel = Some(
             Popover::with_content(reader_settings_panel(settings, &self.requests))
                 .with_label("Reading settings")
@@ -2480,12 +2472,6 @@ impl ui::widget::Decorator for FeedsApp {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let shell = Widget::build_layout(&mut self.shell, taffy, theme, node_map);
-        self.floating_inset = f64::from(theme.tokens.spacing.s2);
-        {
-            let mut core = self.core.borrow_mut();
-            core.floating_inset = self.floating_inset;
-            core.menu_gap = f64::from(theme.tokens.spacing.s1);
-        }
         let floating = |taffy: &mut TaffyTree<()>, node: NodeId| {
             if let Ok(mut style) = taffy.style(node).cloned() {
                 style.position = taffy::Position::Absolute;
@@ -2543,8 +2529,8 @@ impl ui::widget::Decorator for FeedsApp {
                     modal.dialog.apply_layout(taffy, dialog, inner);
                 }
                 if let (Some(panel), Some(node)) = (self.settings_panel.as_mut(), mount.panel) {
-                    // A floating panel keeps its inset from the window's edges.
-                    let window = Widget::get_rect(&self.shell).inset(-self.floating_inset);
+                    // The panel keeps its own air from the window's edges.
+                    let window = Widget::get_rect(&self.shell);
                     panel.set_viewport(window);
                     panel.apply_layout(taffy, node, inner);
                 }

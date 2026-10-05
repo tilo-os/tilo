@@ -214,14 +214,16 @@ impl Core {
             );
         }
         let scroll = self.list.scroll();
-        // Rows span the column, as a list in a section does, so their text
-        // shares the column title's edge; while the list overflows, the
+        // Row text starts on the column's content edge, the column title's,
+        // and the lift bleeds past it; while the list overflows, the
         // trailing gutter stays free for the scroll bar.
+        let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
         let overflows = self.list.content > viewport.height();
+        let x0 = viewport.x0 + edge;
         let x1 = if overflows {
             viewport.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter)
         } else {
-            viewport.x1
+            viewport.x1 - edge
         };
 
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &viewport);
@@ -231,7 +233,7 @@ impl Core {
             if y > viewport.y1 {
                 break;
             }
-            let rect = Rect::new(viewport.x0, y, x1, y + row_h);
+            let rect = Rect::new(x0, y, x1, y + row_h);
             y += row_h;
             self.paint_row(
                 &mut PaintCtx::new(scene, t, text, theme),
@@ -259,7 +261,7 @@ impl Core {
         };
         let viewport = self.list.viewport;
         let time = relative_time(article.published, self.now);
-        let hovered = rect.contains(self.pointer)
+        let hovered = (rect.y0..rect.y1).contains(&self.pointer.y)
             && viewport.contains(self.pointer)
             && self.menu.is_none()
             && !self.modal_open;
@@ -312,7 +314,7 @@ impl Core {
         let caption = theme.text(TextRole::Caption);
         let line = f64::from(text.measure_style("Ag", None, &caption).1);
         // The column title's edge.
-        let pad_x = f64::from(spacing.s3);
+        let pad_x = ui::chrome::column_gutter(theme);
         let band_y = area.y0 + f64::from(spacing.s3);
         text.draw_style(
             scene,
@@ -376,7 +378,9 @@ impl Core {
             .list
             .rows
             .iter()
-            .find(|row| row.rect.contains(self.pointer))
+            // A row answers across the list's whole width, its side insets
+            // included.
+            .find(|row| (row.rect.y0..row.rect.y1).contains(&self.pointer.y))
             .copied();
         let Some(row) = hit else {
             return false;
