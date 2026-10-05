@@ -473,8 +473,12 @@ pub enum InputCommand {
     /// Type text on a US keyboard layout.
     #[command(after_help = "Examples:\n  tilo-vm input type 'hello world'")]
     Type {
-        /// The text to type.
-        text: String,
+        /// The text to type. Use --stdin for sensitive text.
+        #[arg(required_unless_present = "stdin", conflicts_with = "stdin")]
+        text: Option<String>,
+        /// Read exact text from standard input, without recording it in argv.
+        #[arg(long, conflicts_with = "text")]
+        stdin: bool,
     },
     /// Move the pointer to desktop pixel X, Y.
     #[command(
