@@ -217,6 +217,44 @@ pub trait Resource: Sized + 'static {
         Vec::new()
     }
 
+    /// Whether [`read_content`](Self::read_content) answers. A resource that
+    /// does is published with the framework's `read` operation, so a script,
+    /// an agent or an assistive tool reads what it holds as typed data through
+    /// the same door, permissions and audit as every other action — never
+    /// from a screenshot.
+    const READABLE: bool = false;
+
+    /// What the resource holds, as JSON a caller can act on: with no `item`,
+    /// the resource itself (a notebook's pages); with `item`, the nested
+    /// resource of that id from [`children`](Self::children) (one page's
+    /// title and blocks). Read from `doc`, the committed document, so the
+    /// answer is never older than the action that preceded it. Called only
+    /// when [`READABLE`](Self::READABLE) is set.
+    ///
+    /// # Errors
+    /// A message naming why: no such item, or a document that cannot be read.
+    fn read_content(
+        state: &Self::State,
+        doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        let _ = (state, doc, item);
+        Err(format!("a {} does not answer reads", Self::LABEL))
+    }
+
+    /// What declared action `action` (one [`ActionDecl::answering`]) made,
+    /// answered to its caller once it applied to `doc` as `changes`: the
+    /// ids it minted, the area it selected, a warning that what it drew is
+    /// hidden. A compact summary, so the caller needs no second read to
+    /// see what happened. The default answers nothing.
+    fn answer(
+        _doc: &Doc,
+        _action: &str,
+        _changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        None
+    }
+
     /// The stored layout of this resource's content, for services that act
     /// on it generically: History restores a past version through it, field
     /// by field and item by item. `#[resource]` returns the record's
@@ -312,6 +350,8 @@ pub struct ActionDecl<R: Resource> {
     pub params: Vec<ActionParam>,
     pub permission: PermissionRequirement,
     pub destructive: bool,
+    /// Whether it answers what it made ([`Resource::answer`]).
+    pub answers: bool,
     pub build: BuildAction<R>,
 }
 
@@ -324,6 +364,7 @@ impl<R: Resource> Clone for ActionDecl<R> {
             params: self.params.clone(),
             permission: self.permission,
             destructive: self.destructive,
+            answers: self.answers,
             build: Arc::clone(&self.build),
         }
     }
@@ -343,6 +384,7 @@ impl<R: Resource> ActionDecl<R> {
             params,
             permission: PermissionRequirement::Write,
             destructive: false,
+            answers: false,
             build: Arc::new(build),
         }
     }
@@ -362,6 +404,14 @@ impl<R: Resource> ActionDecl<R> {
     #[must_use]
     pub fn destructive(mut self) -> Self {
         self.destructive = true;
+        self
+    }
+
+    /// Answer the caller with what the action made, from
+    /// [`Resource::answer`].
+    #[must_use]
+    pub fn answering(mut self) -> Self {
+        self.answers = true;
         self
     }
 }
@@ -511,6 +561,11 @@ pub fn declaration_spec<R: Resource>(decl: &ActionDecl<R>) -> ActionSpec {
     }
     if decl.destructive {
         spec = spec.destructive();
+    }
+    if decl.answers {
+        spec.contract.result = tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({"type": "object"}),
+        };
     }
     spec
 }

@@ -101,6 +101,9 @@ pub struct Dropdown {
     /// The legacy constructor uses equal value/label pairs.
     values: Vec<String>,
     options: Vec<String>,
+    /// The keys that do what an option does, by its value, shown at the
+    /// row's end so a menu teaches its shortcuts.
+    shortcuts: Vec<(String, String)>,
     /// Where the selected value lives: a document key or process-local state.
     binding: Option<BoxedBinding<String>>,
     on_change: Option<SelectionChangeCallback>,
@@ -138,6 +141,9 @@ pub struct Dropdown {
     /// A menu button's icon: the control is that icon, and a choice is a
     /// command it reports rather than a value it shows.
     menu: Option<crate::icons::Icon>,
+    /// What the last painted frame showed, so an unchanged control reports
+    /// no damage.
+    drawn: Option<u64>,
 }
 
 impl Dropdown {
@@ -152,6 +158,7 @@ impl Dropdown {
             accessible_name: None,
             values: options.clone(),
             options,
+            shortcuts: Vec::new(),
             binding: Some(crate::doc_binding::text_key(value_path)),
             on_change: None,
             action: None,
@@ -171,7 +178,32 @@ impl Dropdown {
             viewport: None,
             enabled: true,
             menu: None,
+            drawn: None,
         }
+    }
+
+    /// Everything the control's paint depends on.
+    fn visual_signature(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (
+            &self.selected,
+            &self.options,
+            &self.placeholder,
+            self.open,
+            self.highlight,
+            &self.filter,
+            self.scroll.to_bits(),
+            self.is_focused,
+            self.is_hovered,
+            self.effectively_enabled(),
+        )
+            .hash(&mut hasher);
+        [self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y1]
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        crate::i18n::I18nManager::revision().hash(&mut hasher);
+        hasher.finish()
     }
 
     /// Create a dropdown bound to typed process-local selected state.
@@ -228,8 +260,9 @@ impl Dropdown {
 
     /// A menu button: the control is `icon` alone, its list opens at least
     /// [`MENU_MIN_WIDTH`] wide aligned to the control's trailing edge, and
-    /// choosing an option reports it (to [`Self::on_change`] or
-    /// [`Self::on_action`]) without the control keeping it as its value.
+    /// choosing an option reports it (to [`Self::on_action`], or to the
+    /// view state of [`Self::from_state`]) without the control keeping it as
+    /// its value.
     /// Name it with [`Self::with_accessible_name`]: it shows no text.
     #[must_use]
     pub fn as_menu(mut self, icon: crate::icons::Icon) -> Self {
@@ -312,6 +345,19 @@ impl Dropdown {
         self.values = values;
         self.options = labels;
         self.highlight = self.highlight.min(self.options.len().saturating_sub(1));
+    }
+
+    /// The keys that do what each option does, by value: shown at the
+    /// end of its row (`Ctrl+S`). Options without one show none.
+    pub fn set_option_shortcuts<'a>(
+        &mut self,
+        shortcuts: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) {
+        self.shortcuts = shortcuts
+            .into_iter()
+            .filter(|(_, keys)| !keys.is_empty())
+            .map(|(value, keys)| (value.to_owned(), keys.to_owned()))
+            .collect();
     }
 
     /// Open the shared searchable, scrollable menu and align its highlight to
@@ -569,11 +615,14 @@ impl Dropdown {
     /// Store `value` through the binding and mirror it locally.
     fn commit_value(&mut self, value: &str, state: &mut AppModel, root: &ModelPath) {
         if self.menu.is_some() {
-            // A menu's choice is a command: reported, never kept.
+            // A menu's choice is a command: reported, never kept. A menu
+            // bound to view state reports it there, for the view to act on.
             if let Some(action) = &mut self.action {
                 let _ = action.emit(value.to_string());
             } else if let Some(callback) = self.on_change.as_mut() {
                 callback(value);
+            } else if let Some(binding) = &mut self.binding {
+                binding.push(state, root, &value.to_string());
             }
             return;
         }
@@ -747,6 +796,14 @@ impl Dropdown {
 
 impl Widget for Dropdown {
     crate::provides!(dyn crate::widget::controls::ActionControls);
+
+    fn needs_redraw(&self) -> bool {
+        self.drawn != Some(self.visual_signature())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.drawn = Some(self.visual_signature());
+    }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
@@ -1035,12 +1092,43 @@ impl Widget for Dropdown {
                 } else {
                     theme.text_primary
                 };
+                // The keys that do the same at the row's end, quieter than
+                // the label unless the row is highlighted.
+                let mut label_end = list.x1 - PAD_X;
+                let keys = self.values.get(opt_idx).and_then(|value| {
+                    self.shortcuts
+                        .iter()
+                        .find(|(of, _)| of == value)
+                        .map(|(_, keys)| keys.as_str())
+                });
+                if let Some(keys) = keys {
+                    let (keys_w, keys_h) = text_renderer.measure(keys, FONT, None);
+                    let keys_x = label_end - f64::from(keys_w);
+                    let keys_color = if vi == self.highlight {
+                        color
+                    } else {
+                        theme.text_dim
+                    };
+                    text_renderer.draw_text(
+                        scene,
+                        keys,
+                        FONT,
+                        keys_color,
+                        translated(
+                            transform,
+                            keys_x,
+                            row_top + (ITEM_HEIGHT - f64::from(keys_h)) / 2.0,
+                        ),
+                        None,
+                    );
+                    label_end = keys_x - PAD_X;
+                }
                 // Rows are one `ITEM_HEIGHT` tall, so a long option elides
                 // rather than wrapping into the row beneath it.
                 let shown = text_renderer.elide_to_width(
                     opt,
                     FONT,
-                    px((list.width() - PAD_X * 2.0).max(0.0)),
+                    px((label_end - list.x0 - PAD_X).max(0.0)),
                 );
                 let (_, opt_h) = text_renderer.measure(&shown, FONT, None);
                 let ty = row_top + (ITEM_HEIGHT - f64::from(opt_h)) / 2.0;

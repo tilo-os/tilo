@@ -39,6 +39,8 @@ struct LayerRow {
 struct MaskRow {
     id: String,
     invert: bool,
+    /// Stays put when the layer's marks move.
+    unlinked: bool,
     /// Switched on: the layer shows through it.
     visible: bool,
 }
@@ -72,6 +74,7 @@ fn rows(art: &Artwork) -> Vec<LayerRow> {
             mask: art.mask_of(&layer.id).map(|mask| MaskRow {
                 id: mask.id.clone(),
                 invert: mask.invert,
+                unlinked: mask.unlinked,
                 visible: mask.visible,
             }),
             clip: layer.clip,
@@ -217,12 +220,14 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
         let id = row.id.clone();
         move |name: String| (id.clone(), name)
     });
+    let renaming = LocalState::new(false);
     let name = cx.actions().bind(
         EditableLabel::new(&row.name)
             .with_font_size(14.0)
             .with_id(&format!("canvas-layer-name-{}", row.id))
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-layer-rename"))
             .renames_on_double_click()
+            .begins_editing_on(&renaming)
             .filling(),
         rename,
     );
@@ -278,7 +283,7 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
             &lock_name,
             ArtworkResource::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked)),
         )));
-    Box::new(
+    let row_element: Element = Box::new(
         ListRow::new(content)
             .on_raised()
             .choosing_any(
@@ -288,7 +293,136 @@ fn layer_row(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Ele
                     .collect(),
             )
             .with_accessible_name(row.name.clone()),
-    )
+    );
+    let menu = row_menu(cx, tools, row, renaming);
+    Box::new(ui::widget::ContextMenuArea::new(row_element, menu))
+}
+
+/// What a right-click on a layer's row offers: the row's own controls and
+/// the chosen layer's, as commands with words, the layer chosen first.
+fn row_menu(
+    cx: &ViewCx<ArtworkResource>,
+    tools: &Tools,
+    row: &LayerRow,
+    renaming: LocalState<bool>,
+) -> impl Fn(Option<ui::vello::kurbo::Point>) -> Vec<ui::widget::MenuEntry> + 'static {
+    use ui::widget::MenuEntry;
+    let dispatcher = cx.dispatcher();
+    let live = cx.live().clone();
+    let chosen = tools.layer.clone();
+    let row = row.clone();
+    move |_| {
+        // The row the menu is about is the chosen one while it is open,
+        // as a left click would choose it.
+        let mine = row
+            .mask
+            .as_ref()
+            .is_some_and(|mask| chosen.with(|id| *id == mask.id));
+        if !mine && chosen.with(|id| *id != row.id) {
+            chosen.set(row.id.clone());
+        }
+        let lookup = ui::i18n::I18nManager::lookup_plain;
+        let named =
+            |id: &str| ui::i18n::I18nManager::format(id, &[("name", row.name.clone().into())]);
+        let invoke = |make: fn(&LayerRow) -> Invoke<ArtworkResource>| {
+            let dispatcher = dispatcher.clone();
+            let row = row.clone();
+            move || dispatcher.invoke(make(&row))
+        };
+        let has_selection = live.get().selection.is_some();
+        let renaming = renaming.clone();
+        let mut entries = vec![
+            MenuEntry::new(lookup("canvas-context-rename-layer"), move || {
+                renaming.set(true);
+            }),
+            MenuEntry::separator(),
+            MenuEntry::new(
+                named(if row.visible {
+                    "canvas-layer-hide-name"
+                } else {
+                    "canvas-layer-show-name"
+                }),
+                invoke(|row| {
+                    ArtworkResource::SET_LAYER_VISIBLE.with((row.id.clone(), !row.visible))
+                }),
+            ),
+            MenuEntry::new(
+                named(if row.locked {
+                    "canvas-layer-unlock-name"
+                } else {
+                    "canvas-layer-lock-name"
+                }),
+                invoke(|row| ArtworkResource::SET_LAYER_LOCKED.with((row.id.clone(), !row.locked))),
+            ),
+            MenuEntry::separator(),
+            MenuEntry::new(
+                lookup("canvas-layer-up"),
+                invoke(|row| ArtworkResource::MOVE_LAYER.with((row.id.clone(), "forward".into()))),
+            ),
+            MenuEntry::new(
+                lookup("canvas-layer-down"),
+                invoke(|row| ArtworkResource::MOVE_LAYER.with((row.id.clone(), "backward".into()))),
+            ),
+            MenuEntry::separator(),
+        ];
+        masking(&row, &dispatcher, has_selection, &mut entries);
+        entries.push(MenuEntry::separator());
+        entries.push(MenuEntry::destructive(
+            named("canvas-layer-remove-name"),
+            invoke(|row| ArtworkResource::REMOVE_LAYER.with(row.id.clone())),
+        ));
+        entries
+    }
+}
+
+/// A layer row's menu entries for its mask and clipping.
+fn masking(
+    row: &LayerRow,
+    dispatcher: &ui::framework::Dispatcher<ArtworkResource>,
+    has_selection: bool,
+    entries: &mut Vec<ui::widget::MenuEntry>,
+) {
+    use ui::widget::MenuEntry;
+    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let invoke = |make: fn(&LayerRow) -> Invoke<ArtworkResource>| {
+        let dispatcher = dispatcher.clone();
+        let row = row.clone();
+        move || dispatcher.invoke(make(&row))
+    };
+    if row.mask.is_some() {
+        entries.push(MenuEntry::new(
+            lookup("canvas-layer-mask-remove"),
+            invoke(|row| ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "remove".into()))),
+        ));
+    } else {
+        entries.push(MenuEntry::new(
+            lookup("canvas-layer-mask-add"),
+            invoke(|row| ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), "reveal".into()))),
+        ));
+    }
+    // The selection as the layer's mask: what it shows of the layer.
+    let dispatch = dispatcher.clone();
+    let layer = row.id.clone();
+    entries.push(
+        MenuEntry::new(lookup("canvas-context-mask-selection"), move || {
+            dispatch.apply(&crate::actions::CanvasAction::UseSelection(
+                crate::selection::UseSelection {
+                    what: "mask".into(),
+                    layer: Some(layer.clone()),
+                    ..crate::selection::UseSelection::default()
+                },
+            ));
+        })
+        .with_enabled(has_selection),
+    );
+    entries.push(MenuEntry::new(
+        lookup(if row.clip {
+            "canvas-context-unclip"
+        } else {
+            "canvas-layer-clip"
+        }),
+        invoke(|row| ArtworkResource::SET_LAYER_CLIP.with((row.id.clone(), !row.clip))),
+    ));
 }
 
 /// The chosen layer's opacity, medium and place among the layers.
@@ -413,6 +547,17 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
     if mask.invert {
         invert = invert.primary();
     }
+    let (chain, link) = if mask.unlinked {
+        (Icon::Unlink, "link")
+    } else {
+        (Icon::Link, "unlink")
+    };
+    let link = icon_button(
+        cx,
+        chain,
+        &lookup(&format!("canvas-layer-mask-{link}")),
+        ArtworkResource::SET_LAYER_MASK.with((row.id.clone(), link.into())),
+    );
     Box::new(
         Row::new()
             .with_gap(2.0)
@@ -427,6 +572,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
                 ArtworkResource::SET_LAYER_VISIBLE.with((mask.id.clone(), !mask.visible)),
             )))
             .push(Box::new(invert))
+            .push(Box::new(link))
             .push(Box::new(icon_button(
                 cx,
                 Icon::X,
@@ -439,7 +585,7 @@ fn mask_line(cx: &ViewCx<ArtworkResource>, row: &LayerRow, mask: &MaskRow) -> El
 /// Adding a layer: a menu of the media to paint it in, adding the chosen
 /// one above the chosen layer and naming it for its medium.
 pub fn add_menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
-    let media = cx.read(|art| {
+    let (media, names) = cx.read(|art| {
         let mut media = vec![(
             String::new(),
             ui::i18n::I18nManager::lookup_plain("canvas-medium-plain"),
@@ -451,7 +597,10 @@ pub fn add_menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     .map(|medium| (medium.id, medium.label)),
             );
         }
-        media
+        let names: Vec<String> = art
+            .map(|art| art.layers.iter().map(|layer| layer.name.clone()).collect())
+            .unwrap_or_default();
+        (media, names)
     });
     let state = LocalState::new(String::new());
     let mut menu = Dropdown::from_state(Vec::new(), &state)
@@ -461,18 +610,19 @@ pub fn add_menu(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
     menu.set_value_options(media.clone());
     let chosen = tools.layer.clone();
     let add = ArtworkResource::ADD_LAYER_NAMED.map(move |medium: String| {
-        // "Oil, alla prima" names its layer "Oil".
+        // A plain layer is "Layer 3"; "Oil, alla prima" names its layer
+        // "Oil", and the next one "Oil 2".
         let label = media
             .iter()
             .find(|(id, _)| *id == medium)
             .map(|(_, label)| label.as_str())
             .unwrap_or_default();
-        let name = label
-            .split(',')
-            .next()
-            .unwrap_or_default()
-            .trim()
-            .to_owned();
+        let base = if medium.is_empty() {
+            "Layer"
+        } else {
+            label.split(',').next().unwrap_or_default().trim()
+        };
+        let name = crate::actions::numbered_name(names.iter().map(String::as_str), base);
         // Named here and chosen now, so the new layer is the one drawn on
         // next even before the artwork has it; it goes above the chosen one.
         let random = uuid::Uuid::new_v4().simple().to_string();

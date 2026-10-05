@@ -49,7 +49,10 @@ on:
       - ".forgejo/workflows/vm-acceptance.yml"
 
 concurrency:
-  group: vm-acceptance-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  # A pull request's newest commit replaces its older run; dispatched and
+  # nightly runs only queue behind an identical request. (github.run_id is
+  # not available here: it collapsed every dispatch into one queue.)
+  group: vm-acceptance-${{ github.event_name }}-${{ github.ref }}-${{ github.event.inputs.ref }}-${{ github.event.inputs.swap }}-${{ github.event.inputs.only }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -309,6 +312,10 @@ jobs:
           uid=$(id -u "$RUN_USER")
           install -d -m 0700 -o "$RUN_USER" -g "$RUN_USER" "/run/user/$uid"
           chmod 0666 /dev/kvm
+          # Fedora's libvirt raises QEMU's core limit to unlimited, which this
+          # container's hard limit refuses; the session takes no core dumps.
+          install -d -o "$RUN_USER" -g "$RUN_USER" "/home/$RUN_USER/.config" "/home/$RUN_USER/.config/libvirt"
+          echo 'max_core = 0' | install -m 0644 -o "$RUN_USER" -g "$RUN_USER" /dev/stdin "/home/$RUN_USER/.config/libvirt/qemu.conf"
           install -d -o "$RUN_USER" -g "$RUN_USER" "$WORK/report"
           chown -R "$RUN_USER:" "$WORK"
           # tilo-vm writes a receipt per command into the worktree it runs from.
@@ -316,12 +323,20 @@ jobs:
           # The toolchain is the builder's, installed for root; the cargo cache
           # and the runner's compiler cache settings carry over.
           chown -R "$RUN_USER:" "$CARGO_HOME"
+          # The compiler cache server root started for tilo-vm writes outputs
+          # as root; the run user's builds start their own.
+          [[ -z ${RUSTC_WRAPPER:-} ]] || "$RUSTC_WRAPPER" --stop-server >/dev/null 2>&1 || true
           keep=$(env | sed -n 's/^\(RUSTC_WRAPPER\|SCCACHE_[A-Z0-9_]*\|ACTIONS_[A-Z0-9_]*\|AWS_[A-Z0-9_]*\|CARGO_[A-Z0-9_]*\|RUSTUP_HOME\|TILO_[A-Z0-9_]*\)=.*/\1/p' | paste -sd, -)
           {
             echo "RUN_UID=$uid"
             echo "RUN_KEEP=$keep"
           } >> "$GITHUB_ENV"
+          # The session daemon started here outlives this step; let it set
+          # any core limit QEMU asks for.
+          ulimit -Hc unlimited 2>/dev/null || echo "::notice::core hard limit stays $(ulimit -Hc)"
           as_user() { sudo -n -u "$RUN_USER" -H --preserve-env="$keep" env "XDG_RUNTIME_DIR=/run/user/$uid" "PATH=$PATH" "$@"; }
+          echo "the run user keeps: $keep"
+          as_user cargo -V
           as_user virsh --connect qemu:///session capabilities | grep -q "<domain type='kvm'"
           as_user tilo-vm doctor || true
 

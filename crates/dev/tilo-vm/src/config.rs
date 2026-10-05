@@ -12,6 +12,9 @@
 //! keep_generations = 5     # gc keeps this many per slot
 //! keep_targets = 2         # gc keeps this many in-VM build dirs
 //!
+//! [remote_builders]        # swap --builder remote, by architecture: a cargo
+//! aarch64 = ["remote-cargo", "--on-builder"]   # drop-in whose `run` runs there
+//!
 //! [vms.dev]
 //! hypervisor = "libvirt"   # libvirt | qemu | utm | hyperv | whpx
 //! ssh = "root@127.0.0.1:2223"
@@ -45,6 +48,13 @@ pub struct Registry {
     /// In-VM build dirs gc keeps (the daemon's default is 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_targets: Option<u32>,
+    /// Remote builders by CPU architecture: the command line of a cargo
+    /// drop-in whose `run` runs the program on a machine of that
+    /// architecture, in this worktree, passing its stdout through.
+    /// `swap --builder remote` uses the one for the machine's architecture,
+    /// and is the default for a device that has one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub remote_builders: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub vms: BTreeMap<String, VmEntry>,
 }
@@ -117,6 +127,17 @@ pub struct VmEntry {
     pub firmware_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub firmware_vars: Option<String>,
+    /// A device's hostname: when its address stops answering, tilo-vm
+    /// finds it again as `<hostname>.local`. Recorded whenever tilo-vm
+    /// reaches it (`vm add`, `vm status`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    /// A device's MAC on the network it was reached on, for `vm wake`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+    /// What can wake a device, as it reported when last reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wake: Option<crate::reach::WakeInfo>,
     /// A host-built kernel the VM boots directly instead of its disk's boot
     /// loader (`tilo-vm swap kernel --direct` on libvirt, or a manually
     /// prepared development bundle on WHPX). Cleared by

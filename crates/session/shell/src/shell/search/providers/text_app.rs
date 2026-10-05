@@ -277,8 +277,8 @@ fn snippet_around(body: &str, hit: std::ops::Range<usize>) -> Option<String> {
         return None;
     }
     let radius = 30usize;
-    let start = ceil_char_boundary(body, hit.start.saturating_sub(radius));
-    let end = ceil_char_boundary(body, hit.end.saturating_add(radius).min(body.len()));
+    let start = body.ceil_char_boundary(hit.start.saturating_sub(radius));
+    let end = body.ceil_char_boundary(hit.end.saturating_add(radius));
     let mut s = String::new();
     if start > 0 {
         s.push('…');
@@ -295,13 +295,6 @@ fn snippet_around(body: &str, hit: std::ops::Range<usize>) -> Option<String> {
         s.push('…');
     }
     Some(s)
-}
-
-fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) {
-        i = i.saturating_add(1);
-    }
-    i
 }
 
 /// Enter on a result: switch workspace/strip/group and activate the tab.

@@ -24,16 +24,29 @@ The default macOS executable is:
 target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 ```
 
-Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources.
+Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources;
+run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
+OS the engine is the signed runtime bundle `tilo-runtime/2026.10.0-chromium`
+(`ui::webview::chromium::runtime`): the image build runs
+`build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
+browser's manifest lists it under `optional-runtimes`, and the launcher mounts
+it read-only into the browser's sandbox.
 Linux requires Chromium sandbox support (user namespaces or the distribution's
 correctly installed setuid sandbox). The host never disables the sandbox. The
 primary process skips Chromium first-run UI because Tilo owns onboarding; this
 also avoids an offscreen initialization stall on Linux.
-Linux packaging is implemented but has not yet been exercised on Linux.
 
 Run with `--profile=/absolute/profile/directory`. Each concurrently running host
 must use its own profile directory. The profile is canonicalized to avoid
 macOS `/var` versus `/private/var` cache path mismatches.
+
+Browser processes that use one profile therefore share one host. The first
+process to open the profile holds `<profile>.lock`, starts the host and serves
+`<profile>.sock` beside the profile directory; every later process connects
+there and drives its own tabs through that host (see
+`crates/sdk/ui-core/src/webview/chromium/shared.rs`). The owning process calls
+`ui::webview::chromium::serve_shared_until_idle()` after its event loop exits,
+so the host outlives every process still using it.
 
 ## IPC
 
@@ -133,6 +146,15 @@ Not yet covered: cross-origin and same-origin iframe content (listed as
 
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
+```
+
+What an agent host relies on — the process budget (the browser, its storage
+service and one renderer per site; Linux adds its sandbox zygotes), hidden
+pages painting nothing yet answering page actions, and the paint stream's
+`paint_capture` / `paint_resource` ops:
+
+```sh
+python3 apps/browser/chromium/tests/agent_host.py target/chromium/tilo-chromium-host
 ```
 
 ## Native blocking

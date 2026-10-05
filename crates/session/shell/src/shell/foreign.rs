@@ -747,6 +747,9 @@ struct ForeignEntry {
     /// The current frame at full precision when it carries an HDR signal;
     /// `rgba` is then its tone-mapped SDR rendition.
     hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    /// The current frame when it stayed on the GPU; `rgba` is then empty and
+    /// read back only on demand.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
 }
 
 impl ForeignEntry {
@@ -778,6 +781,7 @@ impl ForeignEntry {
             presented: false,
             colorimetry: None,
             hdr: None,
+            gpu: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
@@ -906,7 +910,20 @@ pub struct FrameSnapshot {
     pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
-fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
+/// A subsurface's pixels, tightly packed RGBA.
+struct ChildPixels<'a> {
+    rgba: &'a [u8],
+    width: u32,
+    height: u32,
+}
+
+/// Where a subsurface's pixels are.
+enum ChildSource {
+    Cpu(Vec<u8>),
+    Gpu(Arc<crate::shell::gpu_frames::GpuFrame>),
+}
+
+fn composite_child_rgba(root: &mut FrameSnapshot, child: &ChildPixels<'_>, x: i32, y: i32) {
     if child.rgba.is_empty() || child.width == 0 || child.height == 0 {
         return;
     }
@@ -1027,6 +1044,9 @@ pub enum DmabufRoute {
     Gpu,
     /// The plane fd was CPU-mapped directly — only linear, CPU-visible buffers, but needs no GL context.
     CpuMmap,
+    /// Imported on the presenting GPU and copied into a compositor-owned
+    /// texture; no pixel crossed the CPU.
+    Shared,
 }
 
 /// Which capture route a commit took, for logging + tests.
@@ -1074,6 +1094,8 @@ struct ReadyCapture {
     rgba: Vec<u8>,
     /// The frame at full precision, when it carries an HDR signal.
     hdr: Option<crate::shell::hdr_surface::HdrPlane>,
+    /// The frame, when it stayed on the GPU; `rgba` is then empty.
+    gpu: Option<Arc<crate::shell::gpu_frames::GpuFrame>>,
     result: Result<(u32, u32, CaptureRoute), String>,
 }
 
@@ -1192,12 +1214,17 @@ impl AsyncDmabufCapture {
                             *rgba = previous;
                         }
                         let colorimetry = store().colorimetry(job.surface);
-                        let mut hdr = None;
-                        let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr).map(
-                            |(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)),
-                        );
-                        let accepted =
-                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
+                        let accepted = if let Some(frame) = share_dmabuf(&job.payload, job.surface)
+                        {
+                            store().stage_gpu_capture(job.surface, job.token, frame)
+                        } else {
+                            let mut hdr = None;
+                            let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr)
+                                .map(|(width, height, route)| {
+                                    (width, height, CaptureRoute::Dmabuf(route))
+                                });
+                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr)
+                        };
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
@@ -1411,6 +1438,34 @@ fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
     }
 }
 
+/// Keep an SDR client frame on the GPU: import it on the presenting device
+/// and copy it into a compositor-owned texture. `None` sends it down the
+/// readback route instead (no presenting GPU yet, a 10-bit, half-float or
+/// YUV buffer, or a layout the import cannot describe), reported once per
+/// reason. An 8-bit buffer is shown as it is on either route.
+#[cfg(target_os = "linux")]
+fn share_dmabuf(
+    dmabuf: &Dmabuf,
+    surface: SurfaceId,
+) -> Option<Arc<crate::shell::gpu_frames::GpuFrame>> {
+    static REPORTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    match crate::shell::gpu_frames::import_dmabuf(dmabuf, surface) {
+        Ok(frame) => Some(frame),
+        Err(reason) => {
+            let mut reported = REPORTED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !reported.contains(&reason) && reported.len() < 32 {
+                eprintln!(
+                    "tilo compositor: client frame read back through the CPU, not shared on the GPU: {reason}"
+                );
+                reported.push(reason);
+            }
+            None
+        }
+    }
+}
+
 /// Read one dmabuf outside Wayland dispatch and outside the frame-store lock.
 /// GPU import is required for device-local Vulkan buffers; CPU mmap remains
 /// the fallback for linear system-memory buffers and machines without EGL.
@@ -1577,6 +1632,7 @@ impl ForeignFrameStore {
             match r {
                 Ok((w, h)) => {
                     e.hdr = None;
+                    e.gpu = None;
                     e.width = w;
                     e.height = h;
                     e.seq = e.seq.wrapping_add(1);
@@ -1710,7 +1766,40 @@ impl ForeignFrameStore {
             ReadyCapture {
                 rgba: captured,
                 hdr,
+                gpu: None,
                 result,
+            },
+        );
+        drop(guard);
+        true
+    }
+
+    /// Stage a frame that stayed on the GPU for the commit `token` belongs to.
+    #[cfg(target_os = "linux")]
+    fn stage_gpu_capture(
+        &self,
+        id: SurfaceId,
+        token: u64,
+        frame: Arc<crate::shell::gpu_frames::GpuFrame>,
+    ) -> bool {
+        let mut guard = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(entry) = guard.get_mut(&id) else {
+            return false;
+        };
+        if !entry.capture_tokens.contains(&token) {
+            return false;
+        }
+        let size = (frame.width(), frame.height());
+        entry.ready_captures.insert(
+            token,
+            ReadyCapture {
+                rgba: Vec::new(),
+                hdr: None,
+                gpu: Some(frame),
+                result: Ok((size.0, size.1, CaptureRoute::Dmabuf(DmabufRoute::Shared))),
             },
         );
         drop(guard);
@@ -1738,6 +1827,7 @@ impl ForeignFrameStore {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
                 entry.hdr = ready.hdr.map(Arc::new);
+                entry.gpu = ready.gpu;
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1754,6 +1844,7 @@ impl ForeignFrameStore {
             Err(reason) => {
                 entry.rgba.clear();
                 entry.hdr = None;
+                entry.gpu = None;
                 entry.width = 0;
                 entry.height = 0;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1803,6 +1894,7 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| {
             e.mapped = true;
             e.hdr = hdr;
+            e.gpu = None;
             e.rgba.clear();
             e.rgba.extend_from_slice(rgba);
             e.width = width;
@@ -1821,6 +1913,7 @@ impl ForeignFrameStore {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
+            e.gpu = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1838,6 +1931,7 @@ impl ForeignFrameStore {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
             e.hdr = None;
+            e.gpu = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1907,6 +2001,7 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.remove(&id);
         drop(guard);
+        crate::shell::gpu_frames::forget_surface(id);
         let mut children = self
             .children
             .lock()
@@ -1968,19 +2063,30 @@ impl ForeignFrameStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let e = guard.get(&id)?;
         let content = e.content();
-        let snapshot = if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
-            None
+        if e.width == 0 || e.height == 0 {
+            return None;
+        }
+        let gpu = if e.rgba.is_empty() {
+            Some(e.gpu.clone()?)
         } else {
-            Some(FrameSnapshot {
-                rgba: e.rgba.clone(),
-                width: e.width,
-                height: e.height,
-                seq: e.seq,
-                hdr: e.hdr.clone(),
-            })
+            None
+        };
+        let mut snapshot = FrameSnapshot {
+            rgba: if gpu.is_some() {
+                Vec::new()
+            } else {
+                e.rgba.clone()
+            },
+            width: e.width,
+            height: e.height,
+            seq: e.seq,
+            hdr: e.hdr.clone(),
         };
         drop(guard);
-        let mut snapshot = snapshot?;
+        // A frame that stayed on the GPU is read back here, on demand.
+        if let Some(gpu) = gpu {
+            snapshot.rgba.clone_from(gpu.rgba()?.as_ref());
+        }
         let children = self
             .children
             .lock()
@@ -1992,19 +2098,50 @@ impl ForeignFrameStore {
             .entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for child in children {
-            let Some(frame) = guard.get(&child.surface) else {
+        let child_frames: Vec<_> = children
+            .iter()
+            .filter_map(|child| {
+                let frame = guard.get(&child.surface)?;
+                let pixels = if frame.rgba.is_empty() {
+                    frame.gpu.clone().map(ChildSource::Gpu)
+                } else {
+                    Some(ChildSource::Cpu(frame.rgba.clone()))
+                };
+                Some((
+                    child.x,
+                    child.y,
+                    frame.width,
+                    frame.height,
+                    frame.seq,
+                    pixels,
+                ))
+            })
+            .collect();
+        drop(guard);
+        for (x, y, width, height, seq, pixels) in child_frames {
+            let pixels = match pixels {
+                Some(ChildSource::Cpu(rgba)) => Some(rgba),
+                Some(ChildSource::Gpu(gpu)) => gpu.rgba().map(|rgba| rgba.as_ref().clone()),
+                None => None,
+            };
+            snapshot.seq = snapshot.seq.wrapping_add(seq);
+            let Some(rgba) = pixels.filter(|rgba| !rgba.is_empty()) else {
                 continue;
             };
-            composite_child_rgba(&mut snapshot, frame, child.x, child.y);
-            snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
+            composite_child_rgba(
+                &mut snapshot,
+                &ChildPixels {
+                    rgba: &rgba,
+                    width,
+                    height,
+                },
+                x,
+                y,
+            );
             // Subsurfaces live only in the SDR rendition; a window with any
             // is shown through it.
-            if !frame.rgba.is_empty() {
-                snapshot.hdr = None;
-            }
+            snapshot.hdr = None;
         }
-        drop(guard);
         // Subsurfaces are positioned against the whole buffer, so the window
         // is cut out only after they are composited onto it.
         if content != (0, 0, snapshot.width, snapshot.height) {
@@ -2017,6 +2154,59 @@ impl ForeignFrameStore {
             snapshot.height = content.3;
         }
         Some(snapshot)
+    }
+
+    /// The image a tile draws for `id`: straight from the GPU texture when the
+    /// frame stayed there and nothing is composited onto it on the CPU,
+    /// otherwise from [`Self::snapshot`]. Also the frame's HDR plane, if any.
+    pub fn frame_image(
+        &self,
+        id: SurfaceId,
+    ) -> Option<(ImageData, Option<Arc<crate::shell::hdr_surface::HdrPlane>>)> {
+        let has_children = self
+            .children
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .is_some_and(|children| !children.is_empty());
+        if !has_children {
+            let shared = {
+                let guard = self
+                    .entries
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.get(&id).and_then(|e| {
+                    let gpu = e.gpu.clone().filter(|_| e.rgba.is_empty())?;
+                    Some((gpu, e.content()))
+                })
+            };
+            if let Some((gpu, content)) = shared {
+                if content.2 == 0 || content.3 == 0 {
+                    return None;
+                }
+                return Some((gpu.image(content), None));
+            }
+        }
+        let snapshot = self.snapshot(id)?;
+        let hdr = snapshot.hdr.clone();
+        Some((frame_image(snapshot), hdr))
+    }
+
+    /// `rgba`, a `width`×`height` buffer `id` committed, cut to the window
+    /// its client declared (no shadow or resize border), as tiles show it.
+    /// Unchanged without a declared geometry.
+    pub fn crop_to_window(&self, id: SurfaceId, rgba: Vec<u8>, width: u32, height: u32) -> Vec<u8> {
+        let crop = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&id)
+            .and_then(|e| e.geometry)
+            .and_then(|geometry| geometry.crop(width, height));
+        match crop {
+            Some(content) => crop_rgba(&rgba, width, content),
+            None => rgba,
+        }
     }
 
     /// Record the client's declared window geometry (`None` clears it), read
@@ -2572,13 +2762,13 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        let snapshot = store().snapshot(self.surface_id);
-        self.cached_hdr = snapshot.as_ref().and_then(|frame| frame.hdr.clone());
-        self.cached = snapshot.map(frame_image);
+        let frame = store().frame_image(self.surface_id);
+        self.cached_hdr = frame.as_ref().and_then(|(_, hdr)| hdr.clone());
+        self.cached = frame.map(|(image, _)| image);
         self.sheet_images = store()
             .sheets_over(self.surface_id)
             .into_iter()
-            .filter_map(|link| Some((link, frame_image(store().snapshot(link.surface)?))))
+            .filter_map(|link| Some((link, store().frame_image(link.surface)?.0)))
             .collect();
         true
     }
@@ -2743,17 +2933,11 @@ pub fn paint_output_presentation_surface(
     // transparent margins while loading, but projector pixels must never
     // reveal the presenter's desktop behind the slide.
     scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &rect);
-    let Some(frame) = store().snapshot(surface_id) else {
+    let Some((image, _)) = store().frame_image(surface_id) else {
         return;
     };
-    let image = ImageData {
-        data: Blob::new(std::sync::Arc::new(frame.rgba)),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: frame.width,
-        height: frame.height,
-    };
-    if image.width == 0 || image.height == 0 {
+    let (width, height) = (image.width, image.height);
+    if width == 0 || height == 0 {
         return;
     }
     let transform = translated_and_scaled(
@@ -2769,7 +2953,7 @@ pub fn paint_output_presentation_surface(
         transform,
         &brush,
         None,
-        &Rect::new(0.0, 0.0, f64::from(frame.width), f64::from(frame.height)),
+        &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
     );
 }
 
@@ -3244,6 +3428,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        let scale = state.surface_scale(id);
         if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
             continue;
         }
@@ -3254,13 +3439,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             && !is_visible_tab(&state.workspace_tree.read(), id)
         {
             if let Some((w, h)) = store().take_remote_configure(id, extent) {
-                configure_to(&toplevel, w, h, tiled);
+                configure_to(&toplevel, id, (w, h), scale, tiled);
                 sent = sent.saturating_add(1);
             }
             continue;
         }
         if let Some((w, h)) = store().take_pending_configure(id) {
-            configure_to(&toplevel, w, h, tiled);
+            configure_to(&toplevel, id, (w, h), scale, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
                 target: "shell::compositor::foreign",
@@ -3278,7 +3463,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             continue;
         }
         let (w, h) = fallback;
-        configure_to(&toplevel, w, h, tiled);
+        configure_to(&toplevel, id, (w, h), scale, tiled);
         sent = sent.saturating_add(1);
         tracing::warn!(
             target: "shell::compositor::foreign",
@@ -3297,8 +3482,30 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
 /// writes the pending state into the configure, so the size must be
 /// staged before the send, letting any other pending change (decoration mode) ride the same event.
 #[cfg(target_os = "linux")]
-fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
+fn configure_to(
+    toplevel: &ToplevelSurface,
+    id: SurfaceId,
+    size: (i32, i32),
+    scale: f64,
+    tiled: bool,
+) {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as Xdg;
+    let (w, h) = within_client_texture_limit(size, scale);
+    if (w, h) != size {
+        // Whatever laid the tab out this large is a defect: say so, but
+        // still send a size the client can render, since past the limit it
+        // loses its drawing surface and closes the window.
+        tracing::error!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            requested_width = size.0,
+            requested_height = size.1,
+            width = w,
+            height = h,
+            scale,
+            "a tab was laid out larger than a client can render; configuring it to the largest size it can draw",
+        );
+    }
     toplevel.with_pending_state(|pending| {
         pending.size = Some((w, h).into());
         // A tile has a neighbour or the screen edge on every side. Saying so
@@ -3318,6 +3525,29 @@ fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
         }
     });
     toplevel.send_configure();
+}
+
+/// Widest and tallest buffer, in physical pixels, a client is asked to
+/// render: the 2D texture limit every GPU guarantees (WebGPU's default
+/// `max_texture_dimension_2d`). A toolkit sized past it cannot create its
+/// drawing surface at all.
+pub const CLIENT_TEXTURE_LIMIT_PX: i32 = 8192;
+
+/// `size` (logical pixels) kept within [`CLIENT_TEXTURE_LIMIT_PX`] once the
+/// client renders it at `scale`.
+#[must_use]
+pub fn within_client_texture_limit(size: (i32, i32), scale: f64) -> (i32, i32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the limit over a positive scale is at most the limit itself, well inside i32"
+    )]
+    let limit = ((f64::from(CLIENT_TEXTURE_LIMIT_PX) / scale).floor() as i32).max(1);
+    (size.0.min(limit), size.1.min(limit))
 }
 
 /// The size to configure an opening toplevel to when its tab was never
@@ -4252,7 +4482,15 @@ mod tests {
             }
         }
 
+        // A shared window's stream is cut the same way from the buffer it commits.
+        assert_eq!(
+            store().crop_to_window(id, rgba.clone(), w, h),
+            frame.rgba,
+            "the stream shows what the tile shows"
+        );
+
         store().note_window_geometry(id, None);
+        assert_eq!(store().crop_to_window(id, rgba.clone(), w, h), rgba);
         let whole = store().snapshot(id).expect("frame");
         assert_eq!(
             (whole.width, whole.height),

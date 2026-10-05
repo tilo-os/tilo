@@ -238,8 +238,29 @@ pub struct Package {
     pub kind: Kind,
     /// `<runtime-name>/<version>` of the Tilo runtime this binds to;
     /// `None` for `kind = "runtime"`. Version must parse as semver.
+    ///
+    /// A packed native app names the exact runtime build it was linked
+    /// against, `tilo-runtime/<release>+native.<abi digest>`: its Rust
+    /// dylibs have no stable ABI, so it loads on that build and no other.
+    /// Packaging stamps the build over the authored release.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// For a native `kind = "runtime"` package: the runtime build its
+    /// payload is, `<runtime-name>/<release>+native.<abi digest>`. The
+    /// payload is that signed runtime bundle, and installing the package
+    /// installs the bundle for the apps that name it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provides: Option<String>,
+    /// Further runtime bundles, `<runtime-name>/<version>` each, that the
+    /// launcher mounts read-only at `/run/tilo-runtime/<version>` when they
+    /// are installed and verify. The app starts without a missing one and
+    /// offers to install it: the browser's web engine is one.
+    #[serde(
+        default,
+        rename = "optional-runtimes",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub optional_runtimes: Vec<String>,
     /// Targets the app is built and published for; absent means
     /// [`DEFAULT_PLATFORMS`]. Read it through [`Package::platforms`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +289,18 @@ pub struct Package {
 }
 
 impl Package {
+    /// The runtime build a native package binds: the one an app links, or
+    /// the one a runtime package provides. This is what a registry version's
+    /// `target.runtime` records.
+    #[must_use]
+    pub fn native_runtime_binding(&self) -> Option<&str> {
+        if self.kind == Kind::Runtime {
+            self.provides.as_deref()
+        } else {
+            self.runtime.as_deref()
+        }
+    }
+
     /// The targets the app is built and published for.
     #[must_use]
     pub fn platforms(&self) -> &[Platform] {
@@ -323,6 +356,12 @@ impl IsaRequirements {
             Arch::X86_64 => self.x86_64.map(IsaLevel::X86_64),
             Arch::AArch64 => self.aarch64.map(IsaLevel::AArch64),
         }
+    }
+
+    /// Whether no architecture is declared.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.x86_64.is_none() && self.aarch64.is_none()
     }
 }
 
@@ -1114,6 +1153,33 @@ impl Manifest {
             .collect();
         m.providers.normalize();
         Ok(m)
+    }
+
+    /// The system interfaces this package cannot work without: each
+    /// `required@N` service, sorted by name. What a registry version records
+    /// as its target's `interfaces`, and what a device checks against the
+    /// versions its OS serves before installing or running the package.
+    #[must_use]
+    pub fn required_interfaces(&self) -> Vec<registry_types::InterfaceRequirement> {
+        self.sandbox
+            .services
+            .iter()
+            .filter(|(_, req)| req.requirement == Requirement::Required)
+            .map(|(name, req)| registry_types::InterfaceRequirement {
+                name: name.clone(),
+                version: req.version,
+            })
+            .collect()
+    }
+
+    /// [`Manifest::required_interfaces`] in the registry's wire form,
+    /// `<name>@<version>`.
+    #[must_use]
+    pub fn required_interface_wire(&self) -> Vec<String> {
+        self.required_interfaces()
+            .iter()
+            .map(ToString::to_string)
+            .collect()
     }
 
     /// Re-encode to TOML; used for round-trip tests and `tilo-app-package inspect`.

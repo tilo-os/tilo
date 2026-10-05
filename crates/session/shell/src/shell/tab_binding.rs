@@ -37,6 +37,9 @@ pub enum Placement {
     /// this instead of [`Self::TabIn`] so landing left or right of a particular
     /// tab remains stable even if focus changes while the app is starting.
     TabAt(GroupId, usize),
+    /// [`Self::TabAt`] without taking focus: the group keeps showing the tab
+    /// it showed. What a link opened in a background tab gets.
+    BackgroundTabAt(GroupId, usize),
     /// Its own window group, right of the group named here. Unlike [`Placement::NewGroup`] ("beside
     /// whatever has focus"), names a specific group, so the answer survives focus moving between launch and arrival. Falls back to [`Placement::NewGroup`] when gone, as [`Placement::TabIn`] does.
     RightOf(GroupId),
@@ -250,21 +253,23 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         return false;
     };
     let destination = match placement {
-        Placement::TabAt(group, index) => tree.desktop.workspaces.iter().find_map(|workspace| {
-            workspace.strips.iter().find_map(|strip| {
-                strip
-                    .window_groups
-                    .iter()
-                    .any(|candidate| candidate.id == group)
-                    .then_some((
-                        strip.id,
-                        ui::widget::TabDropTarget::ExistingGroup {
-                            group_id: group,
-                            tab_index: index,
-                        },
-                    ))
+        Placement::TabAt(group, index) | Placement::BackgroundTabAt(group, index) => {
+            tree.desktop.workspaces.iter().find_map(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|candidate| candidate.id == group)
+                        .then_some((
+                            strip.id,
+                            ui::widget::TabDropTarget::ExistingGroup {
+                                group_id: group,
+                                tab_index: index,
+                            },
+                        ))
+                })
             })
-        }),
+        }
         Placement::TabIn(group) => tree.desktop.workspaces.iter().find_map(|workspace| {
             workspace.strips.iter().find_map(|strip| {
                 strip.window_groups.iter().find_map(|candidate| {
@@ -482,6 +487,21 @@ pub fn focused_workspace_activity_tab(tree: &WorkspaceTree) -> Option<(StripId, 
     Some((strip_id, group_id, tab.id))
 }
 
+/// Where a tab placed in `group` goes: the exact index a placement names,
+/// else right of the tab the user was on, not at the end of the bar.
+fn tab_insert_index(group: &WindowGroup, placement: Placement) -> usize {
+    match placement {
+        Placement::TabAt(_, index) | Placement::BackgroundTabAt(_, index) => {
+            index.min(group.tabs.len())
+        }
+        _ => group
+            .tabs
+            .iter()
+            .position(|t| t.id == group.active_tab)
+            .map_or(group.tabs.len(), |i| i.saturating_add(1)),
+    }
+}
+
 /// Splice an already-built [`Tab`] into the active workspace at `placement`, and focus it.
 /// Placement and tree decide where a window lands, not what's inside it, so both foreign and
 /// hosted-app opens route through here. Returns `new_tab`'s id even when it can't be spliced (no active workspace).
@@ -526,13 +546,14 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // focused-strip placement rule rather than landing in a random strip.
     let explicit_strip = match placement {
         Placement::GroupAt(strip, _) => ws.strips.iter().position(|s| s.id == strip),
-        Placement::TabAt(group, _) | Placement::TabIn(group) | Placement::RightOf(group) => {
-            ws.strips.iter().position(|s| {
-                s.window_groups
-                    .iter()
-                    .any(|candidate| candidate.id == group)
-            })
-        }
+        Placement::TabAt(group, _)
+        | Placement::BackgroundTabAt(group, _)
+        | Placement::TabIn(group)
+        | Placement::RightOf(group) => ws.strips.iter().position(|s| {
+            s.window_groups
+                .iter()
+                .any(|candidate| candidate.id == group)
+        }),
         Placement::NewGroup | Placement::IntoTab(_) => None,
     };
     // Target strip: explicit destination, then focused one, else the first.
@@ -550,7 +571,7 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
     // A tab target whose group is gone degrades to a new group rather than
     // silently landing somewhere arbitrary.
     let tab_target = match placement {
-        Placement::TabIn(g) | Placement::TabAt(g, _) => {
+        Placement::TabIn(g) | Placement::TabAt(g, _) | Placement::BackgroundTabAt(g, _) => {
             strip.window_groups.iter().position(|w| w.id == g)
         }
         // `IntoTab` only reaches here when its tab has gone; it degrades to a new group, as the variant's own documentation says.
@@ -565,16 +586,13 @@ pub fn place_tab(tree: &mut WorkspaceTree, new_tab: Tab, placement: Placement) -
         let Some(group) = strip.window_groups.get_mut(idx) else {
             return tab_id;
         };
-        let insert_at = match placement {
-            Placement::TabAt(_, index) => index.min(group.tabs.len()),
-            // Right of the tab the user was on, not at the end of the bar.
-            _ => group
-                .tabs
-                .iter()
-                .position(|t| t.id == group.active_tab)
-                .map_or(group.tabs.len(), |i| i.saturating_add(1)),
-        };
-        group.tabs.insert(insert_at, new_tab);
+        group
+            .tabs
+            .insert(tab_insert_index(group, placement), new_tab);
+        if matches!(placement, Placement::BackgroundTabAt(..)) {
+            // Behind the tab the person is reading: nothing moves.
+            return tab_id;
+        }
         group.active_tab = tab_id;
         let group_id = group.id;
         tree.desktop.active_strip.insert(ws_id, strip_id);

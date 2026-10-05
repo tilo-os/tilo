@@ -258,16 +258,16 @@ fn malformed_metadata_never_publishes_and_errors_name_the_page() {
             match case {
                 "duplicate-page" => {
                     let mut page = f.workspace.data.pages[0].clone();
-                    page.order = 2;
+                    page.order = "c".into();
                     f.workspace.data.pages.push(page);
                 }
                 "cycle" => {
                     f.workspace.data.pages[0].parent = Some(f.child);
-                    f.workspace.data.pages[2].order = 0;
+                    f.workspace.data.pages[2].order = "a".into();
                 }
                 "self-cycle" => f.workspace.data.pages[1].parent = Some(f.child),
                 "orphan" => f.workspace.data.pages[1].parent = Some(unknown),
-                "order" => f.workspace.data.pages[2].order = 3,
+                "order" => f.workspace.data.pages[2].order = "B0".into(),
                 "selected" => f.workspace.data.selected = Some(unknown),
                 "duplicate-tag" => f.workspace.data.tags.push(f.workspace.data.tags[0].clone()),
                 "empty-tag" => f.workspace.data.tags[0].name = "  ".into(),

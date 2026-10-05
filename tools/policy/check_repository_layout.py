@@ -61,7 +61,7 @@ RETIRED_SOURCE_ROOTS = {
     "tools/run-imager-ephemeral-runner.sh": "tools/ci/runners/imager-ephemeral-linux.sh",
     "tools/test-windows-": "tools/windows/test-",
     "tools/resolve_ci_builder.py": "tools/ci/resolve_builder.py",
-    "tools/app_resource_action_baseline.toml": "tools/policy/app_resource_action_baseline.toml",
+    "tools/app_resource_action_baseline.toml": "tools/policy/app_resource_action_baseline/",
     "tools/report_action_directory_provider_offenders.py": "tools/policy/",
     "tools/run-repository-policy.sh": "tools/policy/run.sh",
     "tools/rustc-thin-app-wrapper.sh": "tools/ci/rustc-thin-app-wrapper.sh",

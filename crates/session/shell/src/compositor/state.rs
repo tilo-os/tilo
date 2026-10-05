@@ -82,11 +82,11 @@ use smithay::wayland::xdg_activation::{
 use smithay::{
     delegate_compositor, delegate_content_type, delegate_cursor_shape, delegate_data_control,
     delegate_data_device, delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale,
-    delegate_idle_inhibit, delegate_input_method_manager, delegate_keyboard_shortcuts_inhibit,
+    delegate_idle_inhibit, delegate_keyboard_shortcuts_inhibit,
     delegate_output, delegate_pointer_constraints, delegate_pointer_gestures,
     delegate_primary_selection, delegate_relative_pointer,
-    delegate_seat, delegate_session_lock, delegate_shm,
-    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
+    delegate_session_lock, delegate_shm,
+    delegate_viewporter, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
@@ -527,6 +527,10 @@ pub struct State {
     /// retaining this short bounded history lets us reject fabricated and
     /// stale serials instead of treating the opaque integer as authority.
     pub activation_serials: VecDeque<(Serial, u64, std::time::Instant)>,
+    /// Wayland clients (by connection index) the person has sent input to.
+    /// A window of one of these may have been closed from inside the app;
+    /// a window of any other that goes away unasked was lost.
+    pub(crate) clients_given_input: std::collections::HashSet<u32>,
     /// Wall-clock anchor for input timestamps; pointer events ship `time: u32` in milliseconds since this instant.
     pub start_time: std::time::Instant,
     /// Per-peer virtual-seat attribution. Click focus scopes which shared
@@ -548,6 +552,10 @@ pub struct State {
     /// stall waiting on the next damage pass. Held as `Arc` since
     /// [`crate::collab::flatpak_share::SharedFlatpakSession`]'s `encode_next_frame` takes `&self`.
     pub active_sessions: HashMap<SurfaceId, Arc<SharedFlatpakSession>>,
+    /// Apps that can stream their window's page as a display list, by app
+    /// id (`shell-ui`'s `PaintCapable`). Their windows reach web members as
+    /// paint streams instead of video.
+    pub paint_apps: HashMap<String, PaintApp>,
     /// Non-blocking bridge from surface commits into the collaboration
     /// transport, given the topic of the room the window's tab is in when
     /// known. Installed by the native compositor when peer sync is on;
@@ -643,6 +651,11 @@ pub struct State {
     /// reload that only moves the active source switches groups instead of
     /// recompiling and re-sending the keymap to every client.
     applied_keyboard: crate::compositor::backend::drm::input_config::KeyboardSettings,
+    /// Whether clients' own key repeat is off because a remote participant
+    /// types: a release crossing the network late must not let a client
+    /// repeat the key meanwhile. The sender repeats a held key instead, and
+    /// local keyboard input turns client repeat back on.
+    remote_typing: bool,
     /// Combined output size in physical pixels, mirrored from the backend
     /// (`(0, 0)` until the first output is known). Used as the size in a
     /// fullscreen `xdg_toplevel` configure; `(0, 0)` leaves the size unspecified so the client keeps its own.
@@ -713,6 +726,20 @@ pub struct State {
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
+    /// Text commits the on-screen keyboard has made into focused fields this
+    /// session: what a person typed on it, counted but never kept.
+    pub osk_commits: u64,
+    /// Whether one of the shell's own text fields holds the seat's
+    /// text-input focus (see `compositor::shell_text_input`).
+    pub(crate) shell_field_active: bool,
+    /// Editing keys a virtual keyboard sent while a shell field was served,
+    /// as chrome events, until the loop delivers them.
+    pub(crate) shell_field_keys: Vec<winit::event::WindowEvent>,
+    /// Each virtual keyboard's current keymap, to read its keys as keysyms.
+    pub(crate) virtual_keymaps: std::collections::HashMap<
+        smithay::reexports::wayland_server::backend::ObjectId,
+        smithay::input::keyboard::xkb::Keymap,
+    >,
     /// Toplevels the compositor has asked to close, each with the moment its
     /// frame callbacks stop going unthrottled. See
     /// [`Self::ask_toplevel_to_close`].
@@ -1014,6 +1041,22 @@ impl State {
     /// Whether the focused client has committed an enabled text-input-v3
     /// session. This is the compositor's source of truth for OSK visibility;
     /// Wayland xdg-toplevels have no client-side visibility request.
+    /// Re-send `leave` and `enter` to the focused client's text inputs.
+    ///
+    /// Smithay activates the input method only when a field enables its text
+    /// input. The on-screen keyboard binds its input method shortly before
+    /// its surface appears; a field that was already enabled by then (the
+    /// tap that focused it is often the touch that started the keyboard)
+    /// would otherwise never reach it. A client re-enables an IME-allowed
+    /// field on `enter`, which activates the keyboard that is now there.
+    pub fn reannounce_text_input_focus(&self) {
+        let text_input = self.seat.text_input();
+        if text_input.focus().is_some() {
+            text_input.leave();
+            text_input.enter();
+        }
+    }
+
     pub fn text_input_active(&self) -> bool {
         let mut active = false;
         self.seat
@@ -1140,11 +1183,13 @@ impl State {
             seat,
             serial_counter: 0,
             activation_serials: VecDeque::new(),
+            clients_given_input: std::collections::HashSet::new(),
             start_time: std::time::Instant::now(),
             remote_seats: RemoteSeats::new(),
             personal_fabric_input: PersonalFabricInputHolders::default(),
             surface_handles: HashMap::new(),
             active_sessions: HashMap::new(),
+            paint_apps: HashMap::new(),
             legacy_stream_publisher: None,
             legacy_stream_routes: HashMap::new(),
             personal_stream_viewers: std::collections::HashSet::new(),
@@ -1174,6 +1219,7 @@ impl State {
             output_presentation_sequences: HashMap::new(),
             fullscreen_target: None,
             applied_keyboard,
+            remote_typing: false,
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
@@ -1199,6 +1245,10 @@ impl State {
             text_fields: crate::compositor::text_commit::TextFields::default(),
             text_commit: crate::compositor::text_commit::TextCommit::default(),
             osk_surface: None,
+            osk_commits: 0,
+            shell_field_active: false,
+            shell_field_keys: Vec::new(),
+            virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -1265,6 +1315,7 @@ impl State {
                         Ok(feedback) => {
                             // Publish the decision for the import side: buffers clients hand us were allocated on this GPU, so it must read them back.
                             crate::compositor::render_node::set_advertised(node.path.clone());
+                            crate::compositor::gpu_health::record_dmabuf(Ok(&node.path));
                             tracing::info!(
                                 target: "shell::compositor::dmabuf",
                                 device = %node.path.display(),
@@ -1279,6 +1330,7 @@ impl State {
                             ))
                         }
                         Err(e) => {
+                            crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
                             // The format table lives in a sealed memfd; failing to create it means no correct feedback — the broken state this block avoids.
                             tracing::error!(
                                 target: "shell::compositor::dmabuf",
@@ -1291,6 +1343,9 @@ impl State {
                     }
                 }
                 Err(e) => {
+                    if !matches!(e, ProbeError::NoRenderNodes | ProbeError::NoRenderer(_)) {
+                        crate::compositor::gpu_health::record_dmabuf(Err(&e.to_string()));
+                    }
                     tracing::warn!(
                         target: "shell::compositor::dmabuf",
                         reason = %e,
@@ -1401,20 +1456,50 @@ impl State {
                 let active = settings.active_index;
                 self.applied_keyboard = settings;
                 self.activate_keyboard_source(active);
-                let (delay, rate) =
-                    crate::compositor::backend::drm::input_config::InputSettings::load()
-                        .key_repeat_params();
-                // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
-                keyboard.change_repeat_info(
-                    i32::try_from(rate).unwrap_or(i32::MAX),
-                    i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
-                );
+                let (rate, delay) = Self::local_key_repeat();
+                keyboard.change_repeat_info(if self.remote_typing { 0 } else { rate }, delay);
             }
             Err(error) => tracing::warn!(
                 sources = ?settings.source_ids,
                 %error,
                 "Wayland seat: requested XKB keymap did not compile; preserving the working keymap"
             ),
+        }
+    }
+
+    /// The configured client key repeat as `wl_keyboard.repeat_info` takes
+    /// it: rate in Hz, delay in milliseconds.
+    fn local_key_repeat() -> (i32, i32) {
+        let (delay, rate) = crate::compositor::backend::drm::input_config::InputSettings::load()
+            .key_repeat_params();
+        // Neither side of a repeat rate/delay can realistically reach i32::MAX; clamp rather than let a pathological config value wrap.
+        (
+            i32::try_from(rate).unwrap_or(i32::MAX),
+            i32::try_from(delay.as_millis()).unwrap_or(i32::MAX),
+        )
+    }
+
+    /// Clients stop repeating keys on their own: a remote participant's
+    /// key is held exactly as long as the sender says, and repeats only
+    /// as the sender repeats it.
+    fn begin_remote_typing(&mut self) {
+        if std::mem::replace(&mut self.remote_typing, true) {
+            return;
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            keyboard.change_repeat_info(0, Self::local_key_repeat().1);
+        }
+    }
+
+    /// The person at this machine types again: clients repeat held keys
+    /// with the configured rate and delay.
+    pub fn end_remote_typing(&mut self) {
+        if !std::mem::take(&mut self.remote_typing) {
+            return;
+        }
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            let (rate, delay) = Self::local_key_repeat();
+            keyboard.change_repeat_info(rate, delay);
         }
     }
 
@@ -1961,15 +2046,35 @@ impl State {
     /// `encode_next_frame` on every commit; replaces any prior session and
     /// announces the new stream before its first frame.
     pub fn register_share_session(&mut self, session: Arc<SharedFlatpakSession>) {
+        let replaced = self.active_sessions.remove(&session.surface_id);
+        self.install_share_session(session, replaced);
+    }
+
+    /// Put `session` in place of the window's `replaced` one. The window
+    /// stays shared, so its new start alone announces the change (receivers
+    /// rebuild on it): an end first would have them drop the window, and
+    /// the input they send it, until the start arrives. Only viewers the
+    /// new session no longer has lose their focus on it.
+    fn install_share_session(
+        &mut self,
+        session: Arc<SharedFlatpakSession>,
+        replaced: Option<Arc<SharedFlatpakSession>>,
+    ) {
         let surface = session.surface_id;
-        if self.active_sessions.contains_key(&surface) {
-            self.unregister_share_session(surface);
-        }
         if self.legacy_stream_publisher.is_some() {
             let _ = self.publish_legacy(surface, session.stream_start_msg());
         }
         self.sync_share_authority(&session);
+        let viewers = session.viewer_ids();
         self.active_sessions.insert(surface, session);
+        let left = replaced
+            .map(|old| old.viewer_ids())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|peer| !viewers.contains(peer));
+        for peer in left {
+            self.release_remote_focus_for_surface(peer, surface);
+        }
     }
 
     /// Mirror the stream session's actual viewer permissions into the
@@ -2194,7 +2299,9 @@ impl State {
                 tab,
                 viewers: recipients,
                 decode_limits,
+                paint,
             } = share;
+            let paint = *paint && self.paint_apps.contains_key(app_id);
             let recipients = recipients
                 .iter()
                 .copied()
@@ -2225,6 +2332,7 @@ impl State {
                 session.app_id == *app_id
                     && session.tab() == *tab
                     && session.dimensions() == (width, height)
+                    && session.is_paint() == paint
             });
             if reusable {
                 if let Some(session) = self.active_sessions.get(&surface).cloned() {
@@ -2233,10 +2341,17 @@ impl State {
                 continue;
             }
 
-            self.unregister_share_session(surface);
-            let Ok(session) = SharedFlatpakSession::start_with_metrics(
-                host_peer, app_id, surface, width, height, config, &receivers, None,
-            ) else {
+            // The window is still shared: its stream is replaced, not ended,
+            // unless the new one cannot start.
+            let replaced = self.active_sessions.remove(&surface);
+            let started = if paint {
+                SharedFlatpakSession::start_paint(host_peer, app_id, surface, width, height, config)
+            } else {
+                SharedFlatpakSession::start_with_metrics(
+                    host_peer, app_id, surface, width, height, config, &receivers, None,
+                )
+            };
+            let Ok(session) = started else {
                 tracing::warn!(
                     surface,
                     app_id,
@@ -2244,6 +2359,10 @@ impl State {
                     height,
                     "legacy share encoder failed to start"
                 );
+                if let Some(replaced) = replaced {
+                    self.active_sessions.insert(surface, replaced);
+                    self.unregister_share_session(surface);
+                }
                 continue;
             };
             let session = Arc::new(session.with_tab(*tab));
@@ -2259,8 +2378,128 @@ impl State {
                     );
                 }
             }
-            self.register_share_session(Arc::clone(&session));
-            self.seed_share_frame(&session, surface);
+            self.install_share_session(Arc::clone(&session), replaced);
+            if paint {
+                self.seed_paint_share(&session, surface);
+            } else {
+                self.seed_share_frame(&session, surface);
+            }
+        }
+    }
+
+    /// Start a new paint share from the app's current group (its latest
+    /// whole frame and what followed), and ask the app for a fresh one.
+    fn seed_paint_share(&mut self, session: &SharedFlatpakSession, surface: SurfaceId) {
+        let Some(app) = self.paint_apps.get_mut(&session.app_id) else {
+            return;
+        };
+        app.keyframe_wanted = true;
+        let group = app.group.clone();
+        if self.legacy_stream_publisher.is_some() {
+            for payload in group {
+                let _ = self.publish_legacy(surface, session.paint_message(payload));
+            }
+        }
+    }
+
+    /// An app announced it can stream its page (`shell-ui` `PaintCapable`).
+    pub fn note_paint_app(&mut self, app_id: &str, connection: u64) {
+        self.paint_apps
+            .entry(app_id.to_owned())
+            .or_insert_with(|| PaintApp::new(connection))
+            .connection = connection;
+    }
+
+    /// The app's `shell-ui` connection closed: its windows go back to video.
+    pub fn drop_paint_connection(&mut self, connection: u64) {
+        self.paint_apps
+            .retain(|_, app| app.connection != connection);
+    }
+
+    /// One frame of an app's page stream: kept for viewers that start later
+    /// and sent to every paint share of the app's windows.
+    pub fn receive_paint_frame(&mut self, app_id: &str, frame: PaintFrame) {
+        let PaintFrame {
+            payload,
+            page,
+            scale,
+        } = frame;
+        let Some(app) = self.paint_apps.get_mut(app_id) else {
+            return;
+        };
+        app.page = page;
+        app.scale = scale;
+        if ui::webview::paint::stream::wire::Payload::is_key(&payload) {
+            app.group.clear();
+            app.group_bytes = 0;
+        }
+        app.group_bytes = app.group_bytes.saturating_add(payload.len());
+        let keep = app.group_bytes <= MAX_PAINT_GROUP_BYTES;
+        if !keep {
+            // Too long to replay: start the next viewer from a new frame.
+            app.group.clear();
+            app.group_bytes = 0;
+            app.keyframe_wanted = true;
+        }
+        if self.legacy_stream_publisher.is_some() {
+            let sessions = self
+                .active_sessions
+                .values()
+                .filter(|session| session.is_paint() && session.app_id == app_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            for session in sessions {
+                let _ =
+                    self.publish_legacy(session.surface_id, session.paint_message(payload.clone()));
+            }
+        }
+        if keep && let Some(app) = self.paint_apps.get_mut(app_id) {
+            app.group.push(payload);
+        }
+    }
+
+    /// What to tell each paint app: `(connection, true)` to start streaming
+    /// from a whole frame, `(connection, false)` to stop. Watching follows
+    /// the paint shares of the app's windows.
+    pub fn paint_watch_changes(&mut self) -> Vec<(u64, bool)> {
+        let watched = self
+            .active_sessions
+            .values()
+            .filter(|session| session.is_paint())
+            .map(|session| session.app_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        let mut changes = Vec::new();
+        for (app_id, app) in &mut self.paint_apps {
+            let now = watched.contains(app_id);
+            if now && (app.keyframe_wanted || !app.watched) {
+                changes.push((app.connection, true));
+            } else if !now && app.watched {
+                changes.push((app.connection, false));
+            }
+            app.watched = now;
+            app.keyframe_wanted = false;
+        }
+        changes
+    }
+
+    /// Input from a paint share's viewer is in page (CSS) pixels; the
+    /// window's surface-local input is logical, with the page at `page`.
+    fn paint_point_to_surface(&self, surface: SurfaceId, event: InputEvent) -> InputEvent {
+        let InputEvent::PointerMotion { x, y } = event else {
+            return event;
+        };
+        let Some(app) = self
+            .active_sessions
+            .get(&surface)
+            .filter(|session| session.is_paint())
+            .and_then(|session| self.paint_apps.get(&session.app_id))
+        else {
+            return event;
+        };
+        let [left, top, width, height] = app.page;
+        InputEvent::PointerMotion {
+            x: left + x.clamp(0.0, width.max(0.0)),
+            y: top + y.clamp(0.0, height.max(0.0)),
         }
     }
 
@@ -2459,7 +2698,16 @@ impl State {
         let Some(frame) = self.surface_tracker.peek_latest(surface_id) else {
             return false;
         };
-        session.deposit_captured_rgba(frame.rgba);
+        // The stream carries the window as its tab shows it, at the size its
+        // first frame (the tab's snapshot) set: without the shadow and resize
+        // border a client-side-decorating toolkit draws around it.
+        let rgba = crate::compositor::foreign::store().crop_to_window(
+            surface_id,
+            frame.rgba,
+            frame.width,
+            frame.height,
+        );
+        session.deposit_captured_rgba(rgba);
         if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
             && self.legacy_stream_publisher.is_some()
         {
@@ -2530,6 +2778,7 @@ impl State {
         if previously_controlled && !still_controls {
             self.release_remote_focus_for_surface(peer, surface);
         }
+        let event = self.paint_point_to_surface(surface, event);
         let event = if self.personal_stream_viewers.contains(&(peer, surface)) {
             if matches!(
                 event,
@@ -3197,26 +3446,41 @@ impl RemoteInputSink for State {
                 //
                 // Modifier state is *not* force-set: smithay's
                 // `key_input` maintains it from the keycode stream, so peers send Shift-press → A-press → A-release → Shift-release; the wire `modifiers` bitfield is diagnostics only.
-                if self.remote_seats.key_transition(peer, keysym, pressed)
-                    && let Some(keyboard) = self.seat.get_keyboard()
-                {
-                    let key_state = if pressed {
-                        KeyState::Pressed
+                //
+                // A press of a key the peer already holds is the sender's
+                // auto-repeat: the client sees one more stroke of it. Clients
+                // never repeat a remote key themselves, so a release that
+                // arrives late cannot leave one typing the key meanwhile.
+                let repeat = pressed && self.remote_seats.repeats(peer, keysym);
+                if pressed {
+                    self.begin_remote_typing();
+                }
+                let strokes: &[KeyState] = if repeat {
+                    &[KeyState::Released, KeyState::Pressed]
+                } else if self.remote_seats.key_transition(peer, keysym, pressed) {
+                    if pressed {
+                        &[KeyState::Pressed]
                     } else {
-                        KeyState::Released
-                    };
-                    // The compatibility wire's historical field name is
-                    // `keysym`, but the value is an evdev keycode. Smithay's
-                    // keyboard API consumes XKB keycodes (evdev + 8), exactly
-                    // like the local-client path.
-                    let _: Option<()> = keyboard.input(
-                        self,
-                        keysym.saturating_add(8).into(),
-                        key_state,
-                        serial,
-                        time,
-                        |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
-                    );
+                        &[KeyState::Released]
+                    }
+                } else {
+                    &[]
+                };
+                if let Some(keyboard) = self.seat.get_keyboard() {
+                    for key_state in strokes {
+                        // The compatibility wire's historical field name is
+                        // `keysym`, but the value is an evdev keycode. Smithay's
+                        // keyboard API consumes XKB keycodes (evdev + 8), exactly
+                        // like the local-client path.
+                        let _: Option<()> = keyboard.input(
+                            self,
+                            keysym.saturating_add(8).into(),
+                            *key_state,
+                            serial,
+                            time,
+                            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+                        );
+                    }
                 }
             }
         }
@@ -3245,10 +3509,57 @@ pub struct LegacyShare {
     pub app_id: String,
     pub tab: u64,
     pub viewers: std::collections::HashSet<MsgPeerId>,
+    /// Every viewer is a host bridging the window to web members, which
+    /// draw a page streamed as a display list: an app that can stream its
+    /// page ([`PaintApp`]) is shared that way rather than as video.
+    pub paint: bool,
     /// The largest picture each viewer's hardware decoders take, by codec,
     /// where the viewer said: the stream is encoded no larger.
     pub decode_limits:
         HashMap<MsgPeerId, std::collections::BTreeMap<media::StreamCodec, (u32, u32)>>,
+}
+
+/// Most bytes of an app's page stream kept for viewers that start later.
+const MAX_PAINT_GROUP_BYTES: usize = 8 * 1024 * 1024;
+
+/// An app that streams its window's page as a display list.
+#[derive(Debug)]
+pub struct PaintApp {
+    /// Its `shell-ui` connection, which the stream arrives on.
+    pub connection: u64,
+    /// Where the page sits in the window (logical x, y, w, h), as the app
+    /// last said; viewer input is offset by it.
+    pub page: [f64; 4],
+    /// The window's buffer scale, for a viewer that maps buffer pixels.
+    pub scale: f64,
+    /// The latest whole frame and what followed it.
+    group: Vec<Vec<u8>>,
+    group_bytes: usize,
+    /// What the app was last told: whether anyone watches.
+    watched: bool,
+    /// A new share started: ask for a whole frame.
+    keyframe_wanted: bool,
+}
+
+impl PaintApp {
+    fn new(connection: u64) -> Self {
+        Self {
+            connection,
+            page: [0.0; 4],
+            scale: 1.0,
+            group: Vec::new(),
+            group_bytes: 0,
+            watched: false,
+            keyframe_wanted: false,
+        }
+    }
+}
+
+/// One frame an app sent of its page stream.
+pub struct PaintFrame {
+    pub payload: Vec<u8>,
+    pub page: [f64; 4],
+    pub scale: f64,
 }
 
 impl State {
@@ -3410,6 +3721,21 @@ impl State {
         if let Some(blocker) = blocker {
             wl_compositor::add_blocker(surface, blocker);
         }
+        if matches!(
+            association,
+            ForeignCommitCapture::Shm | ForeignCommitCapture::Dmabuf(_)
+        ) {
+            // A typed key's answer: the window it went to drew again. Outside
+            // `with_states`, whose surface mutex `foreign_root` takes too.
+            let root = foreign_root(surface).map_or(surface_id, |root| {
+                crate::compositor::state::surface_id(&root)
+            });
+            let unanswered = crate::compositor::key_latency::tracker()
+                .surface_committed(root, std::time::Instant::now());
+            for app in unanswered {
+                eprintln!("KEY-LATENCY app={app} unanswered=1");
+            }
+        }
         wl_compositor::with_states(surface, |states| {
             states
                 .data_map
@@ -3491,6 +3817,10 @@ pub struct ClientState {
     /// id it announces becomes `legacy.<guest>.<app id>`. Claiming this only
     /// lowers what a window is trusted with, so it needs no proof.
     pub legacy_guest: Option<legacy_agent_protocol::GuestOs>,
+    /// Whether the client asked the seat for a `wl_touch`. A touch sequence
+    /// sent to a surface of a client without one reaches nothing, so such a
+    /// client gets the pointer events touch is emulated as instead.
+    pub touch_bound: std::sync::atomic::AtomicBool,
 }
 
 /// Hand-written, not derived, so every construction path gets its own [`ClientState::index`] — a derived `Default` would hand every client index 0.
@@ -3509,6 +3839,7 @@ impl Default for ClientState {
             executable: None,
             pid: None,
             legacy_guest: None,
+            touch_bound: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -3593,6 +3924,12 @@ pub(crate) fn is_privileged_client(client: &Client) -> bool {
 /// registry, frame tracker — keys off one flat `SurfaceId`, avoiding a
 /// second client's window overwriting the first's. The id is the client's
 /// connection index in the high 32 bits, protocol id in the low 32 — both stable, so it can be recomputed rather than remembered, staying a plain `u64` for the peer-sync wire protocol.
+/// The connection index a [`surface_id`] was minted under.
+#[must_use]
+pub fn client_index_of(surface_id: u64) -> u32 {
+    u32::try_from(surface_id >> 32).unwrap_or(u32::MAX)
+}
+
 pub fn surface_id(surface: &WlSurface) -> u64 {
     let protocol_id = u64::from(surface.id().protocol_id());
     if let Some(client) = surface.client() {
@@ -4828,6 +5165,7 @@ impl XdgShellHandler for State {
         if trusted_osk_identity(surface.wl_surface(), app_id.as_deref()) {
             self.client_input.promote_to_overlay(surface_id);
             self.osk_surface = Some(surface_id);
+            self.reannounce_text_input_focus();
         } else if !floating && !presentation {
             if let Some(room) = attributed_room {
                 let adopted = {
@@ -4875,17 +5213,16 @@ impl XdgShellHandler for State {
         crate::compositor::foreign::note_client_pump();
         // Remove the matching `Foreign` tab so the chrome stops advertising a destroyed surface.
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
-        // Whether the window went because it was asked to or on its own: the
-        // session's default log passes errors only, so this goes to stderr,
-        // which the session log records.
         let launch = crate::shell::launcher::launch_key_for_surface(surface_id);
+        let asked_to_close = self.closing_toplevels.remove(&surface_id).is_some();
         eprintln!(
-            "window-destroyed: surface={surface_id} launch={} asked_to_close={}",
-            launch.as_deref().unwrap_or("-"),
-            self.closing_toplevels.contains_key(&surface_id)
+            "window-destroyed: surface={surface_id} launch={} asked_to_close={asked_to_close}",
+            launch.as_deref().unwrap_or("-")
         );
-        crate::shell::launcher::forget_surface_launch(surface_id);
-        self.closing_toplevels.remove(&surface_id);
+        let person_reached_it = self
+            .clients_given_input
+            .contains(&client_index_of(surface_id));
+        crate::shell::launcher::note_surface_gone(surface_id, asked_to_close || person_reached_it);
         self.release_sheets_of_destroyed(surface_id);
         crate::compositor::toplevel_icon::forget(surface_id);
         if self.osk_surface == Some(surface_id) {
@@ -4975,6 +5312,7 @@ impl XdgShellHandler for State {
                 };
                 self.client_input.promote_to_overlay(surface_id);
                 self.osk_surface = Some(surface_id);
+                self.reannounce_text_input_focus();
                 return;
             }
             if self.promote_floating_toplevel(surface_id, &app_id) {
@@ -5444,11 +5782,228 @@ delegate_xdg_dialog!(State);
 delegate_xdg_decoration!(State);
 delegate_shm!(State);
 delegate_dmabuf!(State);
-delegate_seat!(State);
+// `wl_seat` is Smithay's, with one observation added: whether each client
+// asked for a `wl_touch` (see `ClientState::touch_bound`). The rest of the
+// seat (pointer, keyboard, touch objects) is delegated unchanged.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    WlSeat: smithay::wayland::seat::SeatGlobalData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_pointer::WlPointer: smithay::wayland::seat::PointerUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_keyboard::WlKeyboard: smithay::wayland::seat::KeyboardUserData<State>
+] => SeatState<State>);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_server::protocol::wl_touch::WlTouch: smithay::wayland::seat::TouchUserData<State>
+] => SeatState<State>);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        WlSeat,
+        smithay::wayland::seat::SeatUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &WlSeat,
+        request: smithay::reexports::wayland_server::protocol::wl_seat::Request,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        if matches!(
+            request,
+            smithay::reexports::wayland_server::protocol::wl_seat::Request::GetTouch { .. }
+        ) && let Some(client_state) = client.get_data::<ClientState>()
+        {
+            client_state
+                .touch_bound
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &WlSeat,
+        data: &smithay::wayland::seat::SeatUserData<State>,
+    ) {
+        <SeatState<State> as smithay::reexports::wayland_server::Dispatch<
+            WlSeat,
+            smithay::wayland::seat::SeatUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
 // Text input is dispatched in `compositor::text_commit`, which follows each
 // field's declared content type before handing the request to Smithay.
-delegate_input_method_manager!(State);
-delegate_virtual_keyboard_manager!(State);
+// The input-method manager is Smithay's. `zwp_input_method_v2` is too, with
+// the on-screen keyboard's commits counted on the way (`State::osk_commits`).
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2:
+    smithay::wayland::input_method::InputMethodManagerGlobalData
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_manager_v2::ZwpInputMethodManagerV2: ()
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_keyboard_grab_v2::ZwpInputMethodKeyboardGrabV2:
+    smithay::wayland::input_method::InputMethodKeyboardUserData<State>
+] => InputMethodManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_popup_surface_v2::ZwpInputPopupSurfaceV2:
+    smithay::wayland::input_method::InputMethodPopupSurfaceUserData
+] => InputMethodManagerState);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        smithay::wayland::input_method::InputMethodUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        request: smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        use smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::Request;
+        if matches!(request, Request::CommitString { .. })
+            && client.get_data::<ClientState>().is_some_and(|data| {
+                data.input_method
+                    == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard)
+            })
+        {
+            state.osk_commits = state.osk_commits.saturating_add(1);
+        }
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+        data: &smithay::wayland::input_method::InputMethodUserData<State>,
+    ) {
+        <InputMethodManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_input_method_v2::server::zwp_input_method_v2::ZwpInputMethodV2,
+            smithay::wayland::input_method::InputMethodUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
+// The virtual-keyboard manager is Smithay's. `zwp_virtual_keyboard_v1` is
+// too, but while one of the shell's own fields is served (see
+// `compositor::shell_text_input`) its keys also reach the chrome, which holds
+// no `wl_keyboard` Smithay could send them to.
+smithay::reexports::wayland_server::delegate_global_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1:
+    smithay::wayland::virtual_keyboard::VirtualKeyboardManagerGlobalData
+] => VirtualKeyboardManagerState);
+smithay::reexports::wayland_server::delegate_dispatch!(State: [
+    smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1: ()
+] => VirtualKeyboardManagerState);
+
+impl
+    smithay::reexports::wayland_server::Dispatch<
+        smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+    > for State
+{
+    fn request(
+        state: &mut Self,
+        client: &Client,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        request: smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::Request,
+        data: &smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+        dhandle: &DisplayHandle,
+        data_init: &mut smithay::reexports::wayland_server::DataInit<'_, Self>,
+    ) {
+        use smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::Request;
+        match &request {
+            Request::Keymap { fd, size, .. } => {
+                if let Some(keymap) = read_virtual_keymap(fd, *size) {
+                    state.virtual_keymaps.insert(resource.id(), keymap);
+                }
+            }
+            Request::Key { key, state: key_state, .. } if state.shell_field_active => {
+                if let Some(event) = state
+                    .virtual_keymaps
+                    .get(&resource.id())
+                    .and_then(|keymap| {
+                        let keysym = smithay::input::keyboard::xkb::State::new(keymap)
+                            .key_get_one_sym(smithay::input::keyboard::Keycode::new(
+                                key.saturating_add(8),
+                            ));
+                        crate::compositor::shell_text_input::translate_key(
+                            keysym.raw(),
+                            *key_state == 1,
+                        )
+                    })
+                {
+                    state.shell_field_keys.push(event);
+                }
+            }
+            _ => {}
+        }
+        <VirtualKeyboardManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+            smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+            State,
+        >>::request(state, client, resource, request, data, dhandle, data_init);
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        client: ClientId,
+        resource: &smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+        data: &smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+    ) {
+        state.virtual_keymaps.remove(&resource.id());
+        <VirtualKeyboardManagerState as smithay::reexports::wayland_server::Dispatch<
+            smithay::reexports::wayland_protocols_misc::zwp_virtual_keyboard_v1::server::zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+            smithay::wayland::virtual_keyboard::VirtualKeyboardUserData<State>,
+            State,
+        >>::destroyed(state, client, resource, data);
+    }
+}
+
+/// Compile the XKB text keymap a virtual keyboard uploaded, read without
+/// moving the descriptor Smithay reads after us.
+fn read_virtual_keymap(
+    fd: &std::os::fd::OwnedFd,
+    size: u32,
+) -> Option<smithay::input::keyboard::xkb::Keymap> {
+    use smithay::input::keyboard::xkb;
+    use std::os::unix::fs::FileExt as _;
+    // A keymap is text of a few kilobytes; refuse anything absurd.
+    let size = usize::try_from(size).ok().filter(|size| *size <= 1 << 20)?;
+    let file = std::fs::File::from(fd.try_clone().ok()?);
+    let mut bytes = vec![0_u8; size];
+    file.read_exact_at(&mut bytes, 0).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    xkb::Keymap::new_from_string(
+        &context,
+        text.trim_end_matches('\0').to_owned(),
+        xkb::KEYMAP_FORMAT_TEXT_V1,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+}
 delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
 delegate_relative_pointer!(State);
@@ -5954,6 +6509,78 @@ mod osk_identity_tests {
 )]
 mod tick_hook_tests {
     use super::*;
+
+    #[test]
+    fn a_paint_app_streams_its_page_to_web_viewers_instead_of_video() {
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        state.note_paint_app("so.tilo.browser", 5);
+        // As reconciliation starts it for a host bridging to web members.
+        let session = Arc::new(
+            SharedFlatpakSession::start_paint(1, "so.tilo.browser", 42, 800, 600, &cfg())
+                .expect("start"),
+        );
+        session.sync_viewers(&[9].into_iter().collect());
+        state.register_share_session(Arc::clone(&session));
+        assert_eq!(
+            state.paint_watch_changes(),
+            vec![(5, true)],
+            "the app is asked for a page"
+        );
+        assert!(state.paint_watch_changes().is_empty(), "and asked once");
+
+        state.receive_paint_frame(
+            "so.tilo.browser",
+            PaintFrame {
+                payload: vec![0, 7],
+                page: [10.0, 20.0, 780.0, 560.0],
+                scale: 2.0,
+            },
+        );
+        let messages = sent.lock().unwrap().clone();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            crate::network::NeighbourMsg::SurfaceStreamStart { codec, surface: 42, .. }
+                if codec == "tilo-paint"
+        )));
+        assert!(
+            messages.iter().any(|m| matches!(
+                m,
+                crate::network::NeighbourMsg::SurfaceFrame { surface: 42, encoded_h264, .. }
+                    if encoded_h264 == &vec![0, 7]
+            )),
+            "the app's frame goes out as it came: {messages:?}"
+        );
+        // Input in page pixels lands where the page sits in the window.
+        assert_eq!(
+            state.paint_point_to_surface(42, InputEvent::PointerMotion { x: 5.0, y: 5.0 }),
+            InputEvent::PointerMotion { x: 15.0, y: 25.0 }
+        );
+        // An app that is not streaming ignores its frames' origin.
+        state.receive_paint_frame(
+            "org.example.Other",
+            PaintFrame {
+                payload: vec![0],
+                page: [0.0; 4],
+                scale: 1.0,
+            },
+        );
+        assert_eq!(sent.lock().unwrap().len(), messages.len());
+
+        state.unregister_share_session(42);
+        assert_eq!(
+            state.paint_watch_changes(),
+            vec![(5, false)],
+            "nobody watches any more"
+        );
+        state.drop_paint_connection(5);
+        assert!(state.paint_apps.is_empty());
+    }
     use crate::collab::flatpak_share::SharedFlatpakSession;
     use crate::config::{EncoderChoice, FlatpakShareConfig};
     use crate::network::protocol::{PeerId, SurfaceId};
@@ -6395,6 +7022,76 @@ mod tick_hook_tests {
                 .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
             assert!(!state.tick_share_session_for_surface(SURFACE));
         }
+    }
+
+    /// A shared window that resizes gets a new encoder, but stays shared:
+    /// receivers learn it from the new start alone, and its viewer keeps
+    /// driving it. An end first had a host bridging the window to web
+    /// members forget it, and refuse their input, until the start came.
+    #[test]
+    fn a_resized_shared_window_is_restarted_without_ending_its_stream() {
+        const HOST: PeerId = 0xAAAA;
+        const VIEWER: PeerId = 0xBBBB;
+        const SURFACE: SurfaceId = 0x7e57_0000_0091;
+        let mut state = make_state();
+        let sent = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = Arc::clone(&sent);
+        state.set_legacy_stream_publisher(Arc::new(move |_, message| {
+            sink.lock().unwrap().push(message);
+            true
+        }));
+        let frames = crate::compositor::foreign::store();
+        frames.publish_rgba(SURFACE, &[0x80; 32 * 32 * 4], 32, 32);
+        let desired = HashMap::from([(
+            SURFACE,
+            LegacyShare {
+                app_id: "app".into(),
+                viewers: [VIEWER].into_iter().collect(),
+                ..LegacyShare::default()
+            },
+        )]);
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        let _ = state.remote_seats.seat_mut(VIEWER).enter(SURFACE);
+        sent.lock().unwrap().clear();
+
+        frames.publish_rgba(SURFACE, &[0x80; 48 * 32 * 4], 48, 32);
+        state.reconcile_legacy_share_sessions(HOST, &desired, &cfg());
+        let messages = std::mem::take(&mut *sent.lock().unwrap());
+        assert!(
+            !messages
+                .iter()
+                .any(|m| matches!(m, crate::network::NeighbourMsg::SurfaceStreamEnd { .. })),
+            "the window is still shared: {messages:?}"
+        );
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            crate::network::NeighbourMsg::SurfaceStreamStart {
+                surface: SURFACE,
+                width: 48,
+                ..
+            }
+        )));
+        assert_eq!(
+            state
+                .remote_seats
+                .seat(VIEWER)
+                .and_then(|seat| seat.focused_surface),
+            Some(SURFACE),
+            "its viewer keeps its focus"
+        );
+
+        state.reconcile_legacy_share_sessions(HOST, &HashMap::new(), &cfg());
+        assert!(
+            sent.lock().unwrap().iter().any(|m| matches!(
+                m,
+                crate::network::NeighbourMsg::SurfaceStreamEnd {
+                    surface: SURFACE,
+                    ..
+                }
+            )),
+            "a window no longer shared ends its stream"
+        );
+        frames.forget(SURFACE);
     }
 
     #[test]

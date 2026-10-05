@@ -62,6 +62,9 @@ struct AppHandler {
     text_input_touched: bool,
     primary_frames_sent: u64,
     primary_frames_completed: u64,
+    /// The last submitted frame painted something over the widgets that
+    /// their damage does not describe; the next frame must erase it.
+    top_layer_drawn: bool,
     last_primary_frame_presented: u64,
     primary_retry: crate::render_thread::retry::RenderRetryState,
     /// `None` waits for the next primary submission; `Some(sequence)` waits
@@ -77,6 +80,12 @@ struct AppHandler {
     /// Synthetic mouse events must retain touch modality rather than making
     /// the host immediately classify them as a fine pointer.
     dispatching_touch_pointer: bool,
+    /// Where the pointer last moved over the primary window, until it left.
+    last_pointer: Option<PhysicalPosition<f64>>,
+    /// The widgets moved or were rebuilt since the pointer last moved: a
+    /// control now under a still pointer has never seen it arrive, so a
+    /// press there replays the position first instead of being lost.
+    pointer_unsettled: bool,
     /// Per-window state handed to the next in-place reload. Keyed by the
     /// window id that stays for the life of the process.
     dev_window_state: std::collections::HashMap<String, Vec<u8>>,
@@ -489,7 +498,9 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // memory pressure on exactly the low-end devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: Some(shader_threads),
-            pipeline_cache: None,
+            // The session's compiled pipelines, so an app's first launch
+            // does not compile vello again for its own empty shader cache.
+            pipeline_cache: crate::pipeline_seed::seeded(device_handle),
         },
     )
     .map_err(|e| format!("could not create the renderer: {e}"))?;
@@ -1204,7 +1215,9 @@ impl AppHandler {
                         primary.request_redraw();
                     }
                 }
-                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. } => {}
+                crate::floating_surface::FloatingSurfaceHostMessage::DesktopBounds { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
+                | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop => {}
             }
         }
         changed
@@ -1500,7 +1513,10 @@ impl AppHandler {
             if let Err(reason) = self.init_render(window) {
                 // Retrying every redraw would only spin.
                 crate::diag!("tilo: {reason}");
-                event_loop.exit();
+                stop_abnormally(
+                    event_loop,
+                    format!("its renderer could not start: {reason}"),
+                );
                 return;
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
@@ -1581,8 +1597,9 @@ impl AppHandler {
             }
         }
         if surface_gone {
-            tracing::info!("drawing surface is gone; closing the window");
-            event_loop.exit();
+            let reason = crate::render_thread::take_surface_loss()
+                .unwrap_or_else(|| "its drawing surface was lost".to_owned());
+            stop_abnormally(event_loop, reason);
             return;
         }
         // Do not consume sync/layout/dirty state unless a finite render buffer
@@ -1595,8 +1612,7 @@ impl AppHandler {
             Ok(true) => {}
             Ok(false) => return,
             Err(_) => {
-                tracing::error!("ui-render thread died; closing window");
-                event_loop.exit();
+                stop_abnormally(event_loop, "its render thread stopped".to_owned());
                 return;
             }
         }
@@ -1635,7 +1651,11 @@ impl AppHandler {
         app.layout.last_frame_size = Some(inner);
         let mut floating_content_changed =
             app.layout.layout_dirty || app.layout.structure_dirty || app.needs_sync;
-        let mut full_redraw_required = floating_content_changed;
+        // Model and input changes reach the pixels through the widgets they
+        // dirty, whose damage the frame collects below. Only what damage
+        // cannot describe repaints the whole window: a rebuilt tree, moved
+        // geometry, a resized surface, and layers drawn over the widgets.
+        let mut full_redraw_required = app.layout.structure_dirty;
 
         // Records first: if the root widget opened a different
         // record, sync against that record's document, not the
@@ -1644,6 +1664,7 @@ impl AppHandler {
         let record_changed = app.record_tick();
         mark_first_frame("first-frame-record-done");
         floating_content_changed |= record_changed;
+        // A different record is a different document under the same tree.
         full_redraw_required |= record_changed;
 
         let __prof_frame_start = app.profiler.as_ref().map(|_| crate::time::now());
@@ -1653,15 +1674,20 @@ impl AppHandler {
         mark_first_frame("first-frame-update-start");
         if app.update_model() {
             floating_content_changed = true;
-            full_redraw_required = true;
         }
         mark_first_frame("first-frame-update-done");
         mark_first_frame("first-frame-sync-start");
         if app.sync_model(false) {
             floating_content_changed = true;
-            full_redraw_required = true;
         }
-        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
+        // A control may have asked for larger text or high contrast; both
+        // rebuild the tree, so this frame repaints everything in the new look.
+        if app.apply_accessibility_request() {
+            floating_content_changed = true;
+        }
+        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut())
+            || app.take_close_window_request()
+        {
             if app.admit_native_close_request() {
                 event_loop.exit();
                 return;
@@ -1706,7 +1732,7 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-start");
-        let Some((t_relayout_branch, t_compute_us, t_apply_us)) = run_layout_pass(
+        let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
             app,
             root_node,
             width,
@@ -1721,7 +1747,8 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-done");
-        full_redraw_required |= structure_rebuilt || t_relayout_branch;
+        full_redraw_required |= structure_rebuilt || geometry_changed;
+        self.pointer_unsettled |= structure_rebuilt || geometry_changed;
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
         // independent native floating surfaces.
@@ -1731,14 +1758,16 @@ impl AppHandler {
         // wait on GPU work; aborted layouts retain it in the handle for retry.
         let __prof_pool_wait = app.profiler.as_ref().map(|_| crate::time::now());
         let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
-            tracing::error!("ui-render thread died; closing window");
-            event_loop.exit();
+            stop_abnormally(event_loop, "its render thread stopped".to_owned());
             return;
         };
         if let Some(p) = app.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::ScenePoolWait, __prof_pool_wait);
         }
         damage_regions.clear();
+        // Presented pixels lost geometry to a GPU scratch overflow; damage
+        // cannot describe where.
+        full_redraw_required |= render.take_full_repaint();
         full_redraw_required |= app.debug_mode
             || app.actions.action_palette.is_some()
             || app.input.tooltip_host.needs_frame()
@@ -1753,13 +1782,14 @@ impl AppHandler {
 
         let t_draw_start = if perf { Some(crate::time::now()) } else { None };
         crate::webview::frame_trace::begin_scene();
-        let (transform, window_rect, t_draw_us) =
+        let (transform, window_rect, t_draw_us, mut top_layer) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         #[cfg(target_os = "linux")]
         {
             self.decorations.draw(app, &mut scene, transform);
             full_redraw_required |= self.decorations.take_repaint();
         }
+        let content_draw_tags = scene.encoding().draw_tags.len();
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
@@ -1868,6 +1898,13 @@ impl AppHandler {
             draw_debug_outlines(app, &mut scene, transform);
         }
         record_main_stage(&mut native_main_stages, MainStage::AfterDebugOutlines);
+
+        // Cursors, presence and the HUD paint over the widgets too. A layer
+        // drawn this frame, or one erased since the last, covers pixels no
+        // widget's damage reports.
+        top_layer |= scene.encoding().draw_tags.len() != content_draw_tags;
+        full_redraw_required |=
+            top_layer || std::mem::replace(&mut self.top_layer_drawn, top_layer);
 
         // Animated widgets update their visual bounds while drawing (for
         // example, an indeterminate progress segment records its old and new
@@ -1996,8 +2033,9 @@ impl AppHandler {
                 );
             }
             if send_result.is_err() {
-                tracing::error!("ui-render thread receiver closed; exiting");
-                event_loop.exit();
+                let reason = crate::render_thread::take_surface_loss()
+                    .unwrap_or_else(|| "its render thread stopped".to_owned());
+                stop_abnormally(event_loop, reason);
                 return;
             }
             mark_first_frame("first-frame-submitted");
@@ -2021,7 +2059,7 @@ impl AppHandler {
                 crate::diag!(
                     "perf frame: main_total={:>5}us layout={}({}+{}us) draw={:>5}us (shape={:>4}us hit={} miss={}) send_to_worker={:>5}us",
                     t_send_us,
-                    if t_relayout_branch { "Y" } else { "n" },
+                    if geometry_changed { "Y" } else { "n" },
                     t_compute_us,
                     t_apply_us,
                     t_draw_us,
@@ -2450,6 +2488,10 @@ impl AppHandler {
         // the focused control the same way a mouse click would.
         app.handle_unconsumed_activation_key(&event, &mut handled);
 
+        // Ctrl+T / Ctrl+W / Ctrl+Shift+T nobody consumed are the desktop's
+        // tab chords.
+        app.handle_unconsumed_tab_chord(&event, &mut handled);
+
         // A focused range control consumes Left/Right; Up/Down and Tab
         // still move focus. Modifiers scale the step:
         //   plain  → one step       Shift → four steps (coarse)
@@ -2605,6 +2647,51 @@ impl AppHandler {
 
 impl AppHandler {
     /// `UserEvent` injection keeps the ordinary window dispatch after admission.
+    /// Before a press on the primary window, the pointer's last position
+    /// once more when the widgets moved or were rebuilt since it moved:
+    /// controls learn they are under the pointer from its moves, and one
+    /// swapped in under a still pointer would otherwise drop the click.
+    fn replay_unsettled_pointer(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        window_id: WindowId,
+        event: &WindowEvent,
+    ) {
+        if self
+            .window
+            .as_ref()
+            .is_none_or(|window| window.id() != window_id)
+        {
+            return;
+        }
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_pointer = Some(*position);
+                self.pointer_unsettled = false;
+            }
+            WindowEvent::CursorLeft { .. } => self.last_pointer = None,
+            WindowEvent::MouseInput {
+                device_id,
+                state: ElementState::Pressed,
+                ..
+            } if self.pointer_unsettled => {
+                self.pointer_unsettled = false;
+                if let Some(position) = self.last_pointer {
+                    self.route_window_event(
+                        event_loop,
+                        window_id,
+                        WindowEvent::CursorMoved {
+                            device_id: *device_id,
+                            position,
+                        },
+                        native_input_isolation::EventOrigin::Platform,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn injected_window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -3184,6 +3271,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.text_input_touched = true;
         }
         self.note_host_appearance_event(&event);
+        self.replay_unsettled_pointer(event_loop, window_id, &event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -3910,12 +3998,15 @@ impl App {
             text_input_touched: false,
             primary_frames_sent: 0,
             primary_frames_completed: 0,
+            top_layer_drawn: false,
             last_primary_frame_presented: 0,
             primary_retry: crate::render_thread::retry::RenderRetryState::default(),
             floating_source_clear_frames: std::collections::HashMap::new(),
             floating_destination_present_frames: std::collections::HashMap::new(),
             touch_pointer: crate::interaction::TouchPointerEmulator::default(),
             dispatching_touch_pointer: false,
+            last_pointer: None,
+            pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
             native_input_origin: None,
@@ -3947,7 +4038,44 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+        // The app and its state are dropped (and saved) before the process
+        // reports how its window ended.
+        drop(handler);
+        if let Some(reason) = take_abnormal_stop() {
+            report_window_lost_and_exit(&reason);
+        }
     }
+}
+
+/// Why the window is stopping, when no one asked it to close.
+static ABNORMAL_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Stop the event loop because the window cannot go on, keeping why. The
+/// process then exits non-zero instead of looking like a deliberate quit.
+fn stop_abnormally(event_loop: &ActiveEventLoop, reason: String) {
+    tracing::error!(%reason, "{}", super::WINDOW_LOST);
+    ABNORMAL_STOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(reason);
+    event_loop.exit();
+}
+
+fn take_abnormal_stop() -> Option<String> {
+    ABNORMAL_STOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+#[allow(
+    clippy::exit,
+    reason = "the native app's lifecycle ends here; a window that stopped on \
+              its own must not report the clean exit a deliberate quit does"
+)]
+fn report_window_lost_and_exit(reason: &str) -> ! {
+    eprintln!("error: {}: {reason}", super::WINDOW_LOST);
+    std::process::exit(super::WINDOW_LOST_EXIT_CODE);
 }
 
 impl AppHandler {

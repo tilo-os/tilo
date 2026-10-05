@@ -5,7 +5,9 @@
 pub mod app;
 pub mod appsets;
 pub mod build;
+pub mod builderlayer;
 pub mod ci;
+pub mod cicache;
 pub mod cli;
 pub mod config;
 pub mod context;
@@ -17,6 +19,7 @@ pub mod host;
 pub mod hypervisor;
 pub mod image;
 pub mod imageup;
+pub mod reach;
 pub mod receipt;
 pub mod remote;
 pub mod scenario;

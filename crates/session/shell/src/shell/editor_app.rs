@@ -208,12 +208,7 @@ impl EditorApp {
         if edit.is_noop() {
             return;
         }
-        let caret = self.body.splice(
-            state,
-            root,
-            edit.at..edit.at.saturating_add(edit.removed),
-            &edit.inserted,
-        );
+        let caret = self.body.apply(state, root, edit);
         self.edit.set_caret(caret);
     }
 
@@ -227,49 +222,13 @@ impl EditorApp {
         line_boundaries(&self.body.text, pos).1
     }
 
-    /// Same column, previous line. Returns whether it moved. Columns are
-    /// byte offsets within the line — fine for ASCII, "close enough" for
-    /// mixed UTF-8 given the clamp.
-    fn move_line_up(&mut self, extend: bool) -> bool {
-        let line_start = self.line_start(self.edit.caret());
-        if line_start == 0 {
-            return false;
-        }
-        let col = self.edit.caret().saturating_sub(line_start);
-        let prev_line_end = line_start.saturating_sub(1); // the `\n`
-        let prev_line_start = self.line_start(prev_line_end);
-        let prev_len = prev_line_end.saturating_sub(prev_line_start);
-        let target = prev_line_start.saturating_add(col.min(prev_len));
-        if extend {
-            let anchor = self.edit.selection().anchor;
-            self.edit.set_selection(anchor, target);
-        } else {
-            self.edit.set_caret(target);
-        }
-        self.clamp_cursor();
-        true
-    }
-
-    /// Same column, next line. Returns whether it moved.
-    fn move_line_down(&mut self, extend: bool) -> bool {
-        let line_start = self.line_start(self.edit.caret());
-        let col = self.edit.caret().saturating_sub(line_start);
-        let line_end = self.line_end(self.edit.caret());
-        if line_end >= self.body.text.len() {
-            return false;
-        }
-        let next_line_start = line_end.saturating_add(1);
-        let next_line_end = self.line_end(next_line_start);
-        let next_len = next_line_end.saturating_sub(next_line_start);
-        let target = next_line_start.saturating_add(col.min(next_len));
-        if extend {
-            let anchor = self.edit.selection().anchor;
-            self.edit.set_selection(anchor, target);
-        } else {
-            self.edit.set_caret(target);
-        }
-        self.clamp_cursor();
-        true
+    /// Up / Down: the same character column on the `\n`-delimited line
+    /// above or below. Returns whether the caret or selection changed (not
+    /// at the first / last line).
+    fn move_line(&mut self, motion: Motion, extend: bool) -> bool {
+        let before = self.edit.selection();
+        self.edit.motion(&self.body.text, motion, extend);
+        self.edit.selection() != before
     }
 }
 
@@ -1169,12 +1128,12 @@ impl EditorApp {
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
-                if self.move_line_up(mods.shift_key()) {
+                if self.move_line(Motion::LineUp, mods.shift_key()) {
                     *handled = true;
                 }
             }
             Key::Named(NamedKey::ArrowDown) => {
-                if self.move_line_down(mods.shift_key()) {
+                if self.move_line(Motion::LineDown, mods.shift_key()) {
                     *handled = true;
                 }
             }
@@ -1470,6 +1429,44 @@ mod tests {
         focused_editor_dispatch_selects_and_replaces_text();
         focused_editor_dispatch_extends_selection_with_shift_and_control();
         focused_editor_dispatch_extends_vertical_selection();
+    }
+
+    #[test]
+    fn focused_editor_up_down_keep_the_character_column() {
+        let (mut doc, tile) = bind();
+        let mut app = EditorApp::with_seed("héllo\nwörld\ne\u{301}e\u{301}e\u{301}");
+        app.sync(&mut doc, &tile);
+        app.focused = true;
+        let press = |app: &mut EditorApp, doc: &mut AutoCommit, named: NamedKey| {
+            let mut key: KeyEvent = unsafe { std::mem::zeroed() };
+            key.logical_key = Key::Named(named);
+            key.state = ElementState::Pressed;
+            let mut handled = false;
+            app.handle_keyboard_input(&key, Modifiers::default(), doc, &tile, &mut handled);
+            handled
+        };
+        app.edit.set_caret("hél".len());
+        assert!(press(&mut app, &mut doc, NamedKey::ArrowDown));
+        assert_eq!(
+            app.edit.caret(),
+            "héllo\nwör".len(),
+            "column 3, after the r"
+        );
+        // Column 3 on the last line falls between an "e" and its accent:
+        // the caret lands before that whole cluster instead.
+        assert!(press(&mut app, &mut doc, NamedKey::ArrowDown));
+        assert_eq!(app.edit.caret(), "héllo\nwörld\ne\u{301}".len());
+        assert!(!press(&mut app, &mut doc, NamedKey::ArrowDown), "last line");
+        // Backspace takes the whole combined letter.
+        assert!(press(&mut app, &mut doc, NamedKey::Backspace));
+        assert_eq!(app.body.text, "héllo\nwörld\ne\u{301}e\u{301}");
+        assert!(press(&mut app, &mut doc, NamedKey::ArrowUp));
+        assert_eq!(app.edit.caret(), "héllo\n".len());
+        assert_eq!(
+            doc.text(&doc.get(&tile, BODY_KEY).unwrap().unwrap().1)
+                .unwrap(),
+            app.body.text
+        );
     }
 
     #[test]

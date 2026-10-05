@@ -22,17 +22,27 @@ impl NoteDates {
     }
 
     pub fn display_labels(self, compact: bool) -> Vec<String> {
+        self.display_labels_in(compact, &chrono::Local)
+    }
+
+    /// The labels with times in `zone`: the person's local time zone in the
+    /// app, a fixed one in tests.
+    fn display_labels_in<Tz: chrono::TimeZone>(self, compact: bool, zone: &Tz) -> Vec<String>
+    where
+        Tz::Offset: std::fmt::Display,
+    {
         use ui::i18n::I18nManager;
         let date = |value: Option<i64>| {
             value
                 .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0))
                 .map(|date| {
-                    date.format(if compact {
-                        "%Y-%m-%d"
-                    } else {
-                        "%d %b %Y, %H:%M UTC"
-                    })
-                    .to_string()
+                    date.with_timezone(zone)
+                        .format(if compact {
+                            "%Y-%m-%d"
+                        } else {
+                            "%d %b %Y, %H:%M"
+                        })
+                        .to_string()
                 })
         };
         let mut labels = Vec::new();
@@ -142,6 +152,26 @@ mod tests {
         action.apply(doc).unwrap();
         doc.commit_with(automerge::transaction::CommitOptions::default().with_time(timestamp));
     }
+
+    /// A note edited at 03:54 UTC reads 05:54 to someone on Central
+    /// European Summer Time: the label is the person's local time, not UTC.
+    #[test]
+    fn dates_read_in_the_local_time_zone() {
+        register_messages();
+        // 2026-10-04 03:54:00 UTC.
+        let edited = 1_791_086_040;
+        let dates = NoteDates {
+            created: Some(edited),
+            edited: Some(edited),
+        };
+        let cest = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+        let labels = dates.display_labels_in(false, &cest);
+        assert!(labels[1].contains("04 Oct 2026, 05:54"), "{labels:?}");
+        assert!(!labels[1].contains("UTC"), "{labels:?}");
+        let compact =
+            dates.display_labels_in(true, &chrono::FixedOffset::east_opt(-5 * 3600).unwrap());
+        assert!(compact[0].contains("2026-10-03"), "{compact:?}");
+    }
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
     fn metadata_dates_follow_real_edits_and_survive_reload_and_legacy_notes() {
@@ -150,8 +180,16 @@ mod tests {
             let mut doc = AutoCommit::new();
             let a = PageId::new_v4();
             let b = PageId::new_v4();
-            apply(&mut doc, actions::new_page_action(a, None, 0, "A"), 100);
-            apply(&mut doc, actions::new_page_action(b, None, 1, "B"), 200);
+            apply(
+                &mut doc,
+                actions::new_page_action(a, None, "a".into(), "A"),
+                100,
+            );
+            apply(
+                &mut doc,
+                actions::new_page_action(b, None, "b".into(), "B"),
+                200,
+            );
             let mut index = NoteDateIndex::default();
             index.sync(&mut doc);
             assert_eq!(
@@ -195,7 +233,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut doc,
-                actions::new_page_action(page, None, 0, "Legacy"),
+                actions::new_page_action(page, None, "a".into(), "Legacy"),
                 0,
             );
             let meta = crate::doc::NotesDoc::list_pages(&doc).remove(0);
@@ -216,7 +254,7 @@ mod tests {
             let mut origin = AutoCommit::new();
             let mut peer = AutoCommit::new();
             let page = PageId::new_v4();
-            let action = actions::new_page_action(page, None, 0, "New note");
+            let action = actions::new_page_action(page, None, "a".into(), "New note");
             let envelope =
                 tilo_actions::apply_local(&mut origin, &action, actions::encode(&action)).unwrap();
             assert!(
@@ -259,7 +297,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut base,
-                actions::new_page_action(page, None, 0, "Original"),
+                actions::new_page_action(page, None, "a".into(), "Original"),
                 100,
             );
             let meta = crate::doc::NotesDoc::list_pages(&base).remove(0);
@@ -311,7 +349,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut state.doc,
-                actions::new_page_action(page, None, 0, "Original"),
+                actions::new_page_action(page, None, "a".into(), "Original"),
                 100,
             );
             let before = state.doc.get_heads();
@@ -353,7 +391,7 @@ mod tests {
             let page = PageId::new_v4();
             apply(
                 &mut doc,
-                actions::new_page_action(page, None, 0, "Original"),
+                actions::new_page_action(page, None, "a".into(), "Original"),
                 100,
             );
             let before = doc.get_heads();

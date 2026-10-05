@@ -173,6 +173,8 @@ mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;
+/// The session's read-only vello pipeline cache every app starts from.
+pub mod pipeline_seed;
 #[cfg(all(windows, feature = "native"))]
 pub use native::host_notifications;
 #[cfg(not(all(windows, feature = "native")))]
@@ -198,6 +200,7 @@ pub mod offscreen;
 pub mod overlay;
 pub mod paint;
 pub mod paragraph;
+pub mod passcode_keyboard;
 pub mod pen;
 pub mod permissions;
 pub mod persist;
@@ -227,7 +230,9 @@ pub mod richtext;
 pub mod scale;
 pub mod screen_reader;
 pub mod search;
+pub mod secret_paint;
 pub mod selection;
+pub mod shell_tabs;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;
@@ -300,7 +305,7 @@ pub use input::{
 };
 pub use interaction::{
     ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
-    KeyboardFamily, PointerPrecision,
+    KeyboardFamily, PointerPrecision, TouchPointerEmulator, TouchPointerEvent,
 };
 pub use keycaps::{KeycapLanguage, Keycaps};
 pub use local_state::{
@@ -380,7 +385,6 @@ pub use widget::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
     NativeViewInput,
 };
-pub use widget::{RichBlockStyle, RichTextEditor};
 pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `collab_types::OpClass` /
 // `ArtifactKind` re-exports flow through these widgets, so callers can build
@@ -436,7 +440,10 @@ pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
 pub use status_bubble::StatusBubble;
-pub use text_edit::{Edit, EditCore, Motion};
+pub use text_edit::{
+    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TYPING_RUN_IDLE,
+    TypingRun, delete_last_grapheme, word_at_caret,
+};
 pub use text_render::{
     FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
     NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
@@ -446,10 +453,10 @@ pub use text_render::{
 };
 pub use text_selection::{
     Selection, TextAffinity, TextPosition, clipboard_copy, clipboard_copy_image,
-    clipboard_copy_primary, clipboard_paste, clipboard_paste_primary, extend_span_drag,
-    grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
-    next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
-    try_clipboard_copy, word_boundaries, word_boundaries_chars,
+    clipboard_copy_primary, clipboard_paste, clipboard_paste_image, clipboard_paste_primary,
+    extend_span_drag, grapheme_boundary_at_or_before, line_boundaries, next_char_boundary,
+    next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
+    prev_word_boundary_chars, try_clipboard_copy, word_boundaries, word_boundaries_chars,
 };
 pub use widget::conflict_banner::ConflictBanner;
 pub use widget::conflict_picker::{ConflictPicker, PickerOutcome};

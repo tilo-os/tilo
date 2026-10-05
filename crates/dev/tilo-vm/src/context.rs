@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use tilo_vm_protocol::{Owner, VM_SLOT, valid_slot_name};
+use tilo_vm_protocol::{DEVICE_SLOT, Owner, VM_SLOT, valid_slot_name};
 
 #[derive(Debug, Clone, Default)]
 pub struct Worktree {
@@ -107,8 +107,8 @@ pub fn slot_name_from(text: &str) -> Option<String> {
     while name.ends_with('-') {
         name.pop();
     }
-    if name == VM_SLOT {
-        name = "vm-slot".into();
+    if name == VM_SLOT || name == DEVICE_SLOT {
+        name.push_str("-slot");
     }
     valid_slot_name(&name).then_some(name)
 }
@@ -129,6 +129,7 @@ mod tests {
         );
         assert_eq!(slot_name_from("feature/42-fix").as_deref(), Some("fix"));
         assert_eq!(slot_name_from("vm").as_deref(), Some("vm-slot"));
+        assert_eq!(slot_name_from("device").as_deref(), Some("device-slot"));
         assert_eq!(
             slot_name_from("a-very-long-branch-name-that-keeps-going").map(|n| n.len()),
             Some(28)
