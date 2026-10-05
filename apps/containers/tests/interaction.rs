@@ -387,48 +387,49 @@ fn assert_number_keys_navigate_sections() {
     assert_eq!(app(&mut d).section(), Section::Containers);
 }
 
+fn assert_sidebar_and_list_assistive_activation() {
+    let mut d = offline();
+    let images = d
+        .a11y_nodes()
+        .into_iter()
+        // The destination, not a header that names it.
+        .find(|(_, node)| {
+            node.label() == Some("Images") && node.role() != ui::accesskit::Role::Heading
+        })
+        .map(|(id, _)| id)
+        .expect("the Images destination is named");
+    d.perform_a11y_action(images, &ui::a11y::Action::Activate)
+        .unwrap();
+    assert_eq!(app(&mut d).section(), Section::Images);
+
+    d.key("1");
+    let postgres = sample_engine()
+        .containers
+        .into_iter()
+        .find(|c| c.name == "postgres")
+        .unwrap();
+    let row = d
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("postgres"))
+        .map(|(id, _)| id)
+        .expect("the postgres row is named");
+    d.perform_a11y_action(row, &ui::a11y::Action::Activate)
+        .unwrap();
+    assert_eq!(
+        app(&mut d).selected(),
+        Some(postgres.id.as_str()),
+        "activating a row opens that container"
+    );
+}
+
 /// Number keys switch sections, the sidebar and the list respond to the
 /// pointer and to assistive technology, and the tabs switch the detail.
 #[test]
 fn keyboard_pointer_and_semantic_navigation() {
     assert_number_keys_navigate_sections();
 
-    // --- phase: the_sidebar_and_the_list_take_assistive_activation ---
-    {
-        let mut d = offline();
-        let images = d
-            .a11y_nodes()
-            .into_iter()
-            // The destination, not a header that names it.
-            .find(|(_, node)| {
-                node.label() == Some("Images") && node.role() != ui::accesskit::Role::Heading
-            })
-            .map(|(id, _)| id)
-            .expect("the Images destination is named");
-        d.perform_a11y_action(images, &ui::a11y::Action::Activate)
-            .unwrap();
-        assert_eq!(app(&mut d).section(), Section::Images);
-
-        d.key("1");
-        let postgres = sample_engine()
-            .containers
-            .into_iter()
-            .find(|c| c.name == "postgres")
-            .unwrap();
-        let row = d
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.label() == Some("postgres"))
-            .map(|(id, _)| id)
-            .expect("the postgres row is named");
-        d.perform_a11y_action(row, &ui::a11y::Action::Activate)
-            .unwrap();
-        assert_eq!(
-            app(&mut d).selected(),
-            Some(postgres.id.as_str()),
-            "activating a row opens that container"
-        );
-    }
+    assert_sidebar_and_list_assistive_activation();
 
     // --- phase: tabs_switch_the_detail ---
     {
