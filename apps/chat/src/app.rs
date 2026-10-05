@@ -336,6 +336,7 @@ pub(crate) enum Hit {
     /// Pick a specific file (by path) from the open attachment picker.
     AttachPick(String),
     StartCall,
+    StopSharingLiveContext,
     CloseThread,
     /// Grab the floating call overlay to drag it (records the press point).
     CallDragHandle,
@@ -382,6 +383,7 @@ impl Hit {
             Self::Attach => "chat.attach".into(),
             Self::AttachPick(path) => format!("chat.attach-pick:{path}"),
             Self::StartCall => "chat.start-call".into(),
+            Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
             Self::ToggleLeftFlap => "chat.toggle-navigation".into(),
             Self::ToggleRightFlap => "chat.toggle-details".into(),
             Self::OpenThread(id) => format!("chat.open-thread:{id}"),
@@ -701,6 +703,10 @@ pub struct ChatApp {
     pub(crate) dispatch: Option<ui::framework::Dispatcher<crate::resource::Chat>>,
     /// The voice channel a started call joins once it is in the document.
     pub(crate) pending_call: Option<Id>,
+    /// Ephemeral opt-in to publishing Chat navigation through viewport presence.
+    pub(crate) sharing_context: bool,
+    pub(crate) following_context: bool,
+    pub(crate) context_follow_requested: bool,
     /// This person's Chat preferences, following their other devices; `None`
     /// where the host keeps none (a past version, a test).
     pub(crate) preferences: Option<ui::framework::Setting<crate::preferences::ChatPreferences>>,
@@ -921,6 +927,9 @@ impl ChatApp {
             perms: ChatPermissions::permissive(),
             dispatch: None,
             pending_call: None,
+            sharing_context: false,
+            following_context: false,
+            context_follow_requested: false,
             preferences: None,
             collapsed: std::collections::BTreeSet::new(),
             #[cfg(test)]
@@ -1100,6 +1109,7 @@ impl ChatApp {
             self.context_ws = "ws_acme".into();
             self.active_channel = "c_crit".into();
         }
+        self.sharing_context = scenario == "live-context";
         self.stage_view(scenario);
         self.reselect();
         self.request_relayout();
@@ -2418,6 +2428,9 @@ impl ChatApp {
                         false,
                     ),
                     Hit::StartCall => ("Start or open call".into(), Role::Button, false),
+                    Hit::StopSharingLiveContext => {
+                        (crate::i18n::t("chat-context-stop"), Role::Button, false)
+                    }
                     Hit::ToggleLeftFlap => {
                         ("Show conversation navigation".into(), Role::Button, false)
                     }
@@ -2638,6 +2651,11 @@ impl Collaborative for ChatApp {
 
     fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         match event {
+            ui::collaboration::CollabEvent::FollowChanged { peer_id } => {
+                self.context_follow_requested = peer_id.is_some();
+                self.following_context = false;
+                self.request_relayout();
+            }
             ui::collaboration::CollabEvent::NativeMediaCommandResult { request_id, result } => {
                 if self.native_voice.complete(*request_id, result) {
                     self.project_native_voice();
@@ -2835,7 +2853,8 @@ impl Widget for ChatApp {
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::collaboration::participants::Participants,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::application_view::ApplicationViewState
+        dyn ui::application_view::ApplicationViewState,
+        dyn ui::view::capability::ViewState
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {

@@ -1542,7 +1542,7 @@ impl ChatApp {
             };
 
         let ch = self.channel(&self.active_channel).cloned();
-        let (name, topic, glyph) = match &ch {
+        let (name, mut topic, glyph) = match &ch {
             Some(ch) => {
                 let topic = if self.inbox_open {
                     let source = self
@@ -1563,10 +1563,17 @@ impl ChatApp {
             None => (String::new(), String::new(), "#"),
         };
 
+        if self.sharing_context {
+            topic = crate::i18n::t("chat-context-sharing");
+        } else if self.following_context {
+            topic = crate::i18n::t("chat-context-following");
+        }
+
         // Right-aligned action buttons are placed first so the title + topic
         // know exactly where they must stop — they truncate before the button
         // cluster and can never overlap it, even on a very narrow header.
-        let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, h, hits);
+        let controls = self.draw_context_stop(PaintCtx::new(scene, tf, tr, theme), h, hits);
+        let cluster_left = self.draw_header_action_buttons(scene, tf, tr, theme, controls, hits);
         Self::draw_header_title(
             PaintCtx::new(scene, tf, tr, theme),
             h,
@@ -1576,6 +1583,52 @@ impl ChatApp {
             &topic,
             glyph,
         );
+    }
+
+    /// An immediate stop stays visible while navigation is being published.
+    /// Its face is the shared Button, and its input uses the public effect.
+    fn draw_context_stop(
+        &self,
+        paint: PaintCtx<'_>,
+        header: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) -> Rect {
+        if !self.sharing_context {
+            return header;
+        }
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = paint;
+        let caption = crate::i18n::t("chat-context-stop");
+        let size = theme.tokens.typography.scale.sm;
+        let (width, _) = text.measure(&caption, size, None);
+        let spacing = &theme.tokens.spacing;
+        let button_width = f64::from(width) + 2.0 * f64::from(spacing.s3);
+        let edge = header.x1 - f64::from(spacing.s4);
+        let half_height = f64::from(spacing.s8) / 2.0;
+        let rect = Rect::new(
+            edge - button_width,
+            header.center().y - half_height,
+            edge,
+            header.center().y + half_height,
+        );
+        Button::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &ButtonFace::new(rect, &caption).text_size(size),
+        );
+        Self::push_hit(hits, rect, Hit::StopSharingLiveContext);
+        Rect::new(
+            header.x0,
+            header.y0,
+            rect.x0 - f64::from(spacing.s2),
+            header.y1,
+        )
     }
 
     /// The right-aligned call + members action buttons. Returns the x
@@ -1605,12 +1658,12 @@ impl ChatApp {
         let cy = h.center().y;
         // Both pills size themselves from their measured labels, so a larger
         // text scale widens the pill instead of pushing the caption past it.
-        let call_label = if self.call.active {
-            "● In call"
+        let call_label = crate::i18n::t(if self.call.active {
+            "chat-header-call-open"
         } else {
-            "📹 Call"
-        };
-        let (call_label_width, call_label_height) = tr.measure(call_label, label_size, None);
+            "chat-header-voice-call"
+        });
+        let (call_label_width, call_label_height) = tr.measure(&call_label, label_size, None);
         let call_pad = f64::from(sp.s3);
         let call_w = f64::from(call_label_width) + 2.0 * call_pad;
         // call button (accent when a call is live).
@@ -1630,7 +1683,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            call_label,
+            &call_label,
             label_size,
             ctx,
             call_btn.x0 + call_pad,
