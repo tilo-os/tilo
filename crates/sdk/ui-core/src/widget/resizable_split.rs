@@ -647,18 +647,53 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         let left_node = children.first().copied();
         let right_node = children.get(1).copied();
 
-        let cursor_pt = if let WindowEvent::CursorMoved { position, .. } = event {
-            Some(Point::new(
+        let pointer_event = matches!(
+            event,
+            WindowEvent::CursorMoved { .. }
+                | WindowEvent::CursorLeft { .. }
+                | WindowEvent::MouseInput { .. }
+                | WindowEvent::MouseWheel { .. }
+                | WindowEvent::Touch(_)
+        );
+        // The capturing child owns motion and release even outside its pane.
+        // The divider has already had its own capture handled first.
+        if pointer_event {
+            if self.left.wants_pointer_capture()
+                && let Some(node) = left_node
+            {
+                self.left
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+                return;
+            }
+            if self.right.wants_pointer_capture()
+                && let Some(node) = right_node
+            {
+                self.right
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+                return;
+            }
+        }
+        let cursor_pt = match event {
+            WindowEvent::CursorMoved { position, .. } => Some(Point::new(
                 position.x / ctx.scale_factor,
                 position.y / ctx.scale_factor,
-            ))
-        } else {
-            None
+            )),
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => {
+                Some(self.handle.cursor)
+            }
+            WindowEvent::Touch(touch) => Some(Point::new(
+                touch.location.x / ctx.scale_factor,
+                touch.location.y / ctx.scale_factor,
+            )),
+            _ => None,
         };
 
         let left_rect = self.left.get_rect();
         let right_rect = self.right.get_rect();
         if let Some(pt) = cursor_pt {
+            if let WindowEvent::CursorMoved { device_id, .. } = event {
+                self.clear_inactive_hover(pt, *device_id, ctx);
+            }
             if left_rect.contains(pt) {
                 if let Some(n) = left_node {
                     self.left
@@ -684,6 +719,32 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
             self.right
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
+    }
+
+    fn clear_inactive_hover(
+        &mut self,
+        point: Point,
+        device_id: winit::event::DeviceId,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        // Boundary notifications clear stale sibling hover without claiming
+        // the original move. Captured motion never enters this path.
+        let leave = WindowEvent::CursorLeft { device_id };
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
+        let handled = *ctx.handled;
+        if !self.left.get_rect().contains(point)
+            && let Some(&node) = children.first()
+        {
+            self.left
+                .handle_event(&leave, &mut ctx.reborrow(ctx.path, node));
+        }
+        if !self.right.get_rect().contains(point)
+            && let Some(&node) = children.get(1)
+        {
+            self.right
+                .handle_event(&leave, &mut ctx.reborrow(ctx.path, node));
+        }
+        *ctx.handled = handled;
     }
 
     fn style_panes(
@@ -1207,6 +1268,97 @@ mod tests {
 
     fn split(orientation: SplitOrientation) -> ResizableSplit<TestLeaf, TestLeaf> {
         ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), orientation)
+    }
+
+    #[test]
+    fn hosted_pointer_moves_between_panes_without_activating_stale_hover() {
+        use crate::widget::{Segment, ToggleGroup};
+        let left = std::rc::Rc::new(std::cell::Cell::new(0));
+        let right = std::rc::Rc::new(std::cell::Cell::new(0));
+        let left_changed = left.clone();
+        let right_changed = right.clone();
+        let split = ResizableSplit::new(
+            ToggleGroup::new(
+                vec![Segment::new("Left first"), Segment::new("Left second")],
+                0,
+            )
+            .on_view("left", move |index| left_changed.set(index)),
+            ToggleGroup::new(
+                vec![Segment::new("Right first"), Segment::new("Right second")],
+                0,
+            )
+            .on_view("right", move |index| right_changed.set(index)),
+            SplitOrientation::Vertical,
+        );
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            split,
+            (400, 300),
+            Theme::dark(),
+        );
+        for label in ["Left second", "Right second"] {
+            let (_, node) = harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some(label))
+                .unwrap();
+            let rect = node.bounds().unwrap();
+            harness.click_at((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        }
+        assert_eq!(left.get(), 1);
+        assert_eq!(right.get(), 1, "the right pane receives its physical press");
+    }
+
+    #[test]
+    fn hosted_child_drag_keeps_capture_and_releases_outside_its_pane() {
+        use crate::widget::{Segment, TextInput, ToggleGroup};
+        let split = ResizableSplit::new(
+            TextInput::local()
+                .with_initial_value("select this text")
+                .with_id("drag-text"),
+            ToggleGroup::new(
+                vec![Segment::new("Other first"), Segment::new("Other second")],
+                0,
+            )
+            .on_view("other", |_| {}),
+            SplitOrientation::Horizontal,
+        );
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            split,
+            (600, 200),
+            Theme::dark(),
+        );
+        let text = harness.targets()["drag-text"];
+        harness.drag_at((text.x0 + 20.0, text.center().y), (590.0, text.center().y));
+        let split = harness.root::<ResizableSplit<TextInput, ToggleGroup>>();
+        let (start, end) = split
+            .left
+            .selection_range_public()
+            .expect("actual drag selects text");
+        assert!(start < end);
+        assert_eq!(end, "select this text".len());
+        assert!(
+            !split.left.wants_pointer_capture(),
+            "release reaches the capturing text field"
+        );
+        let (_, node) = harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some("Other second"))
+            .unwrap();
+        let bounds = node.bounds().unwrap();
+        harness.click_at((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+        assert_eq!(
+            harness
+                .root::<ResizableSplit<TextInput, ToggleGroup>>()
+                .right
+                .accessibility()
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("Other second")
+        );
     }
 
     #[test]
