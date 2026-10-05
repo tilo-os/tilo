@@ -60,7 +60,7 @@ tilo-bluez = { path = "../../crates/system/tilo-bluez" }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
-accounts = { path = "../../crates/system/accounts" }
+accounts = { path = "../../crates/system/accounts", features = ["person"] }
 # Credential custody for cloud accounts: the shared OAuth client, Nextcloud
 # Login Flow v2, iCloud sessions and the short-lived handoff to the storage
 # daemon.

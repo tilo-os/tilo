@@ -31,7 +31,6 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -41,7 +40,7 @@ use winit::event::WindowEvent;
 
 use ui::paint::{PaintCtx, with_alpha};
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{FileFilter, PickRequest};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_metrics::{centered_text_top, line_height_px, renderer_type_size};
@@ -51,15 +50,21 @@ use ui::tokens::Metrics;
 use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 use ui::widget::{Badge, Button, ButtonFace, TextInput, Widget};
 
+use crate::actions::ImagerAction;
 use crate::customize::{CustomizePanel, CzField};
-use crate::doc::ImagerDoc;
 use crate::export_dialog::ExportDialog;
 use crate::model::{
     Action, InstallProfile, JobPhase, Progress, Source, SourceKind, Step, TargetDrive, TargetKind,
     TiloRelease, fmt_eta, fmt_rate, fmt_size,
 };
+use crate::resource::{Imager, ImagerEffect, ImagerState};
 use crate::write::{JobControl, WriteRequest, spawn_job};
 use crate::write_setup::WriteSetupPanel;
+use ui::framework::{
+    Dispatcher, EffectAnswer, EffectCx, EffectReply, EffectStatus, Effected, JobProgress, Jobs,
+    LiveRow, RunMode,
+};
+use ui::tilo_resource::Effect as _;
 
 // ---- layout constants (logical px) -------------------------------------
 // The spacing rhythm (HIG §7b) is the crate's: `crate::rhythm` names every
@@ -500,10 +505,24 @@ struct Layout {
     clippy::struct_excessive_bools,
     reason = "the bools split across unrelated concerns (internal-disk visibility, the system-disk destructive-write ack, and seed/repaint bookkeeping), so grouping them would need a real design pass rather than a mechanical lint fix"
 )]
+/// The key of the image write among the window's jobs.
+const WRITE_JOB: &str = "image-write";
+
+/// The key of the installer download among the window's jobs.
+const RELEASE_DOWNLOAD: &str = "release-download";
+
+/// An installer download in flight: the release row it belongs to, and the
+/// switch that stops it between chunks.
+struct ReleaseDownload {
+    index: usize,
+    control: crate::release::DownloadControl,
+}
+
 pub struct ImagerApp {
-    // ---- collaborative records (cached each `sync`) ----
+    // ---- the imager resource, as last presented ----
     source: Option<Source>,
     recent: Vec<Source>,
+    next_recent_rank: i64,
     profile: InstallProfile,
     /// Host-session Wi-Fi passphrase. Never enters the collaborative document.
     wifi_psk: String,
@@ -523,14 +542,17 @@ pub struct ImagerApp {
     status: String,
     step: Step,
     // ---- transient job / portal plumbing (not in the doc) ----
-    job_rx: Option<std::sync::mpsc::Receiver<Progress>>,
+    /// The running write's stop switch; the write itself is the window's
+    /// [`WRITE_JOB`].
     job_control: Option<JobControl>,
-    portal_rx: Option<PortalChannel>,
-    release_rx: Option<std::sync::mpsc::Receiver<crate::release::DownloadEvent>>,
-    release_control: Option<crate::release::DownloadControl>,
-    release_download_index: Option<usize>,
-    release_download_progress: Option<(u64, u64)>,
-    release_download_stage: Option<&'static str>,
+    /// The bytes the running write last reported, and when: its rate.
+    write_mark: Option<(u64, ui::time::Instant)>,
+    /// The caller of the running write effect, answered when it ends.
+    write_reply: Option<EffectReply>,
+    /// The installer download running as this window's job.
+    release_download: Option<ReleaseDownload>,
+    /// The window's own jobs: the installer download.
+    jobs: Option<Jobs<Imager>>,
     export_dialog: ExportDialog,
     /// Stages the read-only export modal after the demo document has synced.
     /// Used only by the deterministic `export` screenshot scenario.
@@ -573,12 +595,15 @@ pub struct ImagerApp {
     customize: CustomizePanel,
     /// Wi-Fi and identity applied onto the written root by this machine.
     write_setup: WriteSetupPanel,
-    /// Framework-owned action dispatch (the only action-dispatch state the app
-    /// holds). Every guided-customization profile edit dispatches its
-    /// [`ImagerAction`](crate::actions::ImagerAction) through this host, which
-    /// brackets the undo boundary and applies it through the executor so it
-    /// records one Ctrl+Z step and replays byte-identically on peers.
-    actions: crate::resource::ActionSink,
+    /// The imager resource's door: every edit of the reviewed source and the
+    /// install profile is an [`ImagerAction`](crate::actions::ImagerAction)
+    /// submitted here, checked, recorded as an undo step and replicated.
+    dispatcher: Option<Dispatcher<Imager>>,
+    /// A window someone uses: drives are probed and may be written.
+    live: bool,
+    /// Whether a live window reaches this machine's drives; the sample
+    /// wizard tests drive never does.
+    reaches_machine: bool,
 }
 
 impl Default for ImagerApp {
@@ -592,6 +617,7 @@ impl ImagerApp {
         let mut app = Self {
             source: None,
             recent: Vec::new(),
+            next_recent_rank: 0,
             targets: Vec::new(),
             releases: Vec::new(),
             selected: None,
@@ -606,14 +632,11 @@ impl ImagerApp {
                 .with_enter_submits(true),
             status: String::new(),
             step: Step::Source,
-            job_rx: None,
             job_control: None,
-            portal_rx: None,
-            release_rx: None,
-            release_control: None,
-            release_download_index: None,
-            release_download_progress: None,
-            release_download_stage: None,
+            write_mark: None,
+            write_reply: None,
+            release_download: None,
+            jobs: None,
             export_dialog: ExportDialog::new(),
             export_after_sync: false,
             shot_confirmation_ready: false,
@@ -631,10 +654,50 @@ impl ImagerApp {
             keyboard_hit: None,
             customize: CustomizePanel::new(),
             write_setup: WriteSetupPanel::new(),
-            actions: crate::resource::ActionSink::default(),
+            dispatcher: None,
+            live: false,
+            reaches_machine: true,
         };
         app.estimate_bands();
         app
+    }
+
+    /// The wizard over the sample drives and releases, its startup review
+    /// done: what tests drive in a framework host.
+    #[cfg(test)]
+    pub(crate) fn sample() -> Self {
+        let mut app = Self::new();
+        app.targets = crate::model::sample_targets();
+        app.releases = crate::model::sample_releases();
+        app.startup_write_state_reconciled = true;
+        app.seeded = true;
+        app.reaches_machine = false;
+        app
+    }
+
+    /// Show the Customize step for the first sample drive.
+    #[cfg(test)]
+    pub(crate) fn show_customize_for_test(&mut self) {
+        self.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        self.select_target(0);
+        self.goto(Step::Customize);
+    }
+
+    /// Give `field` of the profile panel keyboard focus.
+    #[cfg(test)]
+    pub(crate) fn focus_profile_field_for_test(&mut self, field: CzField) {
+        self.customize.focus_for_test(field);
+    }
+
+    /// Choose no drive.
+    #[cfg(test)]
+    pub(crate) fn forget_target_for_test(&mut self) {
+        self.selected = None;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn profile_for_test(&self) -> &InstallProfile {
+        &self.profile
     }
 
     /// Every band at its unmeasured 1× estimate, so a layout taken before
@@ -673,8 +736,8 @@ impl ImagerApp {
         self.selected.and_then(|i| self.targets.get(i))
     }
 
-    /// The releases the document actually knows about — empty on the live
-    /// path, seeded content under `--demo` / `--shots`.
+    /// The releases offered on this machine: the bundled catalogue in a
+    /// live window, staged content in screenshot scenarios.
     fn releases(&self) -> &[TiloRelease] {
         &self.releases
     }
@@ -698,7 +761,7 @@ impl ImagerApp {
 
     /// Can the flow move forward from `from`? (Also gates the step-indicator.)
     fn can_advance(&self, from: Step) -> bool {
-        self.can_advance_with_writer(from, crate::write::write_available())
+        self.can_advance_with_writer(from, self.writer().is_available())
     }
 
     /// Pure half of the advance gate, split so the live-helper capability is
@@ -770,93 +833,62 @@ impl ImagerApp {
             })
     }
 
-    /// Read-only projections used to build the searchable resource hierarchy.
-    /// The target list and job state describe this machine, so publishing them
-    /// does not turn them into shared authority.
+    /// The reviewed image, as last presented or just chosen.
+    #[cfg(test)]
     pub(crate) fn resource_source(&self) -> Option<&Source> {
         self.source.as_ref()
     }
-    pub(crate) fn resource_targets(&self) -> &[TargetDrive] {
-        &self.targets
-    }
-    pub(crate) fn resource_progress(&self) -> &Progress {
-        &self.progress
+
+    /// Show the imager resource as it is now: a local edit, a collaborator's
+    /// (clearing the source included), an undo. Every field is taken as
+    /// presented; an unfocused profile field mirrors its stored value.
+    pub(crate) fn present_state(&mut self, state: &ImagerState) {
+        self.source.clone_from(&state.source);
+        self.recent.clone_from(&state.recent);
+        self.next_recent_rank = state.next_recent_rank;
+        self.profile = state.profile.clone();
+        self.customize.sync(&self.profile);
+        self.write_setup.sync(&self.profile, &self.wifi_psk);
+        self.dirty = true;
     }
 
-    /// The last profile [`EncodedAction`](tilo_actions::EncodedAction) an
-    /// on-screen control dispatched, for the affordance == `ActionSpec` covenant
-    /// test.
-    #[doc(hidden)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
+    /// The release row whose installer is downloading.
+    fn downloading_release(&self) -> Option<usize> {
+        self.release_download
+            .as_ref()
+            .map(|download| download.index)
     }
 
-    /// Show the selected image and install profile the framework resource holds.
-    /// An empty projection does not wipe a selection that has not been published yet.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ImagerState) {
-        if state.source.is_none() && self.source.is_some() {
-            return;
-        }
-        if state.source.is_some() {
-            self.source.clone_from(&state.source);
-        }
-        let profile_changed = state.profile.hostname != self.profile.hostname
-            || state.profile.keyboard != self.profile.keyboard
-            || state.profile.timezone != self.profile.timezone
-            || state.profile.locale != self.profile.locale
-            || state.profile.user.username != self.profile.user.username
-            || state.profile.user.full_name != self.profile.user.full_name
-            || state.profile.encrypt != self.profile.encrypt;
-        if profile_changed {
-            self.profile = state.profile.clone();
-            self.customize.sync(&self.profile);
-        }
-    }
-
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
+    /// The door edits go through, from the framework that hosts the wizard,
+    /// and what it is built for: only a window someone uses probes drives
+    /// and may write them.
     pub(crate) fn attach_framework(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Imager>,
+        dispatcher: Dispatcher<Imager>,
+        jobs: Jobs<Imager>,
+        mode: RunMode,
     ) {
-        self.actions.attach(dispatcher);
+        self.dispatcher = Some(dispatcher);
+        self.jobs = Some(jobs);
+        self.live = self.reaches_machine && mode.is_live();
     }
 
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
+    /// The raw-media writer this window may use.
+    fn writer(&self) -> crate::write::WriteBackend {
+        crate::write::WriteBackend::for_window(self.live)
     }
 
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
+    /// Submit `action` to the imager resource.
+    fn submit(&self, action: &ImagerAction) {
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.apply(action);
+        }
     }
 
-    /// Whether startup has finished reconciling an in-flight write helper.
-    pub(crate) fn startup_write_reconciled(&self) -> bool {
-        self.startup_write_state_reconciled
-    }
-
-    /// Whether a write/verify worker channel is open on this surface.
-    pub(crate) fn job_active(&self) -> bool {
-        self.job_rx.is_some()
-    }
-
-    /// Stage the peer-local confirmation for a deterministic offscreen frame.
-    #[doc(hidden)]
-    pub fn seed_confirmation_for_shot(&mut self, value: &str) {
-        self.confirm_input.set_text(value);
-        self.shot_confirmation_ready = true;
-    }
-
-    /// Headless-shot only: expose the long, searchable time-zone chooser so
-    /// its overlay placement is part of visual review.
-    pub fn shot_open_customize_timezone(&mut self) {
-        self.customize.open_timezone_for_shot();
-    }
-
-    /// Prime local-only state for deterministic offscreen review. None of this
-    /// device/job presentation data is written into the collaborative doc.
-    pub fn seed_local_shot_state(&mut self, scenario: &str) {
+    /// Pose this machine's side of a screenshot scenario: the drives, the
+    /// releases, the station and the job. None of it is document state; the
+    /// scenario's actions staged the reviewed image.
+    pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         self.targets = if scenario == "drive-empty" || scenario == "source-empty" {
             Vec::new()
         } else {
@@ -927,15 +959,22 @@ impl ImagerApp {
             }
             _ => {}
         }
+        match scenario {
+            // The destructive action looks armed, without enabling (or
+            // bypassing) the real write backend.
+            "confirm" => {
+                self.confirm_input.set_text("sdb");
+                self.shot_confirmation_ready = true;
+            }
+            "export" => self.export_after_sync = true,
+            // The long, searchable time-zone chooser, so its overlay
+            // placement is part of visual review.
+            "customize-timezone-open" => self.customize.open_timezone_for_shot(),
+            _ => {}
+        }
         // The unmeasured bands still describe this posed state (the review
         // rows, the failure copy) until the renderer measures them.
         self.estimate_bands();
-    }
-
-    /// Local demo inventory/catalogue used by `--demo`; the collaborative
-    /// document still carries only the reviewed source/profile records.
-    pub fn seed_local_demo_state(&mut self) {
-        self.seed_local_shot_state("source");
     }
 
     fn confirm_matches(&self) -> bool {
@@ -1077,10 +1116,12 @@ impl ImagerApp {
                 .as_ref()
                 .is_some_and(|control| !control.is_cancelled()),
             Hit::CancelDownload => self
-                .release_control
+                .release_download
                 .as_ref()
-                .is_some_and(|control| !control.is_cancelled()),
-            Hit::Release(index) => self.release_rx.is_none() && self.releases.get(index).is_some(),
+                .is_some_and(|download| !download.control.is_cancelled()),
+            Hit::Release(index) => {
+                self.release_download.is_none() && self.releases.get(index).is_some()
+            }
             Hit::Recent(index) => self.recent.get(index).is_some(),
             Hit::Target(index) => self
                 .targets
@@ -1197,9 +1238,9 @@ impl ImagerApp {
                         "Cancel Tilo installer download",
                         *rect,
                         *hit,
-                        self.release_control
+                        self.release_download
                             .as_ref()
-                            .is_none_or(crate::release::DownloadControl::is_cancelled),
+                            .is_none_or(|download| download.control.is_cancelled()),
                     )
                     .with_description("Keeps the verified partial download for a safe resume"),
                 ),
@@ -1526,13 +1567,6 @@ impl ImagerApp {
             .with_name("Start Media Creator")
             .with_children(children)
     }
-}
-
-/// Whether this process should enumerate real block devices. The live binary
-/// sets `IMAGER_LIVE=1`; `--shots`, `--demo` and tests leave it unset so the
-/// document's seeded/posed state is authoritative and no `lsblk` runs.
-fn live_probe_enabled() -> bool {
-    std::env::var("IMAGER_LIVE").is_ok()
 }
 
 // ---- theme-derived colour helpers --------------------------------------
@@ -2170,9 +2204,9 @@ impl ImagerApp {
                 y += SIBLING;
             }
             let r = Rect::new(x0, y, x1, y + m.release_row_h);
-            if self.release_download_index == Some(i) {
+            if self.downloading_release() == Some(i) {
                 hits.push((r, Hit::CancelDownload));
-            } else if self.release_rx.is_none() {
+            } else if self.release_download.is_none() {
                 hits.push((r, Hit::Release(i)));
             }
             y = r.y1;
@@ -2426,7 +2460,7 @@ impl ImagerApp {
     /// The note under the confirmation field. Shot mode poses the field as
     /// ready for documentation, but never enables the backend.
     fn confirm_note(&self) -> &'static str {
-        if crate::write::write_available() || self.shot_confirmation_ready {
+        if self.writer().is_available() || self.shot_confirmation_ready {
             "Ready to write. Check the selected device before continuing."
         } else {
             "Writing is disabled in this preview."
@@ -3208,9 +3242,12 @@ impl ImagerApp {
             Point::new(text_x, r.y0 + RELATED),
             Some(title_max_w),
         );
-        let downloading = self.release_download_index == Some(index);
+        let downloading = self.downloading_release() == Some(index);
+        let progress = downloading.then(|| self.release_progress()).flatten();
         let where_ = if downloading {
-            self.release_download_stage.unwrap_or("preparing")
+            progress
+                .as_ref()
+                .map_or("preparing", |progress| progress.phase.as_str())
         } else if rel.local_path.is_empty() {
             "download"
         } else {
@@ -3249,8 +3286,9 @@ impl ImagerApp {
         )
         .draw_right_v(scene, tr, r.x1 - 16.0, r.y0 + RELATED, f64::from(title_h));
         if downloading {
-            let fraction = self
-                .release_download_progress
+            let fraction = progress
+                .as_ref()
+                .and_then(|progress| progress.completed.zip(progress.total))
                 .and_then(|(done, total)| (total > 0).then_some(done as f64 / total as f64))
                 .unwrap_or(0.0)
                 .clamp(0.0, 1.0);
@@ -4249,7 +4287,7 @@ impl ImagerApp {
 // Interaction / state mutation
 // =========================================================================
 impl ImagerApp {
-    fn select_source(&mut self, state: &mut AutoCommit, src: &Source) {
+    fn select_source(&mut self, src: &Source) {
         let previous = self
             .source
             .as_ref()
@@ -4260,164 +4298,155 @@ impl ImagerApp {
         if !self.source_is_official(src) {
             self.action = Action::Flash;
         }
-        let action = crate::actions::ImagerAction::SelectSource {
+        self.submit(&ImagerAction::SelectSource {
             source: Box::new(src.clone()),
             previous,
-            recent_rank: ImagerDoc::next_recent_rank(state),
-        };
-        self.actions.dispatch_with_context(
-            state,
-            crate::actions::IMAGER_ACTION_TYPE,
-            &action,
-            tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
-        );
+            recent_rank: self.next_recent_rank,
+        });
         self.source = Some(src.clone());
-        self.set_status(
-            state,
-            &format!(
-                "Selected {} — {}",
-                src.name,
-                if self.source_is_official(src) {
-                    "official release verified"
-                } else {
-                    "local image, written as-is"
-                }
-            ),
-        );
-        self.dirty = true;
-    }
-
-    fn open_file_picker(&mut self, state: &AutoCommit) {
-        self.portal_rx = Some(
-            PickRequest::open("Choose a disk image", "Choose")
-                .filter(
-                    FileFilter::new("Disk images")
-                        .glob("*.iso")
-                        .glob("*.img")
-                        .glob("*.raw")
-                        .mimetype("application/x-iso9660-image"),
-                )
-                .thread_name("imager-portal")
-                .send(),
-        );
-        self.set_status(state, "Opening the file picker…");
-        self.dirty = true;
-    }
-
-    /// Drain a pending portal result, if any. Called each `sync`.
-    fn drain_portal(&mut self, state: &mut AutoCommit) {
-        let Some(rx) = &self.portal_rx else { return };
-        let outcome = match rx.try_recv() {
-            Ok(o) => o,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-                return;
+        self.set_status(&format!(
+            "Selected {} — {}",
+            src.name,
+            if self.source_is_official(src) {
+                "official release verified"
+            } else {
+                "local image, written as-is"
             }
+        ));
+        self.dirty = true;
+    }
+
+    /// The disk-image chooser this machine shows.
+    fn image_request() -> PickRequest {
+        PickRequest::open("Choose a disk image", "Choose").filter(
+            FileFilter::new("Disk images")
+                .glob("*.iso")
+                .glob("*.img")
+                .glob("*.raw")
+                .mimetype("application/x-iso9660-image"),
+        )
+    }
+
+    /// Review the image the person chose in the chooser, if they chose one.
+    fn take_chosen_image(&mut self, path: Option<std::path::PathBuf>) -> EffectAnswer {
+        self.dirty = true;
+        let Some(path) = path else {
+            self.set_status("File selection cancelled.");
+            return Ok(Effected::done());
         };
-        self.portal_rx = None;
-        match outcome {
-            PortalOutcome::Opened(path) => match crate::probe::inspect_source(&path) {
-                Some(src) => self.select_source(state, &src),
-                None => self.set_status(state, "That file is not a readable disk image."),
-            },
-            PortalOutcome::Cancelled => self.set_status(state, "File selection cancelled."),
-            PortalOutcome::Failed(reason) => {
-                self.set_status(state, &format!("File picker unavailable: {reason}"));
-            }
+        if let Some(source) = crate::probe::inspect_source(&path) {
+            self.select_source(&source);
+            Ok(Effected::done())
+        } else {
+            let message = "That file is not a readable disk image.";
+            self.set_status(message);
+            Err(message.into())
         }
-        self.dirty = true;
     }
 
-    fn download_release(&mut self, state: &AutoCommit, index: usize, release: TiloRelease) {
-        if self.release_rx.is_some() {
-            self.set_status(state, "A Tilo installer download is already in progress.");
+    /// Download and verify `release` as a job of this window, which the
+    /// release row shows and the published download row can cancel.
+    fn download_release(&mut self, index: usize, release: TiloRelease) {
+        if self.release_download.is_some() {
+            self.set_status("A Tilo installer download is already in progress.");
             return;
         }
-        self.set_status(
-            state,
-            &format!("Downloading and verifying {}…", release.display_name()),
-        );
-        let job = crate::release::spawn_download(release);
-        self.release_rx = Some(job.events);
-        self.release_control = Some(job.control);
-        self.release_download_index = Some(index);
-        self.release_download_progress = None;
-        self.release_download_stage = Some("preparing");
-        self.dirty = true;
-    }
-
-    fn drain_release(&mut self, state: &mut AutoCommit) {
-        let Some(rx) = &self.release_rx else { return };
-        let mut events = Vec::new();
-        loop {
-            match rx.try_recv() {
-                Ok(event) => events.push(event),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    if !events
-                        .iter()
-                        .any(|event| matches!(event, crate::release::DownloadEvent::Finished(_)))
-                    {
-                        events.push(crate::release::DownloadEvent::Finished(Err(
-                            "The Tilo installer download stopped unexpectedly.".into(),
-                        )));
-                    }
-                    break;
-                }
-            }
-        }
-        if events.is_empty() {
+        let Some(jobs) = self.jobs.clone() else {
+            self.set_status("Tilo installers download in a window someone uses.");
             return;
-        }
-        for event in events {
-            match event {
-                crate::release::DownloadEvent::Downloading { received, total } => {
-                    self.release_download_progress = Some((received, total));
-                    self.release_download_stage = Some("downloading");
-                    let percent = received.saturating_mul(100).checked_div(total).unwrap_or(0);
-                    self.set_status(state, &format!("Downloading Tilo installer… {percent}%"));
-                }
-                crate::release::DownloadEvent::Verifying => {
-                    self.release_download_progress = None;
-                    self.release_download_stage = Some("verifying");
-                    self.set_status(state, "Cryptographically verifying the Tilo installer…");
-                }
-                crate::release::DownloadEvent::Expanding { written, total } => {
-                    self.release_download_progress = Some((written, total));
-                    self.release_download_stage = Some("preparing image");
-                    self.set_status(state, "Preparing the verified Tilo installer image…");
-                }
-                crate::release::DownloadEvent::Finished(result) => {
-                    self.release_rx = None;
-                    self.release_control = None;
-                    self.release_download_index = None;
-                    self.release_download_progress = None;
-                    self.release_download_stage = None;
-                    match result {
-                        Ok(source) => {
-                            if let Some(release) = self
-                                .releases
-                                .iter_mut()
-                                .find(|release| release.matches_source(&source))
-                            {
-                                release.local_path.clone_from(&source.path);
-                            }
-                            self.select_source(state, &source);
-                            self.set_status(
-                                state,
-                                "Tilo installer downloaded and cryptographically verified.",
-                            );
+        };
+        self.set_status(&format!(
+            "Downloading and verifying {}…",
+            release.display_name()
+        ));
+        let control = crate::release::DownloadControl::default();
+        let worker = control.clone();
+        jobs.start::<Self>(RELEASE_DOWNLOAD, move |cx| {
+            Ok(cx.thread(
+                move |progress| {
+                    crate::release::verified_image_observed(&release, &worker, &mut |event| {
+                        if progress.is_cancelled() {
+                            worker.cancel();
                         }
-                        Err(error) => self.set_status(state, &error),
-                    }
-                }
+                        match event {
+                            crate::release::DownloadEvent::Downloading { received, total } => {
+                                progress.report("downloading", Some(received), Some(total));
+                            }
+                            crate::release::DownloadEvent::Verifying => {
+                                progress.report("verifying", None, None);
+                            }
+                            crate::release::DownloadEvent::Expanding { written, total } => {
+                                progress.report("preparing image", Some(written), Some(total));
+                            }
+                        }
+                    })
+                },
+                |app: &mut Self, result, _| {
+                    app.finish_release_download(result);
+                    Ok(Effected::done())
+                },
+            ))
+        });
+        self.release_download = Some(ReleaseDownload { index, control });
+        self.dirty = true;
+    }
+
+    /// Stop the running installer download safely.
+    fn cancel_release_download(&mut self) -> Result<(), String> {
+        let Some(download) = &self.release_download else {
+            return Err("No Tilo installer download is running".into());
+        };
+        download.control.cancel();
+        self.set_status(
+            "Cancelling safely… The verified partial download will be kept for resume.",
+        );
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Where the running installer download is, as its job last said.
+    fn release_progress(&self) -> Option<JobProgress> {
+        self.jobs.as_ref()?.progress(RELEASE_DOWNLOAD)
+    }
+
+    /// The status line for a download at `progress`.
+    fn download_status(progress: &JobProgress) -> String {
+        match progress.phase.as_str() {
+            "downloading" => {
+                let percent = progress
+                    .completed
+                    .zip(progress.total)
+                    .and_then(|(done, total)| done.saturating_mul(100).checked_div(total))
+                    .unwrap_or(0);
+                format!("Downloading Tilo installer… {percent}%")
             }
+            "verifying" => "Cryptographically verifying the Tilo installer…".into(),
+            _ => "Preparing the verified Tilo installer image…".into(),
+        }
+    }
+
+    /// The installer download ended: review the verified image, or say why
+    /// it did not arrive.
+    fn finish_release_download(&mut self, result: Result<Source, String>) {
+        self.release_download = None;
+        match result {
+            Ok(source) => {
+                if let Some(release) = self
+                    .releases
+                    .iter_mut()
+                    .find(|release| release.matches_source(&source))
+                {
+                    release.local_path.clone_from(&source.path);
+                }
+                self.select_source(&source);
+                self.set_status("Tilo installer downloaded and cryptographically verified.");
+            }
+            Err(error) => self.set_status(&error),
         }
         self.dirty = true;
     }
 
-    fn select_target(&mut self, state: &AutoCommit, idx: usize) {
+    fn select_target(&mut self, idx: usize) {
         let Some(drive) = self.targets.get(idx) else {
             return;
         };
@@ -4426,7 +4455,6 @@ impl ImagerApp {
         // disk raw writer.
         if !drive.is_media_target() {
             self.set_status(
-                state,
                 "Internal and system disks can only be installed from the booted Tilo medium.",
             );
             self.dirty = true;
@@ -4437,11 +4465,11 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn set_status(&mut self, _state: &AutoCommit, s: &str) {
+    fn set_status(&mut self, s: &str) {
         self.status = s.to_string();
     }
 
-    fn goto(&mut self, _state: &mut AutoCommit, s: Step) {
+    fn goto(&mut self, s: Step) {
         self.step = s;
         self.scroll_y = 0.0;
         self.keyboard_hit = None;
@@ -4451,107 +4479,129 @@ impl ImagerApp {
         self.dirty = true;
     }
 
-    fn advance(&mut self, state: &mut AutoCommit) {
+    fn advance(&mut self) {
         match self.step {
-            Step::Source if self.can_advance(Step::Source) => self.goto(state, Step::Drive),
+            Step::Source if self.can_advance(Step::Source) => self.goto(Step::Drive),
             Step::Drive if self.can_advance(Step::Drive) => {
                 self.action = Action::Flash;
                 if self.customizable() {
-                    self.goto(state, Step::Customize);
+                    self.goto(Step::Customize);
                 } else {
-                    self.goto(state, Step::Confirm);
+                    self.goto(Step::Confirm);
                 }
             }
             Step::Customize => match self.profile.validate_media_profile() {
-                Ok(()) => self.goto(state, Step::Confirm),
-                Err(message) => self.set_status(state, &message),
+                Ok(()) => self.goto(Step::Confirm),
+                Err(message) => self.set_status(&message),
             },
             // Confirm advances into the write only when the typed-name gate is
             // armed; that same gesture kicks off the (external) job.
-            Step::Confirm if self.can_advance(Step::Confirm) => self.start_write(state),
+            Step::Confirm if self.can_advance(Step::Confirm) => self.start_write(),
             _ => {}
         }
     }
 
-    fn back(&mut self, state: &mut AutoCommit) {
+    fn back(&mut self) {
         match self.step {
-            Step::Confirm if self.customizable() => self.goto(state, Step::Customize),
-            Step::Confirm | Step::Customize => self.goto(state, Step::Drive),
-            Step::Drive => self.goto(state, Step::Source),
+            Step::Confirm if self.customizable() => self.goto(Step::Customize),
+            Step::Confirm | Step::Customize => self.goto(Step::Drive),
+            Step::Drive => self.goto(Step::Source),
             // No going back from the source, an in-flight write, or the outcome.
             Step::Source | Step::Write | Step::Done => {}
         }
     }
 
-    fn start_write(&mut self, state: &mut AutoCommit) {
-        let operation = crate::actions::ImagerOperation::Write {
-            device: self.target().map(TargetDrive::dev_path).unwrap_or_default(),
-            confirmation: self.confirm_input.value().to_string(),
-        };
-        if let Err(reason) = self.perform_operation(&operation, state) {
-            self.set_status(state, &reason);
+    /// The Write button: the write effect, through the same door as the
+    /// palette and agents. What would refuse it is said here first.
+    fn start_write(&mut self) {
+        let device = self.target().map(TargetDrive::dev_path).unwrap_or_default();
+        if let Err(reason) = self.write_refusal(&device) {
+            self.set_status(&reason);
             self.dirty = true;
+            return;
+        }
+        if let Some(dispatcher) = &self.dispatcher {
+            dispatcher.effect(&ImagerEffect::Write {
+                device,
+                confirmation: self.confirm_input.value().to_string(),
+            });
         }
     }
 
-    /// One semantic implementation shared by the direct Confirm control and
-    /// the resource-operation route.
+    /// Why nothing can be written now, whichever drive: the write state is
+    /// still being restored, a write runs, or this window has no writer.
+    fn writer_refusal(&self) -> Result<(), (&'static str, String)> {
+        if !self.startup_write_state_reconciled {
+            return Err(("restoring_write_state", "Restoring the previous image-write state; wait for drive review before starting another write".into()));
+        }
+        if self.job_control.is_some() {
+            return Err((
+                "write_in_progress",
+                "An image write is already in progress".into(),
+            ));
+        }
+        if !self.writer().is_available() {
+            return Err((
+                "write_backend_disabled",
+                "Raw-device writing is disabled; enable the privileged Imager backend first".into(),
+            ));
+        }
+        if self.source.is_none() {
+            return Err((
+                "incomplete_plan",
+                "Select an image source and target drive before writing".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The removable drive at `device`, as the last probe saw it.
+    fn media_target(&self, device: &str) -> Option<usize> {
+        self.targets
+            .iter()
+            .position(|target| target.is_media_target() && target.dev_path() == device)
+    }
+
+    /// Writing a drive chooses it: a row's write needs no separate choice.
+    /// The typed name still has to match it before anything is written.
+    pub(crate) fn choose_for_write(&mut self, device: &str) {
+        if let Some(index) = self.media_target(device)
+            && self.selected != Some(index)
+        {
+            self.select_target(index);
+        }
+    }
+
+    /// Why a write to `device` cannot start now, if it cannot.
+    fn write_refusal(&self, device: &str) -> Result<(), String> {
+        self.writer_refusal().map_err(|(_, reason)| reason)?;
+        if self.media_target(device).is_none() {
+            return Err("Select an image source and target drive before writing".into());
+        }
+        Ok(())
+    }
+
+    /// Stop the running write safely.
+    fn cancel_write(&mut self) -> Result<(), String> {
+        let Some(control) = self.job_control.clone() else {
+            return Err("No image write is currently running".into());
+        };
+        control.cancel();
+        self.set_status("Stopping safely… Keep the drive connected until cancellation finishes.");
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Start writing the reviewed image to `device`, whose name the caller
+    /// typed as `confirmation`.
     #[allow(
         clippy::too_many_lines,
-        reason = "write, cancellation, status, and export share one operation-dispatch boundary"
+        reason = "the write's validation, staging and start share one boundary"
     )]
-    fn perform_operation(
-        &mut self,
-        operation: &crate::actions::ImagerOperation,
-        state: &mut AutoCommit,
-    ) -> Result<(), String> {
-        if matches!(operation, crate::actions::ImagerOperation::Write { .. })
-            && !self.startup_write_state_reconciled
-        {
+    fn begin_write(&mut self, device: &str, confirmation: &str) -> Result<(), String> {
+        if !self.startup_write_state_reconciled {
             return Err("Restoring the previous image-write state; wait for drive review before starting another write".into());
         }
-        if matches!(operation, crate::actions::ImagerOperation::Cancel) {
-            let Some(control) = self.job_control.clone() else {
-                return Err("No image write is currently running".into());
-            };
-            control.cancel();
-            self.set_status(
-                state,
-                "Stopping safely… Keep the drive connected until cancellation finishes.",
-            );
-            self.dirty = true;
-            return Ok(());
-        }
-        let crate::actions::ImagerOperation::Write {
-            device,
-            confirmation,
-        } = operation
-        else {
-            return match operation {
-                crate::actions::ImagerOperation::Verify => Err(
-                    "Read-back verification runs automatically after every successful write".into(),
-                ),
-                crate::actions::ImagerOperation::Cancel => {
-                    Err("No image write is currently running".into())
-                }
-                crate::actions::ImagerOperation::Status => Ok(()),
-                crate::actions::ImagerOperation::ExportConfig => {
-                    if self.source.is_none() || self.target().is_none() {
-                        Err("Select an image source and target drive first".into())
-                    } else {
-                        self.export_config(state);
-                        Ok(())
-                    }
-                }
-                crate::actions::ImagerOperation::SetWifiPsk { value } => {
-                    self.wifi_psk.clone_from(value);
-                    Ok(())
-                }
-                crate::actions::ImagerOperation::Write { .. } => {
-                    Err("Invalid image-write operation dispatch".into())
-                }
-            };
-        };
         let (Some(mut src), Some(tgt)) = (self.source.clone(), self.target().cloned()) else {
             return Err("Select a source and drive first.".into());
         };
@@ -4565,7 +4615,7 @@ impl ImagerApp {
         if src.installable {
             self.profile.validate_media_profile()?;
         }
-        if *device != tgt.dev_path() {
+        if device != tgt.dev_path() {
             return Err("The selected target changed; review the write plan again.".into());
         }
         // Stage Wi-Fi / enrollment for any image the operator configured on
@@ -4580,6 +4630,7 @@ impl ImagerApp {
             } else {
                 None
             };
+        let src_size = src.size;
         let req = WriteRequest {
             source: src,
             target: tgt.clone(),
@@ -4587,7 +4638,7 @@ impl ImagerApp {
             profile: self.profile.clone(),
             handoff_stage: handoff_stage.clone(),
         };
-        let (start, rx, control) = spawn_job(req, confirmation);
+        let (start, rx, control) = spawn_job(req, confirmation, self.writer());
         let refuse = |message: String| -> Result<(), String> {
             if let Some(stage) = handoff_stage.as_ref() {
                 let _ = std::fs::remove_dir_all(stage);
@@ -4596,8 +4647,12 @@ impl ImagerApp {
         };
         match start {
             crate::write::JobStart::Started => {
-                self.job_rx = rx;
-                self.job_control = control;
+                let (Some(rx), Some(control), Some(jobs)) = (rx, control, self.jobs.clone()) else {
+                    return refuse("The writer could not start in this window.".into());
+                };
+                Self::start_write_job(&jobs, rx, control.clone(), src_size);
+                self.job_control = Some(control);
+                self.write_mark = None;
                 self.progress = Progress {
                     phase: JobPhase::Writing,
                     write_frac: 0.0,
@@ -4605,19 +4660,16 @@ impl ImagerApp {
                     rate_bps: 0,
                     error: None,
                 };
-                self.set_status(
-                    state,
-                    &format!(
-                        "{} → {} (writing)",
-                        self.source
-                            .as_ref()
-                            .map(|s| s.name.clone())
-                            .unwrap_or_default(),
-                        tgt.dev_path()
-                    ),
-                );
+                self.set_status(&format!(
+                    "{} → {} (writing)",
+                    self.source
+                        .as_ref()
+                        .map(|s| s.name.clone())
+                        .unwrap_or_default(),
+                    tgt.dev_path()
+                ));
                 // The write has begun: move onto the live-progress station.
-                self.goto(state, Step::Write);
+                self.goto(Step::Write);
             }
             crate::write::JobStart::ConfirmationMismatch => {
                 return refuse("Confirmation does not match — write refused.".into());
@@ -4646,111 +4698,211 @@ impl ImagerApp {
         Ok(())
     }
 
-    /// Drain live job progress, folding it into the doc. Called each `sync`.
-    fn drain_job(&mut self, state: &mut AutoCommit) {
-        let Some(rx) = &self.job_rx else { return };
-        let mut latest = None;
-        loop {
-            match rx.try_recv() {
-                Ok(p) => latest = Some(p),
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    // The worker finished; if we never saw a terminal phase,
-                    // treat a non-success as a failure.
-                    if self.progress.phase.is_active() {
-                        self.progress.phase = JobPhase::Failed;
-                        self.progress.error = Some(
-                            "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
-                                .into(),
+    /// Run the started writer as the window's job: its progress, in bytes
+    /// of the active phase, reaches the write station and the caller; it
+    /// stops when cancelled; it ends with the writer's last word.
+    fn start_write_job(
+        jobs: &Jobs<Imager>,
+        events: std::sync::mpsc::Receiver<Progress>,
+        control: JobControl,
+        size: u64,
+    ) {
+        jobs.start::<Self>(WRITE_JOB, move |cx| {
+            Ok(cx.thread(
+                move |progress| {
+                    let mut last = None;
+                    for event in &events {
+                        if progress.is_cancelled() {
+                            control.cancel();
+                        }
+                        let fraction = match event.phase {
+                            JobPhase::Verifying => event.verify_frac,
+                            _ => event.write_frac,
+                        };
+                        progress.report(
+                            event.phase.key(),
+                            Some((fraction.clamp(0.0, 1.0) * size as f64) as u64),
+                            Some(size),
                         );
-                        self.set_status(
-                            state,
-                            "The writer stopped unexpectedly. Reconnect the drive, then review and retry.",
-                        );
-                        self.goto(state, Step::Done);
+                        let ended = matches!(event.phase, JobPhase::Success | JobPhase::Failed);
+                        last = Some(event);
+                        if ended {
+                            break;
+                        }
                     }
-                    self.job_rx = None;
-                    self.job_control = None;
-                    self.dirty = true;
-                    return;
-                }
-            }
+                    last
+                },
+                |app: &mut Self, last, _| {
+                    app.finish_write(last);
+                    Ok(Effected::done())
+                },
+            ))
+        });
+    }
+
+    /// Follow the running write into the write station and tell the write
+    /// effect's caller where it is. Called each `sync`.
+    fn drain_job(&mut self) {
+        if self
+            .write_reply
+            .as_ref()
+            .is_some_and(EffectReply::is_cancelled)
+            && self
+                .job_control
+                .as_ref()
+                .is_some_and(|control| !control.is_cancelled())
+        {
+            let _ = self.cancel_write();
         }
-        if let Some(mut p) = latest {
-            // Cancellation may race with a terminal helper event already in
-            // the pipe. Honour the user's stop request conservatively: never
-            // turn that race into a claim that the medium is ready to use.
-            if p.phase == JobPhase::Success
-                && self
-                    .job_control
-                    .as_ref()
-                    .is_some_and(JobControl::is_cancelled)
-            {
-                p.phase = JobPhase::Failed;
-                p.error = Some(
-                    "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
-                        .into(),
-                );
-            }
-            let terminal_phase = p.phase;
-            let terminal_error = p.error.clone();
-            self.progress = p;
-            self.dirty = true;
-            if matches!(terminal_phase, JobPhase::Success | JobPhase::Failed) {
-                self.job_rx = None;
-                self.job_control = None;
-                let name = self
-                    .source
-                    .as_ref()
-                    .map(|s| s.name.clone())
-                    .unwrap_or_default();
-                let msg = if terminal_phase == JobPhase::Success {
-                    format!("Done — {name} {} and verified", self.action.past())
-                } else {
-                    terminal_error.unwrap_or_else(|| {
-                        format!(
-                            "{} failed. Reconnect the drive, then review and retry.",
-                            self.action.title()
-                        )
-                    })
-                };
-                self.set_status(state, &msg);
-                // Terminal phase → show the outcome station.
-                self.goto(state, Step::Done);
-            }
+        let Some(progress) = self.jobs.as_ref().and_then(|jobs| jobs.progress(WRITE_JOB)) else {
+            return;
+        };
+        self.follow_write(&progress, ui::time::now());
+        if let Some(reply) = &self.write_reply {
+            reply.progress().report(
+                self.progress.phase.key(),
+                Some((self.progress.overall().clamp(0.0, 1.0) * 1000.0) as u64),
+                Some(1000),
+            );
         }
     }
 
-    fn write_another(&mut self, state: &mut AutoCommit) {
+    /// Show the write at `progress`, as reported `at`: its phase, how far
+    /// the active phase is and how fast it goes.
+    fn follow_write(&mut self, progress: &JobProgress, at: ui::time::Instant) {
+        let phase = JobPhase::from_key(&progress.phase);
+        if !phase.is_active() {
+            return;
+        }
+        let done = progress.completed.unwrap_or(0);
+        let fraction = progress
+            .total
+            .filter(|total| *total > 0)
+            .map_or(0.0, |total| done as f64 / total as f64);
+        let (write_frac, verify_frac) = if phase == JobPhase::Verifying {
+            (1.0, fraction)
+        } else {
+            (fraction, 0.0)
+        };
+        let rate_bps = match self.write_mark {
+            Some((before, then)) if done >= before && phase == self.progress.phase => {
+                let seconds = at.saturating_duration_since(then).as_secs_f64();
+                if seconds > 0.0 {
+                    ((done - before) as f64 / seconds) as u64
+                } else {
+                    self.progress.rate_bps
+                }
+            }
+            _ => 0,
+        };
+        if self.write_mark.is_none_or(|(before, _)| before != done) {
+            self.write_mark = Some((done, at));
+        }
+        self.progress = Progress {
+            phase,
+            write_frac,
+            verify_frac,
+            rate_bps,
+            error: None,
+        };
+        self.dirty = true;
+    }
+
+    /// The write ended with the writer's last word, `last`: show the
+    /// outcome and answer the write effect's caller.
+    fn finish_write(&mut self, last: Option<Progress>) {
+        let cancelled = self
+            .job_control
+            .as_ref()
+            .is_some_and(JobControl::is_cancelled);
+        self.job_control = None;
+        self.write_mark = None;
+        let mut outcome = last
+            .filter(|last| !last.phase.is_active())
+            .unwrap_or_else(|| Progress {
+                phase: JobPhase::Failed,
+                error: Some(
+                    "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
+                        .into(),
+                ),
+                ..self.progress.clone()
+            });
+        // Cancellation may race with a terminal helper event already in
+        // the pipe. Honour the user's stop request conservatively: never
+        // turn that race into a claim that the medium is ready to use.
+        if outcome.phase == JobPhase::Success && cancelled {
+            outcome.phase = JobPhase::Failed;
+            outcome.error = Some(
+                "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
+                    .into(),
+            );
+        }
+        let name = self
+            .source
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let message = if outcome.phase == JobPhase::Success {
+            format!("Done — {name} {} and verified", self.action.past())
+        } else {
+            outcome.error.clone().unwrap_or_else(|| {
+                format!(
+                    "{} failed. Reconnect the drive, then review and retry.",
+                    self.action.title()
+                )
+            })
+        };
+        self.progress = outcome;
+        self.set_status(&message);
+        self.goto(Step::Done);
+        self.dirty = true;
+        if let Some(reply) = self.write_reply.take() {
+            reply.finish(match self.progress.phase {
+                JobPhase::Success => Ok(tilo_actions::ActionOutput {
+                    value: Some(self.status_value()),
+                    resources: Vec::new(),
+                }),
+                _ => Err(self
+                    .progress
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| self.status.clone())),
+            });
+        }
+    }
+
+    /// The write job as callers read it.
+    fn status_value(&self) -> serde_json::Value {
+        serde_json::json!({
+            "phase": self.progress.phase.key(),
+            "progress": self.progress.overall(),
+            "message": self.status,
+        })
+    }
+
+    fn write_another(&mut self) {
         if self.progress.phase == JobPhase::Failed {
             // Preserve the reviewed source, target, and customized setup. A
             // retry still requires a fresh peer-local destructive confirmation
             // and passes every target/source validation again in the helper.
             self.progress = Progress::default();
             self.confirm_input.set_text("");
-            self.goto(state, Step::Confirm);
-            self.set_status(
-                state,
-                "Review the image and drive, then confirm the target again to retry.",
-            );
+            self.goto(Step::Confirm);
+            self.set_status("Review the image and drive, then confirm the target again to retry.");
             return;
         }
         self.progress = Progress::default();
         self.confirm_input.set_text("");
-        self.goto(state, Step::Source);
-        self.set_status(state, "");
+        self.goto(Step::Source);
+        self.set_status("");
     }
 
-    fn export_config(&mut self, _state: &mut AutoCommit) {
+    fn export_config(&mut self) {
         let text = self
             .profile
             .to_headless_config(self.source.as_ref(), self.target());
         self.export_dialog.show(text);
         self.dirty = true;
-    }
-
-    pub(crate) fn seed_export_for_shot(&mut self) {
-        self.export_after_sync = true;
     }
 
     /// Replace the last probe snapshot without carrying destructive consent
@@ -4786,66 +4938,57 @@ impl ImagerApp {
             && expected.is_system == actual.is_system
     }
 
-    fn do_rescan(&mut self, state: &AutoCommit) -> bool {
-        if live_probe_enabled() {
+    fn do_rescan(&mut self) -> bool {
+        if self.live {
             // Re-read the live block-device inventory. `probe()` returns `None`
             // only when the platform probe is unavailable or malformed, so in
             // that case we keep the last-known list rather than blanking it.
             // A real (possibly empty) result is authoritative and replaces it,
             // so unplugging the selected drive genuinely drops it from the list.
             let Some(t) = crate::probe::probe() else {
-                self.set_status(
-                    state,
-                    "Drive rescan failed. Check the system disk tools and try again.",
-                );
+                self.set_status("Drive rescan failed. Check the system disk tools and try again.");
                 self.dirty = true;
                 return false;
             };
             self.apply_drive_inventory(t);
             let n = self.targets.len();
             let removable = self.removable_count();
-            self.set_status(
-                state,
-                &format!("Rescanned — {removable} removable, {n} total"),
-            );
+            self.set_status(&format!("Rescanned — {removable} removable, {n} total"));
         } else {
-            self.set_status(state, "Rescanned drives");
+            self.set_status("Rescanned drives");
         }
         self.selected = self.selected.filter(|i| *i < self.targets.len());
         self.dirty = true;
         true
     }
 
-    fn dispatch_hit(&mut self, state: &mut AutoCommit, hit: Hit) {
+    fn dispatch_hit(&mut self, hit: Hit) {
         match hit {
-            Hit::PickFile => self.open_file_picker(state),
+            Hit::PickFile => {
+                if let Some(dispatcher) = &self.dispatcher {
+                    dispatcher.effect(&ImagerEffect::ChooseImage);
+                }
+            }
             Hit::Release(i) => {
                 if let Some(release) = self.releases.get(i).cloned() {
                     if release.url.is_empty() {
-                        self.select_source(state, &release.to_source());
+                        self.select_source(&release.to_source());
                     } else {
-                        self.download_release(state, i, release);
+                        self.download_release(i, release);
                     }
                 }
             }
             Hit::CancelDownload => {
-                if let Some(control) = self.release_control.clone() {
-                    control.cancel();
-                    self.set_status(
-                        state,
-                        "Cancelling safely… The verified partial download will be kept for resume.",
-                    );
-                    self.dirty = true;
-                }
+                let _ = self.cancel_release_download();
             }
             Hit::Recent(i) => {
                 if let Some(src) = self.recent.get(i).cloned() {
-                    self.select_source(state, &src);
+                    self.select_source(&src);
                 }
             }
-            Hit::Target(i) => self.select_target(state, i),
+            Hit::Target(i) => self.select_target(i),
             Hit::Rescan => {
-                self.do_rescan(state);
+                self.do_rescan();
             }
             Hit::ConfirmField => {
                 self.confirm_input.set_focus(true);
@@ -4854,23 +4997,23 @@ impl ImagerApp {
             }
             Hit::StepJump(s) => {
                 if self.crumb_reachable(s) {
-                    self.goto(state, s);
+                    self.goto(s);
                 }
             }
-            Hit::Back => self.back(state),
-            Hit::Next => self.advance(state),
-            Hit::StartWrite => self.start_write(state),
+            Hit::Back => self.back(),
+            Hit::Next => self.advance(),
+            Hit::StartWrite => self.start_write(),
             Hit::CancelWrite => {
-                let _ = self.perform_operation(&crate::actions::ImagerOperation::Cancel, state);
+                let _ = self.cancel_write();
             }
-            Hit::WriteAnother => self.write_another(state),
+            Hit::WriteAnother => self.write_another(),
         }
     }
 
     /// Jobs are supervised only by this process. A restart cannot make a
     /// remote/persisted progress claim look trustworthy, so every fresh window
     /// begins with an idle local job surface and requires a new review.
-    fn reconcile_persisted_write_state(&mut self, _state: &mut AutoCommit) {
+    fn reconcile_persisted_write_state(&mut self) {
         self.startup_write_state_reconciled = true;
     }
 }
@@ -4879,62 +5022,39 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
-    ui::provides!(
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources
-    );
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::IMAGER_OPERATION_TYPE]
-    }
-
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if !self.seeded {
-            if ImagerDoc::is_empty(state) {
-                // Start genuinely blank. In the live app a real `lsblk` probe
-                // fills the drive list; if it finds nothing (or is unavailable)
-                // the list stays empty and the Drive step shows its honest
-                // "insert a drive" state — the imager never invents drives.
-                // Sample content is opt-in (`--demo` / `--shots`), which seeds
-                // the document *before* the first sync so this branch is skipped.
-                let action = crate::actions::ImagerAction::EnsureRecords;
-                self.actions.dispatch_with_context(
-                    state,
-                    crate::actions::IMAGER_ACTION_TYPE,
-                    &action,
-                    tilo_actions::ActionContext::for_action("so.tilo.imager", "Imager", &action),
-                );
-            }
-            if live_probe_enabled() {
+            // Start genuinely blank. In the live app a real `lsblk` probe
+            // fills the drive list; if it finds nothing (or is unavailable)
+            // the list stays empty and the Drive step shows its honest
+            // "insert a drive" state — the imager never invents drives.
+            if self.live {
                 self.targets = crate::probe::probe().unwrap_or_default();
             }
-            if live_probe_enabled() {
-                self.reconcile_persisted_write_state(state);
+            if self.live {
+                self.reconcile_persisted_write_state();
             } else {
-                // Demo/tests/shots intentionally pose worker-less progress
-                // frames. They still complete startup so operations cannot be
-                // held unavailable forever outside the live binary.
+                // Screenshots and tests pose worker-less progress frames.
+                // They still complete startup so operations cannot be held
+                // unavailable forever outside a live window.
                 self.startup_write_state_reconciled = true;
             }
             self.seeded = true;
         }
 
-        if live_probe_enabled() && self.releases.is_empty() {
+        if self.live && self.releases.is_empty() {
             match crate::release::bundled_releases() {
                 Ok(releases) => self.releases = releases,
                 Err(error) => self.status = error,
             }
         }
 
-        // Fold in any async work before reading the doc back.
-        self.drain_portal(state);
-        self.drain_release(state);
-        self.drain_job(state);
+        // Fold in any async work.
+        if let Some(progress) = self.release_progress() {
+            self.status = Self::download_status(&progress);
+        }
+        self.drain_job();
 
-        self.source = ImagerDoc::source(state);
-        self.recent = ImagerDoc::recent(state);
-        self.profile = ImagerDoc::profile(state);
         self.action = Action::Flash;
         self.selected = self.selected.filter(|i| {
             self.targets
@@ -4949,7 +5069,7 @@ impl Widget for ImagerApp {
         self.write_setup.sync(&self.profile, &self.wifi_psk);
         if self.export_after_sync {
             self.export_after_sync = false;
-            self.export_config(state);
+            self.export_config();
         }
         self.dirty = true;
     }
@@ -5124,7 +5244,7 @@ impl Widget for ImagerApp {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.path,
         ) {
             *ctx.handled = true;
@@ -5166,7 +5286,7 @@ impl Widget for ImagerApp {
             }
             if self.confirm_input.take_submit() {
                 if self.can_advance(Step::Confirm) {
-                    self.start_write(ctx.state);
+                    self.start_write();
                 }
                 self.confirm_input.set_focus(false);
                 *ctx.handled = true;
@@ -5200,7 +5320,7 @@ impl Widget for ImagerApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(ctx.state, &lay, ctx.handled);
+                self.handle_left_click(&lay, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. }
                 if lay.viewport_content.contains(self.last_mouse) =>
@@ -5226,37 +5346,18 @@ impl Widget for ImagerApp {
                     },
                 ..
             } => {
-                self.handle_key_pressed(logical_key, ctx.state, ctx.handled);
+                self.handle_key_pressed(logical_key, ctx.handled);
             }
             _ => {}
         }
     }
 
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation_v2(
-                request.kind,
-                request.type_id,
-                request.payload,
-                doc,
-                path,
-            )?
-            .map(ui::widget::ResourceOperationStart::Completed))
-    }
-
     fn name(&self) -> &'static str {
         "ImagerApp"
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {
@@ -5277,11 +5378,10 @@ impl Widget for ImagerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
-        path: &ModelPath,
+        _state: &mut ui::widget::Edits<'_>,
+        _path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as AccessAction;
-        let (state, _) = ui::doc::document(state, path);
 
         if self.export_dialog.is_open() {
             return false;
@@ -5293,52 +5393,19 @@ impl Widget for ImagerApp {
             return match (field_key, action) {
                 ("enroll-identity", AccessAction::Activate | AccessAction::Focus) => {
                     let on = !self.profile.enroll_local_identity;
-                    let field_action = crate::actions::ImagerAction::SetEnrollLocalIdentity { on };
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
-                    self.profile = ImagerDoc::profile(state);
+                    self.submit(&crate::actions::ImagerAction::SetEnrollLocalIdentity { on });
                     true
                 }
                 ("wifi-ssid", AccessAction::SetValue(value)) => {
-                    let field_action = crate::actions::ImagerAction::SetWifiSsid {
+                    self.submit(&crate::actions::ImagerAction::SetWifiSsid {
                         value: value.clone(),
-                    };
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
-                    self.profile = ImagerDoc::profile(state);
+                    });
                     true
                 }
                 ("device-label", AccessAction::SetValue(value)) => {
-                    let field_action = crate::actions::ImagerAction::SetDeviceLabel {
+                    self.submit(&crate::actions::ImagerAction::SetDeviceLabel {
                         value: value.clone(),
-                    };
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
-                    self.profile = ImagerDoc::profile(state);
+                    });
                     true
                 }
                 ("wifi-psk", AccessAction::SetValue(value)) => {
@@ -5359,7 +5426,7 @@ impl Widget for ImagerApp {
                         true
                     }
                     AccessAction::Activate => {
-                        self.export_config(state);
+                        self.export_config();
                         true
                     }
                     _ => false,
@@ -5388,20 +5455,10 @@ impl Widget for ImagerApp {
                 }
                 AccessAction::SetValue(value) => {
                     let Some(value) = self.customize.canonical_value(field, value) else {
-                        self.set_status(state, &format!("Choose a listed {}", field.label()));
+                        self.set_status(&format!("Choose a listed {}", field.label()));
                         return true;
                     };
-                    let field_action = CustomizePanel::field_action(field, value);
-                    self.actions.dispatch_with_context(
-                        state,
-                        crate::actions::IMAGER_ACTION_TYPE,
-                        &field_action,
-                        tilo_actions::ActionContext::for_action(
-                            "so.tilo.imager",
-                            "Imager",
-                            &field_action,
-                        ),
-                    );
+                    self.submit(&CustomizePanel::field_action(field, value));
                     self.focus_accessible_profile_slot(slot);
                     true
                 }
@@ -5467,7 +5524,7 @@ impl Widget for ImagerApp {
                 true
             }
             AccessAction::Activate => {
-                self.dispatch_hit(state, hit);
+                self.dispatch_hit(hit);
                 self.dirty = true;
                 true
             }
@@ -5486,7 +5543,7 @@ impl Widget for ImagerApp {
     /// Keep the event loop ticking while a job or file picker is in flight, so
     /// the progress bars animate and the portal result is drained promptly.
     fn needs_animation_frame(&self) -> bool {
-        self.job_rx.is_some() || self.portal_rx.is_some() || self.release_rx.is_some()
+        self.job_control.is_some()
     }
 
     fn draw_with_presence(
@@ -5502,100 +5559,39 @@ impl Widget for ImagerApp {
     }
 }
 
-impl ui::resources::PublishesResources for ImagerApp {
-    /// Standalone / `--shots` / unit tests publish the full tree. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns
-    /// the profile / write-plan door — keep only live extras (none today:
-    /// job status is a View on the resource, not a second published tree).
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.is_hosted() {
-            return crate::resource::live_extras(self);
-        }
-        self.publish_resources(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if self.is_hosted() && id == "imager.sources" {
-            return None;
-        }
-        fn find(resources: &[tilo_actions::Resource], id: &str) -> Option<tilo_actions::Resource> {
-            for resource in resources {
-                if resource.id.as_str() == id {
-                    return Some(resource.clone());
-                }
-                if let Some(found) = find(&resource.children, id) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        find(&self.publish_resources(doc), id)
-    }
-}
-
-impl ui::undo::CommittedActions for ImagerApp {
-    /// The framework host drains the undo boundary an on-screen profile control
-    /// dispatched, so it records exactly one boundary bracketing it — the same
-    /// path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
 impl ImagerApp {
-    fn answer_resource_operation(
+    /// Answer `effect`, from the Write button, the palette or an agent.
+    pub(crate) fn answer_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected_kind = match operation {
-            crate::actions::ImagerOperation::Status
-            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
-            crate::actions::ImagerOperation::SetWifiPsk { .. } => {
-                tilo_actions::OperationKind::Effect
+        effect: ImagerEffect,
+        cx: &mut EffectCx<Imager, Self>,
+    ) -> EffectAnswer {
+        match effect {
+            ImagerEffect::Write {
+                device,
+                confirmation,
+            } => {
+                self.choose_for_write(&device);
+                self.write_refusal(&device)?;
+                self.begin_write(&device, &confirmation)?;
+                self.write_reply = Some(cx.reply());
+                Ok(Effected::Pending)
             }
-            _ => tilo_actions::OperationKind::Effect,
-        };
-        if kind != expected_kind {
-            return Err("Imager operation kind does not match its contract".into());
-        }
-        let mut local_doc = doc.clone();
-        self.perform_operation(&operation, &mut local_doc)?;
-        Ok(true)
-    }
-
-    fn answer_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        match crate::actions::decode_operation(type_id, payload)? {
-            Some(crate::actions::ImagerOperation::Status) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager status is a view operation".into());
-                }
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({
-                        "phase": self.progress.phase.key(),
-                        "progress": self.progress.overall(),
-                        "message": self.status,
-                    })),
-                    resources: Vec::new(),
-                }));
+            ImagerEffect::Status => Ok(Effected::value(self.status_value())),
+            ImagerEffect::ChooseImage => {
+                self.set_status("Opening the file picker…");
+                self.dirty = true;
+                Ok(
+                    cx.choose_path(Self::image_request(), |app: &mut Self, path, _| {
+                        app.take_chosen_image(path)
+                    }),
+                )
             }
-            Some(crate::actions::ImagerOperation::ExportConfig) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager config export is a view operation".into());
-                }
+            ImagerEffect::CancelDownload => {
+                self.cancel_release_download()?;
+                Ok(Effected::done())
+            }
+            ImagerEffect::ExportConfig => {
                 if self.source.is_none() || self.target().is_none() {
                     return Err("Select an image source and target drive first".into());
                 }
@@ -5604,15 +5600,121 @@ impl ImagerApp {
                     .to_headless_config(self.source.as_ref(), self.target());
                 self.export_dialog.show(text.clone());
                 self.dirty = true;
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String(text)),
-                    resources: Vec::new(),
-                }));
+                Ok(Effected::value(text))
             }
-            _ => {}
+            ImagerEffect::SetWifiPsk { value } => {
+                self.wifi_psk = value;
+                self.write_setup.sync(&self.profile, &self.wifi_psk);
+                self.dirty = true;
+                Ok(Effected::done())
+            }
+            ImagerEffect::Rescan => {
+                if self.do_rescan() {
+                    Ok(Effected::done())
+                } else {
+                    Err(self.status.clone())
+                }
+            }
+            ImagerEffect::ChooseDrive { drive } => {
+                let Some(index) = self.targets.iter().position(|target| target.name == drive)
+                else {
+                    return Err(format!("No drive named {drive} is connected"));
+                };
+                self.select_target(index);
+                if self.selected == Some(index) {
+                    Ok(Effected::done())
+                } else {
+                    Err(self.status.clone())
+                }
+            }
         }
-        self.answer_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
+    }
+
+    /// The effects that cannot run now, and why.
+    pub(crate) fn effect_statuses(&self) -> Vec<EffectStatus> {
+        let mut statuses = Vec::new();
+        if let Err((code, reason)) = self.writer_refusal() {
+            statuses.push(EffectStatus::unavailable(ImagerEffect::WRITE, code, reason));
+        }
+        if self.release_download.is_none() {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::CANCEL_DOWNLOAD,
+                "no_download",
+                "No Tilo installer download is running",
+            ));
+        }
+        if self.source.is_none() || self.target().is_none() {
+            statuses.push(EffectStatus::unavailable(
+                ImagerEffect::EXPORT_CONFIG,
+                "incomplete_plan",
+                "Select an image source and target drive first",
+            ));
+        }
+        statuses
+    }
+
+    /// The removable drives this machine offers, and the write job.
+    pub(crate) fn published_rows(&self) -> Vec<LiveRow> {
+        let mut rows = self
+            .targets
+            .iter()
+            .filter(|target| target.is_media_target())
+            .map(|target| self.target_row(target))
+            .collect::<Vec<_>>();
+        let phase = self.progress.phase.key();
+        rows.push(
+            LiveRow::new("imager.job", "imager.job", format!("Image write: {phase}"))
+                .effect(&ImagerEffect::Status),
+        );
+        if let Some(download) = &self.release_download {
+            let name = self
+                .releases
+                .get(download.index)
+                .map(TiloRelease::display_name)
+                .unwrap_or_default();
+            let detail = self.release_progress().map_or_else(
+                || "Preparing".to_owned(),
+                |progress| Self::download_status(&progress),
+            );
+            rows.push(
+                LiveRow::new(
+                    "imager.download",
+                    "imager.download",
+                    format!("Download {name}"),
+                )
+                .presentation(tilo_actions::ResourcePresentation {
+                    detail: Some(detail),
+                    ..tilo_actions::ResourcePresentation::default()
+                })
+                .effect(&ImagerEffect::CancelDownload),
+            );
+        }
+        rows
+    }
+
+    /// One removable drive: choose it, or write the reviewed image to it —
+    /// choosing it too — after typing its name.
+    fn target_row(&self, target: &TargetDrive) -> LiveRow {
+        let identity = target.stable_id.as_deref().unwrap_or(&target.name);
+        let device = target.dev_path();
+        let mut write = ImagerEffect::Write {
+            device: device.clone(),
+            confirmation: target.name.clone(),
+        }
+        .bound();
+        write.contract.risk = tilo_actions::RiskLevel::Destructive;
+        write.contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
+            phrase: target.name.clone(),
+        };
+        let write = match self.writer_refusal() {
+            Err((code, reason)) => write.unavailable(code, reason),
+            Ok(()) => write,
+        };
+        LiveRow::new(format!("imager.target:{identity}"), "imager.target", device)
+            .effect(&ImagerEffect::ChooseDrive {
+                drive: target.name.clone(),
+            })
+            .operation(write)
     }
 }
 
@@ -5634,13 +5736,13 @@ impl ImagerApp {
         let resp = self.customize.handle_event(
             event,
             ctx,
-            &mut self.actions,
+            self.dispatcher.as_ref(),
             &profile,
             removable,
             lay.content,
         );
         if resp.export_requested {
-            self.export_config(ctx.state);
+            self.export_config();
         }
         resp.handled
     }
@@ -5660,7 +5762,7 @@ impl ImagerApp {
         let resp = self.write_setup.handle_event(
             event,
             ctx,
-            &mut self.actions,
+            self.dispatcher.as_ref(),
             &profile,
             lay.content,
             top,
@@ -5670,7 +5772,6 @@ impl ImagerApp {
         }
         if resp.handled {
             self.confirm_input.set_focus(false);
-            self.profile = ImagerDoc::profile(ctx.state);
         }
         resp.handled
     }
@@ -5690,7 +5791,7 @@ impl ImagerApp {
 
     /// A left click in the content area dispatches a hit-tested affordance or,
     /// on empty space, drops the confirm field's focus.
-    fn handle_left_click(&mut self, state: &mut AutoCommit, lay: &Layout, handled: &mut bool) {
+    fn handle_left_click(&mut self, lay: &Layout, handled: &mut bool) {
         self.keyboard_hit = None;
         let p = self.last_mouse;
         let hit = lay
@@ -5699,7 +5800,7 @@ impl ImagerApp {
             .find(|(r, _)| r.contains(p))
             .map(|(_, h)| *h);
         if let Some(hit) = hit {
-            self.dispatch_hit(state, hit);
+            self.dispatch_hit(hit);
             *handled = true;
             self.dirty = true;
             return;
@@ -5709,18 +5810,13 @@ impl ImagerApp {
 
     /// Keyboard handling for the Confirm step's typed device-name field and
     /// global shortcuts. The export dialog captures input before this path.
-    fn handle_key_pressed(
-        &mut self,
-        logical_key: &winit::keyboard::Key,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-    ) {
+    fn handle_key_pressed(&mut self, logical_key: &winit::keyboard::Key, handled: &mut bool) {
         use winit::keyboard::{Key, NamedKey};
 
         if matches!(logical_key, Key::Named(NamedKey::Enter))
             && let Some(hit) = self.keyboard_hit
         {
-            self.dispatch_hit(state, hit);
+            self.dispatch_hit(hit);
             *handled = true;
             self.dirty = true;
             return;
@@ -5736,7 +5832,7 @@ impl ImagerApp {
             }
             return;
         }
-        self.handle_global_shortcut_key(logical_key, state, handled);
+        self.handle_global_shortcut_key(logical_key, handled);
     }
 
     fn ensure_visible(&mut self, rect: Rect, viewport: Rect) {
@@ -5832,22 +5928,21 @@ impl ImagerApp {
     fn handle_global_shortcut_key(
         &mut self,
         logical_key: &winit::keyboard::Key,
-        state: &mut AutoCommit,
         handled: &mut bool,
     ) {
         use winit::keyboard::{Key, NamedKey};
 
         match logical_key {
             Key::Named(NamedKey::Enter) => {
-                self.advance(state);
+                self.advance();
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowLeft) => {
-                self.back(state);
+                self.back();
                 *handled = true;
             }
             Key::Character(s) if matches!(s.as_str(), "r" | "R") && self.step == Step::Drive => {
-                self.do_rescan(state);
+                self.do_rescan();
                 *handled = true;
             }
             _ => {}
@@ -5858,17 +5953,27 @@ impl ImagerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::doc::ImagerDoc;
+    use automerge::AutoCommit;
+
+    /// Present `doc` as the framework presents the imager resource, then run
+    /// the widget's own sync.
+    fn present(app: &mut ImagerApp, doc: &AutoCommit) {
+        use ui::tilo_resource::Resource as _;
+        app.present_state(&Imager::read(doc).expect("imager state"));
+        let mut model = doc.clone();
+        app.sync(&mut model, &automerge::ROOT);
+    }
 
     fn seeded_app() -> (ImagerApp, AutoCommit) {
         // Tests drive the wizard against the demo document (sample drives + a
-        // Tilo image + recent history) — the same content `--shots`/`--demo` use.
+        // Tilo image + recent history) — the same content the screenshot scenarios stage.
         let mut app = ImagerApp::new();
         app.targets = crate::model::sample_targets();
         app.releases = crate::model::sample_releases();
         let mut doc = AutoCommit::new();
         ImagerDoc::seed_demo(&mut doc);
-        let root = automerge::ROOT;
-        app.sync(&mut doc, &root);
+        present(&mut app, &doc);
         (app, doc)
     }
 
@@ -5884,7 +5989,7 @@ mod tests {
             let (mut app, mut doc) = seeded_app();
             let before = doc.save();
             app.selected = Some(0);
-            app.goto(&mut doc, Step::Confirm);
+            app.goto(Step::Confirm);
             app.progress = Progress {
                 phase: JobPhase::Writing,
                 write_frac: 0.5,
@@ -5892,15 +5997,15 @@ mod tests {
                 rate_bps: 1,
                 error: None,
             };
-            app.set_status(&doc, "local writer status");
+            app.set_status("local writer status");
             assert_eq!(
                 doc.save(),
                 before,
                 "selection, station, status, and job progress are local"
             );
-            let mut peer = AutoCommit::load(&before).unwrap();
+            let peer = AutoCommit::load(&before).unwrap();
             let mut peer_app = ImagerApp::new();
-            peer_app.sync(&mut peer, &automerge::ROOT);
+            present(&mut peer_app, &peer);
             assert_eq!(peer_app.step, Step::Source);
             assert_eq!(peer_app.selected, None);
             assert_eq!(peer_app.progress.phase, JobPhase::Idle);
@@ -5921,8 +6026,8 @@ mod tests {
             // The live path (no demo seed) starts genuinely empty: no drives are
             // invented and no image is pre-selected.
             let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            present(&mut app, &doc);
             assert!(app.targets.is_empty(), "no fabricated drives");
             assert!(app.source.is_none(), "no fabricated image");
             assert!(app.recent.is_empty(), "no fabricated recent history");
@@ -5932,7 +6037,7 @@ mod tests {
         // Phase `restart_drops_unsupervised_local_write_state_and_requires_new_review`.
         {
             let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 0);
+            app.select_target(0);
             app.step = Step::Write;
             app.progress = Progress {
                 phase: JobPhase::Writing,
@@ -5944,8 +6049,8 @@ mod tests {
             app.status = "Writing locally".into();
             let saved = doc.save();
             let mut restarted = ImagerApp::new();
-            let mut restored_doc = AutoCommit::load(&saved).unwrap();
-            restarted.sync(&mut restored_doc, &automerge::ROOT);
+            let restored_doc = AutoCommit::load(&saved).unwrap();
+            present(&mut restarted, &restored_doc);
             assert_eq!(restarted.step, Step::Source);
             assert_eq!(restarted.progress.phase, JobPhase::Idle);
             assert!(restarted.selected.is_none());
@@ -5955,44 +6060,33 @@ mod tests {
 
         // Phase `write_operations_are_blocked_until_startup_state_is_reconciled`.
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 0);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0);
             app.startup_write_state_reconciled = false;
             app.confirm_input.set_text("sdb");
 
             assert!(!app.can_advance_with_writer(Step::Confirm, true));
             let error = app
-                .perform_operation(
-                    &crate::actions::ImagerOperation::Write {
-                        device: app.target().unwrap().dev_path(),
-                        confirmation: "sdb".into(),
-                    },
-                    &mut doc,
-                )
+                .begin_write(&app.target().unwrap().dev_path(), "sdb")
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
-
-            let root = ui::resources::resources(&app, &doc)
-                .into_iter()
-                .find(|resource| resource.kind == "imager.sources")
-                .expect("imager sources resource owns the write Effect");
-            let write = root
-                .actions
-                .iter()
-                .find(|action| action.id == "write")
-                .expect("write action");
-            assert!(!write.contract.availability.is_available());
+            assert!(
+                app.effect_statuses()
+                    .iter()
+                    .any(|status| format!("{status:?}").contains("id: \"write\"")),
+                "the write effect is unavailable"
+            );
         }
 
         // Phase `live_app_offers_no_tilo_release_to_write`.
         // A release row is a *write source for erasing a drive*, so the live app
         // must offer none of its own invention: the list comes from the document,
         // and a live (unseeded) document has nothing in it. Sample releases are
-        // opt-in via `--demo` / `--shots` like every other sample surface here.
+        // staged only by screenshot scenarios, like every other sample surface here.
         {
             let mut app = ImagerApp::new();
-            let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            present(&mut app, &doc);
             assert!(app.releases().is_empty(), "no fabricated Tilo releases");
 
             // ...and nothing on the Source step is clickable that would select one.
@@ -6101,7 +6195,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut h,
                 focus_target: &mut ft,
@@ -6224,13 +6318,13 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &AccessAction::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(board.matches_source(app.source.as_ref().unwrap()));
             assert!(!app.releases[0].matches_source(app.source.as_ref().unwrap()));
-            app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Confirm);
+            app.select_target(0);
+            app.goto(Step::Confirm);
             let tree = app.accessibility_tree();
             assert!(
                 accessible_named(&tree, "Image")
@@ -6248,8 +6342,8 @@ mod tests {
 
             let (mut app, mut doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-            app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Customize);
+            app.select_target(0);
+            app.goto(Step::Customize);
 
             let tree = app.accessibility_tree();
             let mut order = Vec::new();
@@ -6284,55 +6378,18 @@ mod tests {
                 );
             }
 
-            assert!(app.perform_semantic_action(
-                "imager:profile:hostname",
-                &AccessAction::SetValue("accessible-host".into()),
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(ImagerDoc::profile(&doc).hostname, "accessible-host");
-
-            for (target, chosen, expected) in [
-                ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
-                ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
-                ("imager:profile:keyboard", "German (QWERTZ)", "de"),
-            ] {
-                assert!(app.perform_semantic_action(
-                    target,
-                    &AccessAction::SetValue(chosen.into()),
-                    &mut doc,
-                    &automerge::ROOT,
-                ));
-                let profile = ImagerDoc::profile(&doc);
-                let actual = match target {
-                    "imager:profile:locale" => profile.locale,
-                    "imager:profile:timezone" => profile.timezone,
-                    _ => profile.keyboard,
-                };
-                assert_eq!(actual, expected);
-            }
-            let timezone_before = ImagerDoc::profile(&doc).timezone;
-            assert!(app.perform_semantic_action(
-                "imager:profile:timezone",
-                &AccessAction::SetValue("Europe/Not_A_Real_Zone".into()),
-                &mut doc,
-                &automerge::ROOT,
-            ));
-            assert_eq!(ImagerDoc::profile(&doc).timezone, timezone_before);
-            assert!(app.status.contains("Choose a listed Time zone"));
-
             app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
             app.scroll_y = 0.0;
             assert!(app.perform_semantic_action(
                 "imager:profile:keyboard",
                 &AccessAction::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.scroll_y > 0.0, "assistive focus scrolls into view");
 
             app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-            app.goto(&mut doc, Step::Confirm);
+            app.goto(Step::Confirm);
             let target_name = app.target().expect("target").name.clone();
             let confirm = accessible_named(&app.accessibility_tree(), "Confirm the target device")
                 .expect("confirmation input")
@@ -6342,7 +6399,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "imager:hit:confirm-field",
                 &AccessAction::SetValue(target_name),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.confirm_matches());
@@ -6396,7 +6453,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-            app.goto(&mut doc, Step::Customize);
+            app.goto(Step::Customize);
             let tab = named_key_ev(winit::keyboard::NamedKey::Tab);
 
             for slot in 0..7 {
@@ -6460,10 +6517,10 @@ mod tests {
 
         // Phase `compact_step_targets_use_the_same_on_screen_rects_as_the_rail`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
-            app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Confirm);
+            app.select_target(0);
+            app.goto(Step::Confirm);
             let lay = app.compute_layout();
 
             for (rect, step) in &lay.crumbs {
@@ -6484,7 +6541,7 @@ mod tests {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut tr = TextRenderer::new();
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
 
             let browse_top = |app: &ImagerApp| {
@@ -6519,7 +6576,7 @@ mod tests {
             let at_2x = browse_top(&app);
             assert!(at_2x > at_1x * 1.5, "doubled text moves the content down");
 
-            app.goto(&mut doc, Step::Confirm);
+            app.goto(Step::Confirm);
             tr.set_text_scale(1.0);
             app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
             let (title, sub) = app.confirm_heading();
@@ -6702,10 +6759,10 @@ mod tests {
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut tr = TextRenderer::new();
             for width in [1200.0, 320.0] {
-                let (mut app, mut doc) = seeded_app();
+                let (mut app, _doc) = seeded_app();
                 app.rect = Rect::new(0.0, 0.0, width, 800.0);
-                app.select_target(&doc, 0);
-                app.goto(&mut doc, Step::Confirm);
+                app.select_target(0);
+                app.goto(Step::Confirm);
                 app.adjust_layout_with_measure(&mut taffy, node, &mut tr);
                 let lay = app.compute_layout();
                 let field = lay
@@ -6750,7 +6807,7 @@ mod tests {
 
         // Phase `compact_body_controls_reserve_space_for_wrapped_headings`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
 
             let source = app.compute_layout();
@@ -6762,7 +6819,7 @@ mod tests {
             assert!(browse.y0 >= source.content.y0 + 64.0);
             assert!(browse.x0 >= source.content.x0 && browse.x1 <= source.content.x1);
 
-            app.goto(&mut doc, Step::Drive);
+            app.goto(Step::Drive);
             let drive = app.compute_layout();
             let rescan = drive
                 .hits
@@ -6780,11 +6837,11 @@ mod tests {
 
         // Phase `compact_footer_actions_never_overlap`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 640.0);
 
             for step in [Step::Drive, Step::Customize, Step::Confirm] {
-                app.goto(&mut doc, step);
+                app.goto(step);
                 let lay = app.compute_layout();
                 let back = lay.back.unwrap();
                 let primary = lay.primary.unwrap();
@@ -6799,7 +6856,7 @@ mod tests {
         {
             let (mut app, mut doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 320.0, 480.0);
-            app.goto(&mut doc, Step::Customize);
+            app.goto(Step::Customize);
             let before = app.compute_layout();
             let footer_before = before.primary.unwrap();
             assert!(app.max_scroll() > 100.0);
@@ -6854,26 +6911,26 @@ mod tests {
     fn wizard_advance_and_confirm_require_valid_choices_and_capability() {
         // Phase `advancing_requires_selections`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             // Source is seeded → can advance to Drive.
-            app.advance(&mut doc);
+            app.advance();
             assert_eq!(app.step, Step::Drive);
             // No target selected yet → stays on Drive.
-            app.advance(&mut doc);
+            app.advance();
             assert_eq!(app.step, Step::Drive);
-            app.select_target(&doc, 0);
-            app.advance(&mut doc);
+            app.select_target(0);
+            app.advance();
             // Seeded source is an installable Tilo image → goes through Customize.
             assert_eq!(app.step, Step::Customize);
-            app.advance(&mut doc);
+            app.advance();
             assert_eq!(app.step, Step::Confirm);
         }
 
         // Phase `privileged_helper_capability_enables_confirm_but_disabled_backend_does_not`.
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Confirm);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0);
+            app.goto(Step::Confirm);
             app.confirm_input.set_text("sdb");
 
             assert!(crate::write::WriteBackend::PrivilegedHelper.is_available());
@@ -6889,51 +6946,53 @@ mod tests {
 
         // Phase `invalid_media_profile_blocks_confirm_and_direct_write`.
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 0);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0);
             app.profile.hostname = "bad host".into();
-            app.goto(&mut doc, Step::Customize);
+            app.goto(Step::Customize);
 
-            app.advance(&mut doc);
+            app.advance();
             assert_eq!(app.step, Step::Customize);
             assert!(app.status.contains("Hostname"));
 
             // A direct operation dispatch must repeat the gate rather than relying
             // only on wizard navigation.
-            app.goto(&mut doc, Step::Confirm);
+            app.goto(Step::Confirm);
             app.confirm_input.set_text("sdb");
-            app.start_write(&mut doc);
+            let error = app
+                .begin_write("/dev/sdb", "sdb")
+                .expect_err("an invalid profile refuses the write");
             assert_eq!(app.step, Step::Confirm);
-            assert!(app.job_rx.is_none());
-            assert!(app.status.contains("Hostname"));
+            assert!(app.job_control.is_none());
+            assert!(error.contains("Hostname"));
         }
 
         // Phase `plain_iso_skips_customize`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let iso = app
                 .recent
                 .iter()
                 .find(|s| s.kind == SourceKind::IsoFile)
                 .cloned()
                 .unwrap();
-            app.select_source(&mut doc, &iso);
-            app.advance(&mut doc); // → Drive
-            app.select_target(&doc, 0);
-            app.advance(&mut doc); // installable == false → straight to Confirm
+            app.select_source(&iso);
+            app.advance(); // → Drive
+            app.select_target(0);
+            app.advance(); // installable == false → straight to Confirm
             assert_eq!(app.step, Step::Confirm);
             assert!(!app.customizable());
         }
 
         // Phase `local_tilo_claim_cannot_unlock_preconfiguration`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let official = crate::model::sample_source();
             let mut local = official.clone();
             local.kind = SourceKind::IsoFile;
             local.path = "/tmp/tilo-official-looking.iso".into();
             local.identity = None;
-            app.select_source(&mut doc, &local);
+            app.select_source(&local);
             assert!(!app.customizable());
             assert_eq!(app.action, Action::Flash);
 
@@ -6947,25 +7006,19 @@ mod tests {
         // then stop at the disabled write backend, never at an installer-stick
         // refusal.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             assert!(app.customizable(), "seeded source is official");
             assert!(
                 app.offers_write_setup(),
                 "official Confirm must collect Wi-Fi and enrollment"
             );
-            app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Confirm);
+            app.select_target(0);
+            app.goto(Step::Confirm);
             app.confirm_input.set_text("sdb");
             app.profile.wifi_ssid = "studio".into();
             app.wifi_psk = "correct-horse".into();
             let err = app
-                .perform_operation(
-                    &crate::actions::ImagerOperation::Write {
-                        device: "/dev/sdb".into(),
-                        confirmation: "sdb".into(),
-                    },
-                    &mut doc,
-                )
+                .begin_write("/dev/sdb", "sdb")
                 .expect_err("privileged writer is off in unit tests");
             assert!(
                 !err.to_lowercase().contains("installer stick"),
@@ -6975,21 +7028,23 @@ mod tests {
                 err.to_lowercase().contains("disabled") || err.to_lowercase().contains("backend"),
                 "expected write-disabled after staging handoff, got: {err}"
             );
-            assert!(app.job_rx.is_none());
+            assert!(app.job_control.is_none());
             assert_eq!(app.step, Step::Confirm);
         }
 
         // Phase `write_refused_without_matching_confirmation`.
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 0); // sdb
-            app.goto(&mut doc, Step::Confirm);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0); // sdb
+            app.goto(Step::Confirm);
             app.confirm_input.set_text("wrong");
-            app.start_write(&mut doc);
+            let error = app
+                .begin_write("/dev/sdb", "wrong")
+                .expect_err("a mistyped device name refuses the write");
             assert_eq!(app.progress.phase, JobPhase::Idle, "no job started");
-            assert!(app.job_rx.is_none());
+            assert!(app.job_control.is_none());
             assert_eq!(app.step, Step::Confirm, "stays on the Confirm station");
-            assert!(app.status.to_lowercase().contains("confirm"));
+            assert!(error.to_lowercase().contains("confirm"));
         }
     }
 
@@ -6999,30 +7054,15 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
-    fn release_download_is_local_visible_cancellable_and_keeps_the_loop_awake() {
-        // Phase `pending_release_download_keeps_the_event_loop_awake`.
-        {
-            let (mut app, _doc) = seeded_app();
-            assert!(!app.needs_animation_frame());
-
-            let (_tx, rx) = std::sync::mpsc::channel();
-            app.release_rx = Some(rx);
-            assert!(app.needs_animation_frame());
-
-            app.release_rx = None;
-            assert!(!app.needs_animation_frame());
-        }
-
+    fn release_download_is_local_visible_and_cancellable() {
         // Phase `active_release_download_replaces_selection_with_an_accessible_cancel_action`.
         {
             let (mut app, _doc) = seeded_app();
             app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
-            let (_tx, rx) = std::sync::mpsc::channel();
-            app.release_rx = Some(rx);
-            app.release_control = Some(crate::release::DownloadControl::default());
-            app.release_download_index = Some(0);
-            app.release_download_progress = Some((25, 100));
-            app.release_download_stage = Some("downloading");
+            app.release_download = Some(ReleaseDownload {
+                index: 0,
+                control: crate::release::DownloadControl::default(),
+            });
 
             let layout = app.compute_layout();
             assert!(
@@ -7039,32 +7079,43 @@ mod tests {
             );
             let tree = app.accessibility_tree();
             assert!(accessible_named(&tree, "Cancel Tilo installer download").is_some());
+            assert!(
+                app.published_rows()
+                    .iter()
+                    .any(|row| row.id() == "imager.download"),
+                "the download is published with its cancel"
+            );
+
+            app.cancel_release_download().unwrap();
+            assert!(
+                app.release_download
+                    .as_ref()
+                    .is_some_and(|download| download.control.is_cancelled())
+            );
         }
 
-        // Phase `release_progress_is_local_visible_and_terminal_events_clear_the_job`.
+        // Phase `release_progress_reads_as_a_status_and_the_end_clears_the_job`.
         {
-            let (mut app, mut doc) = seeded_app();
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.release_rx = Some(rx);
-            app.release_control = Some(crate::release::DownloadControl::default());
-            app.release_download_index = Some(0);
-            tx.send(crate::release::DownloadEvent::Downloading {
-                received: 25,
-                total: 100,
-            })
-            .unwrap();
-            app.drain_release(&mut doc);
-            assert_eq!(app.release_download_progress, Some((25, 100)));
-            assert!(app.status.contains("25%"));
+            let (mut app, _doc) = seeded_app();
+            let progress = JobProgress {
+                phase: "downloading".into(),
+                completed: Some(25),
+                total: Some(100),
+            };
+            assert!(ImagerApp::download_status(&progress).contains("25%"));
 
-            tx.send(crate::release::DownloadEvent::Finished(Err(
-                "Tilo installer download cancelled.".into(),
-            )))
-            .unwrap();
-            app.drain_release(&mut doc);
-            assert!(app.release_rx.is_none());
-            assert!(app.release_control.is_none());
+            app.release_download = Some(ReleaseDownload {
+                index: 0,
+                control: crate::release::DownloadControl::default(),
+            });
+            app.finish_release_download(Err("Tilo installer download cancelled.".into()));
+            assert!(app.release_download.is_none());
             assert!(app.status.contains("cancelled"));
+            assert!(
+                !app.published_rows()
+                    .iter()
+                    .any(|row| row.id() == "imager.download")
+            );
         }
     }
 
@@ -7129,7 +7180,7 @@ mod tests {
         click_at(&mut app, &mut doc, center(primary));
         assert_eq!(app.step, Step::Confirm);
         assert_eq!(app.progress.phase, JobPhase::Idle);
-        assert!(app.job_rx.is_none());
+        assert!(app.job_control.is_none());
     }
 
     #[test]
@@ -7138,14 +7189,14 @@ mod tests {
         if crate::write::allow_write() {
             return;
         }
-        let (mut app, mut doc) = seeded_app();
-        app.select_target(&doc, 0); // sdb
-        app.goto(&mut doc, Step::Confirm);
+        let (mut app, _doc) = seeded_app();
+        app.select_target(0); // sdb
+        app.goto(Step::Confirm);
         app.confirm_input.set_text("sdb");
-        app.start_write(&mut doc);
+        app.start_write();
         assert_eq!(app.progress.phase, JobPhase::Idle);
         assert_eq!(app.step, Step::Confirm);
-        assert!(app.job_rx.is_none());
+        assert!(app.job_control.is_none());
         assert!(app.status.contains("disabled"));
     }
 
@@ -7156,21 +7207,15 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn source_and_target_selection_accept_only_inspected_external_media() {
-        // Phase `portal_open_selects_inspected_source`.
+        // Phase `a_chosen_image_is_inspected_before_it_is_reviewed`.
         {
-            let (mut app, mut doc) = seeded_app();
-            // The recording host answers with a real Tilo-looking image.
+            let (mut app, _doc) = seeded_app();
             let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
             std::fs::write(f.path(), b"tilo payload for the imager test").unwrap();
-            let (services, recorder) = ui::host::HostServices::recording();
-            let _host = ui::host::enter(&services);
-            recorder.respond_to_pick(PortalOutcome::Opened(f.path().to_path_buf()));
-            app.open_file_picker(&doc);
-            assert_eq!(recorder.pick_requests()[0].title(), "Choose a disk image");
-            app.drain_portal(&mut doc);
-            // A `.iso` file → a valid source is selected.
-            assert!(app.source.is_some());
+            app.take_chosen_image(Some(f.path().to_path_buf())).unwrap();
             assert_eq!(app.source.as_ref().unwrap().kind, SourceKind::IsoFile);
+            app.take_chosen_image(None).unwrap();
+            assert!(app.status.contains("cancelled"));
         }
 
         // Phase `drive_step_only_offers_external_installation_media`.
@@ -7183,8 +7228,8 @@ mod tests {
 
         // Phase `authoritative_empty_rescan_clears_stale_target_and_consent`.
         {
-            let (mut app, doc) = seeded_app();
-            app.select_target(&doc, 0);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0);
             app.confirm_input.set_text("sdb");
 
             app.apply_drive_inventory(Vec::new());
@@ -7196,8 +7241,8 @@ mod tests {
 
         // Phase `rescan_preserves_only_the_same_physical_target`.
         {
-            let (mut app, doc) = seeded_app();
-            app.select_target(&doc, 0);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0);
             app.confirm_input.set_text("sdb");
             let selected = app.target().unwrap().clone();
             let mut reordered = crate::model::sample_targets();
@@ -7245,85 +7290,24 @@ mod tests {
             let mut targets = crate::model::sample_targets();
             targets[1].is_system = true; // the internal NVMe is the system disk
             app.targets = targets.clone();
-            ImagerDoc::seed(&mut doc, &targets);
+            ImagerDoc::seed(&mut doc);
             ImagerDoc::set_source(&mut doc, Some(&crate::model::sample_source()));
-            app.sync(&mut doc, &automerge::ROOT);
+            present(&mut app, &doc);
 
-            app.dispatch_hit(&mut doc, Hit::Target(1));
+            app.dispatch_hit(Hit::Target(1));
             assert_eq!(app.selected, None, "the system disk is never selectable");
             assert!(app.status.to_lowercase().contains("system disk"));
         }
     }
 
-    /// Set the Customize step up with one field cleared and focused, ready for
-    /// the shared panel to receive keystrokes through the real event path.
-    fn customize_with_field_focused(field: crate::customize::CzField) -> (ImagerApp, AutoCommit) {
-        let (mut app, mut doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        // Clear the target field so the typed assertion is exact.
-        let mut p = ImagerDoc::profile(&doc);
-        if field == crate::customize::CzField::Hostname {
-            p.hostname.clear();
-        }
-        ImagerDoc::set_profile(&mut doc, &p);
-        app.step = Step::Customize;
-        app.sync(&mut doc, &automerge::ROOT); // reads the profile + step back
-        assert_eq!(
-            app.step,
-            Step::Customize,
-            "the panel only handles events on this step"
-        );
-        assert!(app.customizable(), "the seeded Tilo image is customizable");
-        app.customize.focus_for_test(field);
-        (app, doc)
-    }
-
     /// Hostname typing, keyboard chooser and preview.
     #[test]
     fn profile_panel_edits_persist_through_the_real_event_path() {
-        // Phase `typing_into_hostname_persists_to_profile_through_the_panel`.
-        {
-            use crate::customize::CzField;
-            let (mut app, mut doc) = customize_with_field_focused(CzField::Hostname);
-            for s in ["l", "a", "b", "0", "1"] {
-                feed(&mut app, &mut doc, &char_ev(s));
-            }
-            assert_eq!(
-                ImagerDoc::profile(&doc).hostname,
-                "lab01",
-                "persisted to the doc"
-            );
-            assert_eq!(
-                app.customize.field_value(CzField::Hostname),
-                "lab01",
-                "the input holds it"
-            );
-        }
-
-        // Phase `keyboard_chooser_filters_and_commits_through_the_real_event_path`.
-        {
-            use crate::customize::CzField;
-            use winit::keyboard::NamedKey;
-
-            let (mut app, mut doc) = customize_with_field_focused(CzField::Keyboard);
-            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-            for character in ["g", "e", "r", "m", "a", "n"] {
-                feed(&mut app, &mut doc, &char_ev(character));
-            }
-            feed(&mut app, &mut doc, &named_key_ev(NamedKey::Enter));
-
-            assert_eq!(ImagerDoc::profile(&doc).keyboard, "de");
-            assert_eq!(
-                app.customize.field_value(CzField::Keyboard),
-                "German (QWERTZ)"
-            );
-        }
-
         // Phase `preview_shows_the_embedded_profile`.
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 1);
-            app.export_config(&mut doc);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(1);
+            app.export_config();
             let text = app.export_dialog.text();
             assert!(text.contains("\"schema\": 1"));
             assert!(text.contains("\"hostname\""));
@@ -7341,8 +7325,8 @@ mod tests {
     fn write_completion_failure_and_cancel_return_to_a_truthful_state() {
         // Phase `write_another_resets_to_source`.
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 0);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0);
             app.progress = Progress {
                 phase: JobPhase::Success,
                 write_frac: 1.0,
@@ -7350,16 +7334,16 @@ mod tests {
                 rate_bps: 0,
                 error: None,
             };
-            app.write_another(&mut doc);
+            app.write_another();
             assert_eq!(app.step, Step::Source);
             assert_eq!(app.progress.phase, JobPhase::Idle);
         }
 
         // Phase `failed_write_keeps_its_cause_and_returns_to_a_fresh_review`.
         {
-            let (mut app, mut doc) = seeded_app();
-            app.select_target(&doc, 0);
-            app.goto(&mut doc, Step::Write);
+            let (mut app, _doc) = seeded_app();
+            app.select_target(0);
+            app.goto(Step::Write);
             app.progress = Progress {
                 phase: JobPhase::Writing,
                 write_frac: 0.4,
@@ -7367,9 +7351,8 @@ mod tests {
                 rate_bps: 0,
                 error: None,
             };
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.job_rx = Some(rx);
-            tx.send(Progress {
+            app.job_control = Some(JobControl::new());
+            app.finish_write(Some(Progress {
                 phase: JobPhase::Failed,
                 write_frac: 0.4,
                 verify_frac: 0.0,
@@ -7377,10 +7360,7 @@ mod tests {
                 error: Some(
                     "Could not write the drive: the selected drive was disconnected.".into(),
                 ),
-            })
-            .unwrap();
-
-            app.drain_job(&mut doc);
+            }));
             assert_eq!(app.step, Step::Done);
             assert_eq!(app.progress.phase, JobPhase::Failed);
             assert!(
@@ -7398,7 +7378,7 @@ mod tests {
             );
 
             app.confirm_input.set_text("sdb");
-            app.write_another(&mut doc);
+            app.write_another();
             assert_eq!(app.step, Step::Confirm, "failure returns to review");
             assert!(app.source.is_some(), "the verified source is preserved");
             assert_eq!(app.selected, Some(0), "the selected drive is preserved");
@@ -7411,13 +7391,12 @@ mod tests {
 
         // Phase `active_write_cancel_operation_requests_a_safe_stop`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let control = JobControl::new();
             app.job_control = Some(control.clone());
-            app.goto(&mut doc, Step::Write);
+            app.goto(Step::Write);
 
-            app.perform_operation(&crate::actions::ImagerOperation::Cancel, &mut doc)
-                .unwrap();
+            app.cancel_write().unwrap();
 
             assert!(control.is_cancelled());
             assert!(app.status.contains("Keep the drive connected"));
@@ -7429,26 +7408,53 @@ mod tests {
             assert!(cancel.state.disabled);
         }
 
+        // Phase `the_job_reports_bytes_of_the_active_phase_and_its_rate_follows`.
+        {
+            let (mut app, _doc) = seeded_app();
+            let start = ui::time::now();
+            let report = |phase: &str, completed| JobProgress {
+                phase: phase.into(),
+                completed: Some(completed),
+                total: Some(1_000),
+            };
+            app.follow_write(&report("writing", 100), start);
+            app.follow_write(
+                &report("writing", 300),
+                start + std::time::Duration::from_secs(2),
+            );
+            assert_eq!(app.progress.phase, JobPhase::Writing);
+            assert!((app.progress.write_frac - 0.3).abs() < 1e-9);
+            assert_eq!(app.progress.rate_bps, 100, "200 bytes in two seconds");
+            app.follow_write(
+                &report("verifying", 500),
+                start + std::time::Duration::from_secs(3),
+            );
+            assert_eq!(app.progress.phase, JobPhase::Verifying);
+            assert!((app.progress.write_frac - 1.0).abs() < 1e-9);
+            assert!((app.progress.verify_frac - 0.5).abs() < 1e-9);
+
+            app.job_control = Some(JobControl::new());
+            app.finish_write(None);
+            assert_eq!(app.progress.phase, JobPhase::Failed);
+            assert!(app.status.contains("stopped unexpectedly"));
+            assert!(app.job_control.is_none());
+        }
+
         // Phase `cancel_wins_a_race_with_an_already_queued_success`.
         {
-            let (mut app, mut doc) = seeded_app();
+            let (mut app, _doc) = seeded_app();
             let control = JobControl::new();
             control.cancel();
             app.job_control = Some(control);
             app.progress.phase = JobPhase::Verifying;
-            app.goto(&mut doc, Step::Write);
-            let (tx, rx) = std::sync::mpsc::channel();
-            app.job_rx = Some(rx);
-            tx.send(Progress {
+            app.goto(Step::Write);
+            app.finish_write(Some(Progress {
                 phase: JobPhase::Success,
                 write_frac: 1.0,
                 verify_frac: 1.0,
                 rate_bps: 0,
                 error: None,
-            })
-            .unwrap();
-
-            app.drain_job(&mut doc);
+            }));
 
             assert_eq!(app.progress.phase, JobPhase::Failed);
             assert!(app.progress.error.as_deref().is_some_and(|message| {

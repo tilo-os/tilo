@@ -1,12 +1,11 @@
 //! Appearance pane — the editor for the **shared appearance preferences**.
 //!
-//! This panel edits [`crate::prefs::AppearancePrefs`], the durable
-//! look-and-feel section of the shared `settings.json`
-//! ([`crate::region::RegionSettings::store_path`]). The OS theming layer
-//! resolves those preferences into the concrete [`ui::Theme`] every app
-//! draws against (see [`crate::prefs::AppearancePrefs::resolve_theme`]) — so
-//! choosing a theme here is the single source of truth the rest of the
-//! system follows, exactly like Region & Formats owns the locale.
+//! This panel edits [`crate::prefs::AppearancePrefs`], the `appearance`
+//! section of the person's settings. The OS theming layer resolves those
+//! preferences into the concrete [`ui::Theme`] every app draws against (see
+//! [`crate::prefs::AppearancePrefs::resolve_theme`]) — so choosing a theme
+//! here is the single source of truth the rest of the system follows,
+//! exactly like Region & Formats owns the locale.
 //!
 //! Controls:
 //! - **Wallpaper** — a picture chosen through the file-chooser portal and
@@ -19,50 +18,34 @@
 //! - **Reduce motion** — snaps animations to their resting state.
 //! - **Text size** — a UI-wide text-scale multiplier for low-vision comfort.
 //!
-//! Each control is bound to a CRDT key; `sync` reads the key, folds the
-//! change into the loaded prefs, and persists the shared store. On first
-//! sync it seeds the controls from the loaded prefs so they rest on the
-//! user's current choice.
+//! Every control is bound to an [`AppearanceEffect`]; the effect writes the
+//! section and the pane shows what the section holds, whoever changed it.
 
 use std::collections::HashMap;
-use ui::doc::{read_bool, read_str_or_text};
-use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
-use tracing::warn;
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, Effected};
 use ui::theme::Theme;
-use ui::widget::{Button, Dropdown, Row, Spacer, Toggle, Widget};
+use ui::tilo_resource;
+use ui::widget::{AppModel, Button, Dropdown, ModelPath, Row, Spacer, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action, set_text_action};
+use crate::effects::effect;
+use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::prefs::{AppearancePrefs, SystemPrefs};
+use crate::prefs::AppearancePrefs;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{caption, card, choice_row, rows, setting_row_described, value_row};
-
-pub const THEME_KEY: &str = "appearance.theme";
-pub const HIGH_CONTRAST_KEY: &str = "appearance.high_contrast";
-pub const REDUCE_MOTION_KEY: &str = "appearance.reduce_motion";
-pub const TEXT_SIZE_KEY: &str = "appearance.text_size";
-pub const UI_SCALE_KEY: &str = "appearance.ui_scale";
-pub const SCHEDULE_KEY: &str = "appearance.schedule";
-pub const SUNRISE_KEY: &str = "appearance.sunrise";
-pub const SUNSET_KEY: &str = "appearance.sunset";
-pub const WALLPAPER_SCOPE_KEY: &str = "appearance.wallpaper_scope";
-pub const WALLPAPER_TARGET_KEY: &str = "appearance.wallpaper_target";
-/// Command bit the "Choose picture…" button sets; the pane opens the chooser
-/// and clears it. Never persisted.
-pub const WALLPAPER_CHOOSE_KEY: &str = "appearance.wallpaper.choose";
 
 /// `(label, persisted value)` of each day/night schedule.
 pub const SCHEDULES: [(&str, &str); 2] = [("Sunset to sunrise", "sun"), ("Custom times", "custom")];
-pub const SCHEDULE_LABELS: [&str; 2] = [SCHEDULES[0].0, SCHEDULES[1].0];
 /// `(label, persisted value)` of which workspaces a new wallpaper covers.
 pub const WALLPAPER_SCOPES: [(&str, &str); 2] =
     [("This workspace", "workspace"), ("Every workspace", "all")];
-pub const WALLPAPER_SCOPE_LABELS: [&str; 2] = [WALLPAPER_SCOPES[0].0, WALLPAPER_SCOPES[1].0];
 /// `(label, persisted value)` of where a new wallpaper shows.
 pub const WALLPAPER_TARGETS: [(&str, &str); 3] = [
     ("Desktop", "background"),
@@ -105,7 +88,7 @@ pub fn scope_label(value: &str) -> String {
     })
 }
 
-fn target_label(value: &str) -> String {
+pub fn target_label(value: &str) -> String {
     t(match value {
         "lockscreen" => "settings-appearance-target-lock",
         "both" => "settings-appearance-target-both",
@@ -135,7 +118,7 @@ pub const UI_SCALES: &[(&str, f64)] = &[
 ];
 
 /// Map a UI-scale factor to the closest offered label (defaults to "100%").
-fn ui_scale_label(scale: f64) -> &'static str {
+pub(crate) fn ui_scale_label(scale: f64) -> &'static str {
     // `total_cmp`, not `partial_cmp().unwrap()`: a hand-edited settings.json
     // could hold a non-finite scale, and this must degrade to "100%" rather
     // than panic the pane.
@@ -192,87 +175,385 @@ pub fn text_size_options() -> Vec<String> {
         .collect()
 }
 
+/// The persisted values of a `(label, value)` table, as an effect's choices.
+fn values(table: &'static [(&'static str, &'static str)]) -> impl Iterator<Item = &'static str> {
+    table.iter().map(|(_, value)| *value)
+}
+
+/// The English text-size names an effect takes.
+pub const TEXT_SIZE_NAMES: [&str; 4] = ["Small", "Default", "Large", "Larger"];
+
+/// The UI-scale steps an effect takes.
+pub const UI_SCALE_NAMES: [&str; 5] = ["90%", "100%", "110%", "125%", "150%"];
+
+/// The English name of a text size shown in either language.
+pub fn text_size_name(shown: &str) -> String {
+    TEXT_SIZES
+        .iter()
+        .find(|(english, _)| *english == shown || t(text_size_ftl(english)) == shown)
+        .map_or_else(|| shown.to_owned(), |(english, _)| (*english).to_owned())
+}
+
+/// The look of the desktop and every app: theme, scale, contrast, motion,
+/// the day-and-night schedule and the wallpaper.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum AppearanceEffect {
+    /// Set the theme every app draws with.
+    #[effect(idempotent)]
+    SetTheme {
+        #[param("The theme; Automatic is light by day and dark by night", choices = AppearancePrefs::THEMES.iter().copied())]
+        theme: String,
+    },
+    /// Set the interface scale.
+    #[effect(idempotent)]
+    SetUiScale {
+        #[param("How large the whole interface is drawn", choices = UI_SCALE_NAMES)]
+        scale: String,
+    },
+    /// Set the text size.
+    #[effect(idempotent)]
+    SetTextSize {
+        #[param("How large text is drawn", choices = TEXT_SIZE_NAMES)]
+        size: String,
+    },
+    /// Turn high contrast on or off.
+    #[effect(idempotent)]
+    SetHighContrast {
+        #[param("Whether high contrast is on")]
+        on: bool,
+    },
+    /// Turn reduced motion on or off.
+    #[effect(idempotent)]
+    SetReduceMotion {
+        #[param("Whether animations are skipped")]
+        on: bool,
+    },
+    /// Set when day and night begin.
+    #[effect(idempotent)]
+    SetDayNightSchedule {
+        #[param("`sun`: at sunrise and sunset; `custom`: at the day and night times", choices = values(&SCHEDULES))]
+        schedule: String,
+    },
+    /// Set when day begins on the custom schedule.
+    #[effect(idempotent)]
+    SetDayStart {
+        #[param("The time day begins, HH:MM", choices = TIMES)]
+        time: String,
+    },
+    /// Set when night begins on the custom schedule.
+    #[effect(idempotent)]
+    SetNightStart {
+        #[param("The time night begins, HH:MM", choices = TIMES)]
+        time: String,
+    },
+    /// Set which workspaces a new wallpaper covers.
+    #[effect(idempotent)]
+    SetWallpaperScope {
+        #[param("`workspace`: this workspace; `all`: every workspace", choices = values(&WALLPAPER_SCOPES))]
+        scope: String,
+    },
+    /// Set where a new wallpaper shows.
+    #[effect(idempotent)]
+    SetWallpaperTarget {
+        #[param("The desktop, the lock screen or both", choices = values(&WALLPAPER_TARGETS))]
+        target: String,
+    },
+    /// Choose a picture and make it the wallpaper.
+    #[effect(job)]
+    ChooseWallpaper,
+}
+
+/// Answer `effect`.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: AppearanceEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let host = app.host();
+    let pick = |table: &[(&str, &'static str)], value: &str, what: &str| {
+        table
+            .iter()
+            .find(|(_, known)| *known == value)
+            .map(|(_, known)| (*known).to_owned())
+            .ok_or_else(|| format!("`{value}` is not a {what}"))
+    };
+    match effect {
+        AppearanceEffect::SetTheme { theme } => {
+            if !AppearancePrefs::THEMES.contains(&theme.as_str()) {
+                return Err(format!("`{theme}` is not a theme"));
+            }
+            host.update(|prefs: &mut AppearancePrefs| prefs.theme = theme)
+        }
+        AppearanceEffect::SetUiScale { scale } => {
+            let factor =
+                ui_scale_factor(&scale).ok_or_else(|| format!("`{scale}` is not a UI scale"))?;
+            host.update(|prefs: &mut AppearancePrefs| prefs.ui_scale = factor)
+        }
+        AppearanceEffect::SetTextSize { size } => {
+            let scale =
+                text_size_scale(&size).ok_or_else(|| format!("`{size}` is not a text size"))?;
+            host.update(|prefs: &mut AppearancePrefs| prefs.text_scale = scale)
+        }
+        AppearanceEffect::SetHighContrast { on } => {
+            host.update(|prefs: &mut AppearancePrefs| prefs.high_contrast = on)
+        }
+        AppearanceEffect::SetReduceMotion { on } => {
+            host.update(|prefs: &mut AppearancePrefs| prefs.reduce_motion = on)
+        }
+        AppearanceEffect::SetDayNightSchedule { schedule } => {
+            let schedule = pick(&SCHEDULES, &schedule, "day and night schedule")?;
+            host.update(|prefs: &mut AppearancePrefs| prefs.schedule = schedule)
+        }
+        AppearanceEffect::SetDayStart { time } => {
+            let time = schedule_time(&time)?;
+            host.update(|prefs: &mut AppearancePrefs| prefs.sunrise = time)
+        }
+        AppearanceEffect::SetNightStart { time } => {
+            let time = schedule_time(&time)?;
+            host.update(|prefs: &mut AppearancePrefs| prefs.sunset = time)
+        }
+        AppearanceEffect::SetWallpaperScope { scope } => {
+            let scope = pick(&WALLPAPER_SCOPES, &scope, "wallpaper scope")?;
+            host.update(|prefs: &mut AppearancePrefs| prefs.wallpaper_scope = scope)
+        }
+        AppearanceEffect::SetWallpaperTarget { target } => {
+            let target = pick(&WALLPAPER_TARGETS, &target, "wallpaper target")?;
+            host.update(|prefs: &mut AppearancePrefs| prefs.wallpaper_target = target)
+        }
+        AppearanceEffect::ChooseWallpaper => choose_wallpaper(app, cx),
+    }
+}
+
+/// A time of day `HH:MM`, normalised.
+fn schedule_time(time: &str) -> Result<String, String> {
+    settings_store::day_schedule::parse_hhmm(time)
+        .map(settings_store::day_schedule::format_hhmm)
+        .ok_or_else(|| format!("`{time}` is not a time of day (HH:MM)"))
+}
+
+/// Ask for a picture through the file-chooser portal, then hand it to the
+/// Wallpaper portal, which previews it and asks before applying it. The
+/// pane shows where the request stands.
+fn choose_wallpaper(app: &SettingsApp, cx: &mut EffectCx<Settings, SettingsApp>) -> EffectAnswer {
+    if !app.host().reaches_devices() {
+        return Err("only a window someone uses opens the file chooser".into());
+    }
+    let target = match app
+        .host()
+        .settings::<AppearancePrefs>()
+        .get()
+        .wallpaper_target
+        .as_str()
+    {
+        "lockscreen" => ui::portal::WallpaperTarget::Lockscreen,
+        "both" => ui::portal::WallpaperTarget::Both,
+        _ => ui::portal::WallpaperTarget::Background,
+    };
+    let status = app.wallpaper_status().writer();
+    let title = t("settings-appearance-choose-wallpaper");
+    let accept = t("settings-appearance-choose");
+    let pictures = t("settings-appearance-pictures");
+    let confirm = t("settings-appearance-confirm-preview");
+    Ok(cx.thread(
+        move |_| {
+            let pick = ui::portal::PickRequest::open(&title, &accept)
+                .filter(
+                    ui::portal::FileFilter::new(&pictures)
+                        .mimetype("image/png")
+                        .mimetype("image/jpeg")
+                        .mimetype("image/webp"),
+                )
+                .thread_name("settings-wallpaper")
+                .send_open_file();
+            let file = match pick.recv() {
+                Ok(ui::portal::OpenFileOutcome::Opened(file)) => file,
+                Ok(ui::portal::OpenFileOutcome::Cancelled) | Err(_) => return Ok(None),
+                Ok(ui::portal::OpenFileOutcome::Failed(error)) => {
+                    return Err(t_args(
+                        "settings-appearance-open-failed",
+                        &[("error", error.into())],
+                    ));
+                }
+            };
+            status.set(Some(confirm));
+            match ui::portal::send_set_wallpaper(file.into_file(), target).recv() {
+                Ok(Ok(())) => Ok(Some(t("settings-appearance-updated"))),
+                Ok(Err(error)) => Err(t_args(
+                    "settings-appearance-unchanged",
+                    &[("error", error.into())],
+                )),
+                Err(_) => Err(t_args(
+                    "settings-appearance-unchanged",
+                    &[("error", "the portal went away".into())],
+                )),
+            }
+        },
+        |app: &mut SettingsApp, outcome: Result<Option<String>, String>, _| match outcome {
+            Ok(None) => {
+                app.wallpaper_status().set(None);
+                Ok(Effected::done())
+            }
+            Ok(Some(done)) => {
+                app.wallpaper_status().set(Some(done));
+                Ok(Effected::done())
+            }
+            Err(error) => {
+                app.wallpaper_status().set(Some(error.clone()));
+                Err(error)
+            }
+        },
+    ))
+}
+
+/// What the pane's controls show: the stored preferences, as labels.
+struct Shown {
+    theme: LocalState<String>,
+    ui_scale: LocalState<String>,
+    text_size: LocalState<String>,
+    high_contrast: LocalState<bool>,
+    reduce_motion: LocalState<bool>,
+    schedule: LocalState<String>,
+    sunrise: LocalState<String>,
+    sunset: LocalState<String>,
+    wallpaper_scope: LocalState<String>,
+    wallpaper_target: LocalState<String>,
+}
+
+impl Shown {
+    fn of(prefs: &AppearancePrefs) -> Self {
+        let shown = Self {
+            theme: LocalState::new(String::new()),
+            ui_scale: LocalState::new(String::new()),
+            text_size: LocalState::new(String::new()),
+            high_contrast: LocalState::new(false),
+            reduce_motion: LocalState::new(false),
+            schedule: LocalState::new(String::new()),
+            sunrise: LocalState::new(String::new()),
+            sunset: LocalState::new(String::new()),
+            wallpaper_scope: LocalState::new(String::new()),
+            wallpaper_target: LocalState::new(String::new()),
+        };
+        shown.show(prefs);
+        shown
+    }
+
+    fn show(&self, prefs: &AppearancePrefs) {
+        self.theme.set(prefs.theme.clone());
+        self.ui_scale.set(ui_scale_label(prefs.ui_scale).to_owned());
+        self.text_size.set(text_size_label(prefs.text_scale));
+        self.high_contrast.set(prefs.high_contrast);
+        self.reduce_motion.set(prefs.reduce_motion);
+        self.schedule.set(schedule_label(&prefs.schedule));
+        self.sunrise.set(prefs.sunrise.clone());
+        self.sunset.set(prefs.sunset.clone());
+        self.wallpaper_scope
+            .set(scope_label(&prefs.wallpaper_scope));
+        self.wallpaper_target
+            .set(target_label(&prefs.wallpaper_target));
+    }
+}
+
 pub struct AppearancePane {
-    prefs: AppearancePrefs,
-    needs_seed: bool,
-    /// The wallpaper file chooser in flight.
-    wallpaper_pick: Option<ui::portal::OpenFileChannel>,
-    /// The Wallpaper portal request in flight (the desktop previews and asks).
-    wallpaper_apply: Option<ui::portal::WallpaperChannel>,
-    /// What happened to the last wallpaper request, shown under the button.
-    wallpaper_status: Option<String>,
+    cx: PaneCx,
+    prefs: Followed<AppearancePrefs>,
+    shown: Shown,
+    /// Where the last wallpaper request stands, written by its effect.
+    wallpaper_status: LocalState<Option<String>>,
+    status_shown: Option<String>,
     structure_dirty: bool,
-    commit_context_pending: bool,
-    /// The only writer for durable appearance values. Controls edit a local
-    /// draft key and this host dispatches the same action exported by Settings'
-    /// resource tree; a click, keyboard activation, Ctrl+K, replay, and undo
-    /// therefore all share one canonical mutation path.
-    actions: crate::resource::ActionSink,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
 
-impl Default for AppearancePane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl AppearancePane {
-    pub fn new() -> Self {
-        Self::with_prefs(SystemPrefs::load().appearance)
-    }
-
-    /// Construct from explicit preferences — used by tests and the
-    /// deterministic `--shots` render.
-    pub fn with_prefs(prefs: AppearancePrefs) -> Self {
+    /// The pane over `cx`'s appearance preferences, showing
+    /// `wallpaper_status`.
+    pub fn new(cx: PaneCx, wallpaper_status: LocalState<Option<String>>) -> Self {
+        let prefs = cx.follow::<AppearancePrefs>();
+        let shown = Shown::of(prefs.get());
+        let status_shown = wallpaper_status.get();
         Self {
+            cx,
             prefs,
-            needs_seed: true,
-            wallpaper_pick: None,
-            wallpaper_apply: None,
-            wallpaper_status: None,
+            shown,
+            wallpaper_status,
+            status_shown,
             structure_dirty: false,
-            commit_context_pending: false,
-            actions: crate::resource::ActionSink::default(),
             composed: None,
             rect: Rect::ZERO,
         }
     }
 
     pub fn prefs(&self) -> &AppearancePrefs {
-        &self.prefs
+        self.prefs.get()
+    }
+
+    fn dropdown(
+        options: Vec<String>,
+        state: &LocalState<String>,
+        id: &str,
+        bind: impl FnOnce(Dropdown) -> Dropdown,
+    ) -> Box<dyn Widget> {
+        let placeholder = state.get();
+        Box::new(bind(
+            Dropdown::from_state(options, state)
+                .with_id(id)
+                .with_placeholder(&placeholder),
+        ))
+    }
+
+    fn toggle(
+        &self,
+        state: &LocalState<bool>,
+        id: &str,
+        effect: tilo_resource::ActionRef<AppearanceEffect, bool>,
+    ) -> Box<dyn Widget> {
+        Box::new(
+            self.cx
+                .bind(Toggle::from_state(state).with_id(id), self::effect(effect)),
+        )
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        let theme_opts: Vec<String> = AppearancePrefs::THEMES
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect();
-        let theme_path = Self::draft_key(THEME_KEY);
-        let theme = Dropdown::new(theme_opts, &theme_path)
-            .with_id("appearance.theme")
-            .with_placeholder(&self.prefs.resolve_theme().name);
-
-        let size_opts = text_size_options();
-        let size_path = Self::draft_key(TEXT_SIZE_KEY);
-        let size_current = text_size_label(self.prefs.text_scale);
-        let size = Dropdown::new(size_opts, &size_path)
-            .with_id("appearance.text_size")
-            .with_placeholder(&size_current);
-
-        let ui_scale_opts: Vec<String> = UI_SCALES.iter().map(|(l, _)| l.to_string()).collect();
-        let ui_scale_path = Self::draft_key(UI_SCALE_KEY);
-        let ui_scale = Dropdown::new(ui_scale_opts, &ui_scale_path)
-            .with_id("appearance.ui_scale")
-            .with_placeholder(ui_scale_label(self.prefs.ui_scale));
+        let cx = &self.cx;
+        let theme = Self::dropdown(
+            AppearancePrefs::THEMES
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect(),
+            &self.shown.theme,
+            "appearance.theme",
+            |control| cx.bind(control, effect(AppearanceEffect::SET_THEME)),
+        );
+        let ui_scale = Self::dropdown(
+            UI_SCALE_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            &self.shown.ui_scale,
+            "appearance.ui_scale",
+            |control| cx.bind(control, effect(AppearanceEffect::SET_UI_SCALE)),
+        );
+        let size = Self::dropdown(
+            text_size_options(),
+            &self.shown.text_size,
+            "appearance.text_size",
+            |control| {
+                cx.bind(
+                    control,
+                    effect(AppearanceEffect::SET_TEXT_SIZE)
+                        .map(|shown: String| text_size_name(&shown)),
+                )
+            },
+        );
 
         let theme_card = card(
             &t("settings-appearance-theme-card"),
             rows(vec![
-                choice_row(&t("settings-appearance-theme"), Box::new(theme)),
-                choice_row(&t("settings-appearance-ui-scale"), Box::new(ui_scale)),
-                choice_row(&t("settings-appearance-text-size"), Box::new(size)),
+                choice_row(&t("settings-appearance-theme"), theme),
+                choice_row(&t("settings-appearance-ui-scale"), ui_scale),
+                choice_row(&t("settings-appearance-text-size"), size),
             ]),
         );
 
@@ -282,31 +563,25 @@ impl AppearancePane {
                 setting_row_described(
                     &t("settings-appearance-high-contrast"),
                     &t("settings-appearance-high-contrast-desc"),
-                    Box::new(
-                        Toggle::new(
-                            "settings.appearance.high_contrast",
-                            "appearance.high_contrast.edit",
-                        )
-                        .with_id("appearance.high_contrast"),
+                    self.toggle(
+                        &self.shown.high_contrast,
+                        "appearance.high_contrast",
+                        AppearanceEffect::SET_HIGH_CONTRAST,
                     ),
                 ),
                 setting_row_described(
                     &t("settings-appearance-reduce-motion"),
                     &t("settings-appearance-reduce-motion-desc"),
-                    Box::new(
-                        Toggle::new(
-                            "settings.appearance.reduce_motion",
-                            "appearance.reduce_motion.edit",
-                        )
-                        .with_id("appearance.reduce_motion"),
+                    self.toggle(
+                        &self.shown.reduce_motion,
+                        "appearance.reduce_motion",
+                        AppearanceEffect::SET_REDUCE_MOTION,
                     ),
                 ),
             ]),
         );
 
-        // A live summary of the theme these choices resolve to, so the effect
-        // is legible before it is applied system-wide.
-        let resolved = self.prefs.resolve_theme();
+        let resolved = self.prefs().resolve_theme();
         let motion = if resolved.reduce_motion {
             t("settings-appearance-on")
         } else {
@@ -343,106 +618,121 @@ impl AppearancePane {
         ])
     }
 
-    /// The wallpaper controls. Tilo ships no stock pictures, so the choice is
-    /// any picture the user has, through the desktop's file chooser.
     fn wallpaper_card(&self) -> Box<dyn Widget> {
-        let dropdown = |labels: Vec<String>, key: &str, id: &str, current: &str| {
-            Box::new(
-                Dropdown::new(labels, &Self::draft_key(key))
-                    .with_id(id)
-                    .with_placeholder(current),
-            ) as Box<dyn Widget>
-        };
-        let scope_current = scope_label(&self.prefs.wallpaper_scope);
-        let target_current = target_label(&self.prefs.wallpaper_target);
+        let cx = &self.cx;
         let mut body = vec![
             caption(&t("settings-appearance-wallpaper-body")),
             choice_row(
                 &t("settings-appearance-use-for"),
-                dropdown(
-                    vec![
-                        t("settings-appearance-scope-workspace"),
-                        t("settings-appearance-scope-all"),
-                    ],
-                    WALLPAPER_SCOPE_KEY,
+                Self::dropdown(
+                    WALLPAPER_SCOPES
+                        .iter()
+                        .map(|(_, value)| scope_label(value))
+                        .collect(),
+                    &self.shown.wallpaper_scope,
                     "appearance.wallpaper_scope",
-                    &scope_current,
+                    |control| {
+                        cx.bind(
+                            control,
+                            effect(AppearanceEffect::SET_WALLPAPER_SCOPE).map(|shown: String| {
+                                value_for_shown(&WALLPAPER_SCOPES, &shown, scope_label)
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            }),
+                        )
+                    },
                 ),
             ),
             choice_row(
                 &t("settings-appearance-show-on"),
-                dropdown(
-                    vec![
-                        t("settings-appearance-target-desktop"),
-                        t("settings-appearance-target-lock"),
-                        t("settings-appearance-target-both"),
-                    ],
-                    WALLPAPER_TARGET_KEY,
+                Self::dropdown(
+                    WALLPAPER_TARGETS
+                        .iter()
+                        .map(|(_, value)| target_label(value))
+                        .collect(),
+                    &self.shown.wallpaper_target,
                     "appearance.wallpaper_target",
-                    &target_current,
+                    |control| {
+                        cx.bind(
+                            control,
+                            effect(AppearanceEffect::SET_WALLPAPER_TARGET).map(|shown: String| {
+                                value_for_shown(&WALLPAPER_TARGETS, &shown, target_label)
+                                    .unwrap_or_default()
+                                    .to_owned()
+                            }),
+                        )
+                    },
                 ),
             ),
             Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new(
-                            "appearance.wallpaper.choose",
-                            &t("settings-appearance-choose-picture"),
-                            Some(WALLPAPER_CHOOSE_KEY),
-                        )
-                        .content_sized(),
+                        cx.bind_invocation(
+                            Button::new(
+                                "appearance.wallpaper.choose",
+                                &t("settings-appearance-choose-picture"),
+                            )
+                            .content_sized(),
+                            AppearanceEffect::ChooseWallpaper,
+                        ),
                     ))
                     .push(Box::new(Spacer::new())),
             ),
         ];
-        if let Some(status) = &self.wallpaper_status {
+        if let Some(status) = &self.status_shown {
             body.push(caption(status));
         }
         card(&t("settings-appearance-wallpaper-card"), rows(body))
     }
 
-    /// When the day ends, for the Automatic theme and a scheduled Night Light.
     fn schedule_card(&self) -> Box<dyn Widget> {
-        let dropdown = |labels: Vec<String>, key: &str, id: &str, current: &str| {
-            Box::new(
-                Dropdown::new(labels, &Self::draft_key(key))
-                    .with_id(id)
-                    .with_placeholder(current),
-            ) as Box<dyn Widget>
-        };
+        let cx = &self.cx;
         let times = || {
             TIMES
                 .iter()
                 .map(|time| (*time).to_string())
                 .collect::<Vec<_>>()
         };
-        let schedule_current = schedule_label(&self.prefs.schedule);
         let mut body = vec![choice_row(
             &t("settings-appearance-schedule"),
-            dropdown(
-                vec![
-                    t("settings-appearance-schedule-sun"),
-                    t("settings-appearance-schedule-custom"),
-                ],
-                SCHEDULE_KEY,
+            Self::dropdown(
+                SCHEDULES
+                    .iter()
+                    .map(|(_, value)| schedule_label(value))
+                    .collect(),
+                &self.shown.schedule,
                 "appearance.schedule",
-                &schedule_current,
+                |control| {
+                    cx.bind(
+                        control,
+                        effect(AppearanceEffect::SET_DAY_NIGHT_SCHEDULE).map(|shown: String| {
+                            value_for_shown(&SCHEDULES, &shown, schedule_label)
+                                .unwrap_or_default()
+                                .to_owned()
+                        }),
+                    )
+                },
             ),
         )];
-        let schedule = self.prefs.schedule();
+        let schedule = self.prefs().schedule();
         if !schedule.config.follow_sun {
             body.push(choice_row(
                 &t("settings-appearance-day-starts"),
-                dropdown(
+                Self::dropdown(
                     times(),
-                    SUNRISE_KEY,
+                    &self.shown.sunrise,
                     "appearance.sunrise",
-                    &self.prefs.sunrise,
+                    |control| cx.bind(control, effect(AppearanceEffect::SET_DAY_START)),
                 ),
             ));
             body.push(choice_row(
                 &t("settings-appearance-night-starts"),
-                dropdown(times(), SUNSET_KEY, "appearance.sunset", &self.prefs.sunset),
+                Self::dropdown(
+                    times(),
+                    &self.shown.sunset,
+                    "appearance.sunset",
+                    |control| cx.bind(control, effect(AppearanceEffect::SET_NIGHT_START)),
+                ),
             ));
         }
         let today = schedule
@@ -471,311 +761,24 @@ impl AppearancePane {
         )));
         card(&t("settings-appearance-day-night-card"), rows(body))
     }
-
-    /// Open the chooser when the button asked for it, and carry a chosen
-    /// picture through the Wallpaper portal.
-    fn sync_wallpaper(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, WALLPAPER_CHOOSE_KEY).unwrap_or(false) {
-            self.dispatch(state, &set_bool_action(WALLPAPER_CHOOSE_KEY, false));
-            if self.wallpaper_pick.is_none() && self.wallpaper_apply.is_none() {
-                let chooser_title = t("settings-appearance-choose-wallpaper");
-                let chooser_ok = t("settings-appearance-choose");
-                let pictures = t("settings-appearance-pictures");
-                self.wallpaper_pick = Some(
-                    ui::portal::PickRequest::open(&chooser_title, &chooser_ok)
-                        .filter(
-                            ui::portal::FileFilter::new(&pictures)
-                                .mimetype("image/png")
-                                .mimetype("image/jpeg")
-                                .mimetype("image/webp"),
-                        )
-                        .thread_name("settings-wallpaper")
-                        .send_open_file(),
-                );
-            }
-        }
-        if let Some(pick) = &self.wallpaper_pick
-            && let Ok(outcome) = pick.try_recv()
-        {
-            self.wallpaper_pick = None;
-            match outcome {
-                ui::portal::OpenFileOutcome::Opened(file) => {
-                    let target = match self.prefs.wallpaper_target.as_str() {
-                        "lockscreen" => ui::portal::WallpaperTarget::Lockscreen,
-                        "both" => ui::portal::WallpaperTarget::Both,
-                        _ => ui::portal::WallpaperTarget::Background,
-                    };
-                    self.wallpaper_apply =
-                        Some(ui::portal::send_set_wallpaper(file.into_file(), target));
-                    self.set_wallpaper_status(Some(t("settings-appearance-confirm-preview")));
-                }
-                ui::portal::OpenFileOutcome::Cancelled => {}
-                ui::portal::OpenFileOutcome::Failed(error) => {
-                    self.set_wallpaper_status(Some(t_args(
-                        "settings-appearance-open-failed",
-                        &[("error", error.into())],
-                    )));
-                }
-            }
-        }
-        if let Some(apply) = &self.wallpaper_apply
-            && let Ok(outcome) = apply.try_recv()
-        {
-            self.wallpaper_apply = None;
-            self.set_wallpaper_status(Some(match outcome {
-                Ok(()) => t("settings-appearance-updated"),
-                Err(error) => t_args("settings-appearance-unchanged", &[("error", error.into())]),
-            }));
-        }
-    }
-
-    /// Fold the day/night schedule and wallpaper choices from the document
-    /// into the prefs. Returns whether any changed.
-    fn reconcile_schedule_and_wallpaper(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
-        let mut changed = false;
-        let structure_before = (
-            self.prefs.schedule.clone(),
-            self.prefs.sunrise.clone(),
-            self.prefs.sunset.clone(),
-        );
-        let current = schedule_label(&self.prefs.schedule);
-        let (label, schedule_changed) = self.reconcile_text(state, root, SCHEDULE_KEY, &current);
-        changed |= schedule_changed;
-        if let Some(value) = value_for_shown(&SCHEDULES, &label, schedule_label) {
-            self.prefs.schedule = value.to_string();
-        }
-        for (key, is_sunrise) in [(SUNRISE_KEY, true), (SUNSET_KEY, false)] {
-            let current = if is_sunrise {
-                self.prefs.sunrise.clone()
-            } else {
-                self.prefs.sunset.clone()
-            };
-            let (time, time_changed) = self.reconcile_text(state, root, key, &current);
-            changed |= time_changed;
-            if let Some(minutes) = settings_store::day_schedule::parse_hhmm(&time) {
-                let time = settings_store::day_schedule::format_hhmm(minutes);
-                if is_sunrise {
-                    self.prefs.sunrise = time;
-                } else {
-                    self.prefs.sunset = time;
-                }
-            }
-        }
-        if structure_before
-            != (
-                self.prefs.schedule.clone(),
-                self.prefs.sunrise.clone(),
-                self.prefs.sunset.clone(),
-            )
-        {
-            self.structure_dirty = true;
-        }
-        let current = scope_label(&self.prefs.wallpaper_scope);
-        let (label, scope_changed) =
-            self.reconcile_text(state, root, WALLPAPER_SCOPE_KEY, &current);
-        changed |= scope_changed;
-        if let Some(value) = value_for_shown(&WALLPAPER_SCOPES, &label, scope_label) {
-            self.prefs.wallpaper_scope = value.to_string();
-        }
-        let current = target_label(&self.prefs.wallpaper_target);
-        let (label, target_changed) =
-            self.reconcile_text(state, root, WALLPAPER_TARGET_KEY, &current);
-        changed |= target_changed;
-        if let Some(value) = value_for_shown(&WALLPAPER_TARGETS, &label, target_label) {
-            self.prefs.wallpaper_target = value.to_string();
-        }
-
-        changed
-    }
-
-    fn set_wallpaper_status(&mut self, status: Option<String>) {
-        if self.wallpaper_status != status {
-            self.wallpaper_status = status;
-            self.structure_dirty = true;
-        }
-    }
-
-    /// Persist the current prefs into the shared store, preserving other
-    /// sections. Reads fresh so a change here never clobbers another pane's.
-    fn persist(&self) {
-        let mut p = SystemPrefs::load();
-        p.appearance = self.prefs.clone();
-        if let Err(e) = p.save() {
-            warn!(target: "tilo::settings", op = "appearance_save", error = %e, "failed to persist appearance prefs");
-        }
-    }
-
-    fn draft_key(canonical: &str) -> String {
-        format!("{canonical}.edit")
-    }
-
-    fn dispatch(&mut self, state: &mut AutoCommit, action: &SettingsAction) {
-        self.actions.dispatch_with_context(
-            state,
-            SETTINGS_ACTION_TYPE,
-            action,
-            tilo_actions::ActionContext::for_action("so.tilo.settings", "Settings", action),
-        );
-    }
-
-    pub(crate) fn bind_dispatcher(
-        &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
-    ) {
-        self.actions.attach(dispatcher);
-    }
-
-    /// Reconcile a dropdown draft with its action-owned value. The draft is
-    /// presentation state only; it is deliberately never read by other apps
-    /// or published as a setting.
-    fn reconcile_text(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        canonical: &str,
-        current: &str,
-    ) -> (String, bool) {
-        let canonical_value =
-            read_str_or_text(state, root, canonical).unwrap_or_else(|| current.to_string());
-        let draft = Self::draft_key(canonical);
-        let draft_value =
-            read_str_or_text(state, root, &draft).unwrap_or_else(|| canonical_value.clone());
-        if canonical_value != current {
-            let _ = state.put(root, draft, canonical_value.as_str());
-            (canonical_value, true)
-        } else if draft_value != canonical_value {
-            self.dispatch(state, &set_text_action(canonical, draft_value.clone()));
-            (draft_value, true)
-        } else {
-            (current.to_string(), false)
-        }
-    }
-
-    fn reconcile_bool(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        canonical: &str,
-        current: bool,
-    ) -> (bool, bool) {
-        let canonical_value = read_bool(state, root, canonical).unwrap_or(current);
-        let draft = Self::draft_key(canonical);
-        let draft_value = read_bool(state, root, &draft).unwrap_or(canonical_value);
-        if canonical_value != current {
-            let _ = state.put(root, draft, canonical_value);
-            (canonical_value, true)
-        } else if draft_value != canonical_value {
-            self.dispatch(state, &set_bool_action(canonical, draft_value));
-            (draft_value, true)
-        } else {
-            (current, false)
-        }
-    }
-}
-
-pub fn build() -> Box<dyn Widget> {
-    Box::new(AppearancePane::new())
 }
 
 impl Widget for AppearancePane {
-    ui::provides!(dyn ui::undo::UndoPoints);
-
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
-        let (state, root) = ui::doc::document(state, root);
-        if self.needs_seed {
-            self.dispatch(state, &set_text_action(THEME_KEY, self.prefs.theme.clone()));
-            self.dispatch(
-                state,
-                &set_text_action(TEXT_SIZE_KEY, text_size_label(self.prefs.text_scale)),
-            );
-            self.dispatch(
-                state,
-                &set_text_action(UI_SCALE_KEY, ui_scale_label(self.prefs.ui_scale)),
-            );
-            self.dispatch(
-                state,
-                &set_bool_action(HIGH_CONTRAST_KEY, self.prefs.high_contrast),
-            );
-            self.dispatch(
-                state,
-                &set_bool_action(REDUCE_MOTION_KEY, self.prefs.reduce_motion),
-            );
-            self.dispatch(
-                state,
-                &set_text_action(SCHEDULE_KEY, schedule_label(&self.prefs.schedule)),
-            );
-            self.dispatch(
-                state,
-                &set_text_action(SUNRISE_KEY, self.prefs.sunrise.clone()),
-            );
-            self.dispatch(
-                state,
-                &set_text_action(SUNSET_KEY, self.prefs.sunset.clone()),
-            );
-            self.dispatch(
-                state,
-                &set_text_action(
-                    WALLPAPER_SCOPE_KEY,
-                    scope_label(&self.prefs.wallpaper_scope),
-                ),
-            );
-            self.dispatch(
-                state,
-                &set_text_action(
-                    WALLPAPER_TARGET_KEY,
-                    target_label(&self.prefs.wallpaper_target),
-                ),
-            );
-            self.dispatch(state, &set_bool_action(WALLPAPER_CHOOSE_KEY, false));
-            self.needs_seed = false;
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
+        if self.prefs.refresh() {
+            self.shown.show(self.prefs.get());
+            // The schedule's rows and the applied theme follow the values.
+            self.structure_dirty = true;
         }
-        self.sync_wallpaper(state, root);
-
-        let current_theme = self.prefs.theme.clone();
-        let (theme, mut changed) = self.reconcile_text(state, root, THEME_KEY, &current_theme);
-        if AppearancePrefs::THEMES.contains(&theme.as_str()) && theme != self.prefs.theme {
-            self.prefs.theme = theme;
+        let status = self.wallpaper_status.get();
+        if status != self.status_shown {
+            self.status_shown = status;
+            self.structure_dirty = true;
         }
-        let current_text_size = text_size_label(self.prefs.text_scale);
-        let (text_size, text_changed) =
-            self.reconcile_text(state, root, TEXT_SIZE_KEY, &current_text_size);
-        changed |= text_changed;
-        if let Some(scale) = text_size_scale(&text_size)
-            && (scale - self.prefs.text_scale).abs() > f64::EPSILON
-        {
-            self.prefs.text_scale = scale;
-        }
-        let current_ui_scale = ui_scale_label(self.prefs.ui_scale);
-        let (ui_scale, scale_changed) =
-            self.reconcile_text(state, root, UI_SCALE_KEY, current_ui_scale);
-        changed |= scale_changed;
-        if let Some(factor) = ui_scale_factor(&ui_scale)
-            && (factor - self.prefs.ui_scale).abs() > f64::EPSILON
-        {
-            self.prefs.ui_scale = factor;
-        }
-        let (high_contrast, contrast_changed) =
-            self.reconcile_bool(state, root, HIGH_CONTRAST_KEY, self.prefs.high_contrast);
-        changed |= contrast_changed;
-        if high_contrast != self.prefs.high_contrast {
-            self.prefs.high_contrast = high_contrast;
-        }
-        let (reduce_motion, motion_changed) =
-            self.reconcile_bool(state, root, REDUCE_MOTION_KEY, self.prefs.reduce_motion);
-        changed |= motion_changed;
-        if reduce_motion != self.prefs.reduce_motion {
-            self.prefs.reduce_motion = reduce_motion;
-        }
-        changed |= self.reconcile_schedule_and_wallpaper(state, root);
-        if changed {
-            self.persist();
-        }
-
         if let Some(c) = &mut self.composed {
             c.sync(state, root);
         }
     }
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -829,14 +832,12 @@ impl Widget for AppearancePane {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
             c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -879,29 +880,14 @@ impl Widget for AppearancePane {
     /// *base* colour theme unscaled — the App folds in high-contrast, the UI
     /// scale, and the text scale itself, keeping that bookkeeping in one place.
     fn appearance_intent(&self) -> Option<ui::theme::AppearanceIntent> {
+        let prefs = self.prefs.get();
         Some(ui::theme::AppearanceIntent {
-            base_theme: self.prefs.base_theme(),
-            high_contrast: self.prefs.high_contrast,
-            reduce_motion: self.prefs.reduce_motion,
-            text_scale: self.prefs.text_scale as f32,
-            ui_scale: self.prefs.ui_scale as f32,
+            base_theme: prefs.base_theme(),
+            high_contrast: prefs.high_contrast,
+            reduce_motion: prefs.reduce_motion,
+            text_scale: prefs.text_scale as f32,
+            ui_scale: prefs.ui_scale as f32,
         })
-    }
-}
-
-impl ui::undo::UndoPoints for AppearancePane {
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
-        crate::panes::preference_commit_context(
-            pending,
-            "appearance",
-            "Appearance",
-            "Change appearance preferences",
-        )
     }
 }
 
@@ -909,62 +895,132 @@ impl ui::undo::UndoPoints for AppearancePane {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use crate::effects::SettingsEffect;
+    use crate::resource::SettingsShell;
+    use ui::prelude::TestApp;
 
-    /// The pane seeds its prefs into the document, hands the shell its live
-    /// appearance intent, and builds a layout.
+    fn set(app: &mut TestApp<SettingsShell>, effect: AppearanceEffect) {
+        app.effect(&SettingsEffect::from(effect))
+            .expect("the appearance effect is answered");
+    }
+
+    /// Every appearance control's effect writes the person's `appearance`
+    /// section, where the compositor and every app read it; a value outside
+    /// the offered ones is refused and changes nothing.
     #[test]
-    fn appearance_pane_seeds_prefs_and_expresses_its_intent() {
-        let mut pane = AppearancePane::with_prefs(AppearancePrefs {
-            theme: "Nord".into(),
-            high_contrast: true,
-            reduce_motion: false,
-            text_scale: 1.15,
-            ui_scale: 1.25,
-            ..AppearancePrefs::default()
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            read_str_or_text(&doc, &root, THEME_KEY).as_deref(),
-            Some("Nord")
+    fn appearance_effects_write_the_shared_section() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        set(
+            &mut app,
+            AppearanceEffect::SetTheme {
+                theme: "Automatic".into(),
+            },
         );
-        assert_eq!(
-            read_str_or_text(&doc, &root, TEXT_SIZE_KEY).as_deref(),
-            Some("Large"),
-            "1.15 seeds the 'Large' label"
+        set(
+            &mut app,
+            AppearanceEffect::SetUiScale {
+                scale: "150%".into(),
+            },
         );
-        assert_eq!(
-            read_str_or_text(&doc, &root, UI_SCALE_KEY).as_deref(),
-            Some("125%"),
-            "1.25 seeds the '125%' UI-scale label"
+        set(
+            &mut app,
+            AppearanceEffect::SetTextSize {
+                size: "Large".into(),
+            },
         );
-        assert_eq!(read_bool(&doc, &root, HIGH_CONTRAST_KEY), Some(true));
+        set(&mut app, AppearanceEffect::SetHighContrast { on: true });
+        set(
+            &mut app,
+            AppearanceEffect::SetDayNightSchedule {
+                schedule: "custom".into(),
+            },
+        );
+        set(
+            &mut app,
+            AppearanceEffect::SetDayStart {
+                time: "06:30".into(),
+            },
+        );
+        set(
+            &mut app,
+            AppearanceEffect::SetNightStart {
+                time: "21:00".into(),
+            },
+        );
+        set(
+            &mut app,
+            AppearanceEffect::SetWallpaperScope {
+                scope: "all".into(),
+            },
+        );
 
-        let pane = AppearancePane::with_prefs(AppearancePrefs {
-            theme: "Nord".into(),
-            high_contrast: false,
-            reduce_motion: true,
-            text_scale: 1.15,
-            ui_scale: 1.25,
-            ..AppearancePrefs::default()
-        });
-        let intent = ui::widget::Widget::appearance_intent(&pane)
+        let settings = app.settings::<AppearancePrefs>();
+        let prefs = settings.get();
+        assert_eq!(prefs.theme, "Automatic");
+        assert_eq!(prefs.ui_scale, 1.50);
+        assert_eq!(prefs.text_scale, 1.15);
+        assert!(prefs.high_contrast);
+        assert_eq!(prefs.wallpaper_scope, "all");
+        let resolved = prefs.resolve_theme();
+        assert_eq!(resolved.ui_scale, 1.50);
+
+        let section = settings.document().section("appearance");
+        let config = settings_store::day_schedule::ScheduleConfig::from_section(&section);
+        assert!(!config.follow_sun);
+        assert_eq!(config.fixed.sunrise, 6 * 60 + 30);
+        assert_eq!(config.fixed.sunset, 21 * 60);
+
+        for refused in [
+            AppearanceEffect::SetTheme {
+                theme: "Neon".into(),
+            },
+            AppearanceEffect::SetDayStart {
+                time: "25:00".into(),
+            },
+        ] {
+            assert!(app.effect(&SettingsEffect::from(refused)).is_err());
+        }
+        assert_eq!(app.settings::<AppearancePrefs>().get(), prefs);
+    }
+
+    /// The pane shows the stored section, follows a change made elsewhere,
+    /// and hands the toolkit the look the person chose.
+    #[test]
+    fn the_pane_follows_the_section_and_expresses_its_intent() {
+        let profile = tempfile::tempdir().unwrap();
+        let cx = PaneCx::in_file(profile.path().join("settings.json"));
+        cx.settings::<AppearancePrefs>()
+            .set(&AppearancePrefs {
+                theme: "Nord".into(),
+                text_scale: 1.15,
+                ui_scale: 1.25,
+                ..AppearancePrefs::default()
+            })
+            .unwrap();
+        let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
+        assert_eq!(pane.shown.theme.get(), "Nord");
+        assert_eq!(pane.shown.text_size.get(), text_size_label(1.15));
+        assert_eq!(pane.shown.ui_scale.get(), "125%");
+
+        cx.settings::<AppearancePrefs>()
+            .update(|prefs| {
+                prefs.theme = "Gruvbox".into();
+                prefs.reduce_motion = true;
+            })
+            .unwrap();
+        let doc = ui::automerge::AutoCommit::new();
+        pane.sync(&doc, &ui::automerge::ROOT);
+        assert_eq!(pane.shown.theme.get(), "Gruvbox");
+        assert!(pane.shown.reduce_motion.get());
+        assert!(pane.take_structure_dirty());
+
+        let intent = pane
+            .appearance_intent()
             .expect("the appearance pane always expresses an intent");
-        assert_eq!(
-            intent.base_theme.name, "Nord",
-            "base theme is handed back unscaled"
-        );
+        assert_eq!(intent.base_theme.name, "Gruvbox");
         assert_eq!(intent.ui_scale, 1.25);
         assert_eq!(intent.text_scale, 1.15);
         assert!(intent.reduce_motion);
-        assert!(!intent.high_contrast);
-
-        let mut pane = build();
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
     #[test]
@@ -977,14 +1033,17 @@ mod tests {
             .collect();
         assert_eq!(hits, vec![Category::Appearance]);
 
-        let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
+        let profile = tempfile::tempdir().unwrap();
+        let mut pane = AppearancePane::new(
+            PaneCx::in_file(profile.path().join("settings.json")),
+            LocalState::new(None),
+        );
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
         let ids: Vec<String> = node_map
             .values()
-            // SAFETY: the map was just built from the live pane tree.
             .filter_map(|&widget| unsafe { (*widget).test_id() }.map(str::to_string))
             .collect();
         for id in ["appearance.wallpaper.choose", "appearance.wallpaper_scope"] {
@@ -995,120 +1054,13 @@ mod tests {
         }
     }
 
+    /// Without a person at the window nothing opens the file chooser.
     #[test]
-    fn the_day_and_night_schedule_round_trips_through_the_document_and_settings() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert_eq!(
-            read_str_or_text(&doc, &root, SCHEDULE_KEY).as_deref(),
-            Some("Sunset to sunrise")
+    fn only_a_window_someone_uses_chooses_a_wallpaper() {
+        let mut app = TestApp::<SettingsShell>::new().unwrap();
+        assert!(
+            app.effect(&SettingsEffect::from(AppearanceEffect::ChooseWallpaper))
+                .is_err()
         );
-        assert_eq!(
-            read_str_or_text(&doc, &root, SUNRISE_KEY).as_deref(),
-            Some("07:00")
-        );
-
-        let _ = doc.put(&root, THEME_KEY, "Automatic");
-        let _ = doc.put(&root, SCHEDULE_KEY, "Custom times");
-        let _ = doc.put(&root, SUNRISE_KEY, "06:30");
-        let _ = doc.put(&root, SUNSET_KEY, "21:00");
-        let _ = doc.put(&root, WALLPAPER_SCOPE_KEY, "Every workspace");
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.prefs().theme, "Automatic");
-        assert_eq!(pane.prefs().schedule, "custom");
-
-        let saved = SystemPrefs::load().appearance;
-        assert_eq!(saved.theme, "Automatic");
-        assert_eq!(saved.schedule, "custom");
-        assert_eq!(saved.sunrise, "06:30");
-        assert_eq!(saved.sunset, "21:00");
-        assert_eq!(saved.wallpaper_scope, "all");
-
-        // What the compositor and every app read back from the shared file.
-        let path = settings_store::settings_path().expect("test config dir");
-        let section = settings_store::load_section_at(&path, "appearance");
-        let config = settings_store::day_schedule::ScheduleConfig::from_section(&section);
-        assert!(!config.follow_sun);
-        assert_eq!(config.fixed.sunrise, 6 * 60 + 30);
-        assert_eq!(config.fixed.sunset, 21 * 60);
-
-        // A fresh pane shows the saved choice, not the defaults.
-        let mut reopened = AppearancePane::new();
-        let mut doc = AutoCommit::new();
-        reopened.sync(&mut doc, &root);
-        assert_eq!(
-            read_str_or_text(&doc, &root, SCHEDULE_KEY).as_deref(),
-            Some("Custom times")
-        );
-        assert_eq!(
-            read_str_or_text(&doc, &root, SUNSET_KEY).as_deref(),
-            Some("21:00")
-        );
-    }
-
-    /// A default pane (persisting through a scratch settings file) after the
-    /// document carries `edits`.
-    fn pane_after_edits(edits: &[(&str, automerge::ScalarValue)]) -> AppearancePane {
-        let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        for (key, value) in edits {
-            let _ = doc.put(&root, *key, value.clone());
-        }
-        pane.sync(&mut doc, &root);
-        pane
-    }
-
-    /// Dropdown and toggle edits in the document update the prefs, which
-    /// resolve to the real theme; unknown values are ignored.
-    #[test]
-    fn appearance_edits_update_prefs_and_resolve() {
-        use automerge::ScalarValue::{Boolean, Str};
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_after_edits(&[(UI_SCALE_KEY, Str("150%".into()))]);
-        assert_eq!(pane.prefs().ui_scale, 1.50);
-        // The pref folds into the resolved theme's ui_scale + scaled tokens.
-        let resolved = pane.prefs().resolve_theme();
-        assert_eq!(resolved.ui_scale, 1.50);
-        let base_gap = ui::Theme::dark().tokens.spacing.s3;
-        assert!((resolved.tokens.spacing.s3 - base_gap * 1.50).abs() < 1e-2);
-
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_after_edits(&[(THEME_KEY, Str("Gruvbox".into()))]);
-        assert_eq!(pane.prefs().theme, "Gruvbox");
-        assert_eq!(pane.prefs().resolve_theme().name, "Gruvbox");
-
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_after_edits(&[
-            (TEXT_SIZE_KEY, Str("Larger".into())),
-            (HIGH_CONTRAST_KEY, Boolean(true)),
-            (REDUCE_MOTION_KEY, Boolean(true)),
-        ]);
-        assert_eq!(pane.prefs().text_scale, 1.30);
-        assert!(pane.prefs().high_contrast);
-        assert!(pane.prefs().reduce_motion);
-        // high_contrast wins the resolved palette.
-        assert_eq!(pane.prefs().resolve_theme().name, "High Contrast");
-
-        let _cfg = crate::prefs::test_env::ConfigGuard::new();
-        let pane = pane_after_edits(&[(THEME_KEY, Str("not-a-theme".into()))]);
-        assert_eq!(pane.prefs().theme, "Dark", "stayed on the default");
-    }
-
-    #[test]
-    fn scale_and_text_size_labels_round_trip() {
-        for (factor, label) in [(1.0, "100%"), (1.25, "125%"), (1.50, "150%")] {
-            assert_eq!(ui_scale_label(factor), label);
-        }
-        assert_eq!(ui_scale_factor("90%"), Some(0.90));
-        assert_eq!(ui_scale_factor("nope"), None);
-        assert_eq!(text_size_label(1.0), "Default");
-        assert_eq!(text_size_label(1.30), "Larger");
-        assert_eq!(text_size_scale("Small"), Some(0.85));
-        assert_eq!(text_size_scale("Nonsense"), None);
     }
 }

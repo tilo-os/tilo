@@ -988,7 +988,7 @@ mod tests {
         let row = out.first().expect("a row for the ghost app");
         assert!(c.borrow().notifications().is_empty());
         (row.on_open)(
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
             &c,
             &crate::shell::search::action_api::ActionArgs::none(),

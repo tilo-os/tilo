@@ -1,18 +1,13 @@
 //! Bundled, fully-populated sample data.
 //!
-//! `--shots` renders exactly one offscreen frame with **no event loop and
-//! no async runtime**, so it can't wait on a live network fetch. To keep
-//! the screenshot honest — a real, populated UI rather than an empty
-//! shell — every saved location ships with a representative snapshot
-//! synthesized here. This data is used **only** by the offscreen/test path
-//! ([`WeatherApp::new`]); the live binary ([`WeatherApp::live`]) discards
-//! these snapshots and shows real Open-Meteo fetches instead, so it never
-//! displays invented readings. Everything is stored in **metric** (the
-//! snapshot's `source_units`); the UI converts to the user's preference at
-//! draw time.
-//!
-//! [`WeatherApp::new`]: crate::app::WeatherApp::new
-//! [`WeatherApp::live`]: crate::app::WeatherApp::live
+//! A screenshot cannot wait on a live network fetch. To keep it honest — a
+//! real, populated UI rather than an empty shell — a capture stages these
+//! places through the resource's actions and shows the representative
+//! snapshot synthesized here for each, as its fixture
+//! ([`crate::resource::SampleForecasts`]). A live window never shows them: it
+//! displays real Open-Meteo fetches, never invented readings. Everything is
+//! stored in **metric** (the snapshot's `source_units`); the UI converts to
+//! the user's preference at draw time.
 
 use crate::model::{
     AirQuality, CurrentConditions, DayForecast, HourPoint, SavedLocation, WeatherModel,
@@ -175,8 +170,7 @@ fn synth_air_quality(loc: &SavedLocation, spec: &DaySpec) -> AirQuality {
     }
 }
 
-/// Build the default multi-location model used for the screenshot and as
-/// the live binary's first-frame seed.
+/// The bundled places and their forecasts that captures show.
 pub fn sample_model() -> WeatherModel {
     let mut model = WeatherModel {
         units: Units::METRIC,
@@ -191,6 +185,9 @@ pub fn sample_model() -> WeatherModel {
     ];
 
     for (index, (mut loc, spec)) in specs.into_iter().enumerate() {
+        // Stable ids, so a capture's staged places find their bundled
+        // forecasts.
+        loc.id = crate::model::LocationId::from_u128(index as u128 + 1);
         loc.order_rank = (index + 1) as f64 * 1024.0;
         let snap = synth_snapshot(&loc, &spec);
         let aq = synth_air_quality(&loc, &spec);

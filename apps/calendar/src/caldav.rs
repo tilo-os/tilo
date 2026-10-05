@@ -137,6 +137,7 @@ pub fn build_put_request(
         projects: Vec::new(),
         events: vec![event.clone()],
         tasks: Vec::new(),
+        ..Model::default()
     };
     PutRequest {
         url,
@@ -521,6 +522,7 @@ fn sample_calendar_ics(calendar: &RemoteCalendar, today: NaiveDate) -> String {
         projects: Vec::new(),
         events,
         tasks: Vec::new(),
+        ..Model::default()
     };
     ics::export(&model)
 }

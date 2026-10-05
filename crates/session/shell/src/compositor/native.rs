@@ -3272,7 +3272,7 @@ fn pump_controller_navigation(
                     let _ = frame_builder.dispatch_event(
                         &event,
                         &ctx.modifiers,
-                        &mut ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut ctx.doc),
                         &ctx.root_obj,
                         &mut ctx.focus,
                     );
@@ -3439,7 +3439,7 @@ fn dispatch_synth_event(
     fb.dispatch_event(
         event,
         &ctx.modifiers,
-        &mut ctx.doc,
+        &mut ui::widget::Edits::lend(&mut ctx.doc),
         &ctx.root_obj,
         &mut ctx.focus,
     );
@@ -3604,7 +3604,7 @@ fn dispatch_test_control_touch(
         let handled = fb.dispatch_event(
             &event,
             &ctx.modifiers,
-            &mut ctx.doc,
+            &mut ui::widget::Edits::lend(&mut ctx.doc),
             &ctx.root_obj,
             &mut ctx.focus,
         );
@@ -3728,7 +3728,12 @@ fn execute_invoke_action(
         // Re-bound against *this* resolution's parameters — the catalogue was just
         // rebuilt and may have landed on a different action under the same address.
         let bound = selected
-            .invoke_json_disposition(&mut ctx.doc, &ctx.root_obj, &chrome_handle, args)
+            .invoke_json_disposition(
+                &mut ui::widget::Edits::lend(&mut ctx.doc),
+                &ctx.root_obj,
+                &chrome_handle,
+                args,
+            )
             .map_err(|e| InvokeFailure {
                 code: e.code().to_string(),
                 message: e.to_string(),
@@ -8880,7 +8885,7 @@ pub fn run() {
                     ) && frame_builder.dispatch_a11y_action(
                         request.target_node,
                         &action,
-                        &mut test_control_ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                         &test_control_ctx.root_obj,
                         &mut test_control_ctx.focus,
                     ) {
@@ -9268,7 +9273,7 @@ pub fn run() {
                             chrome_handled = frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,
-                                &mut test_control_ctx.doc,
+                                &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
@@ -9501,7 +9506,7 @@ pub fn run() {
                     let _ = frame_builder.dispatch_event(
                         &event,
                         &test_control_ctx.modifiers,
-                        &mut test_control_ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                         &test_control_ctx.root_obj,
                         &mut test_control_ctx.focus,
                     );
@@ -10194,7 +10199,7 @@ pub fn run() {
                 frame_builder.dispatch_event(
                     event,
                     &test_control_ctx.modifiers,
-                    &mut test_control_ctx.doc,
+                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                     &test_control_ctx.root_obj,
                     &mut test_control_ctx.focus,
                 );

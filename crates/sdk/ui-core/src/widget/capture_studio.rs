@@ -21,7 +21,7 @@ use crate::{
     theme::Theme,
     widget::{Button, ButtonFace, Chip, ChipLead, ChipStyle, TaffyTreeExt, Widget},
 };
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use std::collections::HashMap;
 
 use crate::time::{Duration, Instant};
@@ -659,7 +659,7 @@ impl CaptureStudio {
         e: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         let Some(menu) = self.send_menu.as_mut() else {
@@ -700,7 +700,7 @@ impl CaptureStudio {
             &mut crate::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -5207,7 +5207,7 @@ impl Widget for CaptureStudio {
         s.pop_layer()
     }
     fn handle_event(&mut self, e: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         if !self.open {
             return;
         }

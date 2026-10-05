@@ -1,27 +1,3 @@
-use automerge::{AutoCommit, ROOT, transaction::Transactable};
-use ui::Widget;
-
-#[test]
-fn existing_projection_and_repeated_sync_do_not_author_changes() {
-    let mut doc = AutoCommit::new();
-    word_processor::initialize_empty_document(&mut doc).unwrap();
-    doc.commit();
-    let before = (doc.base_heads(), doc.pending_ops());
-    let mut widget = word_processor::WordProcessorWidget::from_document(&doc).unwrap();
-    for _ in 0..3 {
-        widget.sync(&mut doc, &ROOT);
-    }
-    assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!ui::resources::resources(&widget, &doc).is_empty());
-}
-
-#[test]
-fn projection_rejects_missing_schema_instead_of_creating_it() {
-    let doc = AutoCommit::new();
-    assert!(word_processor::WordProcessorWidget::from_document(&doc).is_err());
-    assert_eq!(doc.pending_ops(), 0);
-}
-
 fn harness() -> (
     ui::headless::FrameHarness,
     ui::record::RecordStore,

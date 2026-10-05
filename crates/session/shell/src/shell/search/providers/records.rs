@@ -728,7 +728,7 @@ mod tests {
             let row = out.first().expect("the record is findable");
             let mut doc = automerge::AutoCommit::new();
             (row.on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),
@@ -768,7 +768,7 @@ mod tests {
             let out = query(&provider, "book", &chrome);
             let mut doc = automerge::AutoCommit::new();
             (out[0].on_open)(
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),

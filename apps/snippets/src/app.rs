@@ -20,6 +20,7 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::paint::PaintCtx;
@@ -479,7 +480,7 @@ impl SnippetsApp {
     /// text, applied now so the next keystroke splices the text it made.
     /// Typing a word is one undo step. A refused edit (a viewer's) writes
     /// nothing, and the editor shows the stored text again.
-    fn flush_body_edit(&mut self, doc: &mut AutoCommit) {
+    fn flush_body_edit(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(text) = self.body_editor.take_dirty() else {
             return;
         };
@@ -513,7 +514,7 @@ impl SnippetsApp {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let modifiers = *ctx.modifiers;
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         if !self.body_available() {
             self.body_editor.set_focused(false);
             return false;
@@ -559,7 +560,7 @@ impl SnippetsApp {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut handled,
                 focus_target: ctx.focus_target,
@@ -844,10 +845,10 @@ impl SnippetsApp {
         )?;
         self.apply_layout(&taffy, node, Point::ZERO);
         // Settle the reveal so `sidebar_open`/reveal reflect the target.
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let root = automerge::ROOT;
         for _ in 0..240 {
-            if !Widget::update(self, &mut doc, &root) {
+            if !Widget::update(self, &doc, &root) {
                 break;
             }
         }
@@ -926,7 +927,7 @@ impl ui::widget::Widget for SnippetsApp {
         dyn ui::undo::UndoPoints
     );
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.sync_body_editor();
     }
 
@@ -1119,7 +1120,7 @@ impl ui::widget::Widget for SnippetsApp {
             || self.push.is_animating(SplitLayout::Docked)
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Advance the sidebar reveal + the push (list↔detail) slide toward
         // their targets. Frame-rate-independent; the host re-pumps frames
         // while `needs_animation_frame` stays true.
@@ -1237,7 +1238,7 @@ impl ui::widget::Widget for SnippetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -1539,7 +1540,7 @@ impl SnippetsApp {
     /// embedded search editor have both had first refusal.
     fn dispatch_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let modifiers = *ctx.modifiers;
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
         let path = ctx.path;
         let focus_target = &mut *ctx.focus_target;
         let node_id = ctx.node_id;
@@ -1555,7 +1556,7 @@ impl SnippetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path,
                         handled: &mut *ctx.handled,
                         focus_target,
@@ -1586,7 +1587,7 @@ impl SnippetsApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &modifiers,
-                        state,
+                        state: state.reborrow(),
                         path,
                         handled: &mut *ctx.handled,
                         focus_target,
@@ -1603,7 +1604,7 @@ impl SnippetsApp {
                         &mut ui::widget::EventCtx {
                             scale_factor: ctx.scale_factor,
                             modifiers: &modifiers,
-                            state,
+                            state: state.reborrow(),
                             path,
                             handled: &mut *ctx.handled,
                             focus_target,
@@ -1785,7 +1786,7 @@ impl SnippetsApp {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut input_handled,
                 focus_target: &mut *ctx.focus_target,
@@ -2830,7 +2831,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -2915,7 +2916,7 @@ mod tests {
         assert!(app.perform_semantic_action(
             "snippets.expand.field.name",
             &ui::a11y::Action::SetValue("Grün".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(
@@ -2925,13 +2926,13 @@ mod tests {
         assert!(!app.perform_semantic_action(
             "snippets.body",
             &ui::a11y::Action::SetValue("hidden edit".into()),
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(app.perform_semantic_action(
             "snippets.expand.cancel",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert!(!app.expand_open_for_test());
@@ -2949,7 +2950,7 @@ mod tests {
             &mut app,
             &target,
             &ui::a11y::Action::Focus,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
@@ -2960,7 +2961,7 @@ mod tests {
             &mut app,
             &target,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(

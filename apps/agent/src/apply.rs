@@ -16,40 +16,6 @@ use ui::permissions::PermissionContext;
 
 use crate::surface::AppContract;
 
-/// `action`, and the authorship of the text it adds: the durable `author`
-/// mark over every character the agent wrote, so the document itself
-/// records who wrote them. Applied together as one edit, as the editor
-/// signs what a person types.
-pub fn authored(
-    action: &word_processor::actions::RichTextAction,
-    author: &str,
-) -> Vec<word_processor::actions::RichTextAction> {
-    let mut actions = vec![action.clone()];
-    if let word_processor::actions::RichTextAction::SpliceText {
-        region,
-        block,
-        at,
-        ins,
-        ..
-    } = action
-        && !ins.is_empty()
-        && !author.is_empty()
-    {
-        actions.push(word_processor::actions::RichTextAction::SetMark {
-            region: *region,
-            spans: vec![word_processor::actions::Span {
-                block: block.clone(),
-                start: *at,
-                end: at.saturating_add(ins.chars().count()),
-            }],
-            name: tilo_doc::schema::MARK_AUTHOR.to_string(),
-            value: Some(word_processor::actions::MarkVal::Str(author.to_string())),
-            also_clear: Vec::new(),
-        });
-    }
-    actions
-}
-
 pub struct Editor {
     participant: Participant,
     /// Which app wrote this document.
@@ -57,11 +23,6 @@ pub struct Editor {
     /// Exact authenticated route that supplied this replica. It can differ
     /// from the application definition `contract` comes from.
     route_app_id: String,
-}
-
-/// Whether a snapshot is a document with blocks in it.
-fn has_document_schema(doc: &AutoCommit) -> bool {
-    tilo_doc::model::open(doc, &automerge::ROOT).is_ok()
 }
 
 impl Editor {
@@ -241,13 +202,9 @@ impl Editor {
     /// arrive picks whichever app answered first. An instruction addressed
     /// to us by name is the one signal in the content that settles it.
     pub fn is_addressed_to(bytes: &[u8], name: &str) -> bool {
-        let Ok(doc) = AutoCommit::load(bytes) else {
+        let Some(snapshot) = tilo_doc::model::snapshot_of(bytes) else {
             return false;
         };
-        let Ok(c) = tilo_doc::model::open(&doc, &automerge::ROOT) else {
-            return false;
-        };
-        let snapshot = tilo_doc::model::materialize(&doc, &c);
         let blocks = crate::plan::blocks(&snapshot);
         crate::plan::find_addressed(&blocks, name).is_some()
     }
@@ -328,6 +285,6 @@ impl Editor {
     /// Whether `bytes` are a document with blocks in it: what a page the
     /// agent is invited to looks like before any route says whose it is.
     pub fn looks_like_a_document(bytes: &[u8]) -> bool {
-        AutoCommit::load(bytes).is_ok_and(|doc| has_document_schema(&doc))
+        tilo_doc::model::snapshot_of(bytes).is_some()
     }
 }

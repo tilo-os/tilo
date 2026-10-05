@@ -90,7 +90,7 @@ macro_rules! inert_widget_methods {
 /// handle_event, get_rect)`.
 macro_rules! delegate_widget_methods {
     (@ $field:tt sync) => {
-        fn sync(&mut self, doc: &mut $crate::widget::AppModel, path: &$crate::widget::ModelPath) {
+        fn sync(&mut self, doc: &$crate::widget::AppModel, path: &$crate::widget::ModelPath) {
             self.$field.sync(doc, path);
         }
     };

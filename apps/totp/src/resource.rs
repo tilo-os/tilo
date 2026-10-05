@@ -70,7 +70,7 @@ impl Resource for Totp {
 /// What the Authenticator does with what only this device holds: the add
 /// form, an account's codes and its secret.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
-#[effect(operation = "totp.effect")]
+#[effect(operation = "totp.effect", device_only)]
 pub enum TotpEffect {
     /// Add account.
     ///

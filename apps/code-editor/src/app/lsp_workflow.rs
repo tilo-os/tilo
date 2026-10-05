@@ -42,21 +42,17 @@ impl CodeApp {
         }
     }
 
-    /// Whether live language servers are wanted. On by default — an IDE whose
-    /// diagnostics are behind an environment variable is an IDE without
-    /// diagnostics. `TILO_CODE_LSP=0` is the opt-out.
-    ///
-    /// A server is only ever started for a project that is a real directory,
-    /// which is also what keeps `--shots`, the demo project and the test suite
-    /// from ever launching rust-analyzer: they have no path to root it at.
+    /// Whether language servers are wanted: in a window someone uses (a
+    /// capture or a past version reaches nothing outside the process), when
+    /// the person has not turned them off, for a project that is a real
+    /// directory to root them at.
     pub(super) fn lsp_enabled(&self) -> bool {
-        if matches!(
-            std::env::var("TILO_CODE_LSP").as_deref(),
-            Ok("0" | "off" | "false")
-        ) {
-            return false;
-        }
-        self.session.project.is_disk_backed()
+        self.live
+            && self
+                .settings
+                .as_ref()
+                .is_some_and(|settings| settings.get().language_servers)
+            && self.session.project.is_disk_backed()
     }
 
     /// Start (or restart) a language server for the active buffer's language,
@@ -64,6 +60,9 @@ impl CodeApp {
     /// and not retried every frame.
     pub(super) fn maybe_start_lsp(&mut self, doc: &AutoCommit) {
         if !self.lsp_enabled() {
+            if self.lsp.is_some() {
+                self.reset_language_server();
+            }
             return;
         }
         let Some(buf) = self.session.active_buffer() else {
