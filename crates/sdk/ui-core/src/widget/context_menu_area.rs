@@ -92,6 +92,8 @@ pub struct ContextMenuArea {
     /// ran, so what the command asked of it (a rename beginning) happens
     /// at once rather than at the pointer's next move.
     moved: Option<WindowEvent>,
+    /// The entry pressed with the pointer, run when the button comes up.
+    pending: Option<usize>,
     viewport: Option<Rect>,
 }
 
@@ -108,6 +110,7 @@ impl ContextMenuArea {
             runs: Vec::new(),
             cursor: Point::ZERO,
             moved: None,
+            pending: None,
             viewport: None,
         }
     }
@@ -155,6 +158,15 @@ impl ContextMenuArea {
         if let Some(Some(run)) = self.runs.get(index) {
             let run = Rc::clone(run);
             run();
+        }
+    }
+
+    /// Run the chosen entry, then let the content see the pointer where
+    /// it is, so what the command asked of it happens now.
+    fn run(&mut self, index: usize, ctx: &mut EventCtx<'_>) {
+        self.choose(index);
+        if let Some(moved) = self.moved.clone() {
+            self.content.handle_event(&moved, ctx);
         }
     }
 
@@ -212,12 +224,40 @@ impl super::Decorator for ContextMenuArea {
             self.cursor = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.moved = Some(event.clone());
         }
+        // A row pressed with the pointer runs when the button comes up,
+        // and that release is the menu's: what the command started (a
+        // rename's field) never sees half a click.
+        if let Some(index) = self.pending {
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    ..
+                }
+            ) {
+                self.pending = None;
+                self.run(index, ctx);
+                *ctx.handled = true;
+                return;
+            }
+            if matches!(event, WindowEvent::MouseInput { .. }) {
+                self.pending = None;
+            }
+        }
         if self.menu.is_open() {
             self.menu.handle_event(event, ctx);
             if let Some(index) = self.menu.take_selection() {
-                self.choose(index);
-                if let Some(moved) = self.moved.clone() {
-                    self.content.handle_event(&moved, ctx);
+                self.menu.close();
+                if matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        ..
+                    }
+                ) {
+                    self.pending = Some(index);
+                } else {
+                    self.run(index, ctx);
                 }
                 *ctx.handled = true;
             }
@@ -246,7 +286,7 @@ impl super::Decorator for ContextMenuArea {
     }
 
     fn wants_pointer_capture(&self) -> bool {
-        self.menu.is_open() || self.content.wants_pointer_capture()
+        self.menu.is_open() || self.pending.is_some() || self.content.wants_pointer_capture()
     }
 
     fn modal_capture(&self) -> Option<Rect> {
