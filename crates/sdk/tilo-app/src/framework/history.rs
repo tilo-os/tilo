@@ -684,3 +684,45 @@ pub(crate) fn result(action: &str, doc: &AutoCommit, patches: &[Patch]) -> Optio
     };
     Some(value)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui_core::automerge::{ROOT, ReadDoc};
+
+    #[test]
+    fn history_and_diff_leave_the_callers_open_edit_uncommitted() {
+        let mut doc = AutoCommit::new();
+        doc.put(ROOT, "saved", 1_i64).unwrap();
+        let first = doc.commit().unwrap();
+        doc.put(ROOT, "saved", 2_i64).unwrap();
+        let second = doc.commit().unwrap();
+        doc.put(ROOT, "draft", true).unwrap();
+        let before = (doc.base_heads(), doc.pending_ops());
+        assert!(before.1 > 0);
+
+        let listed = history(&doc, 50);
+        assert_eq!(listed["total"], json!(2));
+        assert_eq!(listed["now"], json!(version_name(&[second])));
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+
+        let payload = serde_json::to_vec(&HistoryView::Diff {
+            from: first.to_string(),
+            to: Some(second.to_string()),
+        })
+        .unwrap();
+        let diff = answer(&doc, &payload).unwrap().value.unwrap();
+        assert!(
+            diff["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["item"] == "saved")
+        );
+        assert_eq!((doc.base_heads(), doc.pending_ops()), before);
+        assert_eq!(
+            doc.get(ROOT, "draft").unwrap().unwrap().0.as_bool(),
+            Some(true)
+        );
+    }
+}

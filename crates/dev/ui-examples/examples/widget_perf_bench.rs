@@ -322,7 +322,7 @@ pub fn run(_args: &[String]) {
     // outliers we don't want polluting the steady-state numbers.
     let mut warm = Phases::default();
     bench.full_redraw(&mut warm);
-    bench.root.sync(&mut bench.doc, &automerge::ObjId::Root);
+    bench.root.sync(&bench.doc, &automerge::ObjId::Root);
     eprintln!(
         "warm-up: compute={}us apply={}us draw={}us render={}us",
         warm.compute_us, warm.apply_us, warm.draw_us, warm.render_us
@@ -384,7 +384,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -403,7 +403,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -422,7 +422,7 @@ impl Bench {
             &mut tilo_ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: doc,
+                state: tilo_ui::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
