@@ -2604,8 +2604,9 @@ jobs:
           # Two more overlays of the dev disk on separate user-mode networks,
           # paired to one identity, reach each other only through a relay a
           # third overlay runs: one drives the other's tilo-vmd by name with
-          # tilo-vm, other identities and devices without the grant are
-          # refused, and the route comes back after the device's link is cut.
+          # tilo-vm and creates a slot there, other identities and devices
+          # without the grant are refused, and the route comes back after the
+          # device's link is cut.
           if [[ $DEV_GATE == true ]]; then
             ./os/dev/test-device-admin-reach.sh "$TILO_DISK" --out "$TILO_RUN/device-admin-reach"
           fi
