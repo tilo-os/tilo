@@ -2,9 +2,9 @@
 //! [`ListRowFace`] each, under the refresh progress while feeds refresh;
 //! or the empty state when there is nothing to list.
 //!
-//! The rows are painted, and a [`Scrollable`] scrolls them: it owns the
-//! offset, the wheel and touchpad gestures, momentum and the overlay scroll
-//! bar that fades when idle. The empty state is the retained [`EmptyState`],
+//! The rows are painted, and a [`ScrollRegion`] scrolls them: it owns the
+//! offset, the wheel, keyboard and touchpad gestures, the edge fades and the
+//! overlay scroll bar that fades when idle. The empty state is the retained [`EmptyState`],
 //! so its one action takes part in focus and activation like any button.
 
 use std::collections::HashMap;
@@ -14,17 +14,16 @@ use ui::a11y::{AccessNode, AccessState, Role};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::surface::{ContentEdge, content_edge_fade};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::Instant;
 use ui::tokens::TextRole;
 use ui::widget::{
-    AppModel, EmptyState, Interaction, ListRowFace, ModelPath, ProgressBar, RowAction, Scrollable,
-    TaffyTreeExt, Widget,
+    AppModel, EmptyState, Interaction, ListRowFace, ModelPath, ProgressBar, RowAction,
+    ScrollRegion, TaffyTreeExt, Widget,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -49,7 +48,9 @@ pub(crate) struct ListState {
     /// The rows' viewport, below the refresh progress.
     pub(crate) viewport: Rect,
     /// Scrolls the painted rows.
-    pub(crate) scroller: Scrollable,
+    pub(crate) scroller: ScrollRegion,
+    /// The theme of the last paint, for the scroll bar's fade.
+    pub(crate) theme: Theme,
     /// Scroll the open article's row into view on the next paint.
     pub(crate) reveal: bool,
     /// The rows' full height, with their insets.
@@ -63,7 +64,8 @@ impl Default for ListState {
         Self {
             rect: Rect::ZERO,
             viewport: Rect::ZERO,
-            scroller: Scrollable::new_vertical(),
+            scroller: ScrollRegion::vertical().with_edge_fade(),
+            theme: Theme::dark(),
             reveal: true,
             content: 0.0,
             rows: Vec::new(),
@@ -75,12 +77,12 @@ impl Default for ListState {
 impl ListState {
     /// How far the rows are scrolled.
     pub(crate) fn scroll(&self) -> f64 {
-        f64::from(self.scroller.offset_y())
+        self.scroller.offset().y
     }
 
     /// Back to the top of the list.
     pub(crate) fn scroll_to_top(&mut self) {
-        self.scroller.set_offset_y(0.0);
+        self.scroller.set_offset(Vec2::ZERO);
     }
 }
 
@@ -175,7 +177,8 @@ impl Core {
         };
         let viewport = Rect::new(area.x0, top, area.x1, area.y1);
         self.list.viewport = viewport;
-        self.list.scroller.set_viewport_rect(viewport);
+        self.list.scroller.set_viewport(viewport, theme);
+        self.list.theme = theme.clone();
 
         let ids: Vec<Id> = self
             .store
@@ -195,7 +198,7 @@ impl Core {
         };
         self.list
             .scroller
-            .set_content_size(viewport.width() as f32, self.list.content as f32);
+            .set_content_size(viewport.width(), self.list.content);
         if ids.is_empty() {
             return;
         }
@@ -206,22 +209,21 @@ impl Core {
         {
             // The row with the list's inset above and below it.
             let row_top = row_h * index as f64;
-            self.list.scroller.scroll_into_view(
+            self.list.scroller.scroll_into_view(Rect::new(
                 0.0,
-                row_top as f32,
-                viewport.width() as f32,
-                (row_h + inset * 2.0) as f32,
-            );
+                row_top,
+                viewport.width(),
+                row_top + row_h + inset * 2.0,
+            ));
         }
         let scroll = self.list.scroll();
         // Row text starts on the column's content edge, the column title's,
-        // and the lift bleeds past it; while the list overflows, the
-        // trailing gutter stays free for the scroll bar.
+        // and the lift bleeds past it; while the list overflows, the region
+        // keeps the trailing lane free for the scroll bar.
         let edge = ui::chrome::column_gutter(theme) - ui::chrome::row_bleed(theme);
-        let overflows = self.list.content > viewport.height();
         let x0 = viewport.x0 + edge;
-        let x1 = if overflows {
-            viewport.x1 - f64::from(theme.tokens.metrics.scrollbar_gutter)
+        let x1 = if self.list.scroller.overflows_vertically() {
+            self.list.scroller.content_rect().x1
         } else {
             viewport.x1 - edge
         };
@@ -243,15 +245,8 @@ impl Core {
             );
         }
         scene.pop_layer();
-        // Rows fade into the column where more can scroll in.
-        let ground = theme.tokens.colors.surfaces.content;
-        if scroll > 0.0 {
-            content_edge_fade(scene, t, viewport, ContentEdge::Top, ground);
-        }
-        if scroll + viewport.height() < self.list.content {
-            content_edge_fade(scene, t, viewport, ContentEdge::Bottom, ground);
-        }
-        self.list.scroller.draw_bar_overlay(scene, t, theme);
+        // Rows fade into the column where more can scroll in, under the bar.
+        self.list.scroller.paint(scene, t, theme, |_, _| {});
     }
 
     /// One article's row at `rect`; `next` is the article below it.
@@ -359,8 +354,9 @@ impl Core {
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         // The scroll view takes the wheel, touchpad gestures and its bar.
-        self.list.scroller.handle_event(event, ctx);
-        if *ctx.handled {
+        let theme = self.list.theme.clone();
+        if self.list.scroller.handle_event(event, ctx, &theme) {
+            *ctx.handled = true;
             return true;
         }
         let WindowEvent::MouseInput {
@@ -482,12 +478,9 @@ impl Widget for ListPane {
 
     fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.follow();
-        let scrolled = self.core.borrow_mut().list.scroller.update(state, path);
-        let empty = self
-            .empty
+        self.empty
             .as_mut()
-            .is_some_and(|(_, empty)| empty.update(state, path));
-        scrolled || empty
+            .is_some_and(|(_, empty)| empty.update(state, path))
     }
 
     fn build_layout(
@@ -605,23 +598,17 @@ impl Widget for ListPane {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
-    fn wants_pointer_capture(&self) -> bool {
-        self.core
-            .try_borrow()
-            .is_ok_and(|core| core.list.scroller.wants_pointer_capture())
-    }
-
     fn needs_animation_frame(&self) -> bool {
         self.core
             .try_borrow()
-            .is_ok_and(|core| core.list.scroller.needs_animation_frame())
+            .is_ok_and(|core| core.list.scroller.needs_animation_frame(&core.list.theme))
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
         self.core
             .try_borrow()
             .ok()
-            .and_then(|core| core.list.scroller.next_wake_deadline())
+            .and_then(|core| core.list.scroller.next_wake_deadline(&core.list.theme))
     }
 
     // The rows are painted every frame, as a leaf's are.
@@ -638,7 +625,6 @@ impl Widget for ListPane {
     }
 
     fn mark_drawn(&mut self) {
-        self.core.borrow_mut().list.scroller.mark_drawn();
         if let Some((_, empty)) = self.empty.as_mut() {
             empty.mark_drawn();
         }
