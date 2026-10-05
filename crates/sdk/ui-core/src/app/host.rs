@@ -436,6 +436,7 @@ fn run_layout_pass(
         app.update_focusable_order();
     }
     app.restore_history_focus();
+    app.restore_ordinary_palette_focus();
     if app
         .focused_node
         .is_some_and(|node| !app.focusable_order.contains(&node))

@@ -4118,24 +4118,39 @@ impl App {
     }
 
     pub fn close_action_palette(&mut self) {
-        let return_focus = self.actions.ordinary_palette_return_focus.take();
         self.bindings.clear();
         self.layout.node_map.clear();
         self.focused_node = None;
         self.layout.structure_dirty = true;
         self.actions.action_palette = None;
-        if let Some(focus) = return_focus {
+        if self.actions.ordinary_palette_return_focus.is_some() {
             self.rebuild_action_palette_admission();
-            // SAFETY: admission rebuilt the exclusive background tree and its
-            // custody map. Restore requires one eligible identity in that tree.
-            self.focused_node = unsafe {
-                focus.restore(
-                    &self.layout.node_map,
-                    &self.bindings,
-                    Some(&self.focusable_order),
-                )
-            };
+            // Admission still requires a measured structural rebuild. Keep the
+            // stable opener identity until that final tree has settled, rather
+            // than restoring a NodeId that the next rebuild invalidates.
         }
+    }
+
+    #[cfg(feature = "native")]
+    pub(super) fn restore_ordinary_palette_focus(&mut self) {
+        if self.actions.action_palette.is_some() {
+            return;
+        }
+        let Some(focus) = self.actions.ordinary_palette_return_focus.take() else {
+            return;
+        };
+        if self.accessibility.focus_trap_active {
+            return;
+        }
+        // SAFETY: the layout solve has settled the exclusively owned tree and
+        // its current custody map. Removed or ambiguous openers cannot match.
+        self.focused_node = unsafe {
+            focus.restore(
+                &self.layout.node_map,
+                &self.bindings,
+                Some(&self.focusable_order),
+            )
+        };
     }
 
     pub fn action_palette(&self) -> Option<&crate::action_palette::ActionPalette> {
