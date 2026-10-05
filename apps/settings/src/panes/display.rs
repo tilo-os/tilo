@@ -709,6 +709,19 @@ impl DisplayPane {
     ) {
         let root = automerge::ROOT;
         self.prepare_running_operation(local, &root, &operation);
+        let transaction_key = match operation {
+            crate::actions::DisplayOperation::Apply => Some(APPLY_DISPLAY_KEY),
+            crate::actions::DisplayOperation::Confirm => Some(KEEP_DISPLAY_KEY),
+            crate::actions::DisplayOperation::Revert => Some(REVERT_DISPLAY_KEY),
+            _ => None,
+        };
+        if let Some(key) = transaction_key {
+            // Transaction commands are one-shot edges. Do not reinterpret the
+            // authoritative control projection as a new output edit first.
+            let _ = local.put(&root, key, true);
+            self.sync_transaction_controls(local, &root);
+            return;
+        }
         self.sync_brightness(local, &root);
         self.sync_output_brightness(local, &root);
         self.sync_comfort_prefs(local, &root, true);
@@ -871,15 +884,9 @@ impl DisplayPane {
                 );
                 let _ = state.put(root, output_key(connector, "color_profile"), label);
             }
-            Op::Apply => {
-                let _ = state.put(root, APPLY_DISPLAY_KEY, true);
-            }
-            Op::Confirm => {
-                let _ = state.put(root, KEEP_DISPLAY_KEY, true);
-            }
-            Op::Revert => {
-                let _ = state.put(root, REVERT_DISPLAY_KEY, true);
-            }
+            // Only execute_local_command admits these one-shot edges. Polling
+            // a pending token must not overwrite the compositor's response.
+            Op::Apply | Op::Confirm | Op::Revert => {}
         }
     }
 
@@ -1741,7 +1748,16 @@ impl Widget for DisplayPane {
             .cloned()
             .collect();
         if has_pending_operation {
-            self.sync_output_config(&mut state, &root, &connected);
+            if !matches!(
+                running_operation.as_ref(),
+                Some(
+                    crate::actions::DisplayOperation::Apply
+                        | crate::actions::DisplayOperation::Confirm
+                        | crate::actions::DisplayOperation::Revert
+                )
+            ) {
+                self.sync_output_config(&mut state, &root, &connected);
+            }
             self.sync_transaction_controls(&mut state, &root);
         }
 
@@ -2642,6 +2658,17 @@ impl DisplayPane {
             let marker = (transaction.id, transaction.state);
             if self.last_seen_transaction != Some(marker) {
                 self.last_seen_transaction = Some(marker);
+                if transaction.state == DisplayTransactionState::AwaitingConfirmation
+                    && matches!(
+                        self.running_operation(),
+                        Some(crate::actions::DisplayOperation::Apply)
+                    )
+                {
+                    self.finish_display_operation(Ok(
+                        "Display preview applied. Keep the changes to retain this configuration."
+                            .into(),
+                    ));
+                }
                 if matches!(
                     transaction.state,
                     DisplayTransactionState::Confirmed
@@ -3272,6 +3299,102 @@ mod tests {
             color_profile_labels: BTreeMap::new(),
             monitor: None,
         }
+    }
+
+    #[test]
+    fn local_apply_previews_the_staged_mode_and_completes_at_confirmation_prompt() {
+        use crate::actions::{
+            DisplayOperation as Op, LocalOperationStatus as Status, LocalPaneCommand,
+        };
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let current = OutputMode {
+            width: 2944,
+            height: 1840,
+            refresh_mhz: 59999,
+        };
+        let requested = OutputMode {
+            refresh_mhz: 89999,
+            ..current
+        };
+        let status = ui::LocalState::new(Status::Idle);
+        let commands = ui::LocalState::new(None);
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![display_with_modes(
+                "eDP-1",
+                "Built-in display",
+                true,
+                vec![current, requested],
+            )])
+            .with_command_state(&commands)
+            .with_operation_status(&status);
+        let mut doc = AutoCommit::new();
+        pane.sync(&mut doc, &automerge::ROOT);
+        for operation in [
+            Op::SetMode {
+                connector: "eDP-1".into(),
+                mode: requested,
+            },
+            Op::Apply,
+        ] {
+            status.set(Status::Running {
+                token: crate::actions::local_operation_token_for(
+                    crate::actions::DISPLAY_OPERATION_TYPE,
+                    &operation,
+                ),
+            });
+            commands.set(Some(LocalPaneCommand::Display(operation)));
+            pane.sync(&mut doc, &automerge::ROOT);
+        }
+        let mut transaction =
+            DisplayTransaction::load().expect("actual Apply wrote a preview request");
+        assert_eq!(
+            transaction.candidate.outputs["eDP-1"].mode,
+            Some(requested),
+            "Apply must retain the staged 90Hz candidate"
+        );
+        assert_eq!(transaction.state, DisplayTransactionState::Requested);
+        assert!(
+            matches!(status.get(), Status::Running { .. }),
+            "Apply cannot report staging as preview completion"
+        );
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            DisplayTransaction::load().unwrap().id,
+            transaction.id,
+            "polling must retain the original preview request"
+        );
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
+        transaction.save().unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            matches!(status.get(), Status::Succeeded { .. }),
+            "the successful preview allows the next Keep operation"
+        );
+        let operation = Op::Confirm;
+        status.set(Status::Running {
+            token: crate::actions::local_operation_token_for(
+                crate::actions::DISPLAY_OPERATION_TYPE,
+                &operation,
+            ),
+        });
+        commands.set(Some(LocalPaneCommand::Display(operation)));
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(
+            DisplayTransaction::load().unwrap().state,
+            DisplayTransactionState::ConfirmRequested
+        );
+        assert_eq!(
+            pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].mode,
+            Some(requested)
+        );
+        let mut transaction = DisplayTransaction::load().unwrap();
+        transaction.state = DisplayTransactionState::Confirmed;
+        transaction.save().unwrap();
+        pane.sync(&mut doc, &automerge::ROOT);
+        assert!(matches!(status.get(), Status::Succeeded { .. }));
+        assert!(pane.pending_candidate.is_none());
     }
 
     /// Scale labels, seeding, fractional persistence and staged display plans.
