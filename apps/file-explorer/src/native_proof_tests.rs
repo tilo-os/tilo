@@ -150,7 +150,7 @@ fn native_pointer_observer_tracks_logical_cursor_and_survives_rebuild() {
         &mut ui::widget::EventCtx {
             scale_factor: 2.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: &mut h.state.doc,
+            state: ui::widget::Edits::lend(&mut h.state.doc),
             path: &h.state.root,
             handled: &mut handled,
             focus_target: &mut focus,

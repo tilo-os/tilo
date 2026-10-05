@@ -16,7 +16,7 @@ impl VideoEditorApp {
         &mut self,
         key: &Key,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         r: &Regions,
     ) -> bool {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();

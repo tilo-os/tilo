@@ -80,7 +80,7 @@ fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,

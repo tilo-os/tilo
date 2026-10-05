@@ -15,7 +15,7 @@
 //! while becoming fully navigable.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -405,7 +405,7 @@ impl Widget for NavRow {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         target == self.id && self.perform_action(action, state, path)
@@ -414,7 +414,7 @@ impl Widget for NavRow {
     fn perform_action(
         &mut self,
         action: &Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if let Some(adjust) = &mut self.on_adjust {

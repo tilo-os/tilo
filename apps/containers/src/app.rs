@@ -560,7 +560,7 @@ impl ContainersApp {
     /// Replace the text of `field` in the draft, as one edit.
     pub(crate) fn set_create_field(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         field: CreateField,
         text: &str,
     ) {
@@ -569,7 +569,7 @@ impl ContainersApp {
         };
         let edits = crate::resource::create_field_dispatcher(dispatcher, field);
         if let Err(error) = edits.apply_now(
-            &mut ui::widget::Edits::lend(doc),
+            doc,
             &TextEdit::ReplaceText {
                 text: text.to_owned(),
             },
@@ -580,12 +580,9 @@ impl ContainersApp {
     }
 
     /// Empty the draft, once a container was created from it.
-    fn clear_create(&self, doc: &mut AutoCommit) {
+    fn clear_create(&self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(dispatcher) = &self.dispatcher {
-            let _ = dispatcher.apply_now(
-                &mut ui::widget::Edits::lend(doc),
-                &crate::resource::ContainersAction::ClearCreate,
-            );
+            let _ = dispatcher.apply_now(doc, &crate::resource::ContainersAction::ClearCreate);
         }
     }
 
@@ -1112,7 +1109,7 @@ impl ContainersApp {
         }
     }
 
-    pub(crate) fn submit_create(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn submit_create(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let draft = CreateDoc::read(doc);
         let Some(args) = draft.run_args() else {
             self.show_toast("Image is required to create a container", true);
@@ -1189,7 +1186,7 @@ impl ContainersApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
         let resources: Vec<_> = self
@@ -1218,7 +1215,7 @@ impl ContainersApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -1234,7 +1231,7 @@ impl ContainersApp {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut ignored,
                 focus_target,
@@ -1360,7 +1357,7 @@ impl ContainersApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if enter_pressed(event) {
@@ -1399,7 +1396,7 @@ impl ContainersApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if enter_pressed(event) {
@@ -1431,7 +1428,7 @@ impl ContainersApp {
     }
 
     /// Apply the pending destructive confirm against the real engine/document.
-    fn apply_confirm(&mut self, doc: &mut AutoCommit) {
+    fn apply_confirm(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(confirm) = self.confirm.take() {
             match confirm.target {
                 ConfirmTarget::Container { id, action } => {
@@ -1449,7 +1446,7 @@ impl ContainersApp {
     }
 
     /// Read the prompt's typed value out of the embedded field and commit it.
-    fn submit_prompt(&mut self, doc: &mut AutoCommit) {
+    fn submit_prompt(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let value = self
             .prompt_dialog
             .as_ref()
@@ -1877,7 +1874,7 @@ impl Widget for ContainersApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, _) = ui::doc::document(doc, path);
+        let (doc, _) = ui::doc::document_ref(doc, path);
         self.drain_bg();
         // Periodically re-probe the engine for fresh stats / state. Controlled
         // fixtures own that cadence through the request channel; a wall-clock
@@ -2096,7 +2093,7 @@ impl Widget for ContainersApp {
                 }
             }
             *ctx.handled = true;
-            self.refresh_view(ctx.state);
+            self.refresh_view(&mut ctx.state);
             return;
         }
 
@@ -2111,7 +2108,7 @@ impl Widget for ContainersApp {
         {
             self.open_container_palette();
             *ctx.handled = true;
-            self.refresh_view(ctx.state);
+            self.refresh_view(&mut ctx.state);
             return;
         }
 
@@ -2123,10 +2120,10 @@ impl Widget for ContainersApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
-            self.refresh_view(ctx.state);
+            self.refresh_view(&mut ctx.state);
             return;
         }
         if self.prompt.is_some() {
@@ -2134,10 +2131,10 @@ impl Widget for ContainersApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
-            self.refresh_view(ctx.state);
+            self.refresh_view(&mut ctx.state);
             return;
         }
 
@@ -2152,7 +2149,7 @@ impl Widget for ContainersApp {
                             event,
                             ctx.scale_factor,
                             *ctx.modifiers,
-                            ctx.state,
+                            &mut ctx.state,
                             ctx.path,
                             ctx.focus_target,
                         );
@@ -2163,7 +2160,7 @@ impl Widget for ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -2182,7 +2179,8 @@ impl Widget for ContainersApp {
                     && self.view.section == Section::Containers
                     && self.view.selected.is_some();
                 if compact_detail
-                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(ctx.state)
+                    || self.cursor.x
+                        > self.rect.x0 + RAIL_WIDTH + self.list_area_width(&mut ctx.state)
                 {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
                 } else {
@@ -2201,7 +2199,7 @@ impl Widget for ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -2209,14 +2207,14 @@ impl Widget for ContainersApp {
                     self.open_container_palette();
                     *ctx.handled = true;
                 } else {
-                    self.on_click(ctx.state, ctx.handled);
+                    self.on_click(&mut ctx.state, ctx.handled);
                     if self.create_open {
                         self.route_create_input(
                             self.create_focus,
                             event,
                             ctx.scale_factor,
                             *ctx.modifiers,
-                            ctx.state,
+                            &mut ctx.state,
                             ctx.path,
                             ctx.focus_target,
                         );
@@ -2236,7 +2234,7 @@ impl Widget for ContainersApp {
                     event,
                     ctx.scale_factor,
                     *ctx.modifiers,
-                    ctx.state,
+                    &mut ctx.state,
                     ctx.path,
                     ctx.focus_target,
                 );
@@ -2246,7 +2244,7 @@ impl Widget for ContainersApp {
         }
         // Refresh the cached view state after any mutation so the next draw
         // reflects it (draw has no doc access).
-        self.refresh_view(ctx.state);
+        self.refresh_view(&mut ctx.state);
     }
 
     fn name(&self) -> &'static str {
@@ -2429,7 +2427,7 @@ impl Widget for ContainersApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -2825,7 +2823,7 @@ impl ContainersApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         focus_target: &mut Option<NodeId>,
     ) {
@@ -2843,7 +2841,7 @@ impl ContainersApp {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state: doc,
+                state: doc.reborrow(),
                 path,
                 handled: &mut ignored,
                 focus_target,
@@ -2859,7 +2857,7 @@ impl ContainersApp {
 
     /// Show the draft's texts in the form's fields, and focus the form's
     /// field while it is open.
-    pub(crate) fn refresh_view(&mut self, doc: &mut AutoCommit) {
+    pub(crate) fn refresh_view(&mut self, doc: &AutoCommit) {
         for input in &mut self.create_inputs {
             input.pull(doc);
         }
@@ -3141,7 +3139,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &root,
                     handled: &mut handled,
                     focus_target: &mut focus,

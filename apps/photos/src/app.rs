@@ -3620,7 +3620,7 @@ impl PhotosApp {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3637,7 +3637,7 @@ impl PhotosApp {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -16169,7 +16169,7 @@ impl Widget for PhotosApp {
                 .copied()
         {
             match hit {
-                AlbumEditorHit::New => self.begin_new_album(ctx.state),
+                AlbumEditorHit::New => self.begin_new_album(&mut ctx.state),
                 AlbumEditorHit::Edit => self.begin_edit_album(),
                 _ => {}
             }
@@ -16357,7 +16357,7 @@ impl Widget for PhotosApp {
         &mut self,
         target: &str,
         action: &AccessAction,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -17473,7 +17473,7 @@ mod history_reconcile_tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.,
                         modifiers: &winit::event::Modifiers::default(),
-                        state: &mut doc,
+                        state: ui::widget::Edits::lend(&mut doc),
                         path: &ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -17492,7 +17492,7 @@ mod history_reconcile_tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.,
                     modifiers: &winit::event::Modifiers::default(),
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,

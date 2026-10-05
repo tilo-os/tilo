@@ -841,7 +841,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &no_modifiers,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -863,7 +863,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &ctrl,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

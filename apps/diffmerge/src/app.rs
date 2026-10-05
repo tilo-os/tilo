@@ -1288,7 +1288,7 @@ impl Widget for DiffMergeApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let _ = (state, path);
@@ -2084,7 +2084,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2101,7 +2101,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2118,7 +2118,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2185,7 +2185,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2201,7 +2201,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -2215,7 +2215,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state.doc,
+                state: ui::widget::Edits::lend(&mut state.doc),
                 path: &state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,

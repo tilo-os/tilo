@@ -322,7 +322,7 @@ impl Widget for QueryEditorChild {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.text.perform_action(action, state, path)
@@ -542,7 +542,7 @@ impl Widget for QueryDivider {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         self.pending = match action {
@@ -655,7 +655,7 @@ impl Widget for QueryResizeMenu {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate)
@@ -672,7 +672,7 @@ impl Widget for QueryResizeMenu {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -1957,7 +1957,7 @@ impl Widget for DbClientApp {
     ui::provides!(dyn ui::undo::UndoPoints);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+        let (state, _) = ui::doc::document_ref(state, path);
         self.drain_query_resize_actions();
         // Accessibility activation is delivered directly to the focused child;
         // drain its semantic action here and enter the same modal flow as a
@@ -2198,7 +2198,7 @@ impl Widget for DbClientApp {
             }
             return;
         }
-        let state = &mut *ctx.state;
+        let state = &mut ctx.state;
 
         // The first-run action is a real child widget. Give it first refusal
         // while it is visible, then translate its drained semantic action into
@@ -2211,7 +2211,7 @@ impl Widget for DbClientApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -2248,7 +2248,7 @@ impl Widget for DbClientApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -2270,7 +2270,7 @@ impl Widget for DbClientApp {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state,
+                state: state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -2323,7 +2323,7 @@ impl Widget for DbClientApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
-                    state,
+                    state: state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -2463,7 +2463,7 @@ impl Widget for DbClientApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -2519,7 +2519,7 @@ impl Widget for DbClientApp {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -4526,7 +4526,7 @@ mod behavior_tests {
 
     fn send(
         app: &mut DbClientApp,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         ev: &WindowEvent,
         mods: Modifiers,
     ) -> bool {
@@ -4538,7 +4538,7 @@ mod behavior_tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: doc,
+                state: doc.reborrow(),
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,

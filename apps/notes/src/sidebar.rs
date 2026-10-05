@@ -752,7 +752,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut AutoCommit::new(),
+                state: ui::widget::Edits::lend(&mut AutoCommit::new()),
                 path: &ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus,

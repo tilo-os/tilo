@@ -4,6 +4,7 @@
 //! the CRDT (so a draft is collaborative state, and undo/redo come for
 //! free from the toolkit's snapshotting).
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::Point;
@@ -46,20 +47,20 @@ fn now_secs() -> i64 {
         .map_or(NOW, |d| d.as_secs() as i64)
 }
 
-struct EventDispatch<'a> {
+struct EventDispatch<'a, 'doc> {
     event: &'a WindowEvent,
     scale: f64,
     modifiers: Modifiers,
-    doc: &'a mut AutoCommit,
+    doc: &'a mut ui::widget::Edits<'doc>,
     handled: &'a mut bool,
 }
 
-impl<'a> EventDispatch<'a> {
+impl<'a, 'doc> EventDispatch<'a, 'doc> {
     fn new(
         event: &'a WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &'a mut AutoCommit,
+        doc: &'a mut ui::widget::Edits<'doc>,
         handled: &'a mut bool,
     ) -> Self {
         Self {
@@ -81,7 +82,7 @@ fn drive_text_input(
     event: &WindowEvent,
     scale: f64,
     modifiers: Modifiers,
-    doc: &mut AutoCommit,
+    doc: &mut ui::widget::Edits<'_>,
 ) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
@@ -94,7 +95,7 @@ fn drive_text_input(
         &mut ui::widget::EventCtx {
             scale_factor: scale,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -113,7 +114,7 @@ fn drive_context_menu(
     event: &WindowEvent,
     scale: f64,
     modifiers: Modifiers,
-    doc: &mut AutoCommit,
+    doc: &mut ui::widget::Edits<'_>,
 ) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
@@ -126,7 +127,7 @@ fn drive_context_menu(
         &mut ui::widget::EventCtx {
             scale_factor: scale,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -143,7 +144,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if self.route_context_menu_event(event, scale, modifiers, doc) {
@@ -250,7 +251,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let Some(mut menu) = self.menu.take() else {
             return false;
@@ -287,7 +288,7 @@ impl ChatApp {
 
     /// A pointer move: live-drags the floating call overlay or an in-progress
     /// channel-row swipe, then forwards hover state to both composers.
-    fn handle_cursor_moved(&mut self, last_mouse: Point, dispatch: EventDispatch<'_>) {
+    fn handle_cursor_moved(&mut self, last_mouse: Point, dispatch: EventDispatch<'_, '_>) {
         let EventDispatch {
             event,
             scale,
@@ -367,7 +368,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let mut focus_requested = false;
@@ -431,7 +432,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         self.call.placement.end_drag(self.desktop_floating_bounds());
@@ -458,7 +459,7 @@ impl ChatApp {
 
     /// A pressed key: inline shared inputs win while open; otherwise the
     /// focused composer receives it unless a popover owns the keyboard.
-    fn handle_keyboard_input(&mut self, logical_key: &Key, dispatch: EventDispatch<'_>) {
+    fn handle_keyboard_input(&mut self, logical_key: &Key, dispatch: EventDispatch<'_, '_>) {
         let EventDispatch {
             event,
             scale,
@@ -553,7 +554,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if self.rename.is_some() {
             self.route_rename_input(event, scale, modifiers, doc);
@@ -582,7 +583,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
         if self.rename_input.take_submit() {
@@ -597,7 +598,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
         if self.emoji_search.take_dirty().is_some() {
@@ -606,7 +607,7 @@ impl ChatApp {
     }
 
     /// Enter in the picker's search field picks the best match.
-    fn pick_first_emoji_result(&mut self, doc: &mut AutoCommit) {
+    fn pick_first_emoji_result(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let first = crate::i18n::emoji_catalogue()
             .search(self.emoji_search.value(), 1)
             .first()
@@ -621,7 +622,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         self.edit_input.handle(event, scale, modifiers, doc);
         match self.edit_input.take_outcome() {
@@ -642,7 +643,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         if let WindowEvent::KeyboardInput {
             event:
@@ -689,7 +690,7 @@ impl ChatApp {
         &mut self,
         event: &WindowEvent,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -733,7 +734,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         self.composer_main.handle(event, scale, modifiers, doc);
         self.composer_thread.handle(event, scale, modifiers, doc);
@@ -750,7 +751,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         self.composer_main.handle(event, scale, modifiers, doc);
         self.composer_thread.handle(event, scale, modifiers, doc);
@@ -768,7 +769,7 @@ impl ChatApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if self.emoji_open {
             let handled = drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
@@ -837,7 +838,7 @@ impl ChatApp {
         clippy::too_many_lines,
         reason = "single exhaustive hit router; splitting by surface would obscure the shared pointer/keyboard activation path"
     )]
-    pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut AutoCommit) {
+    pub(crate) fn on_hit(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
         // Search reveal accents are transient selection affordances. Once the
         // person interacts with Chat directly, ordinary navigation takes over.
         self.revealed_message = None;
@@ -950,7 +951,7 @@ impl ChatApp {
         }
     }
 
-    fn on_hit_channel(&mut self, id: Id, doc: &mut AutoCommit) {
+    fn on_hit_channel(&mut self, id: Id, doc: &mut ui::widget::Edits<'_>) {
         let kind = self.channel(&id).map(|c| c.kind);
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
@@ -973,7 +974,12 @@ impl ChatApp {
         }
     }
 
-    fn on_hit_add_channel(&mut self, workspace: &str, category: &str, doc: &mut AutoCommit) {
+    fn on_hit_add_channel(
+        &mut self,
+        workspace: &str,
+        category: &str,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         let id = new_channel_id();
         self.apply_action(
             doc,
@@ -988,7 +994,7 @@ impl ChatApp {
         self.begin_rename(MenuTarget::Channel(id));
     }
 
-    fn on_hit_add_category(&mut self, ws: &str, doc: &mut AutoCommit) {
+    fn on_hit_add_category(&mut self, ws: &str, doc: &mut ui::widget::Edits<'_>) {
         let id = new_category_id();
         self.apply_action(
             doc,
@@ -997,7 +1003,7 @@ impl ChatApp {
         self.begin_rename(MenuTarget::Category(id));
     }
 
-    fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut AutoCommit) {
+    fn on_hit_reaction(&mut self, msg: &str, emoji: &str, doc: &mut ui::widget::Edits<'_>) {
         if self.can_participate() {
             let action = self.reaction_toggle_action(msg, emoji);
             self.apply_action(doc, &action);
@@ -1031,7 +1037,7 @@ impl ChatApp {
         self.keyboard_target = None;
     }
 
-    fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut AutoCommit) {
+    fn on_hit_emoji_choice(&mut self, e: &str, doc: &mut ui::widget::Edits<'_>) {
         self.emoji_recents.record(e);
         if let Some(target) = self.emoji_target.take() {
             if self.can_participate() {
@@ -1051,7 +1057,7 @@ impl ChatApp {
     /// The header Call button. A click while the call is expanded collapses
     /// it — a button-only toggle; everything else is the published
     /// `start-call` effect's own path.
-    fn on_hit_start_call(&mut self, doc: &mut AutoCommit) {
+    fn on_hit_start_call(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if self.call.active && self.call.expanded {
             self.call.expanded = false;
             self.request_relayout();
@@ -1084,7 +1090,7 @@ impl ChatApp {
 
     /// Pointer and accessibility call controls use the same local service as
     /// exported Effect resources. They never mutate durable voice membership.
-    fn join_voice(&mut self, channel: &str, _doc: &mut AutoCommit) {
+    fn join_voice(&mut self, channel: &str, _doc: &mut ui::widget::Edits<'_>) {
         if let Err(error) = self.native_voice_command(
             channel,
             ui::native_media::Command::Join {
@@ -1095,7 +1101,7 @@ impl ChatApp {
         }
     }
 
-    fn leave_voice(&mut self, _doc: &mut AutoCommit) {
+    fn leave_voice(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         let channel = self
             .native_voice
             .channel
@@ -1112,7 +1118,7 @@ impl ChatApp {
         &mut self,
         target: MenuTarget,
         action: MenuAction,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         match target {
             MenuTarget::Channel(id) => self.apply_channel_action(&id, action, doc),
@@ -1144,7 +1150,12 @@ impl ChatApp {
         self.reload(doc);
     }
 
-    fn apply_channel_action(&mut self, id: &str, action: MenuAction, doc: &mut AutoCommit) {
+    fn apply_channel_action(
+        &mut self,
+        id: &str,
+        action: MenuAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Channel(id.to_string())),
             MenuAction::Delete => {
@@ -1171,7 +1182,12 @@ impl ChatApp {
         self.reload(doc);
     }
 
-    fn apply_category_action(&mut self, id: &str, action: MenuAction, doc: &mut AutoCommit) {
+    fn apply_category_action(
+        &mut self,
+        id: &str,
+        action: MenuAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         let ws = self.active_ws.clone();
         match action {
             MenuAction::Rename => self.begin_rename(MenuTarget::Category(id.to_string())),
@@ -1226,7 +1242,7 @@ impl ChatApp {
     }
 
     /// Commit the inline rename to the CRDT and close the editor.
-    fn commit_rename(&mut self, doc: &mut AutoCommit) {
+    fn commit_rename(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(target) = self.rename.take() {
             let text = self.rename_input.value().trim().to_string();
             if !text.is_empty() {
@@ -1252,7 +1268,7 @@ impl ChatApp {
         self.set_composer_focus();
     }
 
-    fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut AutoCommit) -> bool {
+    fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut ui::widget::Edits<'_>) -> bool {
         // Escape unwinds the top-most layer.
         if let Key::Named(NamedKey::Escape) = key {
             if self.attach_open {
@@ -1340,7 +1356,7 @@ impl ChatApp {
         }
     }
 
-    fn activate_keyboard_target(&mut self, doc: &mut AutoCommit) -> bool {
+    fn activate_keyboard_target(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let targets = self.semantic_hits();
         let Some((_, hit, ..)) = self
             .keyboard_target
@@ -1370,7 +1386,7 @@ impl ChatApp {
     /// `TextInput` — used by the emoji picker, which splices a picked glyph as
     /// if typed. Composer keystrokes themselves go straight to the widget via
     /// [`route_composer_key`].
-    fn insert_text(&mut self, doc: &mut AutoCommit, s: &str) {
+    fn insert_text(&mut self, doc: &mut ui::widget::Edits<'_>, s: &str) {
         if !self.can_participate() {
             return;
         }
@@ -1434,7 +1450,7 @@ impl ChatApp {
     /// [`ChatDoc::edit_message`] (which archives the prior text into the
     /// message's history and flags it edited), then close the editor. An
     /// edit that empties the message is discarded rather than blanking it.
-    fn commit_edit(&mut self, doc: &mut AutoCommit) {
+    fn commit_edit(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !self.can_participate() {
             return;
         }
@@ -1463,7 +1479,7 @@ impl ChatApp {
         self.set_composer_focus();
     }
 
-    fn send_focused(&mut self, doc: &mut AutoCommit) {
+    fn send_focused(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Posting is a write into the workspace: gated by the OS permission
         // context (a View-only / ungranted peer can read but not send).
         if !self.can_participate() {
@@ -1615,7 +1631,11 @@ impl ChatApp {
     /// worker and never enters the document/action payload. Its result settles
     /// in [`ChatApp::settle_attachment_import`] during `sync`, which is the
     /// only place the canonical `SendMessage` action may be dispatched.
-    pub(crate) fn attach_file(&mut self, _doc: &mut AutoCommit, path: &std::path::Path) -> bool {
+    pub(crate) fn attach_file(
+        &mut self,
+        _doc: &mut ui::widget::Edits<'_>,
+        path: &std::path::Path,
+    ) -> bool {
         self.begin_attachment_import(path)
     }
 

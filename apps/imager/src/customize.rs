@@ -23,7 +23,6 @@
 //! stays authoritative. It is deliberately free of any imager-wizard coupling
 //! (no step/`Hit` types leak in) so the installer can embed the same panel.
 
-use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -897,7 +896,7 @@ impl CustomizePanel {
             if selected != before
                 && let Some(value) = Self::choice_profile_value(field, &selected)
             {
-                Self::dispatch(ctx.state, edits, &Self::field_action(field, value));
+                Self::dispatch(&mut ctx.state, edits, &Self::field_action(field, value));
             }
             if handled {
                 return CzResponse {
@@ -986,7 +985,7 @@ impl CustomizePanel {
             if let Some(value) = Self::choice_profile_value(f, &selected)
                 && selected != before
             {
-                Self::dispatch(ctx.state, edits, &Self::field_action(f, value));
+                Self::dispatch(&mut ctx.state, edits, &Self::field_action(f, value));
             }
             return CzResponse {
                 handled,
@@ -1022,7 +1021,7 @@ impl CustomizePanel {
             },
         );
         let value = self.input(f).value().to_string();
-        Self::dispatch(ctx.state, edits, &Self::field_action(f, value));
+        Self::dispatch(&mut ctx.state, edits, &Self::field_action(f, value));
         CzResponse {
             handled: true,
             export_requested: false,
@@ -1085,9 +1084,13 @@ impl CustomizePanel {
 
     /// Apply `action` now, inside the event that made it, so the field's
     /// next keystroke continues the same undo step.
-    fn dispatch(doc: &mut AutoCommit, edits: Option<&Dispatcher<Imager>>, action: &ImagerAction) {
+    fn dispatch(
+        doc: &mut ui::widget::Edits<'_>,
+        edits: Option<&Dispatcher<Imager>>,
+        action: &ImagerAction,
+    ) {
         if let Some(edits) = edits {
-            let _ = edits.apply_now(&mut ui::widget::Edits::lend(doc), action);
+            let _ = edits.apply_now(doc, action);
         }
     }
 

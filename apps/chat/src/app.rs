@@ -975,16 +975,12 @@ impl ChatApp {
     /// single document-mutation path of every on-screen affordance, the
     /// same door the palette and agents use. The projection is reconciled
     /// from the document on the next sync.
-    pub(crate) fn apply_action(&self, doc: &mut AutoCommit, action: &ChatAction) {
+    pub(crate) fn apply_action(&self, doc: &mut ui::widget::Edits<'_>, action: &ChatAction) {
         #[cfg(test)]
         self.dispatched.borrow_mut().push(action.clone());
         if let Some(dispatch) = &self.dispatch {
             // A refusal changes nothing; the dispatcher reports it.
-            let _ = dispatch.apply_now_with(
-                &mut ui::widget::Edits::lend(doc),
-                action,
-                actions::history_context(action),
-            );
+            let _ = dispatch.apply_now_with(doc, action, actions::history_context(action));
         }
     }
 
@@ -999,7 +995,7 @@ impl ChatApp {
         }
     }
 
-    pub(crate) fn ensure_composer_draft(&self, doc: &mut AutoCommit, key: &str) {
+    pub(crate) fn ensure_composer_draft(&self, doc: &mut ui::widget::Edits<'_>, key: &str) {
         if key.is_empty() || ChatDoc::rich_draft_is_settled(doc, key) {
             return;
         }
@@ -1021,7 +1017,7 @@ impl ChatApp {
     /// Test-only: apply what this window submitted to `doc`, as the host
     /// applies it after a pass.
     #[cfg(test)]
-    pub(crate) fn land(&self, doc: &mut AutoCommit) {
+    pub(crate) fn land(&self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(dispatch) = &self.dispatch {
             ui::framework::testing::resolve(dispatch, doc).expect("submitted edits apply");
         }
@@ -2608,7 +2604,7 @@ impl Continuable for ChatApp {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
         self.restore_call_continuation(metadata, state)
@@ -3269,7 +3265,7 @@ impl Widget for ChatApp {
             event,
             ctx.scale_factor,
             *ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.handled,
         );
         // Pointer motion that neither Chat nor its inputs consumed changes
@@ -3394,7 +3390,7 @@ impl Widget for ChatApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);

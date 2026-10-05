@@ -13,6 +13,7 @@ use ui::WakeHandle;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2848,7 +2849,7 @@ impl VpnApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if let WindowEvent::KeyboardInput { event: ke, .. } = event
@@ -3250,7 +3251,7 @@ impl Widget for VpnApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.handled,
             );
             return;
@@ -3432,7 +3433,7 @@ impl Widget for VpnApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(

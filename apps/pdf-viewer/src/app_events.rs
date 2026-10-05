@@ -170,7 +170,7 @@ impl PdfApp {
         Some(ToolbarHit::Tool(self.tool))
     }
 
-    fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut AutoCommit) {
+    fn apply_toolbar(&mut self, hit: &ToolbarHit, state: &mut ui::widget::Edits<'_>) {
         match hit {
             ToolbarHit::Tool(t) => self.set_tool(*t),
             ToolbarHit::Swatch(s) => {
@@ -226,7 +226,7 @@ impl PdfApp {
 
     /// Resolve the most specific captured sidebar hit (smallest rect wins,
     /// so the resolve-chip beats the comment card it sits inside).
-    fn apply_sidebar(&mut self, p: Point, state: &mut AutoCommit) -> bool {
+    fn apply_sidebar(&mut self, p: Point, state: &mut ui::widget::Edits<'_>) -> bool {
         if !self.show_sidebar || !self.sidebar_rect.contains(p) {
             return false;
         }
@@ -352,7 +352,7 @@ impl PdfApp {
     }
 
     /// Pointer-down inside the page canvas: dispatch by the active tool.
-    fn apply_canvas_press(&mut self, p: Point, state: &mut AutoCommit) -> bool {
+    fn apply_canvas_press(&mut self, p: Point, state: &mut ui::widget::Edits<'_>) -> bool {
         if !self.canvas_rect.contains(p) {
             return false;
         }
@@ -471,7 +471,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         self.shift_down = modifiers.state().shift_key();
@@ -559,7 +559,7 @@ impl PdfApp {
         p: Point,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         self.last_mouse = p;
         if self.on_cursor_moved_chrome_drags(event, p, scale_factor, modifiers, state) {
@@ -577,7 +577,7 @@ impl PdfApp {
         p: Point,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         // Drawing a signature on the pad: extend the in-progress stroke.
         if self.sig_stroke.is_some() {
@@ -709,7 +709,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let p = self.last_mouse;
@@ -729,7 +729,7 @@ impl PdfApp {
         p: Point,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         // A click inside the active inline editor keeps focus; a click
@@ -778,7 +778,7 @@ impl PdfApp {
     fn on_left_press_rail_and_canvas(
         &mut self,
         p: Point,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // The page rail: its resize grip (a thin strip on the right
@@ -842,7 +842,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // Finish a signature pad stroke: commit it if it has real ink.
@@ -946,7 +946,7 @@ impl PdfApp {
 
     /// `WindowEvent::MouseInput` (right, pressed): the page rail's
     /// duplicate/move/delete menu, else the canvas context menu.
-    fn on_right_press(&mut self, state: &mut AutoCommit, handled: &mut bool) {
+    fn on_right_press(&mut self, state: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         let p = self.last_mouse;
         // Right-click a page thumbnail → the shared rail's duplicate /
         // move / delete menu.
@@ -1043,7 +1043,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let Ok(node) = taffy.new_leaf(Style::default()) else {
@@ -1054,7 +1054,7 @@ impl PdfApp {
             &mut ui::widget::EventCtx {
                 scale_factor: scale,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path: &automerge::ROOT,
                 handled: &mut false,
                 focus_target: &mut None,
@@ -1069,7 +1069,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         match self.editing.as_mut().map(|e| &mut e.input) {
             Some(EditInput::Plain(input)) => {
@@ -1097,7 +1097,7 @@ impl PdfApp {
         key_event: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
         scale: f64,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if self.on_key_editing(event, key_event, modifiers, scale, state, handled) {
@@ -1147,7 +1147,7 @@ impl PdfApp {
         key_event: &winit::event::KeyEvent,
         modifiers: winit::event::Modifiers,
         scale: f64,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if self.editing.is_none() {
@@ -1175,7 +1175,7 @@ impl PdfApp {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) {
         Self::drive_local_input(&mut self.search_input, event, scale, modifiers, state);
     }
@@ -1186,7 +1186,7 @@ impl PdfApp {
         modifiers: winit::event::Modifiers,
         ctrl: bool,
         scale: f64,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if !self.search_active {
@@ -1345,7 +1345,7 @@ impl PdfApp {
     fn on_key_navigation(
         &mut self,
         key_event: &winit::event::KeyEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         match &key_event.logical_key {
@@ -1514,7 +1514,7 @@ mod event_tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut self.st.doc,
+                    state: ui::widget::Edits::lend(&mut self.st.doc),
                     path: &self.st.root,
                     handled: &mut handled,
                     focus_target: &mut focus,

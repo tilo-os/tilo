@@ -12,13 +12,15 @@
 //! is *local* to this peer (which article is selected, scroll offsets, the
 //! active filter, the open modal) is kept in widget fields.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use uuid::Uuid;
@@ -376,7 +378,7 @@ impl RefreshState {
 
 /// A change the live (doc-less) `draw`-time drain produced that still needs to
 /// be persisted into the Automerge document. Draining happens during `draw`
-/// (which has no `&mut AutoCommit`), so the CRDT writes are queued here and
+/// (which has no `&mut ui::widget::Edits<'_>`), so the CRDT writes are queued here and
 /// flushed on the next pass that *does* hold the doc (`sync` / `handle_event`).
 /// This is what lets a refresh land live — updating the visible store on every
 /// animation frame — without ever blocking the UI thread on the network or
@@ -1405,7 +1407,7 @@ impl FeedsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -4474,7 +4476,7 @@ impl Widget for FeedsApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.handled,
             );
@@ -4934,7 +4936,7 @@ impl Widget for FeedsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
@@ -6555,7 +6557,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -6578,7 +6580,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

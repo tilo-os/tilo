@@ -18,7 +18,7 @@ use std::rc::Rc;
 use ui::tilo_actions;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::LocalState;
@@ -826,7 +826,7 @@ impl Widget for Customizer {
             return;
         }
 
-        if self.handle_chip_selection(event, ctx.state, ctx.path, ctx.handled) {
+        if self.handle_chip_selection(event, &mut ctx.state, ctx.path, ctx.handled) {
             return;
         }
 
@@ -1252,7 +1252,7 @@ impl Customizer {
     fn handle_chip_selection(
         &mut self,
         event: &WindowEvent,
-        _state: &mut AutoCommit,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
         handled: &mut bool,
     ) -> bool {

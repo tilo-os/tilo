@@ -6,6 +6,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -84,7 +85,7 @@ impl MapInfoSheet {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if self.current.is_none() {
             return false;

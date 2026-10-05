@@ -6,7 +6,6 @@
 
 use ui::time::{Duration, Instant};
 
-use automerge::AutoCommit;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -180,7 +179,7 @@ impl SearchBox {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> SearchKeyEffect {
         if !self.focused {
             return SearchKeyEffect::None;
@@ -215,7 +214,7 @@ impl SearchBox {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         drive_hand_laid(&mut self.input, event, scale, modifiers, doc);
     }
@@ -225,7 +224,7 @@ impl SearchBox {
         event: &WindowEvent,
         scale: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) {
         self.input.set_focus(true);
         drive_hand_laid(&mut self.input, event, scale, modifiers, doc);
@@ -427,7 +426,7 @@ pub(crate) fn drive_hand_laid(
     event: &WindowEvent,
     scale: f64,
     modifiers: winit::event::Modifiers,
-    doc: &mut AutoCommit,
+    doc: &mut ui::widget::Edits<'_>,
 ) -> bool {
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let Ok(node) = taffy.new_leaf(Style::default()) else {
@@ -440,7 +439,7 @@ pub(crate) fn drive_hand_laid(
         &mut ui::widget::EventCtx {
             scale_factor: scale,
             modifiers: &modifiers,
-            state: doc,
+            state: doc.reborrow(),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,

@@ -17,7 +17,7 @@
 //! the live `Theme`, so theming stays OS-controlled.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::style_helpers::{fr, length, minmax, percent, repeat};
 use taffy::{Dimension, NodeId, Style, TaffyTree};
@@ -820,7 +820,7 @@ impl Widget for Flex {
     fn perform_action(
         &mut self,
         action_kind: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action_kind {
@@ -942,12 +942,14 @@ mod accessibility_tests {
         assert!(node.state.focusable);
         Widget::set_focus(&mut control, true);
         assert!(Widget::is_focused(&control));
-        assert!(Widget::perform_action(
-            &mut control,
-            &ui::a11y::Action::Activate,
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
+        assert!(
+            Widget::perform_action(
+                &mut control,
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits<'_>::new(),
+                &automerge::ROOT,
+            )
+        );
         assert_eq!(
             crate::action::drain(&bus),
             vec![Action::Navigate(crate::model::Route::Home)]

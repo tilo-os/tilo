@@ -214,7 +214,7 @@ impl<W: Widget> Harness<W> {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &self.modifiers,
-                state: &mut self.state.doc,
+                state: ui::widget::Edits::lend(&mut self.state.doc),
                 path: &self.state.root,
                 handled: &mut handled,
                 focus_target: &mut focus,

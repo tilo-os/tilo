@@ -14,13 +14,15 @@
 //! cached in `Hit` and consulted by `handle_event` on the next input —
 //! the same pattern the toolkit's `DataTable` uses for its column rects.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use ui::framework::LiveRow;
 use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
@@ -4330,7 +4332,7 @@ impl MonitorApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -5304,7 +5306,7 @@ impl Widget for MonitorApp {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 ctx.handled,
             );
@@ -5373,7 +5375,7 @@ impl Widget for MonitorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
@@ -7439,7 +7441,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus,

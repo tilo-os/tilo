@@ -29,7 +29,7 @@ use std::sync::mpsc::TryRecvError;
 use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -367,7 +367,7 @@ impl HexView {
     /// undo step per run of typing; an input that edited nothing ends the
     /// run, so the next one is a step of its own. A refused edit shows the
     /// resource's bytes again.
-    fn commit_edits(&mut self, doc: &mut AutoCommit) {
+    fn commit_edits(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let edits = self.model.take_edits();
         self.dirty = true;
         let Some(dispatch) = &self.dispatch else {
@@ -379,10 +379,7 @@ impl HexView {
         }
         for edit in edits {
             if dispatch
-                .apply_now(
-                    &mut ui::widget::Edits::lend(doc),
-                    &HexEditorAction::from_edit(edit),
-                )
+                .apply_now(doc, &HexEditorAction::from_edit(edit))
                 .is_err()
             {
                 if let Some(live) = &self.live {
@@ -1726,7 +1723,7 @@ impl HexView {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         layout: OverlayLayoutCtx<'_>,
     ) -> bool {
@@ -1778,7 +1775,7 @@ impl HexView {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state: doc,
+                        state: doc.reborrow(),
                         path,
                         handled: &mut field_handled,
                         focus_target: layout.focus_target,
@@ -1794,7 +1791,7 @@ impl HexView {
                     &mut ui::widget::EventCtx {
                         scale_factor,
                         modifiers: &modifiers,
-                        state: doc,
+                        state: doc.reborrow(),
                         path,
                         handled: &mut field_handled,
                         focus_target: layout.focus_target,
@@ -1951,7 +1948,7 @@ impl Widget for HexView {
                 event,
                 ctx.scale_factor,
                 *ctx.modifiers,
-                ctx.state,
+                &mut ctx.state,
                 ctx.path,
                 OverlayLayoutCtx {
                     focus_target: ctx.focus_target,
@@ -1996,7 +1993,7 @@ impl Widget for HexView {
                     },
                 ..
             } => {
-                self.handle_key_event(ke, ctrl, shift, ctx.state, ctx.handled);
+                self.handle_key_event(ke, ctrl, shift, &mut ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -2106,7 +2103,7 @@ impl Widget for HexView {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate) && target == "hex.open" {
@@ -2284,7 +2281,7 @@ impl HexView {
         ke: &winit::event::KeyEvent,
         ctrl: bool,
         shift: bool,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let key = &ke.logical_key;

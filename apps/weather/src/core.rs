@@ -18,10 +18,12 @@
 //! [`crate::app::WeatherApp`] borrows it to present the document, pump the network
 //! worker, and drive the shell.
 
+#[cfg(test)]
+use automerge::AutoCommit;
 use std::collections::HashMap;
 use ui::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::ObjId;
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
@@ -233,7 +235,7 @@ pub(crate) struct OverviewEventCtx<'a> {
     pub(crate) event: &'a WindowEvent,
     pub(crate) scale_factor: f64,
     pub(crate) modifiers: winit::event::Modifiers,
-    pub(crate) state: &'a mut AutoCommit,
+    pub(crate) state: ui::widget::Edits<'a>,
     pub(crate) path: &'a ObjId,
     pub(crate) focus_target: &'a mut Option<NodeId>,
     pub(crate) node_id: NodeId,
@@ -1892,7 +1894,7 @@ impl Core {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: &ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut ac_handled,
                 focus_target: ctx.focus_target,
@@ -1907,7 +1909,7 @@ impl Core {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.search.is_editing() {

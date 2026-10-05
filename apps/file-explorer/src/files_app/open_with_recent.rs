@@ -278,7 +278,7 @@ impl FileExplorerWidget {
         event: &winit::event::WindowEvent,
         scale_factor: f64,
         modifiers: winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &automerge::ObjId,
         focus_target: &mut Option<taffy::NodeId>,
     ) {
@@ -293,7 +293,7 @@ impl FileExplorerWidget {
             &mut ui::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
-                state,
+                state: state.reborrow(),
                 path,
                 handled: &mut handled,
                 focus_target,

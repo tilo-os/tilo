@@ -4020,7 +4020,7 @@ impl Widget for PlayerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {

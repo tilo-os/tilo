@@ -1114,7 +1114,7 @@ impl NotesApp {
     /// Test-only: apply what this notebook submitted to `doc`, as the host
     /// applies it after a pass.
     #[cfg(test)]
-    pub(crate) fn land(&self, doc: &mut AutoCommit) {
+    pub(crate) fn land(&self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(dispatcher) = &self.dispatcher {
             ui::framework::testing::resolve(dispatcher, doc).expect("submitted edits apply");
         }
@@ -1123,9 +1123,9 @@ impl NotesApp {
     /// Test-only: one frame as a host runs it — sync, the settle pass and
     /// what it submitted applied to `doc` — shown in the same frame.
     #[cfg(test)]
-    pub(crate) fn frame(&mut self, doc: &mut AutoCommit, root: &automerge::ObjId) {
+    pub(crate) fn frame(&mut self, doc: &mut ui::widget::Edits<'_>, root: &automerge::ObjId) {
         ui::widget::Widget::sync(self, doc, root);
-        ui::widget::Widget::settle(self, &mut ui::widget::Edits::lend(doc), root);
+        ui::widget::Widget::settle(self, doc, root);
         self.land(doc);
         ui::widget::Widget::sync(self, doc, root);
     }
@@ -2501,12 +2501,7 @@ impl Widget for NotesApp {
         if self.handle_find_shortcut(event, *ctx.modifiers, ctx.focus_target, ctx.handled) {
             return;
         }
-        if self.handle_new_child_shortcut(
-            event,
-            *ctx.modifiers,
-            &mut ui::widget::Edits::lend(ctx.state),
-            ctx.handled,
-        ) {
+        if self.handle_new_child_shortcut(event, *ctx.modifiers, &mut ctx.state, ctx.handled) {
             return;
         }
         if self.handle_route_history_shortcut(event, *ctx.modifiers, ctx.handled) {
@@ -2578,7 +2573,7 @@ impl Widget for NotesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == "notes.drawer"
@@ -3052,7 +3047,7 @@ impl NotesApp {
         if self.note_menu.is_open() {
             self.note_menu.handle_event(event, ctx);
             if let Some(index) = self.note_menu.take_selection() {
-                self.apply_note_menu_selection(index, ctx.state);
+                self.apply_note_menu_selection(index, &mut ctx.state);
             }
             self.self_dirty = true;
             *ctx.handled = true;
@@ -3153,7 +3148,7 @@ impl NotesApp {
         true
     }
 
-    fn apply_note_menu_selection(&mut self, index: usize, state: &mut AutoCommit) {
+    fn apply_note_menu_selection(&mut self, index: usize, state: &mut ui::widget::Edits<'_>) {
         let Some(page) = self.note_menu_target.take() else {
             return;
         };
@@ -3219,21 +3214,13 @@ impl NotesApp {
             index
         };
         match index {
-            0 => self.apply_and_dispatch(
-                &mut ui::widget::Edits::lend(state),
-                OutEvent::CreateChild { parent: Some(page) },
-            ),
+            0 => self.apply_and_dispatch(state, OutEvent::CreateChild { parent: Some(page) }),
             1 => self.main.begin_title_edit(),
-            2 => self.apply_and_dispatch(
-                &mut ui::widget::Edits::lend(state),
-                OutEvent::Duplicate(page),
-            ),
+            2 => self.apply_and_dispatch(state, OutEvent::Duplicate(page)),
             3 => self.request(&NotesEffect::CopyLink { page }),
             4 => self.request(&NotesEffect::ExportMarkdown { page }),
             5 => self.request(&NotesEffect::InsertImage { page }),
-            7 => {
-                self.apply_and_dispatch(&mut ui::widget::Edits::lend(state), OutEvent::Delete(page))
-            }
+            7 => self.apply_and_dispatch(state, OutEvent::Delete(page)),
             _ => {}
         }
         self.sidebar.sync_from_workspace(&self.workspace);

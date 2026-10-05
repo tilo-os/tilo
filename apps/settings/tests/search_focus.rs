@@ -213,7 +213,7 @@ impl Harness {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut self.doc,
+                    state: ui::widget::Edits::lend(&mut self.doc),
                     path: &root(),
                     handled: &mut handled,
                     focus_target: &mut focus_target,
@@ -240,7 +240,7 @@ impl Harness {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &mods,
-                state: &mut self.doc,
+                state: ui::widget::Edits::lend(&mut self.doc),
                 path: &root(),
                 handled: &mut handled,
                 focus_target: &mut focus_target,

@@ -295,7 +295,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
         // Show the draft as it is now first, so the edit is made against it.
         self.host.sync(doc, &automerge::ROOT);
@@ -334,7 +334,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
     pub fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool {
         self.host.sync(doc, path);
@@ -344,12 +344,10 @@ impl<S: RichTextSource + 'static> Composer<S> {
     }
 
     /// Put `text` at the caret, as typed.
-    pub fn insert_text(&mut self, doc: &mut AutoCommit, text: &str) {
+    pub fn insert_text(&mut self, doc: &mut ui::widget::Edits<'_>, text: &str) {
         self.host.sync(doc, &automerge::ROOT);
         self.caret_somewhere();
-        self.host
-            .widget_mut()
-            .insert_text(&mut ui::widget::Edits::lend(doc), text);
+        self.host.widget_mut().insert_text(doc, text);
         self.host.sync(doc, &automerge::ROOT);
     }
 
@@ -357,7 +355,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
     /// mention of `id` shown as `label`.
     pub fn complete_mention(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         query_len: usize,
         id: &str,
         label: &str,
@@ -366,7 +364,7 @@ impl<S: RichTextSource + 'static> Composer<S> {
         self.caret_somewhere();
         let surface = self.host.widget_mut();
         surface.editor_mut().select_before_caret(query_len);
-        surface.insert_mention(&mut ui::widget::Edits::lend(doc), id, label);
+        surface.insert_mention(doc, id, label);
         self.host.sync(doc, &automerge::ROOT);
     }
 
