@@ -586,7 +586,7 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
     d.click_named("api.form.primary").unwrap();
     settle(d);
     assert!(
-        d.focus_access_nodes().iter().any(|n| n
+        semantic_nodes(d).iter().any(|n| n
             .name
             .as_deref()
             .is_some_and(|s| s.contains("Edited") && s.contains("collection"))),
@@ -594,6 +594,8 @@ fn composition_management_real_buttons_keep_canonical_mutations() {
         d.dump_json()
     );
     environment_command(d, "Add variable…");
+    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+        .expect("the canonical environment command publishes its variable form");
     d.click_named("api.form-variable-key").unwrap();
     d.type_text("region");
     d.click_named("api.form-variable-value").unwrap();
@@ -622,6 +624,8 @@ fn composition_narrow_escape_paging_and_open_resize_are_reachable() {
     }
     assert_sidebar_targets(d, 900.0);
     environment_command(d, "Add variable…");
+    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+        .expect("the canonical environment command publishes its variable form");
     let field = d.targets()["api.form-variable-key"];
     assert!(field.x0 >= 0.0 && field.x1 <= 480.0 && field.y1 <= 900.0);
     // 480 logical pixels for the app below the window's 40-pixel title bar.
@@ -651,6 +655,8 @@ fn composition_real_two_x_retains_all_controls_and_response_space() {
     assert!(targets["api.request-divider"].y1 < 700.0);
     assert!(targets["api.request-tabs"].x1 <= 800.0);
     environment_command(d, "Add variable…");
+    d.wait_for_named("api.form-variable-key", ui::time::Duration::from_secs(5))
+        .expect("the canonical environment command publishes its variable form");
     let field = d.targets()["api.form-variable-key"];
     assert!(
         field.x0 >= 0.0 && field.x1 <= 800.0 && field.y1 <= 900.0,

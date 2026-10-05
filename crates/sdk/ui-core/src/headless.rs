@@ -3237,11 +3237,23 @@ impl FrameHarness {
     /// bound is measured on it too: an executor with a virtual clock (a
     /// pumped test) cannot run the bound out before an entrance has ended.
     pub fn settle_for_capture(&mut self, bound: crate::time::Duration) -> bool {
-        self.wait_until_on(bound, crate::time::now, |driver| {
+        let settled = self.wait_until_on(bound, crate::time::now, |driver| {
             !driver.frame_schedule().needs_animation_frame
                 && !driver.root.has_pending_visual_work()
                 && crate::image_store::loads_in_flight() == 0
-        })
+        });
+        if !settled {
+            return false;
+        }
+        // An animation may land at its endpoint during draw, after the
+        // current frame's layout and pixels were produced. Flush that final
+        // invalidation through the normal pipeline before capturing them.
+        if self.try_relayout().is_err() {
+            return false;
+        }
+        !self.frame_schedule().needs_animation_frame
+            && !self.root.has_pending_visual_work()
+            && crate::image_store::loads_in_flight() == 0
     }
 
     /// Run the normal frame pipeline until requested visual work completes.
@@ -8679,6 +8691,37 @@ mod tests {
         }
         fn get_rect(&self) -> Rect {
             Rect::ZERO
+        }
+    }
+
+    #[test]
+    fn capture_settlement_applies_the_final_push_sidebar_geometry() {
+        use crate::widget::{NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
+        for width in [360_u32, 520_u32] {
+            let shell = NavShell::new()
+                .mode(NavMode::Push)
+                .with_pane_state(&crate::LocalState::new(NavPane::Content))
+                .sidebar(Box::new(NavList::new(vec![NavSection::untitled(
+                    "screens",
+                    vec![NavItem::new("world", "World")],
+                )])))
+                .content(Box::new(crate::widget::Spacer::new()));
+            let mut harness =
+                FrameHarness::for_root(State::new(), shell, (width, 820), Theme::dark());
+            harness
+                .perform_named("nav-shell-back", &crate::a11y::Action::Activate)
+                .unwrap();
+            assert!(harness.settle_for_capture(crate::time::Duration::from_secs(1)));
+            let column = harness.root::<NavShell>().geometry().sidebar_column;
+            assert_eq!(column.x0, 0.0, "the final sidebar starts at the viewport");
+            assert_eq!(column.x1, f64::from(width));
+            let (_, row) = harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| node.label() == Some("World"))
+                .expect("the settled visible sidebar publishes its actual row");
+            let bounds = row.bounds().unwrap();
+            assert!(bounds.x0 >= 0.0 && bounds.x1 <= f64::from(width));
         }
     }
 

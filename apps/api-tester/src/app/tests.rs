@@ -929,6 +929,7 @@ fn long_navigation_labels_fit_the_shared_rows() {
             // At large text this viewport uses a push sidebar. Review the
             // actual visible navigation pane rather than hidden content.
             surface.nav.show(ui::widget::NavPane::Sidebar);
+            surface.nav.open_sidebar();
             surface.nav.snap();
         })
         .unwrap();
