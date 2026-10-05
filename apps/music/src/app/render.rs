@@ -2405,28 +2405,6 @@ impl MusicApp {
 
     // ---- controls ---------------------------------------------------------
 
-    /// Paint a labelled button at `rect` and register its hit. Returns
-    /// whether the pointer is over it.
-    fn button(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        rect: Rect,
-        label: &str,
-        icon: Option<Icon>,
-        role: ButtonRole,
-        action: Action,
-    ) -> bool {
-        let mut face = ButtonFace::new(rect, label).role(role);
-        if let Some(icon) = icon {
-            face = face.icon(icon);
-        }
-        let hit = face.hit_rect(ctx.theme);
-        let hovered = self.push_hit(hit, action);
-        let face = face.hovered(hovered);
-        Button::paint(ctx.scene, ctx.transform, ctx.text, ctx.theme, &face);
-        hovered
-    }
-
     /// Paint an icon button `face` and register its hit. `on` marks a toggle
     /// that is on (the toolkit's toggled face).
     fn icon_button(
@@ -2457,20 +2435,6 @@ impl MusicApp {
         let hovered = self.push_hit(face.hit_rect(ctx.theme), action) && !idle;
         TransportFace::paint(ctx.scene, ctx.transform, ctx.theme, &face.hovered(hovered));
         hovered
-    }
-
-    /// The width a button with `label` (and `icon`) needs at `size`.
-    fn button_width(
-        ctx: &mut PaintCtx<'_>,
-        label: &str,
-        icon: Option<Icon>,
-        size: ControlSize,
-    ) -> f64 {
-        let mut face = ButtonFace::new(Rect::ZERO, label).control_size(size);
-        if let Some(icon) = icon {
-            face = face.icon(icon);
-        }
-        face.intrinsic_width(ctx.text, ctx.theme)
     }
 
     // ---- master frame -----------------------------------------------------
@@ -4609,12 +4573,9 @@ impl MusicApp {
         let rows = self.gather_tracks(&ids);
         let summary = length_caption(&rows);
         let mut y = Self::note(ctx, look, body, y, &summary) + look.section;
-        let h = ButtonFace::height(ControlSize::Regular, ctx.theme);
-        let mut x = body.x0 + look.gutter;
-        for (label, icon, role, action) in [
+        let buttons = [
             (
                 "Play",
-                None,
                 ButtonRole::Primary,
                 Action::Play {
                     queue: ids.clone().into(),
@@ -4623,23 +4584,25 @@ impl MusicApp {
             ),
             (
                 "Shuffle",
-                None,
                 ButtonRole::Secondary,
                 Action::ShufflePlay(ids.clone().into()),
             ),
-        ] {
-            let w = Self::button_width(ctx, label, icon, ControlSize::Regular);
-            self.button(
-                ctx,
-                Rect::new(x, y, x + w, y + h),
-                label,
-                icon,
-                role,
-                action,
-            );
-            x += w + look.related;
-        }
-        y += h + look.gutter;
+        ];
+        let key = format!("{buttons:?}");
+        let gap = ui::num::f32_of_f64(look.related);
+        let span = (body.x0 + look.gutter, body.x1 - look.gutter);
+        y = self.page_part(ctx, span, y, key, move |asked| {
+            let mut row = ui::widget::Row::new().with_gap(gap);
+            for (label, role, action) in buttons {
+                row = row.push(Box::new(
+                    Button::new(&format!("music.page.{label}"), label, None)
+                        .role(role)
+                        .on_click(super::page_part::asking(asked, action)),
+                ));
+            }
+            Box::new(row)
+        });
+        y += look.gutter;
         self.draw_track_table(ctx, look, body, y, &TrackTable::new(&rows, &ids))
     }
 
