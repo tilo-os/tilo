@@ -161,6 +161,7 @@ fn journal_table() -> DataTable<JournalRow> {
     ];
     DataTable::new(columns)
         .compact()
+        .fill_height()
         .with_id("logs.entries")
         .with_accessible_name("Journal entries")
         .selectable(true)
@@ -192,9 +193,6 @@ pub(crate) struct JournalPane {
     boot: Dropdown,
     severity: Dropdown,
     table: DataTable<JournalRow>,
-    /// The viewport height last handed to the table.
-    viewport: f64,
-    row_height: f64,
     placeholder: Option<(Placeholder, EmptyState)>,
     has_entries: bool,
     /// The row index the table's selection was last synchronised to.
@@ -233,8 +231,6 @@ impl JournalPane {
             boot,
             severity,
             table: journal_table(),
-            viewport: 0.0,
-            row_height: 0.0,
             placeholder: None,
             has_entries: false,
             shown_selection: None,
@@ -382,26 +378,6 @@ impl JournalPane {
         vec![band]
     }
 
-    /// Scroll the table so the selected row is in view, centred when it was
-    /// out of sight.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
-        reason = "row offsets are small logical-pixel values"
-    )]
-    fn scroll_to_selection(&mut self) {
-        let Some(index) = self.table.selection().primary() else {
-            return;
-        };
-        let top = index as f64 * self.row_height;
-        let scroll = f64::from(self.table.scroll_y());
-        if top < scroll || top + self.row_height > scroll + self.viewport {
-            let centred = (top - (self.viewport - self.row_height) / 2.0).max(0.0);
-            self.table.set_scroll_y(centred as f32);
-            self.layout_dirty = true;
-        }
-    }
-
     fn shows_filters(&self) -> bool {
         self.has_entries
     }
@@ -504,9 +480,6 @@ impl Widget for JournalPane {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.adopt();
-        let tokens = &theme.tokens;
-        let metrics = tokens.metrics;
-        self.row_height = f64::from(metrics.min_pointer_target);
         self.layout_dirty = false;
 
         self.nodes = Nodes::default();
@@ -602,28 +575,15 @@ impl Widget for JournalPane {
         }
         if let (Some(body), Some(child)) = (self.nodes.body, self.nodes.body_child) {
             let body_origin = origin_of(taffy, body, inner);
-            let available = taffy
-                .layout(body)
-                .map_or(0.0, |layout| f64::from(layout.size.height));
+            // The table fills the body and scrolls its own rows; a selection
+            // the app moved (a search result, a restored view) is brought
+            // into sight by the nearest edge once the table has its height.
             self.body_mut().apply_layout(taffy, child, body_origin);
-            if self.placeholder.is_none() {
-                // The table is as tall as its header plus the viewport it was
-                // given; hand it the viewport that fills the body.
-                let header = (self.table.get_rect().height() - self.viewport).max(0.0);
-                let target = if self.viewport > 0.0 {
-                    (available - header).max(self.row_height)
-                } else {
-                    self.row_height
-                };
-                if (target - self.viewport).abs() > 0.5 {
-                    self.table
-                        .set_viewport(target as f32, self.row_height as f32);
-                    self.viewport = target;
-                    self.layout_dirty = true;
-                } else if self.reveal_selection {
-                    self.reveal_selection = false;
-                    self.scroll_to_selection();
-                }
+            if self.placeholder.is_none()
+                && std::mem::take(&mut self.reveal_selection)
+                && let Some(index) = self.table.selection().primary()
+            {
+                self.table.reveal_row(index);
             }
         }
         if width_changed {
