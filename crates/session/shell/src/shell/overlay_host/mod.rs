@@ -10,6 +10,8 @@
 //! to the wrapped content, and an open palette gets first crack at every
 //! event so typing and Enter work without the desktop stealing focus.
 
+mod axis_navigation;
+
 use crate::shell::state::WorkspaceAuthority as _;
 use std::time::{Duration, Instant};
 use std::{collections::HashMap, sync::Arc};
@@ -682,6 +684,7 @@ pub struct ShellOverlayHost {
     /// The focused `(strip, group)` last recorded in the display partition,
     /// so a focus change is noted once.
     last_noted_focus: Option<(StripId, GroupId)>,
+    axis_gather_pending: Option<axis_navigation::Gather>,
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
@@ -2104,6 +2107,7 @@ impl ShellOverlayHost {
             content_built_empty: None,
             workspace_content_layout_dirty: false,
             last_noted_focus: None,
+            axis_gather_pending: None,
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
@@ -6073,6 +6077,13 @@ impl ShellOverlayHost {
     pub fn step_focus_along_strip(&mut self, steps: i32) -> bool {
         if steps == 0 {
             return false;
+        }
+        if self
+            .chrome
+            .as_ref()
+            .is_some_and(|c| c.borrow().axis_navigation_enabled())
+        {
+            return self.step_axis_navigation(steps);
         }
         if let Some(moved) = self.step_focus_across_displays(steps) {
             return moved;
@@ -12033,6 +12044,13 @@ impl ShellOverlayHost {
     ///
     /// [`ChromeState::request_shortcut_action`]: crate::shell::chrome_state::ChromeState::request_shortcut_action
     pub fn run_requested_shortcut_actions(&mut self) {
+        let gather = self
+            .chrome
+            .as_ref()
+            .is_some_and(|chrome| chrome.borrow_mut().take_axis_gather_request());
+        if gather {
+            self.request_axis_gather();
+        }
         let requested = self
             .chrome
             .as_ref()
@@ -16793,6 +16811,7 @@ impl Widget for ShellOverlayHost {
         }
         self.pairing
             .apply_layout(taffy, Point::new(self.rect.x0, self.rect.y0));
+        self.finish_axis_gather();
         self.publish_strip_viewport();
     }
 
