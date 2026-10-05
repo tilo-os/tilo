@@ -8,7 +8,7 @@
 //! launcher paths used everywhere else.
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ReadDoc as _, ScalarValue, Value};
@@ -60,7 +60,7 @@ pub struct LaunchpadAppAction {
     pub action: &'static str,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LaunchpadAction {
     Chat,
     Notes,
@@ -175,6 +175,42 @@ impl LaunchpadAction {
     }
 }
 
+const LAUNCHPAD_ACTION_TYPE: &str = "tilo.desktop.launchpad";
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+enum LaunchpadChoice {
+    OpenApp,
+    Card(LaunchpadAction),
+}
+
+impl LaunchpadChoice {
+    fn path(&self) -> &'static str {
+        match self {
+            Self::OpenApp => EMPTY_WORKSPACE_OPEN_APP,
+            Self::Card(action) => action.path(),
+        }
+    }
+}
+
+/// A native launchpad request the desktop consumes through its public route.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct ActivateLaunchpad {
+    root: String,
+    choice: LaunchpadChoice,
+}
+
+impl tilo_actions::Action for ActivateLaunchpad {
+    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
+        let root = doc.import_obj(&self.root)?;
+        doc.put(&root, self.choice.path(), true)?;
+        Ok(())
+    }
+
+    fn locus(&self) -> tilo_actions::ExecutionLocus {
+        tilo_actions::ExecutionLocus::ClientLocal
+    }
+}
+
 pub struct CollaborationLaunchpad {
     /// Horizontal room the host's floating workspace rail takes over a
     /// canvas of the given height.
@@ -196,6 +232,7 @@ pub struct CollaborationLaunchpad {
     /// What this widget painted last differs from what it would paint now.
     dirty: bool,
     copy: LaunchpadCopy,
+    actions: ui::action_host::ActionHost,
 }
 
 /// Words a host puts in place of the launchpad's own: a desktop in the
@@ -235,6 +272,7 @@ impl CollaborationLaunchpad {
             ),
             dirty: true,
             copy: LaunchpadCopy::default(),
+            actions: ui::action_host::ActionHost::new(),
         }
     }
 
@@ -322,8 +360,25 @@ impl CollaborationLaunchpad {
             .collect()
     }
 
-    fn fire(action: LaunchpadAction, state: &mut AutoCommit, path: &ObjId) {
-        let _ = state.put(path, action.path(), true);
+    fn activate(
+        &mut self,
+        choice: LaunchpadChoice,
+        state: &mut ui::widget::Edits<'_>,
+        path: &ObjId,
+    ) -> bool {
+        let action = ActivateLaunchpad {
+            root: path.to_string(),
+            choice,
+        };
+        let context =
+            tilo_actions::ActionContext::for_action("tilo.desktop", action.choice.path(), &action);
+        match state.apply(&mut self.actions, LAUNCHPAD_ACTION_TYPE, &action, context) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "launchpad action refused");
+                false
+            }
+        }
     }
 
     /// The footer reservation under the grid: `FOOTER_TOP` below the last
@@ -443,7 +498,7 @@ impl CollaborationLaunchpad {
         event: &WindowEvent,
         scale_factor: f64,
         shift: bool,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -458,12 +513,12 @@ impl CollaborationLaunchpad {
             } => {
                 if self.app_button_rect().contains(self.last_cursor) {
                     self.selected = 6;
-                    let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
+                    self.activate(LaunchpadChoice::OpenApp, state, path);
                     *handled = true;
                 } else if let Some(index) = self.hovered() {
                     self.selected = index;
                     if let Some(action) = LaunchpadAction::ALL.get(index).copied() {
-                        Self::fire(action, state, path);
+                        self.activate(LaunchpadChoice::Card(action), state, path);
                         *handled = true;
                     }
                 }
@@ -493,12 +548,12 @@ impl CollaborationLaunchpad {
                     }
                     Key::Named(NamedKey::Enter | NamedKey::Space) => {
                         if self.selected == 6 {
-                            let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
+                            self.activate(LaunchpadChoice::OpenApp, state, path);
                             *handled = true;
                         } else if let Some(action) =
                             LaunchpadAction::ALL.get(self.selected).copied()
                         {
-                            Self::fire(action, state, path);
+                            self.activate(LaunchpadChoice::Card(action), state, path);
                             *handled = true;
                         }
                         None
@@ -749,7 +804,7 @@ impl Widget for CollaborationLaunchpad {
             event,
             ctx.scale_factor,
             ctx.modifiers.state().shift_key(),
-            ctx.state,
+            &mut ctx.state,
             ctx.path,
             ctx.handled,
         );
@@ -853,13 +908,12 @@ impl Widget for CollaborationLaunchpad {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
         if target == EMPTY_WORKSPACE_OPEN_APP && matches!(action, Action::Activate) {
-            let _ = state.put(path, EMPTY_WORKSPACE_OPEN_APP, true);
-            return true;
+            return self.activate(LaunchpadChoice::OpenApp, state, path);
         }
         let Some(item) = LaunchpadAction::ALL
             .into_iter()
@@ -870,8 +924,7 @@ impl Widget for CollaborationLaunchpad {
         if !matches!(action, Action::Activate) {
             return false;
         }
-        Self::fire(item, state, path);
-        true
+        self.activate(LaunchpadChoice::Card(item), state, path)
     }
 }
 
@@ -1116,7 +1169,7 @@ mod tests {
             assert!(launchpad.perform_semantic_action(
                 EMPTY_WORKSPACE_ACTIVITY,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert!(matches!(
@@ -1144,7 +1197,14 @@ mod tests {
             let notes = pad.card_rects[1].center();
             let mut handled = false;
             for event in [pointer_at(notes), left_press()] {
-                pad.handle_launchpad_event(&event, 1.0, false, &mut doc, &root, &mut handled);
+                pad.handle_launchpad_event(
+                    &event,
+                    1.0,
+                    false,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &root,
+                    &mut handled,
+                );
             }
             assert!(handled);
             assert_eq!(
@@ -1170,7 +1230,7 @@ mod tests {
                     &named_key(key),
                     1.0,
                     false,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &root,
                     &mut handled,
                 );
