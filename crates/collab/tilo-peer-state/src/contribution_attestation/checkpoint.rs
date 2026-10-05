@@ -2,14 +2,41 @@ use super::delegation::{validate_certificate, verify_contribution_delegation};
 use ed25519_dalek::{Signer as _, Verifier as _};
 use neighbour_wire::contribution::{
     CONTRIBUTION_CHECKPOINT_VERSION, ContributionAttestorV1, ContributionCheckpointBodyV1,
-    ContributionPurposeV1, DocumentContributionCheckpointV1, MAX_CONTRIBUTION_BASIS_HEADS,
-    MAX_CONTRIBUTION_CHANGES_PER_OPERATION, MAX_CONTRIBUTION_CHECKPOINT_BYTES,
-    MAX_CONTRIBUTION_RECEIPTS,
+    ContributionOriginalPolicyV1, ContributionPurposeV1, DocumentContributionCheckpointV1,
+    MAX_CONTRIBUTION_BASIS_HEADS, MAX_CONTRIBUTION_CHANGES_PER_OPERATION,
+    MAX_CONTRIBUTION_CHECKPOINT_BYTES, MAX_CONTRIBUTION_RECEIPTS,
 };
 use std::collections::BTreeSet;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 const DOMAIN: &[u8] = b"tilo/document-contribution-checkpoint/v1\0";
+const ROOM_BASIS_DOMAIN: &[u8] = b"tilo/contribution-room-basis/v1\0";
+
+/// Digest the canonical room and exact sorted Automerge heads. Heads commit
+/// the graph; transient document save encodings are not signing inputs.
+///
+/// # Errors
+/// The room is not canonical or the head set is empty, oversized or unsorted.
+pub fn contribution_room_basis_digest(room: &str, heads: &[[u8; 32]]) -> Result<[u8; 32], String> {
+    let room_id = uuid::Uuid::parse_str(room).map_err(|_| "invalid contribution basis room")?;
+    if room_id.to_string() != room
+        || heads.is_empty()
+        || heads.len() > MAX_CONTRIBUTION_BASIS_HEADS
+        || !strictly_sorted(heads)
+        || heads.contains(&[0; 32])
+    {
+        return Err("invalid contribution governed-room basis".into());
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(ROOM_BASIS_DOMAIN);
+    hash.update(room_id.as_bytes());
+    let count = u32::try_from(heads.len()).map_err(|_| "contribution basis head count overflow")?;
+    hash.update(&count.to_le_bytes());
+    for head in heads {
+        hash.update(head);
+    }
+    Ok(*hash.finalize().as_bytes())
+}
 
 fn valid_text(value: &str, max: usize, allow_empty: bool) -> bool {
     (allow_empty || !value.is_empty())
@@ -42,9 +69,7 @@ fn validate_header(body: &ContributionCheckpointBodyV1) -> Result<(), String> {
         || body.authored_at_ns == 0
         || (body.generation == 1) == body.previous_digest.is_some()
         || body.previous_digest == Some([0; 32])
-        || body.governance_heads.is_empty()
-        || body.governance_heads.len() > MAX_CONTRIBUTION_BASIS_HEADS
-        || !strictly_sorted(&body.governance_heads)
+        || body.room_bases.is_empty()
         || tilo_relay_protocol::room_workspace_id(&body.room).map_err(|error| error.to_string())?
             != body.workspace_id
     {
@@ -57,7 +82,7 @@ fn validate_tables(body: &ContributionCheckpointBodyV1) -> Result<(), String> {
     if !strictly_sorted_by(&body.certificates, |left, right| {
         left.device_public_key < right.device_public_key
     }) || !strictly_sorted(&body.contracts)
-        || !strictly_sorted(&body.task_bases)
+        || !strictly_sorted(&body.room_bases)
         || body
             .contracts
             .iter()
@@ -68,16 +93,9 @@ fn validate_tables(body: &ContributionCheckpointBodyV1) -> Result<(), String> {
     for certificate in &body.certificates {
         tilo_user_identity::verify_device_cert(certificate).map_err(|error| error.to_string())?;
     }
-    for basis in &body.task_bases {
-        if !valid_text(&basis.app, 256, false)
-            || !valid_text(&basis.record, 4096, true)
-            || basis.artifact == [0; 16]
-            || basis.digest == [0; 32]
-            || basis.heads.is_empty()
-            || basis.heads.len() > MAX_CONTRIBUTION_BASIS_HEADS
-            || !strictly_sorted(&basis.heads)
-        {
-            return Err("invalid contribution task-document basis".into());
+    for basis in &body.room_bases {
+        if contribution_room_basis_digest(&body.room, &basis.heads)? != basis.digest {
+            return Err("contribution governed-room basis digest mismatch".into());
         }
     }
     Ok(())
@@ -86,7 +104,7 @@ fn validate_tables(body: &ContributionCheckpointBodyV1) -> Result<(), String> {
 struct ReferencedTables {
     certificates: BTreeSet<u32>,
     contracts: BTreeSet<u32>,
-    task_bases: BTreeSet<u32>,
+    room_bases: BTreeSet<u32>,
     changes: BTreeSet<[u8; 32]>,
     receipt_count: usize,
 }
@@ -96,7 +114,7 @@ impl ReferencedTables {
         Self {
             certificates: BTreeSet::new(),
             contracts: BTreeSet::new(),
-            task_bases: BTreeSet::new(),
+            room_bases: BTreeSet::new(),
             changes: BTreeSet::new(),
             receipt_count: 0,
         }
@@ -121,6 +139,10 @@ fn validate_receipt(
         || usize::try_from(receipt.original_certificate)
             .map_or(true, |index| index >= body.certificates.len())
         || usize::try_from(receipt.contract).map_or(true, |index| index >= body.contracts.len())
+        || matches!(
+            receipt.original_policy,
+            ContributionOriginalPolicyV1::ManagedAgent
+        ) != receipt.purpose.is_some()
     {
         return Err("invalid contribution checkpoint receipt".into());
     }
@@ -132,12 +154,9 @@ fn validate_receipt(
                 || !valid_text(&task.agent, 128, false)
                 || task.agent != receipt.actor
                 || task.run_epoch == 0
-                || usize::try_from(task.task_basis)
-                    .map_or(true, |index| index >= body.task_bases.len())
             {
                 return Err("invalid contribution task frontier".into());
             }
-            referenced.task_bases.insert(task.task_basis);
         }
         Some(ContributionPurposeV1::ConversationReply(reply)) => {
             let request = uuid::Uuid::from_bytes(reply.request_invocation);
@@ -172,12 +191,15 @@ fn validate_operations(body: &ContributionCheckpointBodyV1) -> Result<(), String
             || operation.artifact == [0; 16]
             || operation.operation_id == [0; 32]
             || operation.outer_signer == [0; 32]
+            || usize::try_from(operation.room_basis)
+                .map_or(true, |index| index >= body.room_bases.len())
             || operation.receipts.is_empty()
             || operation.receipts.len() > MAX_CONTRIBUTION_CHANGES_PER_OPERATION
             || !strictly_sorted(&operation.receipts)
         {
             return Err("invalid contribution checkpoint operation".into());
         }
+        referenced.room_bases.insert(operation.room_basis);
         referenced.receipt_count = referenced
             .receipt_count
             .checked_add(operation.receipts.len())
@@ -189,7 +211,7 @@ fn validate_operations(body: &ContributionCheckpointBodyV1) -> Result<(), String
     }
     if referenced.certificates.len() != body.certificates.len()
         || referenced.contracts.len() != body.contracts.len()
-        || referenced.task_bases.len() != body.task_bases.len()
+        || referenced.room_bases.len() != body.room_bases.len()
     {
         return Err("contribution checkpoint contains unused table entries".into());
     }
@@ -292,9 +314,13 @@ pub fn sign_contribution_checkpoint(
 /// A delegated signer must still be valid at `accepted_at_ns`; its self-claimed
 /// authored time cannot backdate around a revocation.
 ///
+/// This verifies shape and signature only, not the referenced signed operation
+/// or historical room graph. A receiver must correlate and materialize those
+/// exact bases before treating any receipt as verified Agent attribution.
+///
 /// # Errors
 /// The body, current authority proof, signature or encoded bound is invalid.
-pub fn verify_contribution_checkpoint(
+pub fn verify_contribution_checkpoint_signature(
     checkpoint: &DocumentContributionCheckpointV1,
     authority: &DeviceCert,
     revocations: &RevocationList,
