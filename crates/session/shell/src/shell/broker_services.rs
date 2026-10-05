@@ -1160,8 +1160,44 @@ impl ContinuationServices for NativeContinuations {
 }
 
 /// The native identity selector and fleet remain native service dependencies.
-pub struct NativeCertificates;
+pub struct NativeCertificates {
+    origin: Result<
+        tilo_action_broker::peer_actions::PolicyOrigin,
+        tilo_action_broker::peer_actions::PolicyClockError,
+    >,
+}
+impl Default for NativeCertificates {
+    fn default() -> Self {
+        Self {
+            origin: tilo_action_broker::peer_actions::OwnerPolicyClock::new()
+                .map(|clock| clock.new_origin()),
+        }
+    }
+}
 impl tilo_action_broker::peer_actions::CertificateAuthority for NativeCertificates {
+    fn policy_time(&self) -> Result<Option<tilo_action_broker::peer_actions::PolicyTime>, String> {
+        self.origin
+            .as_ref()
+            .map_err(ToString::to_string)?
+            .capture()
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+    fn authorize_with_policy_time(
+        &self,
+        room: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+        time: &tilo_action_broker::peer_actions::PolicyTime,
+    ) -> Result<(), String> {
+        let origin = self.origin.as_ref().map_err(ToString::to_string)?;
+        if !origin.owns(time) {
+            return Err("native certificate policy origin changed".into());
+        }
+        let now = time.now_ns().map_err(|error| error.to_string())?;
+        tilo_user_identity::verify_device_cert_at(certificate, now)
+            .map_err(|_| "native certificate expired at retained policy time")?;
+        self.authorize(room, certificate)
+    }
     fn authorize(
         &self,
         room: uuid::Uuid,
@@ -1214,7 +1250,7 @@ pub fn native_services(
         committed_documents,
         workspace_memberships,
         desktop_commands: None,
-        native_certificates: Some(Arc::new(NativeCertificates)),
+        native_certificates: Some(Arc::new(NativeCertificates::default())),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
         }),
@@ -1606,6 +1642,61 @@ impl workspace_control_handle::Server for CapnpWorkspaceControlHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_certificate_policy_time_is_retained_and_retires_with_its_service() {
+        use tilo_action_broker::peer_actions::CertificateAuthority;
+
+        let authority = NativeCertificates::default();
+        let first = authority.policy_time().unwrap().unwrap();
+        let second = authority.policy_time().unwrap().unwrap();
+        assert!(first.same_origin(&second));
+        let initial = first.now_ns().unwrap();
+        assert!(second.now_ns().unwrap() >= initial);
+        let replacement = NativeCertificates::default();
+        assert!(!first.same_origin(&replacement.policy_time().unwrap().unwrap()));
+        drop(authority);
+        assert!(first.now_ns().is_err());
+        assert!(second.now_ns().is_err());
+        assert!(replacement.policy_time().unwrap().unwrap().now_ns().is_ok());
+    }
+
+    #[test]
+    fn native_certificate_policy_clock_failure_never_falls_back_to_wall_time() {
+        use tilo_action_broker::peer_actions::CertificateAuthority;
+
+        let authority = NativeCertificates {
+            origin: Err(tilo_action_broker::peer_actions::PolicyClockError),
+        };
+        assert!(authority.policy_time().is_err());
+    }
+
+    #[test]
+    fn native_certificate_policy_refuses_another_services_retained_origin() {
+        use tilo_action_broker::peer_actions::CertificateAuthority;
+
+        let authority = NativeCertificates::default();
+        let other = NativeCertificates::default();
+        let foreign_time = other.policy_time().unwrap().unwrap();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[73; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[74; 32]);
+        let certificate = tilo_joined_room::testing::certificate(&root, &device, "clock test");
+        let room = uuid::Uuid::parse_str(tilo_joined_room::testing::ROOM).unwrap();
+        assert_eq!(
+            authority
+                .authorize_with_policy_time(room, &certificate, &foreign_time)
+                .unwrap_err(),
+            "native certificate policy origin changed"
+        );
+        drop(other);
+        assert!(foreign_time.now_ns().is_err());
+        assert_eq!(
+            authority
+                .authorize_with_policy_time(room, &certificate, &foreign_time)
+                .unwrap_err(),
+            "native certificate policy origin changed"
+        );
+    }
 
     /// Content keyed by `(room, hash)`, standing in for the content store's
     /// room-scoped reads.

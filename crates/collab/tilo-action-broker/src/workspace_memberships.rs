@@ -138,7 +138,7 @@ impl CapnpBrokerState {
         let Some(authority) = &self.membership else {
             return Ok(());
         };
-        let (_, now) = self.checked_policy_time(None)?;
+        let now = self.policy_now_ns()?;
         for workspace in authority.snapshot()?.workspaces {
             let room = workspace.room.to_string();
             if !service.requires_room(&room) {
