@@ -254,6 +254,19 @@ fn the_status_dot_sits_on_the_title_line_of_a_two_line_row() {
     let block = face.text_block(&mut text, &m);
     let title_cy = rect.center().y - block / 2.0 + RowMetrics::line(&mut text, &m.title) / 2.0;
     assert!(title_cy < rect.center().y - 1.0, "fixture: two lines");
+    let dot = face.dot_centre(rect, &mut text, &theme).unwrap();
+    assert!(
+        (dot.y - title_cy).abs() < 0.5,
+        "the dot is on the title's line"
+    );
+
+    // Beside a chevron the dot centres with it: one trailing line.
+    let face = face.disclosure();
+    let dot = face.dot_centre(rect, &mut text, &theme).unwrap();
+    assert!(
+        (dot.y - rect.center().y).abs() < 0.5,
+        "the dot centres with the chevron"
+    );
 }
 
 #[test]
