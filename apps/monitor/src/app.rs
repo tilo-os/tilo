@@ -8159,7 +8159,7 @@ mod tests {
                     monitor_process_target(process.pid, process.started_at.saturating_add(1))
                 ),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(taken(&mut a).is_none());
@@ -8226,21 +8226,21 @@ mod tests {
                 &mut first,
                 "monitor.interval:3000",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert!(Widget::perform_semantic_action(
                 &mut first,
                 "monitor.auto-refresh",
                 &ui::a11y::Action::ToggleCheck,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert!(Widget::perform_semantic_action(
                 &mut first,
                 "monitor.kernel-threads",
                 &ui::a11y::Action::ToggleCheck,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &root,
             ));
             // Window state (and device prefs) must not enter the shared
@@ -8300,7 +8300,7 @@ mod tests {
                 &mut a,
                 "monitor.summary.2",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(a.tab, Tab::Resources);
@@ -8322,7 +8322,7 @@ mod tests {
                     process_resource_id(pid, started_at)
                 ),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(a.expanded.contains(&pid));
@@ -8341,7 +8341,7 @@ mod tests {
                     process_resource_id(pid, started_at)
                 ),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -8364,7 +8364,7 @@ mod tests {
                 &mut a,
                 &format!("{}:kill", monitor_process_target(pid, started_at)),
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -8393,7 +8393,7 @@ mod tests {
                 &mut a,
                 "monitor.process-source.retry",
                 &ui::a11y::Action::Activate,
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(

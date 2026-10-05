@@ -5441,7 +5441,7 @@ mod tests {
         assert!(app.perform_semantic_action(
             "passwords.review",
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(app.mode, Pane::Health);
@@ -5801,14 +5801,14 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "passwords.add",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.mode, Pane::Editor);
             assert!(app.perform_semantic_action(
                 "passwords.field.name",
                 &ui::a11y::Action::SetValue("New name".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(app.draft_title, "New name");
@@ -5823,7 +5823,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     target,
                     &ui::a11y::Action::Activate,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(app.draft_kind, expected);
@@ -5854,7 +5854,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     "passwords.backup.password",
                     &Action::SetValue("Owned fixture password 52!".into()),
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(app.backup_password.value(), "Owned fixture password 52!");
@@ -5862,7 +5862,7 @@ mod tests {
                     assert!(app.perform_semantic_action(
                         "passwords.backup.confirmation",
                         &Action::SetValue("Owned fixture password 52!".into()),
-                        &mut doc,
+                        &mut ui::widget::Edits::lend(&mut doc),
                         &automerge::ROOT,
                     ));
                     assert!(app.backup_form_error(true).is_none());
@@ -5880,7 +5880,7 @@ mod tests {
             assert!(!app.perform_semantic_action(
                 "passwords.backup.password",
                 &Action::SetValue("outside dialog".into()),
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
         }
@@ -6026,7 +6026,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "passwords.delete",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(matches!(
@@ -6051,7 +6051,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "passwords.delete.confirm",
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.model.items().is_empty());

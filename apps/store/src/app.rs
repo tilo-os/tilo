@@ -5070,7 +5070,7 @@ mod tests {
                     assert_eq!(
                         primary.perform_action(
                             &ui::a11y::Action::Activate,
-                            &mut doc,
+                            &mut ui::widget::Edits::lend(&mut doc),
                             &automerge::ROOT
                         ),
                         !busy

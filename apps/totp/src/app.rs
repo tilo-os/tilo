@@ -1597,7 +1597,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &format!("totp.copy:{id}"),
                 &A11yAction::Activate,
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root,
             ));
             assert_eq!(app.selected_account(), Some(id));
@@ -1731,14 +1731,14 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "totp.dialog.issuer",
                 &A11yAction::SetValue("Acme".into()),
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root
             ));
             assert_eq!(app.add_panel.field_snapshot().0, "Acme");
             assert!(app.perform_semantic_action(
                 "totp.dialog.save",
                 &A11yAction::Activate,
-                &mut state.doc,
+                &mut ui::widget::Edits::lend(&mut state.doc),
                 &state.root
             ));
             let dialog = &app
@@ -1767,7 +1767,7 @@ mod tests {
                 assert!(app.perform_semantic_action(
                     target,
                     &A11yAction::Activate,
-                    &mut state.doc,
+                    &mut ui::widget::Edits::lend(&mut state.doc),
                     &state.root
                 ));
             }
@@ -1936,7 +1936,7 @@ mod tests {
         assert!(app.perform_semantic_action(
             "totp.retry-persist",
             &A11yAction::Activate,
-            &mut state.doc,
+            &mut ui::widget::Edits::lend(&mut state.doc),
             &state.root,
         ));
         assert!(!app.persistence_pending());

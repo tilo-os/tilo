@@ -272,7 +272,7 @@ mod tests {
 
             assert!(switch.perform_action(
                 &ui::a11y::Action::ToggleCheck,
-                &mut state,
+                &mut ui::widget::Edits::lend(&mut state),
                 &automerge::ROOT,
             ));
             assert_eq!(

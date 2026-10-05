@@ -3503,14 +3503,14 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "windows.select:cyberpunk-2077",
                 &AccessibilityAction::Activate,
-                &mut automerge::AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(app.selected, 1);
             assert!(!app.perform_semantic_action(
                 "windows.select:stale-id",
                 &AccessibilityAction::Activate,
-                &mut automerge::AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             ));
         }

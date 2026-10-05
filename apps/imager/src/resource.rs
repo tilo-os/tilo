@@ -362,7 +362,7 @@ mod tests {
                         wizard.perform_semantic_action(
                             target,
                             &AccessAction::SetValue(value.into()),
-                            &mut automerge::AutoCommit::new(),
+                            &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                             &automerge::ROOT,
                         )
                     })
