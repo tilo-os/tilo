@@ -308,11 +308,8 @@ struct OwnerTransitionError {
 
 impl Binding {
     fn settle_outgoing(&mut self) -> Option<crate::application::ComponentCloseReport> {
-        use automerge::transaction::Transactable;
         // This comparison must not commit a local draft or advance any sibling.
-        if let Some((heads, 0)) = self
-            .store
-            .read(&self.live, |doc| (doc.base_heads(), doc.pending_ops()))
+        if let Some((heads, 0)) = self.store.read(&self.live, super::settle_mark)
             && self.settled_frontier.as_ref() == Some(&heads)
         {
             return None;
@@ -323,7 +320,8 @@ impl Binding {
         self.settled_frontier = self
             .store
             .read(&self.live, |doc| {
-                (doc.pending_ops() == 0).then(|| doc.base_heads())
+                let (heads, pending) = super::settle_mark(doc);
+                (pending == 0).then_some(heads)
             })
             .flatten();
         Some(crate::application::ComponentCloseReport {
@@ -4214,7 +4212,6 @@ mod tests {
                 .initialize(|doc| {
                     use automerge::transaction::Transactable;
                     doc.put(ROOT, "body", "the other kind's body")
-                        .map(|()| ())
                         .map_err(|error| error.to_string())
                 })
                 .unwrap();

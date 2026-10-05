@@ -155,7 +155,7 @@ impl Dropdown {
             accessible_name: None,
             values: options.clone(),
             options,
-            binding: Some(crate::doc_binding::text_key(value_path)),
+            binding: Some(crate::doc_source::text_key(value_path)),
             on_change: None,
             action: None,
             placeholder: String::new(),
@@ -596,7 +596,7 @@ impl Dropdown {
     }
 
     /// Store `value` through the binding and mirror it locally.
-    fn commit_value(&mut self, value: &str, state: &mut AppModel, root: &ModelPath) {
+    fn commit_value(&mut self, value: &str, _state: &AppModel, _root: &ModelPath) {
         if self.menu.is_some() {
             // A menu's choice is a command: reported, never kept. A menu
             // bound to view state reports it there, for the view to act on.
@@ -605,14 +605,14 @@ impl Dropdown {
             } else if let Some(callback) = self.on_change.as_mut() {
                 callback(value);
             } else if let Some(binding) = &mut self.binding {
-                binding.push(state, root, &value.to_string());
+                binding.publish(&value.to_string());
             }
             return;
         }
         if let Some(action) = &mut self.action {
             let _ = action.emit(value.to_string());
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &value.to_string());
+            binding.publish(&value.to_string());
         }
         self.selected = value.to_string();
         if self.action.is_none() {
@@ -626,7 +626,7 @@ impl Dropdown {
     }
 
     /// Select the highlighted option (if any) and close.
-    fn select_highlighted(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn select_highlighted(&mut self, state: &AppModel, root: &ModelPath) {
         let filtered = self.filtered();
         if let Some(&opt_idx) = filtered.get(self.highlight)
             && let Some(value) = self.values.get(opt_idx).cloned()
@@ -1458,8 +1458,16 @@ mod tests {
             assert_eq!(dd.highlight_index(), 1);
         }
 
-        fn enter_selects_writes_value_and_closes() {
-            let mut dd = Dropdown::new(opts(), "tz");
+        fn enter_emits_selection_action_and_closes() {
+            let mut dd =
+                Dropdown::new(opts(), "tz").on_action(crate::widget::test_string_action_binding());
+            crate::widget::controls::refresh_control_action_availability(
+                &mut dd,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
             let (mut doc, root) = doc_with_tz("UTC");
             dd.sync(&doc, &root);
             dd.set_focus(true);
@@ -1485,10 +1493,16 @@ mod tests {
             ));
             assert!(!dd.is_open(), "selecting closes the list");
             assert_eq!(dd.selected(), "America/New_York");
-            // The value landed in the CRDT Text object the host reads.
+            assert_eq!(
+                crate::widget::controls::take_control_invocation(&mut dd)
+                    .unwrap()
+                    .arguments["value"],
+                "America/New_York"
+            );
             assert_eq!(
                 crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some("America/New_York")
+                Some("UTC"),
+                "selecting submits an action and preserves the read model"
             );
         }
 
@@ -1533,7 +1547,7 @@ mod tests {
         starts_closed_and_reads_value_on_sync();
         down_opens_when_closed_and_focused();
         arrows_move_highlight_while_open();
-        enter_selects_writes_value_and_closes();
+        enter_emits_selection_action_and_closes();
         escape_closes_without_changing_value();
         open_builder_aligns_highlight_to_selection_on_sync();
     }
@@ -1900,71 +1914,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_writes_minimal_crdt_diffs_and_binds_state() {
-        fn commit_creates_text_object_when_absent() {
-            // No `tz` key seeded: commit must create the Text object.
-            let mut dd = Dropdown::new(opts(), "tz");
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            dd.commit_value("Europe/Amsterdam", &mut doc, &root);
-            assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some("Europe/Amsterdam")
-            );
-        }
-
-        fn repeated_selection_splices_the_diff_not_the_whole_value() {
-            // Committing by deleting the old value and reinserting the new one
-            // leaves a tombstone per character per selection, so a settings pane
-            // toggled back and forth bloats its document without bound.
-            let long: Vec<String> = (0..4)
-                .map(|i| format!("Europe/Amsterdam/very/long/option/label/number/{i}"))
-                .collect();
-            let mut dd = Dropdown::new(long.clone(), "tz");
-            let (mut doc, root) = doc_with_tz(&long[0]);
-            dd.sync(&doc, &root);
-            let baseline = doc.save().len();
-
-            // Alternate between two options that share a 46-char prefix.
-            for i in 0..60 {
-                dd.commit_value(&long[i % 2], &mut doc, &root);
-            }
-            let grown = doc.save().len() - baseline;
-
-            assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some(long[1].as_str()),
-                "the last committed option must be what the document holds"
-            );
-            assert!(
-                grown < 8 * long[0].len(),
-                "60 selections grew the document by {grown} bytes for a {}-char label \
-             — commit_value is rewriting the whole value",
-                long[0].len()
-            );
-        }
-
-        fn recommitting_the_current_value_is_free() {
-            let mut dd = Dropdown::new(opts(), "tz");
-            let (mut doc, root) = doc_with_tz("Asia/Tokyo");
-            dd.sync(&doc, &root);
-            let before = doc.save().len();
-
-            for _ in 0..25 {
-                dd.commit_value("Asia/Tokyo", &mut doc, &root);
-            }
-
-            assert_eq!(
-                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
-                Some("Asia/Tokyo")
-            );
-            assert_eq!(
-                doc.save().len(),
-                before,
-                "re-selecting the already-selected option must not grow the document"
-            );
-        }
-
+    fn committed_selection_binds_process_local_state() {
         fn local_state_binding_is_two_way_across_dropdowns() {
             let state = crate::LocalState::new(String::from("UTC"));
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -1999,9 +1949,6 @@ mod tests {
             assert_eq!(&*changes.borrow(), &["Europe/Amsterdam"]);
         }
 
-        commit_creates_text_object_when_absent();
-        repeated_selection_splices_the_diff_not_the_whole_value();
-        recommitting_the_current_value_is_free();
         local_state_binding_is_two_way_across_dropdowns();
     }
 

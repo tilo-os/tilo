@@ -2,9 +2,3 @@
 # Counts may only fall; tools/policy/check_widget_document_writes.py --update
 # records a file that shed some. The goal is an empty table.
 [files]
-"crates/sdk/ui-core/src/widget/checkbox.rs" = 1
-"crates/sdk/ui-core/src/widget/dropdown.rs" = 1
-"crates/sdk/ui-core/src/widget/resource_operation.rs" = 1
-"crates/sdk/ui-core/src/widget/slider.rs" = 1
-"crates/sdk/ui-core/src/widget/tile_host.rs" = 1
-"crates/sdk/ui-core/src/widget/toggle.rs" = 1

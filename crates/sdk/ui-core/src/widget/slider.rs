@@ -91,7 +91,7 @@ impl Slider {
             is_dragging: false,
             is_focused: false,
             value: 0.5,
-            binding: Some(crate::doc_binding::number_key(on_change_path)),
+            binding: Some(crate::doc_source::number_key(on_change_path)),
             on_change: None,
             settles: false,
             drag_from: None,
@@ -248,7 +248,7 @@ impl Slider {
     /// Commit a new value to the CRDT iff it differs from the cached
     /// `value` by more than a frame-of-noise epsilon. Returns `true` if
     /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn commit_value(&mut self, new_value: f64, _state: &AppModel, _root: &ModelPath) -> bool {
         if (new_value - self.value).abs() <= 0.001 {
             return false;
         }
@@ -264,10 +264,10 @@ impl Slider {
                 // The value a drag will settle on, shown to whatever reads
                 // the control's local state (a label, a live preview) before
                 // the action is invoked at release.
-                binding.push(state, root, &self.value);
+                binding.publish(&self.value);
             }
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &self.value);
+            binding.publish(&self.value);
         }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()

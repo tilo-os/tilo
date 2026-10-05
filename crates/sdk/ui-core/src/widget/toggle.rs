@@ -60,7 +60,7 @@ impl Toggle {
             enabled: true,
             id_override: None,
             accessible_name: Some(crate::widget::humanize_control_id(id)),
-            binding: Some(crate::doc_binding::bool_key(on_toggle_path)),
+            binding: Some(crate::doc_source::bool_key(on_toggle_path)),
             on_change: None,
             action: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
@@ -126,12 +126,12 @@ impl Toggle {
         }
     }
 
-    fn commit_user_toggle(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn commit_user_toggle(&mut self, _state: &AppModel, _root: &ModelPath) {
         let checked = !self.is_checked;
         if let Some(action) = &mut self.action {
             let _ = action.emit(checked);
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &checked);
+            binding.publish(&checked);
         }
         self.is_checked = checked;
         if self.action.is_none()
