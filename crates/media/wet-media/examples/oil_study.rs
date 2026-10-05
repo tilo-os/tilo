@@ -325,12 +325,7 @@ fn render(name: &str, out: &str, (width, height): (usize, usize), marks: Vec<Mar
     let engines = Engines::builtin();
     let engine = engines.get("oil").expect("oil engine");
     let ground = Arc::new(Heightfield::new(width, height, Texture::Linen, 1.0, 1));
-    let canvas = Canvas {
-        width,
-        height,
-        scale: 1.0,
-        ground: Arc::clone(&ground),
-    };
+    let canvas = Canvas::whole(1.0, Arc::clone(&ground));
     let preset = tilo_wet_media::presets::builtin()
         .into_iter()
         .find(|preset| preset.id == "oil")

@@ -513,6 +513,10 @@ impl Invalidation {
         *self = Self::StructureAndFocus;
     }
 
+    fn structure_pending(self) -> bool {
+        matches!(self, Self::Structure | Self::StructureAndFocus)
+    }
+
     fn take_structure(&mut self) -> bool {
         let present = matches!(self, Self::Structure | Self::StructureAndFocus);
         if present {
@@ -3704,6 +3708,15 @@ impl Widget for OnboardingView {
         self.rect
     }
 
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+        // Background work (nearby pairing, the codecs worker) changes the
+        // page from `sync` with no input behind it. The compositor presents
+        // only what `update` reports, so a page that is not yet laid out is
+        // a change: otherwise a pairing that fails on the same screen stays
+        // on its code until something unrelated repaints.
+        self.invalidation.structure_pending()
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         self.invalidation.take_focus()
     }
@@ -3889,6 +3902,96 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn nearby_pairing_news_asks_the_compositor_to_present() {
+        // The helper reports through its status file with no input behind
+        // it. The compositor paints only what `update` reports, so every
+        // change the poll makes must be reported there, or a failure on the
+        // same screen stays hidden behind the code.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity_dir = dir.path().join("identity");
+        std::fs::create_dir(&identity_dir).expect("identity dir");
+        let status = identity_dir.join(".nearby-enrollment-status.json");
+        let report_code = dir.path().join("report-code");
+        let report_failure = dir.path().join("report-failure");
+        let mut helper = Command::new("sh");
+        helper
+            .args([
+                "-c",
+                r#"while [ ! -e "$2" ]; do sleep 0.02; done
+                   printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"
+                   while [ ! -e "$3" ]; do sleep 0.02; done
+                   printf '%s' '{"state":"failed","error":"Permission denied (os error 13)"}' > "$1"
+                   exit 1"#,
+                "helper",
+            ])
+            .arg(&status)
+            .arg(&report_code)
+            .arg(&report_failure);
+        let (mut view, _) = view();
+        view.flow.begin_existing();
+        view.flow.choose_nearby();
+        assert_eq!(view.flow.screen(), Screen::Nearby);
+        view.nearby = Some(
+            crate::onboarding_nearby::NearbyPairing::spawn(
+                helper,
+                &identity_dir,
+                &status,
+                Duration::from_secs(600),
+            )
+            .expect("spawn helper"),
+        );
+        view.nearby_status_path = Some(status);
+        let mut doc = AutoCommit::new();
+        // The page as it was laid out when pairing started.
+        view.sync(&mut doc, &automerge::ROOT);
+        let _ = view.take_structure_dirty();
+        assert!(!view.update(&mut doc, &automerge::ROOT), "nothing new yet");
+
+        std::fs::write(&report_code, b"").expect("let the helper show its code");
+        let deadline = tilo_test_env::hang_deadline();
+        while view.nearby_code.is_none() {
+            assert!(Instant::now() < deadline, "the code never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&mut doc, &automerge::ROOT);
+        }
+        assert!(
+            view.update(&mut doc, &automerge::ROOT),
+            "the verification code is presented"
+        );
+        assert!(view.take_structure_dirty());
+        assert!(
+            !view.update(&mut doc, &automerge::ROOT),
+            "a laid-out page is not presented again"
+        );
+
+        std::fs::write(&report_failure, b"").expect("let the helper fail");
+        while view.nearby.is_some() {
+            assert!(Instant::now() < deadline, "the failure never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&mut doc, &automerge::ROOT);
+        }
+        assert!(
+            view.error()
+                .is_some_and(|error| error.contains("Permission denied")),
+            "{:?}",
+            view.error()
+        );
+        assert!(
+            view.update(&mut doc, &automerge::ROOT),
+            "the failure and its Try again are presented"
+        );
+        let composition = view.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_some(),
+            "a failed pairing offers Try again"
+        );
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.nearby.code").is_none(),
+            "the stale code is gone"
+        );
     }
 
     fn process_group_has_live_member(pgid: i32) -> bool {

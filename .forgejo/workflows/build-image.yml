@@ -816,7 +816,7 @@ jobs:
 
       - name: Retain public Lenovo firmware import evidence
         if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-lenovo-firmware-import-${{ github.sha }}
           path: firmware-import.json
@@ -984,13 +984,23 @@ jobs:
           DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
         run: |
           set -euo pipefail
-          if [[ $DEV_BUILD == true ]]; then
+          free_kib() {
+            docker exec "buildx_buildkit_${BUILDER_NAME}0" \
+              sh -c 'df -Pk /var/lib/buildkit | awk "NR == 2 { print \$4 }"'
+          }
+          if [[ $DEV_BUILD == true ]] && (( $(free_kib) < 46875000 )); then
             # Only this job's builder cache: Docker's images and the runner
             # configuration are outside this cleanup. Reserve enough space
             # before compiles start, rather than racing the background GC.
-            timeout --kill-after=30s 180s docker buildx prune \
-              --builder "$BUILDER_NAME" --force --all \
-              --min-free-space 48GB --reserved-space 2GB
+            # Only when short of it: BuildKit's prune removes one record even
+            # when the space is there, and its pick was the Rust target cache
+            # every build would otherwise reuse. Layers go first.
+            for filter in type!=exec.cachemount type!=internal; do
+              timeout --kill-after=30s 180s docker buildx prune \
+                --builder "$BUILDER_NAME" --force --all --filter "$filter" \
+                --min-free-space 48GB --reserved-space 2GB
+              (( $(free_kib) < 46875000 )) || break
+            done
           fi
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -h /var/lib/buildkit
           docker exec "buildx_buildkit_${BUILDER_NAME}0" df -i /var/lib/buildkit
@@ -2000,7 +2010,7 @@ jobs:
               --arch '${{ matrix.arch }}' --role "$role"
           done
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         with:
@@ -2207,7 +2217,7 @@ jobs:
       - name: Retain the boot splash frames
         if: always() && steps.splash.outcome == 'success'
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-boot-splash-${{ matrix.arch }}
           path: /var/tmp/tilo-boot-splash-${{ matrix.arch }}
@@ -2710,6 +2720,9 @@ jobs:
             echo '::notice::image built without the Browser; its Ctrl+T desktop-tab gate is inapplicable'
           fi
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh desktop
+          # Quick Settings must reach the system, not merely open: change
+          # the power profile there and read it back from the daemon.
+          ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh quick-settings
           # The system authentication sheet is drawn by the compositor, not
           # an app window. A real polkit request from the graphical session
           # must reach an external reader as a dialog with password text it
@@ -2725,14 +2738,14 @@ jobs:
           # through QEMU's keyboard as key presses, never an app API. The
           # document must read back exactly what was typed, in order.
           typed_sentence='The quick brown fox jumps over the lazy dog, twice!'
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-typing'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-typing'
           ./os/dev/vm.sh type "$typed_sentence"
           # The note is durable, and Notes says so: "Saved", never "Not saved".
           ./os/dev/vm.sh ssh "/usr/libexec/tilo/installed-atspi-apps.sh typed '$typed_sentence' --state /tmp/notes-typing --status Saved"
 
           # Tab in a note nests the line under the one above instead of
           # moving focus away; the second block must read as nested.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-nesting'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-nesting'
           ./os/dev/vm.sh type one
           ./os/dev/vm.sh keys ret
           ./os/dev/vm.sh type two
@@ -2741,7 +2754,7 @@ jobs:
 
           # A screenshot copied elsewhere pastes into a note as an image with
           # Ctrl+V, kept by the document media service the launcher must reach.
-          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --state /tmp/notes-image'
+          ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh type-into Notes "New note" --field "Block text" --state /tmp/notes-image'
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh copy-image
           # The copy reaches Notes as a selection event; give it a moment to
           # read the image before pasting.
@@ -2766,6 +2779,35 @@ jobs:
           ./os/dev/vm.sh ssh "$(python3 scripts/vm-acceptance/gpu_check.py --probe)" \
             | python3 scripts/vm-acceptance/gpu_check.py
 
+          # A touchscreen plugged in after login brings up the on-screen
+          # keyboard: a tap on the search field starts the keyboard service,
+          # which must keep running and show for the field, and taps on three
+          # of its letter keys must type into it, read back over AT-SPI. Root
+          # owns the touchscreen; the session user's client says where to tap.
+          touch_log="$(mktemp /var/tmp/tilo-touch.XXXXXX)"
+          ./os/dev/vm.sh ssh "printf '%s\\n' '$TILO_PASS' | sudo -S -p '' /usr/libexec/tilo/input-hotplug-check.sh touchscreen \"\$XDG_RUNTIME_DIR/tilo/input-state.json\" \"/run/user/\$(id -u)/tilo-touch\" \"\$(id -un)\"" \
+            >"$touch_log" 2>&1 &
+          touch_helper=$!
+          for _ in $(seq 1 60); do
+            grep -q '^ready' "$touch_log" && break
+            kill -0 "$touch_helper" 2>/dev/null || break
+            sleep 1
+          done
+          if ! grep -q '^ready' "$touch_log"; then
+            cat "$touch_log"
+            echo "::error::the compositor never opened a touchscreen plugged in after login" >&2
+            exit 1
+          fi
+          if ! ./os/dev/vm.sh ssh '/usr/libexec/tilo/installed-atspi-apps.sh osk-search "/run/user/$(id -u)/tilo-touch"'; then
+            cat "$touch_log"
+            ./os/dev/vm.sh ssh 'journalctl -b --no-pager -o short-monotonic -n 200 _UID=$(id -u)' || true
+            echo "::error::the on-screen keyboard did not type into a tapped field" >&2
+            exit 1
+          fi
+          wait "$touch_helper"
+          cat "$touch_log"
+          ./os/dev/vm.sh keys esc
+
           # Lock is compositor-owned too. It has previously fallen outside the
           # app-window AT-SPI path; exercise the Super+L route and require its
           # protected password field and instructions on the session bus. The
@@ -2783,6 +2825,12 @@ jobs:
             # The image's apps are installed packages: Settings updates from
             # a registry, launches as the new version, and rolls back.
             RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh
+            # Last, because it ends this session: signed in again with every
+            # frame stalled 50-130 ms, as on a slow laptop, apps opened one
+            # beside another keep their windows, are never configured larger
+            # than the display, and never exit. Only the dev image's
+            # compositor honours the stall.
+            ./os/dev/test-slow-frame-launch.sh --out "$TILO_RUN/slow-frames" --stall 50-130
           fi
           else
             # A Lenovo DTB cannot describe QEMU virt hardware. The sealed
@@ -2816,7 +2864,7 @@ jobs:
 
       - name: Upload the boot's QEMU and serial logs
         if: always()
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-os-boot-failure-${{ matrix.arch }}
           path: |
@@ -3035,7 +3083,7 @@ jobs:
             --data "$payload"
           echo "::notice::requested tilo-vm:$tag ($ARCH) from $IMAGE"
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: steps.release-mode.outputs.publish == 'true'
         with:
           name: tilo-os-child-${{ matrix.arch }}
@@ -3050,7 +3098,7 @@ jobs:
     enable-openid-connect: true
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           path: release-children
       # Promotion needs only Cosign, not the multi-gigabyte build-input cache.
@@ -3255,7 +3303,7 @@ jobs:
             > tilo-os-release-index.json
           echo "::notice::promoted signed, attested multi-architecture generation $generation ($index_digest)"
 
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: tilo-os-release-index
           path: tilo-os-release-index.json
@@ -3549,7 +3597,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+      - uses: actions/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
         with:
           name: tilo-os-child-aarch64
           path: release-child
@@ -3787,7 +3835,7 @@ jobs:
           fi
           skopeo copy --multi-arch index-only --preserve-digests "docker://$repository@$digest" "docker://$moving"
           echo "::notice::$moving -> $source ($digest)"
-      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+      - uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         if: steps.lanes.outputs.both == 'true'
         with:
           name: tilo-os-integration-index

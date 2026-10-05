@@ -821,6 +821,8 @@ fn stopped_reason_key(code: Option<i32>, stderr_tail: &str) -> &'static str {
         "launch-failed-missing-library"
     } else if stderr_tail.lines().any(|line| line.starts_with("bwrap: ")) {
         "launch-failed-sandbox"
+    } else if stderr_tail.contains(ui::collaboration::ROUTE_JOIN_FAILED) {
+        "launch-failed-collaboration"
     } else if code.is_none() {
         "launch-failed-crashed"
     } else {
@@ -4041,6 +4043,14 @@ mod tests {
                 "bwrap: Can't make overlay mount on /newroot/usr with options \
                  upperdir=/proc/self/fd/13,userxattr: Invalid argument",
                 "The app's sandbox could not be set up, so it stopped before opening.",
+            ),
+            (
+                Some(1),
+                "error: service connection failed: joining collaboration route failed: \
+                 capnp error: Failed: remote exception: collaboration launch is not an \
+                 authenticated shell-managed process",
+                "The app couldn't join this workspace's collaboration service, so it \
+                 stopped before opening. The desktop log says why.",
             ),
             (
                 None,

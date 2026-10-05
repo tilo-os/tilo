@@ -57,6 +57,18 @@ class SettingsNetworkTests(unittest.TestCase):
         self.assertTrue(CLIENT.network_mismatches(failed, expected))
 
 
+class OnScreenKeyboardTests(unittest.TestCase):
+    def test_extents_replies_parse_into_rectangles(self):
+        self.assertEqual(CLIENT.extents_reply("((12, -3, 640, 48),)\n"), (12, -3, 640, 48))
+        self.assertIsNone(CLIENT.extents_reply("()"))
+
+    def test_the_keyboard_docks_where_the_compositor_places_it(self):
+        # crates/session/shell/src/shell/frame.rs `layout_osk_overlay`.
+        self.assertEqual(CLIENT.keyboard_rect(1280, 800), (160.0, 460.0, 960.0, 320.0))
+        self.assertEqual(CLIENT.keyboard_rect(1920, 1080), (480.0, 680.0, 960.0, 380.0))
+        self.assertEqual(CLIENT.keyboard_rect(400, 300), (20.0, 60.0, 360.0, 220.0))
+
+
 class ManifestScenarioTests(unittest.TestCase):
     def test_package_store_metadata_and_payload_are_separate(self):
         with tempfile.TemporaryDirectory() as work:
@@ -109,6 +121,24 @@ class ManifestScenarioTests(unittest.TestCase):
         with self.subTest(phase='name matching uses an atspi string value'):
             tree = {"/node/1": "(< 'Settings' >,)", "/node/2": "(< 'Other' >,)"}
             self.assertEqual(CLIENT.AtspiClient.named(tree, "Settings"), ["/node/1"])
+
+
+class TypingTargetTests(unittest.TestCase):
+    def test_a_named_field_or_else_the_document_takes_typing(self):
+        from unittest import mock
+
+        client = mock.Mock()
+        client.interfaces.return_value = "['org.a11y.atspi.EditableText', 'org.a11y.atspi.Component']"
+        # AccessKit answers GetRole with an AtspiRole number; 82 is a document frame.
+        client.role.return_value = 82
+        target = CLIENT.is_typing_target
+        with self.subTest(phase="a block editor's editable line, by name"):
+            self.assertTrue(target(client, "/1", "(<'Block text'>,)", "Block text"))
+            self.assertFalse(target(client, "/2", "(<'Page title'>,)", "Block text"))
+        with self.subTest(phase="without a field name, the document"):
+            self.assertTrue(target(client, "/3", "(<''>,)", None))
+            client.role.return_value = 43  # a push button
+            self.assertFalse(target(client, "/4", "(<'New note'>,)", None))
 
 
 class TypedTextTests(unittest.TestCase):
@@ -226,10 +256,14 @@ class FakeShell:
     def property(self, path, _name):
         return f"(<'{self.nodes[path][1]}'>,)"
 
+    def role(self, path):
+        return CLIENT.AtspiClient.role(self, path)
+
     def call(self, path, method, *args, check=True):
         role, _name, kids = self.nodes[path]
-        if method.endswith("GetRoleName"):
-            return f"('{role}',)"
+        if method.endswith("GetRole"):
+            number = {"frame": 23, "page tab": 37, "page tab list": 38, "push button": 43}[role]
+            return f"(uint32 {number},)"
         if method.endswith("GetChildren"):
             return "([" + ", ".join(f"(':1.2', objectpath '{kid}')" for kid in kids) + "],)"
         raise AssertionError(method)

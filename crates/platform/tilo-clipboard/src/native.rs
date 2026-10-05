@@ -198,6 +198,14 @@ impl ClipboardBackend for NativeClipboard {
         handle.set_image(img).is_ok()
     }
 
+    fn rich_text(&self) -> Option<crate::RichTextOffer> {
+        #[cfg(target_os = "linux")]
+        if let Some(wayland) = WAYLAND.get() {
+            return wayland.rich_text();
+        }
+        None
+    }
+
     fn image(&self) -> Option<crate::ClipboardImage> {
         if let Some(wayland) = wayland() {
             return wayland.image();

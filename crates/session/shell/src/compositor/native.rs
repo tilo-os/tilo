@@ -353,6 +353,32 @@ impl NativeRedrawReasons {
     }
 }
 
+/// An animation's resting frame is owed after its demand clears. The last
+/// tick that saw it moving may not have painted (the presenter was full, or
+/// the tick fell between display intervals), and the tick after it sees
+/// nothing moving: without this latch a popover stays frozen part-way
+/// through its fade, translucent over whatever is behind it.
+#[derive(Clone, Copy, Debug, Default)]
+struct AnimationSettle {
+    owed: bool,
+}
+
+impl AnimationSettle {
+    /// Whether this tick must still produce an animated frame.
+    const fn due(self, animating: bool) -> bool {
+        animating || self.owed
+    }
+
+    /// Record the tick: motion owes a frame painted after it ends.
+    fn after_tick(&mut self, animating: bool, painted: bool) {
+        if animating {
+            self.owed = true;
+        } else if painted {
+            self.owed = false;
+        }
+    }
+}
+
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
 const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
@@ -5950,6 +5976,9 @@ fn install_device_fabric_bridge(
             }
             match action {
                 DeviceFabricUiAction::Snapshot | DeviceFabricUiAction::SnapshotFresh => {}
+                DeviceFabricUiAction::WakeDevice { device } => {
+                    crate::shell::device_wake::request_wake(&fabric_net, &device)?;
+                }
                 DeviceFabricUiAction::HandoffMedia { session_id, target } => {
                     let _ = crate::shell::device_fabric_runtime::request_media_handoff(
                         &fabric_net,
@@ -6334,6 +6363,7 @@ fn install_session_peer_sync(
     let net = Arc::new(handle);
     net.join_at_boot();
     net.follow_host_rooms();
+    net.attach_session_inhibitors(frame_builder.host().session_inhibitors());
     frame_builder.set_enrolled_action_network(Arc::clone(&net));
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
     crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
@@ -8256,6 +8286,7 @@ pub fn run() {
     let mut last_lock_media_poll = Instant::now();
     let mut last_revision = frame_builder.chrome_revision();
     let mut force_first_paint = true;
+    let mut animation_settle = AnimationSettle::default();
     // `output_presentation_frame_changed` observes live foreign-frame
     // sequences, but removal leaves no live entry to report. Keep a local
     // repaint edge until its full-frame boundary is actually submitted.
@@ -8280,6 +8311,9 @@ pub fn run() {
     // is already visibly broken. `TILO_LOOP_TIMING` additionally enables the
     // verbose aggregate line for development runs.
     let loop_timing = std::env::var("TILO_LOOP_TIMING").is_ok();
+    // A developer override: every painted frame takes as long as on a slow
+    // machine, so per-frame layout steps see real long frame times.
+    let mut frame_stall = super::frame_stall::FrameStall::from_process_env();
     let mut pump_checkpoint = Instant::now();
     let mut pump_slowest = ("start", Duration::ZERO);
     macro_rules! pump_checkpoint {
@@ -10600,7 +10634,8 @@ pub fn run() {
         // Host demand clears when the crossfade settles (e2e). Keep
         // painting until this many compositor frames have actually run (W16).
         let transition_run = frame_builder.chrome().transition_paints_remaining() > 0;
-        let animating = animation_demand.any() || transition_run;
+        let still_moving = animation_demand.any() || transition_run;
+        let animating = animation_settle.due(still_moving);
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -10725,6 +10760,7 @@ pub fn run() {
             metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
+        animation_settle.after_tick(still_moving, should_paint);
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
         // deadline could strand that frame. A full presenter is itself the
@@ -11310,6 +11346,9 @@ pub fn run() {
             state.client_cursor.send_frame_callbacks(
                 u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
             );
+            if let Some(stall) = frame_stall.as_mut() {
+                stall.stall();
+            }
         } else if had_backend_events || accessibility_changed {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
@@ -11962,6 +12001,28 @@ mod tests {
             "",
             "each report covers its own window"
         );
+    }
+
+    #[test]
+    fn an_animation_ends_on_a_painted_resting_frame() {
+        let mut settle = AnimationSettle::default();
+        assert!(!settle.due(false), "nothing moving owes nothing");
+        // The last moving tick finds the presenter full and cannot paint.
+        settle.after_tick(true, false);
+        assert!(
+            settle.due(false),
+            "the tick after motion ends still owes the resting frame"
+        );
+        // Off-cadence: still not painted, still owed.
+        settle.after_tick(false, false);
+        assert!(settle.due(false));
+        // Painted at rest: settled.
+        settle.after_tick(false, true);
+        assert!(!settle.due(false));
+        // A frame painted while still moving samples mid-motion; the
+        // resting frame remains owed.
+        settle.after_tick(true, true);
+        assert!(settle.due(false));
     }
 
     #[test]

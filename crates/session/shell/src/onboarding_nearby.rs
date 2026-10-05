@@ -141,7 +141,7 @@ impl NearbyPairing {
         Self::spawn(command, identity_dir, status_path, PROCESS_BOUND)
     }
 
-    fn spawn(
+    pub(crate) fn spawn(
         mut command: Command,
         identity_dir: &Path,
         status_path: &Path,
@@ -211,10 +211,12 @@ impl NearbyPairing {
     }
 
     fn exited(&mut self, status: ExitStatus, progress: NearbyProgress) -> NearbyEvent {
-        let mut stderr = String::new();
-        if let Some(stream) = self.child.as_mut().and_then(|child| child.stderr.as_mut()) {
-            let _ = stream.take(64 * 1024).read_to_string(&mut stderr);
-        }
+        let stderr = self
+            .child
+            .as_mut()
+            .and_then(|child| child.stderr.as_mut())
+            .map(available_output)
+            .unwrap_or_default();
         let detail = match progress {
             NearbyProgress::Failed { error } if !error.is_empty() => Some(error),
             _ => stderr
@@ -274,6 +276,35 @@ impl Drop for NearbyPairing {
     fn drop(&mut self) {
         terminate(&mut self.child);
     }
+}
+
+/// What the helper wrote to `stream` so far, without waiting for more.
+///
+/// The helper has exited, but a worker it started may still hold the pipe
+/// open; reading to end of file would block the compositor until that worker
+/// is gone. The pipe is switched to non-blocking and drained of what is there.
+fn available_output(stream: &mut std::process::ChildStderr) -> String {
+    use std::os::fd::AsRawFd as _;
+
+    let fd = stream.as_raw_fd();
+    // SAFETY: `fd` is the open read end of this child's stderr pipe, owned by
+    // `stream` for the whole call; F_GETFL/F_SETFL only change its flags.
+    let nonblocking = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) == 0
+    };
+    if !nonblocking {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    while bytes.len() < 64 * 1024 {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => bytes.extend_from_slice(chunk.get(..read).unwrap_or_default()),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Stop `child` and every process in its group, bounded.
@@ -489,6 +520,27 @@ mod tests {
                 NearbyProgress::Failed {
                     error: t("onboarding-nearby-timed-out")
                 }
+            );
+        }
+        // Phase `a_worker_holding_stderr_open_never_blocks_the_report`.
+        {
+            let fixture = fixture();
+            // The leader reports and exits while a worker it started keeps
+            // the inherited stderr open for far longer than the test runs.
+            let script =
+                r#"(sleep 600) & echo "Error: Permission denied (os error 13)" >&2; exit 1"#;
+            let mut pairing = helper(&fixture, script, PROCESS_BOUND);
+            let started = Instant::now();
+            assert_eq!(
+                poll_until_over(&mut pairing),
+                NearbyEvent::Failed(t_args(
+                    "onboarding-nearby-failed-detail",
+                    &[("detail", "Permission denied (os error 13)".into())],
+                ))
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "the report waited on the worker's pipe"
             );
         }
         // Phase `a_successful_exit_without_a_joined_identity_is_an_error`.
