@@ -10,6 +10,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+#[cfg(test)]
 use automerge::AutoCommit;
 use vello::kurbo::{Point, Rect};
 
@@ -316,28 +317,30 @@ impl MailState {
     /// with the palette and agents. The in-memory mailbox is updated by the
     /// caller for immediate feedback and reconciled from the document on the
     /// next `sync`.
-    fn dispatch_action(&self, doc: &mut AutoCommit, action: &MailAction) {
+    fn dispatch_action(&self, doc: &mut ui::widget::Edits<'_>, action: &MailAction) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
         let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", action);
-        if let Err(error) =
-            dispatcher.apply_now_with(&mut ui::widget::Edits::lend(doc), action, context)
-        {
+        if let Err(error) = dispatcher.apply_now_with(doc, action, context) {
             tracing::warn!(%error, "mail: an edit was refused");
         }
     }
 
     /// Record content from outside — what a mail server reported or
     /// confirmed — as one document action.
-    pub(crate) fn dispatch_external(&self, doc: &mut AutoCommit, action: &MailAction) {
+    pub(crate) fn dispatch_external(&self, doc: &mut ui::widget::Edits<'_>, action: &MailAction) {
         self.dispatch_action(doc, action);
     }
 
     /// Record server baselines as one document action
     /// ([`MailAction::IngestBaselines`](crate::actions::MailAction::IngestBaselines)).
     /// Existing flags win, so a later fetch cannot overwrite a `MailAction`.
-    pub(crate) fn ingest_messages(&self, doc: &mut AutoCommit, messages: &[crate::model::Message]) {
+    pub(crate) fn ingest_messages(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        messages: &[crate::model::Message],
+    ) {
         if messages.is_empty() {
             return;
         }
@@ -356,7 +359,7 @@ impl MailState {
     /// lives there and its flags ([`IngestBaseline::fetched`](crate::actions::IngestBaseline::fetched)).
     pub(crate) fn ingest_fetched(
         &self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         account: &str,
         messages: &[crate::model::Message],
     ) {
@@ -374,7 +377,7 @@ impl MailState {
         );
     }
 
-    pub(crate) fn register_message_target(&self, doc: &mut AutoCommit, id: &str) {
+    pub(crate) fn register_message_target(&self, doc: &mut ui::widget::Edits<'_>, id: &str) {
         self.dispatch_action(
             doc,
             &crate::actions::MailAction::IngestBaselines {
@@ -387,7 +390,7 @@ impl MailState {
     /// corpus has an eligibility record before emitting its action. Normal UI
     /// flow seeds these records during sync; this tiny idempotent bridge also
     /// covers a just-hydrated message acted on before the next frame.
-    fn register_loaded_target(&self, doc: &mut AutoCommit, id: MessageId) {
+    fn register_loaded_target(&self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
         if self.mailbox.get(id).is_some() {
             self.register_message_target(doc, &id.to_string());
         }
@@ -396,7 +399,7 @@ impl MailState {
     /// Persist the in-progress draft as an action (undo boundary + replay + the
     /// same [`MailAction`] the palette's draft actions use). The visible Drafts
     /// message is materialised separately by the app.
-    pub fn save_draft(&mut self, doc: &mut AutoCommit, draft: &Draft) {
+    pub fn save_draft(&mut self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) {
         self.dispatch_action(doc, &save_draft_action(draft));
     }
 
@@ -467,7 +470,7 @@ impl MailState {
     /// keyboard activation, and the admitted resource operation) all use it,
     /// so an unread message produces the same canonical `SetRead` action.
     /// [`Self::preview_message`] is the only read-neutral alternative.
-    pub fn open_message(&mut self, doc: &mut AutoCommit, id: MessageId) -> bool {
+    pub fn open_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) -> bool {
         let Some(folder) = self.mailbox.get(id).map(|message| message.folder) else {
             return false;
         };
@@ -490,7 +493,7 @@ impl MailState {
     /// Compatibility entry point for the existing painted list controls.
     /// New code should name the domain boundary explicitly with
     /// [`Self::open_message`].
-    pub fn select_message(&mut self, doc: &mut AutoCommit, id: MessageId) {
+    pub fn select_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
         let _ = self.open_message(doc, id);
     }
 
@@ -507,7 +510,7 @@ impl MailState {
         self.dirty = true;
     }
 
-    pub fn select_folder(&mut self, _doc: &mut AutoCommit, folder: Folder) {
+    pub fn select_folder(&mut self, _doc: &mut ui::widget::Edits<'_>, folder: Folder) {
         self.folder = folder;
         self.search.clear();
         self.selected = self
@@ -620,7 +623,11 @@ impl MailState {
     /// messages were affected. Archive/move-to-Trash/purge clear the local selection because
     /// those rows have left the current projection; flag changes intentionally
     /// retain it so a person can triage the same set in successive steps.
-    pub fn apply_bulk_action(&mut self, doc: &mut AutoCommit, action: BulkAction) -> usize {
+    pub fn apply_bulk_action(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        action: BulkAction,
+    ) -> usize {
         let ids = self.selected_bulk_ids();
         if ids.is_empty() {
             return 0;
@@ -710,7 +717,7 @@ impl MailState {
         affected
     }
 
-    pub fn reselect_after_remove(&mut self, _doc: &mut AutoCommit) {
+    pub fn reselect_after_remove(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         self.selected = self
             .current_threads()
             .first()
@@ -748,7 +755,7 @@ impl MailState {
     // the document, as it does of a change the palette or a peer made.
 
     /// Set a message's read flag through the action path.
-    pub fn set_read(&mut self, doc: &mut AutoCommit, id: MessageId, read: bool) {
+    pub fn set_read(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId, read: bool) {
         if self.mailbox.get(id).is_none() {
             return;
         }
@@ -759,7 +766,7 @@ impl MailState {
     }
 
     /// Toggle a message's star through the action path.
-    pub fn toggle_star(&mut self, doc: &mut AutoCommit, id: MessageId) {
+    pub fn toggle_star(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId) {
         let Some(target) = self.mailbox.get(id).map(|m| !m.starred) else {
             return;
         };
@@ -770,7 +777,7 @@ impl MailState {
     }
 
     /// Move a message to `folder` through the action path.
-    pub fn move_message(&mut self, doc: &mut AutoCommit, id: MessageId, folder: Folder) {
+    pub fn move_message(&mut self, doc: &mut ui::widget::Edits<'_>, id: MessageId, folder: Folder) {
         if self.mailbox.get(id).is_none() {
             return;
         }
@@ -781,7 +788,12 @@ impl MailState {
 
     /// Apply a message action. Reply/forward raise an intent (the app owns the
     /// composer); the rest route through the action path above.
-    pub fn apply_message_action(&mut self, doc: &mut AutoCommit, id: MessageId, action: CtxAction) {
+    pub fn apply_message_action(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        id: MessageId,
+        action: CtxAction,
+    ) {
         match action {
             CtxAction::Reply => self.push_intent(Intent::Reply(id)),
             CtxAction::ReplyAll => self.push_intent(Intent::ReplyAll(id)),
@@ -829,7 +841,7 @@ impl MailState {
         }
     }
 
-    fn after_remove(&mut self, doc: &mut AutoCommit, was_selected: bool) {
+    fn after_remove(&mut self, doc: &mut ui::widget::Edits<'_>, was_selected: bool) {
         self.reselect_after_remove(doc);
         // If the open message left the current folder while its detail was
         // pushed on narrow, return to the list.
@@ -838,7 +850,7 @@ impl MailState {
         }
     }
 
-    pub fn move_selection(&mut self, _doc: &mut AutoCommit, delta: i32) {
+    pub fn move_selection(&mut self, _doc: &mut ui::widget::Edits<'_>, delta: i32) {
         let rows = self.list_rows();
         if rows.is_empty() {
             return;
@@ -924,7 +936,10 @@ mod tests {
             .cloned()
             .expect("sample inbox");
         let mut doc = automerge::AutoCommit::new();
-        st.ingest_messages(&mut doc, std::slice::from_ref(&message));
+        st.ingest_messages(
+            &mut ui::widget::Edits::lend(&mut doc),
+            std::slice::from_ref(&message),
+        );
         assert_eq!(
             crate::doc::MailDoc::get_read(&doc, &message.id.to_string()),
             Some(message.read)
@@ -970,7 +985,7 @@ mod tests {
             let delta = if unread_index > 0 { 1 } else { -1 };
             let mut doc = AutoCommit::new();
             let heads_before = doc.get_heads();
-            st.move_selection(&mut doc, delta);
+            st.move_selection(&mut ui::widget::Edits::lend(&mut doc), delta);
             assert_eq!(st.selected, Some(target));
             assert!(st.mailbox.get(target).is_some_and(|message| !message.read));
             assert_eq!(doc.get_heads(), heads_before);
@@ -981,7 +996,11 @@ mod tests {
             let mut st = state();
             let mut doc = AutoCommit::new();
             let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
-            st.apply_message_action(&mut doc, id, CtxAction::ReplyAll);
+            st.apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id,
+                CtxAction::ReplyAll,
+            );
             let intents = st.take_intents();
             assert!(
                 intents
@@ -998,7 +1017,11 @@ mod tests {
         let message = st.mailbox.get_mut(id).expect("loaded message");
         message.rfc_message_id = Some(format!("{id}@example.test"));
         let message = message.clone();
-        st.ingest_fetched(doc, "you@example.test", std::slice::from_ref(&message));
+        st.ingest_fetched(
+            &mut ui::widget::Edits::lend(doc),
+            "you@example.test",
+            std::slice::from_ref(&message),
+        );
     }
 
     /// A triage control posts nothing to the engine itself: it changes the
@@ -1019,7 +1042,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         fetch(&mut st, &mut doc, id);
-        st.apply_message_action(&mut doc, id, CtxAction::ToggleStar);
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::ToggleStar,
+        );
         posts_nothing(&mut st);
         assert!(matches!(
             crate::doc::MailDoc::server_updates(&doc).as_slice(),
@@ -1034,7 +1061,11 @@ mod tests {
         let mut doc = AutoCommit::new();
         let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         fetch(&mut st, &mut doc, id);
-        st.apply_message_action(&mut doc, id, CtxAction::Archive);
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::Archive,
+        );
         posts_nothing(&mut st);
         assert!(matches!(
             crate::doc::MailDoc::server_updates(&doc).as_slice(),
@@ -1049,8 +1080,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         let id = first_inbox_id(&st).expect("sample corpus has an inbox message");
         fetch(&mut st, &mut doc, id);
-        st.apply_message_action(&mut doc, id, CtxAction::Delete);
-        st.apply_message_action(&mut doc, id, CtxAction::Delete);
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::Delete,
+        );
+        st.apply_message_action(
+            &mut ui::widget::Edits::lend(&mut doc),
+            id,
+            CtxAction::Delete,
+        );
         posts_nothing(&mut st);
         assert!(
             matches!(
@@ -1086,7 +1125,10 @@ mod tests {
             }
             let archive_before = st.mailbox.count(Folder::Archive);
             let versions_before = version_count(&doc);
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Archive), 2);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Archive),
+                2
+            );
             assert_eq!(st.mailbox.count(Folder::Archive), archive_before + 2);
             assert!(
                 st.bulk_selection.is_empty(),
@@ -1124,7 +1166,10 @@ mod tests {
             for id in &ids {
                 st.toggle_bulk_selection(*id);
             }
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::MarkRead), 2);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::MarkRead),
+                2
+            );
             assert!(
                 ids.iter()
                     .all(|id| st.mailbox.get(*id).is_some_and(|m| m.read))
@@ -1153,7 +1198,10 @@ mod tests {
             st.toggle_bulk_selection(already_trash);
             st.toggle_bulk_selection(inbox);
 
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Delete), 1);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Delete),
+                1
+            );
             assert_eq!(
                 st.mailbox.get(already_trash).map(|message| message.folder),
                 Some(Folder::Trash),
@@ -1192,7 +1240,10 @@ mod tests {
             st.bulk_selection.push(uuid::Uuid::new_v4());
 
             let heads_before = doc.get_heads();
-            assert_eq!(st.apply_bulk_action(&mut doc, BulkAction::Purge), 0);
+            assert_eq!(
+                st.apply_bulk_action(&mut ui::widget::Edits::lend(&mut doc), BulkAction::Purge),
+                0
+            );
             assert!(st.mailbox.get(trash).is_some());
             assert!(st.mailbox.get(inbox).is_some());
             assert_eq!(
