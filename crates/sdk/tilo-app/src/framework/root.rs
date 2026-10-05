@@ -853,7 +853,6 @@ fn with_row(mut result: SearchResult, title: &str, row: &tilo_resource::SearchRo
 impl ResourceSearch {
     /// The search source over `indexed`, listed under `name` unless an
     /// entry names its own group.
-    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn new(name: &'static str, indexed: Arc<IndexedEntries>) -> Self {
         Self {
             name,
@@ -1355,12 +1354,10 @@ impl<R: Resource> ui_core::search::capability::SearchSource for ResourceRoot<R> 
         // The app's one search source: what its content widgets show beside
         // the resource reaches it as their surfaces' entries, never as a
         // provider of their own.
-        vec![Box::new(ResourceSearch {
-            name: R::LABEL,
-            indexed,
-            scopes: R::search_scopes(&self.live.get()),
-            queries,
-        })]
+        let mut source = ResourceSearch::new(R::LABEL, indexed);
+        source.scopes = R::search_scopes(&self.live.get());
+        source.queries = queries;
+        vec![Box::new(source)]
     }
 
     /// A picked hit opens the app at its anchor: the views registered with
