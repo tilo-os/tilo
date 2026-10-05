@@ -131,6 +131,12 @@ pub enum WorkspaceTaskCommand {
         after_revision: u64,
         text: String,
     },
+    /// A person explicitly returns a waiting task to the runnable queue.
+    /// Appended to preserve every existing encoded command variant index.
+    Retry {
+        task_id: String,
+        run_epoch: u64,
+    },
 }
 
 impl WorkspaceTaskCommand {
@@ -323,7 +329,27 @@ fn dispatch(
             text,
             (*run_epoch, *after_revision),
         ),
+        WorkspaceTaskCommand::Retry { task_id, run_epoch } => {
+            dispatch_retry(tasks, controls, context, task_id, *run_epoch)
+        }
     }
+}
+
+fn dispatch_retry(
+    tasks: &mut [WorkspaceTask],
+    controls: &std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    context: &CommandContext<'_>,
+    task_id: &str,
+    run_epoch: u64,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    retry(
+        tasks,
+        controls,
+        context.actor,
+        task_id,
+        run_epoch,
+        context.now,
+    )
 }
 
 fn queue(
@@ -718,6 +744,40 @@ fn abandon(
     ))
 }
 
+fn retry(
+    tasks: &mut [WorkspaceTask],
+    controls: &std::collections::BTreeMap<String, WorkspaceTaskControl>,
+    actor: &AdmittedTaskActor,
+    task_id: &str,
+    run_epoch: u64,
+    now: i64,
+) -> Result<(String, WorkspaceTaskMutationResult), String> {
+    let AdmittedTaskActor::Person { id: author, .. } = actor else {
+        return Err("only a person may retry a waiting task".into());
+    };
+    let task = task_mut(tasks, task_id)?;
+    if task.status != WorkspaceTaskStatus::Waiting
+        || controls
+            .get(task_id)
+            .is_none_or(|control| control.active_run.is_some() || control.run_epoch != run_epoch)
+    {
+        return Err("only a waiting task without an active run may be retried".into());
+    }
+    task.status = WorkspaceTaskStatus::Queued;
+    task.updated_at = now;
+    task.audit.push(WorkspaceTaskAuditEvent {
+        at: now,
+        actor: author.clone(),
+        summary: "Queued retry".into(),
+    });
+    Ok((
+        task_id.to_owned(),
+        WorkspaceTaskMutationResult::Queued {
+            task_id: task_id.to_owned(),
+        },
+    ))
+}
+
 fn task_mut<'a>(tasks: &'a mut [WorkspaceTask], id: &str) -> Result<&'a mut WorkspaceTask, String> {
     tasks
         .iter_mut()
@@ -842,6 +902,51 @@ mod tests {
             command,
             i64::try_from(invocation).unwrap(),
         )
+    }
+
+    fn task_with_applied_direction() -> (AutoCommit, String) {
+        let mut doc = AutoCommit::new();
+        let queued = run(&mut doc, 1, 1, &person(), &queue_command()).unwrap();
+        let WorkspaceTaskMutationResult::Queued { task_id } = queued.result else {
+            panic!("queue result")
+        };
+        run(
+            &mut doc,
+            2,
+            2,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        run(
+            &mut doc,
+            3,
+            3,
+            &person(),
+            &WorkspaceTaskCommand::DirectionForRun {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                after_revision: 0,
+                text: "Preserve this direction across recovery".into(),
+            },
+        )
+        .unwrap();
+        run(
+            &mut doc,
+            4,
+            4,
+            &agent(),
+            &WorkspaceTaskCommand::AppliedAck {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                revision: 1,
+            },
+        )
+        .unwrap();
+        (doc, task_id)
     }
 
     #[test]
@@ -1086,6 +1191,95 @@ mod tests {
                 },
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn abandoned_run_waits_for_an_explicit_person_retry() {
+        let (mut doc, task_id) = task_with_applied_direction();
+        run(
+            &mut doc,
+            5,
+            5,
+            &host(),
+            &WorkspaceTaskCommand::Abandon {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+                reason: "Agent session stopped".into(),
+            },
+        )
+        .unwrap();
+        let waiting = snapshot(&doc).unwrap();
+        assert_eq!(waiting.tasks[0].status, WorkspaceTaskStatus::Waiting);
+        assert!(waiting.controls[&task_id].active_run.is_none());
+        assert_eq!(waiting.controls[&task_id].directions.len(), 1);
+        assert!(waiting.controls[&task_id].directions[0].applied.is_some());
+        assert!(
+            run(
+                &mut doc,
+                6,
+                6,
+                &person(),
+                &WorkspaceTaskCommand::Retry {
+                    task_id: task_id.clone(),
+                    run_epoch: 2,
+                },
+            )
+            .is_err()
+        );
+        assert!(
+            run(
+                &mut doc,
+                7,
+                7,
+                &host(),
+                &WorkspaceTaskCommand::Retry {
+                    task_id: task_id.clone(),
+                    run_epoch: 1,
+                },
+            )
+            .is_err()
+        );
+        assert_eq!(
+            postcard::to_allocvec(&WorkspaceTaskCommand::Retry {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+            })
+            .unwrap()[0],
+            7
+        );
+        run(
+            &mut doc,
+            8,
+            8,
+            &person(),
+            &WorkspaceTaskCommand::Retry {
+                task_id: task_id.clone(),
+                run_epoch: 1,
+            },
+        )
+        .unwrap();
+        let retried = snapshot(&doc).unwrap();
+        assert_eq!(retried.tasks[0].status, WorkspaceTaskStatus::Queued);
+        assert!(retried.controls[&task_id].active_run.is_none());
+        assert_eq!(retried.controls[&task_id].directions.len(), 1);
+        run(
+            &mut doc,
+            9,
+            9,
+            &host(),
+            &WorkspaceTaskCommand::StartRun {
+                task_id: task_id.clone(),
+                agent_id: "scribe".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot(&doc).unwrap().controls[&task_id]
+                .active_run
+                .as_ref()
+                .map(|run| run.epoch),
+            Some(2)
         );
     }
 }
