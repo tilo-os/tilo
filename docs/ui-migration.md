@@ -2076,6 +2076,9 @@ header row and which reads as on while History shows. Apps place nothing.
 7. History mode: pass `--history` with `--shots` or `--responsive-matrix`;
    the capture opens History first (`FrameHarness::open_history`), as the
    History shortcut does.
+8. Search: pass `--search QUERY` with `--shots`; the capture opens this
+   window's search with the query typed (`FrameHarness::open_search`), the
+   palette an app's search launcher opens, over the app's own providers.
 
 ### What to delete in an app
 

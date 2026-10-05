@@ -189,6 +189,9 @@ pub struct LaunchArgs {
     /// `--history`: a capture shows History open, where the app has
     /// History.
     pub history: bool,
+    /// `--search QUERY`: a capture shows this window's search open with
+    /// `QUERY` typed, as the app's search launcher opens it.
+    pub search: Option<String>,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -211,6 +214,7 @@ impl LaunchArgs {
             theme: None,
             window: crate::theme::WindowAppearance::default(),
             history: false,
+            search: None,
             extras: Vec::new(),
             values: Vec::new(),
             positionals: Vec::new(),
@@ -1693,8 +1697,8 @@ fn dispatch_definition_with_manager(
     Ok(DefinitionDispatch::Native(Box::new(app)))
 }
 
-/// `--history`: open History before the capture settles, so the shot shows
-/// History mode as a person sees it.
+/// `--history` and `--search`: open History or this window's search before
+/// the capture settles, so the shot shows it as a person sees it.
 #[cfg(feature = "native")]
 fn show_history_for_capture(
     driver: &mut FrameHarness,
@@ -1704,6 +1708,13 @@ fn show_history_for_capture(
         driver
             .open_history()
             .map_err(|error| LaunchError::Operation(format!("--history: {error}")))?;
+    }
+    // `--search`: the window's search, opened as the app's own launcher
+    // opens it.
+    if let Some(query) = &args.search {
+        driver
+            .open_search(&crate::search::SearchRequest::this_app().with_query(query.clone()))
+            .map_err(|error| LaunchError::Operation(format!("--search: {error}")))?;
     }
     Ok(())
 }
@@ -2239,6 +2250,7 @@ fn parse_args_extended(
         theme: None,
         window: crate::theme::WindowAppearance::default(),
         history: false,
+        search: None,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -2333,6 +2345,10 @@ fn parse_args_extended(
                 }
                 parsed.native_audit = true;
             }
+            "--search" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                set_once(&mut parsed.search, value.to_owned(), flag)?;
+            }
             "--history" if inline.is_none() => {
                 if parsed.history {
                     return Err(LaunchError::Duplicate(flag.to_owned()));
@@ -2390,6 +2406,13 @@ fn parse_args_extended(
         && parsed.responsive_matrix.is_none()
     {
         return Err(LaunchError::ShotsOnly("--history".to_owned()));
+    }
+    if parsed.search.is_some()
+        && parsed.shots.is_none()
+        && parsed.shots_dir.is_none()
+        && parsed.responsive_matrix.is_none()
+    {
+        return Err(LaunchError::ShotsOnly("--search".to_owned()));
     }
     if parsed.shots.is_none()
         && parsed.shots_dir.is_none()
@@ -3109,6 +3132,17 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--history"]), &[], &[]),
                 Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
+            ));
+            let shot = parse_args(
+                &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(shot.search.as_deref(), Some("café"));
+            assert!(matches!(
+                parse_args(&strings(&["app", "--search", "café"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--search"
             ));
         }
 
