@@ -516,7 +516,7 @@ fn search_inputs_are_present_and_navigate() {
             app.harness()
                 .controls()
                 .iter()
-                .all(|control| !(control.role == ui::a11y::Role::TextInput
+                .all(|control| !(control.role == ui::accesskit::Role::TextInput
                     && control.name.as_deref() == Some("Search"))),
             "Escape closes the actual platform query field"
         );
@@ -524,7 +524,7 @@ fn search_inputs_are_present_and_navigate() {
             app.harness()
                 .controls()
                 .iter()
-                .any(|control| control.role == ui::a11y::Role::Button
+                .any(|control| control.role == ui::accesskit::Role::Button
                     && control.name.as_deref() == search.name.as_deref()),
             "Escape restores the platform Search button"
         );
