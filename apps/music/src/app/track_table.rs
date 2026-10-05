@@ -134,7 +134,7 @@ pub(super) struct Shape {
 }
 
 /// What a row asked for; the index is the row's place in the table.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum RowEvent {
     Play(usize),
     Menu(usize, Rect),
@@ -653,7 +653,7 @@ fn action_buttons(
         let sink = Rc::clone(events);
         Button::icon_only(&format!("music.track.{index}.{name}"), icon, label)
             .control_size(ControlSize::Small)
-            .on_click(move || sink.borrow_mut().push(event.clone()))
+            .on_click(move || sink.borrow_mut().push(event))
     };
     let mut cluster = Row::new().no_wrap().with_gap(0.0);
     if let Actions::Reorder { playlist } = actions {

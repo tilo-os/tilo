@@ -211,6 +211,50 @@ fn track_rows_play_and_act_through_the_shared_table() {
     );
 }
 
+/// A cover is the shared media card: a press on it opens what it names, and
+/// the Play action over its art plays it.
+#[test]
+fn cover_cards_open_and_play_through_the_shared_grid() {
+    let (mut app, mut doc) = app_with_doc();
+    app.view = View::Albums;
+    draw_once(&mut app, &mut doc);
+    let album = app
+        .lib
+        .albums
+        .keys()
+        .next()
+        .cloned()
+        .expect("a sample album");
+    let card = app
+        .media_grids
+        .iter()
+        .find_map(|grid| grid.card_rect(&album))
+        .expect("the album has a card");
+    assert!(card.width() > 0.0 && app.body_rect.contains(card.center()));
+
+    // Phase `the_play_action_over_the_art_plays_the_album`.
+    let art = Point::new(card.center().x, card.y0 + card.width() / 2.0);
+    send(&mut app, &cursor_at(art), &mut doc);
+    send(&mut app, &press(MouseButton::Left), &mut doc);
+    send(&mut app, &released(MouseButton::Left), &mut doc);
+    assert_eq!(app.view, View::Albums, "Play does not leave the page");
+    let playing = app.pb.current.clone().expect("the album plays");
+    assert_eq!(
+        app.lib
+            .tracks
+            .get(&playing)
+            .map(|track| track.album_id.clone()),
+        Some(album.clone())
+    );
+
+    // Phase `a_press_on_the_card_opens_the_album`.
+    let title = Point::new(card.x0 + 8.0, card.y1 - 6.0);
+    send(&mut app, &cursor_at(title), &mut doc);
+    send(&mut app, &press(MouseButton::Left), &mut doc);
+    send(&mut app, &released(MouseButton::Left), &mut doc);
+    assert_eq!(app.view, View::Album(album));
+}
+
 /// Test and shot constructors own their caches and never read the real profile;
 /// startup adopts only the host document; the seed is honest.
 #[test]
@@ -4362,14 +4406,17 @@ fn invoke_hit(app: &mut MusicApp, hit: &ui::search::SearchResult, doc: &mut Auto
     .expect("the hit's action runs");
 }
 
+/// Whether track `id` is a row of one of the page's track tables.
 fn has_play_of(app: &MusicApp, id: &str) -> bool {
-    app.hits
-        .iter()
-        .any(|h| matches!(&h.action, Action::Play { queue, .. } if queue.iter().any(|q| q == id)))
+    app.track_tables.iter().any(|slot| {
+        slot.queue.iter().any(|queued| queued == id)
+            && slot.table.rows().iter().any(|row| row.id == id)
+    })
 }
 fn has_nav(app: &MusicApp, view: View) -> bool {
     let want = Action::Nav(view);
     app.hits.iter().any(|h| h.action == want)
+        || app.media_grids.iter().any(|grid| grid.offers(&want))
 }
 
 #[test]
@@ -4447,17 +4494,7 @@ fn artist_and_album_pages_navigate_and_play() {
         );
         // Click a top track → it plays.
         let top_id = "yt:top_track".to_string();
-        let play = app
-            .hits
-            .iter()
-            .find_map(|h| match &h.action {
-                Action::Play { queue, .. } if queue.iter().any(|q| q == &top_id) => {
-                    Some(h.action.clone())
-                }
-                _ => None,
-            })
-            .expect("a top track is a playable row on the artist page");
-        app.dispatch(play, &mut doc);
+        click_track(&mut app, &mut doc, &top_id);
         assert_eq!(
             app.pb.current.as_deref(),
             Some("yt:top_track"),

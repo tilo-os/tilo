@@ -28,8 +28,8 @@ use ui::widget::data_table::DataTableFace;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState, EmptyStateContent,
-    Interaction, MediaArt, MediaBadge, MediaCardFace, MediaSize, SkeletonFace, SkeletonShape,
-    Slider, SliderFace, TransportControl, TransportFace,
+    Interaction, MediaArt, MediaCardFace, MediaSize, SkeletonFace, SkeletonShape, Slider,
+    SliderFace, TransportControl, TransportFace,
 };
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -168,12 +168,6 @@ pub(super) fn text_right_in_band(
 /// A square of `side` centred on `c`.
 pub(super) fn square_around(c: Point, side: f64) -> Rect {
     Rect::from_center_size(c, (side, side))
-}
-
-/// Whether two rects are on screen inside `clip` (a scrolled-away row neither
-/// paints nor catches clicks).
-fn visible_in(rect: Rect, clip: Rect) -> bool {
-    rect.y1 >= clip.y0 && rect.y0 <= clip.y1
 }
 
 /// Keep the active-screen accessibility snapshot useful without cloning an
@@ -659,47 +653,11 @@ pub(super) fn paint_equalizer(ctx: &mut PaintCtx<'_>, playing: bool, end: Point)
     }
 }
 
-/// A responsive grid of media cards: the column count that keeps each card
-/// closest to the small media extent (so a narrow column holds three
-/// covers rather than two oversized ones), with the media grid's own column
-/// and row gaps.
-#[derive(Clone, Copy, Debug)]
-struct Grid {
-    x0: f64,
-    cols: usize,
-    card_w: f64,
-    col_gap: f64,
-    row_gap: f64,
-}
-
-impl Grid {
-    fn of(theme: &Theme, look: &Look, body: Rect) -> Self {
-        let rhythm = &theme.tokens.spacing.rhythm;
-        let col_gap = f64::from(rhythm.section);
-        let row_gap = f64::from(rhythm.group);
-        let avail = (body.width() - 2.0 * look.gutter).max(0.0);
-        let target = MediaSize::Small.extent(theme);
-        let cols = ((avail + col_gap) / (target + col_gap)).round().max(1.0) as usize;
-        Self {
-            x0: body.x0 + look.gutter,
-            cols,
-            card_w: ui::widget::card_column_width(avail, cols, col_gap),
-            col_gap,
-            row_gap,
-        }
-    }
-
-    fn x(&self, col: usize) -> f64 {
-        self.x0 + col as f64 * (self.card_w + self.col_gap)
-    }
-}
-
 /// One card of a media grid: what it shows and what a click on it does.
 struct GridCard<'a> {
     art_id: &'a str,
     title: &'a str,
     meta: [Option<&'a str>; 2],
-    badges: &'a [MediaBadge<'a>],
     action: Action,
     /// A Play action over the art while hovered.
     play: Option<Action>,
@@ -2037,7 +1995,7 @@ impl MusicApp {
     /// Pointer and key input the header, the sidebar and the scroll region
     /// left for the page.
     fn on_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if self.drag.is_none() && self.bar_press.is_none() && self.route_track_tables(event, ctx) {
+        if self.drag.is_none() && self.bar_press.is_none() && self.route_page_widgets(event, ctx) {
             if let WindowEvent::CursorMoved { .. } = event {
                 self.on_cursor_moved(event, ctx.scale_factor, ctx.state, ctx.handled);
             }
@@ -2445,48 +2403,6 @@ impl MusicApp {
             .paint(ctx, square_around(rect.center(), side));
     }
 
-    /// A person in a media grid: their round portrait over their name and
-    /// one fact, centred under it, on the grid cell's hover lift.
-    fn draw_portrait_card(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        rect: Rect,
-        card: &GridCard<'_>,
-        hovered: bool,
-    ) {
-        let theme = ctx.theme;
-        chrome::paint_row_selection(
-            ctx.scene,
-            ctx.transform,
-            rect.inflate(look.related, look.related),
-            SelectionState::new(false, hovered, false),
-            theme.tokens.colors.surfaces.content,
-            theme,
-        );
-        let art = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + rect.width());
-        self.draw_portrait(ctx, art, card.art_id, card.title);
-        let lines = std::iter::once((card.title, theme.text(TextRole::Body), look.text)).chain(
-            card.meta
-                .iter()
-                .flatten()
-                .map(|meta| (*meta, theme.text(TextRole::Caption), look.dim)),
-        );
-        let mut y = art.y1 + look.related;
-        for (text, style, ink) in lines {
-            let shown = elide(ctx.text, text, &style, rect.width());
-            let w = f64::from(ctx.text.measure_style(&shown, None, &style).0);
-            ctx.text(
-                &shown,
-                &style,
-                ink,
-                Point::new(rect.center().x - w / 2.0, y),
-                None,
-            );
-            y += line_of(ctx, &style);
-        }
-    }
-
     // ---- controls ---------------------------------------------------------
 
     /// Paint a labelled button at `rect` and register its hit. Returns
@@ -2600,6 +2516,7 @@ impl MusicApp {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         self.hits.clear();
         self.track_tables_drawn = 0;
+        self.media_grids_drawn = 0;
         self.sync_context_menu_geometry(ctx.theme);
         // Fold in any streaming-worker results (resolved stream URLs → audio
         // engine, real search hits → library), then keep live search results
@@ -2675,6 +2592,7 @@ impl MusicApp {
         ctx.scene.pop_layer();
         self.body_hits = self.hits.len();
         self.track_tables.truncate(self.track_tables_drawn);
+        self.media_grids.truncate(self.media_grids_drawn);
         self.content_height = (end_y + scrolled) - body.y0 + look.gutter;
         self.body_scroll
             .set_content_size(body.width(), self.content_height);
@@ -3050,7 +2968,7 @@ impl MusicApp {
         // it will fill. Once a fetch has failed (offline build / network
         // error) the honest state below settles instead.
         if self.home_is_loading() {
-            return Self::draw_home_skeleton(ctx, look, body, y);
+            return self.draw_home_skeleton(ctx, look, body, y);
         }
 
         // Nothing live, and nothing in the library yet: the first-run state.
@@ -3141,7 +3059,6 @@ impl MusicApp {
                     art_id,
                     title: &item.title,
                     meta: [Some(item.subtitle.as_str()).filter(|s| !s.is_empty()), None],
-                    badges: &[],
                     portrait: matches!(item.kind, HomeItemKind::Artist),
                     action,
                     play,
@@ -3159,97 +3076,88 @@ impl MusicApp {
         }
     }
 
-    /// The Home grid while it loads: two sections of card-shaped skeletons.
-    fn draw_home_skeleton(ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, mut y: f64) -> f64 {
+    /// The Home grid while it loads: two sections, each a heading and one
+    /// row of the toolkit's loading cards.
+    fn draw_home_skeleton(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        body: Rect,
+        mut y: f64,
+    ) -> f64 {
         let theme = ctx.theme;
-        let grid = Grid::of(theme, look, body);
+        let (left, right) = (body.x0 + look.gutter, body.x1 - look.gutter);
+        let extent = MediaSize::Small.extent(theme);
+        let columns = ui::widget::card_columns(
+            (right - left).max(0.0),
+            extent,
+            f64::from(theme.tokens.spacing.rhythm.section),
+        );
         let heading = SkeletonFace::new(SkeletonShape::Text { lines: 1 });
-        let card = SkeletonFace::new(SkeletonShape::Media(ui::widget::MediaAspect::Square));
+        let clip = self.body_rect;
         for _ in 0..2 {
-            let w = (grid.card_w * 1.5).min(body.width() - 2.0 * look.gutter);
+            let w = (extent * 1.5).min(right - left);
             let h = heading.height(ctx.text, theme, w);
-            heading.paint(ctx, Rect::new(grid.x0, y, grid.x0 + w, y + h));
+            heading.paint(ctx, Rect::new(left, y, left + w, y + h));
             y += h + look.sibling;
-            let card_h = card.height(ctx.text, theme, grid.card_w);
-            for col in 0..grid.cols {
-                let x = grid.x(col);
-                card.paint(ctx, Rect::new(x, y, x + grid.card_w, y + card_h));
+            let index = self.media_grids_drawn;
+            self.media_grids_drawn += 1;
+            if self.media_grids.len() <= index {
+                self.media_grids
+                    .push(super::media_grid::MediaGridHost::new());
             }
-            y += card_h + look.gutter;
+            if let Some(grid) = self.media_grids.get_mut(index) {
+                grid.update_loading(columns);
+                y = grid.place(ctx, (left, right), y, clip);
+            }
+            y += look.gutter;
         }
         y
     }
 
     // ---- media grids ------------------------------------------------------
 
-    /// Lay `cards` out as a media grid from `y`; every card of a row shares
-    /// the row's tallest text block so titles line up. Returns the y below
-    /// the grid.
+    /// Lay `cards` out as a media grid from `y`: the toolkit's grid of
+    /// cover cards, embedded in the page. The cards take their own hover,
+    /// press and Play action; what they ask for comes back through
+    /// [`Self::route_page_widgets`]. Returns the y below the grid.
     fn draw_media_grid(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         look: &Look,
         body: Rect,
-        mut y: f64,
+        y: f64,
         cards: &[GridCard<'_>],
     ) -> f64 {
-        let theme = ctx.theme;
-        let g = Grid::of(theme, look, body);
-        let images: Vec<Option<vello::peniko::ImageData>> = cards
+        let specs = cards
             .iter()
-            .map(|card| self.art_image(card.art_id))
-            .collect();
-        let faces: Vec<MediaCardFace<'_>> = cards
-            .iter()
-            .zip(&images)
-            .map(|(card, image)| {
-                let art = image
-                    .as_ref()
-                    .map_or(MediaArt::Placeholder, MediaArt::Image);
-                let mut face = MediaCardFace::new(art)
-                    .title(card.title)
-                    .badges(card.badges);
-                for meta in card.meta.iter().flatten() {
-                    face = face.meta(meta);
-                }
-                if card.play.is_some() {
-                    face = face.hover_action(Icon::Play);
-                }
-                face
+            .map(|card| super::media_grid::CardSpec {
+                art_id: card.art_id.to_owned(),
+                title: card.title.to_owned(),
+                meta: card
+                    .meta
+                    .iter()
+                    .flatten()
+                    .map(|line| (*line).to_owned())
+                    .collect(),
+                image: self.art_image(card.art_id),
+                portrait: card.portrait,
+                action: card.action.clone(),
+                play: card.play.clone(),
             })
             .collect();
-        for (row_cards, row_faces) in cards.chunks(g.cols).zip(faces.chunks(g.cols)) {
-            let text_h = row_faces
-                .iter()
-                .map(|face| face.text_height(ctx.text, theme, g.card_w))
-                .fold(0.0, f64::max);
-            let card_h = g.card_w + text_h;
-            for (col, (card, face)) in row_cards.iter().zip(row_faces).enumerate() {
-                let x = g.x(col);
-                let rect = Rect::new(x, y, x + g.card_w, y + card_h);
-                if !visible_in(rect, self.body_rect) {
-                    continue;
-                }
-                let hovered = self.body_hit(rect, card.action.clone());
-                if card.portrait {
-                    self.draw_portrait_card(ctx, look, rect, card, hovered);
-                    continue;
-                }
-                if hovered
-                    && let Some(play) = &card.play
-                    && let Some(target) = face.hover_action_rect(rect, theme)
-                {
-                    self.push_hit(target, play.clone());
-                }
-                face.interaction(Interaction {
-                    hovered,
-                    ..Interaction::default()
-                })
-                .paint(ctx, rect);
-            }
-            y += card_h + g.row_gap;
+        let index = self.media_grids_drawn;
+        self.media_grids_drawn += 1;
+        if self.media_grids.len() <= index {
+            self.media_grids
+                .push(super::media_grid::MediaGridHost::new());
         }
-        if cards.is_empty() { y } else { y - g.row_gap }
+        let clip = self.body_rect;
+        let Some(grid) = self.media_grids.get_mut(index) else {
+            return y;
+        };
+        grid.update(specs);
+        grid.place(ctx, (body.x0 + look.gutter, body.x1 - look.gutter), y, clip)
     }
 
     fn draw_album_grid(
@@ -3280,7 +3188,6 @@ impl MusicApp {
                     Some(a.artist.as_str()).filter(|s| !s.is_empty()),
                     Some(year.as_str()).filter(|s| !s.is_empty()),
                 ],
-                badges: &[],
                 portrait: false,
                 action: Action::Nav(View::Album(a.id.clone())),
                 play: (!a.queue.is_empty()).then(|| Action::Play {
@@ -3306,7 +3213,6 @@ impl MusicApp {
                 art_id: &a.id,
                 title: &a.name,
                 meta: [Some(a.genre.as_str()).filter(|s| !s.is_empty()), None],
-                badges: &[],
                 portrait: true,
                 action: Action::Nav(View::Artist(a.id.clone())),
                 play: None,
@@ -3332,7 +3238,6 @@ impl MusicApp {
                 art_id: &p.id,
                 title: &p.name,
                 meta: [Some(count.as_str()), None],
-                badges: &[],
                 portrait: false,
                 action: Action::Nav(View::Playlist(p.id.clone())),
                 play: None,
@@ -3375,7 +3280,7 @@ impl MusicApp {
     /// songs, downloads, the queue): the toolkit's table, embedded in the
     /// page and windowed by its scroll. Its rows lift, play, open their menu
     /// and show their actions themselves; what they ask for comes back
-    /// through [`Self::route_track_tables`]. Returns the y below the table.
+    /// through [`Self::route_page_widgets`]. Returns the y below the table.
     fn draw_track_table(
         &mut self,
         ctx: &mut PaintCtx<'_>,
@@ -3571,16 +3476,16 @@ impl MusicApp {
         }
     }
 
-    /// Route `event` to the page's track tables and turn what their rows
-    /// asked for into actions. Chrome painted over the page (the queue
+    /// Route `event` to the page's embedded widgets (its track tables and
+    /// cover grids) and turn what their rows and cards asked for into
+    /// actions. Chrome painted over the page (the queue
     /// preview, a floating sidebar and its scrim) takes the pointer first.
     /// Returns whether a table took the event.
-    fn route_track_tables(
+    fn route_page_widgets(
         &mut self,
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        use super::track_table::{Offline, RowEvent};
         let pointer = matches!(
             event,
             WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
@@ -3623,60 +3528,87 @@ impl MusicApp {
             self.table_tooltip = tooltip;
             self.dirty = true;
         }
-        let took = *ctx.handled;
-        for (index, ask) in asked {
-            let Some(slot) = self.track_tables.get(index) else {
-                continue;
-            };
-            let offset = slot.queue_offset.unwrap_or(0);
-            let row = |i: usize| slot.table.rows().get(i);
-            let up = matches!(ask, RowEvent::MoveUp(_));
-            let action = match ask {
-                RowEvent::Play(i) => Some(Action::Play {
-                    queue: Arc::clone(&slot.queue),
-                    index: offset + i,
-                }),
-                RowEvent::Menu(i, rect) => row(i).map(|track| {
-                    self.menu_anchor_row = Some(rect);
-                    Action::OpenTrackMenu {
-                        track: track.id.clone(),
-                        in_playlist: slot.playlist.clone(),
-                        queue_index: slot.queue_offset.map(|o| o + i),
-                    }
-                }),
-                RowEvent::Like(i) => row(i).map(|track| Action::ToggleLike(track.id.clone())),
-                RowEvent::Offline(i) => row(i).map(|track| Action::SetOffline {
-                    track: track.id.clone(),
-                    keep: matches!(track.offline, Offline::Streamed | Offline::Failed),
-                }),
-                RowEvent::MoveUp(i) | RowEvent::MoveDown(i) => {
-                    let to = if up { i.saturating_sub(1) } else { i + 1 };
-                    Some(match &slot.playlist {
-                        Some(playlist) => Action::MovePlaylistItem {
-                            playlist: playlist.clone(),
-                            from: i,
-                            to,
+        let mut cards = Vec::new();
+        for grid in &mut self.media_grids {
+            if covered {
+                // The pointer is not over the page: no card stays lifted.
+                if let WindowEvent::CursorMoved { device_id, .. } = event {
+                    grid.handle_event(
+                        &WindowEvent::CursorMoved {
+                            device_id: *device_id,
+                            position: winit::dpi::PhysicalPosition::new(f64::MIN, f64::MIN),
                         },
-                        None => Action::MoveQueueItem {
-                            from: offset + i,
-                            to: offset + to,
-                        },
-                    })
+                        ctx,
+                    );
                 }
-                RowEvent::Remove(i) => match &slot.playlist {
-                    Some(playlist) => row(i).map(|track| Action::RemoveFromPlaylist {
-                        playlist: playlist.clone(),
-                        track: track.id.clone(),
-                    }),
-                    None => Some(Action::RemoveFromQueue(offset + i)),
-                },
-            };
-            if let Some(action) = action {
+                continue;
+            }
+            if !*ctx.handled {
+                grid.handle_event(event, ctx);
+            }
+            cards.extend(grid.take_asked());
+        }
+        let took = *ctx.handled;
+        for action in cards {
+            self.dispatch(action, ctx.state);
+            self.dirty = true;
+        }
+        for (index, ask) in asked {
+            if let Some(action) = self.row_action(index, ask) {
                 self.dispatch(action, ctx.state);
                 self.dirty = true;
             }
         }
         took
+    }
+
+    /// The action a row of track table `index` asked for.
+    fn row_action(&mut self, index: usize, ask: super::track_table::RowEvent) -> Option<Action> {
+        use super::track_table::{Offline, RowEvent};
+        let slot = self.track_tables.get(index)?;
+        let offset = slot.queue_offset.unwrap_or(0);
+        let row = |i: usize| slot.table.rows().get(i);
+        let up = matches!(ask, RowEvent::MoveUp(_));
+        match ask {
+            RowEvent::Play(i) => Some(Action::Play {
+                queue: Arc::clone(&slot.queue),
+                index: offset + i,
+            }),
+            RowEvent::Menu(i, rect) => row(i).map(|track| {
+                self.menu_anchor_row = Some(rect);
+                Action::OpenTrackMenu {
+                    track: track.id.clone(),
+                    in_playlist: slot.playlist.clone(),
+                    queue_index: slot.queue_offset.map(|o| o + i),
+                }
+            }),
+            RowEvent::Like(i) => row(i).map(|track| Action::ToggleLike(track.id.clone())),
+            RowEvent::Offline(i) => row(i).map(|track| Action::SetOffline {
+                track: track.id.clone(),
+                keep: matches!(track.offline, Offline::Streamed | Offline::Failed),
+            }),
+            RowEvent::MoveUp(i) | RowEvent::MoveDown(i) => {
+                let to = if up { i.saturating_sub(1) } else { i + 1 };
+                Some(match &slot.playlist {
+                    Some(playlist) => Action::MovePlaylistItem {
+                        playlist: playlist.clone(),
+                        from: i,
+                        to,
+                    },
+                    None => Action::MoveQueueItem {
+                        from: offset + i,
+                        to: offset + to,
+                    },
+                })
+            }
+            RowEvent::Remove(i) => match &slot.playlist {
+                Some(playlist) => row(i).map(|track| Action::RemoveFromPlaylist {
+                    playlist: playlist.clone(),
+                    track: track.id.clone(),
+                }),
+                None => Some(Action::RemoveFromQueue(offset + i)),
+            },
+        }
     }
 
     /// A song's offline status in words, and whether it failed. A failure
