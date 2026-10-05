@@ -118,7 +118,7 @@ impl InstalledManagedPackage {
         &self,
         trust: &PackageTrust,
     ) -> Result<(MinimalManifest, tilo_app_package::BlobHash), String> {
-        let evidence = managed_record_dir(&self.data_root);
+        let evidence = self.record_dir();
         let signed = std::fs::read(evidence.join("signed-root")).map_err(|e| e.to_string())?;
         let root = tilo_app_package::SignedRoot::decode(&signed).map_err(|e| e.to_string())?;
         let manifest = std::fs::read(&self.installed.manifest_path).map_err(|e| e.to_string())?;
@@ -183,12 +183,16 @@ impl InstalledManagedPackage {
             &self.id.to_hex(),
         )
         .map_err(|e| e.to_string())?;
-        // The installer keeps a copy of the signed manifest at the payload
-        // root; it must be exactly the recorded one.
-        let installed_manifest = std::fs::read(self.installed.payload_root.join(MANIFEST_FILE))
-            .map_err(|e| e.to_string())?;
-        if installed_manifest != recorded {
-            return Err("installed manifest differs from signed evidence".into());
+        // Legacy installs copied the manifest into the payload. The current
+        // content-addressed store keeps metadata outside its signed payload
+        // tree; its authoritative manifest was checked above. Never require
+        // a new, unsigned file in that tree merely to launch a managed app.
+        let payload_manifest = self.installed.payload_root.join(MANIFEST_FILE);
+        if payload_manifest.exists() || evidence == managed_record_dir(&self.data_root) {
+            let installed_manifest = std::fs::read(payload_manifest).map_err(|e| e.to_string())?;
+            if installed_manifest != recorded {
+                return Err("installed manifest differs from signed evidence".into());
+            }
         }
         refuse_unexpected_files(&self.installed.payload_root, collection)?;
         // Parse the exact bytes already verified above, never reread a path
@@ -208,6 +212,20 @@ impl InstalledManagedPackage {
             .map(|(_, digest)| *digest)
             .ok_or("managed executable is not signed payload")?;
         Ok((manifest, digest))
+    }
+
+    fn record_dir(&self) -> PathBuf {
+        let recorded = package_store::integrity::record_dir(&self.installed);
+        if self
+            .installed
+            .manifest_path
+            .parent()
+            .is_some_and(|parent| parent == recorded)
+        {
+            recorded
+        } else {
+            managed_record_dir(&self.data_root)
+        }
     }
 }
 
@@ -292,12 +310,19 @@ fn require_managed_service(manifest: &MinimalManifest) -> Result<(), String> {
 
 /// Labels supplied by a committed host owner. These carry no launch authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ManagedLaunchScope {
+    /// A retained collaborator process, independent of any queued task.
+    AgentSession,
+    /// A process reserved for an existing owner-committed task run.
+    Task { task: String, run: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ManagedBinding {
     pub room: String,
     pub app: String,
     pub agent: String,
-    pub task: String,
-    pub run: String,
+    pub scope: ManagedLaunchScope,
     pub launch: String,
     pub generation: u64,
 }
@@ -311,9 +336,11 @@ impl ManagedBinding {
         if self.app != WORKSPACE_AGENT_PACKAGE_ID
             || self.generation == 0
             || uuid::Uuid::parse_str(&self.room).is_err()
-            || [&self.agent, &self.task, &self.run, &self.launch]
+            || [&self.agent, &self.launch]
                 .iter()
                 .any(|value| !valid_label(value))
+            || matches!(&self.scope, ManagedLaunchScope::Task { task, run }
+                if !valid_label(task) || !valid_label(run))
         {
             return Err("invalid managed binding".into());
         }
@@ -456,7 +483,7 @@ impl TreeStamp {
 }
 impl RuntimeOwner {
     fn stamp(&self) -> Option<TreeStamp> {
-        let evidence = managed_record_dir(&self.package.data_root);
+        let evidence = self.package.record_dir();
         TreeStamp::of(&[
             &self.package.installed.payload_root,
             &self.package.installed.manifest_path,
@@ -1230,6 +1257,21 @@ impl LaunchObserver {
     }
 }
 #[cfg(target_os = "linux")]
+pub(crate) fn managed_service_argv(binding: &ManagedBinding) -> Vec<String> {
+    vec![
+        "--task-runs".into(),
+        "--workspace".into(),
+        binding.room.clone(),
+        "--app".into(),
+        binding.app.clone(),
+        "--agent-id".into(),
+        binding.agent.clone(),
+        "--name".into(),
+        binding.agent.clone(),
+    ]
+}
+
+#[cfg(target_os = "linux")]
 impl ManagedLauncher {
     /// Start the permitted launch's sandboxed agent on a supervising worker.
     ///
@@ -1267,15 +1309,7 @@ impl ManagedLauncher {
             workspace_id: Some(permit.binding.room.clone()),
             app_id: Some(permit.binding.app.clone()),
             mode: crate::run::LaunchMode::Service {
-                passthrough_argv: vec![
-                    "--task-runs".into(),
-                    "--workspace".into(),
-                    permit.binding.room.clone(),
-                    "--agent-id".into(),
-                    permit.binding.agent.clone(),
-                    "--name".into(),
-                    permit.binding.agent.clone(),
-                ],
+                passthrough_argv: managed_service_argv(&permit.binding),
             },
             ..Default::default()
         };

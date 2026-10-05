@@ -226,6 +226,8 @@ pub enum Icon {
     /// Spaced evenly from top to bottom. Lucide
     /// `align-vertical-distribute-center`.
     AlignVerticalDistributeCenter,
+    /// Emoji selection. Lucide `smile`; content emoji remain text.
+    Smile,
 }
 
 impl Icon {
@@ -235,6 +237,7 @@ impl Icon {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
+            "smile" => Self::Smile,
             "layout-grid" => Self::LayoutGrid,
             "settings-2" => Self::Settings2,
             "mouse" => Self::Mouse,
@@ -388,6 +391,7 @@ impl Icon {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Smile => "smile",
             Self::LayoutGrid => "layout-grid",
             Self::Settings2 => "settings-2",
             Self::Mouse => "mouse",
@@ -599,6 +603,12 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
 )]
 pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
     match icon {
+        Icon::Smile => vec![
+            circle_path(12.0, 12.0, 10.0),
+            path_from_d("M8 14s1.5 2 4 2 4-2 4-2"),
+            path_from_d("M9 9h.01"),
+            path_from_d("M15 9h.01"),
+        ],
         Icon::LayoutGrid => vec![
             rect_path(3.0, 3.0, 7.0, 7.0, 1.0),
             rect_path(14.0, 3.0, 7.0, 7.0, 1.0),
@@ -1595,6 +1605,7 @@ mod tests {
     #[test]
     fn every_glyph_is_found_by_its_lucide_name() {
         for name in [
+            "smile",
             "layout-grid",
             "settings-2",
             "mouse",
@@ -1780,6 +1791,11 @@ mod tests {
         reason = "one scenario, one labelled phase per merged case"
     )]
     fn icon_families_have_their_lucide_subpath_counts() {
+        assert_eq!(
+            icon_subpaths(Icon::Smile).len(),
+            4,
+            "emoji selection = face, mouth, two eyes"
+        );
         // phase: status_tray_icons_have_their_expected_subpaths
         // Wi-Fi's subpaths are addressed *by index* to show signal strength
         // (see [`draw_icon_layered`]) — a reordering upstream would silently
