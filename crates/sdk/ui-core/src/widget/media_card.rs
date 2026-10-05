@@ -386,15 +386,21 @@ impl<'a> MediaCardFace<'a> {
         if let Some(title) = self.title {
             let width = crate::num::f32_of_f64(rect.width().max(1.0));
             let mut y = art.y1 + m.text_gap;
+            // A disc is a person: the name and its line stand centred under
+            // it. Every other card starts its text on the art's leading edge.
+            let centred = self.aspect == MediaAspect::Circle;
+            let start = |ctx: &mut PaintCtx<'_>, line: &str, style: &TextStyle, extra: f64| {
+                if centred {
+                    let (w, _) = ctx.text.measure_style(line, None, style);
+                    rect.x0 + ((rect.width() - f64::from(w) - extra) / 2.0).max(0.0)
+                } else {
+                    rect.x0
+                }
+            };
             let title_line = MediaMetrics::line(ctx.text, &m.title);
             for line in ctx.text.clamp_to_lines(title, &m.title, width, 2) {
-                ctx.text(
-                    &line,
-                    &m.title,
-                    theme.text_primary,
-                    Point::new(rect.x0, y),
-                    None,
-                );
+                let x = start(ctx, &line, &m.title, 0.0);
+                ctx.text(&line, &m.title, theme.text_primary, Point::new(x, y), None);
                 y += title_line;
             }
             let meta_line = MediaMetrics::line(ctx.text, &m.meta);
@@ -406,13 +412,14 @@ impl<'a> MediaCardFace<'a> {
                     crate::num::f32_of_f64((f64::from(width) - mark_w).max(1.0)),
                     &m.meta,
                 );
-                ctx.text(&line, &m.meta, theme.text_dim, Point::new(rect.x0, y), None);
+                let x = start(ctx, &line, &m.meta, mark_w);
+                ctx.text(&line, &m.meta, theme.text_dim, Point::new(x, y), None);
                 if let Some(icon) = mark {
                     let (w, _) = ctx.text.measure_style(&line, None, &m.meta);
                     let glyph = Rect::new(
-                        rect.x0 + f64::from(w) + m.mark_gap,
+                        x + f64::from(w) + m.mark_gap,
                         y + (meta_line - m.mark) / 2.0,
-                        rect.x0 + f64::from(w) + m.mark_gap + m.mark,
+                        x + f64::from(w) + m.mark_gap + m.mark,
                         y + (meta_line + m.mark) / 2.0,
                     );
                     icon.draw(ctx.scene, ctx.transform, glyph, theme.text_dim);
@@ -1371,7 +1378,9 @@ impl Widget for MediaGrid {
         match self.mode {
             GridMode::Columns => {
                 let columns = self.columns_for_width(width);
-                let column = card_column_width(width, columns, self.column_gap);
+                // Whole pixels: every card of the grid is the same width, so
+                // their art is the same height and their titles share a line.
+                let column = card_column_width(width, columns, self.column_gap).floor();
                 let tracks = vec![length(crate::num::f32_of_f64(column)); columns];
                 if let Ok(current) = taffy.style(node)
                     && current.grid_template_columns != tracks
