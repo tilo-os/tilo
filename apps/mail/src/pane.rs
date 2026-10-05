@@ -13,7 +13,9 @@
 use std::collections::HashMap;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -412,7 +414,7 @@ struct LargeTextFlow {
 struct EventContext<'a> {
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     path: &'a ObjId,
     handled: &'a mut bool,
     focus_target: &'a mut Option<NodeId>,
@@ -2924,7 +2926,7 @@ impl Pane {
 
     // ---- event handling ---------------------------------------------------
 
-    fn on_left_press(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+    fn on_left_press(&mut self, doc: &mut ui::widget::Edits<'_>, pt: Point, handled: &mut bool) {
         if !self.rect.contains(pt) {
             return;
         }
@@ -2937,7 +2939,12 @@ impl Pane {
 
     /// The sidebar's left-click routing: compose, per-account settings/
     /// toggle/select, and folder select. Part of [`Self::on_left_press`].
-    fn on_left_press_sidebar(&self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+    fn on_left_press_sidebar(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        pt: Point,
+        handled: &mut bool,
+    ) {
         let Some(hit) = self.hit_at(pt) else {
             return;
         };
@@ -2977,7 +2984,12 @@ impl Pane {
     /// The list pane's left-click routing: refresh, search focus/clear, star
     /// toggle, row select/open, and arming a potential row swipe. Part of
     /// [`Self::on_left_press`].
-    fn on_left_press_list(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+    fn on_left_press_list(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        pt: Point,
+        handled: &mut bool,
+    ) {
         if let Some(hit) = self.hit_at(pt) {
             match hit {
                 Hit::Refresh => {
@@ -3079,7 +3091,12 @@ impl Pane {
     /// The reader's left-click routing: the remote-images toggle, an
     /// attachment-chip save, and the action bar (Reply/Archive/Delete/Star/
     /// Mark unread). Part of [`Self::on_left_press`].
-    fn on_left_press_reader(&mut self, doc: &mut AutoCommit, pt: Point, handled: &mut bool) {
+    fn on_left_press_reader(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        pt: Point,
+        handled: &mut bool,
+    ) {
         // The remote-images toggle under an HTML body: opt this message in to
         // (or back out of) loading remote content.
         if self.html_toggle_rect.is_some_and(|r| r.contains(pt)) {
@@ -3169,7 +3186,7 @@ impl Pane {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: ctx.handled,
                     focus_target: ctx.focus_target,
@@ -3198,7 +3215,7 @@ impl Pane {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &ctx.modifiers,
-                        state: ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -3429,7 +3446,7 @@ impl Widget for Pane {
             &mut EventContext {
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: ctx.handled,
                 focus_target: ctx.focus_target,
@@ -3446,7 +3463,7 @@ impl Widget for Pane {
             &mut EventContext {
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: ctx.handled,
                 focus_target: ctx.focus_target,
@@ -3479,7 +3496,7 @@ impl Widget for Pane {
                 ..
             } => {
                 let pt = self.shared.borrow().last_mouse;
-                self.on_left_press(ctx.state, pt, ctx.handled);
+                self.on_left_press(&mut ctx.state, pt, ctx.handled);
             }
             WindowEvent::CursorMoved { .. } => {
                 if self.role == Role::List
@@ -3501,13 +3518,13 @@ impl Widget for Pane {
                 if let Some(s) = self.swipe.take() {
                     if s.dx <= -SWIPE_THRESHOLD {
                         self.shared.borrow_mut().apply_message_action(
-                            ctx.state,
+                            &mut ctx.state,
                             s.id,
                             CtxAction::Archive,
                         );
                     } else if s.dx >= SWIPE_THRESHOLD {
                         self.shared.borrow_mut().apply_message_action(
-                            ctx.state,
+                            &mut ctx.state,
                             s.id,
                             CtxAction::Delete,
                         );
@@ -3640,7 +3657,8 @@ mod tests {
     fn reader_for(sh: &Shared, id: MessageId, w: f64, h: f64) -> Pane {
         {
             let mut doc = AutoCommit::new();
-            sh.borrow_mut().select_message(&mut doc, id);
+            sh.borrow_mut()
+                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
             sh.borrow_mut().take_intents();
         }
         let mut p = Pane::new(Role::Reader, sh.clone());
@@ -3668,7 +3686,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3740,7 +3758,11 @@ mod tests {
             sh.borrow_mut().last_mouse = star.center();
             let mut doc = AutoCommit::new();
             let mut handled = false;
-            p.on_left_press(&mut doc, star.center(), &mut handled);
+            p.on_left_press(
+                &mut ui::widget::Edits::lend(&mut doc),
+                star.center(),
+                &mut handled,
+            );
             assert!(handled, "reader Star click consumed");
             assert_eq!(
                 sh.borrow().mailbox.get(id).unwrap().starred,
@@ -3801,7 +3823,8 @@ mod tests {
             };
             {
                 let mut doc = AutoCommit::new();
-                sh.borrow_mut().select_message(&mut doc, id);
+                sh.borrow_mut()
+                    .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
                 sh.borrow_mut().take_intents();
             }
             let mut p = Pane::new(Role::Reader, sh);
@@ -3885,7 +3908,8 @@ mod tests {
             };
             {
                 let mut doc = AutoCommit::new();
-                sh.borrow_mut().select_message(&mut doc, id);
+                sh.borrow_mut()
+                    .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
                 sh.borrow_mut().take_intents();
             }
             let mut p = Pane::new(Role::Reader, sh.clone());
@@ -3900,7 +3924,11 @@ mod tests {
             sh.borrow_mut().last_mouse = toggle.center();
             let mut doc = AutoCommit::new();
             let mut handled = false;
-            p.on_left_press(&mut doc, toggle.center(), &mut handled);
+            p.on_left_press(
+                &mut ui::widget::Edits::lend(&mut doc),
+                toggle.center(),
+                &mut handled,
+            );
             assert!(handled, "toggle click consumed");
             draw(&mut p);
             assert_eq!(
@@ -3933,7 +3961,11 @@ mod tests {
             sh.borrow_mut().last_mouse = star.center();
             let mut doc = AutoCommit::new();
             let mut handled = false;
-            p.on_left_press(&mut doc, star.center(), &mut handled);
+            p.on_left_press(
+                &mut ui::widget::Edits::lend(&mut doc),
+                star.center(),
+                &mut handled,
+            );
             assert!(
                 sh.borrow().mailbox.get(id).unwrap().starred,
                 "starring sets the flag the filled glyph keys on"
@@ -3966,7 +3998,11 @@ mod tests {
             sh.borrow_mut().last_mouse = rect.center();
             let mut doc = AutoCommit::new();
             let mut handled = false;
-            p.on_left_press(&mut doc, rect.center(), &mut handled);
+            p.on_left_press(
+                &mut ui::widget::Edits::lend(&mut doc),
+                rect.center(),
+                &mut handled,
+            );
             assert!(handled, "chip click consumed");
 
             assert!(
@@ -4186,7 +4222,11 @@ mod tests {
             sh.borrow_mut().last_mouse = sr.center();
             let mut doc = AutoCommit::new();
             let mut handled = false;
-            p.on_left_press(&mut doc, sr.center(), &mut handled);
+            p.on_left_press(
+                &mut ui::widget::Edits::lend(&mut doc),
+                sr.center(),
+                &mut handled,
+            );
             assert!(
                 sh.borrow().search_focused,
                 "clicking the field focuses search"
@@ -4223,7 +4263,11 @@ mod tests {
                 .map(|(r, _)| *r)
                 .expect("clear button appears");
             let mut handled = false;
-            p.on_left_press(&mut doc, clr.center(), &mut handled);
+            p.on_left_press(
+                &mut ui::widget::Edits::lend(&mut doc),
+                clr.center(),
+                &mut handled,
+            );
             assert!(sh.borrow().search.is_empty(), "clear reset the query");
             assert_eq!(
                 sh.borrow().list_rows().len(),
@@ -4256,7 +4300,11 @@ mod tests {
             sh.borrow_mut().last_mouse = row.center();
             let mut doc = AutoCommit::new();
             let mut handled = false;
-            p.on_left_press(&mut doc, row.center(), &mut handled);
+            p.on_left_press(
+                &mut ui::widget::Edits::lend(&mut doc),
+                row.center(),
+                &mut handled,
+            );
             let intents = sh.borrow_mut().take_intents();
             assert!(
                 intents
@@ -4339,7 +4387,7 @@ mod tests {
         sh.borrow_mut().last_mouse = pt;
         let mut doc = AutoCommit::new();
         let mut handled = false;
-        p.on_left_press(&mut doc, pt, &mut handled);
+        p.on_left_press(&mut ui::widget::Edits::lend(&mut doc), pt, &mut handled);
         assert!(handled, "sidebar click at {pt:?} consumed");
         sh.borrow_mut().take_intents()
     }

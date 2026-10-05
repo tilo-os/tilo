@@ -31,7 +31,9 @@ use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use taffy::{Dimension, NodeId, Size as TSize, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -99,7 +101,7 @@ const CONTEXT_MENU_PAD: f64 = 6.0;
 struct EventContext<'a> {
     scale_factor: f64,
     modifiers: winit::event::Modifiers,
-    state: &'a mut AutoCommit,
+    state: ui::widget::Edits<'a>,
     path: &'a ObjId,
     handled: &'a mut bool,
     focus_target: &'a mut Option<NodeId>,
@@ -614,7 +616,7 @@ impl MailApp {
     /// mailbox. Runs in the sync after the framework asked for it, with the
     /// document, so a scenario that changes mail (moving messages to Trash
     /// before confirming a purge) does it through the resource's actions.
-    fn stage_scenario(&mut self, doc: &mut AutoCommit, scenario: &str) {
+    fn stage_scenario(&mut self, doc: &mut ui::widget::Edits<'_>, scenario: &str) {
         match scenario {
             "compose" | "compose_narrow" => self.compose.open_demo(),
             "narrow_detail" => {
@@ -692,7 +694,7 @@ impl MailApp {
 
     /// The bundled HTML newsletter open in the reader (it is starred, so the
     /// filled-star action shows too).
-    fn stage_html_mail(&mut self, doc: &mut AutoCommit) {
+    fn stage_html_mail(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let id = {
             let st = self.shared.borrow();
             st.mailbox
@@ -743,7 +745,7 @@ impl MailApp {
 
     /// Two messages moved to Trash and selected, with the confirmation that
     /// names how many will be deleted for good.
-    fn stage_bulk_purge_confirmation(&mut self, doc: &mut AutoCommit) {
+    fn stage_bulk_purge_confirmation(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let ids: Vec<MessageId> = self
             .shared
             .borrow()
@@ -1156,7 +1158,7 @@ impl MailApp {
     /// Send the message the composer holds: it goes into the mailbox's
     /// outbox as an action — undone like any edit until it is delivered —
     /// and a device that holds its account delivers it.
-    fn send_compose(&mut self, doc: &mut AutoCommit) {
+    fn send_compose(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.store_preferences_if_changed();
         let draft = self.compose.to_draft(doc);
         let acct = self.shared.borrow().accounts.active_config();
@@ -1204,7 +1206,7 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn save_compose_draft(&mut self, doc: &mut AutoCommit) {
+    fn save_compose_draft(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let draft = self.compose.to_draft(doc);
         // Persist the draft as an action (survives a crash / syncs to peers /
         // one undo boundary) …
@@ -1221,7 +1223,7 @@ impl MailApp {
 
     /// Insert (or, when editing an existing draft, update in place) a Drafts
     /// folder message reflecting `draft`, and return its id.
-    fn upsert_draft_message(&self, doc: &mut AutoCommit, draft: &Draft) -> MessageId {
+    fn upsert_draft_message(&self, doc: &mut ui::widget::Edits<'_>, draft: &Draft) -> MessageId {
         let (from, now) = {
             let st = self.shared.borrow();
             let acct = st.accounts.active_config();
@@ -1736,7 +1738,7 @@ impl MailApp {
         self.dirty = true;
     }
 
-    fn save_setup(&mut self, _doc: &mut AutoCommit) {
+    fn save_setup(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.setup_validation.is_some() {
             return;
         }
@@ -1815,7 +1817,7 @@ impl MailApp {
     #[cfg(test)]
     fn save_setup_with(
         &mut self,
-        _doc: &mut AutoCommit,
+        _doc: &mut ui::widget::Edits<'_>,
         probe: &dyn crate::validate::ProbeTransport,
     ) {
         self.maybe_autofill();
@@ -1880,7 +1882,7 @@ impl MailApp {
     /// Remove the account currently being edited from the person's accounts
     /// (dropping its secret from this device's vault), and close the sheet.
     /// A no-op on the add flow (no editing target).
-    fn remove_editing_account(&mut self, _doc: &mut AutoCommit) {
+    fn remove_editing_account(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         let Some(idx) = self.setup_editing else {
             return;
         };
@@ -2185,7 +2187,7 @@ impl MailApp {
 
     fn apply_fetched_messages(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         account_id: &str,
@@ -2232,7 +2234,7 @@ impl MailApp {
 
     fn apply_sent_message(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         wire_bytes: usize,
@@ -2255,7 +2257,7 @@ impl MailApp {
 
     fn apply_engine_error(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         st: &mut MailState,
         request_id: EngineRequestId,
         context: &str,
@@ -2311,7 +2313,12 @@ impl MailApp {
         }
     }
 
-    fn apply_engine_event(&mut self, doc: &mut AutoCommit, st: &mut MailState, event: EngineEvent) {
+    fn apply_engine_event(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        st: &mut MailState,
+        event: EngineEvent,
+    ) {
         match event {
             EngineEvent::Connected {
                 request_id,
@@ -2495,7 +2502,7 @@ impl MailApp {
         self.delivery = Some(delivery);
     }
 
-    fn drain_engine(&mut self, doc: &mut AutoCommit) {
+    fn drain_engine(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(handle) = &self.engine else { return };
         let mut events = Vec::new();
         while let Ok(event) = handle.rx.try_recv() {
@@ -2518,7 +2525,7 @@ impl MailApp {
     /// Register the locally hydrated corpus before actions target it. This is
     /// external ingestion, not a user mutation: it never writes flags from a
     /// presentation cache into the collaborative document.
-    fn register_hydrated_messages(&self, doc: &mut AutoCommit) {
+    fn register_hydrated_messages(&self, doc: &mut ui::widget::Edits<'_>) {
         let messages: Vec<_> = self
             .shared
             .borrow()
@@ -2714,7 +2721,7 @@ impl MailApp {
 
     /// Apply collaborative domain state to the local hydrated corpus. Folder,
     /// selection, search, and composer format remain local to this window.
-    fn hydrate_domain_state(&self, doc: &mut AutoCommit) {
+    fn hydrate_domain_state(&self, doc: &mut ui::widget::Edits<'_>) {
         {
             let mut st = self.shared.borrow_mut();
             MailDoc::apply_flags(doc, &mut st.mailbox);
@@ -4032,7 +4039,7 @@ impl MailApp {
             &mut ComposeEventContext {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 node_id: ctx.node_id,
                 taffy: ctx.taffy,
@@ -4041,8 +4048,8 @@ impl MailApp {
         let lifecycle_boundary = !matches!(&action, ComposeAction::None);
         match action {
             ComposeAction::RequestAttachment => self.request_compose_attachment(),
-            ComposeAction::Send => self.send_compose(ctx.state),
-            ComposeAction::SaveDraft => self.save_compose_draft(ctx.state),
+            ComposeAction::Send => self.send_compose(&mut ctx.state),
+            ComposeAction::SaveDraft => self.save_compose_draft(&mut ctx.state),
             ComposeAction::Close => {
                 self.dirty = true;
             }
@@ -4054,7 +4061,7 @@ impl MailApp {
         consumed
     }
 
-    fn confirm_bulk_purge(&mut self, state: &mut AutoCommit) {
+    fn confirm_bulk_purge(&mut self, state: &mut ui::widget::Edits<'_>) {
         let affected = self
             .shared
             .borrow_mut()
@@ -4103,7 +4110,7 @@ impl MailApp {
             }
         );
         if confirm_key {
-            self.confirm_bulk_purge(ctx.state);
+            self.confirm_bulk_purge(&mut ctx.state);
         } else if cancel_key {
             self.bulk_purge_confirmation = None;
             self.dirty = true;
@@ -4119,7 +4126,7 @@ impl MailApp {
             let (cancel, confirm) = Self::bulk_purge_confirmation_buttons(panel);
             let point = self.shared.borrow().last_mouse;
             if confirm.contains(point) {
-                self.confirm_bulk_purge(ctx.state);
+                self.confirm_bulk_purge(&mut ctx.state);
             } else if cancel.contains(point) || !panel.contains(point) {
                 self.bulk_purge_confirmation = None;
                 self.dirty = true;
@@ -4134,7 +4141,7 @@ impl MailApp {
     fn handle_context_menu_keyboard(
         &mut self,
         event: &WindowEvent,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let WindowEvent::KeyboardInput {
             event:
@@ -4203,7 +4210,11 @@ impl MailApp {
 
     /// One dispatcher for pointer, keyboard and assistive-technology menu
     /// activation. The message must still be loaded when the command lands.
-    fn activate_context_menu_item(&mut self, index: usize, state: &mut AutoCommit) -> bool {
+    fn activate_context_menu_item(
+        &mut self,
+        index: usize,
+        state: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         let Some(menu) = self.context_menu.take() else {
             return false;
         };
@@ -4223,7 +4234,7 @@ impl MailApp {
     }
 
     /// Activate the clicked context-menu item or dismiss the open menu.
-    fn handle_context_menu_click(&mut self, pt: Point, state: &mut AutoCommit) {
+    fn handle_context_menu_click(&mut self, pt: Point, state: &mut ui::widget::Edits<'_>) {
         self.rebuild_overlay_hits();
         let item = self
             .overlay_hits
@@ -4250,7 +4261,7 @@ impl MailApp {
             return true;
         }
 
-        if self.context_menu.is_some() && self.handle_context_menu_keyboard(event, ctx.state) {
+        if self.context_menu.is_some() && self.handle_context_menu_keyboard(event, &mut ctx.state) {
             *ctx.handled = true;
             return true;
         }
@@ -4262,7 +4273,7 @@ impl MailApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &ctx.modifiers,
-                        state: ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -4303,7 +4314,7 @@ impl MailApp {
         {
             if *button == MouseButton::Left {
                 let point = self.shared.borrow().last_mouse;
-                self.handle_context_menu_click(point, ctx.state);
+                self.handle_context_menu_click(point, &mut ctx.state);
             } else {
                 self.context_menu = None;
             }
@@ -4738,18 +4749,12 @@ impl MailApp {
 
 impl Widget for MailApp {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         self.background_poll_deadline.set(None);
         self.adopt_person_accounts();
         if self.first_run.take_action() {
             self.open_setup_edit(None);
         }
-        // Drain any engine results first so freshly-fetched messages are present
-        // before layout/draw.
-        self.drain_engine(state);
-        self.reveal_requested(state);
-        self.deliver_effect_replies();
-        self.flush_server_outbox();
         self.drain_setup_validation();
         self.drain_setup_discovery();
         // The host Save dialog runs off-thread; its outcome is applied here
@@ -4761,11 +4766,7 @@ impl Widget for MailApp {
         self.expire_toast_at(ui::time::now());
 
         let mem_seeded = self.shared.borrow().seeded;
-        if mem_seeded {
-            self.hydrate_domain_state(state);
-        } else {
-            self.register_hydrated_messages(state);
-            self.hydrate_domain_state(state);
+        if !mem_seeded {
             // Live: kick off a connect + inbox fetch for the active account.
             let has_accounts = !self.shared.borrow().accounts.is_empty();
             if self.engine.is_some() && has_accounts && !self.connect_requested {
@@ -4779,9 +4780,6 @@ impl Widget for MailApp {
             }
             self.shared.borrow_mut().seeded = true;
         }
-        if let Some(scenario) = self.pending_stage.take() {
-            self.stage_scenario(state, &scenario);
-        }
         // Live app: advance the wall clock (relative timestamps + the periodic
         // refresh cadence read it) and fire a periodic refresh when due. The
         // sample/`--shots` path pins `now_min`, so this only runs live.
@@ -4792,6 +4790,22 @@ impl Widget for MailApp {
         self.persist_active_account_if_changed();
         self.sync_preferences();
         self.nav.sync(state, path);
+    }
+
+    fn settle(&mut self, state: &mut ui::widget::Edits<'_>, path: &ObjId) {
+        self.drain_engine(state);
+        self.reveal_requested(state);
+        self.deliver_effect_replies();
+        self.flush_server_outbox();
+        self.compose.settle(state, path);
+        if !self.shared.borrow().seeded {
+            self.register_hydrated_messages(state);
+        }
+        self.hydrate_domain_state(state);
+        if let Some(scenario) = self.pending_stage.take() {
+            self.stage_scenario(state, &scenario);
+        }
+        self.nav.settle(state, path);
     }
 
     fn build_layout(
@@ -4925,7 +4939,7 @@ impl Widget for MailApp {
             let mut context = EventContext {
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: ctx.handled,
                 focus_target: ctx.focus_target,
@@ -4942,7 +4956,7 @@ impl Widget for MailApp {
         self.process_intents();
 
         if !*ctx.handled {
-            self.global_shortcuts(event, *ctx.modifiers, ctx.state, ctx.handled);
+            self.global_shortcuts(event, *ctx.modifiers, &mut ctx.state, ctx.handled);
         }
 
         self.dirty = true;
@@ -5088,7 +5102,7 @@ impl Widget for MailApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, _) = ui::doc::document(state, path);
@@ -5388,7 +5402,7 @@ impl MailApp {
     }
 
     /// Take up what effects asked to show that needs the document.
-    fn reveal_requested(&mut self, doc: &mut AutoCommit) {
+    fn reveal_requested(&mut self, doc: &mut ui::widget::Edits<'_>) {
         for reveal in std::mem::take(&mut self.reveals) {
             match reveal {
                 Reveal::Message(id) => {
@@ -5688,7 +5702,7 @@ impl MailApp {
         &mut self,
         control: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !self.compose.open {
             return false;
@@ -5714,7 +5728,7 @@ impl MailApp {
         &mut self,
         control: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use ui::a11y::Action;
 
@@ -5774,7 +5788,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -5824,7 +5838,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         use ui::a11y::Action;
 
@@ -5859,7 +5873,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         let Some((account_raw, folder_raw)) = raw.split_once(':') else {
             return false;
@@ -5891,7 +5905,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -5929,7 +5943,7 @@ impl MailApp {
         &mut self,
         raw: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -6038,7 +6052,7 @@ impl MailApp {
                     let order = self.setup_tab_order();
                     let is_last = self.setup_focus.is_some_and(|f| order.last() == Some(&f));
                     if is_last {
-                        self.save_setup(ctx.state);
+                        self.save_setup(&mut ctx.state);
                     } else {
                         self.focus_setup_step(1);
                     }
@@ -6056,7 +6070,7 @@ impl MailApp {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &ctx.modifiers,
-                        state: ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: ctx.handled,
                         focus_target: ctx.focus_target,
@@ -6080,7 +6094,7 @@ impl MailApp {
         } = event
         {
             let pt = self.shared.borrow().last_mouse;
-            self.handle_setup_click(pt, ctx.state);
+            self.handle_setup_click(pt, &mut ctx.state);
             *ctx.handled = true;
         }
     }
@@ -6089,7 +6103,7 @@ impl MailApp {
     /// `pt` lands on a field / pill / toggle / button, or falls outside the
     /// panel and cancels the sheet. Every outcome counts as handled, which
     /// the caller sets unconditionally.
-    fn handle_setup_click(&mut self, pt: Point, state: &mut AutoCommit) {
+    fn handle_setup_click(&mut self, pt: Point, state: &mut ui::widget::Edits<'_>) {
         self.rebuild_overlay_hits();
         let panel = self.overlay_panel_rect();
         let hit = self
@@ -6151,7 +6165,7 @@ impl MailApp {
         &mut self,
         event: &WindowEvent,
         modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let search_focused = self.shared.borrow().search_focused;
@@ -6407,7 +6421,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -6421,7 +6435,10 @@ mod tests {
     fn app() -> (MailApp, AutoCommit) {
         let mut app = MailApp::new_sample();
         let mut doc = AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         (app, doc)
     }
 
@@ -6488,7 +6505,8 @@ mod tests {
         }
 
         fn drain(&mut self) {
-            self.app.drain_engine(&mut self.doc);
+            self.app
+                .drain_engine(&mut ui::widget::Edits::lend(&mut self.doc));
         }
     }
 
@@ -6524,13 +6542,13 @@ mod tests {
             message.clone()
         };
         app.shared.borrow().ingest_fetched(
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             "you@example.test",
             std::slice::from_ref(&message),
         );
         app.shared
             .borrow_mut()
-            .set_read(&mut doc, id, !message.read);
+            .set_read(&mut ui::widget::Edits::lend(&mut doc), id, !message.read);
         let [update] = MailDoc::server_updates(&doc).try_into().unwrap();
 
         let outcome = push(&app, update.clone());
@@ -6562,7 +6580,7 @@ mod tests {
                 message: "connection reset".into(),
             })
             .unwrap();
-        app.drain_engine(&mut doc);
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Err(_))));
         assert_eq!(
             MailDoc::server_updates(&doc),
@@ -6579,7 +6597,7 @@ mod tests {
                 kind: EngineRequestKind::StoreFlag,
             })
             .unwrap();
-        app.drain_engine(&mut doc);
+        app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
         assert!(matches!(outcome.borrow().as_ref(), Some(Ok(()))));
         assert!(
             MailDoc::server_updates(&doc).is_empty(),
@@ -6621,7 +6639,7 @@ mod tests {
             .unwrap();
             let mut doc = AutoCommit::new();
             let mut state = MailState::new_sample(avatar_store_offline());
-            state.save_draft(&mut doc, &draft);
+            state.save_draft(&mut ui::widget::Edits::lend(&mut doc), &draft);
             let stored = MailDoc::load_draft(&doc);
             assert_eq!(stored.to, "guest@example.com");
             assert_eq!(stored.subject, "Invitation: Review");
@@ -6846,7 +6864,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &message_target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -6888,7 +6906,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &archive_target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -6934,7 +6952,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -6968,7 +6986,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &star_target,
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(
@@ -6983,13 +7001,15 @@ mod tests {
                 .map(|(id, _)| id)
                 .find(|id| *id != selected)
                 .expect("second sample message");
-            app.shared.borrow_mut().select_message(&mut doc, other);
+            app.shared
+                .borrow_mut()
+                .select_message(&mut ui::widget::Edits::lend(&mut doc), other);
             app.process_intents();
             assert!(
                 !app.perform_semantic_action(
                     &star_target,
                     &Action::Activate,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ),
                 "a stale reader control cannot operate a newly selected message"
@@ -7008,7 +7028,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "mail.compose:discard",
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(
@@ -7027,7 +7047,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "mail.setup:cancel",
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(!app.setup_open, "semantic cancel closes account setup");
@@ -7054,13 +7074,13 @@ mod tests {
             assert!(app.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Focus,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.perform_semantic_action(
                 &target,
                 &ui::a11y::Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(app.context_menu.is_none());
@@ -7095,7 +7115,9 @@ mod tests {
                     .map(|m| m.id)
             }
             .expect("an unread message");
-            app.shared.borrow_mut().select_message(&mut doc, id);
+            app.shared
+                .borrow_mut()
+                .select_message(&mut ui::widget::Edits::lend(&mut doc), id);
             assert!(app.shared.borrow().mailbox.get(id).unwrap().read);
             let mut fresh = app.shared.borrow().mailbox.clone();
             for m in fresh.messages.values_mut() {
@@ -7128,7 +7150,10 @@ mod tests {
                     .unwrap(),
                 ui::framework::Effected::Done(_)
             ));
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 app.shared.borrow().mailbox.get(id).unwrap().read,
                 "Open dispatches the canonical mark-read action"
@@ -7171,7 +7196,10 @@ mod tests {
                     ui::framework::Effected::Done(_)
                 ));
             }
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
 
             assert!(ids.iter().all(|id| {
                 app.shared
@@ -7209,7 +7237,10 @@ mod tests {
                 "preview is read-state neutral before sync"
             );
             assert_eq!(doc.get_heads(), heads_before_preview);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(
                 !app.shared.borrow().mailbox.get(id).unwrap().read,
                 "unlike Open message, explicit preview never queues mark-read"
@@ -7342,7 +7373,9 @@ mod tests {
             ));
             assert!(app.compose.open, "message Reply opens the normal composer");
             assert_eq!(
-                app.compose.to_draft(&mut doc.clone()).to,
+                app.compose
+                    .to_draft(&mut ui::widget::Edits::lend(&mut doc.clone()))
+                    .to,
                 message.from.rfc5322()
             );
             assert_eq!(
@@ -7366,7 +7399,7 @@ mod tests {
                 ..Default::default()
             };
             app.compose.reattach(&draft);
-            app.send_compose(&mut doc);
+            app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
             let outbox = MailDoc::outbox(&doc);
             let [(outgoing, None)] = outbox.as_slice() else {
                 panic!("one message waits in the outbox: {outbox:?}");
@@ -7408,7 +7441,7 @@ mod tests {
                     message: "relay denied".into(),
                 })
                 .unwrap();
-            app.drain_engine(&mut doc);
+            app.drain_engine(&mut ui::widget::Edits::lend(&mut doc));
             let outbox = MailDoc::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(_, Some(reason))] if reason.contains("relay denied")),
@@ -7420,7 +7453,7 @@ mod tests {
             );
 
             // Sending it again replaces the refused one.
-            app.send_compose(&mut doc);
+            app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
             let outbox = MailDoc::outbox(&doc);
             assert!(
                 matches!(outbox.as_slice(), [(again, None)] if again.id != outgoing.id),
@@ -7441,12 +7474,14 @@ mod tests {
                     .expect("a multi-recipient message")
                     .id
             };
-            app.shared
-                .borrow_mut()
-                .apply_message_action(&mut doc, id, CtxAction::ReplyAll);
+            app.shared.borrow_mut().apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id,
+                CtxAction::ReplyAll,
+            );
             app.process_intents();
             assert!(app.compose.open, "reply-all opens the composer");
-            let d = app.compose.to_draft(&mut doc);
+            let d = app.compose.to_draft(&mut ui::widget::Edits::lend(&mut doc));
             let sender = app
                 .shared
                 .borrow()
@@ -7490,7 +7525,7 @@ mod tests {
             app.compose
                 .add_attachment(attachment.clone())
                 .expect("attach to draft");
-            app.save_compose_draft(&mut doc);
+            app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
             assert!(!app.compose.open, "save closes the composer");
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Drafts),
@@ -7510,8 +7545,18 @@ mod tests {
             };
             app.open_draft(id);
             assert!(app.compose.open, "the draft reopens in the composer");
-            assert_eq!(app.compose.to_draft(&mut doc).subject, "WIP proposal");
-            assert_eq!(app.compose.to_draft(&mut doc).attachments, vec![attachment]);
+            assert_eq!(
+                app.compose
+                    .to_draft(&mut ui::widget::Edits::lend(&mut doc))
+                    .subject,
+                "WIP proposal"
+            );
+            assert_eq!(
+                app.compose
+                    .to_draft(&mut ui::widget::Edits::lend(&mut doc))
+                    .attachments,
+                vec![attachment]
+            );
             assert_eq!(app.editing_draft, Some(id));
         }
 
@@ -7525,12 +7570,12 @@ mod tests {
                 body: "one".into(),
                 ..Default::default()
             });
-            app.save_compose_draft(&mut doc);
+            app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
             let after_first = app.shared.borrow().mailbox.count(Folder::Drafts);
             // Re-open + re-save the same draft.
             let id = app.editing_draft.expect("editing the saved draft");
             app.open_draft(id);
-            app.save_compose_draft(&mut doc);
+            app.save_compose_draft(&mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(
                 app.shared.borrow().mailbox.count(Folder::Drafts),
                 after_first,
@@ -7578,7 +7623,10 @@ mod tests {
                     .next_wake_deadline()
                     .expect("picker completion must wake");
                 assert_eq!(app.next_wake_deadline(), Some(deadline));
-                app.sync(&mut doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 assert!(app.compose_attachment_rx.is_none());
                 assert_eq!(app.shared.borrow().status.as_deref(), Some(expected));
                 assert_eq!(app.next_wake_deadline(), app.toast_deadline);
@@ -7636,7 +7684,7 @@ mod tests {
             assert!(app.perform_semantic_action(
                 "mail.bulk-purge:confirm",
                 &Action::Activate,
-                &mut doc,
+                &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -7907,7 +7955,10 @@ mod tests {
             // Drive the offline probe explicitly so this offline-save flow is
             // deterministic under both builds (the live probe's connect gating is
             // covered by the `validate` state-machine tests and the socket tests).
-            app.save_setup_with(&mut doc, &crate::validate::OfflineProbe);
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &crate::validate::OfflineProbe,
+            );
             assert!(!app.setup_open);
             assert_eq!(app.shared.borrow().accounts.len(), before + 1);
             assert_eq!(
@@ -7953,7 +8004,10 @@ mod tests {
             app.setup_inputs[2].set_text("guard@example.test");
             app.setup_inputs[4].set_text("imap.example.test");
             app.setup_inputs[6].set_text("smtp.example.test");
-            app.save_setup_with(&mut doc, &crate::validate::OfflineProbe);
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &crate::validate::OfflineProbe,
+            );
             assert_eq!(
                 app.shared.borrow().accounts.active_config().email,
                 "guard@example.test",
@@ -8040,17 +8094,23 @@ mod tests {
             let mut doc = AutoCommit::new();
             {
                 let mut app = MailApp::new_sample();
-                app.sync(&mut doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
+                app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+                app.sync(&doc, &automerge::ROOT);
                 app.shared
                     .borrow_mut()
-                    .select_folder(&mut doc, Folder::Sent);
+                    .select_folder(&mut ui::widget::Edits::lend(&mut doc), Folder::Sent);
                 app.shared.borrow_mut().set_active_account(1);
                 app.shared.borrow_mut().search = "private query".into();
                 app.compose.set_format(ComposeFormat::Text);
             }
             // A second app sharing the document receives only domain state.
             let mut app2 = MailApp::new_sample();
-            app2.sync(&mut doc, &automerge::ROOT);
+            app2.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app2.sync(&doc, &automerge::ROOT);
+            app2.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app2.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 app2.shared.borrow().folder,
                 Folder::Inbox,
@@ -8080,7 +8140,10 @@ mod tests {
             let (mut app, mut doc) = app();
             let selected_id = app.shared.borrow().accounts.accounts[1].id.clone();
             app.shared.borrow_mut().set_active_account(1);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
 
             let root = app
                 .accounts_persist_root()
@@ -8103,7 +8166,10 @@ mod tests {
         {
             let mut app = MailApp::new_first_run();
             let mut doc = AutoCommit::new();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             app.layout_for_test(1100.0, 780.0);
             assert!(
                 app.is_first_run(),
@@ -8117,12 +8183,15 @@ mod tests {
             assert!(
                 app.first_run.perform_action(
                     &ui::a11y::Action::Activate,
-                    &mut doc,
+                    &mut ui::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "assistive activation reaches Add account"
             );
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_open, "Add account opens the account setup sheet");
             assert!(
                 !app.is_first_run(),
@@ -8763,7 +8832,10 @@ mod tests {
             app.close_setup();
             assert!(cancellation.load(std::sync::atomic::Ordering::Relaxed));
             assert!(sender.send(crate::validate::ValidationState::Ok).is_err());
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.shared.borrow().accounts.accounts.len(), accounts_before);
             assert!(app.setup_validation.is_none());
             assert_eq!(app.next_wake_deadline(), app.toast_deadline);
@@ -8783,7 +8855,10 @@ mod tests {
             });
             app.set_setup_input(4, "changed-after-verification.example");
             sender.send(crate::validate::ValidationState::Ok).unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_open);
             assert!(
                 app.setup_error
@@ -8808,7 +8883,10 @@ mod tests {
                 cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             drop(sender);
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_open);
             assert!(
                 app.setup_error
@@ -8835,7 +8913,10 @@ mod tests {
                 cancellation: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
             sender.send(crate::validate::ValidationState::Ok).unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(!app.setup_open);
             assert!(app.setup_validation.is_none());
             assert!(app.setup_error.is_none());
@@ -8862,7 +8943,10 @@ mod tests {
             let before = app.shared.borrow().accounts.len();
 
             // Failing verification: no persist, sheet stays open, error surfaced.
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: false });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: false },
+            );
             assert_eq!(
                 app.shared.borrow().accounts.len(),
                 before,
@@ -8878,7 +8962,10 @@ mod tests {
             );
 
             // Succeeding verification: account saved, sheet closes.
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: true });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: true },
+            );
             assert_eq!(
                 app.shared.borrow().accounts.len(),
                 before + 1,
@@ -8896,7 +8983,10 @@ mod tests {
             app.set_setup_input(2, "new@host.example");
             app.set_setup_input(4, "imap.host.example");
             app.set_setup_input(6, "smtp.host.example");
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: false });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: false },
+            );
             let dialog = app.accessibility().expect("setup dialog stays available");
             assert!(
                 dialog.children.iter().any(|node| {
@@ -8960,7 +9050,10 @@ mod tests {
             app.set_setup_input(3, "user-entered-secret");
             let discovered = crate::autoconfig::builtin_autoconfig("fastmail.com").unwrap();
             sender.send(Some(discovered.clone())).unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.setup_inputs[4].value(), "manual.imap.invalid");
             assert_eq!(app.setup_inputs[5].value(), "1993");
             assert_eq!(app.setup_inputs[3].value(), "user-entered-secret");
@@ -8979,7 +9072,10 @@ mod tests {
             sender
                 .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
                 .unwrap();
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_inputs[4].value().is_empty());
             assert!(app.setup_inputs[6].value().is_empty());
             assert_eq!(app.setup_inputs[1].value(), "new@other.invalid");
@@ -8999,7 +9095,10 @@ mod tests {
                     .send(crate::autoconfig::builtin_autoconfig("fastmail.com"))
                     .is_err()
             );
-            app.sync(&mut doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
+            app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            app.sync(&doc, &automerge::ROOT);
             assert!(app.setup_inputs[4].value().is_empty());
             assert!(app.setup_discovery.is_none());
         }
@@ -9022,7 +9121,10 @@ mod tests {
             app.setup_inputs[2].set_text("new@host.example");
             app.setup_inputs[4].set_text("imap.host.example");
             app.setup_inputs[6].set_text("smtp.host.example");
-            app.save_setup_with(&mut doc, &FixedProbe { imap_ok: true });
+            app.save_setup_with(
+                &mut ui::widget::Edits::lend(&mut doc),
+                &FixedProbe { imap_ok: true },
+            );
             assert!(app.setup_open);
             assert!(
                 app.setup_error
@@ -9034,7 +9136,7 @@ mod tests {
             assert!(app.pending_engine_requests.is_empty());
 
             app.open_setup_edit(Some(0));
-            app.remove_editing_account(&mut doc);
+            app.remove_editing_account(&mut ui::widget::Edits::lend(&mut doc));
             assert!(app.setup_open);
             assert!(
                 app.setup_error

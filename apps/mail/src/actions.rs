@@ -2089,7 +2089,11 @@ mod tests {
             let mut doc = AutoCommit::new();
             let id = an_inbox_id(&st);
 
-            st.apply_message_action(&mut doc, id.parse().unwrap(), CtxAction::Archive);
+            st.apply_message_action(
+                &mut ui::widget::Edits::lend(&mut doc),
+                id.parse().unwrap(),
+                CtxAction::Archive,
+            );
             let mut palette = AutoCommit::new();
             MailDoc::register_message(&mut palette, &id);
             move_action(vec![id.clone()], Folder::Archive)

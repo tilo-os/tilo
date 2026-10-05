@@ -245,7 +245,7 @@ impl ComposeMetrics {
 pub(crate) struct ComposeEventContext<'a> {
     pub(crate) scale_factor: f64,
     pub(crate) modifiers: winit::event::Modifiers,
-    pub(crate) state: &'a mut automerge::AutoCommit,
+    pub(crate) state: ui::widget::Edits<'a>,
     pub(crate) path: &'a automerge::ObjId,
     pub(crate) node_id: taffy::NodeId,
     pub(crate) taffy: &'a taffy::TaffyTree<()>,
@@ -909,7 +909,7 @@ impl ComposeWindow {
 
     /// The current draft, with both a plain body and (in HTML mode) an HTML
     /// body, ready for `transport::build_mime`.
-    pub fn to_draft(&mut self, doc: &mut automerge::AutoCommit) -> Draft {
+    pub fn to_draft(&mut self, doc: &mut ui::widget::Edits<'_>) -> Draft {
         self.start_pending_body(doc);
         let (body, html_body) = match self.format {
             ComposeFormat::Html => {
@@ -981,7 +981,7 @@ impl ComposeWindow {
     }
 
     /// Apply a pending [`Self::start_body`].
-    fn start_pending_body(&mut self, doc: &mut automerge::AutoCommit) {
+    fn start_pending_body(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(dispatcher) = &self.dispatcher else {
             return;
         };
@@ -990,9 +990,7 @@ impl ComposeWindow {
         };
         let action = MailAction::StartDraftBody(seed);
         let context = tilo_actions::ActionContext::for_action("so.tilo.mail", "Mail", &action);
-        if let Err(error) =
-            dispatcher.apply_now_with(&mut ui::widget::Edits::lend(doc), &action, context)
-        {
+        if let Err(error) = dispatcher.apply_now_with(doc, &action, context) {
             tracing::warn!(%error, "draft body could not be started");
         }
     }
@@ -1006,16 +1004,24 @@ impl ComposeWindow {
 
     /// Bring the body up to date with the document: a pending start, and
     /// what peers or an undo changed. Called by the host every frame.
-    pub fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    pub fn sync(&mut self, doc: &automerge::AutoCommit, path: &automerge::ObjId) {
         if !self.open || self.format != ComposeFormat::Html {
             return;
         }
-        self.start_pending_body(doc);
         ui::Widget::sync(&mut self.editor, doc, path);
         self.body_plain = Self::read_plain(doc);
         if ui::Widget::needs_redraw(&self.editor) {
             self.dirty = true;
         }
+    }
+
+    /// Author a pending draft start and the body editor's queued actions.
+    pub fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        if !self.open || self.format != ComposeFormat::Html {
+            return;
+        }
+        self.start_pending_body(edits);
+        ui::Widget::settle(&mut self.editor, edits, path);
     }
 
     fn focused_kind(&self) -> BlockKind {
@@ -1093,7 +1099,7 @@ impl ComposeWindow {
 
     /// An event for the body editor.
     fn body_event(&mut self, event: &WindowEvent, ctx: &mut ComposeEventContext<'_>) {
-        self.start_pending_body(ctx.state);
+        self.start_pending_body(&mut ctx.state);
         if self.body_layout.node.is_none() {
             // An event before the first frame: lay out with the default theme.
             self.lay_out_body(&Theme::dark());
@@ -1121,7 +1127,7 @@ impl ComposeWindow {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: &ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -1129,7 +1135,7 @@ impl ComposeWindow {
                 taffy: &self.body_layout.taffy,
             },
         );
-        self.body_plain = Self::read_plain(ctx.state);
+        self.body_plain = Self::read_plain(ctx.state.doc());
         self.dirty = true;
     }
 
@@ -1419,7 +1425,7 @@ impl ComposeWindow {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: &mut h,
                     focus_target: &mut ft,
@@ -1436,7 +1442,7 @@ impl ComposeWindow {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: &mut h,
                     focus_target: &mut ft,
@@ -1451,7 +1457,7 @@ impl ComposeWindow {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: &mut h,
                     focus_target: &mut ft,
@@ -1598,7 +1604,7 @@ impl ComposeWindow {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: &mut h,
                     focus_target: &mut ft,
@@ -1639,7 +1645,7 @@ impl ComposeWindow {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &ctx.modifiers,
-                        state: ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: &mut h,
                         focus_target: &mut ft,
@@ -1663,7 +1669,7 @@ impl ComposeWindow {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: &mut h,
                     focus_target: &mut ft,
@@ -1737,7 +1743,7 @@ impl ComposeWindow {
                         &mut ui::widget::EventCtx {
                             scale_factor: ctx.scale_factor,
                             modifiers: &ctx.modifiers,
-                            state: ctx.state,
+                            state: ctx.state.reborrow(),
                             path: ctx.path,
                             handled: &mut h,
                             focus_target: &mut ft,
@@ -1778,7 +1784,7 @@ impl ComposeWindow {
                     &mut ui::widget::EventCtx {
                         scale_factor: ctx.scale_factor,
                         modifiers: &ctx.modifiers,
-                        state: ctx.state,
+                        state: ctx.state.reborrow(),
                         path: ctx.path,
                         handled: &mut h,
                         focus_target: &mut ft,
@@ -1848,7 +1854,7 @@ impl ComposeWindow {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.path,
                     handled: &mut h,
                     focus_target: &mut ft,
@@ -2808,13 +2814,28 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
             w.set_focus(Field::Body);
             w.start_body(DraftBodySeed::text("Hello world"));
-            w.sync(&mut doc, &automerge::ROOT);
+            w.sync(&doc, &automerge::ROOT);
+            assert!(
+                MailDoc::draft_body(&doc).is_none(),
+                "projection leaves a pending draft body unwritten"
+            );
+            w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            assert!(
+                MailDoc::draft_body(&doc).is_some(),
+                "settlement authors the pending draft body"
+            );
+            w.sync(&doc, &automerge::ROOT);
+            w.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            w.sync(&doc, &automerge::ROOT);
             w.toggle_format();
             assert_eq!(w.format(), ComposeFormat::Text);
             assert!(w.plain_body.value().contains("Hello world"));
             w.toggle_format();
             assert_eq!(w.format(), ComposeFormat::Html);
-            assert_eq!(w.to_draft(&mut doc).body, "Hello world");
+            assert_eq!(
+                w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
+                "Hello world"
+            );
         }
 
         // Phase `draft_carries_html_in_html_mode`.
@@ -2824,7 +2845,7 @@ mod tests {
             w.set_focus(Field::Body);
             w.start_body(DraftBodySeed::text("Body\n> quoted"));
             w.to.set_text("a@b.example");
-            let d = w.to_draft(&mut doc);
+            let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
             let html = d.html_body.expect("an HTML part");
             assert!(html.contains("<p>Body</p>"), "got: {html}");
             assert!(html.contains("<blockquote>"), "got: {html}");
@@ -2841,7 +2862,7 @@ mod tests {
                 html_body: Some("<h2>Plan</h2><ul><li><b>ship</b> it</li></ul>".into()),
                 ..Draft::default()
             });
-            let d = w.to_draft(&mut doc);
+            let d = w.to_draft(&mut ui::widget::Edits::lend(&mut doc));
             assert_eq!(d.body, "Plan\n• ship it");
             let html = d.html_body.unwrap();
             assert!(html.contains("<h2>Plan</h2>"), "got: {html}");
@@ -2854,7 +2875,9 @@ mod tests {
             w.open_blank();
             w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
             w.plain_body.set_text("Just text");
-            let d = w.to_draft(&mut automerge::AutoCommit::new());
+            let d = w.to_draft(&mut ui::widget::Edits::lend(
+                &mut automerge::AutoCommit::new(),
+            ));
             assert!(d.html_body.is_none());
             assert_eq!(d.body, "Just text");
         }
@@ -2879,7 +2902,7 @@ mod tests {
                     &mut ComposeEventContext {
                         scale_factor: 1.0,
                         modifiers: m,
-                        state: &mut doc,
+                        state: ui::widget::Edits::lend(&mut doc),
                         path: &automerge::ROOT,
                         node_id: node,
                         taffy: &taffy,
@@ -2894,7 +2917,7 @@ mod tests {
             send(&key(Key::Character(SmolStr::new("o")), Some("o")));
 
             assert_eq!(
-                w.to_draft(&mut doc).body,
+                w.to_draft(&mut ui::widget::Edits::lend(&mut doc)).body,
                 "Hi\ntwo",
                 "Enter split the body across two lines"
             );
@@ -2979,7 +3002,7 @@ mod tests {
                 &mut ComposeEventContext {
                     scale_factor: 1.0,
                     modifiers,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     node_id: taffy::NodeId::new(0),
                     taffy: &taffy,
@@ -3012,7 +3035,7 @@ mod tests {
             &mut ComposeEventContext {
                 scale_factor: 1.0,
                 modifiers: m,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 node_id: node,
                 taffy: &taffy,
@@ -3028,7 +3051,7 @@ mod tests {
             &mut ComposeEventContext {
                 scale_factor: 1.0,
                 modifiers: m,
-                state: &mut doc,
+                state: ui::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 node_id: node,
                 taffy: &taffy,

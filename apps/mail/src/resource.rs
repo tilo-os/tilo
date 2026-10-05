@@ -475,7 +475,8 @@ mod tests {
     fn resource_publish_owns_folder_and_message_document_ops_and_the_window_keeps_no_second_door() {
         let mut app = MailApp::new_sample();
         let mut doc = automerge::AutoCommit::new();
-        app.sync(&mut doc, &automerge::ROOT);
+        app.settle(&mut ui::widget::Edits::lend(&mut doc), &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
 
         let state = Mail::read(&doc).expect("seeded mail state");
         assert!(
