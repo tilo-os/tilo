@@ -95,7 +95,8 @@ impl std::fmt::Debug for RowLeading<'_> {
     }
 }
 
-/// A status dot on the row's trailing edge, on the title's line.
+/// A status dot on the row's trailing edge, on the title's line; beside a
+/// check or a disclosure chevron it centres with them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowStatus<'a> {
     /// Running, connected, healthy.
@@ -629,6 +630,38 @@ impl<'a> ListRowFace<'a> {
 
     /// The text block's height: the title lines, the subtitle and the
     /// secondary lines.
+    /// Where the status dot's centre stands: on the title's line, as a
+    /// presence dot beside a name; beside a check or chevron it centres with
+    /// them, so the trailing column stands on one line.
+    fn dot_cy(geo: &RowGeometry, row: Rect, extra: bool, title_cy: f64) -> f64 {
+        let accessory = geo.disclosure.is_some() || geo.check.is_some();
+        if extra && !accessory {
+            title_cy
+        } else {
+            row.center().y
+        }
+    }
+
+    /// The status dot's centre in `row`, as painted.
+    #[cfg(test)]
+    pub(crate) fn dot_centre(
+        &self,
+        row: Rect,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<Point> {
+        let m = RowMetrics::new(theme);
+        let geo = self.geometry(row, &m, text, theme);
+        let x = geo.dot_x?;
+        let block = self.text_block(text, &m);
+        let title_line = RowMetrics::line(text, &self.title_style(&m));
+        let title_cy = row.center().y - block / 2.0 + title_line / 2.0;
+        Some(Point::new(
+            x,
+            Self::dot_cy(&geo, row, self.extra_lines() > 0, title_cy),
+        ))
+    }
+
     fn text_block(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
         let title = RowMetrics::line(text, &self.title_style(m)) * f64::from(self.title_lines);
         let subtitle = if self.subtitle.is_some() {
@@ -964,8 +997,7 @@ impl<'a> ListRowFace<'a> {
             Icon::Check.draw(ctx.scene, ctx.transform, r, theme.text_primary);
         }
         if let (Some(status), Some(x)) = (self.status, geo.dot_x) {
-            // On the title's line, as a presence dot beside a name.
-            let cy = if extra { title_cy } else { row.center().y };
+            let cy = Self::dot_cy(&geo, row, extra, title_cy);
             ctx.scene.fill(
                 Fill::NonZero,
                 ctx.transform,
