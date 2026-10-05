@@ -1184,13 +1184,20 @@ impl TubeApp {
     /// Put the current screen, the rail and the header into the shell.
     fn rebuild_shell(&mut self, theme: &Theme) {
         let screen = self.build_screen(theme);
-        let rail = self.build_rail();
         let title = screens::title(&self.model.route);
         let actions = screens::header_actions(self.ui(theme));
         self.shell.set_content_header(title, actions);
         self.can_go_back.set(self.nav.can_go_back());
         self.shell.set_can_go_back(self.nav.can_go_back());
-        self.shell.set_sidebar(Some(Box::new(rail)));
+        // Catalogue updates may arrive between pointer motion and press.
+        // Keep the static destinations and their real input/focus state while
+        // refreshing content; the shell still lays them out for theme/width.
+        if let Some(rail) = self.shell.sidebar_mut::<NavList>() {
+            rail.set_selected(Some(self.model.route.nav_section()));
+        } else {
+            let rail = self.build_rail();
+            self.shell.set_sidebar(Some(Box::new(rail)));
+        }
         self.shell.set_content(screen);
         self.shell_built = true;
     }
