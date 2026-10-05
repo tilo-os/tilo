@@ -3444,14 +3444,14 @@ impl ContainersApp {
                 self.select_container(None);
             }
             *ctx.handled = true;
-            self.refresh_view(&mut ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
         // Create modal owns the keyboard while open.
         if self.create_open {
             self.create_modal_key(event, ctx, key);
-            self.refresh_view(&mut ctx.state);
+            self.refresh_view(&ctx.state);
             return;
         }
 
@@ -3492,7 +3492,7 @@ impl ContainersApp {
                 _ => {}
             }
         }
-        self.refresh_view(&mut ctx.state);
+        self.refresh_view(&ctx.state);
     }
 
     fn create_modal_key(
@@ -3508,20 +3508,20 @@ impl ContainersApp {
         if on_image && self.combo.open {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
-                    let len = self.filtered_image_len(&mut ctx.state);
+                    let len = self.filtered_image_len(&ctx.state);
                     self.combo.move_highlight(1, len);
                     *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let len = self.filtered_image_len(&mut ctx.state);
+                    let len = self.filtered_image_len(&ctx.state);
                     self.combo.move_highlight(-1, len);
                     *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     // Pick the highlighted suggestion, else submit.
-                    let typed = CreateDoc::read(&mut ctx.state)
+                    let typed = CreateDoc::read(&ctx.state)
                         .get(CreateField::Image)
                         .to_owned();
                     let options = self.engine.image_references();

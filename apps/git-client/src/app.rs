@@ -7,7 +7,6 @@
 //! active screen (changes / history / panels). Events are routed by
 //! hit-testing the regions each screen emits.
 
-#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use ui::time::Instant;

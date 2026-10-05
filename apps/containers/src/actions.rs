@@ -140,7 +140,7 @@ mod tests {
             Some(ContainerStatus::Exited)
         );
 
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
         assert_eq!(doc.get_heads(), heads, "nothing was written");
         let keys: Vec<String> = doc.keys(ROOT).collect();
         assert_eq!(keys, ["create"], "the document is the draft");

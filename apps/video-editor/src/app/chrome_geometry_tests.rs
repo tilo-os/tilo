@@ -21,7 +21,7 @@ fn app_sized(w: f64, h: f64) -> VideoEditorApp {
         crate::resource::VideoProject,
         crate::actions::VideoEditorEffect,
     >::present(&mut app, &std::rc::Rc::new(VideoDoc::load_project(&doc)));
-    app.sync(&mut doc, &automerge::ROOT);
+    app.sync(&doc, &automerge::ROOT);
     app
 }
 

@@ -252,7 +252,7 @@ mod tests {
         let mut app = ChatApp::new_ephemeral();
         let mut doc = AutoCommit::new();
         crate::doc::ChatDoc::seed_if_empty(&mut doc);
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
         (app, doc)
     }
 
@@ -409,7 +409,7 @@ mod tests {
     fn target_starts_media_only_after_fresh_capture_consent() {
         // Phase: accept_needs_fresh_capture_and_media_ready_is_a_separate_edge.
         {
-            let (mut app, mut doc) = app_and_doc();
+            let (mut app, doc) = app_and_doc();
             let projection = ChatCallContinuation {
                 workspace_id: "ws_acme".into(),
                 channel_id: "c_huddle".into(),
@@ -449,12 +449,12 @@ mod tests {
                     ..
                 })
             ));
-            Widget::sync(&mut app, &mut doc, &ROOT);
+            Widget::sync(&mut app, &doc, &ROOT);
         }
 
         // Phase: shell_consent_drives_target_accept_then_media_ready.
         {
-            let (mut app, mut doc) = app_and_doc();
+            let (mut app, doc) = app_and_doc();
             let offered = ChatCallContinuation {
                 workspace_id: "ws_acme".into(),
                 channel_id: "c_huddle".into(),
@@ -507,7 +507,7 @@ mod tests {
                 },
             );
             assert!(!app.call.active);
-            Widget::sync(&mut app, &mut doc, &ROOT);
+            Widget::sync(&mut app, &doc, &ROOT);
             assert!(app.call.active && app.call.muted && app.call.audio_only);
             assert_eq!(app.realtime.session.as_deref(), Some("target-session"));
             let pending = Collaborative::take_collab_requests(&mut app);
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn source_stays_live_until_exact_stop_source_event() {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         app.call.join("c_huddle");
         app.realtime.session = Some("session-1".into());
         Collaborative::handle_collab_event(
@@ -567,7 +567,7 @@ mod tests {
                 },
             ),
         );
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
         assert!(app.call.active, "rollback must leave source media live");
         Collaborative::handle_collab_event(
             &mut app,
@@ -577,7 +577,7 @@ mod tests {
                 },
             ),
         );
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
         assert!(app.call.active, "foreign cutover cannot stop this call");
         Collaborative::handle_collab_event(
             &mut app,
@@ -591,7 +591,7 @@ mod tests {
             app.call.active,
             "callback queues the safe document mutation"
         );
-        Widget::sync(&mut app, &mut doc, &ROOT);
+        Widget::sync(&mut app, &doc, &ROOT);
         assert!(!app.call.active);
     }
 
@@ -600,7 +600,7 @@ mod tests {
     /// source and never resumes sharing.
     #[test]
     fn an_offered_screen_share_never_requests_host_capture() {
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let offered = ChatCallContinuation {
             workspace_id: "ws_acme".into(),
             channel_id: "c_huddle".into(),
@@ -619,7 +619,7 @@ mod tests {
         app.realtime.offer = Some(("target-session".into(), offered));
         app.realtime.accepted_target = true;
         let (services, recorder) = ui::host::HostServices::recording();
-        ui::host::scoped(&services, || Widget::sync(&mut app, &mut doc, &ROOT));
+        ui::host::scoped(&services, || Widget::sync(&mut app, &doc, &ROOT));
         assert!(recorder.screen_capture_requests().is_empty());
         assert!(!app.call.sharing);
         assert!(!app.realtime_target_media_ready());

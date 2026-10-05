@@ -3673,7 +3673,7 @@ mod identity_on_screen {
         ));
         let mut state = ui::State::new();
         ChatDoc::seed_starter(&mut state.doc, "owner", "Owner", "OW");
-        Widget::sync(&mut app, &mut state.doc, &state.root);
+        Widget::sync(&mut app, &state.doc, &state.root);
         app.land(&mut state.doc);
         let recorded = app
             .last_dispatched()
@@ -3794,7 +3794,7 @@ mod live_draft_presence {
         let mut doc = AutoCommit::new();
         ChatDoc::set_draft(&mut doc, &app.active_channel, text);
         app.composer_main.set_key(&app.active_channel);
-        app.composer_main.sync(&mut doc);
+        app.composer_main.sync(&doc);
         Widget::set_focus(&mut app, true);
         app
     }

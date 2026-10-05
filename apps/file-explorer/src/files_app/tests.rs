@@ -741,7 +741,7 @@ mod command_path_tests {
                        tr: &mut ui::text_render::TextRenderer| {
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            widget.sync(&mut state.doc, &state.root);
+            widget.sync(&state.doc, &state.root);
             let node = widget.build_layout(&mut taffy, &theme, &mut nm);
             let measure_map = nm.clone();
             taffy
@@ -782,8 +782,8 @@ mod command_path_tests {
         // that bit. A model/structure/animation change is a real present.
         ui::widget::Widget::mark_drawn(&mut widget);
         let _ = widget.take_structure_dirty();
-        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
         let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
         assert!(
@@ -814,8 +814,8 @@ mod command_path_tests {
                 },
             );
         }
-        let updated = ui::widget::Widget::update(&mut widget, &mut state.doc, &state.root);
-        ui::widget::Widget::sync(&mut widget, &mut state.doc, &state.root);
+        let updated = ui::widget::Widget::update(&mut widget, &state.doc, &state.root);
+        ui::widget::Widget::sync(&mut widget, &state.doc, &state.root);
         let structure = ui::widget::Widget::take_structure_dirty(&mut widget);
         let needs_animation = ui::widget::Widget::needs_animation_frame(&widget);
         assert!(
@@ -1454,11 +1454,11 @@ mod command_path_tests {
         let root = automerge::ROOT;
         let baseline = doc.save();
         w.set_rename_buffer("report-000.txt".into());
-        w.sync(&mut doc, &root);
+        w.sync(&doc, &root);
 
         for i in 1..40 {
             w.set_rename_buffer(format!("report-{i:03}.txt"));
-            w.sync(&mut doc, &root);
+            w.sync(&doc, &root);
         }
         assert_eq!(
             w.rename_buffer(),
@@ -3439,8 +3439,8 @@ mod command_path_tests {
         release_tx.send(()).unwrap();
         server.join().unwrap();
         wakes.recv_timeout(tilo_test_env::hang_bound()).unwrap();
-        let mut doc = automerge::AutoCommit::new();
-        assert!(widget.update(&mut doc, &automerge::ROOT));
+        let doc = automerge::AutoCommit::new();
+        assert!(widget.update(&doc, &automerge::ROOT));
         assert!(widget.share_pending_path.is_none());
         assert_eq!(
             widget.status.as_deref(),
@@ -3879,7 +3879,7 @@ mod responsive_body_tests {
             let theme = Theme::dark();
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            self.w.sync(&mut self.state.doc, &self.state.root);
+            self.w.sync(&self.state.doc, &self.state.root);
             let node = self.w.build_layout(&mut taffy, &theme, &mut nm);
             let measure_map = nm.clone();
             let trm = &mut self.tr;
@@ -5084,8 +5084,8 @@ mod injected_startup_tests {
         assert_eq!(widget.displayed_entries().len(), 1);
         assert_eq!(widget.displayed_entries()[0].name, "Welcome.txt");
         ui::widget::Widget::set_focus(&mut widget, true);
-        let mut document = automerge::AutoCommit::new();
-        ui::widget::Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        let document = automerge::AutoCommit::new();
+        ui::widget::Widget::sync(&mut widget, &document, &automerge::ROOT);
         widget.refresh_external_search_catalogs();
         assert!(!widget.refresh_trusted_identities(None));
         widget.refresh_metadata_if_due(ui::time::now() + metadata_refresh::LIVE_INTERVAL);
@@ -5175,8 +5175,8 @@ mod injected_startup_tests {
             Widget::next_wake_deadline(&widget).is_some_and(|deadline| deadline <= ui::time::now()),
             "a shell reply after draw must schedule the one follow-up Files sync"
         );
-        let mut document = automerge::AutoCommit::new();
-        Widget::sync(&mut widget, &mut document, &automerge::ROOT);
+        let document = automerge::AutoCommit::new();
+        Widget::sync(&mut widget, &document, &automerge::ROOT);
         assert_eq!(widget.status_line(), Some("document storage unavailable"));
         assert!(widget.pending_document_open.is_none());
     }

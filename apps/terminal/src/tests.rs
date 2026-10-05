@@ -156,7 +156,7 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
     // Case `embedded_terminal_only_requests_frames_for_queued_output`.
     {
         let (mut widget, _writes, output) = build_test_widget_io();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
 
         assert!(
             !widget.needs_animation_frame(),
@@ -168,8 +168,8 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
             widget.needs_animation_frame(),
             "queued PTY bytes must request a frame until the host pumps them"
         );
-        assert!(widget.update(&mut doc, &ROOT));
-        widget.sync(&mut doc, &ROOT);
+        assert!(widget.update(&doc, &ROOT));
+        widget.sync(&doc, &ROOT);
         assert!(widget.grid_text().contains("embedded output"));
         assert!(
             !widget.needs_animation_frame(),
@@ -230,11 +230,11 @@ fn pty_output_is_read_and_pumped_into_redraws_and_watermark() {
     // Case `pty_pump_retires_watermark_even_for_nonprinting_output`.
     {
         let (mut widget, _write_rx, output_tx) = build_test_widget_io();
-        let mut state = AutoCommit::new();
+        let state = AutoCommit::new();
         assert!(!widget.has_received_pty_output());
 
         output_tx.send(vec![b'\x1b', b'[', b'0', b'm']).unwrap();
-        assert!(widget.update(&mut state, &ROOT));
+        assert!(widget.update(&state, &ROOT));
         assert!(widget.has_received_pty_output());
     }
 }
@@ -350,7 +350,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             crate::target::SessionTarget::default_environment().encode(),
         )
         .unwrap();
-        ui::widget::Widget::sync(&mut widget, &mut doc, &automerge::ROOT);
+        ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         assert_eq!(widget.session_state(), &crate::sessions::OpenState::Open);
         drop(widget);
         server.join().unwrap();
@@ -396,7 +396,7 @@ fn hosted_service_sockets_are_probed_and_never_fall_back() {
             crate::target::SessionTarget::default_environment().encode(),
         )
         .unwrap();
-        ui::widget::Widget::sync(&mut widget, &mut doc, &automerge::ROOT);
+        ui::widget::Widget::sync(&mut widget, &doc, &automerge::ROOT);
         assert!(
             matches!(
                 widget.session_state(),
@@ -902,10 +902,10 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
 
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         let deadline = ui::time::now() + HANG_BOUND;
         while ui::time::now() < deadline {
-            widget.sync(&mut doc, &ROOT);
+            widget.sync(&doc, &ROOT);
             if widget.is_disconnected() {
                 break;
             }
@@ -1474,7 +1474,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
         // 240px tall / 20px rows → 12 visible rows. Feed many more than that
         // so history accumulates above the viewport.
         let (mut w, _write_rx, out_tx) = build_test_widget_io();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0);
 
         let mut payload = Vec::new();
@@ -1482,7 +1482,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
             payload.extend_from_slice(format!("LINE{i:03}\r\n").as_bytes());
         }
         w.feed(&payload);
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
 
         // Pinned to the bottom: newest lines visible, oldest not.
         let bottom = w.visible_lines();
@@ -1512,7 +1512,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
         // Fresh PTY output must snap the viewport back to the bottom. Push it
         // through the real channel so `sync`→`pump` performs the snap.
         out_tx.send(b"LINE060\r\n".to_vec()).unwrap();
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert_eq!(w.scroll_offset(), 0, "new output snaps to the live bottom");
         let after = w.visible_lines();
         assert!(
@@ -1588,7 +1588,7 @@ fn scrollback_viewport_and_scrollbar_track_output() {
             payload.extend_from_slice(format!("L{i:03}\r\n").as_bytes());
         }
         w.feed(&payload);
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
 
         w.scroll_to_top();
         assert!(w.scroll_offset() > 0);
@@ -2148,7 +2148,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     {
         use ui::time::Duration;
         let (mut w, _write_rx, _out_tx) = build_test_widget_io();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         // 129 cols × ~38 rows — the same shape a maximized terminal reflows to,
         // where the regression froze.
         w.force_geometry(Rect::new(0.0, 0.0, 1290.0, 760.0), 10.0, 20.0);
@@ -2165,7 +2165,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
 
         let start = ui::time::now();
         w.feed(&payload);
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         let elapsed = start.elapsed();
 
         // Correctness: the freshest lines are on screen with their real content.
@@ -2201,7 +2201,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         // buffer — is still exactly index-aligned with the CRDT: newest kept,
         // oldest trimmed, survivors intact, memory bounded.
         let (mut w, _rx, _out) = build_test_widget_io();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 80x24 logical grid
 
         let mut emitted = 0usize;
@@ -2212,7 +2212,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
                 emitted += 1;
             }
             w.feed(&payload);
-            w.sync(&mut doc, &automerge::ROOT);
+            w.sync(&doc, &automerge::ROOT);
         }
         // 150 lines fed, MAX_HISTORY 120 (+8 slack) under cfg(test): a trim
         // must have run, and the incremental sync must have stayed aligned.
@@ -2277,7 +2277,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         }
         .apply(&mut doc)
         .unwrap();
-        assert!(reader.sync(&mut doc).expect("the change reads"));
+        assert!(reader.sync(&doc).expect("the change reads"));
         ResourceSurface::<crate::resource::Terminal, crate::resource::TerminalEffect>::present(
             &mut viewer,
             reader.state(),
@@ -2362,19 +2362,19 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
     {
         use vello::kurbo::Rect;
         let (mut w, _rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Write to the main screen.
         w.feed(b"MAIN CONTENT\r\n");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert!(!w.is_alt_screen());
         assert!(w.grid_row(0).starts_with("MAIN CONTENT"));
 
         // Enter the alternate screen and do a full-screen redraw.
         w.feed(b"\x1b[?1049h\x1b[2J\x1b[H");
         w.feed(b"\x1b[3;5HTUI REDRAW");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert!(w.is_alt_screen(), "?1049h enters the alternate screen");
         // The alt buffer holds the redraw, and the main content is not in it.
         assert!(
@@ -2389,7 +2389,7 @@ fn terminal_modes_switch_screens_cursor_paste_and_focus_reporting() {
 
         // Leave the alternate screen — the main buffer must return intact.
         w.feed(b"\x1b[?1049l");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert!(!w.is_alt_screen(), "?1049l restores the main screen");
         assert!(
             w.grid_row(0).starts_with("MAIN CONTENT"),
@@ -2633,10 +2633,10 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         use ui::a11y::Role;
         use ui::widget::Widget;
         let (mut w, _rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 80.0), 10.0, 20.0);
         w.feed(b"accessible output");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         w.set_focus(true);
 
         let node = w
@@ -2963,12 +2963,12 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         use crate::CellColor;
         use vello::kurbo::Rect;
         let (mut w, _rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Semicolon truecolor foreground.
         w.feed(b"\x1b[H\x1b[38;2;10;20;30mA");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).fg,
             CellColor::Rgb(10, 20, 30),
@@ -2977,7 +2977,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 
         // Semicolon 256-indexed foreground.
         w.feed(b"\x1b[H\x1b[38;5;196mB");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).fg,
             CellColor::Indexed(196),
@@ -2986,7 +2986,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 
         // Colon-subparam 256-indexed foreground (the xterm form apps emit).
         w.feed(b"\x1b[H\x1b[38:5:214mC");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).fg,
             CellColor::Indexed(214),
@@ -2995,7 +2995,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 
         // Truecolor background.
         w.feed(b"\x1b[H\x1b[48;2;5;6;7mD");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         assert_eq!(
             w.cell_attr(0, 0).bg,
             CellColor::Rgb(5, 6, 7),
@@ -3008,12 +3008,12 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         use crate::CellColor;
         use vello::kurbo::Rect;
         let (mut w, _rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Bold + italic + underline + reverse all at once.
         w.feed(b"\x1b[H\x1b[1;3;4;7mW");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
         assert!(
             a.bold && a.italic && a.underline && a.reverse,
@@ -3022,7 +3022,7 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 
         // A reset clears everything back to the default attribute.
         w.feed(b"\x1b[H\x1b[0mN");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         let b = w.cell_attr(0, 0);
         assert_eq!(b.fg, CellColor::Default);
         assert!(
@@ -3035,19 +3035,19 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
     {
         use vello::kurbo::Rect;
         let (mut w, _rx) = build_test_widget();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
 
         // Faint + crossed-out together.
         w.feed(b"\x1b[H\x1b[2;9mX");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         let a = w.cell_attr(0, 0);
         assert!(a.dim, "SGR 2 sets faint: {a:?}");
         assert!(a.strike, "SGR 9 sets crossed-out: {a:?}");
 
         // SGR 22 clears both bold and faint; SGR 29 clears crossed-out.
         w.feed(b"\x1b[H\x1b[1;2;9mY\x1b[22;29mZ");
-        w.sync(&mut doc, &automerge::ROOT);
+        w.sync(&doc, &automerge::ROOT);
         let z = w.cell_attr(0, 1);
         assert!(!z.dim && !z.bold, "SGR 22 clears bold+faint: {z:?}");
         assert!(!z.strike, "SGR 29 clears crossed-out: {z:?}");
@@ -3061,11 +3061,11 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
         .unwrap();
         let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
         let (mut host, rx) = build_test_widget();
-        let mut host_doc = AutoCommit::new();
+        let host_doc = AutoCommit::new();
         host.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
         host.feed(b"before ");
         host.feed(format!("\x1b_Ga=T,f=100,t=d,c=3,r=2,i=42;{encoded}\x1b\\after").as_bytes());
-        host.sync(&mut host_doc, &automerge::ROOT);
+        host.sync(&host_doc, &automerge::ROOT);
 
         assert!(
             host.grid_text().contains("before after"),
@@ -3106,12 +3106,13 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 // Real PTY — a live subprocess through the production reader→sync path.
 // ---------------------------------------------------------------
 
-/// Poll the production `sync` (which drains the PTY reader thread and
-/// replays bytes through vte into the CRDT grid) until the grid contains
+/// Pump and settle the production terminal lifecycle until the grid contains
 /// `needle` or `tries` elapse. Returns whether it appeared.
 fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
     let deadline = ui::time::now() + HANG_BOUND;
     while ui::time::now() < deadline {
+        w.update(doc, &ROOT);
+        w.settle(&mut ui::widget::Edits::lend(doc), &ROOT);
         w.sync(doc, &ROOT);
         if w.grid_text().contains(needle) {
             return true;
@@ -3154,7 +3155,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         let mut w = TerminalWidget::spawn_command(cmd).expect("spawn default shell");
         let mut doc = AutoCommit::new();
         // Let the shell reach a prompt before typing.
-        w.sync(&mut doc, &ROOT);
+        w.sync(&doc, &ROOT);
         #[cfg(unix)]
         w.write_input(b"printf 'TILO_%s_OK\\n' SHELL; exit\n");
         #[cfg(windows)]
@@ -3179,9 +3180,9 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         use automerge::AutoCommit;
 
         let mut old = TerminalWidget::spawn_headless().expect("old terminal");
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         old.feed(b"old-session-output");
-        old.sync(&mut doc, &automerge::ROOT);
+        old.sync(&doc, &automerge::ROOT);
         assert!(old.grid_text().contains("old-session-output"));
 
         // A real spawned widget owns a new local PTY incarnation. Use a short
@@ -3193,7 +3194,7 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
         let deadline = ui::time::now() + HANG_BOUND;
         while ui::time::now() < deadline {
-            fresh.sync(&mut doc, &automerge::ROOT);
+            fresh.sync(&doc, &automerge::ROOT);
             if fresh.grid_text().contains("new-session-output") {
                 break;
             }
@@ -4089,7 +4090,7 @@ fn real_pty_query_replies_and_fish_startup() {
         // emulator to answer it (via write_input) before we type anything, so
         // our keystrokes are never mistaken for the DA response.
         for _ in 0..40 {
-            w.sync(&mut doc, &ROOT);
+            w.sync(&doc, &ROOT);
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
 
@@ -4097,7 +4098,7 @@ fn real_pty_query_replies_and_fish_startup() {
         w.write_input(b"echo TILO_FISH_READY\r");
         let ready = pump_until_contains(&mut w, &mut doc, "TILO_FISH_READY");
         w.write_input(b"exit\r");
-        w.sync(&mut doc, &ROOT);
+        w.sync(&doc, &ROOT);
 
         let screen = w.grid_text();
         assert!(
@@ -4452,7 +4453,7 @@ fn a_desktop_entry_command_reaches_the_terminal_through_the_launch_context() {
 #[test]
 fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
     let (mut w, _rx) = build_test_widget();
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
     w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
     let batches: [&[u8]; 3] = [
         b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1bP+q696e646e\x1b\\\x1bP+q71756572792d6f732d6e616d65\x1b\\\x1b[?1049l\x1b[0c",
@@ -4461,7 +4462,7 @@ fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
     ];
     for batch in batches {
         w.feed(batch);
-        w.sync(&mut doc, &ROOT);
+        w.sync(&doc, &ROOT);
     }
     assert!(
         w.grid_row(2).starts_with("root@ush /v/tmp# ab"),
@@ -4474,16 +4475,16 @@ fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
 #[test]
 fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
     let (mut w, _rx) = build_test_widget();
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
     w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
     w.feed(b"above\r\nP# tail\r\nbelow\x1b[2;4H\x1b[J");
-    w.sync(&mut doc, &ROOT);
+    w.sync(&doc, &ROOT);
     assert_eq!(w.grid_row(0).trim_end(), "above");
     assert_eq!(w.grid_row(1).trim_end(), "P#");
     assert_eq!(w.grid_row(2).trim_end(), "");
 
     w.feed(b"\x1b[2;3H\x1b[1J");
-    w.sync(&mut doc, &ROOT);
+    w.sync(&doc, &ROOT);
     assert_eq!(w.grid_row(0).trim_end(), "");
     assert!(
         w.grid_row(1).starts_with("  "),

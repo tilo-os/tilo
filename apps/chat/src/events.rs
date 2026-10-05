@@ -3832,7 +3832,7 @@ mod tests {
     fn composer_accessibility_keeps_a_backward_browser_selection_direction() {
         let (mut app, mut doc) = app_with_doc();
         ChatDoc::set_draft(&mut doc, &app.active_channel, "Ae\u{301}👋B");
-        app.sync_composers(&mut doc);
+        app.sync_composers(&doc);
         render_frame(&mut app, 1280.0, 720.0);
         assert!(app.composer_main.perform_action(
             &ui::a11y::Action::SetSelection {
@@ -4075,8 +4075,8 @@ mod tests {
         let watermark = ChatDoc::read_watermark(&doc, &channel, &app.me.id);
         let heads = doc.get_heads();
         for _ in 0..5 {
-            assert!(!app.update(&mut doc, &automerge::ROOT));
-            app.sync(&mut doc, &automerge::ROOT);
+            assert!(!app.update(&doc, &automerge::ROOT));
+            app.sync(&doc, &automerge::ROOT);
         }
         assert_eq!(
             ChatDoc::read_watermark(&doc, &channel, &app.me.id),
@@ -4097,17 +4097,17 @@ mod tests {
             "first presentation requests a model frame"
         );
         assert!(
-            app.update(&mut doc, &automerge::ROOT),
+            app.update(&doc, &automerge::ROOT),
             "first presentation re-runs sync"
         );
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&doc, &automerge::ROOT);
         app.land(&mut doc);
         assert!(
             ChatDoc::read_watermark(&doc, &channel, &app.me.id) > watermark,
             "the presented channel is marked read"
         );
         assert!(
-            !app.update(&mut doc, &automerge::ROOT),
+            !app.update(&doc, &automerge::ROOT),
             "the extra frame is one-shot"
         );
     }
@@ -4122,7 +4122,7 @@ mod tests {
         {
             let (mut app, mut doc) = app_with_doc();
             // Simulate having viewed the initial channel (as each sync frame does).
-            app.mark_active_read(&mut doc);
+            app.mark_active_read(&doc);
             app.land(&mut doc);
             app.reload(&doc);
             let unread =
@@ -4161,7 +4161,7 @@ mod tests {
         // Phase: a_message_in_another_channel_shows_as_unread.
         {
             let (mut app, mut doc) = app_with_doc();
-            app.mark_active_read(&mut doc);
+            app.mark_active_read(&doc);
             app.land(&mut doc);
             app.reload(&doc);
             let unread =
@@ -4204,7 +4204,7 @@ mod tests {
         // Phase: reading_history_does_not_mark_new_messages_read_until_returning_to_latest.
         {
             let (mut app, mut doc) = app_with_doc();
-            app.mark_active_read(&mut doc);
+            app.mark_active_read(&doc);
             app.land(&mut doc);
             let watermark = ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id);
 
@@ -4222,7 +4222,7 @@ mod tests {
                 },
             );
             app.timeline_at_end = false;
-            app.mark_active_read(&mut doc);
+            app.mark_active_read(&doc);
             app.land(&mut doc);
             assert_eq!(
                 ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id),
@@ -4231,7 +4231,7 @@ mod tests {
             );
 
             app.jump_to_latest();
-            app.mark_active_read(&mut doc);
+            app.mark_active_read(&doc);
             app.land(&mut doc);
             assert!(
                 ChatDoc::read_watermark(&doc, &app.active_channel, &app.me.id) > watermark,

@@ -2143,7 +2143,7 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
         // flap and restores the invoking pane, just like Escape.
         let regions = app.regions();
         app.last_mouse = regions.export_btn.center();
-        app.handle_press(&mut doc, &regions, false);
+        app.handle_press(&doc, &regions, false);
         assert!(!app.bin_overlay_is_open());
         assert!(
             !app.presentation.export_open,
@@ -2204,7 +2204,7 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             ("go-to field", |a| a.goto_entry = Some(String::new())),
         ];
         for (name, open) in cases {
-            let (mut app, mut doc) = app_and_doc();
+            let (mut app, doc) = app_and_doc();
             let r = app.regions();
             let before = app.project.clips.len();
             let target = app.project.clips.first().map(|c| c.id);
@@ -2219,7 +2219,7 @@ fn bin_docks_wide_overlays_narrow_and_side_panels_settle() {
             // Aim at a clip on the timeline — something a stray click would
             // otherwise select or move.
             app.last_mouse = r.lanes.center();
-            app.handle_press(&mut doc, &r, false);
+            app.handle_press(&doc, &r, false);
 
             assert!(
                 app.selected().is_none(),
@@ -3063,12 +3063,12 @@ fn project_save_and_open_round_trip_and_replace() {
         // edit back — not "a file appeared".
         let dir = scratch("roundtrip");
         let path = dir.join("Coastline.qvp");
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let clips = app.project.clips.len();
         let media = app.project.media.len();
         assert!(clips > 1 && media > 1, "the fixture is a real edit");
 
-        app.write_project_to(&mut doc, path.clone());
+        app.write_project_to(&doc, path.clone());
         assert_eq!(app.project_path.as_ref(), Some(&path));
         assert!(path.is_file(), "the file is really on disk");
 
@@ -3175,7 +3175,7 @@ fn unsaved_badge_follows_the_document() {
             "a project with clips and no file is unsaved"
         );
 
-        app.write_project_to(&mut doc, path);
+        app.write_project_to(&doc, path);
         assert!(!app.project_is_dirty(), "saving settles it");
         assert!(!app.project_status_line().contains("unsaved"));
 
@@ -3205,7 +3205,7 @@ fn unsaved_badge_follows_the_document() {
         let dir = scratch("sameframe");
         let path = dir.join("S.qvp");
         let (mut app, mut doc) = app_and_doc();
-        app.write_project_to(&mut doc, path.clone());
+        app.write_project_to(&doc, path.clone());
         assert!(!app.project_is_dirty());
 
         // Edit and save with no `sync` in between — the frame boundary the
@@ -3214,7 +3214,7 @@ fn unsaved_badge_follows_the_document() {
         app.selection.select_only(target);
         app.playhead = 12.0;
         key_press(&mut app, &mut doc, "s", false);
-        app.save_project(&mut doc);
+        app.save_project(&doc);
         assert!(!app.project_is_dirty(), "the save settled it");
 
         // And the file really holds the edit, not the state before it.
@@ -3242,7 +3242,7 @@ fn unsaved_badge_follows_the_document() {
         // A screen-reader user must not get the tidier story. The dot means
         // "unsaved"; so must the node.
         let dir = scratch("a11yproj");
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         assert!(app.project_is_dirty());
         let node = app.a11y_project();
         assert_eq!(node.description.as_deref(), Some(PROJECT_UNSAVED));
@@ -3252,7 +3252,7 @@ fn unsaved_badge_follows_the_document() {
                 .is_some_and(|v| v.contains("not saved to a file yet"))
         );
 
-        app.write_project_to(&mut doc, dir.join("A.qvp"));
+        app.write_project_to(&doc, dir.join("A.qvp"));
         let node = app.a11y_project();
         assert_eq!(node.description, None, "saved: no unsaved claim");
         assert!(
@@ -3275,7 +3275,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let dir = scratch("ask");
         let path = dir.join("Other.qvp");
         crate::project_file::save(&path, &Project::new("Other")).unwrap();
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let before = app.project.clips.len();
         assert!(app.project_path.is_none() && app.project_is_dirty());
 
@@ -3284,14 +3284,14 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         assert_eq!(app.project.clips.len(), before, "and changed nothing yet");
 
         // Cancel leaves everything exactly where it was.
-        app.resolve_pending_open(&mut doc, DiscardChoice::Cancel);
+        app.resolve_pending_open(&doc, DiscardChoice::Cancel);
         assert!(app.pending_open.is_none());
         assert_eq!(app.project.clips.len(), before);
         assert!(app.project_path.is_none());
 
         // Open anyway goes through.
         app.begin_open(path.clone());
-        app.resolve_pending_open(&mut doc, DiscardChoice::Discard);
+        app.resolve_pending_open(&doc, DiscardChoice::Discard);
         assert_eq!(app.project.name, "Other");
         assert_eq!(app.project_path.as_ref(), Some(&path));
         std::fs::remove_dir_all(&dir).ok();
@@ -3304,8 +3304,8 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let dir = scratch("noask");
         let path = dir.join("Next.qvp");
         crate::project_file::save(&path, &Project::new("Next")).unwrap();
-        let (mut app, mut doc) = app_and_doc();
-        app.write_project_to(&mut doc, dir.join("Current.qvp"));
+        let (mut app, doc) = app_and_doc();
+        app.write_project_to(&doc, dir.join("Current.qvp"));
 
         app.begin_open(path);
         assert!(app.pending_open.is_none(), "no question was asked");
@@ -3320,19 +3320,19 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         let dir = scratch("savethen");
         let target = dir.join("Target.qvp");
         crate::project_file::save(&target, &Project::new("Target")).unwrap();
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let kept = dir.join("Kept.qvp");
 
         app.begin_open(target.clone());
         assert!(app.pending_open.is_some());
-        app.resolve_pending_open(&mut doc, DiscardChoice::Save);
+        app.resolve_pending_open(&doc, DiscardChoice::Save);
         // Save on a never-saved project opens the chooser; the destination
         // arriving is what completes both halves.
         assert!(
             app.save_then_open.is_some(),
             "the open is remembered across the save"
         );
-        app.write_project_to(&mut doc, kept.clone());
+        app.write_project_to(&doc, kept.clone());
 
         assert!(
             kept.is_file(),
@@ -3351,9 +3351,9 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
     {
         // The one outcome that could really cost someone their work is being
         // told a save happened when it did not.
-        let (mut app, mut doc) = app_and_doc();
+        let (mut app, doc) = app_and_doc();
         let impossible = PathBuf::from("/definitely/not/a/directory/x.qvp");
-        app.write_project_to(&mut doc, impossible);
+        app.write_project_to(&doc, impossible);
         assert_eq!(
             app.project_path, None,
             "the project did not adopt a path it has not got"
@@ -3477,7 +3477,7 @@ fn project_shortcuts_and_menu_open_save_and_recents() {
         let dir = scratch("keys");
         let path = dir.join("K.qvp");
         let (mut app, mut doc) = app_and_doc();
-        app.write_project_to(&mut doc, path.clone());
+        app.write_project_to(&doc, path.clone());
         let target = app.project.top_video_clip_at(10.0).unwrap().id;
         app.selection.select_only(target);
         app.playhead = 12.0;
@@ -6429,7 +6429,7 @@ fn topbar_and_transport_degrade_gracefully_when_narrow() {
         assert!(!app.inspector_is_visible(&r));
         // Press the toggle: it opens.
         app.last_mouse = r.inspector_btn.center();
-        app.handle_press(&mut doc, &r, false);
+        app.handle_press(&doc, &r, false);
         app.inspector_flap.snap(true);
         let r = app.regions();
         assert!(app.inspector_is_visible(&r));

@@ -4283,8 +4283,8 @@ mod responsive_tests {
         // --- phase: demo_query_automatic_height_follows_its_content ---
         {
             let mut app = DbClientApp::sampled();
-            let mut doc = sample_document();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = sample_document();
+            app.sync(&doc, &automerge::ROOT);
             lay_out(&mut app, 1200.0, 800.0);
 
             assert_eq!(
@@ -4301,8 +4301,8 @@ mod responsive_tests {
         // --- phase: shaped_wrapped_query_refines_the_automatic_height ---
         {
             let mut app = DbClientApp::sampled();
-            let mut doc = sample_document();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = sample_document();
+            app.sync(&doc, &automerge::ROOT);
             app.editor.set_text(
             "SELECT this_is_a_deliberately_long_projection_name, another_long_projection_name, a_third_long_projection_name FROM albums;",
         );
@@ -4325,8 +4325,8 @@ mod responsive_tests {
         // --- phase: short_query_layout_keeps_every_region_ordered_and_usable ---
         {
             let mut app = DbClientApp::sampled();
-            let mut doc = sample_document();
-            app.sync(&mut doc, &automerge::ROOT);
+            let doc = sample_document();
+            app.sync(&doc, &automerge::ROOT);
             lay_out(&mut app, 800.0, 480.0);
             let layout = app.query_layout;
 
@@ -4403,7 +4403,7 @@ mod honesty_tests {
                 !app.modal.is_open(),
                 "the child publishes its action before the parent sync drains it"
             );
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert!(
                 app.modal.is_open(),
                 "semantic activation enters the existing new-connection flow"
@@ -4552,8 +4552,8 @@ mod behavior_tests {
 
     fn synced() -> (DbClientApp, AutoCommit) {
         let mut app = DbClientApp::sampled();
-        let mut doc = sample_document();
-        app.sync(&mut doc, &ROOT);
+        let doc = sample_document();
+        app.sync(&doc, &ROOT);
         (app, doc)
     }
 
@@ -4626,7 +4626,7 @@ mod behavior_tests {
                 ctrl
             ));
             app.session.block_until_idle();
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             app.relayout();
             assert_eq!(
                 app.query_layout.divider.y0, manual.y0,
@@ -4680,7 +4680,7 @@ mod behavior_tests {
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT
             ));
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider.y0, automatic.y0 + 48.0);
 
@@ -4754,7 +4754,7 @@ mod behavior_tests {
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             let menu = app
                 .children_mut()
                 .into_iter()
@@ -4766,7 +4766,7 @@ mod behavior_tests {
                 &mut ui::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             lay_out(&mut app, 1200.0, 800.0);
             assert_eq!(app.query_layout.divider, automatic);
 
@@ -5182,7 +5182,7 @@ mod behavior_tests {
                 &char_event("Z"),
                 Modifiers::default(),
             );
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
             assert_eq!(doc.get_heads(), before, "the document is unchanged");
             assert_eq!(app.editor.value(), crate::doc::EditorDoc::read_sql(&doc));
         }
@@ -5192,7 +5192,7 @@ mod behavior_tests {
             let (mut app, mut doc) = synced();
             crate::doc::EditorDoc::set_sql(&mut doc, "SELECT * FROM remote_table");
 
-            app.sync(&mut doc, &ROOT);
+            app.sync(&doc, &ROOT);
 
             assert_eq!(app.editor.value(), "SELECT * FROM remote_table");
         }

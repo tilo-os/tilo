@@ -337,7 +337,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
     eprintln!("phase people_rejection_is_reversible_and_accessibility_activates_the_same_control");
     {
         let mut app = test_app();
-        let mut doc = AutoCommit::new();
+        let doc = AutoCommit::new();
         assert!(
             app.people_controller_mut().add_cluster(
                 "dismiss-me",
@@ -362,7 +362,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
         assert!(app.perform_library_semantic_action(
             &format!("photos:people:control:{reject}"),
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         let cluster = app.people_controller().cluster("dismiss-me").unwrap();
         assert!(cluster.hidden && cluster.rejected);
@@ -377,7 +377,7 @@ fn people_review_commits_only_explicit_canonical_actions() {
         assert!(app.perform_library_semantic_action(
             &format!("photos:people:control:{restore}"),
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         let cluster = app.people_controller().cluster("dismiss-me").unwrap();
         assert!(!cluster.hidden && !cluster.rejected);
@@ -992,7 +992,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         assert!(app.perform_library_semantic_action(
             "photos:timeline:density-in",
             &AccessAction::Focus,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(
             app.timeline_density, before,
@@ -1001,7 +1001,7 @@ fn density_changes_share_one_event_path_and_reanchor_the_first_photo() {
         assert!(app.perform_library_semantic_action(
             "photos:timeline:density-in",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(app.timeline_density, before + 1);
         assert_eq!(PhotosDoc::library(&doc), library);
@@ -1199,13 +1199,13 @@ fn collection_views_are_local_complete_and_refuse_stale_ids() {
         assert!(app.perform_library_semantic_action(
             "photos:collection-page:people-next",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(app.people_page, 2);
         assert!(app.perform_library_semantic_action(
             "photos:collection-page:people-previous",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(app.people_page, 1);
     }
@@ -1268,7 +1268,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(app.perform_library_semantic_action(
             "photos:selection:favorite",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         land(&app, &mut doc);
         let favorites = PhotosResources
@@ -1312,13 +1312,13 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(app.perform_library_semantic_action(
             "photos:selection:choose-album",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert!(app.selection_album_chooser);
         assert!(app.perform_library_semantic_action(
             "photos:selection:destination:photos.album:trip",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(
             app.selection_destination_album.as_deref(),
@@ -1389,18 +1389,18 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(app.perform_library_semantic_action(
             "photos:selection:choose-album",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert!(app.perform_library_semantic_action(
             "photos:selection:destination-next",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(app.selection_album_page, 1);
         assert!(app.perform_library_semantic_action(
             "photos:selection:destination:photos.album:destination-7",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(
             app.selection_destination_album.as_deref(),
@@ -1417,7 +1417,7 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(!app.perform_library_semantic_action(
             "photos:selection:destination:photos.album:destination-7",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(
             app.notice.as_deref(),
@@ -1483,13 +1483,13 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(app.perform_library_semantic_action(
             "photos:album-editor:next-page",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(app.library_offset, 24);
         assert!(app.perform_library_semantic_action(
             "photos:album-editor:previous-page",
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         // The preceding activation is valid from the second page and leaves
         // the editor's membership draft local.
@@ -1551,14 +1551,14 @@ fn selection_and_album_editing_page_everything_and_mint_canonical_actions() {
         assert!(app.perform_library_semantic_action(
             &format!("photos:album-edit:{album_id}"),
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert!(app.album_editor);
         app.cancel_album_editor();
         assert!(app.perform_library_semantic_action(
             &format!("photos:library-album:{album_id}"),
             &AccessAction::Activate,
-            &mut doc,
+            &doc,
         ));
         assert_eq!(app.active_album.as_deref(), Some(album_id.as_str()));
         assert_eq!(app.library_destination, LibraryDestination::Timeline);
@@ -1628,10 +1628,10 @@ fn operations_fail_canonically_cancel_terminally_and_confirm_removal() {
         app.show_library();
         sync(&mut app, &mut doc);
         let target = format!("photos:library-remove:{id}");
-        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
+        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &doc));
         assert!(PhotosDoc::library(&doc).photo(&id).is_some());
         assert_eq!(app.library_remove_confirm.as_deref(), Some(id.as_str()));
-        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &mut doc));
+        assert!(app.perform_library_semantic_action(&target, &AccessAction::Activate, &doc));
         settle(&mut app, &mut doc);
         assert!(PhotosDoc::library(&doc).photo(&id).is_none());
     }
