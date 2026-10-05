@@ -449,12 +449,8 @@ pub fn layout(
     } else {
         0.0
     };
-    let button_h = action_height(theme);
-    let footer_h = if spec.actions.is_empty() {
-        0.0
-    } else {
-        f64::from(spacing.s6) + button_h
-    };
+    let footer = footer_geometry(spec, (w - pad * 2.0).max(0.0), text_renderer, theme);
+    let footer_h = footer.height;
     let chrome_h = pad * 2.0 + title_h + title_gap + footer_h;
     let wanted_h = chrome_h + spec.body_height.max(0.0);
     let room = sheet_room(window, wanted_h, theme);
@@ -494,7 +490,7 @@ pub fn layout(
         (card.y1 - pad - footer_h).max(body_top),
     );
 
-    let actions = place_actions(spec, card, text_renderer, theme);
+    let actions = place_actions(spec, card, &footer, theme);
     let destructive = spec
         .actions
         .iter()
@@ -522,6 +518,53 @@ pub fn layout(
     }
 }
 
+struct FooterGeometry {
+    widths: Vec<f64>,
+    stacked: bool,
+    height: f64,
+}
+
+/// Reserve the footer before allocating body space. Labels are measured in
+/// the real control typography, so larger text and translations can wrap
+/// the action group into separate rows without covering the body.
+fn footer_geometry(
+    spec: &ModalSpec<'_>,
+    available_width: f64,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> FooterGeometry {
+    let spacing = &theme.tokens.spacing;
+    let label = ControlSize::Regular.label_style(theme);
+    let label_pad = f64::from(spacing.s4);
+    let min_w = f64::from(spacing.s12) * 2.0;
+    let widths: Vec<_> = spec
+        .actions
+        .iter()
+        .map(|action| {
+            let (width, _) = text_renderer.measure_style(action.label, None, &label);
+            (f64::from(width) + label_pad * 2.0).max(min_w)
+        })
+        .collect();
+    let gap = f64::from(spacing.s2);
+    let gaps = widths.len().saturating_sub(1) as f64;
+    let stacked = widths.iter().sum::<f64>() + gaps * gap > available_width;
+    let height = if widths.is_empty() {
+        0.0
+    } else {
+        f64::from(spacing.s6)
+            + if stacked {
+                widths.len() as f64 * action_height(theme) + gaps * gap
+            } else {
+                action_height(theme)
+            }
+    };
+    FooterGeometry {
+        widths,
+        stacked,
+        height,
+    }
+}
+
 /// The footer's action rects, indexed by the authored action while the
 /// visual order follows emphasis and the platform's convention. Where the
 /// primary action stands last, an alternate answer stands apart at the
@@ -530,7 +573,7 @@ pub fn layout(
 fn place_actions(
     spec: &ModalSpec<'_>,
     card: Rect,
-    text_renderer: &mut TextRenderer,
+    footer: &FooterGeometry,
     theme: &Theme,
 ) -> Vec<Rect> {
     let mut actions = vec![Rect::ZERO; spec.actions.len()];
@@ -540,9 +583,6 @@ fn place_actions(
     let spacing = &theme.tokens.spacing;
     let pad = pad(theme);
     let button_h = action_height(theme);
-    let label = ControlSize::Regular.label_style(theme);
-    let label_pad = f64::from(spacing.s4);
-    let min_w = f64::from(spacing.s12) * 2.0;
     let gap = f64::from(spacing.s2);
     let by = card.y1 - pad - button_h;
     let order = spec.platform.dialog_action_order();
@@ -563,15 +603,18 @@ fn place_actions(
             (DialogActionOrder::PrimaryLast, true, _) => 3,
         }
     });
-    let mut width = |index: usize| {
-        spec.actions.get(index).map_or(0.0, |a| {
-            let (tw, _) = text_renderer.measure_style(a.label, None, &label);
-            (f64::from(tw) + label_pad * 2.0).max(min_w)
-        })
-    };
+    if footer.stacked {
+        let rows_height = footer.height - f64::from(spacing.s6);
+        let mut y = card.y1 - pad - rows_height;
+        for index in leading.iter().chain(&trailing) {
+            actions[*index] = Rect::new(card.x0 + pad, y, card.x1 - pad, y + button_h);
+            y += button_h + gap;
+        }
+        return actions;
+    }
     let mut bx = card.x1 - pad;
     for &index in trailing.iter().rev() {
-        let bw = width(index);
+        let bw = footer.widths[index];
         if let Some(slot) = actions.get_mut(index) {
             *slot = Rect::new(bx - bw, by, bx, by + button_h);
         }
@@ -579,7 +622,7 @@ fn place_actions(
     }
     let mut lx = card.x0 + pad;
     for &index in &leading {
-        let bw = width(index);
+        let bw = footer.widths[index];
         if let Some(slot) = actions.get_mut(index) {
             *slot = Rect::new(lx, by, lx + bw, by + button_h);
         }

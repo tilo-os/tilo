@@ -93,6 +93,13 @@ impl TreeHeadingAction {
     }
 }
 
+fn is_button_target(target: &str) -> bool {
+    target == HEADING_ACTION_TARGET
+        || target.starts_with("row-action:")
+        || target.starts_with("section-action:")
+        || target.starts_with("move:")
+}
+
 impl<T, M: TreeModel> TreeView<T, M> {
     /// Offer a context menu: right click on a row (which selects it) or on
     /// empty space (`None`), the `Menu` key or `Shift+F10` on the focused
@@ -120,6 +127,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Show `actions` at the trailing edge of the hovered row.
     #[must_use]
     pub fn with_row_actions(mut self, actions: Vec<TreeRowAction>) -> Self {
+        self.affordance_focus_valid = false;
         self.row_actions = actions;
         self
     }
@@ -134,6 +142,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Place an icon button at the trailing edge of the heading band.
     #[must_use]
     pub fn with_heading_action(mut self, action: TreeHeadingAction) -> Self {
+        self.affordance_focus_valid = false;
         self.heading_action = Some(action);
         self
     }
@@ -417,6 +426,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
         ChipFace::new(rect, "")
             .lead(ChipLead::Glyph(action.icon))
             .hovered(hovered)
+            .focused(
+                self.is_focused
+                    && self.affordance_focus_valid
+                    && self.focused_affordance.as_deref() == Some(HEADING_ACTION_TARGET),
+            )
             .paint(scene, transform, text_renderer, theme);
     }
 
@@ -715,6 +729,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .with_state(AccessState::new().focusable(true))
             .with_action_target(HEADING_ACTION_TARGET)
             .with_bounds(rect);
+        node.state.focused = self.is_focused
+            && self.affordance_focus_valid
+            && self.focused_affordance.as_deref() == Some(HEADING_ACTION_TARGET);
         if let Some(description) = &action.description {
             node = node.with_description(description.clone());
         }
@@ -769,6 +786,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 children.push(node);
             }
         }
+        for child in &mut children {
+            child.state.focused = self.is_focused
+                && self.affordance_focus_valid
+                && child.action_target.as_deref() == self.focused_affordance.as_deref()
+                && self.focused_affordance.is_some();
+        }
         children
     }
 
@@ -793,6 +816,48 @@ impl<T, M: TreeModel> TreeView<T, M> {
         Some(node)
     }
 
+    /// Resolve only an actionable, currently published button. The visible
+    /// model and its current availability remain authoritative after focus.
+    pub(super) fn available_affordance(&self, target: &str) -> Option<AccessNode> {
+        if !is_button_target(target) {
+            return None;
+        }
+        let heading = self.heading_action_node().into_iter();
+        let rows = self
+            .visible_row_range()
+            .filter_map(|index| {
+                let (TreeRowKey::Node(id), _) = self.index.row_at(&self.model, index)? else {
+                    return None;
+                };
+                let label = self.model.label(id)?;
+                Some(self.row_semantic_children(id, label, self.row_rect(id)))
+            })
+            .flatten();
+        heading.chain(rows).find(|node| {
+            node.action_target.as_deref() == Some(target)
+                && node.state.focusable
+                && !node.state.disabled
+                && !node.state.read_only
+        })
+    }
+
+    fn focus_affordance(&mut self, target: &str) -> bool {
+        if self.available_affordance(target).is_none() {
+            return false;
+        }
+        if let Some(id) = target
+            .rsplit(':')
+            .next()
+            .and_then(|raw| raw.parse::<NodeId>().ok())
+        {
+            self.focused = Some(TreeRowKey::Node(id));
+        }
+        self.focused_affordance = Some(target.to_owned());
+        self.affordance_focus_valid = true;
+        self.is_focused = true;
+        true
+    }
+
     /// Handle the semantic targets the affordances publish. `None` when the
     /// target is not one of theirs.
     pub(super) fn perform_affordance_action(
@@ -803,6 +868,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
         path: &automerge::ObjId,
     ) -> Option<bool> {
         use crate::a11y::Action;
+        if matches!(action, Action::Focus) && is_button_target(target) {
+            return Some(self.focus_affordance(target));
+        }
         if let Some(target) = target.strip_prefix(MENU_TARGET) {
             let performed = self
                 .menu
@@ -811,6 +879,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 self.drain_menu_selection();
             }
             return Some(performed);
+        }
+        if matches!(action, Action::Activate)
+            && is_button_target(target)
+            && self.available_affordance(target).is_none()
+        {
+            return Some(false);
         }
         if target == HEADING_ACTION_TARGET {
             if !matches!(action, Action::Activate) || self.heading_action.is_none() {

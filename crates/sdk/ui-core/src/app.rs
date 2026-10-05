@@ -4676,8 +4676,14 @@ pub(crate) mod ordinary_confirmation_tests {
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
             host.activate("Emit request");
             assert_eq!(host.focused_label().as_deref(), Some("Confirmation"));
+            if let Host::Native(app) = &host {
+                assert!(app.actions.ordinary_palette_return_focus.is_some());
+            }
             host.activate("Cancel");
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
+            if let Host::Native(app) = &host {
+                assert!(app.actions.ordinary_palette_return_focus.is_none());
+            }
             assert!(ledger.borrow().is_empty());
         }
     }
@@ -4692,6 +4698,10 @@ pub(crate) mod ordinary_confirmation_tests {
         let Host::Native(app) = &mut host else {
             unreachable!()
         };
+        assert!(
+            app.actions.ordinary_palette_return_focus.is_some(),
+            "the modal actually retained the opener identity before removal"
+        );
         // Retire the old custody map before removing its retained owner.
         app.bindings.clear();
         app.layout.node_map.clear();

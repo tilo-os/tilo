@@ -882,3 +882,83 @@ fn the_arrow_keys_pass_over_an_empty_sections_caption() {
     }
     assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("note"));
 }
+
+#[test]
+fn exported_section_and_row_buttons_keep_their_keyboard_identity() {
+    use crate::a11y::{AccessNode, Action};
+    fn focused(node: &AccessNode, name: &str) -> bool {
+        (node.name.as_deref() == Some(name) && node.state.focused)
+            || node.children.iter().any(|child| focused(child, name))
+    }
+    let sections = vec![
+        NavSection::new("saved", "Saved", vec![NavItem::new("one", "One")])
+            .trailing_action(NavAction::new("rename", Icon::Pencil, "Rename section")),
+    ];
+    let sections_called = Rc::new(Cell2::new(Vec::new()));
+    let rows_called = Rc::new(Cell2::new(Vec::new()));
+    let section_log = Rc::clone(&sections_called);
+    let row_log = Rc::clone(&rows_called);
+    let list = NavList::new(sections)
+        .with_id("navigation")
+        .on_section_action(move |section, action| {
+            section_log
+                .borrow_mut()
+                .push((section.to_owned(), action.to_owned()))
+        })
+        .item_actions(
+            vec![NavAction::new("rename", Icon::Pencil, "Rename row")],
+            move |row, action| {
+                row_log
+                    .borrow_mut()
+                    .push((row.to_owned(), action.to_owned()));
+            },
+        );
+    let mut h = harness(list, Theme::dark());
+    let section = h
+        .a11y_node_named("Rename section Saved")
+        .expect("exported section button");
+    h.perform_a11y_action(section, &Action::Focus)
+        .expect("focus section action");
+    assert!(focused(
+        &h.root::<NavList>()
+            .accessibility()
+            .expect("published navigation"),
+        "Rename section Saved"
+    ));
+    h.key("Enter");
+    assert_eq!(
+        *sections_called.borrow(),
+        [("saved".to_owned(), "rename".to_owned())]
+    );
+    assert!(rows_called.borrow().is_empty());
+    let row = h
+        .a11y_node_named("Rename row One")
+        .expect("exported row button");
+    h.perform_a11y_action(row, &Action::Focus)
+        .expect("focus row action");
+    assert!(focused(
+        &h.root::<NavList>()
+            .accessibility()
+            .expect("published navigation"),
+        "Rename row One"
+    ));
+    h.key("Space");
+    assert_eq!(
+        *rows_called.borrow(),
+        [("one".to_owned(), "rename".to_owned())]
+    );
+    h.root_mut::<NavList>().set_sections(vec![NavSection::new(
+        "saved",
+        "Saved",
+        vec![NavItem::new("replacement", "Replacement")],
+    )]);
+    h.relayout();
+    h.key("Enter");
+    assert_eq!(
+        rows_called.borrow().len(),
+        1,
+        "removed focused action never runs a stale callback"
+    );
+    assert_eq!(sections_called.borrow().len(), 1);
+    assert!(h.a11y_node_named("Rename row One").is_none());
+}

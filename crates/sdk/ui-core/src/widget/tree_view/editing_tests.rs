@@ -1050,3 +1050,36 @@ fn a_filled_tree_hides_its_bar_at_rest_and_shows_it_while_scrolling() {
         "and the tree wakes to fade it out"
     );
 }
+
+#[test]
+fn hosted_affordance_focus_refuses_disabled_moves_and_expires_after_model_changes() {
+    use crate::headless::FrameHarness;
+    use crate::state::State;
+    let view = flat_list().with_id("tree");
+    let mut h = FrameHarness::for_root(State::new(), view, (280, 360), Theme::dark());
+    h.relayout();
+    assert!(
+        h.perform_semantic_named("tree", Some("move:up:1"), &Action::Focus)
+            .is_err(),
+        "a disabled published move cannot receive focus"
+    );
+    h.perform_semantic_named("tree", Some("move:down:1"), &Action::Focus)
+        .expect("available move takes focus");
+    h.key("Enter");
+    assert_eq!(ids(h.root::<TreeView<()>>().model()), [2, 1, 3]);
+    h.key("Enter");
+    assert_eq!(
+        ids(h.root::<TreeView<()>>().model()),
+        [2, 1, 3],
+        "the changed model invalidates the old affordance focus"
+    );
+    h.perform_semantic_named("tree", Some("move:down:1"), &Action::Focus)
+        .expect("current move may be explicitly focused anew");
+    h.key("ArrowUp");
+    h.key("Enter");
+    assert_eq!(
+        ids(h.root::<TreeView<()>>().model()),
+        [2, 1, 3],
+        "ordinary row navigation clears button focus"
+    );
+}
