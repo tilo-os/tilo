@@ -12107,6 +12107,7 @@ dependencies = [
  "rustypipe",
  "settings-store",
  "tilo-actions",
+ "tilo-app",
  "tilo-bluez",
  "tilo-callstream",
  "tilo-cli-kit",
