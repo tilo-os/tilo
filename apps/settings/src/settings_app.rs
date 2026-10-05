@@ -118,6 +118,7 @@ pub struct SettingsApp {
     /// This device's system image, firmware and codec pack.
     updates: panes::updates::UpdatesArea,
     storage: panes::storage::StorageArea,
+    disk_unlock: panes::disk_unlock::DiskUnlockArea,
     printers: panes::printers::PrintersArea,
     users: panes::users::UsersArea,
     bluetooth: panes::bluetooth::BluetoothArea,
@@ -169,6 +170,7 @@ impl SettingsApp {
             power: panes::power::PowerArea::new(&cx),
             updates: panes::updates::UpdatesArea::new(&cx),
             storage: panes::storage::StorageArea::new(&cx),
+            disk_unlock: panes::disk_unlock::DiskUnlockArea::new(&cx),
             printers: panes::printers::PrintersArea::new(&cx),
             users: panes::users::UsersArea::new(&cx),
             bluetooth: panes::bluetooth::BluetoothArea::new(&cx),
@@ -398,6 +400,7 @@ impl SettingsApp {
         self.power = panes::power::PowerArea::new(&cx);
         self.updates = panes::updates::UpdatesArea::new(&cx);
         self.storage = panes::storage::StorageArea::new(&cx);
+        self.disk_unlock = panes::disk_unlock::DiskUnlockArea::new(&cx);
         self.printers = panes::printers::PrintersArea::new(&cx);
         self.users = panes::users::UsersArea::new(&cx);
         self.bluetooth = panes::bluetooth::BluetoothArea::new(&cx);
@@ -453,6 +456,10 @@ impl SettingsApp {
     /// This device's system image, firmware and codec pack.
     pub(crate) fn updates(&self) -> &panes::updates::UpdatesArea {
         &self.updates
+    }
+
+    pub(crate) fn disk_unlock(&self) -> &panes::disk_unlock::DiskUnlockArea {
+        &self.disk_unlock
     }
 
     pub(crate) fn storage(&self) -> &panes::storage::StorageArea {
@@ -589,7 +596,12 @@ impl SettingsApp {
                 self.agent_models.model(),
             ))),
             Category::RegionFormats => Box::new(panes::region::RegionPane::new(self.cx.clone())),
-            Category::Permissions => panes::permissions::build(&self.cx),
+            Category::Permissions => panes::permissions::build_with_disk_unlock(
+                &self.cx,
+                Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
+                    self.disk_unlock.model(),
+                ))),
+            ),
             Category::Updates => Box::new(panes::model::ModelPane::new(std::rc::Rc::clone(
                 self.updates.model(),
             ))),
@@ -771,6 +783,7 @@ impl Widget for SettingsApp {
         // is open.
         self.updates.poll();
         self.storage.poll();
+        self.disk_unlock.poll();
         self.printers.poll();
         self.speakers.poll();
         self.device_mesh.poll();
