@@ -10060,6 +10060,12 @@ pub fn run() {
             frame_builder.with_chrome(|chrome| {
                 for request in app_closes.drain() {
                     let tabs = crate::shell::app_close::tabs_of(&chrome.tree().desktop, &request);
+                    eprintln!(
+                        "app-close-requested: app={} room={} windows={}",
+                        request.app_id,
+                        request.room,
+                        tabs.len()
+                    );
                     for tab in tabs {
                         let _ = crate::shell::window_actions::close_tab(chrome, tab);
                     }
