@@ -1017,6 +1017,31 @@ fn matched_fallbacks_paint_at_the_size_they_were_shaped_at() {
 }
 
 #[test]
+fn condensed_text_is_shaped_at_the_width_it_is_drawn() {
+    let mut renderer = renderer();
+    let text = "paypa1.com/l0gin SN 0O1I-l0O8";
+    let normal = named_style("Tilo Sans");
+    let condensed = named_style("Tilo Sans").with_font_variation(OpenTypeTag::WIDTH, 75.0);
+    let normal_width = renderer.measure_style(text, None, &normal).0;
+    let condensed_width = renderer.measure_style(text, None, &condensed).0;
+    // Tilo Sans' condensed `n` is 442 units against 599. Shaped at the
+    // default width, condensed text kept the normal advances and drew its
+    // narrow glyphs spaced out.
+    assert!(
+        condensed_width < normal_width * 0.85,
+        "condensed {condensed_width} against normal {normal_width}"
+    );
+    for (width, stretch) in [
+        (75.0, cosmic_text::Stretch::Condensed),
+        (80.0, cosmic_text::Stretch::Condensed),
+        (90.0, cosmic_text::Stretch::SemiCondensed),
+        (100.0, cosmic_text::Stretch::Normal),
+    ] {
+        assert_eq!(stretch_for_width(width), stretch, "{width}");
+    }
+}
+
+#[test]
 fn the_generic_sans_follows_the_theme_ui_face() {
     let mut renderer = renderer();
     let generic = TextStyle::new(20.0);
