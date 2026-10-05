@@ -312,6 +312,10 @@ mod tests {
                 "transfer" | "import" | "export" | "backup" => {
                     assert!(selected(&root, "Import and export"), "{scenario}: {frame}");
                 }
+                "api-key" => assert!(
+                    shows("Cloud console") && shows("lovelace-prod-0Il1O"),
+                    "{frame}"
+                ),
                 "empty" | "new-item" => {}
                 _ => assert!(shows("Northstar Bank"), "{scenario}: {frame}"),
             }

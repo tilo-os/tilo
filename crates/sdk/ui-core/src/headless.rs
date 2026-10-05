@@ -2232,7 +2232,7 @@ impl FrameHarness {
     #[cfg(not(target_arch = "wasm32"))]
     fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
         self.drain_component_wakes();
-        let (w, h) = self.viewport;
+        let (w, h) = self.device_size();
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
         renderer.set_backdrop(Some(self.backdrop.clone()));
         renderer.render_resilient(&self.scene, background)
@@ -2255,10 +2255,42 @@ impl FrameHarness {
         if let Some(parent) = out.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let (w, h) = self.viewport;
+        let (w, h) = self.device_size();
         let mut renderer = crate::offscreen::OffscreenRenderer::new(w, h);
         renderer.set_backdrop(Some(self.backdrop.clone()));
         renderer.render_png(&self.scene, background, out);
+    }
+
+    /// The transform frames are drawn with: the identity, or the capture's
+    /// device scale ([`crate::offscreen::set_capture_device_scale`]).
+    pub(crate) fn capture_draw_transform(&self) -> Affine {
+        crate::scale::composite_transform(f64::from(crate::offscreen::capture_device_scale()))
+    }
+
+    /// The frame's size in device pixels: the viewport at the capture's
+    /// device scale.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a capture's device scale makes the frame larger than
+    /// Vello renders in one pass (256 bins of 256 x 256 px): it would drop
+    /// the bins past that and write a frame with holes.
+    fn device_size(&self) -> (u32, u32) {
+        let scale = crate::offscreen::capture_device_scale();
+        let size = (
+            self.viewport.0.saturating_mul(scale),
+            self.viewport.1.saturating_mul(scale),
+        );
+        assert!(
+            scale == 1 || size.0.div_ceil(256).saturating_mul(size.1.div_ceil(256)) <= 256,
+            "a {}x{} capture at device scale {scale} is {}x{} pixels, more than Vello renders \
+             in one pass (256 bins of 256 x 256); pass a smaller --viewport (1280x768 fits at 4x)",
+            self.viewport.0,
+            self.viewport.1,
+            size.0,
+            size.1
+        );
+        size
     }
 
     /// Drive a record-aware app: the live document is a record's, and the
@@ -2808,6 +2840,9 @@ impl FrameHarness {
         self.publish_undo_status();
 
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
+        // Logical layout, rasterised at the capture's device scale, as the
+        // live host draws at its window's scale factor.
+        let transform = self.capture_draw_transform();
         self.scene.reset();
         // Floating chrome records what lies below it, so a capture blurs it
         // under the material exactly as the live window's renderer does.
@@ -2824,7 +2859,7 @@ impl FrameHarness {
         if let Some(history) = &mut self.history {
             history.draw(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
@@ -2839,7 +2874,7 @@ impl FrameHarness {
             crate::widget::native_view_frame_start(self.root.as_mut());
             self.root.draw_with_presence(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
@@ -2858,7 +2893,7 @@ impl FrameHarness {
                 .draw(
                     &context,
                     &mut self.scene,
-                    Affine::IDENTITY,
+                    transform,
                     &mut self.text,
                     &self.theme,
                     &self.presence,
@@ -2881,7 +2916,7 @@ impl FrameHarness {
         {
             self.root.draw_overlay(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
@@ -2892,7 +2927,7 @@ impl FrameHarness {
             crate::widget::FloatingSurfaceWidgetExt::draw_floating_surfaces(
                 self.root.as_mut(),
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
@@ -2902,7 +2937,7 @@ impl FrameHarness {
         if let Some(history) = &mut self.history {
             history.draw_overlay(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
@@ -2912,7 +2947,7 @@ impl FrameHarness {
         if self.history_chrome_enabled {
             self.document_history.draw_overlay(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
@@ -2936,7 +2971,7 @@ impl FrameHarness {
             );
             palette.draw(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,

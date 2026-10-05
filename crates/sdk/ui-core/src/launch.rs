@@ -192,6 +192,14 @@ pub struct LaunchArgs {
     /// `--search QUERY`: a capture shows this window's search open with
     /// `QUERY` typed, as the app's search launcher opens it.
     pub search: Option<String>,
+    /// `--device-scale N`: a capture is drawn at N device pixels per
+    /// logical pixel (1 to [`MAX_SHOT_DEVICE_SCALE`]), as a HiDPI display
+    /// draws the same window.
+    pub device_scale: Option<u32>,
+    /// `--distinct-letters on|off`: a capture renders with "Always
+    /// distinguish similar letters" on or off, whatever the theme's face
+    /// would choose.
+    pub distinct_letters: Option<bool>,
     extras: Vec<String>,
     values: Vec<(String, String)>,
     positionals: Vec<String>,
@@ -215,6 +223,8 @@ impl LaunchArgs {
             window: crate::theme::WindowAppearance::default(),
             history: false,
             search: None,
+            device_scale: None,
+            distinct_letters: None,
             extras: Vec::new(),
             values: Vec::new(),
             positionals: Vec::new(),
@@ -1268,6 +1278,12 @@ fn run_with_args_with_attachment(
     if args.shots.is_some() || args.responsive_matrix.is_some() {
         crate::clock::freeze_for_capture();
     }
+    if let Some(scale) = args.device_scale {
+        crate::offscreen::set_capture_device_scale(scale);
+    }
+    if let Some(on) = args.distinct_letters {
+        let _ = CAPTURE_DISTINCT_LETTERS.set(on);
+    }
     crate::i18n::I18nManager::set_pseudo_locale(if args.pseudo_locale {
         crate::i18n::PseudoLocale::Expanded
     } else {
@@ -2103,6 +2119,32 @@ fn unknown_scenario(name: &str, declared: &[&str]) -> String {
 /// thumbnails loaded) before it writes anyway.
 pub const CAPTURE_SETTLE_BOUND: crate::time::Duration = crate::time::Duration::from_secs(3);
 
+/// The largest `--device-scale`: a 1280 x 800 window at 4x is 5120 x 3200.
+pub const MAX_SHOT_DEVICE_SCALE: u32 = 4;
+
+/// `--distinct-letters` for the capture this process writes: every capture
+/// theme ([`shot_theme`], [`capture_theme`], [`shot_theme_from_env`]) takes it.
+static CAPTURE_DISTINCT_LETTERS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// What this process's capture set "Always distinguish similar letters" to
+/// (`--distinct-letters`), `None` outside a capture or without the flag: a
+/// pane that shows the setting's own control renders it as the person's
+/// choice, so the control matches the text around it.
+#[must_use]
+pub fn capture_distinct_letters() -> Option<bool> {
+    CAPTURE_DISTINCT_LETTERS.get().copied()
+}
+
+/// Pin "Always distinguish similar letters" on a capture theme when the
+/// capture asked for it (`--distinct-letters`).
+fn with_capture_letters(mut theme: Theme, explicit: Option<bool>) -> Theme {
+    if let Some(on) = explicit.or_else(|| CAPTURE_DISTINCT_LETTERS.get().copied()) {
+        theme.document.type_.distinct_letters = Some(on);
+        theme.tokens.typography.distinct_letters = on;
+    }
+    theme
+}
+
 /// Resolve the palette, text scale, and motion policy used by screenshot
 /// capture. An explicit `--text-scale` wins over the
 /// `TILO_SHOTS_TEXT_SCALE` environment variable.
@@ -2124,7 +2166,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         Some(hue) => theme.with_your_colour(hue),
         None => theme,
     };
-    let theme = theme.in_window(&args.window);
+    let theme = with_capture_letters(theme.in_window(&args.window), args.distinct_letters);
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
     let theme = theme.with_text_scale(shot_text_scale(
         args.text_scale,
@@ -2148,6 +2190,7 @@ pub fn capture_theme(text_scale: Option<f32>) -> Theme {
     } else {
         theme
     };
+    let theme = with_capture_letters(theme, None);
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `tilo_ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
@@ -2167,7 +2210,7 @@ pub fn shot_theme_from_env() -> Result<Theme, String> {
         Err(_) => Theme::dark(),
     };
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
-    Ok(theme
+    Ok(with_capture_letters(theme, None)
         .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
         .with_reduce_motion(shot_motion_reduced()))
 }
@@ -2251,6 +2294,8 @@ fn parse_args_extended(
         window: crate::theme::WindowAppearance::default(),
         history: false,
         search: None,
+        device_scale: None,
+        distinct_letters: None,
         extras: Vec::new(),
         values: Vec::new(),
         positionals: Vec::new(),
@@ -2288,6 +2333,34 @@ fn parse_args_extended(
                 let value = take_value(args, &mut index, flag, inline)?;
                 let viewport = parse_viewport(value)?;
                 set_once(&mut parsed.viewport, viewport, flag)?;
+            }
+            "--device-scale" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let max = MAX_SHOT_DEVICE_SCALE;
+                let scale = value
+                    .trim()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|scale| (1..=max).contains(scale))
+                    .ok_or_else(|| {
+                        LaunchError::Scenario(format!(
+                            "{flag}: expected a whole number from 1 to {max}, got {value:?}"
+                        ))
+                    })?;
+                set_once(&mut parsed.device_scale, scale, flag)?;
+            }
+            "--distinct-letters" => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let on = match value.trim() {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        return Err(LaunchError::Scenario(format!(
+                            "{flag}: expected on or off, got {other:?}"
+                        )));
+                    }
+                };
+                set_once(&mut parsed.distinct_letters, on, flag)?;
             }
             "--scenario" => {
                 let value = take_value(args, &mut index, flag, inline)?;
@@ -2424,6 +2497,12 @@ fn parse_args_extended(
         }
         if parsed.theme.is_some() {
             return Err(LaunchError::ShotsOnly("--theme".to_owned()));
+        }
+        if parsed.device_scale.is_some() {
+            return Err(LaunchError::ShotsOnly("--device-scale".to_owned()));
+        }
+        if parsed.distinct_letters.is_some() {
+            return Err(LaunchError::ShotsOnly("--distinct-letters".to_owned()));
         }
         if parsed.window.workspace_hue.is_some() {
             return Err(LaunchError::ShotsOnly("--workspace-hue".to_owned()));
@@ -2976,6 +3055,53 @@ mod tests {
             assert!(parsed.pseudo_locale);
             assert_eq!(parsed.text_scale, Some(2.0));
             assert_eq!(parsed.scenario.as_deref(), Some("wide"));
+        }
+
+        // Case `a_capture_takes_a_device_scale_and_the_distinct_letters_setting`.
+        {
+            let parsed = parse_args(
+                &strings(&[
+                    "app",
+                    "--shots=/tmp/s.png",
+                    "--device-scale=4",
+                    "--distinct-letters",
+                    "on",
+                ]),
+                &[],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(parsed.device_scale, Some(4));
+            assert_eq!(parsed.distinct_letters, Some(true));
+            let theme = shot_theme(&LaunchArgs {
+                theme: Some("light".into()),
+                ..parsed.clone()
+            });
+            assert!(theme.tokens.typography.distinct_letters);
+            let off = shot_theme(&LaunchArgs {
+                distinct_letters: Some(false),
+                ..parsed
+            });
+            assert!(!off.tokens.typography.distinct_letters);
+            for bad in [
+                &["app", "--shots=/tmp/s.png", "--device-scale=0"][..],
+                &["app", "--shots=/tmp/s.png", "--device-scale=5"][..],
+                &["app", "--shots=/tmp/s.png", "--distinct-letters=yes"][..],
+            ] {
+                assert!(matches!(
+                    parse_args(&strings(bad), &[], &[]),
+                    Err(LaunchError::Scenario(_))
+                ));
+            }
+            for live in [
+                &["app", "--device-scale=2"][..],
+                &["app", "--distinct-letters=on"][..],
+            ] {
+                assert!(matches!(
+                    parse_args(&strings(live), &[], &[]),
+                    Err(LaunchError::ShotsOnly(_))
+                ));
+            }
         }
 
         // Case `shots_dir_captures_every_scenario_and_names_none`.

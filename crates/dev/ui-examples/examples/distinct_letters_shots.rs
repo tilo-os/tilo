@@ -33,7 +33,7 @@ use tilo_ui::{State, TextKind};
 
 /// A face in the shipped catalog whose distinct I, l and slashed zero are
 /// OpenType features rather than its default shapes: proof that resolution
-/// follows what a face can do, while Tilo Sans' own forms are held back.
+/// follows what a face can do, whichever face it is.
 const PROBE_FAMILY: &str = "Adwaita Sans";
 
 const PROSE: &str =

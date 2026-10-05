@@ -1,7 +1,7 @@
 //! Caller-only palette presentation. Submission transfers inert intent to the
 //! host; it never installs a worker route or executes an application effect.
 use super::{
-    Affine, ElementState, FrameHarness, HashMap, InspectionNode, Key, Point, WindowEvent,
+    ElementState, FrameHarness, HashMap, InspectionNode, Key, Point, WindowEvent,
     collect_inspection,
 };
 use crate::action_palette::{ActionPalette, PendingOperation};
@@ -195,6 +195,7 @@ impl FrameHarness {
     }
 
     pub(super) fn draw_caller_palette(&mut self) {
+        let transform = self.capture_draw_transform();
         if let Some(palette) = &mut self.caller_palette.palette {
             let width = (f64::from(self.viewport.0) - 32.0).clamp(1.0, 640.0);
             palette.layout_with_text(
@@ -205,7 +206,7 @@ impl FrameHarness {
             );
             palette.draw(
                 &mut self.scene,
-                Affine::IDENTITY,
+                transform,
                 &mut self.text,
                 &self.theme,
                 &self.presence,
