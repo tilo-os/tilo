@@ -449,10 +449,13 @@ fn publish_device_file(
     };
     let root = local::open_dir(identity_root)?;
     trusted(&root, &identity_root.display().to_string())?;
-    let mut dir = local::open_shared_subdir(&root, top)?;
+    let mut dir = local::open_shared_subdir(&root, top, None)?;
     trusted(&dir, top)?;
+    // Directories below take the top-level directory's mode, which was
+    // just checked to be root's (when this runs as root).
+    let mode = local::fstat(&dir)?.st_mode;
     for part in below {
-        dir = local::open_shared_subdir(&dir, part)?;
+        dir = local::open_shared_subdir(&dir, part, Some(mode))?;
     }
     local::replace_shared_file(
         &dir,

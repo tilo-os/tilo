@@ -701,22 +701,22 @@ pub mod local {
     }
 
     /// Open `name` inside a shared directory `dir` as a directory without
-    /// following a link, whoever owns it, creating it with the parent's
-    /// permission bits (set-group-ID included) when missing. A directory
+    /// following a link, whoever owns it. With `create`, a missing directory
+    /// is created and, when this account owns it, given that mode (set-group-
+    /// ID included) whatever the umask; the mode comes from the caller's
+    /// trusted parent, never from a directory another account controls.
+    /// Without it the directory must exist and keeps its mode. A directory
     /// anyone may write is refused.
-    pub fn open_shared_subdir(dir: &OwnedFd, name: &str) -> io::Result<OwnedFd> {
+    pub fn open_shared_subdir(
+        dir: &OwnedFd,
+        name: &str,
+        create: Option<libc::mode_t>,
+    ) -> io::Result<OwnedFd> {
         let c = c_name(name)?;
-        let wanted = fstat(dir)?.st_mode & 0o7777;
-        // SAFETY: `dir` is open and `c` is NUL-terminated.
-        if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), wanted & 0o777) } == 0 {
-            // SAFETY: as above.
-            let fd = from_raw(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), DIR_FLAGS) })?;
-            // Whatever the umask, the new directory is reachable like its
-            // parent; through the descriptor just created, never a link.
-            // SAFETY: `fd` is open.
-            if unsafe { libc::fchmod(fd.as_raw_fd(), wanted) } != 0 {
-                return Err(io::Error::last_os_error());
-            }
+        let create = create.map(|mode| mode & 0o7777 & !0o002);
+        if let Some(mode) = create {
+            // SAFETY: `dir` is open and `c` is NUL-terminated.
+            unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), mode & 0o777) };
         }
         // SAFETY: `dir` is open and `c` is NUL-terminated.
         let fd = from_raw(unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), DIR_FLAGS) })?;
@@ -726,6 +726,17 @@ pub mod local {
         }
         if stat.st_mode & 0o002 != 0 {
             return Err(invalid(format!("{name} is writable by every account")));
+        }
+        // Another account's directory swapped in under this name keeps its
+        // mode; only this account's own is made reachable like its parent.
+        if let Some(mode) = create
+            && stat.st_uid == own_uid()
+            && stat.st_mode & 0o7777 != mode
+        {
+            // SAFETY: `fd` is open.
+            if unsafe { libc::fchmod(fd.as_raw_fd(), mode) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
         }
         Ok(fd)
     }
