@@ -5,6 +5,13 @@
 #
 #   RUNNER='./os/dev/vm.sh ssh' ./os/tests/booted_app_update.sh   # a booted dev VM
 #
+# On a tilo-vm slot, RUNNER runs a command in the slot (`tilo-vm slot exec
+# --slot S -- sh -c`), and ROOT_RUNNER runs one as root in every mount
+# namespace of its session (the compositor's and its user manager's, through
+# `tilo-vm vm ssh` and nsenter), since a slot's session sees its own layered
+# /usr. The session must be unlocked and accessibility on
+# (org.a11y.Status IsEnabled), as on a signed-in seat.
+#
 # A dev image is the production image plus dev tooling; this needs one piece
 # of that tooling, tilo-test-registry, which serves newer versions of the
 # installed Settings repacked from its own payload, signed by keys made for
@@ -67,8 +74,16 @@ cleanup() {
   restore_interfaces >/dev/null 2>&1 || true
 }
 
-# Run as root in the guest; the password comes from TILO_PASS when sudo asks.
-as_root() { on "printf '%s\\n' '${TILO_PASS:-}' | sudo -S -p '' sh -c '$*'"; }
+# Run as root in the guest, where the subject's commands run: through
+# ROOT_RUNNER when set (a dev VM slot's own mount namespace), else sudo, the
+# password coming from TILO_PASS when it asks.
+as_root() {
+  if [ -n "${ROOT_RUNNER:-}" ]; then
+    $ROOT_RUNNER "$*"
+  else
+    on "printf '%s\\n' '${TILO_PASS:-}' | sudo -S -p '' sh -c '$*'"
+  fi
+}
 
 # Stand in for an OS that serves `versions` of the system interface.
 serve_system() {
@@ -112,8 +127,11 @@ rollback_to_image() {
 }
 
 # Open an app through the palette; prints "<bus> <pid>".
+# A launch of a copy the store no longer holds never presents a window, and
+# the client would wait for one indefinitely: bound each try, so the caller
+# retries once the desktop has reread the store.
 open_app() {
-  on "$ATSPI open '$1'" | tr -d '\r' | tail -1
+  on "timeout 60 $ATSPI open '$1'" | tr -d '\r' | tail -1
 }
 
 # Open Settings through the palette and require that the launched process
