@@ -125,7 +125,9 @@ containerfile="$repo/os/Containerfile"
 # base image too: their three helpers, three units and the greeter baseline.
 # The session wrapper moves into the shell component beside its compositor;
 # the destination, source bytes and executable mode remain the same.
-expected_contract=a67f5b224dd494f8d87a808930dc944ef2dd307b26d13cbdad518455505ab072
+# The disk-unlock polkit action and exact-command read rule ship beside the
+# existing policies. Their two rootfs payload rows are the intentional delta.
+expected_contract=d62c84fe149b06832c2a75201c6e30a2cef878031d2aa6a349b92e8a8351f96c
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
