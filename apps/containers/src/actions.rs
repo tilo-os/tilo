@@ -107,7 +107,11 @@ mod tests {
         let mut doc = host.peer_document();
         assert_eq!(doc.get_heads(), heads, "nothing was written");
         let keys: Vec<String> = doc.keys(ROOT).collect();
-        assert_eq!(keys, ["create"], "the document is the draft");
+        assert_eq!(
+            keys,
+            ["create", "tilo:record", "tilo:schema_version"],
+            "the canonical record contains only the app draft and framework metadata"
+        );
         assert_eq!(Containers::read(&doc).unwrap(), ContainersState::default());
     }
 

@@ -547,6 +547,39 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
     click_tab(d, 2);
     assert!(!d.targets().contains_key("api.body"));
     assert_eq!(d.targets()["api.request-divider"], manual);
+    fn response_diagnostics(d: &Driver) -> String {
+        fn find(
+            node: &ui::headless::InspectionNode,
+            ancestors: &mut Vec<String>,
+        ) -> Option<String> {
+            if node.test_id.as_deref() == Some("api.response-view") {
+                return Some(format!(
+                    "ancestors={ancestors:?} group={} focus={}",
+                    serde_json::to_string(node).unwrap(),
+                    node.focusable,
+                ));
+            }
+            ancestors.push(format!(
+                "{} rect={:?} clip={:?}",
+                node.path, node.rect, node.child_clip
+            ));
+            for child in &node.children {
+                if let Some(found) = find(child, ancestors) {
+                    return Some(found);
+                }
+            }
+            ancestors.pop();
+            None
+        }
+        let snapshot = d.inspection();
+        format!(
+            "{} native_focus={:?} accessible_focus={:?}",
+            find(&snapshot.root, &mut Vec::new()).unwrap_or_else(|| "group absent".into()),
+            d.focused(),
+            d.focused_access_node(),
+        )
+    }
+    let before_response = response_diagnostics(d);
     let headers = semantic_nodes(d)
         .into_iter()
         .find(|node| node.action_target.as_deref() == Some("api.response-view:segment:2"))
@@ -561,7 +594,10 @@ fn composition_pointer_drag_body_auth_and_preference_survive_resize() {
                 && node.name.as_deref() == Some("Headers")
                 && node.state.checked == Some(true)
         }),
-        "the real response switch selects Headers"
+        "the real response switch selects Headers; pointer={:?}; before={}; after={}",
+        headers.center(),
+        before_response,
+        response_diagnostics(d)
     );
     // Response presentation changes do not save a request. Open the form
     // through the real request Save control before checking resize custody.
