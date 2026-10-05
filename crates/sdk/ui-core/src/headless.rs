@@ -510,6 +510,7 @@ pub struct FrameHarness {
     root: Box<dyn Widget>,
     history: Option<Box<crate::history_mode::host::HistoryHost>>,
     action_palette: Option<Box<crate::action_palette::ActionPalette>>,
+    ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
     /// The open search palette has provider pages left to read.
     search_pending: bool,
     root_lifetime: uuid::Uuid,
@@ -908,6 +909,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.ordinary_palette_return_focus = None;
         self.root_type = None;
         self.root = root;
         if let Some(registration) = history
@@ -1017,6 +1019,7 @@ impl FrameHarness {
         self.discard_layout_tree();
         self.focused = None;
         self.focus_before_trap = None;
+        self.ordinary_palette_return_focus = None;
         self.root_type = None;
         self.root = root;
     }
@@ -1423,6 +1426,7 @@ impl FrameHarness {
             bindings: crate::bound_dispatch::BoundNodeMap::new(),
             history: None,
             action_palette: None,
+            ordinary_palette_return_focus: None,
             search_pending: false,
             root_lifetime: uuid::Uuid::new_v4(),
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -2947,6 +2951,14 @@ impl FrameHarness {
         }
 
         self.update_focus_trap(focus);
+        if self.action_palette.is_none()
+            && let Some(saved) = self.ordinary_palette_return_focus.take()
+            && !self.focus_trap_active
+        {
+            let (allowed, _) = self.history_app_focus_order(self.child_node);
+            // SAFETY: this final layout owns the freshly admitted tree.
+            self.focused = unsafe { saved.restore(&self.node_map, &self.bindings, Some(&allowed)) };
+        }
 
         // After layout (so a control built this pass is in `node_map`) and
         // before draw and any accessibility read — a shot must show the
@@ -4094,6 +4106,11 @@ impl FrameHarness {
             self.set_focused(Some(taffy_id));
         }
         if !handled {
+            if semantic_target.is_some() && !matches!(action, crate::a11y::Action::Focus) {
+                return Err(format!(
+                    "the current semantic target did not handle {action:?}"
+                ));
+            }
             match action {
                 crate::a11y::Action::Focus => {
                     if !ordinal_path.is_empty() {
@@ -5812,6 +5829,17 @@ impl FrameHarness {
         let Ok(request) = request else {
             return;
         };
+        if self.action_palette.is_none() {
+            // SAFETY: modal admission has not retired this owned live tree.
+            self.ordinary_palette_return_focus = unsafe {
+                crate::widget::layout::CompositionFocus::capture(
+                    self.focused,
+                    &self.node_map,
+                    &self.bindings,
+                )
+            }
+            .or_else(|| crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref()));
+        }
         self.discard_layout_tree();
         self.focused = None;
         let mut palette = Box::new(crate::action_palette::ActionPalette::with_host_text(
