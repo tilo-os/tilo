@@ -28,7 +28,7 @@
 #
 # DEV_DISK_QCOW2 (a dev disk: tilo-vmd, tilo-device-admin, tilo-vm) is never
 # booted or modified; each VM boots its own overlay.
-set -euo pipefail
+set -Eeuo pipefail
 
 dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 vm="$dev_dir/vm.sh"
@@ -84,7 +84,13 @@ vm_c() {
 }
 # Root on a guest for test setup only. The account is in wheel; sudo takes
 # the password's line from stdin and the shell it starts reads the script.
-as_root() { local each=$1; printf '%s\n%s\n' "$TILO_PASS" "$2" | "$each" ssh "sudo -S -p '' sh -s"; }
+as_root() {
+  local each=$1 script=$2
+  # The password must never become the first script statement when sudo
+  # has cached authentication or a fixture account has a NOPASSWD grant.
+  script="'${script//\'/\'\\\'\'}'"
+  printf '%s\n' "$TILO_PASS" | "$each" ssh "sudo -S -p '' sh -c $script"
+}
 
 collect() {
   local label=$1 run=$2 each=$3
@@ -111,6 +117,7 @@ cleanup() {
   exit "$rc"
 }
 trap cleanup EXIT
+trap 'printf "device-admin reach: failed at scenario line %s\n" "$LINENO" >&2' ERR
 
 # --- three machines, three networks --------------------------------------------
 for run in "$run_a" "$run_b" "$run_c"; do
