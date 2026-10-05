@@ -786,11 +786,13 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 children.push(node);
             }
         }
+        let focused_target = self
+            .focused_affordance
+            .as_deref()
+            .filter(|_| self.is_focused && self.affordance_focus_valid);
         for child in &mut children {
-            child.state.focused = self.is_focused
-                && self.affordance_focus_valid
-                && child.action_target.as_deref() == self.focused_affordance.as_deref()
-                && self.focused_affordance.is_some();
+            child.state.focused =
+                focused_target.is_some_and(|target| child.action_target.as_deref() == Some(target));
         }
         children
     }
