@@ -356,8 +356,11 @@ impl ApiTesterApp {
         Box::new(
             Stack::new()
                 .push(Box::new(
+                    // The URL and its variable-resolution caption belong
+                    // together; keep the caption's tight text rhythm so the
+                    // content-sized request leaves room for the response.
                     Column::new()
-                        .with_rhythm(ui::tokens::Rhythm::Related)
+                        .with_rhythm(ui::tokens::Rhythm::Tight)
                         .push(request::url_bar(sink))
                         .push(request::variable_hint(Rc::clone(env_vars)))
                         .push(Box::new(
