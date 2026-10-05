@@ -2506,15 +2506,41 @@ impl ChatApp {
             panel.y1 - pad,
         )
     }
-    /// The timeline: between the header row and the composer.
+    /// Whether this window draws the floating call window over its content.
+    /// At enlarged text the labelled Call control remains reachable in the
+    /// header instead; a fixed floating huddle would cover the thread and
+    /// composer instead of forming a usable secondary surface.
+    pub(crate) fn app_draws_huddle(&self) -> bool {
+        self.call.active
+            && !self.call.expanded
+            && self.layout_text_scale <= 1.25
+            && ((!self.call.placement.is_return_pending()
+                && matches!(
+                    self.call.placement.attachment(),
+                    ui::floating_surface::Attachment::App { .. }
+                ))
+                || !self.call.placement.is_desktop_covered())
+    }
+
+    /// The timeline: between the header row and the composer. While the call
+    /// window floats over it, the messages keep clear of it and wrap beside
+    /// it, so it never covers what is being said.
     pub(crate) fn messages_rect(&self, tr: &mut TextRenderer) -> Rect {
         let composer = self.composer_rect(tr);
-        Rect::new(
+        let mut rect = Rect::new(
             self.center_left(),
             self.rect.y0 + self.chrome.header_h,
             self.center_right(),
             composer.y0 - self.chrome.avatar_gap,
-        )
+        );
+        if self.app_draws_huddle() {
+            let call = self.huddle_panel();
+            let overlaps = call.x0 < rect.x1 && call.x1 > rect.x0 && call.y0 < rect.y1;
+            if overlaps {
+                rect.x1 = rect.x1.min(call.x0 - self.chrome.avatar_gap).max(rect.x0);
+            }
+        }
+        rect
     }
     /// The detail drawer's panel. A thread is content, not a secondary
     /// sidebar: on a narrow window it becomes a pushed page over the whole
@@ -3743,19 +3769,22 @@ impl Widget for ChatApp {
             msg_area,
             &mut hits,
         );
+        scene.pop_layer();
         // Older messages fade into the ground under the header row while
-        // there is more history above.
+        // there is more history above, across the whole conversation column
+        // (beside a floating call window too, so the header edge reads as
+        // one line).
         let history_above = self.scroll_content - self.scroll_viewport - self.scroll;
         if history_above > 0.5 {
+            let column = Rect::new(msg_area.x0, msg_area.y0, self.center_right(), msg_area.y1);
             ui::surface::content_edge_fade(
                 scene,
                 tf,
-                msg_area,
+                column,
                 ui::surface::ContentEdge::Top,
                 theme.tokens.colors.surfaces.content,
             );
         }
-        scene.pop_layer();
         self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
         self.draw_drawers(scene, tf, tr, theme, presence, &mut hits);
@@ -3774,18 +3803,7 @@ impl Widget for ChatApp {
             }
             self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
-        } else if self.call.active
-            // At enlarged text, the labelled Call control remains reachable
-            // in the header; a fixed floating huddle would cover the thread
-            // and composer instead of forming a usable secondary surface.
-            && theme.text_scale <= 1.25
-            && ((!self.call.placement.is_return_pending()
-                && matches!(
-                    self.call.placement.attachment(),
-                    ui::floating_surface::Attachment::App { .. }
-                ))
-                || !self.call.placement.is_desktop_covered())
-        {
+        } else if self.app_draws_huddle() {
             self.draw_live_huddle(scene, tf, tr, theme, presence, &mut hits);
         }
 
@@ -3858,6 +3876,12 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A focused composer's editor floats its menus over the timeline.
+        for composer in [&mut self.composer_main, &mut self.composer_thread] {
+            if composer.is_focused() && composer.rect().width() > 0.0 {
+                composer.draw_overlay(scene, tf, tr, theme, presence);
+            }
+        }
         if let Some(menu) = self.menu.as_mut() {
             menu.widget.draw_overlay(scene, tf, tr, theme, presence);
         }
