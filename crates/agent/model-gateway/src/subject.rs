@@ -89,8 +89,17 @@ pub fn segment(image: &VisionImage) -> Result<String, String> {
         // The store checks only the file's size when it is looked up; the
         // bytes run here are checked against the digest the signed
         // catalogue pinned, once per load.
+        let hashing = Instant::now();
         if hex_digest(&file) != installed.sha256 {
             return Err(TAMPERED.to_string());
+        }
+        if !std::env::var_os("TILO_MODEL_GATEWAY_TIMING").is_some_and(|value| value == "0") {
+            eprintln!(
+                "tilo-model-gateway: timing subject model={} bytes={} hash_us={}",
+                installed.id,
+                file.len(),
+                hashing.elapsed().as_micros(),
+            );
         }
         let model = SubjectModel::load(file, family)
             .map_err(|error| error.to_string())?
