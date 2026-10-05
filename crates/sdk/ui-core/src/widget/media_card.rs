@@ -158,6 +158,7 @@ struct MediaMetrics {
     icon: f64,
     mark: f64,
     mark_gap: f64,
+    creator_side: f64,
 }
 
 impl MediaMetrics {
@@ -178,6 +179,7 @@ impl MediaMetrics {
             icon: f64::from(metrics.icon_md),
             mark: f64::from(metrics.icon_sm),
             mark_gap: f64::from(spacing.s1),
+            creator_side: crate::widget::AvatarSize::Small.side(theme),
         }
     }
 
@@ -197,6 +199,7 @@ pub struct MediaCardFace<'a> {
     meta: [Option<&'a str>; 2],
     /// A mark after the first meta line (verified).
     meta_mark: Option<Icon>,
+    creator: Option<crate::widget::AvatarFace<'a>>,
     badges: &'a [MediaBadge<'a>],
     hover_action: Option<Icon>,
     selected: bool,
@@ -213,6 +216,7 @@ impl<'a> MediaCardFace<'a> {
             seed: None,
             meta: [None, None],
             meta_mark: None,
+            creator: None,
             badges: &[],
             hover_action: None,
             selected: false,
@@ -287,6 +291,13 @@ impl<'a> MediaCardFace<'a> {
         self
     }
 
+    /// Creator attribution beside the metadata, using the shared avatar painter.
+    #[must_use]
+    pub fn creator(mut self, avatar: crate::widget::AvatarFace<'a>) -> Self {
+        self.creator = Some(avatar);
+        self
+    }
+
     /// The height of the text block under the art at `width` (0 for an
     /// art-only card). A grid passes the tallest of a row to every card in
     /// it, so their titles line up.
@@ -303,7 +314,12 @@ impl<'a> MediaCardFace<'a> {
         let lines = text.clamp_to_lines(title, &m.title, wrap, 2).len().max(1);
         let mut h = crate::num::f64_of_usize(lines) * MediaMetrics::line(text, &m.title);
         let meta_lines = self.meta.iter().flatten().count();
-        h += crate::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
+        let metadata = crate::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
+        h += if self.creator.is_some() {
+            metadata.max(m.creator_side)
+        } else {
+            metadata
+        };
         (m.text_gap + h).ceil()
     }
 
@@ -404,15 +420,22 @@ impl<'a> MediaCardFace<'a> {
                 y += title_line;
             }
             let meta_line = MediaMetrics::line(ctx.text, &m.meta);
+            let creator_inset = self.creator.map_or(0.0, |avatar| {
+                avatar.paint(
+                    ctx,
+                    Rect::from_origin_size((rect.x0, y), (m.creator_side, m.creator_side)),
+                );
+                m.creator_side + m.text_gap
+            });
             for (index, meta) in self.meta.iter().flatten().enumerate() {
                 let mark = if index == 0 { self.meta_mark } else { None };
                 let mark_w = mark.map_or(0.0, |_| m.mark + m.mark_gap);
                 let line = ctx.text.elide_to_width_style(
                     meta,
-                    crate::num::f32_of_f64((f64::from(width) - mark_w).max(1.0)),
+                    crate::num::f32_of_f64((f64::from(width) - mark_w - creator_inset).max(1.0)),
                     &m.meta,
                 );
-                let x = start(ctx, &line, &m.meta, mark_w);
+                let x = start(ctx, &line, &m.meta, mark_w) + creator_inset;
                 ctx.text(&line, &m.meta, theme.text_dim, Point::new(x, y), None);
                 if let Some(icon) = mark {
                     let (w, _) = ctx.text.measure_style(&line, None, &m.meta);
@@ -807,6 +830,13 @@ impl OwnedBadge {
     }
 }
 
+struct MediaCreator {
+    name: String,
+    identity: String,
+    image: Option<peniko::ImageData>,
+    image_url: Option<(ImageStore, String)>,
+}
+
 /// A retained media card. See the module docs.
 pub struct MediaCard {
     source: MediaSource,
@@ -816,6 +846,9 @@ pub struct MediaCard {
     seed: Option<String>,
     meta: Vec<String>,
     meta_mark: Option<Icon>,
+    creator: Option<MediaCreator>,
+    creator_title_height: f64,
+    creator_rect: Rect,
     badges: Vec<OwnedBadge>,
     hover_action: Option<(Icon, String, Box<dyn FnMut()>)>,
     pressed_action: bool,
@@ -842,6 +875,9 @@ impl MediaCard {
             seed: None,
             meta: Vec::new(),
             meta_mark: None,
+            creator: None,
+            creator_title_height: 0.0,
+            creator_rect: Rect::ZERO,
             badges: Vec::new(),
             hover_action: None,
             pressed_action: false,
@@ -885,6 +921,37 @@ impl MediaCard {
     pub fn meta(mut self, line: impl Into<String>) -> Self {
         if self.meta.len() < 2 {
             self.meta.push(line.into());
+        }
+        self
+    }
+
+    /// A person's attribution below the title. The initials use their stable
+    /// identity, and a picture can be attached with `creator_image_url`.
+    #[must_use]
+    pub fn creator(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
+        self.creator = Some(MediaCreator {
+            name: name.into(),
+            identity: identity.into(),
+            image: None,
+            image_url: None,
+        });
+        self
+    }
+
+    /// The creator's decoded picture; otherwise their shared avatar shows initials.
+    #[must_use]
+    pub fn creator_image(mut self, image: peniko::ImageData) -> Self {
+        if let Some(creator) = &mut self.creator {
+            creator.image = Some(image);
+        }
+        self
+    }
+
+    /// Load a creator picture from the same cache used by the retained Avatar.
+    #[must_use]
+    pub fn creator_image_url(mut self, store: ImageStore, url: impl Into<String>) -> Self {
+        if let Some(creator) = &mut self.creator {
+            creator.image_url = Some((store, url.into()));
         }
         self
     }
@@ -952,6 +1019,12 @@ impl MediaCard {
         if let Some(mark) = self.meta_mark {
             face = face.meta_mark(mark);
         }
+        if let Some(creator) = &self.creator {
+            face = face.creator(
+                crate::widget::AvatarFace::new(&creator.name, &creator.identity)
+                    .image(creator.image.as_ref()),
+            );
+        }
         if let Some((icon, _, _)) = &self.hover_action {
             face = face.hover_action(*icon);
         }
@@ -986,6 +1059,14 @@ impl Widget for MediaCard {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        if let Some(creator) = &mut self.creator
+            && creator.image.is_none()
+            && let Some((store, url)) = &creator.image_url
+            && let Some(image) = store.get(url)
+        {
+            creator.image = Some(image);
+            self.dirty = true;
+        }
         if self.loaded.is_none()
             && let MediaSource::Url { store, url } = &self.source
             && let Some(image) = store.get(url)
@@ -1028,6 +1109,17 @@ impl Widget for MediaCard {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 160.0,
         }));
+        if self.creator.is_some()
+            && let Some(m) = &self.metrics
+            && let Some(title) = &self.title
+        {
+            let lines = text_renderer
+                .clamp_to_lines(title, &m.title, crate::num::f32_of_f64(width.max(1.0)), 2)
+                .len()
+                .max(1);
+            self.creator_title_height =
+                crate::num::f64_of_usize(lines) * MediaMetrics::line(text_renderer, &m.title);
+        }
         let text = self
             .shared_text_height
             .unwrap_or_else(|| self.own_text_height(text_renderer, width));
@@ -1050,6 +1142,20 @@ impl Widget for MediaCard {
             self.dirty = true;
         }
         self.rect = rect;
+        if self.creator.is_some()
+            && let Some(m) = &self.metrics
+        {
+            self.creator_rect = Rect::from_origin_size(
+                (
+                    rect.x0,
+                    rect.y0
+                        + rect.width() / self.aspect.ratio()
+                        + m.text_gap
+                        + self.creator_title_height,
+                ),
+                (m.creator_side, m.creator_side),
+            );
+        }
     }
 
     fn draw(
@@ -1172,10 +1278,17 @@ impl Widget for MediaCard {
         let mut node = self
             .with_face(|face| face.accessibility(self.rect))
             .with_semantic_key(self.activation.id());
+        if let Some(creator) = &self.creator {
+            node.children.push(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Image)
+                    .with_name(creator.name.clone())
+                    .with_bounds(self.creator_rect),
+            );
+        }
         if let Some((_, label, _)) = &self.hover_action {
-            node = node.with_children(vec![
+            node.children.push(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name(label.clone()),
-            ]);
+            );
         }
         Some(node)
     }

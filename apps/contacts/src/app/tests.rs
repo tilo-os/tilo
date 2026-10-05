@@ -759,11 +759,9 @@ fn retained_forms_preserve_persistence_and_refusals() {
                 "selected chip label must remain readable on its resolved fill"
             );
             assert!(
-                ui::a11y::contrast_ratio(
-                    selected.edge.expect("a selected contact chip has an edge"),
-                    ground
-                ) >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
-                "selected chip edge must remain distinguishable from its pane"
+                ui::a11y::contrast_ratio(selected.edge.unwrap_or(selected.fill), ground)
+                    >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                "the painted outline or filled chip boundary remains distinguishable from its pane"
             );
         }
     }
@@ -1238,11 +1236,8 @@ fn text_scale_reflows_geometry_and_names_fit() {
     );
     assert!(last.y0 > first.y1, "paired fields stack at large text");
     assert!(
-        notes
-            .as_any()
-            .and_then(|value| value.downcast_ref::<ui::widget::TextInput>())
-            .unwrap()
-            .is_multiline()
+        notes.accessibility().unwrap().state.multiline,
+        "the real notes editor publishes its multiline text contract"
     );
     assert!(
         notes.get_rect().height() >= first.height() * 3.0,
@@ -2826,7 +2821,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         act_named(
             &mut h.app,
             "Sort contacts",
-            &ui::a11y::Action::SetValue("organization".into()),
+            &ui::a11y::Action::SetValue("Sort by organization".into()),
         );
         assert_eq!(h.app.sort, SortKey::Org, "choosing Org changes the sort");
         let first_by_org = h
@@ -2845,7 +2840,7 @@ fn sort_and_group_filters_reorder_and_filter_the_list() {
         act_named(
             &mut h.app,
             "Sort contacts",
-            &ui::a11y::Action::SetValue("name".into()),
+            &ui::a11y::Action::SetValue("Sort by name".into()),
         );
         assert_eq!(h.app.sort, SortKey::Name);
     }
@@ -3215,7 +3210,7 @@ fn draft_popups_set_type_and_birthday_only_in_the_draft() {
         act_named(
             &mut h.app,
             "Phone 1 type",
-            &ui::a11y::Action::SetValue(TYPE_OPTIONS[pick].0.into()),
+            &ui::a11y::Action::SetValue(TYPE_OPTIONS[pick].1.into()),
         );
         h.app.form.as_mut().unwrap().collect();
         assert_eq!(
@@ -3363,7 +3358,7 @@ fn vcf_export_writes_the_selected_book() {
         act_named(
             &mut h.app,
             "Format",
-            &ui::a11y::Action::SetValue("3.0".into()),
+            &ui::a11y::Action::SetValue("vCard 3.0, for older apps".into()),
         );
         let (mut services, recorder) = ui::host::HostServices::recording();
         let chooser = std::sync::Arc::new(DeferredPicker::new(recorder.clone()));
@@ -3474,6 +3469,7 @@ fn import_with(app: &mut Live, outcome: ui::portal::MultiOutcome) {
 #[serial_test::serial]
 fn export_asks_a_format_and_writes_the_chosen_file() {
     let dir = scratch_dir();
+    std::fs::create_dir_all(&dir).unwrap();
     let vcf = dir.join("out.vcf");
     let mut app = synced();
     app.set_group_filter(Some("Friends".into()));
@@ -3982,7 +3978,7 @@ fn duplicate_and_conflict_review_is_accessible() {
         act_named(
             &mut app,
             "Organization to keep",
-            &ui::a11y::Action::SetValue("other".into()),
+            &ui::a11y::Action::SetValue("Keep the other card's".into()),
         );
         assert!(
             app.duplicate_review
@@ -3994,7 +3990,7 @@ fn duplicate_and_conflict_review_is_accessible() {
         act_named(
             &mut app,
             "Organization to keep",
-            &ui::a11y::Action::SetValue("current".into()),
+            &ui::a11y::Action::SetValue("Keep this card's".into()),
         );
         assert!(
             !app.duplicate_review
@@ -4220,7 +4216,7 @@ fn form_choice_semantics() {
     app.recompose();
     let kind = TypeTarget::Phone(0);
     let name = format!("{} type", kind.spoken());
-    act_named(&mut app, &name, &ui::a11y::Action::SetValue("other".into()));
+    act_named(&mut app, &name, &ui::a11y::Action::SetValue("Other".into()));
     assert_eq!(app.form.as_ref().unwrap().kind(kind), "other");
     let before = app.form.as_ref().unwrap().draft.phones.len();
     act_named(&mut app, "Remove phone 1", &ui::a11y::Action::Activate);
@@ -4388,17 +4384,6 @@ impl Live {
     fn save_edit(&mut self) {
         self.request(Request::Save);
     }
-    fn toggle_favorite(&mut self, id: ContactId) -> bool {
-        let Some(before) = self.store.get(id).map(|contact| contact.favorite) else {
-            return false;
-        };
-        self.selected = Some(id);
-        self.request(Request::ToggleFavorite);
-        self.store
-            .get(id)
-            .is_some_and(|contact| contact.favorite != before)
-    }
-
     /// The address book as it would be after `action`, applied to a copy of
     /// the document as the palette's action of the same name applies it.
     fn book_after(&self, action: &crate::actions::ContactsAction) -> Vec<Contact> {

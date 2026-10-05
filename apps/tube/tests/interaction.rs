@@ -24,7 +24,7 @@ use tube::TubeApp;
 use tube::model::Route;
 use ui::headless::Framed;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{MediaSize, Widget};
 use vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -384,16 +384,21 @@ fn pages_lay_out_without_overlap_at_every_size() {
             );
             let mut cards = Vec::new();
             rects_named(&*framed, "MediaCard", &mut cards);
-            cards
+            let mut grids = Vec::new();
+            rects_named(&*framed, "MediaGrid", &mut grids);
+            let width = cards
                 .first()
                 .map(Rect::width)
-                .expect("the page shows cards")
+                .expect("the page shows cards");
+            let extent = MediaSize::Regular.extent(&Theme::dark());
+            (width, grids, extent)
         };
-        let home = width_on(Route::Home);
-        let channel = width_on(Route::Channel("ch_lowlevel".into()));
+        let (home, home_grids, home_extent) = width_on(Route::Home);
+        let (channel, channel_grids, channel_extent) =
+            width_on(Route::Channel("ch_lowlevel".into()));
         assert!(
             (home - channel).abs() <= 1.0,
-            "a creator's three videos are as wide as Home's at {viewport:?}: {home} vs {channel}"
+            "a creator's three videos are as wide as Home's at {viewport:?}: {home} vs {channel}; Home grids={home_grids:?}, extent={home_extent}; creator grids={channel_grids:?}, extent={channel_extent}"
         );
     }
     // Case `home_cards_never_overlap`.
@@ -482,10 +487,24 @@ fn search_inputs_are_present_and_navigate() {
         let centre = bounds.center();
         app.harness().click_at(centre.x, centre.y);
         app.settle();
+        let pointer_query = app.harness().global_search_query().map(str::to_owned);
+        if pointer_query.as_deref() != Some("") {
+            let focus = app.harness().a11y_focus();
+            let controls = app.harness().controls();
+            let activation = app
+                .harness()
+                .operate_control(&search.id, &ui::headless::ControlInput::Press);
+            app.settle();
+            eprintln!(
+                "Tube Search pointer refused: viewport={viewport:?}, scale={scale}, search={search:?}, focus={focus:?}, controls={controls:?}; same control AT activation={activation:?}, AT query={:?}, AT focus={:?}",
+                app.harness().global_search_query(),
+                app.harness().a11y_focus()
+            );
+        }
         assert_eq!(
-            app.harness().global_search_query(),
+            pointer_query.as_deref(),
             Some(""),
-            "the shared platform search owns input"
+            "the shared platform search owns input after the actual pointer click"
         );
         assert!(
             app.harness().a11y_focus().is_some(),
@@ -749,9 +768,13 @@ fn share_copies_a_link_through_a_real_click() {
     })
     .unwrap();
     assert!(
-        app.harness().a11y_nodes().iter().any(|(_, node)| node
-            .label()
-            .is_some_and(|label| label.contains("Link copied") && label.contains(WATCH_ID))),
+        app.harness().a11y_nodes().iter().any(|(_, node)| {
+            node.label() == Some("Notifications")
+                && node.live() == Some(ui::accesskit::Live::Assertive)
+                && node
+                    .value()
+                    .is_some_and(|value| value.contains("Link copied") && value.contains(WATCH_ID))
+        }),
         "the share confirmation is actually published by the toast strip"
     );
 }

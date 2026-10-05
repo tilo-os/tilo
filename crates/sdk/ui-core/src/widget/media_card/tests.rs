@@ -295,3 +295,67 @@ fn equal_column_rows_use_the_remainder_of_odd_viewport_widths() {
         }
     }
 }
+
+#[test]
+fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
+    use std::sync::Arc;
+    let bytes = crate::png::encode_rgba8(2, 2, &[180; 16]).unwrap();
+    let fetch: crate::image_store::Fetcher = Arc::new(move |_| Some(bytes.clone()));
+    let store = crate::ImageStore::new(&fetch);
+    assert!(store.get("https://example.test/creator.png").is_none());
+    store.block_until_idle(tilo_test_env::hang_bound());
+    assert!(store.get("https://example.test/creator.png").is_some());
+    for theme in [
+        Theme::dark(),
+        Theme::light(),
+        Theme::dark().with_text_scale(2.0),
+    ] {
+        let card = MediaCard::new("creator-card", MediaSource::Placeholder)
+            .aspect(MediaAspect::Wide)
+            .title("A video title")
+            .meta("Ada Lovelace")
+            .meta("Recorded yesterday")
+            .creator("Ada Lovelace", "ada")
+            .creator_image_url(store.clone(), "https://example.test/creator.png");
+        let mut harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(card),
+            (400, 600),
+            theme.clone(),
+        );
+        harness.recompose().unwrap();
+        let image = harness
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(_, node)| {
+                (node.role() == accesskit::Role::Image && node.label() == Some("Ada Lovelace"))
+                    .then_some(node)
+            })
+            .expect("the creator is a semantic image, rather than a duplicate action");
+        let bounds = image
+            .bounds()
+            .expect("the attribution has measured geometry");
+        let side = crate::widget::AvatarSize::Small.side(&theme);
+        assert!((bounds.width() - side).abs() < 0.1);
+        assert!((bounds.height() - side).abs() < 0.1);
+        assert!(
+            bounds.y0 > 400.0 / MediaAspect::Wide.ratio(),
+            "the avatar sits below the art and title"
+        );
+        assert!(
+            bounds.y1 <= harness.inspection().root.rect[3],
+            "metadata measurement includes the whole avatar"
+        );
+        assert_eq!(
+            harness
+                .scene()
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|tag| **tag == vello_encoding::DrawTag::IMAGE)
+                .count(),
+            1,
+            "the real decoded creator image is painted by AvatarFace"
+        );
+    }
+}
