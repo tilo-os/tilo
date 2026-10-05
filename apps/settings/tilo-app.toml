@@ -86,9 +86,12 @@ splash-budget   = 250
 
 # The installed-image external AT-SPI client uses this safe navigation action
 # as a release certificate; it neither changes a preference nor needs hardware
-# or a configured account.
+# or a configured account. The root is the app surface's own landmark: the
+# app's name ("Personal Settings") is carried by the window chrome the
+# compositor draws, never repeated in the app's tree
+# (tests/no_app_title_header.rs).
 [accessibility.atspi_acceptance]
-root         = "Personal Settings"
+root         = "Settings"
 required     = ["Appearance", "Accessibility"]
 action       = "Accessibility"
 after_action = ["Screen reader"]
