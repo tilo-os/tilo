@@ -101,15 +101,30 @@ per frame, is the follow-up — and the frame trace already measures it.
 
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the
-`TILO_REFRESH_HZ` override. That is a statement about the *loop*. It is
-not a statement about frames landing on a real panel's vblank: nothing in
-this design consumes hardware presentation feedback (DRM page-flip
-completion timestamps, or a `presentation-time` protocol event from a
-nested parent). `FrameClock::note_presented` is called at submit, so the
-deadline series is anchored on production, not on photons. Closing that
-loop — feeding real flip timestamps back into `note_presented`, which the
-clock is already shaped to accept — is the next step, and it needs
-hardware to be worth anything.
+`TILO_REFRESH_HZ` override. `FrameClock::note_presented` is still called at
+submit: cadence remains anchored on frame production.
+
+Standard `wp_presentation` feedback separately binds a client's committed
+buffer generation to the pixels drawn by the foreign-surface widget and
+then to the exact `PresentPipe` submission serial. On one physical DRM
+output, a successful page-flip event for that output's CRTC completes the
+feedback with the original kernel timestamp and sequence, provided the
+driver advertises monotonic timestamps. Presenter return and ordinary
+frame retirement do not prove presentation. Failed capture, uncertain
+completion, timeout, missing output, nested/headless backends and ambiguous
+multi-output frames discard feedback. Timeout or resetting a still-pending
+flip disables physical proof for that scanout: a late event without a
+submission cookie must not certify a newer frame. Refresh is unknown when adaptive
+sync is active. Feedback does not change the frame clock's cadence policy.
+
+Native protocol tests verify commit/frame ownership and discard paths;
+DRM event fixtures verify timestamp preservation and completion guards.
+They do not prove Yoga latency. Opt-in `TILO_PROFILE_PRESENTATION=1`
+content-free traces preserve the original libinput monotonic event time,
+Wayland delivery serial and delivery time for correlation with actual app
+state changes and presentation feedback. Synthetic input and repeats lack
+an original physical timestamp and cannot qualify as physical latency
+samples. Panel timing and latency goals require a real hardware run.
 
 ## Event loop + state
 
