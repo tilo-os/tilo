@@ -47,8 +47,8 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
     let mut sample = synced_sample();
     sample.with_doc(|app, doc| {
         let initial = app.search_refresh_stats();
-        app.sync(doc, &automerge::ROOT);
-        app.sync(doc, &automerge::ROOT);
+        app.sync(doc.doc(), &automerge::ROOT);
+        app.sync(doc.doc(), &automerge::ROOT);
         let idle = app.search_refresh_stats();
         assert_eq!(idle.rebuilds, initial.rebuilds);
         assert_eq!(idle.buffer_reads, initial.buffer_reads);
@@ -57,9 +57,15 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
 
         let node = app.active_file_node().expect("sample buffer");
         let key = app.buffer_key(node);
-        let text = EditorDoc::buffer_text_key(doc, &key).expect("buffer text");
-        EditorDoc::splice(doc, &text, 0, 0, "fn revision_gate_needle() {}\n");
-        app.sync(doc, &automerge::ROOT);
+        let base = EditorDoc::read_buffer_key(doc, &key).expect("buffer text");
+        app.dispatch_text_action(
+            doc,
+            key,
+            &base,
+            &format!("fn revision_gate_needle() {{}}\n{base}"),
+        )
+        .unwrap();
+        app.sync(doc.doc(), &automerge::ROOT);
         let after_document = app.search_refresh_stats();
         assert_eq!(after_document.rebuilds, idle.rebuilds.saturating_add(1));
         assert!(
@@ -80,7 +86,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
             "fn project_revision_needle() {}\n",
         );
         app.invalidate_search_projection();
-        app.sync(doc, &automerge::ROOT);
+        app.sync(doc.doc(), &automerge::ROOT);
         let after_project = app.search_refresh_stats();
         assert_eq!(
             after_project.rebuilds,
@@ -96,7 +102,7 @@ fn search_projection_rebuilds_only_for_document_project_or_result_revisions() {
             preview_offset: 0,
         });
         app.invalidate_search_projection();
-        app.sync(doc, &automerge::ROOT);
+        app.sync(doc.doc(), &automerge::ROOT);
         let after_results = app.search_refresh_stats();
         assert_eq!(
             after_results.rebuilds,
@@ -161,17 +167,21 @@ fn ide_embeds_the_real_terminal_widget() {
 
 fn ide_terminal_runs_a_command_and_shows_output() {
     // End-to-end: open the embedded terminal, type a command, pump the
-    // app's `sync` (which drains the terminal's PTY), and prove the shell's
+    // app's update, settle and sync passes, and prove the shell's
     // output flowed back into the IDE's integrated terminal grid.
     let mut app = CodeApp::with_sample();
     app.shots_open_terminal();
     let mut state = ui::State::new();
-    app.sync(&mut state.doc, &state.root);
+    app.update(&state.doc, &state.root);
+    app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
+    app.sync(&state.doc, &state.root);
     app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
     let mut found = false;
     let deadline = ui::time::now() + HANG_BOUND;
     while ui::time::now() < deadline {
-        app.sync(&mut state.doc, &state.root);
+        app.update(&state.doc, &state.root);
+        app.settle(&mut ui::widget::Edits::lend(&mut state.doc), &state.root);
+        app.sync(&state.doc, &state.root);
         if let Some(t) = app.shots_terminal_grid_text()
             && t.contains("IDE_TERM_OK")
         {
@@ -444,9 +454,15 @@ fn toggle_sidebar_command_hides_it() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
     assert!(app.sidebar_open());
-    app.apply_command(Command::ToggleSidebar, &mut doc);
+    app.apply_command(
+        Command::ToggleSidebar,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(!app.sidebar_open());
-    app.apply_command(Command::ToggleSidebar, &mut doc);
+    app.apply_command(
+        Command::ToggleSidebar,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.sidebar_open());
 }
 
@@ -902,8 +918,11 @@ fn duplicate_line_repeats_it_below() {
         let before = buffer_lines(app, doc, node);
 
         app.editor.move_caret_to(0, 0);
-        app.editor.duplicate_lines(doc, true);
-        app.dispatch_editor_text_edits(doc);
+        app.pending_command = Some(Command::DuplicateLine);
+        app.sync(doc.doc(), &automerge::ROOT);
+        assert_eq!(buffer_lines(app, doc, node), before, "projection leaves the queued edit unwritten");
+        assert!(matches!(app.pending_command, Some(Command::DuplicateLine)));
+        app.settle(doc, &automerge::ROOT);
 
         let after = buffer_lines(app, doc, node);
         assert_eq!(after.len(), before.len() + 1, "one line added");
@@ -952,10 +971,11 @@ fn toggle_comment_comments_then_uncomments() {
     sample.with_doc(|app, doc| {
         let node = app.session.active_buffer().unwrap().node;
         // Replace the buffer with a content-stable single line of Rust.
-        let obj = EditorDoc::buffer_text_key(doc, &app.buffer_key(node)).unwrap();
-        let len = doc.text(&obj).unwrap().chars().count();
-        EditorDoc::splice(doc, &obj, 0, len, "let x = 1;\n");
-        app.editor.sync(doc, &automerge::ROOT);
+        let key = app.buffer_key(node);
+        let base = EditorDoc::read_buffer_key(doc, &key).unwrap();
+        app.dispatch_text_action(doc, key, &base, "let x = 1;\n")
+            .unwrap();
+        app.editor.sync(doc.doc(), &automerge::ROOT);
 
         app.editor.move_caret_to(0, 0);
         app.editor.toggle_line_comment(doc);
@@ -981,17 +1001,29 @@ fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
     let mut app = CodeApp::with_sample();
     let mut doc = AutoCommit::new();
 
-    app.apply_command(Command::GoToProblems, &mut doc);
+    app.apply_command(
+        Command::GoToProblems,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.panel_visible);
     assert_eq!(app.panel.active_tab(), PanelTab::Problems);
 
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(!app.panel_visible);
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.panel_visible);
     assert_eq!(app.panel.active_tab(), PanelTab::Problems);
 
-    app.apply_command(Command::GoToTerminal, &mut doc);
+    app.apply_command(
+        Command::GoToTerminal,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert!(app.panel_visible);
     assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
     assert!(
@@ -1004,8 +1036,14 @@ fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
         .map(std::ptr::from_ref)
         .expect("Terminal command creates a retained terminal");
     let terminal_content_before = app.shots_terminal_grid_text();
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
-    app.apply_command(Command::ToggleBottomPanel, &mut doc);
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    app.apply_command(
+        Command::ToggleBottomPanel,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
     assert_eq!(app.panel.active_tab(), PanelTab::Terminal);
     assert!(
         app.terminal.is_some(),
@@ -1026,7 +1064,10 @@ fn dock_commands_open_the_requested_content_and_toggle_without_clearing_it() {
 fn explicit_problems_open_survives_an_empty_diagnostics_refresh() {
     let mut app = CodeApp::new();
     let mut doc = AutoCommit::new();
-    app.apply_command(Command::GoToProblems, &mut doc);
+    app.apply_command(
+        Command::GoToProblems,
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
 
     app.refresh_diagnostics(&doc);
 

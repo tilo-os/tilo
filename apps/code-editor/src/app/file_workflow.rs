@@ -109,7 +109,7 @@ impl CodeApp {
     }
 
     /// Throw away this buffer's edits and take what is on disk.
-    pub(super) fn reload_buffer(&mut self, doc: &mut AutoCommit, node: TreeId) {
+    pub(super) fn reload_buffer(&mut self, doc: &mut ui::widget::Edits<'_>, node: TreeId) {
         if self.session.buffer_of(node).is_none() {
             return;
         }
@@ -159,7 +159,11 @@ impl CodeApp {
     }
 
     /// Answer an open conflict.
-    pub(super) fn resolve_conflict(&mut self, doc: &mut AutoCommit, choice: ConflictChoice) {
+    pub(super) fn resolve_conflict(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        choice: ConflictChoice,
+    ) {
         let Some(conflict) = self.conflict.take() else {
             return;
         };

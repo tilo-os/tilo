@@ -647,7 +647,7 @@ impl EditorView {
     }
 
     /// Cut: copy the primary selection, then request its action-owned delete.
-    fn cut_selection(&mut self, doc: &mut AutoCommit) {
+    fn cut_selection(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(t) = self.selected_text() {
             clipboard_copy(&t);
             // `backspace` deletes an active selection wholesale.
@@ -656,7 +656,7 @@ impl EditorView {
     }
 
     /// Paste clipboard text at the caret, replacing any selection.
-    fn paste_clipboard(&mut self, doc: &mut AutoCommit) {
+    fn paste_clipboard(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(t) = clipboard_paste()
             && !t.is_empty()
         {
@@ -719,7 +719,7 @@ impl EditorView {
 
     /// Accept the highlighted completion: replace the identifier prefix under
     /// the caret with the item's insert text through the action path.
-    fn accept_completion(&mut self, doc: &mut AutoCommit) {
+    fn accept_completion(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if !self.completion_active() {
             return;
         }
@@ -938,19 +938,19 @@ impl EditorView {
     }
 
     /// Insert a string at every caret, replacing its selection.
-    fn insert(&mut self, _doc: &mut AutoCommit, s: &str) {
+    fn insert(&mut self, _doc: &mut ui::widget::Edits<'_>, s: &str) {
         self.edit_at_carets(|core, _| core.insert(s));
     }
 
     /// Backspace at every caret: the selection, else the character (grapheme
     /// cluster) before the caret — joining lines at a line start.
-    fn backspace(&mut self, _doc: &mut AutoCommit) {
+    fn backspace(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         self.edit_at_carets(|core, text| core.delete_backward(text, false));
     }
 
     /// Forward-delete at every caret: the selection, else the character
     /// (grapheme cluster) after the caret.
-    fn delete_forward(&mut self, _doc: &mut AutoCommit) {
+    fn delete_forward(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         self.edit_at_carets(|core, text| core.delete_forward(text, false));
     }
 
@@ -1118,7 +1118,7 @@ impl EditorView {
 
     /// Insert a newline plus auto-indent matching the current line's leading
     /// whitespace — the single most-felt editor nicety.
-    fn newline_with_indent(&mut self, doc: &mut AutoCommit) {
+    fn newline_with_indent(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let (line, _) = self.primary_caret();
         let indent: String = self
             .lines
@@ -1135,7 +1135,7 @@ impl EditorView {
     }
 
     /// Indent: insert `indent_width` spaces at the caret.
-    fn insert_indent(&mut self, doc: &mut AutoCommit) {
+    fn insert_indent(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let spaces = " ".repeat(self.indent_width);
         self.insert(doc, &spaces);
     }
@@ -1182,7 +1182,7 @@ impl EditorView {
     /// `focus_copy` the caret rides down onto the new copy (copy-down); without
     /// it the caret stays on the original (copy-up). Bound to Shift+Alt+Down /
     /// Shift+Alt+Up.
-    pub fn duplicate_lines(&mut self, _doc: &mut AutoCommit, focus_copy: bool) {
+    pub fn duplicate_lines(&mut self, _doc: &mut ui::widget::Edits<'_>, focus_copy: bool) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1205,7 +1205,7 @@ impl EditorView {
 
     /// Move the caret's line(s) up or down by one, swapping with the neighbour.
     /// One action-owned replacement, so it undoes as one step. Bound to Alt+Up/Alt+Down.
-    pub fn move_lines(&mut self, _doc: &mut AutoCommit, up: bool) {
+    pub fn move_lines(&mut self, _doc: &mut ui::widget::Edits<'_>, up: bool) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1251,7 +1251,7 @@ impl EditorView {
 
     /// Delete the caret's line(s) entirely, landing the caret at the start of
     /// what follows. Bound to Ctrl+Shift+K.
-    pub fn delete_lines(&mut self, _doc: &mut AutoCommit) {
+    pub fn delete_lines(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1288,7 +1288,7 @@ impl EditorView {
     /// the range is already commented, uncomment; otherwise comment them all
     /// (at the range's shallowest indent, so the comment markers line up).
     /// No-op for languages without a line comment. Bound to Ctrl+/.
-    pub fn toggle_line_comment(&mut self, _doc: &mut AutoCommit) {
+    pub fn toggle_line_comment(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1350,7 +1350,7 @@ impl EditorView {
     /// Indent every line the selection spans by one indent unit. Falls back to
     /// a plain tab-at-caret when the selection is empty or single-line (handled
     /// by the caller). Bound to Tab with a multi-line selection.
-    pub fn indent_selection(&mut self, _doc: &mut AutoCommit) {
+    pub fn indent_selection(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -1370,7 +1370,7 @@ impl EditorView {
 
     /// Outdent every line the selection spans by up to one indent unit. Bound
     /// to Shift+Tab.
-    pub fn outdent_selection(&mut self, _doc: &mut AutoCommit) {
+    pub fn outdent_selection(&mut self, _doc: &mut ui::widget::Edits<'_>) {
         if self.text_obj.is_none() {
             return;
         }
@@ -2194,7 +2194,7 @@ impl EditorView {
         &mut self,
         key_event: &KeyEvent,
         mods: winit::keyboard::ModifiersState,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         let logical_key = &key_event.logical_key;
@@ -2231,7 +2231,7 @@ impl EditorView {
     fn handle_completion_popup_keys(
         &mut self,
         logical_key: &Key,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         if !self.completion_active() {
@@ -2301,7 +2301,7 @@ impl EditorView {
         ctrl: bool,
         shift: bool,
         alt: bool,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         match logical_key {
@@ -2365,7 +2365,7 @@ impl EditorView {
         logical_key: &Key,
         ctrl: bool,
         shift: bool,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) -> bool {
         let Key::Character(s) = logical_key else {
@@ -2396,7 +2396,7 @@ impl EditorView {
         text: Option<&str>,
         ctrl: bool,
         shift: bool,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         match logical_key {
@@ -2492,7 +2492,7 @@ impl EditorView {
 
 impl Widget for EditorView {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+        let (state, _) = ui::doc::document_ref(state, path);
         // Pull remote/undo edits: if the buffer text differs from our cache,
         // rebuild. Cheap string compare on the hot path.
         if let Some(t) = self.text_obj.clone() {
@@ -2691,7 +2691,7 @@ impl Widget for EditorView {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key_press(key_event, mods, ctx.state, ctx.handled);
+                self.handle_key_press(key_event, mods, &mut ctx.state, ctx.handled);
             }
             WindowEvent::Ime(ime) => self.handle_ime(ime, ctx.handled),
             _ => {}
@@ -2763,13 +2763,13 @@ impl Widget for EditorView {
 impl EditorView {
     /// Test hook: directly drive a text insertion (bypasses winit events).
     #[cfg(test)]
-    pub fn insert_for_test(&mut self, doc: &mut AutoCommit, s: &str) {
+    pub fn insert_for_test(&mut self, doc: &mut ui::widget::Edits<'_>, s: &str) {
         self.insert(doc, s);
     }
 
     /// Test hook: backspace at the primary caret.
     #[cfg(test)]
-    pub fn backspace_for_test(&mut self, doc: &mut AutoCommit) {
+    pub fn backspace_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.backspace(doc);
     }
 
@@ -2782,7 +2782,7 @@ impl EditorView {
 
     /// Test hook: newline-with-indent at the primary caret.
     #[cfg(test)]
-    pub fn newline_for_test(&mut self, doc: &mut AutoCommit) {
+    pub fn newline_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.newline_with_indent(doc);
     }
 
@@ -2837,7 +2837,7 @@ impl EditorView {
 
     /// Test hook: cut the primary selection through the action request path.
     #[cfg(test)]
-    pub fn cut_for_test(&mut self, doc: &mut AutoCommit) {
+    pub fn cut_for_test(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.cut_selection(doc);
     }
 }
@@ -2855,7 +2855,7 @@ mod tests {
         ev.bind(t, Language::Rust);
         // Mimic the App's first sync so the line cache is populated.
         let root = automerge::ROOT;
-        ev.sync(&mut doc, &root);
+        ev.sync(&doc, &root);
         (ev, doc)
     }
 
@@ -2923,7 +2923,7 @@ mod tests {
     fn insert_text_requests_an_action_owned_edit() {
         let (mut ev, mut doc) = bound_editor("ab");
         ev.set_caret_for_test(0, 1);
-        ev.insert_for_test(&mut doc, "X");
+        ev.insert_for_test(&mut ui::widget::Edits::lend(&mut doc), "X");
         assert_eq!(ev.text_for_test(), "aXb");
         assert_eq!(ev.primary_caret(), (0, 2));
     }
@@ -2931,7 +2931,7 @@ mod tests {
     fn newline_preserves_leading_indent() {
         let (mut ev, mut doc) = bound_editor("    foo");
         ev.set_caret_for_test(0, 7); // end of "    foo"
-        ev.newline_for_test(&mut doc);
+        ev.newline_for_test(&mut ui::widget::Edits::lend(&mut doc));
         // New line carries the 4-space indent.
         assert_eq!(ev.text_for_test(), "    foo\n    ");
         assert_eq!(ev.primary_caret(), (1, 4));
@@ -2940,7 +2940,7 @@ mod tests {
     fn backspace_at_line_start_joins_previous_line() {
         let (mut ev, mut doc) = bound_editor("ab\ncd");
         ev.set_caret_for_test(1, 0); // start of "cd"
-        ev.backspace_for_test(&mut doc);
+        ev.backspace_for_test(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(ev.text_for_test(), "abcd");
         assert_eq!(ev.primary_caret(), (0, 2));
     }
@@ -2948,7 +2948,7 @@ mod tests {
     fn backspace_removes_char_before_caret() {
         let (mut ev, mut doc) = bound_editor("abc");
         ev.set_caret_for_test(0, 2);
-        ev.backspace_for_test(&mut doc);
+        ev.backspace_for_test(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(ev.text_for_test(), "ac");
         assert_eq!(ev.primary_caret(), (0, 1));
     }
@@ -2956,7 +2956,7 @@ mod tests {
     fn multi_char_unicode_inserts_keep_caret_in_chars() {
         let (mut ev, mut doc) = bound_editor("");
         ev.set_caret_for_test(0, 0);
-        ev.insert_for_test(&mut doc, "héllo");
+        ev.insert_for_test(&mut ui::widget::Edits::lend(&mut doc), "héllo");
         // Caret column counts characters, not bytes (é is 2 bytes).
         assert_eq!(ev.primary_caret(), (0, 5));
         assert_eq!(ev.text_for_test(), "héllo");
@@ -3010,7 +3010,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3040,7 +3040,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3073,7 +3073,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3093,7 +3093,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &m,
-                state: doc,
+                state: ui::widget::Edits::lend(doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -3389,7 +3389,7 @@ mod tests {
             );
         }
         assert_eq!(ev.selected_text_for_test().as_deref(), Some("hello "));
-        ev.cut_for_test(&mut doc);
+        ev.cut_for_test(&mut ui::widget::Edits::lend(&mut doc));
         assert_eq!(ev.text_for_test(), "world");
         assert_eq!(ev.selection_for_test(), None);
     }
