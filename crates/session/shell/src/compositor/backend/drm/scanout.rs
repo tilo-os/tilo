@@ -1340,6 +1340,15 @@ pub struct OutputCursor {
     mover: HwCursor,
 }
 
+/// Client cursor bitmaps have already been resampled to output pixels;
+/// compositor shapes retain logical coordinates until the output is chosen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum HotspotSpace {
+    #[default]
+    Logical,
+    OutputPixels,
+}
+
 /// Routes a global pointer position to the right output's hardware cursor plane: each KMS plane
 /// is per-CRTC and output-local, so motion moves the plane under the pointer and hides the one it left. Single-output collapses to one entry at `(0, 0)`.
 #[derive(Default)]
@@ -1350,6 +1359,7 @@ pub struct CursorPlanes {
     /// Pixel offset of the pointer position within the cursor image: the
     /// plane's top-left sits this far up-left of the pointer.
     hotspot: (i32, i32),
+    hotspot_space: HotspotSpace,
     /// Last global position, so a hotspot change re-places a still pointer.
     last: Option<(f64, f64)>,
 }
@@ -1361,16 +1371,28 @@ impl CursorPlanes {
             outputs,
             active: None,
             hotspot: (0, 0),
+            hotspot_space: HotspotSpace::Logical,
             last: None,
         }
     }
 
-    /// Adopt the hotspot of a newly shown cursor image.
-    pub fn set_hotspot(&mut self, hotspot: (i32, i32)) {
-        if self.hotspot == hotspot {
+    /// Adopt the newly shown image's hotspot in its own coordinate space.
+    pub fn set_image_hotspot(&mut self, image: &PointerImage, size: u32) {
+        let hotspot = image.bitmap(size).map_or((0, 0), |bitmap| {
+            (
+                i32::try_from(bitmap.hotspot.0).unwrap_or(0),
+                i32::try_from(bitmap.hotspot.1).unwrap_or(0),
+            )
+        });
+        let space = match image {
+            PointerImage::Client(_) => HotspotSpace::OutputPixels,
+            PointerImage::Shape(_) | PointerImage::Hidden => HotspotSpace::Logical,
+        };
+        if self.hotspot == hotspot && self.hotspot_space == space {
             return;
         }
         self.hotspot = hotspot;
+        self.hotspot_space = space;
         if let Some((x, y)) = self.last {
             self.move_to(x, y);
         }
@@ -1440,6 +1462,14 @@ impl CursorPlanes {
         }
     }
 
+    /// The pixel offset applied by a cursor plane at this output density.
+    pub(crate) fn hotspot_pixels(&self, scale: f64) -> (i32, i32) {
+        match self.hotspot_space {
+            HotspotSpace::Logical => scaled_hotspot(self.hotspot, scale),
+            HotspotSpace::OutputPixels => self.hotspot,
+        }
+    }
+
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
         self.last = Some((gx, gy));
@@ -1471,7 +1501,7 @@ impl CursorPlanes {
             height,
             target.transform,
         );
-        let (hx, hy) = scaled_hotspot(self.hotspot, target.scale);
+        let (hx, hy) = self.hotspot_pixels(target.scale);
         target
             .mover
             .move_to(x.saturating_sub(hx), y.saturating_sub(hy));

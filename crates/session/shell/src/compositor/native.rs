@@ -14743,6 +14743,84 @@ mod tests {
         execute_snapshot_with_bogus_dir_does_not_crash();
     }
 
+    #[test]
+    fn native_touch_on_a_tab_pill_carries_the_window_group() {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+
+        let group = |id: u64| WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id: id + 100,
+                title: format!("Touch window {id}"),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: format!("Touch window {id}"),
+                },
+            }],
+            active_tab: id + 100,
+            width: WindowWidth::Fraction(250),
+            maximized: false,
+        };
+        let ws_id = WorkspaceId(7);
+        let strip = StripId(77);
+        let mut ws = Workspace::new(ws_id, "Touch desk");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![group(1), group(2), group(3)],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+        let mut fb = FrameBuilder::with_tree(tree, (1472, 920));
+        fb.relayout();
+        let rects = fb.widget_registry();
+        let from = rects["tab:Touch window 1"].center();
+        let last = rects["tab:Touch window 3[3]"].center();
+        let to = vello::kurbo::Point::new(last.x + 400.0, from.y + 40.0);
+        let mut ctx = TestControlCtx::new();
+        // A vertical lift selects window movement; an immediate horizontal
+        // swipe intentionally pans the strip instead.
+        for (phase, point) in [
+            (TouchPhaseKind::Down, from),
+            (
+                TouchPhaseKind::Motion,
+                vello::kurbo::Point::new(from.x, to.y),
+            ),
+            (TouchPhaseKind::Motion, to),
+            (TouchPhaseKind::Up, to),
+        ] {
+            execute_planned_action(
+                &PlannedAction::Touch {
+                    device: "native-frame-test".into(),
+                    slot: 0,
+                    phase,
+                    x: point.x,
+                    y: point.y,
+                },
+                &mut fb,
+                &mut ctx,
+            );
+        }
+        // The normal compositor model tick harvests the row's completed
+        // drop into the authoritative workspace tree.
+        fb.pump_apps(&mut ctx.doc, &ctx.root_obj);
+        let chrome = fb.chrome();
+        let groups = &chrome.tree().desktop.workspaces[0].strips[0].window_groups;
+        assert_eq!(
+            groups.iter().map(|group| group.id).collect::<Vec<_>>(),
+            [2, 3, 1]
+        );
+        assert_eq!(
+            groups[2].tabs[0].id, 101,
+            "the existing window moved intact"
+        );
+    }
+
     // state_dump
 
     #[test]
