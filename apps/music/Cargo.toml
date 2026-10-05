@@ -31,11 +31,13 @@ audio = ["dep:gstreamer", "dep:tokio"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "tilo-net/http", "tilo-net/blocking", "dep:account-custody", "dep:accounts"]
 # Enable network lyrics without the full live backend; live already enables them.
 lyrics = ["tilo-net/http", "tilo-net/blocking"]
 
 [dependencies]
+account-custody = { path = "../../crates/system/account-custody", optional = true }
+accounts = { path = "../../crates/system/accounts", optional = true }
 fnv.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
@@ -81,6 +83,8 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 
 [dev-dependencies]
+test-http = { path = "../../crates/dev/test-http" }
+tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 serial_test.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }

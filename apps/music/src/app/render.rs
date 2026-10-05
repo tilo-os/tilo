@@ -10,7 +10,7 @@ use super::{
     NOWPLAYING_H, NodeId, ObjId, PermissionContext, PlaylistPage, Point, PresenceCtx, Rect,
     RepeatMode, SIDEBAR_BREAKPOINT, Scene, SearchTab, Size, Stroke, Style, TaffyTree, TextRenderer,
     TextWeight, Theme, View, Widget, art, elide, icon, is_live_album_id, is_live_id,
-    is_live_playlist_id, lyrics, rrect,
+    is_live_playlist_id, live_track_id, lyrics, rrect,
 };
 use ui::widget::{AppModel, ModelPath};
 
@@ -921,7 +921,13 @@ impl Widget for MusicApp {
 
     fn children(&self) -> Vec<&dyn Widget> {
         if matches!(self.view, View::Home) {
-            vec![&self.open_file_button]
+            std::iter::once(&self.open_file_button as &dyn Widget)
+                .chain(
+                    self.source_buttons
+                        .iter()
+                        .map(|button| button as &dyn Widget),
+                )
+                .collect()
         } else {
             Vec::new()
         }
@@ -929,7 +935,13 @@ impl Widget for MusicApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if matches!(self.view, View::Home) {
-            vec![&mut self.open_file_button]
+            std::iter::once(&mut self.open_file_button as &mut dyn Widget)
+                .chain(
+                    self.source_buttons
+                        .iter_mut()
+                        .map(|button| button as &mut dyn Widget),
+                )
+                .collect()
         } else {
             Vec::new()
         }
@@ -973,7 +985,13 @@ impl Widget for MusicApp {
         let visible = matches!(self.view, View::Home);
         self.open_file_layout_visible = Some(visible);
         let children = if visible {
-            vec![self.open_file_button.build_layout(taffy, theme, node_map)]
+            std::iter::once(self.open_file_button.build_layout(taffy, theme, node_map))
+                .chain(
+                    self.source_buttons
+                        .iter_mut()
+                        .map(|button| button.build_layout(taffy, theme, node_map)),
+                )
+                .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
@@ -1070,6 +1088,11 @@ impl Widget for MusicApp {
         {
             self.open_file_button
                 .handle_event(event, &mut ctx.reborrow(ctx.path, *button_node));
+            for (button, node) in self.source_buttons.iter_mut().zip(children.iter().skip(1)) {
+                if !*ctx.handled {
+                    button.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+                }
+            }
         }
         if *ctx.handled {
             self.dirty = true;
@@ -1817,6 +1840,7 @@ impl Widget for MusicApp {
             || self.local_file_pick.is_some()
             || self.toast.is_some()
             || self.live_search_pending.is_some()
+            || self.source_invocation.is_some()
             || self.resolve_in_flight > 0
             || self.images_pending()
             || self.lyrics_pending_for.is_some()
@@ -1847,6 +1871,37 @@ impl Widget for MusicApp {
 }
 
 impl MusicApp {
+    fn begin_source_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        effect: &crate::actions::MusicEffect,
+    ) -> Result<ui::framework::Effected, String> {
+        use crate::actions::MusicEffect;
+        if !self.allow_network {
+            return Err("Network access is unavailable in this session".into());
+        }
+        if self.source_invocation.is_some() {
+            return Err("A music source request is already running".into());
+        }
+        self.ensure_worker();
+        let request = if matches!(effect, MusicEffect::DisconnectSpotify) {
+            crate::stream::StreamRequest::DisconnectSpotify
+        } else {
+            crate::stream::StreamRequest::Source {
+                spotify: !matches!(effect, MusicEffect::BrowseYouTube),
+                sign_in: matches!(effect, MusicEffect::ConnectSpotify),
+            }
+        };
+        self.worker
+            .as_ref()
+            .ok_or("Music worker unavailable")?
+            .request(request)?;
+        self.source_error = None;
+        self.source_invocation = Some(invocation);
+        self.dirty = true;
+        Ok(ui::framework::Effected::Pending)
+    }
+
     /// Start `effect`, invoked as `invocation`. A view, a queue edit or a
     /// transport change that needs no new source answers at once; starting
     /// a stream, a download or the file picker answers once that work
@@ -1864,6 +1919,10 @@ impl MusicApp {
         use crate::actions::{MusicEffect, Place};
         let done = ui::framework::Effected::done();
         match effect {
+            MusicEffect::ConnectSpotify
+            | MusicEffect::DisconnectSpotify
+            | MusicEffect::BrowseSpotify
+            | MusicEffect::BrowseYouTube => self.begin_source_effect(invocation, &effect),
             MusicEffect::OpenFile => {
                 self.begin_local_file_pick(invocation)?;
                 Ok(ui::framework::Effected::Pending)
@@ -2649,6 +2708,9 @@ impl MusicApp {
     ) {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         self.open_file_button.apply_layout_external(Rect::ZERO);
+        for button in &mut self.source_buttons {
+            button.apply_layout_external(Rect::ZERO);
+        }
         self.hits.clear();
         self.row_menu_hits.clear();
         self.sync_context_menu_geometry(ctx.theme);
@@ -3217,6 +3279,7 @@ impl MusicApp {
         let mut y = body.y0 - self.scroll;
         if matches!(self.view, View::Home) && !rows.is_empty() {
             y = self.position_open_file_button(body.x0, y);
+            y = self.position_source_buttons(ctx, c, body, y);
             self.open_file_button.draw(
                 ctx.scene,
                 ctx.transform,
@@ -3332,6 +3395,7 @@ impl MusicApp {
             y = body.y0 + 160.0;
             if matches!(self.view, View::Home) {
                 y = self.position_open_file_button(body.x0, y);
+                y = self.position_source_buttons(ctx, c, body, y);
                 self.open_file_button.draw(
                     ctx.scene,
                     ctx.transform,
@@ -3870,7 +3934,7 @@ impl MusicApp {
         let pad = 28.0;
         y += 20.0;
         ctx.text(
-            "Good evening",
+            &ui::i18n!("music-home-heading"),
             &TextStyle::new(28.0).with_weight(TextWeight::Bold),
             c.text,
             Point::new(body.x0 + pad, y),
@@ -3878,6 +3942,7 @@ impl MusicApp {
         );
         y += 46.0;
         y = self.position_open_file_button(body.x0, y);
+        y = self.position_source_buttons(ctx, c, body, y);
 
         // Real YouTube-Music content when it has landed.
         if let Some(home) = self.home.take() {
@@ -4003,6 +4068,64 @@ impl MusicApp {
             None,
         );
         y + 36.0
+    }
+
+    fn position_source_buttons(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        c: &Palette,
+        body: Rect,
+        mut y: f64,
+    ) -> f64 {
+        let gap = f64::from(ctx.theme.padding_standard);
+        let left = body.x0 + CONTENT_GUTTER;
+        let width = (body.width() - CONTENT_GUTTER * 2.0).max(0.0);
+        let mut x = left;
+        let mut row_height: f64 = 0.0;
+        for button in &mut self.source_buttons {
+            let size = button.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size {
+                    width: taffy::AvailableSpace::Definite(width as f32),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                ctx.text,
+            );
+            if x > left && x + f64::from(size.width) > body.x1 - CONTENT_GUTTER {
+                y += row_height + gap;
+                x = left;
+                row_height = 0.0;
+            }
+            button.apply_layout_external(Rect::from_origin_size(
+                Point::new(x, y),
+                (f64::from(size.width), f64::from(size.height)),
+            ));
+            x += f64::from(size.width) + gap;
+            row_height = row_height.max(f64::from(size.height));
+        }
+        for button in &mut self.source_buttons {
+            button.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &PresenceCtx::empty(),
+            );
+        }
+        y += row_height + gap;
+        let status = self.source_status();
+        let (_, height) = ctx.text.measure(&status, 13.0, Some(width as f32));
+        ctx.text(
+            &status,
+            &TextStyle::new(13.0),
+            c.text,
+            Point::new(left, y),
+            Some(width as f32),
+        );
+        y + f64::from(height) + gap * 2.0
     }
 
     fn position_open_file_button(&mut self, left: f64, top: f64) -> f64 {
@@ -4189,7 +4312,7 @@ impl MusicApp {
             .items
             .iter()
             .filter(|it| it.kind == HomeItemKind::Track)
-            .map(|it| format!("yt:{}", it.video_id))
+            .map(|it| live_track_id(&it.video_id))
             .collect();
         let mut queue = SectionQueue {
             ids: &track_ids,
@@ -4221,7 +4344,7 @@ impl MusicApp {
         let art_rect = Rect::new(card.x0, card.y0, card.x1, card.y0 + card.width());
         match item.kind {
             HomeItemKind::Track => {
-                let lib_id = format!("yt:{}", item.video_id);
+                let lib_id = live_track_id(&item.video_id);
                 let idx = queue.next;
                 queue.next += 1;
                 let hover = self.push_hit(
@@ -5390,7 +5513,7 @@ impl MusicApp {
         let ids: Vec<String> = page
             .tracks
             .iter()
-            .map(|h| format!("yt:{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         let year = if page.year > 0 {
             format!(" \u{00b7} {}", page.year)
@@ -5716,7 +5839,7 @@ impl MusicApp {
         let top_ids: Vec<String> = page
             .tracks
             .iter()
-            .map(|h| format!("yt:{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         let followed = self.lib.is_artist_followed(&page.id);
         let mut y = self.draw_detail_header(
@@ -6077,7 +6200,7 @@ impl MusicApp {
         let ids: Vec<String> = page
             .tracks
             .iter()
-            .map(|h| format!("yt:{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         let y = self.draw_detail_header(
             ctx,
@@ -6942,7 +7065,7 @@ impl MusicApp {
             SearchTab::All => self.draw_search_all(ctx, c, body, y, &results, searching),
             SearchTab::Songs => {
                 if results.songs.is_empty() {
-                    return self.draw_tab_empty(ctx, c, body, y, searching, "songs");
+                    return Self::draw_tab_empty(ctx, c, body, y, searching, "songs");
                 }
                 let rows = self.gather_tracks(&results.songs);
                 self.draw_track_table(
@@ -6955,19 +7078,19 @@ impl MusicApp {
             }
             SearchTab::Albums => {
                 if results.albums.is_empty() {
-                    return self.draw_tab_empty(ctx, c, body, y, searching, "albums");
+                    return Self::draw_tab_empty(ctx, c, body, y, searching, "albums");
                 }
                 self.draw_album_grid(ctx, c, body, y + 4.0, &results.albums)
             }
             SearchTab::Artists => {
                 if results.artists.is_empty() {
-                    return self.draw_tab_empty(ctx, c, body, y, searching, "artists");
+                    return Self::draw_tab_empty(ctx, c, body, y, searching, "artists");
                 }
                 self.draw_artist_grid(ctx, c, body, y + 4.0, &results.artists)
             }
             SearchTab::Playlists => {
                 if results.playlists.is_empty() {
-                    return self.draw_tab_empty(ctx, c, body, y, searching, "playlists");
+                    return Self::draw_tab_empty(ctx, c, body, y, searching, "playlists");
                 }
                 self.draw_result_playlist_grid(ctx, c, body, y + 4.0, &results.playlists)
             }
@@ -7061,7 +7184,7 @@ impl MusicApp {
         let pad = 28.0;
         y += 24.0;
         let msg = if searching {
-            format!("Searching YouTube Music for \u{201c}{q}\u{201d}\u{2026}")
+            ui::i18n!("music-searching-catalogue")
         } else {
             format!("No results for \u{201c}{q}\u{201d}")
         };
@@ -7072,8 +7195,9 @@ impl MusicApp {
             Point::new(body.x0 + pad, y),
             None,
         );
+        let online_hint = ui::i18n!("music-search-hint");
         let hint = if self.backend_live {
-            "Press Enter to search YouTube Music"
+            online_hint.as_str()
         } else if searching {
             ""
         } else {
@@ -7110,7 +7234,7 @@ impl MusicApp {
         let songs: Vec<String> = bundle
             .tracks
             .iter()
-            .map(|h| format!("yt:{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         let albums: Vec<AlbumDisp> = bundle
             .albums
@@ -7244,7 +7368,7 @@ impl MusicApp {
         use crate::backend::SearchTop;
         match top {
             SearchTop::Track(h) => {
-                let id = format!("yt:{}", h.video_id);
+                let id = live_track_id(&h.video_id);
                 SearchHero {
                     title: h.title.clone(),
                     subtitle: format!("Song \u{00b7} {}", h.artist),
@@ -7433,7 +7557,7 @@ impl MusicApp {
             y += 8.0;
         } else if searching {
             ctx.text(
-                "Searching YouTube Music\u{2026}",
+                &ui::i18n!("music-searching-catalogue"),
                 &TextStyle::new(13.0),
                 c.dim,
                 Point::new(body.x0 + pad, y + 4.0),
@@ -7475,7 +7599,6 @@ impl MusicApp {
 
     /// A placeholder line for a per-type tab whose results haven't landed yet.
     fn draw_tab_empty(
-        &self,
         ctx: &mut PaintCtx<'_>,
         c: &Palette,
         body: Rect,
@@ -7484,7 +7607,7 @@ impl MusicApp {
         kind: &str,
     ) -> f64 {
         let pad = 28.0;
-        let msg = if searching || self.backend_live {
+        let msg = if searching {
             format!("Finding {kind}\u{2026}")
         } else {
             format!("No {kind} for this search")

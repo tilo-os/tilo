@@ -227,6 +227,23 @@ pub enum Place {
 #[derive(Debug, Clone, PartialEq, Effect)]
 #[effect(operation = "music.effects")]
 pub enum MusicEffect {
+    /// Connect Spotify
+    ///
+    /// Opens Spotify's PKCE sign-in in the system browser; grants stay in system custody.
+    #[effect(job, device_only)]
+    ConnectSpotify,
+    /// Disconnect Spotify
+    ///
+    /// Forgets the local grant. Revoke Tilo in Spotify account settings to remove provider-side access.
+    #[effect(job, device_only)]
+    DisconnectSpotify,
+    /// Browse Spotify
+    #[effect(job, device_only)]
+    BrowseSpotify,
+    /// Browse `YouTube` Music
+    #[effect(job, device_only)]
+    BrowseYouTube,
+
     /// Open audio file
     ///
     /// Plays a local audio file the person chooses on this device.

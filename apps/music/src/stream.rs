@@ -31,9 +31,17 @@ const MAX_EXTERNAL_ID_BYTES: usize = 512;
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum StreamRequest {
+    DisconnectSpotify,
+    Source {
+        spotify: bool,
+        sign_in: bool,
+    },
     /// Run a real multi-type YouTube-Music search (songs, albums, artists,
     /// playlists + a top result) in one call.
-    Search { query: String, request_id: u64 },
+    Search {
+        query: String,
+        request_id: u64,
+    },
     /// A deep per-type "see all" search for the given filter tab.
     SearchMore {
         query: String,
@@ -64,6 +72,9 @@ pub enum StreamRequest {
 /// A result folded back into the app on the UI thread.
 #[derive(Clone, Debug)]
 pub enum StreamUpdate {
+    SourceSelected {
+        result: Result<(String, bool), String>,
+    },
     /// One-time announcement of which backend the worker bound to.
     Backend { name: String, live: bool },
     /// Real multi-type search results for a query (the mixed "All" bundle).
@@ -279,7 +290,7 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
                 return Err("music resource identifier is empty or too long".to_string());
             }
         }
-        StreamRequest::Home => {}
+        StreamRequest::Home | StreamRequest::Source { .. } | StreamRequest::DisconnectSpotify => {}
     }
     Ok(())
 }
@@ -321,6 +332,20 @@ fn handle_request(
     request: StreamRequest,
 ) {
     match request {
+        StreamRequest::DisconnectSpotify => {
+            let result = backend
+                .disconnect_spotify()
+                .map(|()| (backend.name().to_string(), backend.is_live()))
+                .map_err(|error| error.to_string());
+            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+        }
+        StreamRequest::Source { spotify, sign_in } => {
+            let result = backend
+                .select_source(spotify, sign_in)
+                .map(|()| (backend.name().to_string(), backend.is_live()))
+                .map_err(|error| error.to_string());
+            let _ = up_tx.send(StreamUpdate::SourceSelected { result });
+        }
         StreamRequest::Search { query, request_id } => match backend.search_all(&query) {
             Ok(bundle) => {
                 let _ = up_tx.send(StreamUpdate::SearchResults {

@@ -261,6 +261,11 @@ mod tests {
         assert!(surface.contains("music.player:player"), "{surface}");
         assert!(surface.contains("toggle-shuffle"));
         assert!(surface.contains("open-file"));
+        assert!(surface.contains("music.source:catalogue"));
+        assert!(surface.contains("connect-spotify"));
+        assert!(surface.contains("disconnect-spotify"));
+        assert!(surface.contains("browse-spotify"));
+        assert!(surface.contains("browse-you-tube"));
 
         let album = crate::actions::album_resource_id("al_glasslight");
         app.effect_on(

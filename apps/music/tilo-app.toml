@@ -28,7 +28,7 @@ aarch64 = "aarch64"
 
 # What the app's code uses (tools/policy/check_app_capabilities.py checks it).
 [capabilities]
-optional = ["files.open", "files.paths", "app-files", "network.http", "network.status", "threads", "media.decode", "media.session"]
+optional = ["open-uri", "secrets", "files.open", "files.paths", "app-files", "network.http", "network.status", "threads", "media.decode", "media.session"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

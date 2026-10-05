@@ -68,3 +68,12 @@ files = [
     "files.content.read",
     "files.content.write",
 ]
+
+[spotify]
+# Public PKCE registration supplied by the distributor; never borrow another
+# application's identity. Register http://127.0.0.1:47654/oauth exactly.
+client_id = ""
+redirect_ports = [47654]
+
+[spotify.scopes]
+music = ["user-library-read", "playlist-read-private", "playlist-read-collaborative"]

@@ -438,3 +438,14 @@ block-editor-replace = Replace
 
 block-editor-replace-all = Replace all
 block-editor-replace-all-help = Replace all — Shift+Enter in the replacement field
+
+music-home-heading = Your music
+music-connect-spotify = Connect Spotify
+music-browse-spotify = Browse Spotify
+music-browse-youtube = YouTube Music
+music-source-connecting = Connecting… Finish sign-in in your browser.
+
+music-disconnect-spotify = Disconnect Spotify
+
+music-searching-catalogue = Searching the music catalogue…
+music-search-hint = Press Enter to search the selected music source

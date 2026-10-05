@@ -24,6 +24,7 @@ const DEFAULTS: &str = include_str!("../oauth-clients.toml");
 pub struct Scopes {
     pub files: Vec<String>,
     pub mail: Vec<String>,
+    pub music: Vec<String>,
 }
 
 impl Scopes {
@@ -31,6 +32,7 @@ impl Scopes {
         match capability {
             Capability::Files => &self.files,
             Capability::Mail => &self.mail,
+            Capability::Music => &self.music,
         }
     }
 }
@@ -54,6 +56,7 @@ pub struct ClientTable {
     pub google: ClientEntry,
     pub microsoft: ClientEntry,
     pub dropbox: ClientEntry,
+    pub spotify: ClientEntry,
 }
 
 impl ClientTable {
@@ -82,6 +85,7 @@ impl ClientTable {
             OAuthIssuer::Google => &self.google,
             OAuthIssuer::Microsoft => &self.microsoft,
             OAuthIssuer::Dropbox => &self.dropbox,
+            OAuthIssuer::Spotify => &self.spotify,
         }
     }
 
