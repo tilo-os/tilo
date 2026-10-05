@@ -249,10 +249,9 @@ fn signed_entry(
         name: name.as_str().into(),
         description: format!("{name}, offered by a test registry").into(),
         tagline: name.as_str().into(),
-        images: registry_types::LocalizedImages::english_icon(
-            format!("{base_url}/icon.svg"),
-            format!("{name} icon"),
-        ),
+        // Store artwork must be served over https, which a loopback registry
+        // is not; the Store draws its own mark for an entry without any.
+        images: registry_types::LocalizedImages::default(),
         supported_languages: vec!["en".into()],
         categories: manifest.package.category.clone().into_iter().collect(),
         source_url: None,
@@ -391,5 +390,55 @@ mod tests {
         assert_eq!(args.port, 0);
         assert!(parse_args(["--app", "x"].map(String::from).into_iter()).is_err());
         assert!(parse_args(["--version", "1"].map(String::from).into_iter()).is_err());
+    }
+
+    /// What a device's client checks of every entry before it believes a
+    /// snapshot, so an entry it would refuse never leaves this registry.
+    #[test]
+    fn the_signed_entry_passes_the_clients_entry_checks() {
+        let manifest = Manifest::from_toml_str(
+            r#"
+[package]
+id = "so.tilo.settings"
+name = "Personal Settings"
+category = "System"
+version = "1.0.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[publisher]
+identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.services]
+system = "required@1"
+"#,
+        )
+        .unwrap();
+        let packed = [Packed {
+            version: "9999.0.0".into(),
+            file: "/so.tilo.settings-9999.0.0.tapp".into(),
+            root_hex: "ab".repeat(32),
+            bytes: vec![1, 2, 3],
+            interfaces: manifest.required_interface_wire(),
+        }];
+        let publisher = SigningKey::from_bytes(&[7; 32]);
+        let entry = signed_entry(
+            "so.tilo.settings",
+            &manifest,
+            &packed,
+            "http://127.0.0.1:4000",
+            &publisher,
+        );
+        assert_eq!(entry.validate(), Ok(()));
+        assert_eq!(entry.versions[0].target.interfaces, ["system@1"]);
     }
 }
