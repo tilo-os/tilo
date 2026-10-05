@@ -1321,13 +1321,13 @@ impl FrameBuilder {
         let records_done = std::time::Instant::now();
         self.pump_room_contents();
         let rooms_done = std::time::Instant::now();
-        let before_settle = (doc.get_heads(), doc.pending_ops());
+        let before_settle = (doc.base_heads(), doc.pending_ops());
         self.host.settle(&mut ui::widget::Edits::lend(doc), root);
-        let mut settled = before_settle != (doc.get_heads(), doc.pending_ops());
+        let mut settled = before_settle != (doc.base_heads(), doc.pending_ops());
         self.host.sync(doc, root);
-        let before_settle = (doc.get_heads(), doc.pending_ops());
+        let before_settle = (doc.base_heads(), doc.pending_ops());
         self.host.settle(&mut ui::widget::Edits::lend(doc), root);
-        if before_settle != (doc.get_heads(), doc.pending_ops()) {
+        if before_settle != (doc.base_heads(), doc.pending_ops()) {
             settled = true;
             self.host.sync(doc, root);
         }
@@ -1341,9 +1341,9 @@ impl FrameBuilder {
         }
         let sync_done = std::time::Instant::now();
         let changed = self.host.update(doc, root);
-        let before_settle = (doc.get_heads(), doc.pending_ops());
+        let before_settle = (doc.base_heads(), doc.pending_ops());
         self.host.settle(&mut ui::widget::Edits::lend(doc), root);
-        if before_settle != (doc.get_heads(), doc.pending_ops()) {
+        if before_settle != (doc.base_heads(), doc.pending_ops()) {
             settled = true;
             self.host.sync(doc, root);
         }
@@ -3673,11 +3673,14 @@ mod tests {
             ),
             "typed settlement consumes the request"
         );
-        let revision = (doc.get_heads(), doc.pending_ops());
+        doc.put(&automerge::ROOT, "pending-observer-witness", "uncommitted")
+            .expect("pending fixture edit");
+        assert!(doc.pending_ops() > 0);
+        let revision = (doc.base_heads(), doc.pending_ops());
         frame.pump_apps(&mut doc, &automerge::ROOT);
         assert_eq!(
             revision,
-            (doc.get_heads(), doc.pending_ops()),
+            (doc.base_heads(), doc.pending_ops()),
             "the next pump does not repeat the request"
         );
     }
