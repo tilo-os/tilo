@@ -2595,8 +2595,12 @@ jobs:
           # Two more overlays on one Ethernet segment: one creates an
           # identity, the other joins it from first-boot onboarding through
           # Connect a nearby device, first through an injected helper failure
-          # and then for real, and signs in again afterwards.
-          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing"
+          # and then for real, and signs in again afterwards. With --unlock the
+          # joined device's root then moves onto LUKS2 with a sibling slot: A
+          # approves its boot, and a denial, a replayed exchange, an
+          # uncertified boot key and its removal from the fleet each leave it
+          # at the passphrase prompt.
+          ./os/dev/test-nearby-pairing.sh "$TILO_DISK" --out "$TILO_RUN/nearby-pairing" --unlock
           # Any failing check leaves the guest's own account of it in the log:
           # failed units and this boot's warnings (the gate user reads the
           # system journal through wheel), before the VM goes away.
