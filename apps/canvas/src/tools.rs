@@ -469,7 +469,12 @@ impl Tools {
     /// not a colour.
     pub fn hex(&self) -> String {
         let rgba = self.colour().to_rgba8();
-        format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b)
+        let rgb = format!("#{:02x}{:02x}{:02x}", rgba.r, rgba.g, rgba.b);
+        if rgba.a == 255 {
+            rgb
+        } else {
+            format!("{rgb}{:02x}", rgba.a)
+        }
     }
 
     /// The colour the brush paints, for drawing its preview: the pigment's
