@@ -281,6 +281,7 @@ pub struct ChatShell;
 
 /// Every named scenario `--shots --scenario NAME` captures.
 const SCENARIOS: &[&str] = &[
+    "agent-work",
     "narrow",
     "history",
     "compact",
@@ -350,7 +351,20 @@ impl ResourceApp for ChatShell {
 
     /// The first-run workspace for `starter`, the demo conversation for
     /// every other scenario, both read by the capture's own person.
+    fn fixture(fixture: &mut ui::framework::Fixture<Chat>) {
+        if fixture.scenario() == Some("agent-work") {
+            for (author, action) in agent_work_scenario() {
+                if let Ok(invoke) = Invoke::apply(&action) {
+                    fixture.version(author, crate::doc::NOW * 1000, invoke);
+                }
+            }
+        }
+    }
+
     fn scenario(name: Option<&str>) -> Vec<Invoke<Chat>> {
+        if name == Some("agent-work") {
+            return Vec::new();
+        }
         let seed = match name {
             Some("starter") => {
                 let you = LocalIdentity::demo();
@@ -394,6 +408,83 @@ impl ResourceApp for ChatShell {
         .into_iter()
         .collect()
     }
+}
+
+pub(crate) fn agent_work_scenario() -> Vec<(&'static str, ChatAction)> {
+    use crate::model::{
+        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
+    };
+    const AGENT: &str = "agent-task:11111111-1111-4111-8111-111111111111";
+    let work = AgentWork::new(
+        AgentWorkState::Doing {
+            did: "Add function".into(),
+            about: "Revenue curve, preserving the current graph bounds".into(),
+        },
+        crate::doc::NOW - 110,
+    )
+    .because(AgentReasoning {
+        route: AgentRoute::Model,
+        why: "Calculator offers the requested graph operation and no bounds change is needed."
+            .into(),
+    })
+    .with_trace(vec![AgentStep::authored(
+        "calculator.workspace",
+        "Add function",
+        AgentStepOutcome::Asked,
+        0,
+    )]);
+    vec![
+        (crate::model::ME, ChatAction::SeedDemo {}),
+        (
+            AGENT,
+            ChatAction::EnsureUser {
+                name: "Tide".into(),
+                initials: "TI".into(),
+                color_idx: 6,
+                status: crate::model::Presence::Online.as_str().into(),
+            },
+        ),
+        (
+            crate::model::ME,
+            ChatAction::NameAgent {
+                participant: AGENT.into(),
+                name: "Tide".into(),
+            },
+        ),
+        (
+            crate::model::ME,
+            actions::send_message_action(
+                "c_crit",
+                "m_agent_request",
+                crate::doc::NOW - 120,
+                "@Tide add the revenue curve to Calculator and keep the current bounds.",
+                None,
+                None,
+                vec![crate::mention::Mention {
+                    user: AGENT.into(),
+                    start: 0,
+                    len: "@Tide".len(),
+                    is_agent: true,
+                }],
+            ),
+        ),
+        (
+            AGENT,
+            actions::send_message_action(
+                "c_crit",
+                "m_agent_reply",
+                crate::doc::NOW - 115,
+                "",
+                Some("m_agent_request".into()),
+                None,
+                Vec::new(),
+            ),
+        ),
+        (
+            AGENT,
+            actions::set_agent_work_action("c_crit", "m_agent_reply", work, None),
+        ),
+    ]
 }
 
 impl ResourceSurface<Chat, ChatEffect> for ChatApp {
@@ -578,6 +669,32 @@ mod tests {
                 );
             }
         }
+        let agent = TestApp::<ChatShell>::capture(Some("agent-work")).unwrap();
+        let state = agent.state();
+        let reply = state
+            .message("m_agent_reply")
+            .expect("agent reply is durable");
+        assert!(reply.agent, "the agent authors its own reply");
+        let work = agent
+            .read_document(|doc| {
+                ChatDoc::list_messages(doc, "c_crit")
+                    .into_iter()
+                    .find(|message| message.id == "m_agent_reply")
+                    .unwrap()
+                    .work
+            })
+            .expect("reply carries work evidence");
+        assert_eq!(
+            work.reasoning.as_ref().unwrap().route,
+            crate::model::AgentRoute::Model
+        );
+        assert!(matches!(
+            work.trace.as_slice(),
+            [crate::model::AgentStep {
+                outcome: crate::model::AgentStepOutcome::Asked,
+                ..
+            }]
+        ));
         let composer = TestApp::<ChatShell>::capture(Some("composer")).unwrap();
         let draft = composer.read_document(|doc| ChatDoc::draft_text(doc, "c_crit"));
         assert!(draft.contains("Enter sends"), "{draft:?}");

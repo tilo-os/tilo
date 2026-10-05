@@ -106,11 +106,11 @@ fn drive_text_input(
     focus_target.is_some()
 }
 
-/// Drive the retained shared menu from Chat's immediate-mode event host.
+/// Drive a retained shared control from Chat's immediate-mode event host.
 /// The temporary layout node only satisfies `Widget::handle_event`; menu
-/// geometry is established synchronously by `open_at_clamped`.
-fn drive_context_menu(
-    menu: &mut ui::widget::ContextMenu,
+/// geometry is established synchronously by its owner before dispatch.
+fn drive_retained_control(
+    menu: &mut dyn ui::Widget,
     event: &WindowEvent,
     scale: f64,
     modifiers: Modifiers,
@@ -139,6 +139,24 @@ fn drive_context_menu(
 }
 
 impl ChatApp {
+    fn route_thread_scroll_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        self.thread_open.is_some()
+            && !self.emoji_open
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+            )
+            && drive_retained_control(&mut self.thread_scroll, event, scale, modifiers, doc)
+    }
+
     pub(crate) fn dispatch_event(
         &mut self,
         event: &WindowEvent,
@@ -148,6 +166,10 @@ impl ChatApp {
         handled: &mut bool,
     ) -> bool {
         if self.route_context_menu_event(event, scale, modifiers, doc) {
+            *handled = true;
+            return false;
+        }
+        if self.route_thread_scroll_event(event, scale, modifiers, doc) {
             *handled = true;
             return false;
         }
@@ -184,6 +206,12 @@ impl ChatApp {
                 if self.emoji_open && self.emoji_grid.contains(self.last_mouse) {
                     // Clamped against the content height when painted.
                     self.emoji_scroll = (self.emoji_scroll - dy).max(0.0);
+                    *handled = true;
+                    return false;
+                }
+                if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
+                    // At a thread boundary, do not bubble wheel input to the
+                    // hidden/main timeline behind the detail view.
                     *handled = true;
                     return false;
                 }
@@ -256,7 +284,7 @@ impl ChatApp {
         let Some(mut menu) = self.menu.take() else {
             return false;
         };
-        let widget_handled = drive_context_menu(&mut menu.widget, event, scale, modifiers, doc);
+        let widget_handled = drive_retained_control(&mut menu.widget, event, scale, modifiers, doc);
         let selection = menu.widget.take_selection();
         let selected = selection.and_then(|index| menu.items.get(index).copied());
         let target = menu.target.clone();
@@ -902,8 +930,7 @@ impl ChatApp {
                 self.on_hit_start_call(doc);
             }
             Hit::CloseThread => {
-                self.thread_open = None;
-                self.focus = Focus::Main;
+                self.close_thread();
             }
             Hit::CallParticipantsToggle => {
                 self.call.participants_expanded = !self.call.participants_expanded;
@@ -1012,13 +1039,23 @@ impl ChatApp {
     }
 
     fn on_hit_open_thread(&mut self, id: Id) {
+        if self.thread_open.as_ref() != Some(&id) {
+            self.thread_scroll.set_offset_y(0.0);
+        }
         if self.thread_open.as_deref() == Some(id.as_str()) {
-            self.thread_open = None;
-            self.focus = Focus::Main;
+            self.close_thread();
         } else {
             self.thread_open = Some(id);
             self.focus = Focus::Thread;
             self.right_flap.open();
+        }
+    }
+
+    fn close_thread(&mut self) {
+        self.thread_open = None;
+        self.focus = Focus::Main;
+        if self.right_mode == crate::responsive::FlapMode::Overlay {
+            self.right_flap.close();
         }
     }
 
@@ -1284,8 +1321,7 @@ impl ChatApp {
                 self.call.expanded = false;
                 self.request_relayout();
             } else if self.thread_open.is_some() {
-                self.thread_open = None;
-                self.focus = Focus::Main;
+                self.close_thread();
             } else {
                 return false;
             }
@@ -3473,8 +3509,192 @@ mod tests {
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
 
+    fn stage_agent_work(app: &mut ChatApp, doc: &mut AutoCommit) {
+        for (author, action) in crate::resource::agent_work_scenario() {
+            crate::actions::apply_as(doc, author, &action).unwrap();
+        }
+        app.land(doc);
+        app.stage_scenario("agent-work");
+    }
+
+    #[test]
+    fn agent_work_thread_survives_pointer_navigation_and_projects_updates() {
+        use crate::model::{AgentStepOutcome, AgentWork, AgentWorkState};
+        use ui::Widget;
+
+        for (width, height) in [(1600.0, 900.0), (800.0, 600.0)] {
+            let (mut app, mut doc) = app_with_doc();
+            stage_agent_work(&mut app, &mut doc);
+            app.land(&mut doc);
+            app.sync(&doc, &automerge::ROOT);
+            app.rect = vello::kurbo::Rect::new(0.0, 0.0, width, height);
+            app.reconcile_flaps();
+            app.right_flap.snap(true);
+            render_frame(&mut app, width, height);
+
+            let description = |app: &ChatApp| {
+                app.accessibility()
+                    .unwrap()
+                    .children
+                    .into_iter()
+                    .find(|node| node.name.as_deref() == Some("Messages"))
+                    .unwrap()
+                    .children
+                    .into_iter()
+                    .find(|node| node.name.as_deref() == Some("Tide: "))
+                    .expect("the open thread exposes its agent reply")
+                    .description
+                    .unwrap()
+            };
+            assert!(description(&app).contains("Latest intent: Add function"));
+            assert!(description(&app).contains("Requested: Add function"));
+
+            let close = app
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::CloseThread))
+                .expect("painted thread has a close/back control")
+                .0
+                .center();
+            click_point(&mut app, &mut doc, close);
+            assert!(app.thread_open.is_none());
+
+            // Render the settled closed flap, not the outgoing overlay frame
+            // that deliberately continues intercepting input during its exit.
+            app.right_flap.snap(false);
+
+            render_frame(&mut app, width, height);
+            let open = app
+                .hits
+                .iter()
+                .find(|(_, hit)| matches!(hit, Hit::OpenThread(id) if id == "m_agent_request"))
+                .expect("the original request retains its reply affordance")
+                .0
+                .center();
+            click_point(&mut app, &mut doc, open);
+            assert_eq!(app.thread_open.as_deref(), Some("m_agent_request"));
+
+            let mut applied_step = app
+                .messages
+                .iter()
+                .find(|message| message.id == "m_agent_reply")
+                .unwrap()
+                .work
+                .as_ref()
+                .unwrap()
+                .trace[0]
+                .clone();
+            applied_step.outcome = AgentStepOutcome::Applied;
+            crate::actions::apply_as(
+                &mut doc,
+                "agent-task:11111111-1111-4111-8111-111111111111",
+                &crate::actions::set_agent_work_action(
+                    "c_crit",
+                    "m_agent_reply",
+                    AgentWork::new(
+                        AgentWorkState::Done {
+                            did: "Revenue curve added".into(),
+                        },
+                        crate::doc::NOW,
+                    )
+                    .with_trace(vec![applied_step]),
+                    None,
+                ),
+            )
+            .unwrap();
+            app.land(&mut doc);
+            app.sync(&doc, &automerge::ROOT);
+            render_frame(&mut app, width, height);
+            assert_eq!(
+                description(&app),
+                "Completed: Revenue curve added; Applied: Add function",
+                "the state update retains the previously recorded dispatch evidence"
+            );
+            let reply = app
+                .messages
+                .iter()
+                .find(|message| message.id == "m_agent_reply")
+                .unwrap();
+            assert_eq!(reply.parent.as_deref(), Some("m_agent_request"));
+            assert!(
+                reply.text.is_empty(),
+                "work updates do not overwrite authored text"
+            );
+        }
+    }
+
     fn count_hits(app: &ChatApp, pred: impl Fn(&Hit) -> bool) -> usize {
         app.hits.iter().filter(|(_, h)| pred(h)).count()
+    }
+
+    fn click_point(app: &mut ChatApp, doc: &mut AutoCommit, point: Point) {
+        feed(app, doc, &cursor(point.x, point.y));
+        feed(app, doc, &mouse(ElementState::Pressed, MouseButton::Left));
+        feed(app, doc, &mouse(ElementState::Released, MouseButton::Left));
+    }
+
+    #[test]
+    fn agent_work_compact_thread_scrolls_all_evidence_without_moving_timeline() {
+        use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
+        use ui::Widget;
+        let (mut app, mut doc) = app_with_doc();
+        stage_agent_work(&mut app, &mut doc);
+        app.sync(&mut doc, &automerge::ROOT);
+        let work = AgentWork::new(AgentWorkState::Done { did: "Reviewed all operations".into() }, crate::doc::NOW)
+            .with_trace((0..60).map(|index| AgentStep::authored("calculator.workspace",
+                format!("Operation {index}: preserve graph bounds and add the requested revenue curve"),
+                AgentStepOutcome::Applied, index)).collect());
+        crate::actions::apply_as(
+            &mut doc,
+            "agent-task:11111111-1111-4111-8111-111111111111",
+            &crate::actions::set_agent_work_action("c_crit", "m_agent_reply", work, None),
+        )
+        .unwrap();
+        app.sync(&mut doc, &automerge::ROOT);
+        render_frame(&mut app, 800.0, 600.0);
+        let region = app.primary_vertical_scroll().unwrap();
+        assert_eq!(region.key, "thread");
+        assert!(
+            region.metrics.max_scroll() > 600.0,
+            "production wrapping creates real overflow"
+        );
+        let timeline_offset = app.scroll;
+        assert!(matches!(
+            app.apply_primary_vertical_scroll(ui::widget::PrimaryScrollAction::End),
+            ui::widget::PrimaryScrollResult::Changed(_)
+        ));
+        render_frame(&mut app, 800.0, 600.0);
+        let region = app.primary_vertical_scroll().unwrap();
+        assert!((region.metrics.offset - region.metrics.max_scroll()).abs() < 0.01);
+        assert!((app.scroll - timeline_offset).abs() < 0.01);
+        let tree = app.accessibility().unwrap();
+        let messages = tree
+            .children
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Messages"))
+            .unwrap();
+        assert_eq!(
+            messages.children.len(),
+            2,
+            "pushed detail exposes only parent and reply"
+        );
+        let description = messages
+            .children
+            .iter()
+            .find_map(|node| node.description.as_ref())
+            .unwrap();
+        assert!(
+            description.contains("Operation 59:"),
+            "the final recorded dispatch is accessible"
+        );
+        let point = app.thread_body.center();
+        feed(&mut app, &mut doc, &cursor(point.x, point.y));
+        feed(&mut app, &mut doc, &wheel(2.0));
+        assert!(
+            f64::from(app.thread_scroll.offset_y()) < region.metrics.max_scroll(),
+            "pointer wheel reaches earlier evidence"
+        );
+        assert!((app.scroll - timeline_offset).abs() < 0.01);
     }
 
     fn cursor(x: f64, y: f64) -> WindowEvent {
@@ -4242,6 +4462,11 @@ mod tests {
         // Phase: history_scroll_exposes_an_accessible_return_to_latest_control.
         {
             let (mut app, mut doc) = app_with_doc();
+            // The ephemeral fixture opens a thread by default. On a compact
+            // viewport that is now an honest pushed detail view, so navigate
+            // back before testing the main timeline's history controls.
+            app.on_hit(Hit::CloseThread, &mut ui::widget::Edits::lend(&mut doc));
+            assert!(app.thread_open.is_none());
             for n in 0..24 {
                 ChatDoc::push_message(
                     &mut doc,
