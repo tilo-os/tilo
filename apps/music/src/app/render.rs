@@ -918,7 +918,7 @@ impl Widget for MusicApp {
     fn take_structure_dirty(&mut self) -> bool {
         // Reported once: an app that is not rebuilt right away (a tab behind
         // another) must not ask again on every frame.
-        let visible = Some(matches!(self.view, View::Home));
+        let visible = Some(self.source_widget_mode());
         std::mem::replace(&mut self.open_file_layout_visible, visible) != visible
     }
 
@@ -931,6 +931,12 @@ impl Widget for MusicApp {
                         .chain(self.spotify_device_buttons.iter())
                         .map(|button| button as &dyn Widget),
                 )
+                .collect()
+        } else if self.source_widget_mode() == 1 {
+            self.source_buttons
+                .iter()
+                .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+                .map(|button| button as &dyn Widget)
                 .collect()
         } else {
             Vec::new()
@@ -946,6 +952,12 @@ impl Widget for MusicApp {
                         .chain(self.spotify_device_buttons.iter_mut())
                         .map(|button| button as &mut dyn Widget),
                 )
+                .collect()
+        } else if self.source_widget_mode() == 1 {
+            self.source_buttons
+                .iter_mut()
+                .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+                .map(|button| button as &mut dyn Widget)
                 .collect()
         } else {
             Vec::new()
@@ -987,9 +999,9 @@ impl Widget for MusicApp {
         // framework-wide contract this one widget can't change — so a
         // `new_leaf` failure (which a freshly-created tree with one valid
         // leaf style cannot produce) has no propagation path here.
-        let visible = matches!(self.view, View::Home);
+        let visible = self.source_widget_mode();
         self.open_file_layout_visible = Some(visible);
-        let children = if visible {
+        let children = if visible == 2 {
             std::iter::once(self.open_file_button.build_layout(taffy, theme, node_map))
                 .chain(
                     self.source_buttons
@@ -998,6 +1010,12 @@ impl Widget for MusicApp {
                         .map(|button| button.build_layout(taffy, theme, node_map)),
                 )
                 .collect::<Vec<_>>()
+        } else if visible == 1 {
+            self.source_buttons
+                .iter_mut()
+                .filter(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+                .map(|button| button.build_layout(taffy, theme, node_map))
+                .collect()
         } else {
             Vec::new()
         };
@@ -1885,6 +1903,16 @@ impl MusicApp {
                 }
             }
         }
+        if self.source_widget_mode() == 1
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
+            && let Some(node) = children.first()
+            && let Some(button) = self
+                .source_buttons
+                .iter_mut()
+                .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+        {
+            button.handle_event(event, &mut ctx.reborrow(ctx.path, *node));
+        }
     }
 
     fn begin_source_effect(
@@ -1943,6 +1971,9 @@ impl MusicApp {
             | MusicEffect::BrowseSpotify
             | MusicEffect::BrowseYouTube => self.begin_source_effect(invocation, &effect),
             MusicEffect::SpotifyDevices
+            | MusicEffect::SpotifyQueue
+            | MusicEffect::SpotifyLibraryMore
+            | MusicEffect::SpotifyCreatePlaylist { .. }
             | MusicEffect::SpotifyTransfer { .. }
             | MusicEffect::SpotifyRemotePlay { .. }
             | MusicEffect::SpotifyRemotePause { .. }
@@ -1952,6 +1983,15 @@ impl MusicApp {
             | MusicEffect::SpotifyPlaylistAdd { .. }
             | MusicEffect::SpotifyPlaylistRemove { .. } => {
                 self.begin_spotify_operation(invocation, &effect)
+            }
+            MusicEffect::NewSpotifyPlaylist => {
+                if !self.spotify_catalogue {
+                    return Err(ui::i18n!("music-spotify-select-first"));
+                }
+                self.on_begin_new_playlist(None);
+                self.name_prompt = Some(super::NamePrompt::NewSpotifyPlaylist);
+                self.dirty = true;
+                Ok(ui::framework::Effected::done())
             }
             other => self.begin_player_effect(invocation, other),
         }
@@ -2755,6 +2795,7 @@ impl MusicApp {
         theme: &Theme,
     ) {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
+        self.refresh_spotify_control_flags();
         self.open_file_button.apply_layout_external(Rect::ZERO);
         for button in self
             .source_buttons
@@ -3335,7 +3376,7 @@ impl MusicApp {
                 .sections
                 .iter()
                 .flat_map(|section| &section.items)
-                .take(2_048)
+                .take(4_096)
             {
                 let view = match item.kind {
                     HomeItemKind::Album => View::Album(item.id.clone()),
@@ -3353,6 +3394,9 @@ impl MusicApp {
             }
         }
         let mut y = body.y0 - self.scroll;
+        if matches!(self.view, View::Queue) {
+            y = self.draw_spotify_remote_queue(ctx, c, body, y);
+        }
         if matches!(self.view, View::Home) && !rows.is_empty() {
             y = self.position_open_file_button(body.x0, y);
             y = self.position_source_buttons(ctx, c, body, y);
@@ -3366,6 +3410,10 @@ impl MusicApp {
         }
         for (title, subtitle, trailing, action, active) in &rows {
             let row = Rect::new(body.x0 + 16.0, y, body.x1 - 16.0, y + row_h);
+            if row.y1 < body.y0 || row.y0 > body.y1 {
+                y += row_h;
+                continue;
+            }
             let title_top = row.y0 + (row_h - row_block_h) / 2.0;
             let artist_top = title_top + row_title_h + LARGE_ROW_LINE_GAP;
             let text_x = body.x0 + CONTENT_GUTTER;
@@ -3451,14 +3499,14 @@ impl MusicApp {
                 heading,
                 &TextStyle::new(18.0).with_weight(TextWeight::Bold),
                 c.text,
-                Point::new(body.x0 + 34.0, body.y0 - self.scroll + 64.0),
+                Point::new(body.x0 + 34.0, y + 64.0),
                 Some((body.width() - 68.0).max(0.0) as f32),
             );
             let budget = Some((body.width() - 68.0).max(0.0) as f32);
             let (_, heading_h) = ctx
                 .text
                 .measure_weighted(heading, 18.0, budget, TextWeight::Bold);
-            let detail_y = body.y0 - self.scroll + 64.0 + f64::from(heading_h) + 18.0;
+            let detail_y = y + 64.0 + f64::from(heading_h) + 18.0;
             let (_, detail_h) = ctx.text.measure(detail, 11.0, budget);
             ctx.text(
                 detail,
@@ -4428,6 +4476,12 @@ impl MusicApp {
             let cx = body.x0 + pad + (i % cols) as f64 * (card_w + gap);
             let cy = y + (i / cols) as f64 * (card_h + gap);
             let card = Rect::new(cx, cy, cx + card_w, cy + card_h);
+            if card.y1 < body.y0 || card.y0 > body.y1 {
+                if item.kind == HomeItemKind::Track {
+                    queue.next += 1;
+                }
+                continue;
+            }
             self.draw_home_section_tile_art(ctx, c, item, card, &mut queue);
             Self::draw_home_section_tile_labels(ctx, c, item, card);
         }
@@ -6445,9 +6499,118 @@ impl MusicApp {
         }
     }
 
+    fn draw_spotify_remote_queue(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        c: &Palette,
+        body: Rect,
+        mut y: f64,
+    ) -> f64 {
+        if !self.spotify_catalogue && self.spotify_remote_queue.is_none() {
+            return y;
+        }
+        let left = body.x0 + CONTENT_GUTTER;
+        let width = (body.width() - CONTENT_GUTTER * 2.0).max(1.0) as f32;
+        let gap = f64::from(ctx.theme.padding_standard);
+        let mut lines = vec![
+            ui::i18n!("music-spotify-remote-queue"),
+            ui::i18n!("music-spotify-remote-queue-help"),
+        ];
+        if let Some(error) = &self.source_error {
+            lines.push(error.clone());
+        }
+        if let Some((snapshot, observed)) = &self.spotify_remote_queue {
+            lines.push(ui::i18n::I18nManager::format(
+                "music-spotify-remote-queue-age",
+                &[("seconds", observed.elapsed().as_secs().to_string().into())],
+            ));
+            let queue = &snapshot["remote_queue"];
+            if queue["currently_playing"].is_object() {
+                lines.push(super::spotify::remote_item_label(
+                    &queue["currently_playing"],
+                ));
+            }
+            if let Some(items) = queue["queue"].as_array() {
+                if items.is_empty() {
+                    lines.push(ui::i18n!("music-spotify-remote-queue-empty"));
+                }
+                lines.extend(items.iter().take(50).enumerate().map(|(index, item)| {
+                    format!("{}. {}", index + 1, super::spotify::remote_item_label(item))
+                }));
+            }
+            if snapshot["truncated"].as_bool() == Some(true) {
+                lines.push(ui::i18n!("music-spotify-remote-queue-truncated"));
+            }
+        } else {
+            lines.push(ui::i18n!("music-spotify-remote-queue-unloaded"));
+        }
+        // The ordinary shared action button is present in the host's focus
+        // and accessibility tree on Queue as well as Home.
+        if let Some(button) = self
+            .source_buttons
+            .iter_mut()
+            .find(|button| button.test_id() == Some("music-spotify-queue-refresh"))
+        {
+            let size = button.measure(
+                Size {
+                    width: None,
+                    height: None,
+                },
+                Size {
+                    width: taffy::AvailableSpace::Definite(width),
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+                ctx.text,
+            );
+            button.apply_layout_external(Rect::from_origin_size(
+                (left, y),
+                (f64::from(size.width), f64::from(size.height)),
+            ));
+            button.draw(
+                ctx.scene,
+                ctx.transform,
+                ctx.text,
+                ctx.theme,
+                &PresenceCtx::empty(),
+            );
+            y += f64::from(size.height) + gap;
+        }
+        for (index, line) in lines.iter().enumerate() {
+            let weight = if index == 0 {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            };
+            let (_, height) = ctx.text.measure_weighted(line, 14.0, Some(width), weight);
+            if y + f64::from(height) >= body.y0 && y <= body.y1 {
+                ctx.text(
+                    line,
+                    &TextStyle::new(14.0).with_weight(weight),
+                    c.text,
+                    Point::new(left, y),
+                    Some(width),
+                );
+            }
+            y += f64::from(height) + gap;
+        }
+        let local = ui::i18n!("music-spotify-local-queue");
+        let (_, height) =
+            ctx.text
+                .measure_weighted(&local, 16.0, Some(width), TextWeight::Semibold);
+        ctx.text(
+            &local,
+            &TextStyle::new(16.0).with_weight(TextWeight::Semibold),
+            c.text,
+            Point::new(left, y),
+            Some(width),
+        );
+        y + f64::from(height) + gap
+    }
+
     fn draw_queue(&mut self, ctx: &mut PaintCtx<'_>, c: &Palette, body: Rect, mut y: f64) -> f64 {
         let pad = 28.0;
         y += 20.0;
+        y = self.draw_spotify_remote_queue(ctx, c, body, y);
         y = self.draw_queue_now_playing(ctx, c, body, y);
         // Up next.
         let upnext: Vec<String> = self

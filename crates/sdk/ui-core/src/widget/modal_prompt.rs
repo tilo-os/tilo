@@ -51,6 +51,8 @@ pub struct PromptBody {
     multiline: bool,
     rect: Rect,
     field_rect: Rect,
+    caption_height: f64,
+    label_height: f64,
 }
 
 impl PromptBody {
@@ -66,6 +68,8 @@ impl PromptBody {
             multiline: false,
             rect: Rect::ZERO,
             field_rect: Rect::ZERO,
+            caption_height: CAPTION_BLOCK,
+            label_height: LABEL_BLOCK,
         }
     }
 
@@ -117,10 +121,10 @@ impl PromptBody {
     fn place_field(&mut self) {
         let mut y = self.rect.y0 + TOP_PAD;
         if !self.caption.is_empty() {
-            y += CAPTION_BLOCK;
+            y += self.caption_height;
         }
         if !self.label.is_empty() {
-            y += LABEL_BLOCK;
+            y += self.label_height;
         }
         let bottom = if self.multiline {
             self.rect.y1.max(y + FIELD_H)
@@ -188,6 +192,14 @@ impl Widget for PromptBody {
     ) {
         let c = &theme.tokens.colors;
         let width = px(self.rect.width().max(1.0));
+        let gap = f64::from(theme.tokens.spacing.s2);
+        self.caption_height =
+            f64::from(tr.measure(&self.caption, CAPTION_SIZE, Some(width)).1) + gap;
+        self.label_height = f64::from(
+            tr.measure_weighted(&self.label, LABEL_SIZE, Some(width), TextWeight::Semibold)
+                .1,
+        ) + gap;
+        self.place_field();
         let mut y = self.rect.y0 + TOP_PAD;
         if !self.caption.is_empty() {
             tr.draw_text(
@@ -198,7 +210,7 @@ impl Widget for PromptBody {
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
                 Some(width),
             );
-            y += CAPTION_BLOCK;
+            y += self.caption_height;
         }
         if !self.label.is_empty() {
             tr.draw_text_weighted(
@@ -207,7 +219,7 @@ impl Widget for PromptBody {
                 LABEL_SIZE,
                 c.text_primary,
                 transform.pre_translate(Vec2::new(self.rect.x0, y)),
-                None,
+                Some(width),
                 TextWeight::Semibold,
             );
         }
@@ -332,6 +344,40 @@ mod tests {
                 taffy: &taffy,
             },
         );
+    }
+
+    #[test]
+    fn wrapped_prompt_help_leaves_the_editable_field_below_all_lines() {
+        for scale in [1.0, 2.0] {
+            let mut body = PromptBody::new(
+                "Only the playlist owner can rename it. Saving does not grant editing access.",
+                "Name",
+            )
+            .with_caption("This change is sent to the provider after confirmation.");
+            body.rect = Rect::new(0.0, 0.0, 240.0, 700.0);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            let theme = Theme::high_contrast().with_text_scale(scale);
+            body.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let (_, caption) = text.measure(&body.caption, CAPTION_SIZE, Some(240.0));
+            let (_, label) =
+                text.measure_weighted(&body.label, LABEL_SIZE, Some(240.0), TextWeight::Semibold);
+            assert!(
+                label > LABEL_SIZE * 2.0,
+                "the long label occupies multiple lines"
+            );
+            assert!(
+                body.field_rect.y0 >= f64::from(caption + label) + TOP_PAD,
+                "text and editable field do not overlap"
+            );
+            assert!(body.field_rect.y1 <= body.rect.y1);
+        }
     }
 
     #[test]

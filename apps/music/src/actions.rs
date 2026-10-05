@@ -240,6 +240,25 @@ pub enum MusicEffect {
     /// Refresh Spotify devices
     #[effect(job, device_only)]
     SpotifyDevices,
+    /// Show Spotify's remote queue
+    ///
+    /// Reads a provider snapshot; never replaces this device's queue.
+    #[effect(job, device_only)]
+    SpotifyQueue,
+    /// Load more Spotify library collections
+    #[effect(job, device_only)]
+    SpotifyLibraryMore,
+    /// Name a new private Spotify playlist
+    #[effect(device_only)]
+    NewSpotifyPlaylist,
+    /// Create private Spotify playlist
+    ///
+    /// Creates an empty private playlist. Refresh before retrying an uncertain result.
+    #[effect(job, device_only)]
+    SpotifyCreatePlaylist {
+        #[param("Playlist name")]
+        name: String,
+    },
     /// Transfer Spotify playback
     #[effect(job, device_only)]
     SpotifyTransfer {

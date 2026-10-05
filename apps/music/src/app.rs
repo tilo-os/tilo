@@ -221,6 +221,7 @@ enum Action {
     CreatePlaylist,
     /// Begin editing a new-playlist name (opens the name input overlay).
     BeginNewPlaylist,
+    BeginNewSpotifyPlaylist,
     /// Begin a new playlist that the given track will be added to on create
     /// (the "Add to playlist… → New playlist…" flow).
     BeginNewPlaylistFor(String),
@@ -325,10 +326,13 @@ pub struct MusicApp {
     spotify_devices: Vec<crate::backend::SpotifyDevice>,
     spotify_device_buttons: Vec<ui::widget::Button>,
     spotify_remote_state: serde_json::Value,
+    spotify_remote_queue: Option<(serde_json::Value, ui::time::Instant)>,
+    spotify_library_offset: u32,
+    spotify_library_more: bool,
     spotify_menu_controls: Vec<ui::widget::ActionEmitter<()>>,
     control_domain: Option<ui::ControlDomain>,
     source_error: Option<String>,
-    open_file_layout_visible: Option<bool>,
+    open_file_layout_visible: Option<u8>,
     open_file_gap: f64,
     /// The search pill's full rect, captured during draw so a press inside it
     /// routes to `search_input` (caret placement / drag-select).
@@ -648,6 +652,7 @@ enum ShotStage {
 enum NamePrompt {
     /// Creating a brand-new playlist.
     NewPlaylist,
+    NewSpotifyPlaylist,
     /// Renaming an existing playlist (by id).
     Rename(String),
 }
@@ -745,6 +750,9 @@ impl MusicApp {
             spotify_devices: Vec::new(),
             spotify_device_buttons: Vec::new(),
             spotify_remote_state: serde_json::Value::Null,
+            spotify_remote_queue: None,
+            spotify_library_offset: 50,
+            spotify_library_more: true,
             spotify_menu_controls: Vec::new(),
             control_domain: None,
             source_error: None,
@@ -1220,6 +1228,7 @@ impl MusicApp {
             .collect();
         rows.push(self.source_row());
         rows.extend(self.spotify_device_rows());
+        rows.extend(self.spotify_remote_rows());
         rows.extend(
             self.catalogue_rows()
                 .into_iter()
@@ -1238,6 +1247,12 @@ impl MusicApp {
     /// The row `id` this device shows, beyond the published page: a queue
     /// entry, the player, the open file, a track it keeps offline.
     pub(crate) fn device_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id.starts_with("music.spotify-remote:") {
+            return self
+                .spotify_remote_rows()
+                .into_iter()
+                .find(|row| row.id() == id);
+        }
         if id == "music.source:catalogue" {
             return Some(self.source_row());
         }
@@ -1294,6 +1309,9 @@ impl MusicApp {
         .effect(&MusicEffect::ConnectSpotify)
         .effect(&MusicEffect::ConnectSpotifyPlayback)
         .effect(&MusicEffect::SpotifyDevices)
+        .effect(&MusicEffect::SpotifyQueue)
+        .effect(&MusicEffect::SpotifyLibraryMore)
+        .effect(&MusicEffect::NewSpotifyPlaylist)
         .effect(&MusicEffect::DisconnectSpotify)
         .effect(&MusicEffect::BrowseSpotify)
         .effect(&MusicEffect::BrowseYouTube)
@@ -1995,16 +2013,26 @@ impl MusicApp {
         let Some(kind) = self.name_prompt.clone() else {
             return;
         };
-        let (title, primary) = match kind {
-            NamePrompt::NewPlaylist => ("New playlist", "Create"),
-            NamePrompt::Rename(_) => ("Rename playlist", "Save"),
+        let (title, primary, guidance) = match kind {
+            NamePrompt::NewPlaylist => ("New playlist".into(), "Create".into(), String::new()),
+            NamePrompt::NewSpotifyPlaylist => (
+                ui::i18n!("music-spotify-create-playlist"),
+                ui::i18n!("music-spotify-create"),
+                ui::i18n!("music-spotify-private-help"),
+            ),
+            NamePrompt::Rename(ref id) if id.starts_with("spotify:") => (
+                ui::i18n!("music-spotify-rename-playlist"),
+                ui::i18n!("music-spotify-save-name"),
+                ui::i18n!("music-spotify-ownership-help"),
+            ),
+            NamePrompt::Rename(_) => ("Rename playlist".into(), "Save".into(), String::new()),
         };
-        let body = PromptBody::new("", "Playlist name").with_initial(&self.name_input);
+        let body = PromptBody::new(&guidance, "Playlist name").with_initial(&self.name_input);
         let submit = Rc::new(Cell::new(false));
         let cancel = Rc::new(Cell::new(false));
         let dialog = ModalDialog::new(title, body)
             .open(true)
-            .with_max_size(420.0, 190.0)
+            .with_max_size(420.0, if guidance.is_empty() { 190.0 } else { 420.0 })
             .primary_action(primary, {
                 let s = submit.clone();
                 move || s.set(true)
@@ -2142,6 +2170,11 @@ impl MusicApp {
         self.name_input = value;
         let commit = match self.name_prompt.clone() {
             Some(NamePrompt::NewPlaylist) => Action::CreatePlaylist,
+            Some(NamePrompt::NewSpotifyPlaylist) => {
+                Action::SpotifyEffect(crate::actions::MusicEffect::SpotifyCreatePlaylist {
+                    name: self.name_input.trim().into(),
+                })
+            }
             Some(NamePrompt::Rename(id)) => Action::CommitRename(id),
             None => Action::None,
         };
@@ -2207,6 +2240,10 @@ impl MusicApp {
                 self.on_move_playlist_item(&playlist, from, to, state);
             }
             Action::BeginNewPlaylist => self.on_begin_new_playlist(None),
+            Action::BeginNewSpotifyPlaylist => {
+                self.on_begin_new_playlist(None);
+                self.name_prompt = Some(NamePrompt::NewSpotifyPlaylist);
+            }
             Action::BeginNewPlaylistFor(track) => self.on_begin_new_playlist(Some(track)),
             Action::CreatePlaylist => self.on_create_playlist(state),
             Action::BeginRenamePlaylist(id) => self.on_begin_rename_playlist(id),
@@ -2221,7 +2258,15 @@ impl MusicApp {
             Action::SpotifyLibrary { track, save } => {
                 self.queue_spotify_library_control(&track, save);
             }
-            Action::SpotifyEffect(effect) => self.queue_spotify_effect_control(&effect),
+            Action::SpotifyEffect(effect) => {
+                self.queue_spotify_effect_control(&effect);
+                if matches!(
+                    effect,
+                    crate::actions::MusicEffect::SpotifyCreatePlaylist { .. }
+                ) {
+                    self.on_close_name_prompt();
+                }
+            }
             Action::OpenSpotifyPlaylistMenu(playlist) => self.open_spotify_playlist_menu(&playlist),
             Action::FocusSearch => self.on_focus_search(),
             Action::RetrySearch => self.request_live_search(),
@@ -3274,6 +3319,7 @@ impl MusicApp {
                                     self.spotify_device_buttons.clear();
                                     self.open_file_layout_visible = None;
                                     self.spotify_remote_state = serde_json::Value::Null;
+                                    self.spotify_remote_queue = None;
                                 }
                                 if self.source_disconnect_pending
                                     && self
@@ -3304,6 +3350,8 @@ impl MusicApp {
                                     .retain(|id| !id.starts_with("spotify:"));
                                 self.failed_pages.retain(|id| !id.starts_with("spotify:"));
                                 self.home = None;
+                                self.spotify_library_offset = 50;
+                                self.spotify_library_more = true;
                                 self.home_requested = false;
                                 self.home_failed = false;
                                 self.live_results = None;
@@ -3383,6 +3431,11 @@ impl MusicApp {
                     }
                 }
                 StreamUpdate::Home { content } => {
+                    self.spotify_library_offset = 50;
+                    self.spotify_library_more = content
+                        .sections
+                        .iter()
+                        .any(|section| section.items.len() == 50);
                     self.absorb_home(&content);
                     self.home = Some(*content);
                     self.home_failed = false;
@@ -4107,7 +4160,8 @@ impl MusicApp {
             "album-page" => self.snap_album_page(),
             "error" => self.snap_error_page(),
             "membership-open" => self.snap_membership_open(),
-            "spotify-home" | "spotify-devices" | "spotify-error" => self.snap_spotify(scenario),
+            "spotify-home" | "spotify-devices" | "spotify-error" | "spotify-queue"
+            | "spotify-create" => self.snap_spotify(scenario),
             _ => {}
         }
     }
@@ -4743,6 +4797,12 @@ impl MusicApp {
             "New playlist\u{2026}",
             Action::BeginNewPlaylistFor(track.to_string()),
         );
+        if track.starts_with("spotify:track:") {
+            self.push_menu(
+                ui::i18n!("music-spotify-create-playlist"),
+                Action::BeginNewSpotifyPlaylist,
+            );
+        }
         if !self.lib.playlists.is_empty() {
             self.context.push(MenuItem::separator());
             self.menu_actions.push(Action::Back);

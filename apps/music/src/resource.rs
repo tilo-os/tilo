@@ -115,6 +115,8 @@ const SCENARIOS: &[&str] = &[
     "spotify-home",
     "spotify-devices",
     "spotify-error",
+    "spotify-queue",
+    "spotify-create",
 ];
 
 /// Framework app: the music widget is the surface over [`Music`].
@@ -144,7 +146,14 @@ impl ResourceApp for MusicShell {
     fn scenario(name: Option<&str>) -> Vec<Invoke<Music>> {
         if matches!(
             name,
-            Some("empty" | "spotify-home" | "spotify-devices" | "spotify-error")
+            Some(
+                "empty"
+                    | "spotify-home"
+                    | "spotify-devices"
+                    | "spotify-error"
+                    | "spotify-queue"
+                    | "spotify-create"
+            )
         ) {
             return Vec::new();
         }

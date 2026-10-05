@@ -4,7 +4,8 @@ Music keeps local files and YouTube Music, and adds a Spotify catalogue with
 independent native playback and official Connect controls. Catalogue selection
 is device-local and persists across restarts; a queued track keeps its provider
 identity when the catalogue changes. The live app starts empty. The
-`spotify-home`, `spotify-devices` and `spotify-error` captures use fixtures only.
+`spotify-home`, `spotify-devices`, `spotify-error`, `spotify-queue` and
+`spotify-create` captures use fixtures only.
 
 ## Authorization
 
@@ -17,7 +18,10 @@ Spotifast registration.
 
 Connect Spotify authorizes catalogue, library and official player operations.
 Authorize playback obtains a separate streaming grant after confirming Premium.
-Both grants must identify the same account. Account custody seals them under
+Both grants must identify the same account; stable `account_id` values, when
+returned, must also match. The native session additionally matches its canonical
+username. A missing/deprecated subscription field is reported as unknown; native
+playback stays unavailable rather than assuming Premium or mislabelling Free. Account custody seals them under
 `music.spotify` and `music.spotify.streaming`; they never enter Automerge,
 resources, the playback profile, fixtures or continuity payloads. Disconnect
 forgets both device-local grants and stops the local Spotify transport. Revoke
@@ -60,7 +64,13 @@ backend and does not enable native Spotify dependencies.
 
 ## Catalogue, library and devices
 
-Home shows Liked Songs, the first 20 saved albums and the first 20 playlists.
+Home starts with Liked Songs and up to 50 saved albums and 50 playlists.
+Load more Spotify collections advances by 50, up to 2,000 collections per type.
+Only a successfully decoded page advances the cursor; overlapping IDs merge
+once, failed/stale pages preserve the current library, and only one page request
+can be active. Device/remote-queue refreshes preserve loaded library pages.
+Offscreen Home tiles produce neither paint nor pointer targets; their canonical
+resources remain reachable.
 Mixed and per-type search return up to ten results per requested type. Albums,
 playlists and Liked Songs use bounded paging, with an explicit 2,000-track
 limit; an incomplete or oversized collection is refused rather than presented
@@ -71,7 +81,11 @@ likes. Save/remove actions read back library membership. Playlist rename reads
 back its name; add/remove require a provider snapshot revision. Remove deletes
 all occurrences of the track. These edits are provider effects, never shared
 Tilo document mutations. Playlist editing is also available through the resource
-action surface; its full graphical editing journey needs further design work.
+action surface. The shared name dialog can create an empty private Spotify
+playlist; creation requires a valid provider URI and private/name read-back.
+A failed confirmation is uncertain and must not be automatically retried.
+Rename checks ownership; song edits require ownership or collaboration before
+sending the write. Saving somebody else’s playlist never grants editing rights.
 
 Spotify devices offers official discovery, output selection, play and pause.
 Premium is checked before a control command, and restricted/unavailable devices
@@ -80,7 +94,12 @@ state and confirms the device, track and playing state before reporting success.
 Confirmed remote play pauses Music's local transport. Spotify owns the remote
 queue; Music does not claim local reorder/remove controls edit that queue.
 Device resources expose the complete discovered list; the Home control group
-shows up to twelve devices.
+shows up to twelve devices. Refresh Spotify queue opens a separate, read-only
+provider snapshot (up to 50 upcoming items, with truncation explicitly labelled).
+Tracks and episodes show their metadata; snapshot age and errors remain visible.
+The shared refresh button is in Queue’s host focus/accessibility tree, and
+read-only remote item resources are exported. Refresh never replaces or edits
+this device’s local queue.
 
 ## UI and resource surface
 
@@ -114,9 +133,9 @@ registration and an eligible, consenting Premium test account. Spotify account
 allowlists, quota mode and streaming eligibility apply independently of this UI.
 No credentials or grants were created during implementation.
 
-The competitive UX goal is not yet certified: further acceptance covers playlist
-creation and ownership guidance, library paging beyond the current bounds, followed artists,
-remote queue presentation, all search/queue/playback states at large text,
+The competitive UX goal is not yet certified: further acceptance covers
+paging beyond the current bounds, followed artists,
+all search/queue/playback states at large text,
 keyboard/screen-reader journeys and responsiveness on older hardware.
 
 ## Reference sources
@@ -132,3 +151,56 @@ artwork, icon, assets, client identity or authentication workaround was copied.
 - [Spotify quota modes](https://developer.spotify.com/documentation/web-api/concepts/quota-modes)
 - [Spotify playlist items](https://developer.spotify.com/documentation/web-api/reference/get-playlists-items)
 - [librespot](https://github.com/librespot-org/librespot)
+
+## Exact-head CI and blocked dependency repair
+
+At head `5fd8fb3c7d`, lint run 71190 reported the new librespot dependency chain:
+`librespot-core -> quick-xml 0.38.4` violates the repository's parser ban, and
+`hyper-proxy2 0.1.0 -> rustls 0.22/rustls-webpki 0.102.8` fails certificate
+validation advisories. The same old proxy chain adds `rustls-native-certs 0.7.3`,
+which makes CI's package-name selector ambiguous with Tilo's patched 0.8.3
+member; check run 71188 reported that separately. Its other failure was the
+Chromium cancellation test reproduced on clean base `aad1bd2997`.
+
+Automatic approval review rejected vendoring/dependency/TLS/lock changes as
+insufficiently authorized or validated. No such changes were applied. A narrower
+repair is proposed, not executed: preserve Rustls and Tilo's fixed-path trust
+root loader; vendor the MIT librespot-core 0.8.0 release with quick-xml 0.41 and
+vendor the MIT hyper-proxy2 release with Tokio-Rustls 0.26/Hyper-Rustls 0.27,
+remove its unused old webpki edge, and use native-certs 0.8. Preserve licence and
+provenance files, update only these package lock edges, and run cargo-deny,
+focused upstream/parser/TLS tests and the Music/native checks before pushing.
+Spotifast's maintained proxy dependency uses the modern Rustls generations too.
+The downloaded unmodified core archive matches the committed registry checksum
+`168bbe1c416980ddd9a969ebd6b50fb6c924eb1a3ded194285fa8ec0e2b1c68b`.
+
+Upstream librespot-core 0.8.0 also calls `exit(1)` on non-Premium product data.
+Before deployment, that handler must return a session failure without exiting
+Music. The current strict subscription preflight does not certify safety against
+later provider subscription changes. This is an additional required upstream
+repair, not a reason to relax Premium eligibility.
+
+## Live acceptance setup (not started)
+
+Use a Tilo/distributor-owned public app registration and configure the exact
+loopback redirect above. A consenting eligible Premium tester must be authorized
+for that app; the app owner needs active Premium in Development Mode. New-user
+allowlist limits and grandfathered registration differences apply. Verify the
+selected registration's endpoint availability and whether it returns subscription
+eligibility; absent product data currently blocks native playback. Start browser
+PKCE only with explicit approval, authorize the catalogue and streaming grants
+for the same account, and use the system secret store. Never paste tokens,
+passwords or client secrets into chat. The client ID is public configuration.
+
+Then verify cancel/denial, mismatch, expiry/revocation, sealed-store failure,
+actual decoded audio/pause/seek/volume/track changes, gapless waveform timing,
+output failure and repeated session teardown. For Connect, provide a real active
+Spotify device and verify read-back on transfer/play/pause. Exercise playlist
+creation/save/rename/song edits against owner, collaborator and non-owner cases.
+No browser sign-in, account setup, live provider write or actual Spotify stream
+was performed in this task.
+
+- [Current Development Mode migration requirements](https://developer.spotify.com/documentation/web-api/tutorials/february-2026-migration-guide)
+- [Current profile fields](https://developer.spotify.com/documentation/web-api/reference/get-current-users-profile)
+- [Spotifast TLS dependency strategy](https://github.com/crmne/spotifast/blob/main/Cargo.toml)
+- [Upstream non-Premium session handler](https://github.com/librespot-org/librespot/blob/v0.8.0/core/src/session.rs)

@@ -179,7 +179,7 @@ pub enum SearchKind {
 
 /// What a [`HomeItem`] represents, so the UI can route a click and pick the
 /// right tile shape (artists render as circles).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HomeItemKind {
     Track,
     Album,
@@ -189,7 +189,7 @@ pub enum HomeItemKind {
 
 /// One tile on the real Home page (a chart track, a new album, a top artist, a
 /// mood playlist). Toolkit-free so it crosses the worker boundary.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HomeItem {
     /// Entity id: album id / artist channel id / playlist id. For a track it's
     /// the library id the app mints; [`Self::video_id`] carries the stream key.
@@ -208,14 +208,14 @@ pub struct HomeItem {
 }
 
 /// A titled row of tiles on the Home page.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HomeSection {
     pub title: String,
     pub items: Vec<HomeItem>,
 }
 
 /// Real YouTube-Music home/charts content: a handful of titled sections.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct HomeContent {
     pub sections: Vec<HomeSection>,
 }
@@ -327,6 +327,9 @@ pub type ResolveOutcome = Result<ResolvedStream, BackendError>;
 #[derive(Clone, Debug)]
 pub enum SpotifyOperation {
     Devices,
+    Queue,
+    LibraryPage { offset: u32 },
+    CreatePlaylist { name: String },
     Transfer { device: String },
     RemotePlay { device: String, track: String },
     RemotePause { device: String },
