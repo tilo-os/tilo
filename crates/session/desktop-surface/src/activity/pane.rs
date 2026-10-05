@@ -4883,6 +4883,7 @@ impl RoomActivityPane {
                     id: resource.id.clone(),
                     kind: resource.kind.clone(),
                     label: resource.label.clone(),
+                    agent_request: None,
                 })
         });
     }
