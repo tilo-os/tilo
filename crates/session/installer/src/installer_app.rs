@@ -6008,8 +6008,11 @@ mod tests {
                 .find(|child| child.test_id() == Some("recovery_ack"))
                 .expect("recovery-key acknowledgement");
             let nav = controls.last().expect("review navigation");
+            // Full height is the toolkit's regular control height, the
+            // height every single-line field takes.
+            let full = ui::widget::ControlSize::Regular.height(&Theme::dark());
             assert!(
-                input.get_rect().height() >= 38.0,
+                input.get_rect().height() >= full - 0.5,
                 "confirmation input collapsed: {:?}",
                 input.get_rect()
             );
@@ -6056,12 +6059,13 @@ mod tests {
             app.step = Step::Account;
             let (_taffy, _root) = build(&mut app);
 
-            // Username + optional full name + password + confirmation, each
-            // password with its show/hide control, + Back + Next.
+            // Username + optional full name + password + confirmation, + Back
+            // + Next. A password's show/hide control is an inline accessory,
+            // not a Tab stop.
             assert_eq!(
                 count_focusable(&app),
-                8,
-                "4 inputs, 2 show/hide controls and 2 nav buttons must be focusable"
+                6,
+                "4 inputs and 2 nav buttons must be focusable"
             );
         }
         // Phase `keyboard_step_has_dropdown_and_nav_and_a_preview`.
