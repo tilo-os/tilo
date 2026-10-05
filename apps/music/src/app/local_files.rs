@@ -1264,3 +1264,134 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }
 }
+
+impl MusicApp {
+    pub(super) fn make_source_buttons() -> Vec<ui::widget::Button> {
+        use crate::actions::MusicEffect;
+        use ui::tilo_resource::Effect as _;
+        [
+            (MusicEffect::ConnectSpotify, "music-connect-spotify"),
+            (MusicEffect::DisconnectSpotify, "music-disconnect-spotify"),
+            (MusicEffect::BrowseSpotify, "music-browse-spotify"),
+            (MusicEffect::BrowseYouTube, "music-browse-youtube"),
+        ]
+        .into_iter()
+        .filter_map(|(effect, key)| {
+            let resource = tilo_actions::Resource::new("music.library", "music.library", "Library")
+                .with_action(effect.bound());
+            tilo_actions::ActionBinding::unit_for(&resource, effect.id())
+                .ok()
+                .map(|binding| {
+                    ui::widget::Button::new(key, key)
+                        .content_sized()
+                        .on_action(binding)
+                })
+        })
+        .collect()
+    }
+}
+
+#[cfg(test)]
+mod spotify_tests {
+    use super::*;
+    use ui::widget::Widget as _;
+
+    #[test]
+    fn spotify_search_projection_uses_provider_ids_and_retains_youtube_ids() {
+        let hit = crate::backend::TrackHit {
+            video_id: "spotify:track:1234567890123456789012".into(),
+            title: "Song".into(),
+            artist: "Artist".into(),
+            artist_id: Some("spotify:artist:abcdefghijklmnopqrstuv".into()),
+            album: Some("Album".into()),
+            album_id: Some("spotify:album:ABCDEFGHIJKLMNOPQRSTUV".into()),
+            duration_s: 120,
+            cover_url: String::new(),
+        };
+        let mut app = MusicApp::without_profile();
+        app.disconnect();
+        app.ingest_search_results(
+            "Song",
+            crate::backend::SearchBundle {
+                tracks: vec![hit.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            app.live_results.as_ref().unwrap().1.as_slice(),
+            std::slice::from_ref(&hit.video_id)
+        );
+        assert!(app.lib.track(&hit.video_id).is_some());
+        assert_eq!(
+            super::super::live_track_id("existing-video"),
+            "yt:existing-video"
+        );
+        app.merge_search_more(
+            "Song",
+            crate::backend::SearchKind::Songs,
+            crate::backend::SearchBundle {
+                tracks: vec![hit.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.live_results.as_ref().unwrap().1, [hit.video_id]);
+    }
+
+    #[test]
+    fn spotify_source_buttons_wrap_and_use_semantic_actions() {
+        use crate::actions::MusicEffect;
+        use ui::tilo_resource::Effect as _;
+        for effect in [
+            MusicEffect::ConnectSpotify,
+            MusicEffect::BrowseSpotify,
+            MusicEffect::BrowseYouTube,
+            MusicEffect::DisconnectSpotify,
+        ] {
+            assert_eq!(effect.bound().kind, tilo_actions::OperationKind::Effect);
+        }
+        for (width, base_theme) in [360.0, 1000.0].into_iter().flat_map(|width| {
+            [
+                ui::theme::Theme::dark(),
+                ui::theme::Theme::light(),
+                ui::theme::Theme::high_contrast(),
+            ]
+            .map(|theme| (width, theme))
+        }) {
+            for scale in [1.0, 2.0] {
+                let mut app = MusicApp::without_profile();
+                app.disconnect();
+                assert!(app.device_row("music.source:catalogue").is_some());
+                assert!(
+                    app.device_rows()
+                        .iter()
+                        .any(|row| row.id() == "music.source:catalogue")
+                );
+                app.rect = vello::kurbo::Rect::new(0.0, 0.0, width, 1000.0);
+                let theme = base_theme.clone().with_text_scale(scale);
+                let mut tree = taffy::TaffyTree::new();
+                app.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
+                let mut text = ui::text_render::TextRenderer::new();
+                text.set_text_scale(scale);
+                app.render_frame(
+                    &mut vello::Scene::new(),
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                );
+                assert_eq!(app.source_buttons.len(), 4);
+                for (index, button) in app.source_buttons.iter().enumerate() {
+                    let rect = button.get_rect();
+                    assert!(
+                        rect.width() > 0.0 && rect.height() > 0.0,
+                        "width {width}, scale {scale}, button {index}"
+                    );
+                    assert!(rect.x0 >= 0.0 && rect.x1 <= width);
+                    for other in app.source_buttons.iter().skip(index + 1) {
+                        let overlap = rect.intersect(other.get_rect());
+                        assert!(overlap.width() <= 0.0 || overlap.height() <= 0.0);
+                    }
+                }
+            }
+        }
+    }
+}

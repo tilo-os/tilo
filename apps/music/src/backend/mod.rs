@@ -25,6 +25,10 @@ pub mod live;
 pub mod offline;
 pub mod potoken;
 pub mod proxy;
+#[cfg(feature = "live")]
+mod sources;
+#[cfg(feature = "live")]
+pub mod spotify;
 
 /// Signed media URLs are accepted only from `YouTube`'s HTTPS media origin.
 /// A substring check would also accept `googlevideo.com.attacker.invalid`.
@@ -327,6 +331,22 @@ pub trait MusicBackend: Send + Sync {
     /// "youtube-music (live)").
     fn name(&self) -> &str;
 
+    /// Select a catalogue or authorize it, on the background worker.
+    ///
+    /// # Errors
+    /// Source unavailable, sign-in failed or account inaccessible.
+    fn select_source(&self, _spotify: bool, _sign_in: bool) -> Result<(), BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
+    /// Forget Spotify authorization on this device.
+    ///
+    /// # Errors
+    /// Spotify unavailable or credential custody failed.
+    fn disconnect_spotify(&self) -> Result<(), BackendError> {
+        Err(BackendError("Spotify is unavailable in this build".into()))
+    }
+
     /// Whether this backend can actually reach `YouTube` and stream audio. The UI
     /// uses it to decide whether to surface live search / "streaming" state.
     fn is_live(&self) -> bool {
@@ -440,7 +460,7 @@ pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
         match live::RustyPipeBackend::new() {
             Ok(b) => {
                 note(format!("live backend ready: {}", b.name()));
-                return Box::new(b);
+                return Box::new(sources::Sources::new(Box::new(b)));
             }
             Err(e) => {
                 note(format!(
@@ -453,6 +473,11 @@ pub fn preferred_backend(note: impl FnOnce(String)) -> Box<dyn MusicBackend> {
     {
         note("offline build (no `live` feature); using bundled library".to_string());
     }
+    #[cfg(feature = "live")]
+    {
+        Box::new(sources::Sources::new(default_backend()))
+    }
+    #[cfg(not(feature = "live"))]
     default_backend()
 }
 

@@ -8480,6 +8480,8 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 name = "music"
 version = "0.1.0"
 dependencies = [
+ "account-custody",
+ "accounts",
  "base64",
  "fnv",
  "gstreamer",
@@ -8494,6 +8496,7 @@ dependencies = [
  "sha2 0.11.0",
  "taffy",
  "tempfile",
+ "test-http",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
@@ -8502,6 +8505,7 @@ dependencies = [
  "tilo-files",
  "tilo-media",
  "tilo-net",
+ "tilo-oauth",
  "tilo-paths",
  "tilo-test-env",
  "tilo-thumbnail",

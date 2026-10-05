@@ -311,6 +311,9 @@ pub struct MusicApp {
     /// the live query via `search_input.value()`.
     search_input: TextInput,
     open_file_button: ui::widget::Button,
+    source_buttons: Vec<ui::widget::Button>,
+    source_invocation: Option<tilo_actions::InvocationId>,
+    source_error: Option<String>,
     open_file_layout_visible: Option<bool>,
     open_file_gap: f64,
     /// The search pill's full rect, captured during draw so a press inside it
@@ -720,6 +723,9 @@ impl MusicApp {
             nav_back: Vec::new(),
             search_input,
             open_file_button: Self::make_open_file_button(),
+            source_buttons: Self::make_source_buttons(),
+            source_invocation: None,
+            source_error: None,
             open_file_layout_visible: None,
             open_file_gap: 0.0,
             search_pill_rect: Rect::ZERO,
@@ -1188,6 +1194,7 @@ impl MusicApp {
             .into_iter()
             .map(live_row)
             .collect();
+        rows.push(self.source_row());
         rows.extend(
             self.device_cache
                 .iter()
@@ -1201,6 +1208,9 @@ impl MusicApp {
     /// The row `id` this device shows, beyond the published page: a queue
     /// entry, the player, the open file, a track it keeps offline.
     pub(crate) fn device_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        if id == "music.source:catalogue" {
+            return Some(self.source_row());
+        }
         if let Some(track) = id.strip_prefix("music.track:") {
             return matches!(self.cache_state(track), CacheState::Cached)
                 .then(|| self.offline_row(track))
@@ -1214,6 +1224,29 @@ impl MusicApp {
             return None;
         }
         self.publish_resource(id).map(live_row)
+    }
+
+    fn source_status(&self) -> String {
+        if self.source_invocation.is_some() {
+            ui::i18n!("music-source-connecting")
+        } else {
+            self.source_error
+                .clone()
+                .unwrap_or_else(|| self.backend_name.clone())
+        }
+    }
+
+    fn source_row(&self) -> ui::framework::LiveRow {
+        use crate::actions::MusicEffect;
+        ui::framework::LiveRow::new(
+            "music.source:catalogue",
+            "music.source",
+            self.source_status(),
+        )
+        .effect(&MusicEffect::ConnectSpotify)
+        .effect(&MusicEffect::DisconnectSpotify)
+        .effect(&MusicEffect::BrowseSpotify)
+        .effect(&MusicEffect::BrowseYouTube)
     }
 
     /// A track this device keeps offline, offering to remove its copy.
@@ -1415,6 +1448,15 @@ impl MusicApp {
     }
 
     fn publish_handoff(&self) {
+        if self
+            .pb
+            .current
+            .as_deref()
+            .is_some_and(|id| id.starts_with("spotify:"))
+        {
+            self.handoff.clear();
+            return;
+        }
         let Some(track_id) = self.pb.current.as_deref() else {
             self.handoff.clear();
             return;
@@ -3137,6 +3179,60 @@ impl MusicApp {
         };
         for up in updates {
             match up {
+                StreamUpdate::SourceSelected { result } => {
+                    if let Some(invocation) = self.source_invocation.take() {
+                        let update = match result {
+                            Ok((name, live)) => {
+                                self.source_error = None;
+                                self.backend_name = name;
+                                self.backend_live = live;
+                                self.playlist_pages
+                                    .retain(|id, _| !id.starts_with("spotify:"));
+                                self.playlist_requested
+                                    .retain(|id| !id.starts_with("spotify:"));
+                                self.artist_pages
+                                    .retain(|id, _| !id.starts_with("spotify:"));
+                                self.artist_requested
+                                    .retain(|id| !id.starts_with("spotify:"));
+                                self.album_pages.retain(|id, _| !id.starts_with("spotify:"));
+                                self.album_requested
+                                    .retain(|id| !id.starts_with("spotify:"));
+                                self.failed_pages.retain(|id| !id.starts_with("spotify:"));
+                                self.home = None;
+                                self.home_requested = false;
+                                self.home_failed = false;
+                                self.live_results = None;
+                                self.live_bundle = None;
+                                self.search_more_sent.clear();
+                                self.active_search_more.clear();
+                                self.live_search_pending = None;
+                                self.active_search_request = None;
+                                self.live_query_sent = None;
+                                self.search_error = None;
+                                self.view = View::Home;
+                                self.scroll = 0.0;
+                                tilo_actions::InvocationUpdate::Succeeded {
+                                    invocation,
+                                    output: tilo_actions::ActionOutput::default(),
+                                }
+                            }
+                            Err(message) => {
+                                self.source_error = Some(message.clone());
+                                self.toast = Some((message.clone(), ui::time::now()));
+                                tilo_actions::InvocationUpdate::Failed {
+                                    invocation,
+                                    error: tilo_actions::ActionFailure {
+                                        code: "music.source_failed".into(),
+                                        message,
+                                        details: None,
+                                        retryable: true,
+                                    },
+                                }
+                            }
+                        };
+                        self.resource_stream_results.push(update);
+                    }
+                }
                 StreamUpdate::Backend { name, live } => {
                     self.backend_live = live;
                     self.backend_name = name;
@@ -3522,7 +3618,7 @@ impl MusicApp {
         let ordered: Vec<String> = bundle
             .tracks
             .iter()
-            .map(|h| format!("{LIVE_TRACK_PREFIX}{}", h.video_id))
+            .map(|h| live_track_id(&h.video_id))
             .collect();
         let n_types = [
             !bundle.tracks.is_empty(),
@@ -3574,7 +3670,7 @@ impl MusicApp {
                     .map(|(_, v)| v.clone())
                     .unwrap_or_default();
                 for h in &more.tracks {
-                    let id = format!("{LIVE_TRACK_PREFIX}{}", h.video_id);
+                    let id = live_track_id(&h.video_id);
                     if !bundle.tracks.iter().any(|t| t.video_id == h.video_id) {
                         bundle.tracks.push(h.clone());
                     }
@@ -4755,19 +4851,27 @@ fn elide(tr: &mut TextRenderer, text: &str, size: f32, weight: TextWeight, max_w
 /// tracks use `tk_…` ids and never match.
 pub(crate) const LIVE_TRACK_PREFIX: &str = "yt:";
 
+fn live_track_id(source_key: &str) -> String {
+    if source_key.starts_with("spotify:track:") {
+        source_key.to_owned()
+    } else {
+        format!("{LIVE_TRACK_PREFIX}{source_key}")
+    }
+}
+
 /// Whether a track id refers to a real (streamable) YouTube-Music track.
 fn is_live_track(track_id: &str) -> bool {
-    track_id.starts_with(LIVE_TRACK_PREFIX)
+    track_id.starts_with(LIVE_TRACK_PREFIX) || track_id.starts_with("spotify:track:")
 }
 
 /// Whether an id looks like a real `YouTube` channel id (artist page fetchable).
 fn is_live_id(id: &str) -> bool {
-    id.starts_with("UC")
+    id.starts_with("UC") || id.starts_with("spotify:artist:")
 }
 
 /// Whether an id looks like a real YouTube-Music album/playlist browse id.
 fn is_live_album_id(id: &str) -> bool {
-    id.starts_with("MPRE") || id.starts_with("OLAK")
+    id.starts_with("MPRE") || id.starts_with("OLAK") || id.starts_with("spotify:album:")
 }
 
 /// Whether a playlist id refers to a real (live YouTube-Music) playlist rather
@@ -4874,7 +4978,7 @@ fn hit_to_live(hit: &TrackHit) -> CatalogueTrack {
         .unwrap_or_else(|| format!("ytal:{}_{}", slug(&hit.artist), slug(&album_title)));
     CatalogueTrack {
         track: Track {
-            id: format!("{LIVE_TRACK_PREFIX}{}", hit.video_id),
+            id: live_track_id(&hit.video_id),
             title: hit.title.clone(),
             album_id: album_id.clone(),
             artist_id: artist_id.clone(),
