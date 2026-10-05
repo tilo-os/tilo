@@ -242,6 +242,7 @@ members = [
     "crates/platform/tilo-paths",
     "crates/platform/tilo-pdf",
     "crates/platform/tilo-process",
+    "crates/platform/tilo-presentation",
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/platform/tilo-subject",

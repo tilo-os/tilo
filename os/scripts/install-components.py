@@ -8,6 +8,10 @@ runs it to arrange the image's binaries, os/Containerfile.dev runs it with
 same invocation with `--dest <layer>/` assembles a development sysext layer, so
 none of them can place files differently.
 
+A `from = "@manifest/path"` entry copies a checked-in input relative to the
+manifest directory. It travels with its owning component on a development
+swap as well as in the image, independently of the Cargo output directory.
+
 Only the Python 3.11+ standard library is used, so it runs in the bare Fedora
 bootc base as well as on a developer host.
 """
@@ -85,7 +89,8 @@ class FileEntry:
     component: str
     to: str
     layer: str
-    source: str | None = None  # `from`; relative to --from, or absolute under --build-root
+    source: str | None = None  # `from`; build output, @manifest/ input, or absolute path
+    manifest_dir: Path | None = None  # root for explicitly manifest-relative inputs
     link: str | None = None
     mode: str | None = None
     tree: bool = False
@@ -180,7 +185,7 @@ def _check_image_path(path: str, where: str) -> None:
         raise ManifestError(f"{where}: `to` must be a normalized absolute image path, got {path!r}")
 
 
-def _parse_file(raw: object, component: str, default_layer: str | None, optional: bool, index: int) -> FileEntry:
+def _parse_file(raw: object, component: str, default_layer: str | None, optional: bool, index: int, manifest_dir: Path) -> FileEntry:
     where = f"component {component!r} file #{index + 1}"
     if not isinstance(raw, dict):
         raise ManifestError(f"{where}: must be a table like {{ from = ..., to = ... }}")
@@ -196,6 +201,10 @@ def _parse_file(raw: object, component: str, default_layer: str | None, optional
         raise ManifestError(f"{where}: exactly one of `from` or `link` is required")
     if source is not None and (not isinstance(source, str) or not source or ".." in PurePosixPath(source).parts):
         raise ManifestError(f"{where}: `from` must be a build output path without `..`")
+    if source is not None and source.startswith("@manifest/"):
+        relative = source.removeprefix("@manifest/")
+        if not relative or relative.startswith("/") or str(PurePosixPath(relative)) != relative.rstrip("/"):
+            raise ManifestError(f"{where}: @manifest/ must name a normalized relative input")
     if link is not None and (not isinstance(link, str) or not link or link.startswith("/")):
         raise ManifestError(f"{where}: `link` must be a relative symlink target")
     tree = raw.get("tree", False)
@@ -219,7 +228,8 @@ def _parse_file(raw: object, component: str, default_layer: str | None, optional
     file_optional = raw.get("optional", optional)
     if not isinstance(file_optional, bool):
         raise ManifestError(f"{where}: `optional` must be true or false")
-    return FileEntry(component=component, to=to, layer=layer, source=source, link=link,
+    return FileEntry(component=component, to=to, layer=layer, source=source,
+                     manifest_dir=manifest_dir, link=link,
                      mode=mode, tree=tree, optional=file_optional)
 
 
@@ -297,7 +307,7 @@ def parse_manifest(document: dict, path: Path) -> Manifest:
         if not isinstance(raw_files, list) or (not raw_files and kind != "boot"):
             # Boot components whose install is not manifest-driven yet may omit files.
             raise ManifestError(f"{where}: `files` must list at least one {{ from, to, mode }} entry")
-        files = tuple(_parse_file(f, name, layer, optional, i) for i, f in enumerate(raw_files))
+        files = tuple(_parse_file(f, name, layer, optional, i, path.resolve().parent) for i, f in enumerate(raw_files))
         dev_layers = {entry.layer for entry in files if entry.dev_only}
         if dev_layers and len(dev_layers) != len({entry.layer for entry in files}):
             raise ManifestError(f"{where}: mixes dev-only layers ({', '.join(sorted(dev_layers))}) with "
@@ -360,6 +370,10 @@ def select(manifest: Manifest, names: list[str], everything: bool, layers: list[
 def resolve_source(entry: FileEntry, from_dirs: list[Path], build_root: Path | None) -> Path | None:
     assert entry.source is not None
     relative = entry.source.rstrip("/")
+    if relative.startswith("@manifest/"):
+        assert entry.manifest_dir is not None
+        candidate = entry.manifest_dir / relative.removeprefix("@manifest/")
+        return candidate if candidate.exists() or candidate.is_symlink() else None
     if entry.source.startswith("/"):
         if build_root is None:
             raise ManifestError(

@@ -48,6 +48,8 @@ pub struct WinitState {
     /// The compositor state which is used to create new windows and regions.
     pub compositor_state: Arc<CompositorState>,
 
+    pub presentation: Option<Arc<super::types::wp_presentation::PresentationState>>,
+
     /// The state of the subcompositor.
     pub subcompositor_state: Option<Arc<SubcompositorState>>,
 
@@ -191,6 +193,8 @@ impl WinitState {
         Ok(Self {
             registry_state,
             compositor_state: Arc::new(compositor_state),
+            presentation: super::types::wp_presentation::PresentationState::bind(globals, queue_handle)
+                .ok().map(Arc::new),
             subcompositor_state: subcompositor_state.map(Arc::new),
             output_state,
             seat_state,

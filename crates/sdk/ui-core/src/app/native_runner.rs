@@ -25,6 +25,7 @@ struct AppHandler {
     animation_schedule: animation_schedule::AnimationSchedule,
     native_scenario: Option<crate::native_scenario::Scenario>,
     native_input_ids: Vec<usize>,
+    physical_input_trace: Option<crate::physical_input_trace::Trace>,
     native_input_origin: Option<Instant>,
     native_input_pointer_passthrough: bool,
     native_input_route_isolation: bool,
@@ -459,7 +460,7 @@ fn create_window_render_prepared(
     };
     // After this, every GPU call happens on its render worker.
     let window_id = window.id();
-    let render = spawn_render_thread(
+    let render = crate::render_thread::spawn_render_thread_for_window(
         render_cx,
         surface,
         renderer,
@@ -467,6 +468,7 @@ fn create_window_render_prepared(
             // Avoid synchronous macOS main-thread dispatch while the UI waits on submission.
             let _ = proxy.send_event(UserEvent::RenderReady(window_id));
         }),
+        Some(window.clone()),
     )?;
     tilo_startup_metrics::mark("window-render-context-done");
     Ok(render)
@@ -2006,12 +2008,26 @@ impl AppHandler {
             full_redraw_required,
             !damage_regions.is_empty(),
         ) {
+            let cpu_frame_id = app
+                .profiler
+                .as_ref()
+                .and_then(|profiler| profiler.history().back())
+                .map(|sample| sample.frame)
+                .or_else(|| {
+                    self.physical_input_trace
+                        .as_ref()
+                        .map(|_| self.primary_frames_sent.saturating_add(1))
+                });
+
+            if let Some(trace) = self.physical_input_trace.as_mut()
+                && trace.has_pending()
+                && let Some(row) = trace.drawn(cpu_frame_id, app.native_input_snapshot())
+            {
+                crate::native_scenario::log::emit_json("tilo-physical-frame", row);
+            }
+
             let req = RenderRequest::Frame {
-                cpu_frame_id: app
-                    .profiler
-                    .as_ref()
-                    .and_then(|profiler| profiler.history().back())
-                    .map(|sample| sample.frame),
+                cpu_frame_id,
                 scene,
                 width,
                 height,
@@ -2767,6 +2783,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             self.text_input_touched = true;
         }
+        let physical_input = if crate::physical_input_trace::Trace::observes(&event)
+            && self
+                .window
+                .as_ref()
+                .is_some_and(|window| window.id() == window_id)
+        {
+            let state = self
+                .physical_input_trace
+                .as_ref()
+                .and_then(|_| self.app.native_input_snapshot());
+            self.physical_input_trace
+                .as_mut()
+                .and_then(|trace| trace.begin(&event, state))
+        } else {
+            None
+        };
         self.note_host_appearance_event(&event);
         self.replay_unsettled_pointer(event_loop, window_id, &event);
         self.route_window_event(
@@ -2775,6 +2807,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event,
             native_input_isolation::EventOrigin::Platform,
         );
+        if let Some(input) = physical_input {
+            crate::native_scenario::log::emit_json(
+                "tilo-physical-input",
+                crate::physical_input_trace::Trace::effect(input, self.app.native_input_snapshot()),
+            );
+        }
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
@@ -3510,6 +3548,9 @@ impl App {
             pointer_unsettled: false,
             native_scenario,
             native_input_ids: Vec::new(),
+            physical_input_trace: std::env::var("TILO_PROFILE_PRESENTATION")
+                .is_ok_and(|value| value == "1")
+                .then(crate::physical_input_trace::Trace::default),
             native_input_origin: None,
             native_input_pointer_passthrough: false,
             native_input_route_isolation: false,
