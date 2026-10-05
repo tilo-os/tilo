@@ -253,6 +253,14 @@ impl<'a> CardFace<'a> {
         )
     }
 
+    /// The theme for what a host paints on the card: its ground is the
+    /// card's own face, so a Secondary button lifts off the card instead of
+    /// sinking into it, and ink and lifts are judged against the card.
+    #[must_use]
+    pub fn content_theme(theme: &Theme) -> Theme {
+        theme.on_ground(theme.tokens.colors.surfaces.raised)
+    }
+
     /// Paint the card's chrome and title into `rect`.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         paint_surface(
@@ -604,7 +612,9 @@ impl Widget for Card {
             self.activation.is_bound(),
             self.selected,
         );
-        self.parts.draw(scene, transform, text, theme, presence);
+        // The content stands on the card's face, not the window's ground.
+        let inner = CardFace::content_theme(theme);
+        self.parts.draw(scene, transform, text, &inner, presence);
     }
 
     fn handle_event(

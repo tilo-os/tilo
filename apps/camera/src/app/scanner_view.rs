@@ -516,6 +516,10 @@ impl CameraApp {
     ) {
         let content = CardContent::of(code);
         let face = CardFace::new();
+        // What stands on the card is painted against the card's face.
+        let ground = theme;
+        let on_card = CardFace::content_theme(theme);
+        let theme = &on_card;
         let body = face.body_rect(tr, theme, card);
         let (_, actions) = Self::scan_card_body(tr, theme, body.width(), &content);
         let control = ButtonFace::height(ui::widget::ControlSize::Regular, theme);
@@ -523,8 +527,8 @@ impl CameraApp {
         let icon_size = f64::from(theme.tokens.metrics.icon_md);
         let colors = theme.tokens.colors.clone();
         {
+            face.paint(&mut PaintCtx::new(scene, t, tr, ground), card);
             let mut ctx = PaintCtx::new(scene, t, tr, theme);
-            face.paint(&mut ctx, card);
             let header = Rect::new(
                 body.x0,
                 body.y0,
