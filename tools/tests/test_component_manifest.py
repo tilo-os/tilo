@@ -103,7 +103,7 @@ class InstallerTests(unittest.TestCase):
         out.mkdir(parents=True)
         manifest = installer.load_manifest(REPO / "os/components.toml")
         for entry in manifest.files():
-            if entry.source and not entry.source.startswith("/"):
+            if entry.source and not entry.source.startswith(("/", "@manifest/")):
                 (out / entry.source).parent.mkdir(parents=True, exist_ok=True)
                 (out / entry.source).write_bytes(b"\x7fELF" + entry.source.encode())
                 (out / entry.source).chmod(0o700)
@@ -112,6 +112,19 @@ class InstallerTests(unittest.TestCase):
     def run_installer(self, *args: str) -> int:
         with contextlib.redirect_stdout(io.StringIO()):
             return installer.main(list(args))
+
+    def test_ush_swap_installs_the_service_pin_with_the_binary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            out = self.build_outputs(root)
+            (out / "tilo-ush").write_bytes(b"fixture-ush")
+            layer = root / "layer"
+            self.assertEqual(self.run_installer("--from", str(out), "--dest", str(layer), "ush"), 0)
+            self.assertEqual((layer / "usr/libexec/tilo-ush").read_bytes(), b"fixture-ush")
+            unit = layer / "usr/lib/systemd/user/tilo-ush.service"
+            self.assertEqual(unit.read_bytes(), (REPO / "os/usr/lib/systemd/user/tilo-ush.service").read_bytes())
+            self.assertIn("Environment=TILO_USH_BIN=/usr/libexec/tilo-ush", unit.read_text())
+            self.assertEqual(unit.stat().st_mode & 0o777, 0o644)
 
     def test_installer_selects_manifest_layers_and_keeps_dev_and_production_apart(self):
         with self.subTest(phase='image layers match manifest'):
