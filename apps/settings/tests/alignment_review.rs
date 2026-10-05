@@ -181,10 +181,10 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
         let caption = first_named(&*app, "Maximise contrast for low-vision comfort");
         let next_label = first_named(&*app, "Reduce motion");
         let toggles = by_widget_name(&*app, "Toggle");
-        let label_centre = label.center().y;
+        let block_centre = f64::midpoint(label.y0, caption.y1);
         let row_toggle = toggles
             .iter()
-            .find(|t| t.y0 <= label_centre && label_centre <= t.y1)
+            .find(|t| t.y0 <= block_centre && block_centre <= t.y1)
             .copied()
             .expect("the High contrast row carries a toggle");
         // The caption is part of its label's block, not a line of its own.
@@ -201,12 +201,11 @@ fn row_captions_and_hero_follow_the_spacing_steps() {
             next_label.y0 - caption.y1 > caption.y0 - label.y1,
             "the caption must belong to its label, not float towards the next row"
         );
-        // The toggle stands on its label's line, the caption reading under
-        // the label as a field's help does.
+        // The toggle is centred on the label and its caption together.
         same_centre_line(
-            label_centre,
+            block_centre,
             row_toggle.center().y,
-            "label vs toggle centre",
+            "label block vs toggle centre",
         );
     }
 
