@@ -1,8 +1,0 @@
-# Audited ceilings of apps/themes (tools/policy/check_app_resource_action_contract.py).
-# Each count may only go down; the target is an empty file.
-
-[ratchets.app_action_host]
-
-[ratchets.standalone_launch]
-
-[ratchets.widget_owned_document]

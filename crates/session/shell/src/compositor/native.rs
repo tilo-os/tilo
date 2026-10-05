@@ -1602,7 +1602,8 @@ fn pump_floating_surface_service(
                 appearance.disconnected(connection);
                 // Closing the control socket does not destroy the last Wayland
                 // buffer. Preserve its protection until the toplevel dies.
-                for tab in foreign::foreign_tabs_anywhere(&state.workspace_tree.read()) {
+                let tabs = foreign::foreign_tabs_anywhere(&state.workspace_tree.read());
+                for tab in tabs {
                     if tab.app_id == app_id {
                         foreign::store().retain_surface_capture_protection(tab.surface_id, &app_id);
                     }
