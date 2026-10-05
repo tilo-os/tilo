@@ -2813,6 +2813,10 @@ impl Widget for CodeApp {
         if let Some(terminal) = self.terminal.as_mut() {
             terminal.widget_mut().settle(&mut state.reborrow(), path);
         }
+        // Canonical row View callbacks run after pointer dispatch. Consume
+        // their navigation requests in this settlement, without waiting for
+        // another physical input event.
+        self.drain_child_events();
     }
 
     fn build_layout(

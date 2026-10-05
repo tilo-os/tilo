@@ -240,7 +240,7 @@ impl BottomPanel {
                     Box::new(
                         ListRow::new(format!("search-{index}"), &hit.preview)
                             .meta(format!("{}:{}", hit.rel, hit.line))
-                            .on_activate(move || activated.set(Some(index))),
+                            .on_view(move || activated.set(Some(index))),
                     ) as Element
                 })
                 .collect();
@@ -269,7 +269,7 @@ impl BottomPanel {
                 let activated = Rc::clone(&self.activated);
                 let row = ListRow::new(format!("problem-{index}"), d.message.clone())
                     .meta(format!("Ln {}, Col {}", d.line, d.col))
-                    .on_activate(move || activated.set(Some(index)));
+                    .on_view(move || activated.set(Some(index)));
                 let row = match d.severity {
                     Severity::Error => row.icon(ui::icons::Icon::Ban).error(),
                     Severity::Warning => row.icon(ui::icons::Icon::TriangleAlert).warning(),
@@ -703,6 +703,26 @@ mod tests {
         assert_eq!(panel.take_jump(), None, "cleared on read");
         panel.set_problems(Vec::new());
         assert!(panel.list.is_none());
+    }
+
+    #[test]
+    fn a_retained_problem_row_activates_through_its_native_view_door() {
+        let mut panel = BottomPanel::new();
+        panel.set_problems(vec![
+            diagnostic(Severity::Error, 3),
+            diagnostic(Severity::Warning, 9),
+        ]);
+        let activated = Rc::clone(&panel.activated);
+        let mut harness =
+            ui::headless::FrameHarness::new(ui::State::new(), Box::new(panel), (640, 300));
+        assert_eq!(activated.get(), None);
+        harness.click_named("problem-1").unwrap();
+        assert_eq!(activated.take(), Some(1));
+        assert_eq!(
+            activated.take(),
+            None,
+            "the native activation is consumed once"
+        );
     }
 
     #[test]
