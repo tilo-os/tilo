@@ -2306,6 +2306,8 @@ struct ActiveMutation {
     /// A foreign segment is compared against this boundary after delivery.
     /// Same-owner continuation does not close or refresh the open transaction.
     before: Option<Vec<ChangeHash>>,
+    /// Settlement names its owner without closing a draft until an action writes.
+    deferred: bool,
 }
 struct ActionFrame {
     history: crate::state::UndoLog,
@@ -2464,6 +2466,10 @@ pub(crate) fn typed_action_before(doc: &mut AutoCommit) -> Option<Vec<ChangeHash
     let handle = mutation_frame(doc)?;
     let mut owned = handle.borrow_mut();
     let frame = owned.as_mut()?;
+    if let Some(active) = frame.mutation.as_ref().filter(|active| active.deferred) {
+        let binding = active.binding.clone();
+        frame.activate(&binding, doc);
+    }
     let before = frame.commit_physical(doc);
     for operation in &mut frame.operations {
         if operation.cursor.is_none() {
@@ -2866,13 +2872,34 @@ impl ActionFrame {
             self.mutation = Some(ActiveMutation {
                 binding: binding.clone(),
                 before: None,
+                deferred: false,
             });
             return;
         }
         self.mutation = Some(ActiveMutation {
             binding: binding.clone(),
             before,
+            deferred: false,
         });
+    }
+}
+
+struct SettlementReturn<'a> {
+    document: &'a mut AutoCommit,
+    frame: FrameHandle,
+    previous: Option<ActiveMutation>,
+}
+impl Drop for SettlementReturn<'_> {
+    fn drop(&mut self) {
+        if let Some(frame) = self.frame.borrow_mut().as_mut() {
+            frame.settle_segment(self.document);
+            match self.previous.take() {
+                Some(previous) if !previous.deferred => {
+                    frame.activate(&previous.binding, self.document);
+                }
+                previous => frame.mutation = previous,
+            }
+        }
     }
 }
 
@@ -3186,6 +3213,42 @@ impl CallbackBinding {
         callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
     ) -> Result<R, BoundDispatchError> {
         self.with_record_frame(outer, true, callback)
+    }
+    /// Lend typed edits without opening a mutation merely because a frame polls.
+    /// The executor activates this owner when a typed action actually writes.
+    pub(crate) fn with_settlement<R>(
+        &self,
+        outer: &mut AutoCommit,
+        callback: impl FnOnce(&mut AutoCommit, &ObjId) -> R,
+    ) -> Result<R, BoundDispatchError> {
+        self.with_record_frame(outer, false, |document, root| {
+            let handle = ACTIVE
+                .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
+                .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+            let previous = {
+                let mut owned = handle.borrow_mut();
+                let frame = owned
+                    .as_mut()
+                    .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
+                // An exclusive loan still advances admission bookkeeping;
+                // only its document transaction waits for an actual action.
+                frame.state.generation = frame
+                    .state
+                    .generation
+                    .and_then(|value| value.checked_add(1));
+                frame.mutation.replace(ActiveMutation {
+                    binding: self.clone(),
+                    before: None,
+                    deferred: true,
+                })
+            };
+            let restore = SettlementReturn {
+                document,
+                frame: handle,
+                previous,
+            };
+            Ok(callback(restore.document, root))
+        })?
     }
     /// Restore only through the already owned record frame. Unlike ordinary
     /// mutation entry this never activates or flushes an unfinished action.

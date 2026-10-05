@@ -5214,6 +5214,19 @@ impl FrameHarness {
     fn idle_control_tick(&mut self) {
         self.dispatch_control_invocations();
         self.poll_control_invocations();
+        // Settlement and the control callbacks above can replace children.
+        // Retire their raw nodes before sweeping undo brackets, then admit
+        // the new composition so surviving descendants keep their history.
+        if self.take_composition_dirty() {
+            let focus = crate::widget::layout::CompositionFocus::capture_live(self.root.as_ref());
+            self.discard_layout_tree();
+            self.relayout();
+            if let Some(focus) = focus {
+                // SAFETY: the relayout admitted this fresh, exclusively owned tree.
+                self.focused =
+                    unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
+            }
+        }
         let author = self.author.clone();
         // SAFETY: this host exclusively owns the unchanged root and admitted layout.
         unsafe {
@@ -9016,6 +9029,7 @@ mod tests {
         retired: Vec<Box<dyn Widget>>,
         structure_dirty: bool,
         replace_during_sync: bool,
+        request_replacement: std::rc::Rc<std::cell::Cell<bool>>,
     }
 
     impl StructureReplacingEditor {
@@ -9036,6 +9050,7 @@ mod tests {
                 retired: Vec::new(),
                 structure_dirty: false,
                 replace_during_sync: false,
+                request_replacement: std::rc::Rc::default(),
             }
         }
 
@@ -9072,7 +9087,9 @@ mod tests {
         }
 
         fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
-            if std::mem::take(&mut self.replace_during_sync) {
+            if std::mem::take(&mut self.replace_during_sync)
+                || self.request_replacement.replace(false)
+            {
                 let value = self.current.accessibility().unwrap().value.unwrap();
                 let current = std::mem::replace(&mut self.current, Self::editor(&value));
                 self.retired.push(current);
@@ -9111,6 +9128,48 @@ mod tests {
         fn take_structure_dirty(&mut self) -> bool {
             std::mem::take(&mut self.structure_dirty)
         }
+    }
+
+    #[test]
+    fn idle_control_tick_retires_replaced_nodes_before_sweeping_undo_brackets() {
+        let editor = StructureReplacingEditor::new("draft");
+        let request = editor.request_replacement.clone();
+        let mut driver = Driver::new_with_controlled_inputs(
+            State::new(),
+            Box::new(editor),
+            (600, 400),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("retired-node-test".into()),
+        );
+        let before = driver
+            .node_map
+            .values()
+            .map(|pointer| pointer.cast::<()>().addr())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(!before.is_empty(), "the old editor has admitted nodes");
+        request.set(true);
+        driver.root.sync(&driver.state.doc, &driver.state.root);
+        // This is the post-sync action boundary, before the next frame's
+        // normal layout. The fixture keeps old allocations alive so a
+        // regression fails deterministically rather than depending on UAF.
+        driver.idle_control_tick();
+        assert!(!driver.node_map.is_empty(), "the new editor is admitted");
+        assert!(
+            driver
+                .node_map
+                .values()
+                .all(|pointer| { !before.contains(&pointer.cast::<()>().addr()) }),
+            "no undo callback can reach the retired editor"
+        );
+        assert_eq!(
+            driver
+                .access_node_named("structure-editor", None)
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("draft")
+        );
     }
 
     #[test]
