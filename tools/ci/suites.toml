@@ -724,7 +724,6 @@ readers = [
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
-  "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
 ]
 

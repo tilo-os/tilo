@@ -574,17 +574,6 @@ impl Widget for BrowserShell {
         for intent in intents {
             self.apply_intent(intent);
         }
-        {
-            let (doc, root) = ui::doc::document(state, path);
-            if tilo_desktop::launchpad::take_open_app(doc, root) {
-                self.handle.open_search(None);
-                changed = true;
-            }
-            if let Some(action) = LaunchpadAction::take(doc, root) {
-                self.apply_launchpad(action);
-                changed = true;
-            }
-        }
         if let Some(pick) = self.overview.take_pick() {
             self.apply_pick(pick);
             changed = true;
@@ -602,6 +591,18 @@ impl Widget for BrowserShell {
         changed |= self.bar.update(state, path);
         changed |= self.area.update(state, path);
         changed
+    }
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ui::automerge::ObjId) {
+        for child in self.children_mut() {
+            child.settle(edits, path);
+        }
+        if tilo_desktop::launchpad::take_open_app(edits, path) {
+            self.handle.open_search(None);
+        }
+        if let Some(action) = LaunchpadAction::take(edits, path) {
+            self.apply_launchpad(action);
+        }
     }
 
     fn build_layout(
