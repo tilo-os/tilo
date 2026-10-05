@@ -219,9 +219,14 @@ pub fn monotonic(before: Option<&AutoCommit>, after: &AutoCommit) -> Result<(), 
     let new = entries(after)?;
     for (key, prior) in old {
         let next = new.get(&key).ok_or("durable receipt cannot be erased")?;
+        // A successor re-signs a receipt its predecessor wrote: a new author
+        // counts its own sequence, so only the generation must advance.
+        let succeeded = next.coverage.author != prior.coverage.author
+            && next.generation > prior.generation
+            && crate::succession::succeeded(after, &prior.coverage.author, &next.coverage.author);
         if next.generation < prior.generation
-            || next.coverage.sequence < prior.coverage.sequence
-            || next.coverage.author != prior.coverage.author
+            || (!succeeded && next.coverage.sequence < prior.coverage.sequence)
+            || (!succeeded && next.coverage.author != prior.coverage.author)
             || next.coverage.room != prior.coverage.room
             || next.coverage.app != prior.coverage.app
             || next.coverage.record != prior.coverage.record

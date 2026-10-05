@@ -37,8 +37,10 @@ pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod media_governance;
 mod native_publication;
 pub use native_publication::NativePublicationCut;
+mod governor_succession;
 mod resources;
 mod sealed_compaction;
+pub use governor_succession::Custody;
 pub use media_governance::VerifiedSecurityMetadataOnly;
 pub use sealed_compaction::SealCheckpoint;
 
@@ -224,6 +226,15 @@ struct DurableV6<'a> {
     exact: &'a [u8],
     sealed: SealedHistory,
 }
+/// Any durable state of a replica whose room is contested between two
+/// governor successors, with why. Written only while the room is contested.
+#[derive(Serialize, Deserialize)]
+struct DurableContested {
+    version: u32,
+    contested: String,
+    state: Vec<u8>,
+}
+
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
@@ -301,6 +312,8 @@ impl StatePeer {
                 exact_admissions: ExactAdmissions::default(),
                 admission_v5: false,
                 native_cut_publisher: None,
+                adopting: false,
+                contested: None,
                 _retention: (),
             },
         })
@@ -1524,7 +1537,9 @@ impl StatePeer {
         }
         let (source, retained_replay) = self.resolve_origin(origin, &message, now)?;
         let mut candidate = self.clone();
-        let report = candidate.receive_with_context(source, message, now, retained_replay, true)?;
+        let report = candidate
+            .receive_with_context(source, message, now, retained_replay, true)
+            .inspect_err(|_| self.keep_contest(&candidate))?;
         *self = candidate;
         Ok(report)
     }
@@ -1638,6 +1653,7 @@ impl StatePeer {
         let mut candidate = self.clone();
         let outcome = candidate
             .receive_with_context(source, message, now, retained_replay, false)
+            .inspect_err(|_| self.keep_contest(&candidate))
             .map_err(err)?;
         *self = candidate;
         Ok(outcome.summary)
@@ -1724,10 +1740,27 @@ impl StatePeer {
                 if received != self.core.room {
                     return Err("room topic mismatch".into());
                 }
+                if !self.core.adopting && source != self.core.authority.device_public_key {
+                    let candidate =
+                        room::candidate(self.core.room_doc.as_deref(), &changes).map_err(err)?;
+                    if let Some(chain) = self.succession_to(&candidate, source, now)? {
+                        return self.adopt_succession(
+                            chain,
+                            source,
+                            NeighbourMsg::SyncResp {
+                                changes,
+                                room: received,
+                            },
+                            now,
+                            retained_replay,
+                            strict_report,
+                        );
+                    }
+                }
                 let person = self.certificate(&source, now)?.user_public_key;
-                // Bootstrap: the invite's authority device supplies the first
-                // governance before any roster exists to resolve it against.
-                let role = if self.core.room_doc.is_some()
+                // Bootstrap and a verified succession carry their own authority
+                // before the new governor appears in the admitted roster.
+                let role = if (self.core.room_doc.is_some() && !self.core.adopting)
                     || source != self.core.authority.device_public_key
                 {
                     Some(self.role(&source, now)?)
@@ -1752,6 +1785,8 @@ impl StatePeer {
                     &changes,
                 )
                 .map_err(err)?;
+                self.guard_successions(&candidate, now)?;
+                self.check_governor_actors(&changes, &candidate, source)?;
                 // Receipts this peer admitted earlier stay immutable even once
                 // the room document omits them.
                 let mut receipts = self.core.receipts.clone();
@@ -3117,8 +3152,7 @@ impl StatePeer {
         if coverage.room != self.core.room
             || coverage.app != app
             || coverage.record != record
-            || coverage.author != self.core.authority.device_public_key
-            || self.core.revocations.revokes(&self.core.authority)
+            || !self.governed_receipt_author(&coverage.author)
         {
             return Err("durable receipt authority/route mismatch".into());
         }
@@ -3169,6 +3203,19 @@ impl StatePeer {
     ///
     /// Returns an error if the state cannot be encoded within its limits.
     pub fn durable(&self) -> Result<Vec<u8>, String> {
+        let state = self.durable_state()?;
+        match &self.core.contested {
+            Some(contested) => postcard::to_allocvec(&DurableContested {
+                version: 7,
+                contested: contested.clone(),
+                state,
+            })
+            .map_err(err),
+            None => Ok(state),
+        }
+    }
+
+    fn durable_state(&self) -> Result<Vec<u8>, String> {
         let documents = self
             .core
             .documents
@@ -3252,10 +3299,6 @@ impl StatePeer {
     /// Returns an error if the bytes are malformed, the room or authority does not match,
     /// or restored state fails admission.
     #[expect(
-        clippy::needless_pass_by_value,
-        reason = "public API: callers hand over the pinned revocation list"
-    )]
-    #[expect(
         clippy::too_many_lines,
         reason = "one durable restore across every stored schema version"
     )]
@@ -3268,6 +3311,16 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
+        if version == 7 {
+            let value: DurableContested = postcard::from_bytes(bytes).map_err(err)?;
+            let (inner, _) = postcard::take_from_bytes::<u32>(&value.state).map_err(err)?;
+            if inner == 7 {
+                return Err("invalid contested durable envelope".into());
+            }
+            let mut peer = Self::restore(&value.state, room, authority, roster, revocations, now)?;
+            peer.core.contested = Some(value.contested);
+            return Ok(peer);
+        }
         let mut exact_admissions = ExactAdmissions::default();
         let mut sealed = Vec::new();
         let (durable, pending, pending_bytes) = match version {
@@ -3308,9 +3361,13 @@ impl StatePeer {
             }
             _ => return Err("unsupported durable admission version".into()),
         };
-        if durable.version != 3 || durable.room != room || durable.authority != authority {
+        if durable.version != 3 || durable.room != room {
             return Err("durable admission namespace mismatch".into());
         }
+        // A replica that followed a governor succession keeps its successor;
+        // the room it stores must lead there from the governor it was given.
+        let pinned = authority;
+        let authority = durable.authority.clone();
         let canonical_room = uuid::Uuid::parse_str(room).map_err(err)?.to_string();
         let verified_certificates = backend::restore_certificate_roster(
             durable.certificates,
@@ -3334,6 +3391,8 @@ impl StatePeer {
                 exact_admissions,
                 admission_v5: version >= 5,
                 native_cut_publisher: None,
+                adopting: false,
+                contested: None,
                 _retention: (),
             },
         };
@@ -3356,6 +3415,22 @@ impl StatePeer {
                     .map_err(err)
             })
             .transpose()?;
+        if peer.core.authority != pinned {
+            let doc = peer
+                .core
+                .room_doc
+                .as_deref()
+                .ok_or("durable admission namespace mismatch")?;
+            let chain = crate::succession::chain(
+                doc,
+                &peer.core.room,
+                &pinned,
+                crate::succession::Walk::Followed,
+            )?;
+            if chain.last().map(|link| &link.successor) != Some(&peer.core.authority) {
+                return Err("durable admission namespace mismatch".into());
+            }
+        }
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.room_doc.as_deref(),

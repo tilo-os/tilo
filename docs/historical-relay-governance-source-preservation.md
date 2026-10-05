@@ -40,3 +40,14 @@ Close an original source PR only after verifying its contribution on landed
 main and retaining these exact recovery pointers. Qualification changes only
 source and tests, never live identities, access grants, credentials or deployed
 trust.
+
+The local dependent recovery branch `codex/historical-governor-succession` also
+adopts #2787's original ten-path text delta (SHA-256
+`b562a866b7b3f9683d432fa4384680bdf48bdf1db7ea18ddeade2d0f3b5be198`). Its source
+conflict is resolved by retaining main's single shared room admission and its
+capability, topology, immutable receipt, coverage, durability and media checks;
+succession detection and actor/contest checks wrap that path. All six original
+real relay room scenarios, both root/cutoff controls, peer/relay all-target
+Clippy and required shell test compilation pass. This does not qualify the
+known arbitrary-actor governance cutoff gap for integration; #2801 ownership
+coordination and custody/history negative controls remain required.

@@ -154,7 +154,8 @@ impl StatePeer {
     ) -> Result<AdmissionReport, AdmissionError> {
         let (cut, report) = self
             .begin_native_publication_cut(publisher, now)?
-            .push_report(message, now, strict)?;
+            .push_report(message, now, strict)
+            .inspect_err(|error| self.keep_contest_from(error))?;
         *self = cut.finish(now)?;
         Ok(report)
     }

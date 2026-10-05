@@ -132,6 +132,11 @@ pub(super) struct PeerCore<S: Storage> {
     pub(super) admission_v5: bool,
     // Transient native cut context is never part of the durable DTO.
     pub(super) native_cut_publisher: Option<[u8; 32]>,
+    /// Admitting the change that carries a governor succession: the
+    /// successor has no governed row before it.
+    pub(super) adopting: bool,
+    /// Why governance is refused: two successors for one governor.
+    pub(super) contested: Option<String>,
     pub(super) _retention: S::Retention,
 }
 impl Clone for PeerCore<LegacyNative> {
@@ -150,6 +155,8 @@ impl Clone for PeerCore<LegacyNative> {
             exact_admissions: self.exact_admissions.clone(),
             admission_v5: self.admission_v5,
             native_cut_publisher: self.native_cut_publisher,
+            adopting: self.adopting,
+            contested: self.contested.clone(),
             _retention: (),
         }
     }

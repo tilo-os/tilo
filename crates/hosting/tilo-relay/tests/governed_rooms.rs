@@ -126,6 +126,34 @@ async fn receive_refusing_until(
     .await;
 }
 
+/// As [`receive_refusing_until`], keeping every message with its author as
+/// the relay retained it.
+async fn receive_logging_until(
+    what: &str,
+    session: &RelayCoeditSession,
+    peer: &mut StatePeer,
+    log: &mut Vec<([u8; 32], NeighbourMsg)>,
+    mut done: impl FnMut(&StatePeer) -> bool,
+) {
+    tilo_test_env::within(what, async {
+        while !done(peer) {
+            if let Inbound::Delta { author, data } =
+                session.recv().await.expect("the session stays open")
+            {
+                let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
+                log.push((author, message.clone()));
+                let origin = if author == peer.authority().device_public_key {
+                    TransportOrigin::RetainedRelayDelta(author)
+                } else {
+                    TransportOrigin::RelayDelta(author)
+                };
+                let _ = peer.receive_from(origin, message, SystemTime::now());
+            }
+        }
+    })
+    .await;
+}
+
 /// Invite `person` to `room` and redeem the invitation on `device`: the
 /// replica its bootstrap gives that device.
 async fn join(
@@ -1297,4 +1325,575 @@ async fn a_relay_whose_device_is_revoked_stops_governing() {
     assert_eq!(relay.rooms().unwrap().list().await.len(), 1);
     assert!(enter(relay.node_addr()).await.is_err());
     relay.shutdown().await;
+}
+
+/// The heads of `peer`'s admitted room: the history a succession vouches for.
+fn room_heads(peer: &StatePeer) -> Vec<[u8; 32]> {
+    peer.admitted_room()
+        .unwrap()
+        .clone()
+        .get_heads()
+        .into_iter()
+        .map(|head| head.0)
+        .collect()
+}
+
+/// Every governance message `after` adds to `before`'s room, as its governor
+/// publishes them.
+fn governance_since(
+    before: &StatePeer,
+    after: &mut StatePeer,
+    key: &ed25519_dalek::SigningKey,
+) -> Vec<NeighbourMsg> {
+    after
+        .durable_mutation_messages(before, key, SystemTime::now(), 1_000_000)
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn another_device_of_the_identity_succeeds_a_revoked_governor() {
+    use tilo_peer_state::Custody;
+    use tilo_peer_state::succession::GovernorSuccession;
+
+    let alice = TestUser::fresh("Alice");
+    let bob = TestUser::fresh("Bob");
+    let carol = TestUser::fresh("Carol");
+    let host = alice.enrol("alice-home", DeviceCapabilities::host());
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let tablet = alice.enrol("alice-tablet", DeviceCapabilities::joined());
+    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let intruder = carol.enrol("carol-phone", DeviceCapabilities::primary());
+    let state = tempfile::tempdir().unwrap();
+    let relay = start(state.path(), &alice, &host).await;
+    let address = relay.node_addr();
+
+    // Alice's relay governs the room; her laptop and tablet enter, Bob joins.
+    let admin = RoomAdminClient::new(device_endpoint(&laptop).await, laptop.cert.clone());
+    let room = admin.create(address.clone(), "Handover").await.unwrap();
+    for device in [&laptop, &tablet] {
+        RoomAdminClient::new(device_endpoint(device).await, device.cert.clone())
+            .send(
+                address.clone(),
+                RoomCommand::Enter {
+                    room: room.room.clone(),
+                },
+            )
+            .await
+            .unwrap();
+    }
+    let mut bob_peer = join(&admin, &address, &room.room, &bob, &phone, 6).await;
+    let fresh = || {
+        StatePeer::new(
+            &room.room,
+            host.cert.clone(),
+            vec![host.cert.clone()],
+            RevocationList::new(),
+            SystemTime::now(),
+        )
+        .unwrap()
+    };
+    let mut laptop_peer = fresh();
+    let mut tablet_peer = fresh();
+    let laptop_session = session(&relay, &laptop, room.workspace_id).await;
+    let tablet_session = session(&relay, &tablet, room.workspace_id).await;
+    let bob_session = session(&relay, &phone, room.workspace_id).await;
+    let everyone_admitted = |peer: &StatePeer| {
+        [
+            laptop.device_pubkey(),
+            tablet.device_pubkey(),
+            phone.device_pubkey(),
+        ]
+        .iter()
+        .all(|device| member_device(peer, *device))
+    };
+    let mut retained = Vec::new();
+    receive_logging_until(
+        "the laptop's replica",
+        &laptop_session,
+        &mut laptop_peer,
+        &mut retained,
+        |peer| everyone_admitted(peer),
+    )
+    .await;
+    for (what, session, peer) in [
+        ("the tablet's replica", &tablet_session, &mut tablet_peer),
+        ("Bob's replica", &bob_session, &mut bob_peer),
+    ] {
+        receive_refusing_until(what, session, peer, |peer| everyone_admitted(peer)).await;
+    }
+
+    // A record everyone holds, created by the relay while it governs.
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "topic", "before").unwrap();
+    doc.commit();
+    let message = laptop_peer
+        .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
+        .unwrap();
+    publish(&laptop_session, &message);
+    receive_refusing_until("the record at Bob", &bob_session, &mut bob_peer, |peer| {
+        text(peer, "topic").as_deref() == Some("before")
+    })
+    .await;
+    let bob_heads = {
+        let mut heads = room_heads(&bob_peer);
+        heads.sort_unstable();
+        heads
+    };
+    receive_logging_until(
+        "the laptop's replica holds the room as Bob does",
+        &laptop_session,
+        &mut laptop_peer,
+        &mut retained,
+        |peer| {
+            let mut heads = room_heads(peer);
+            heads.sort_unstable();
+            heads == bob_heads
+        },
+    )
+    .await;
+    receive_refusing_until(
+        "the record at the tablet",
+        &tablet_session,
+        &mut tablet_peer,
+        |peer| text(peer, "topic").as_deref() == Some("before"),
+    )
+    .await;
+
+    // Alice revokes her relay's device; it stops governing.
+    let revocation = revoke(&alice, host.device_pubkey());
+    tilo_relay::store::save_revocations(state.path(), std::slice::from_ref(&revocation)).unwrap();
+    tilo_test_env::within("the relay stops governing", async {
+        while admin
+            .send(
+                address.clone(),
+                RoomCommand::Enter {
+                    room: room.room.clone(),
+                },
+            )
+            .await
+            .is_ok()
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+
+    // What the revoked relay would still sign: Bob's removal.
+    let mut rogue = bob_peer.clone();
+    let before = rogue.clone();
+    rogue
+        .remove_member(bob.user_pk, &host.sk, SystemTime::now())
+        .unwrap();
+    let removal = governance_since(&before, &mut rogue, &host.sk);
+    let lagging = bob_peer.clone();
+
+    // A member cannot write room history as the governor.
+    let spoofed = {
+        use automerge::transaction::Transactable as _;
+        let mut doc = bob_peer.admitted_room().unwrap().clone();
+        let heads = doc.get_heads();
+        doc.set_actor(automerge::ActorId::from(host.device_pubkey().to_vec()));
+        doc.put(ROOT, "note", "as the governor").unwrap();
+        doc.commit();
+        NeighbourMsg::SyncResp {
+            changes: doc
+                .get_changes(&heads)
+                .into_iter()
+                .map(|change| change.raw_bytes().to_vec())
+                .collect(),
+            room: room.room.clone(),
+        }
+    };
+    assert!(
+        tablet_peer
+            .clone()
+            .receive_from(
+                TransportOrigin::RelayDelta(phone.device_pubkey()),
+                spoofed,
+                SystemTime::now(),
+            )
+            .is_err(),
+        "a member's change under the governor's actor is refused"
+    );
+
+    // Alice's root hands the room to her laptop, vouching for the history
+    // her laptop holds.
+    let succession = GovernorSuccession::sign(
+        &room.room,
+        host.cert.clone(),
+        revocation.clone(),
+        laptop.cert.clone(),
+        room_heads(&laptop_peer),
+        &alice.user_sk,
+    )
+    .unwrap();
+
+    // Records no member may follow, each published by the device it names.
+    let mut forged = succession.clone();
+    forged.successor = tablet.cert.clone();
+    let mut unrevoked = revocation.clone();
+    unrevoked.signature = [9; 64];
+    let not_revoked = GovernorSuccession::sign(
+        &room.room,
+        host.cert.clone(),
+        unrevoked,
+        tablet.cert.clone(),
+        room_heads(&laptop_peer),
+        &alice.user_sk,
+    )
+    .unwrap();
+    assert!(
+        GovernorSuccession::sign(
+            &room.room,
+            host.cert.clone(),
+            revocation.clone(),
+            intruder.cert.clone(),
+            room_heads(&laptop_peer),
+            &carol.user_sk,
+        )
+        .is_err(),
+        "another identity's root does not sign a succession of Alice's governor"
+    );
+    let mut foreign = forged.clone();
+    foreign.successor = intruder.cert.clone();
+    for (what, record) in [
+        ("a forged succession", forged),
+        ("a succession of an unrevoked governor", not_revoked),
+        ("a succession to another identity's device", foreign),
+    ] {
+        let successor = if record.successor == intruder.cert {
+            &intruder
+        } else {
+            &tablet
+        };
+        let mut claimant = tablet_peer.clone();
+        assert!(
+            claimant
+                .assume_governance(&record, &successor.sk, SystemTime::now())
+                .is_err(),
+            "{what}: its claimant cannot take the room over"
+        );
+        let message = forced_succession(&tablet_peer, &record, successor);
+        let mut member = bob_peer.clone();
+        assert!(
+            member
+                .receive_from(
+                    TransportOrigin::RelayDelta(successor.device_pubkey()),
+                    message,
+                    SystemTime::now(),
+                )
+                .is_err(),
+            "{what}: a member refuses it"
+        );
+        assert_eq!(member.authority(), &host.cert, "{what}");
+    }
+
+    // Without a replica that holds the history, what the relay retained
+    // serves, replayed and checked against the cutoff.
+    let from_retention = StatePeer::take_custody(
+        &succession,
+        [
+            Custody::Replica(Box::new(fresh())),
+            Custody::Retained(retained.clone()),
+        ],
+        SystemTime::now(),
+    )
+    .unwrap();
+    succession
+        .check_cutoff(from_retention.admitted_room().unwrap())
+        .unwrap();
+    assert!(
+        StatePeer::take_custody(
+            &succession,
+            [Custody::Replica(Box::new(fresh()))],
+            SystemTime::now()
+        )
+        .is_err(),
+        "a replica without the history is no custody"
+    );
+
+    // The laptop takes custody: its own replica first, the relay's
+    // retention only if that does not verify.
+    let tablet_before = tablet_peer.clone();
+    let mut governor = StatePeer::take_custody(
+        &succession,
+        [
+            Custody::Replica(Box::new(laptop_peer.clone())),
+            Custody::Retained(Vec::new()),
+        ],
+        SystemTime::now(),
+    )
+    .unwrap();
+    governor
+        .assume_governance(&succession, &laptop.sk, SystemTime::now())
+        .unwrap();
+    assert_eq!(governor.authority(), &laptop.cert);
+    publish(&laptop_session, &governor.room_message());
+
+    // Every member follows the laptop and refuses the revoked relay.
+    for (what, session, peer) in [
+        ("the tablet's replica", &tablet_session, &mut tablet_peer),
+        ("Bob's replica", &bob_session, &mut bob_peer),
+    ] {
+        receive_refusing_until(what, session, peer, |peer| peer.authority() == &laptop.cert).await;
+        assert!(peer.revocations().contains(&revocation), "{what}");
+        for message in removal.clone() {
+            assert!(
+                peer.receive_from(
+                    TransportOrigin::RetainedRelayDelta(host.device_pubkey()),
+                    message,
+                    SystemTime::now(),
+                )
+                .is_err(),
+                "{what}: the revoked relay's governance is refused"
+            );
+        }
+        assert_eq!(
+            role(peer, phone.device_pubkey()),
+            Some(collab_types::Role::Editor),
+            "{what}"
+        );
+    }
+
+    // A replica that joins after the succession follows it from the room's
+    // history alone.
+    let mut joiner = fresh();
+    joiner
+        .receive_from(
+            TransportOrigin::RelayDelta(laptop.device_pubkey()),
+            governor.room_message(),
+            SystemTime::now(),
+        )
+        .unwrap();
+    assert_eq!(joiner.authority(), &laptop.cert);
+    assert!(member_device(&joiner, phone.device_pubkey()));
+
+    // A member that took governance the revoked relay wrote past the cutoff
+    // does not follow; it can only rebuild from the successor's room, as the
+    // joiner above did.
+    let mut lagging = lagging;
+    for message in removal.clone() {
+        lagging
+            .receive_from(
+                TransportOrigin::RetainedRelayDelta(host.device_pubkey()),
+                message,
+                SystemTime::now(),
+            )
+            .unwrap();
+    }
+    assert!(
+        lagging
+            .receive_from(
+                TransportOrigin::RelayDelta(laptop.device_pubkey()),
+                governor.room_message(),
+                SystemTime::now(),
+            )
+            .is_err(),
+        "history the revoked governor wrote past the cutoff is not the room's"
+    );
+    assert_eq!(lagging.authority(), &host.cert);
+
+    // A succession record kept under another governor's key claims nothing
+    // and contests nothing.
+    let mut member = bob_peer.clone();
+    assert!(
+        member
+            .receive_from(
+                TransportOrigin::RelayDelta(tablet.device_pubkey()),
+                forced_record(
+                    &bob_peer,
+                    &succession,
+                    &tablet,
+                    &hex::encode(laptop.device_pubkey())
+                ),
+                SystemTime::now(),
+            )
+            .is_err()
+    );
+    assert!(member.contested_succession().is_none());
+
+    // Members keep writing the record the revoked relay created.
+    let reply = write(&mut bob_peer, "topic", "after", &phone.sk);
+    publish(&bob_session, &reply);
+    receive_refusing_until(
+        "Bob's write at the tablet",
+        &tablet_session,
+        &mut tablet_peer,
+        |peer| text(peer, "topic").as_deref() == Some("after"),
+    )
+    .await;
+
+    // A member restarted from its stored replica follows the successor.
+    let restored = StatePeer::restore(
+        &bob_peer.durable().unwrap(),
+        &room.room,
+        host.cert.clone(),
+        vec![host.cert.clone()],
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    assert_eq!(restored.authority(), &laptop.cert);
+
+    // The successor governs: members accept what it publishes.
+    let before = governor.clone();
+    governor
+        .set_member_role(
+            bob.user_pk,
+            MemberRole::Viewer,
+            &laptop.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    for message in governance_since(&before, &mut governor, &laptop.sk) {
+        publish(&laptop_session, &message);
+    }
+    for (what, session, peer) in [
+        ("the tablet's replica", &tablet_session, &mut tablet_peer),
+        ("Bob's replica", &bob_session, &mut bob_peer),
+    ] {
+        receive_refusing_until(what, session, peer, |peer| {
+            role(peer, phone.device_pubkey()) == Some(collab_types::Role::Viewer)
+        })
+        .await;
+    }
+
+    // The successor checkpoints the room and the record the revoked relay
+    // checkpointed; members take its checkpoints in place of the relay's.
+    let checkpoints = governor
+        .durable_bootstrap_messages(&laptop.sk, SystemTime::now(), 2_000_000)
+        .unwrap();
+    let mut member = tablet_peer.clone();
+    for message in checkpoints {
+        member
+            .receive_from(
+                TransportOrigin::RelayDelta(laptop.device_pubkey()),
+                message,
+                SystemTime::now(),
+            )
+            .unwrap();
+    }
+    assert_eq!(text(&member, "topic").as_deref(), Some("after"));
+
+    // A second successor for the same governor contests the room: a member
+    // refuses it and from then on the first one too, and says why.
+    let rival = GovernorSuccession::sign(
+        &room.room,
+        host.cert.clone(),
+        revocation.clone(),
+        tablet.cert.clone(),
+        succession.cutoff.clone(),
+        &alice.user_sk,
+    )
+    .unwrap();
+    let mut contender = StatePeer::take_custody(
+        &rival,
+        [Custody::Replica(Box::new(tablet_before))],
+        SystemTime::now(),
+    )
+    .unwrap();
+    contender
+        .assume_governance(&rival, &tablet.sk, SystemTime::now())
+        .unwrap();
+    let mut member = bob_peer.clone();
+    assert!(
+        member
+            .receive_from(
+                TransportOrigin::RelayDelta(tablet.device_pubkey()),
+                contender.room_message(),
+                SystemTime::now(),
+            )
+            .is_err(),
+        "a member refuses a second successor"
+    );
+    let contested = member.contested_succession().unwrap().to_owned();
+    let restored = StatePeer::restore(
+        &member.durable().unwrap(),
+        &room.room,
+        host.cert.clone(),
+        vec![host.cert.clone()],
+        RevocationList::new(),
+        SystemTime::now(),
+    )
+    .unwrap();
+    assert_eq!(
+        restored.contested_succession(),
+        Some(contested.as_str()),
+        "a restarted member still refuses both"
+    );
+    assert!(
+        contested.contains(&hex::encode(tablet.device_pubkey())),
+        "{contested}"
+    );
+    let before = governor.clone();
+    governor
+        .set_member_role(
+            bob.user_pk,
+            MemberRole::Editor,
+            &laptop.sk,
+            SystemTime::now(),
+        )
+        .unwrap();
+    for message in governance_since(&before, &mut governor, &laptop.sk) {
+        assert!(
+            member
+                .receive_from(
+                    TransportOrigin::RelayDelta(laptop.device_pubkey()),
+                    message,
+                    SystemTime::now(),
+                )
+                .is_err(),
+            "a contested room takes governance from neither successor"
+        );
+    }
+
+    laptop_session.close().await;
+    tablet_session.close().await;
+    bob_session.close().await;
+    relay.shutdown().await;
+}
+
+/// The change a claimant would publish to take `peer`'s room over under
+/// `record`, written as if the record were valid.
+fn forced_succession(
+    peer: &StatePeer,
+    record: &tilo_peer_state::succession::GovernorSuccession,
+    claimant: &TestDevice,
+) -> NeighbourMsg {
+    forced_record(peer, record, claimant, &record.key())
+}
+
+/// The change `claimant` would write to keep `record` under `key`.
+fn forced_record(
+    peer: &StatePeer,
+    record: &tilo_peer_state::succession::GovernorSuccession,
+    claimant: &TestDevice,
+    key: &str,
+) -> NeighbourMsg {
+    use automerge::transaction::Transactable as _;
+    let mut doc = peer.admitted_room().unwrap().clone();
+    let before = doc.get_heads();
+    doc.set_actor(automerge::ActorId::from(claimant.device_pubkey().to_vec()));
+    let map = doc
+        .put_object(
+            ROOT,
+            tilo_peer_state::succession::SUCCESSIONS_FIELD,
+            automerge::ObjType::Map,
+        )
+        .unwrap();
+    doc.put(
+        &map,
+        key,
+        automerge::ScalarValue::Bytes(postcard::to_stdvec(record).unwrap()),
+    )
+    .unwrap();
+    doc.commit();
+    NeighbourMsg::SyncResp {
+        changes: doc
+            .get_changes(&before)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect(),
+        room: peer.room().to_owned(),
+    }
 }

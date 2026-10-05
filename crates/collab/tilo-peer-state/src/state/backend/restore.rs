@@ -160,6 +160,8 @@ pub(in crate::state) fn restore(
         exact_admissions: exact,
         admission_v5: version >= 5,
         native_cut_publisher: None,
+        adopting: false,
+        contested: None,
         _retention: (),
     };
     let mut media_policy = None;

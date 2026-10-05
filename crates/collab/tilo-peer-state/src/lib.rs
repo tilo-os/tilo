@@ -5,6 +5,7 @@ pub mod governance;
 pub mod hdr_metadata;
 pub mod join;
 pub mod protocol;
+pub mod succession;
 pub use protocol::NeighbourMsg;
 #[cfg(test)]
 mod admission_tests;
@@ -18,7 +19,7 @@ pub mod room;
 mod state;
 mod verified_certificate;
 pub use state::{
-    BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
+    BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, Custody, DocumentRow, GovernedAccess,
     GovernedMember, LocalRecoveryReservation, NativePublicationCut, PeerDeliveryPolicy,
     PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
     PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome, Reseal,
