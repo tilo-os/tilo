@@ -1463,21 +1463,6 @@ fn prepare_status_evidence(
     (fallback, newest_first)
 }
 
-// Scrim alphas, centralised so `shell_chrome_test` can pin the numeric
-// values. Floating chrome itself is the blurred material
-// (`ui::floating_surface::Material::Floating`).
-
-/// Alpha of the scrim beneath the `WorkspaceSettings` modal. The design
-/// calls for a blurred `0.30`; the pinned Vello has no blur layer, so
-/// `0.45` is the empirical alpha at which an un-blurred scrim reads the
-/// same. Pinned by `tests::palette_scrim_alpha_matches_concept`.
-pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
-
-/// Alpha of the scrim beneath the search palette and Overview
-/// view. Same value and same reasoning as [`MODAL_SCRIM_ALPHA`]. Pinned
-/// by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
-pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
-
 /// What the palette's filter band shows: each registered kind with its
 /// label, the chosen kinds, and each scope with its label.
 #[derive(Clone, Debug, PartialEq)]
@@ -18951,18 +18936,6 @@ fn app_kind_filter() -> Vec<crate::shell::search::ResourceKind> {
     vec![ResourceKind::Application, ResourceKind::HostApplication]
 }
 
-/// [`draw_scrim`] scaled by `openness` so the palette/overview scrim
-/// fades with its surface.
-fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
-    fill_scrim(
-        scene,
-        transform,
-        rect,
-        PALETTE_SCRIM_ALPHA * openness,
-        theme,
-    );
-}
-
 /// The modal scrim, scaled by `openness` in `0.0..=1.0` so it fades in
 /// with the modal opening and out with it closing.
 fn draw_modal_scrim_at(
@@ -18972,31 +18945,7 @@ fn draw_modal_scrim_at(
     openness: f32,
     theme: &Theme,
 ) {
-    fill_scrim(scene, transform, rect, MODAL_SCRIM_ALPHA * openness, theme);
-}
-
-/// Paint `rect` in the theme's scrim hue at `strength`. Uses
-/// `surfaces.scrim` rather than a literal black, since a light theme's
-/// scrim is a different colour from a dark theme's.
-pub(crate) fn fill_scrim(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    strength: f32,
-    theme: &Theme,
-) {
-    let alpha = f32_to_u8_saturating((strength.clamp(0.0, 1.0) * 255.0).round());
-    if alpha == 0 {
-        return;
-    }
-    let c = theme.tokens.colors.surfaces.scrim.to_rgba8();
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        Color::from_rgba8(c.r, c.g, c.b, alpha),
-        None,
-        &rect,
-    );
+    ui::overlay::scrim::modal(scene, transform, rect, openness, theme);
 }
 
 /// Synthesises a persisted [`crate::shell::state::WindowGroup`] from a
@@ -19154,7 +19103,7 @@ fn scene_damage_rect(rect: Rect) -> Option<vello::FineDamageRect> {
 }
 
 fn scrim_rgba(theme: &Theme, openness: f32) -> [u8; 4] {
-    let strength = (MODAL_SCRIM_ALPHA * openness).clamp(0.0, 1.0);
+    let strength = (theme.tokens.colors.surfaces.scrim_strength * openness).clamp(0.0, 1.0);
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -21039,7 +20988,7 @@ impl ShellOverlayHost {
         let palette_now = Instant::now();
         if self.palette_transition.is_visible(palette_now) {
             let openness = self.palette_transition.value(palette_now);
-            draw_scrim_at(scene, transform, self.rect, openness, theme);
+            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
             let (alpha, dy, scale) = self.palette_transition.modal_curve(palette_now, 0.96);
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
@@ -21157,7 +21106,7 @@ impl ShellOverlayHost {
             let Some(layout) = self.portal_dialogs.layout(self.rect) else {
                 return;
             };
-            draw_scrim_at(scene, transform, self.rect, 1.0, theme);
+            draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
             // A review sheet is a Panel (HIG §9.1): `radii.panel` and an `e4`
             // shadow along that outline, painted before the surface so the
             // sheet sits on its shadow rather than under it. Was a 16 px

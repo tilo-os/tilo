@@ -24,5 +24,6 @@ pub use shell::{
     ChromeRole, GLOW_ALPHA, HAIRLINE_ALPHA, PANEL_BORDER_ALPHA, RowJoin, SELECTION_MIN_STEP,
     SelectionState, SelectionTier, chrome_hairline, column_gutter, fill_scrim, glass_selector,
     lightness_step, paint_row_selection, paint_row_selection_joined, panel_border, panel_ground,
-    panel_shadow, row_bleed, scrim_maps, selection_floor_ramp, selection_tier, selection_tier_on,
+    panel_shadow, row_bleed, scrim_channel, scrim_maps, selection_floor_ramp, selection_tier,
+    selection_tier_on,
 };

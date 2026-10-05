@@ -2599,13 +2599,7 @@ impl ForeignSurfaceWidget {
         let sy = dst.height() / f64::from(image.height.max(1));
         for (link, sheet) in &self.sheet_images {
             if link.modal {
-                crate::shell::overlay_host::fill_scrim(
-                    scene,
-                    transform,
-                    self.rect,
-                    crate::shell::overlay_host::MODAL_SCRIM_ALPHA,
-                    theme,
-                );
+                ui::overlay::scrim::modal(scene, transform, self.rect, 1.0, theme);
             }
             let Some(local) = store().sheet_rect_in_root(self.surface_id, link.surface) else {
                 continue;
