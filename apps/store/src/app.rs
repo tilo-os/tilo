@@ -723,7 +723,7 @@ impl StoreApp {
         if self.worker.is_some() {
             return;
         }
-        self.flatpak_available = crate::flathub_client::flatpak_available();
+        // Host capabilities arrive with the worker snapshot, never a sandbox subprocess.
         self.images = Some(crate::images::image_store());
         // The first presented frame is the catalogue chrome ("Loading
         // apps…"), not a cleared swapchain: the worker is already in flight.
@@ -1267,10 +1267,10 @@ impl StoreApp {
                     )),
             ));
         }
-        self.operation_error.as_ref().map(|_| {
+        self.operation_error.as_ref().map(|error| {
             Box::new(
                 Banner::error("The last operation failed")
-                    .with_message(visible_operation_status(&self.status_line)),
+                    .with_message(visible_operation_status(error)),
             ) as Box<dyn Widget>
         })
     }
@@ -3586,6 +3586,7 @@ impl StoreApp {
             if let Some(detail) = snap.detail {
                 self.set_detail_from_worker(detail);
             }
+            self.set_flatpak_available(snap.flatpak_available);
             self.set_remotes(snap.remotes);
             self.set_status_line(snap.status_line);
             self.set_operation_error(snap.operation_error);
