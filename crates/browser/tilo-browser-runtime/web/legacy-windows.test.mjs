@@ -296,6 +296,37 @@ test('typing reaches the window as every stroke in order, and a held key repeats
   m.layer.close();
 });
 
+test('character modifier snapshots reach the window as shift edges even without a shift key event', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  for (const [code, shiftKey] of [['KeyM', true], ['KeyI', false], ['Slash', true], ['Digit7', true], ['KeyA', false]]) {
+    m.canvas.dispatch('keydown', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+    m.canvas.dispatch('keyup', {code, shiftKey, ctrlKey: false, altKey: false, metaKey: false});
+  }
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [
+    [42, true], [50, true], [50, false], [42, false], [23, true], [23, false],
+    [42, true], [53, true], [53, false], [8, true], [8, false],
+    [42, false], [30, true], [30, false],
+  ], 'Mi?&a retains capitals and shifted punctuation without duplicate modifier presses');
+  m.layer.close();
+});
+
+test('a shortcut held before focus is restored and its modifier is released on blur', async () => {
+  const m = await controlled({control: true});
+  m.place([{key: KEY, rect: [10, 36, 410, 300], focused: true}]);
+  m.run();
+  m.canvas.dispatch('keydown', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('keyup', {code: 'KeyL', ctrlKey: true, shiftKey: false, altKey: false, metaKey: false});
+  m.canvas.dispatch('blur');
+  for (let i = 0; i < 8; i++) await tick();
+  const keys = m.sent.flatMap(request => request.events).filter(event => 'Key' in event).map(({Key}) => [Key.keysym, Key.pressed]);
+  assert.deepEqual(keys, [[29, true], [38, true], [38, false], [29, false]]);
+  m.layer.close();
+});
+
 test('the window the desktop focuses takes the keyboard, and a click focuses its desktop window', async () => {
   const focused = [];
   let desktop = 0;
