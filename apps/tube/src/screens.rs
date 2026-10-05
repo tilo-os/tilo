@@ -145,7 +145,14 @@ fn video_card(ui: Ui<'_>, v: &Video) -> MediaCard {
     )
     .aspect(MediaAspect::Wide)
     .title(v.display_title(dearrow))
-    .meta(&v.channel_name);
+    .meta(&v.channel_name)
+    .creator(&v.channel_name, &v.channel_id);
+    if let Some(store) = ui.imgs.store_handle()
+        && let Some(channel) = ui.model.channel(&v.channel_id)
+        && !channel.avatar_url.is_empty()
+    {
+        card = card.creator_image_url(store, &channel.avatar_url);
+    }
     if ui
         .model
         .channel(&v.channel_id)

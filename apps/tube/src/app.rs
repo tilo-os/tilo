@@ -2438,7 +2438,7 @@ impl Widget for TubeApp {
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
+        use ui::a11y::{AccessNode, AccessState, Role};
         let route = match &self.model.route {
             Route::Home => "Home".to_string(),
             Route::Trending => "Trending".to_string(),
@@ -2463,9 +2463,10 @@ impl Widget for TubeApp {
         let mut node = AccessNode::new(Role::Window)
             .with_name(format!("Tube — {route}"))
             .with_state(AccessState::new().busy(self.model.feed_loading));
-        if let Some(notice) = self.model.notices.first() {
-            node.live = Some(Politeness::Polite);
-            node.value = Some(notice.clone());
+        if !self.toasts.is_empty()
+            && let Some(announcement) = self.toasts.accessibility()
+        {
+            node.children.push(announcement);
         }
         Some(node)
     }
