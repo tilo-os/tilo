@@ -3,16 +3,15 @@
 //!
 //! The row keeps the primary commands as icon buttons. Everything else (find,
 //! zoom, Picture in Picture, history pause, developer tools, protection,
-//! private window, settings) is a row of the trailing [`Toolbar`], which is
-//! one control wide, so those commands always sit in its overflow menu. In a
-//! compact window the site information, bookmark and library commands join
-//! them: nothing is ever hidden, only moved.
+//! private window, settings) is a row of the trailing More button's menu
+//! ([`MenuButton`]). In a compact window the site information, bookmark and
+//! library commands join them: nothing is ever hidden, only moved.
 
 use ui::icons::Icon;
 use ui::theme::Theme;
 use ui::webview::WebViewCommand;
-use ui::widget::toolbar::Orientation;
-use ui::widget::{Button, Container, Row, TextInput, TextInputKind, Toolbar, Widget};
+use ui::widget::floating_surface::PanelAlign;
+use ui::widget::{Button, MenuButton, MenuItem, Row, TextInput, TextInputKind, Widget};
 
 use super::{BrowserWidget, URL_INPUT_ID};
 
@@ -82,76 +81,85 @@ impl BrowserWidget {
         }
     }
 
-    /// The overflow menu: a [`Toolbar`] exactly one control wide, so every
-    /// command in it is a row of the "More commands" menu.
-    fn overflow_menu(&self) -> Toolbar {
-        let mut menu = Toolbar::new(Orientation::Horizontal);
+    /// The overflow menu: a More button whose menu holds every command the
+    /// row has no icon for.
+    fn overflow_menu(&self) -> MenuButton {
+        // A menu row runs the same `FnMut` command a toolbar button would.
+        fn row(label: &str, command: impl FnMut() + 'static) -> MenuItem {
+            let command = std::cell::RefCell::new(command);
+            MenuItem::action(label, move || (command.borrow_mut())())
+        }
+        let mut items = Vec::new();
         if self.compact_chrome {
             // What the narrow row has no room for.
-            menu = menu
-                .push_button("Site information", self.site.open_command(true))
-                .push_button(
-                    if self.bookmarks.contains(&self.current_uri) {
-                        "Page bookmarked"
-                    } else {
-                        "Bookmark this page"
-                    },
-                    self.bookmark_command(),
-                );
+            items.push(row("Site information", self.site.open_command(true)));
+            items.push(row(
+                if self.bookmarks.contains(&self.current_uri) {
+                    "Page bookmarked"
+                } else {
+                    "Bookmark this page"
+                },
+                self.bookmark_command(),
+            ));
             let (resource, action) = self.library_command();
-            menu = menu
-                .push_button(
-                    "History, bookmarks and downloads",
-                    self.queue_command(resource, action),
-                )
-                .push_separator();
+            items.push(row(
+                "History, bookmarks and downloads",
+                self.queue_command(resource, action),
+            ));
+            items.push(MenuItem::separator());
         }
         let developer_engine = self.engine.clone();
         let (settings_resource, settings_action) = self.settings_command();
-        menu.push_toggle(
-            "Picture in Picture",
-            self.active_pip,
-            self.queue_command("browser.page", "picture-in-picture"),
-        )
-        .push_toggle(
-            "Pause history",
-            self.history_paused(),
-            self.queue_command("browser.session", "toggle-history-pause"),
-        )
-        .push_button(
-            "Find in page",
-            self.daily.command(crate::daily_controls::Action::Open),
-        )
-        .push_button("Developer tools", move || {
-            developer_engine.send(WebViewCommand::ShowDeveloperTools);
-        })
-        .push_separator()
-        .push_button(
-            "Zoom in",
-            self.daily.command(crate::daily_controls::Action::Zoom(1)),
-        )
-        .push_button(
-            "Zoom out",
-            self.daily.command(crate::daily_controls::Action::Zoom(-1)),
-        )
-        .push_button(
-            &self.daily.zoom_label(),
-            self.daily.command(crate::daily_controls::Action::Zoom(0)),
-        )
-        .push_separator()
-        .push_button("Ads and trackers", self.site.open_command(false))
-        .push_button("New private window", {
-            let request = self.private_window_request.clone();
-            move || request.set(true)
-        })
-        .push_button(
-            if self.show_settings {
-                "Close settings"
-            } else {
-                "Settings"
-            },
-            self.queue_command(settings_resource, settings_action),
-        )
+        items.extend([
+            row(
+                "Picture in Picture",
+                self.queue_command("browser.page", "picture-in-picture"),
+            )
+            .with_checked(self.active_pip),
+            row(
+                "Pause history",
+                self.queue_command("browser.session", "toggle-history-pause"),
+            )
+            .with_checked(self.history_paused()),
+            row(
+                "Find in page",
+                self.daily.command(crate::daily_controls::Action::Open),
+            ),
+            row("Developer tools", move || {
+                developer_engine.send(WebViewCommand::ShowDeveloperTools);
+            }),
+            MenuItem::separator(),
+            row(
+                "Zoom in",
+                self.daily.command(crate::daily_controls::Action::Zoom(1)),
+            ),
+            row(
+                "Zoom out",
+                self.daily.command(crate::daily_controls::Action::Zoom(-1)),
+            ),
+            row(
+                &self.daily.zoom_label(),
+                self.daily.command(crate::daily_controls::Action::Zoom(0)),
+            ),
+            MenuItem::separator(),
+            row("Ads and trackers", self.site.open_command(false)),
+            row("New private window", {
+                let request = self.private_window_request.clone();
+                move || request.set(true)
+            }),
+            row(
+                if self.show_settings {
+                    "Close settings"
+                } else {
+                    "Settings"
+                },
+                self.queue_command(settings_resource, settings_action),
+            ),
+        ]);
+        Button::icon_only(OVERFLOW_ID, Icon::MoreHorizontal, "More commands")
+            .tooltip("More commands")
+            .with_menu(items)
+            .aligned(PanelAlign::Trailing)
     }
 
     /// The whole toolbar row.
@@ -262,13 +270,7 @@ impl BrowserWidget {
                 "show",
             )));
         }
-        row = row.push(Box::new(
-            Container::new()
-                .with_id(OVERFLOW_ID)
-                .with_no_padding()
-                .with_width(theme.tokens.metrics.min_pointer_target)
-                .with_child(Box::new(self.overflow_menu())),
-        ));
+        row = row.push(Box::new(self.overflow_menu()));
         Box::new(row)
     }
 }
