@@ -1084,13 +1084,13 @@ fn run_external_process(
     let stdout_reader = std::thread::Builder::new()
         .name("tilo-projection-status-out".to_owned())
         .spawn(move || {
-            forward_sender_diagnostics(stdout, stdout_tx, stdout_secret.as_deref(), &stdout_ready);
+            forward_sender_diagnostics(stdout, &stdout_tx, stdout_secret.as_deref(), &stdout_ready);
         })
         .map_err(|error| format!("cannot monitor {transport_name} sender output: {error}"))?;
     let stderr_reader = std::thread::Builder::new()
         .name("tilo-projection-status-err".to_owned())
         .spawn(move || {
-            forward_sender_diagnostics(stderr, line_tx, secret.as_deref(), &ready_messages);
+            forward_sender_diagnostics(stderr, &line_tx, secret.as_deref(), &ready_messages);
         })
         .map_err(|error| format!("cannot monitor {transport_name} diagnostics: {error}"))?;
     let mut diagnostics = Vec::new();
@@ -1144,7 +1144,7 @@ fn run_external_process(
 // password on either stream, and later become user-visible session errors.
 fn forward_sender_diagnostics(
     stream: impl Read,
-    lines: mpsc::Sender<(bool, String)>,
+    lines: &mpsc::Sender<(bool, String)>,
     credential: Option<&str>,
     ready_messages: &[String],
 ) {
