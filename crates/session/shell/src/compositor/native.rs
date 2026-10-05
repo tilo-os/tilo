@@ -3109,8 +3109,8 @@ impl TestControlCtx {
             PlannedAction::KeyboardKey { pressed: true, .. } => {
                 self.input.note_used(ui::InputModality::Keyboard)
             }
-            PlannedAction::CursorMoved { .. }
-            | PlannedAction::MouseLeftButton { .. }
+            PlannedAction::CursorMoved { .. } => self.input.note_pointer_motion(),
+            PlannedAction::MouseLeftButton { .. }
             | PlannedAction::MousePointerButton { .. }
             | PlannedAction::MouseWheel { .. }
             | PlannedAction::Pen { .. }
@@ -9473,6 +9473,12 @@ pub fn run() {
                 BackendEvent::TabletMode(on) => {
                     test_control_ctx.input.set_tablet_mode(on);
                 }
+                BackendEvent::PointerMotionUsed => {
+                    if test_control_ctx.input.note_pointer_motion() {
+                        test_control_ctx.publish_input_environment(&mut frame_builder);
+                        session_changed = true;
+                    }
+                }
                 BackendEvent::InputUsed(modality) => {
                     if test_control_ctx.input.note_used(modality) {
                         test_control_ctx.publish_input_environment(&mut frame_builder);
@@ -12265,6 +12271,38 @@ mod tests {
         native_consent_fixture_root, run_isolated_native_consent_test,
         wait_for_local_session_worker_teardown,
     };
+
+    #[test]
+    fn pointer_hover_preserves_touch_keyboard_until_pointer_activation() {
+        use crate::compositor::input_method::{OskInput, OskPreference, osk_wanted};
+
+        let mut ctx = TestControlCtx::new();
+        let mut fb = FrameBuilder::new((800, 600));
+        ctx.note_injected_input(
+            &PlannedAction::Touch {
+                device: "panel".into(),
+                slot: 0,
+                phase: TouchPhaseKind::Down,
+                x: 100.0,
+                y: 100.0,
+            },
+            &mut fb,
+        );
+        assert!(osk_wanted(
+            OskPreference::Auto,
+            OskInput::from_environment(&ctx.input)
+        ));
+        ctx.note_injected_input(&PlannedAction::CursorMoved { x: 110.0, y: 100.0 }, &mut fb);
+        assert!(
+            osk_wanted(OskPreference::Auto, OskInput::from_environment(&ctx.input)),
+            "incidental pointer hover must not dismiss a touch-started keyboard"
+        );
+        ctx.note_injected_input(&PlannedAction::MouseLeftButton { pressed: true }, &mut fb);
+        assert!(!osk_wanted(
+            OskPreference::Auto,
+            OskInput::from_environment(&ctx.input)
+        ));
+    }
 
     #[test]
     fn dispatched_client_requests_get_a_follow_up_tick() {

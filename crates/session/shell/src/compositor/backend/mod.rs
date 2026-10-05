@@ -425,11 +425,14 @@ pub enum BackendEvent {
     InputDeviceRemoved {
         id: String,
     },
-    /// The class of physical input changed: the person typed, moved a
+    /// The class of physical input changed: the person typed, activated a
     /// pointer, touched the screen or used a controller after using
     /// something else. Reported by the source of the event, so emulated
     /// pointer input from a tap still counts as touch.
     InputUsed(ui::InputModality),
+    /// Pointer hover changes precision and shortcut hints, but preserves a
+    /// touch-started on-screen keyboard until deliberate pointer input.
+    PointerMotionUsed,
     /// A convertible's tablet-mode switch changed: `true` when the keyboard
     /// is folded away and the touchscreen is the primary input.
     TabletMode(bool),
