@@ -998,11 +998,11 @@ impl ui::tilo_resource::Effect for ViewOp {
             .into_iter()
             .map(|declared| {
                 let mut spec = declared.spec(Self::OPERATION);
-                if !declared.is_job() {
-                    spec.contract.result = ResultSpec::Json {
-                        schema: serde_json::json!({"type": "object"}),
-                    };
-                }
+                // Background execution and the terminal value are separate:
+                // these jobs finish with the same JSON/content as a view.
+                spec.contract.result = ResultSpec::Json {
+                    schema: serde_json::json!({"type": "object"}),
+                };
                 spec
             })
             .collect()
