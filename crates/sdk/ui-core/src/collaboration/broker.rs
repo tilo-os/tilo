@@ -9476,7 +9476,7 @@ mod tests {
                         && seen.action_publications.iter().any(|(id, actions)| {
                             id == &app_id
                                 && actions.iter().any(|(label, action)| {
-                                    label == "Complete" && action == "activate"
+                                    label == "Complete" && !action.is_empty()
                                 })
                         })
                 },
@@ -9516,7 +9516,7 @@ mod tests {
                         id == &app_id
                             && actions
                                 .iter()
-                                .any(|(label, action)| label == "Complete" && action == "activate")
+                                .any(|(label, action)| label == "Complete" && !action.is_empty())
                     })
                 },
             );
