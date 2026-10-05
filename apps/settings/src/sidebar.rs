@@ -1008,7 +1008,11 @@ mod tests {
             assert_eq!(node.state.checked, Some(false));
 
             let mut doc = AutoCommit::new();
-            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
+            assert!(row.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
             assert_eq!(
                 request.with(|selection| *selection),
                 Some(Category::Accessibility),

@@ -14,14 +14,12 @@
 //! Ctrl-N for a new connection, `/` to focus search).
 
 #[cfg(test)]
-#[cfg(test)]
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
-use ui::widget::AppModel;
 use ui::widget::ModelPath;
 
 use automerge::ObjId;
