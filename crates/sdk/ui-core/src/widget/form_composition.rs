@@ -158,6 +158,8 @@ pub struct FormSection {
     beside: bool,
     /// The effective field spacing, the gap between stacked grouped rows.
     stacked_gap: f32,
+    /// The width the section's dropdowns share.
+    choosers: super::dropdown::ChooserColumn,
 }
 impl FormSection {
     pub fn new(title: impl Into<String>) -> Self {
@@ -187,6 +189,7 @@ impl FormSection {
             form_needs: None,
             beside: true,
             stacked_gap: 0.0,
+            choosers: super::dropdown::ChooserColumn::default(),
         }
     }
     /// Lay the fields out as a settings list: each a row at least one
@@ -723,6 +726,11 @@ impl Widget for FormSection {
             effective.field_spacing.value
         };
         self.beside = true;
+        // The section's dropdowns share one width.
+        self.choosers.reset();
+        for child in &mut self.parts.children {
+            self.choosers.join(child.as_mut());
+        }
         let node = self.parts.build(column_style(gap), tree, theme, map);
         if self.grouped {
             // Each field row is at least a grouped row high, its content on

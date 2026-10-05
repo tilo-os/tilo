@@ -21,8 +21,12 @@
 //! with it.
 //!
 //! Closed, the control is as wide as its widest option (`fill` spans the
-//! parent). [`DropdownFace`] paints the same closed control for a painted
-//! host, paired with an option [`crate::widget::Popover`].
+//! parent). Inside a [`crate::widget::Section`] or
+//! [`crate::widget::FormSection`] the section's choosers share one width:
+//! the widest option among them, capped at the theme's chooser width, so a
+//! column of trailing dropdowns has two straight edges. [`DropdownFace`]
+//! paints the same closed control for a painted host, paired with an option
+//! [`crate::widget::Popover`].
 //!
 //! [`Dropdown::as_menu`] makes it a menu button instead: an icon that opens
 //! a list of choices, each one a command rather than a value it keeps.
@@ -32,7 +36,9 @@
 //! list becomes hit-testable and click-outside dismissal works.
 
 use crate::widget::{AppModel, ModelPath};
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::widget::TaffyTreeExt;
 use crate::widget::binding::{BoxedBinding, Pulled};
@@ -185,6 +191,12 @@ pub struct Dropdown {
     theme_caption_height: f64,
     /// The width measured for the options in the latest layout.
     measured: f64,
+    /// The width the choosers of the enclosing section share, when this
+    /// dropdown is one of them.
+    column: Option<ChooserColumn>,
+    /// The widest a shared chooser grows: the theme's chooser width, grown
+    /// with the text.
+    chooser_cap: f64,
     /// The open list's width for its options, from the latest paint.
     list_width: f64,
     /// One row of the open list: a menu row, grown with its text.
@@ -198,7 +210,65 @@ pub struct Dropdown {
 /// next option starting with it instead.
 pub const FILTER_MIN_OPTIONS: usize = 8;
 
+/// The one width a section's choosers share. Each dropdown offers the width
+/// its own options need; all of them take the widest offer, capped at the
+/// theme's chooser width (a longer value elides). Trailing in their rows,
+/// they then line up on both edges.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ChooserColumn(Rc<Cell<f64>>);
+
+impl ChooserColumn {
+    /// Forget the offers of the previous layout, so a chooser whose options
+    /// got shorter lets the column narrow.
+    pub(crate) fn reset(&self) {
+        self.0.set(0.0);
+    }
+
+    fn offer(&self, width: f64) -> f64 {
+        let shared = self.0.get().max(width);
+        self.0.set(shared);
+        shared
+    }
+
+    /// Enrol `widget` or the value choosers inside it: dropdowns that hug
+    /// their options, without a caption of their own. A nested section keeps
+    /// its own column.
+    pub(crate) fn join(&self, widget: &mut dyn Widget) {
+        if let Some(any) = widget.as_any_mut() {
+            if any.is::<crate::widget::Section>() || any.is::<crate::widget::FormSection>() {
+                return;
+            }
+            if let Some(dropdown) = any.downcast_mut::<Dropdown>() {
+                dropdown.join_column(self);
+                return;
+            }
+        }
+        for child in widget.children_mut() {
+            self.join(child);
+        }
+    }
+}
+
 impl Dropdown {
+    /// Take part in a section's shared chooser width, unless the dropdown
+    /// spans its row, is a menu button, or is a captioned filter.
+    fn join_column(&mut self, column: &ChooserColumn) {
+        self.column =
+            (!self.fill && self.menu.is_none() && self.caption.is_none()).then(|| column.clone());
+    }
+
+    /// The width the control takes for options that need `own`: its own, or
+    /// the section's shared chooser width.
+    fn field_width(&self, own: f64) -> f64 {
+        let own = own.max(PAD_X + CHEVRON_W);
+        self.column.as_ref().map_or(own, |column| {
+            column
+                .offer(own)
+                .min(self.chooser_cap)
+                .max(PAD_X + CHEVRON_W)
+        })
+    }
+
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
@@ -241,6 +311,8 @@ impl Dropdown {
             caption_style: crate::tokens::typography::stock().style(TextRole::Caption),
             theme_caption_height: 0.0,
             measured: 0.0,
+            column: None,
+            chooser_cap: f64::from(crate::tokens::Metrics::BASE.chooser_width),
             list_width: 0.0,
             item_h: ITEM_HEIGHT,
             layout_dirty: true,
@@ -508,6 +580,7 @@ impl Dropdown {
         self.caption_style = theme.text(TextRole::Caption);
         self.theme_caption_height =
             caption_height_in(&self.caption_style, f64::from(theme.tokens.spacing.s1));
+        self.chooser_cap = f64::from(theme.tokens.metrics.chooser_width * theme.text_growth());
         self.item_h = f64::from(theme.tokens.metrics.menu_row_height).max(
             (f64::from(theme.text(TextRole::Body).line_height_px())
                 + 2.0 * f64::from(theme.tokens.spacing.s1))
@@ -966,6 +1039,10 @@ impl Dropdown {
 impl Widget for Dropdown {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(selected) = binding.pull(state, root)
@@ -1023,7 +1100,7 @@ impl Widget for Dropdown {
         let width = if self.fill {
             Dimension::percent(1.0)
         } else if self.measured > 0.0 {
-            Dimension::length(px(self.measured.max(PAD_X + CHEVRON_W)))
+            Dimension::length(px(self.field_width(self.measured)))
         } else {
             Dimension::auto()
         };
@@ -1075,7 +1152,7 @@ impl Widget for Dropdown {
             PAD_X + CHEVRON_W
         } else {
             self.measured = self.measured_width(text);
-            self.measured.max(PAD_X + CHEVRON_W)
+            self.field_width(self.measured)
         };
         Size {
             width: known.width.unwrap_or(px(width)),
@@ -1099,7 +1176,7 @@ impl Widget for Dropdown {
             return false;
         };
         let mut style = current.clone();
-        style.size.width = Dimension::length(px(self.measured.max(PAD_X + CHEVRON_W)));
+        style.size.width = Dimension::length(px(self.field_width(self.measured)));
         if style == *current {
             return false;
         }
@@ -2872,6 +2949,74 @@ mod tests {
         accessibility_unselected_uses_placeholder_name_and_no_value();
         accessibility_reflects_open_and_disabled();
         action_binding_owns_accessibility_selection();
+    }
+
+    #[test]
+    fn a_sections_choosers_share_one_width_and_line_up_on_both_edges() {
+        use crate::widget::{Element, Row, Section, Spacer, Text};
+        fn row(label: &str, dropdown: Dropdown) -> Element {
+            Box::new(
+                Row::new()
+                    .no_wrap()
+                    .push(Box::new(Text::new(label)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(dropdown)),
+            )
+        }
+        let short = || vec!["A".to_string(), "B".to_string()];
+        let section = Section::titled(
+            "Formats",
+            vec![
+                row("Zone", Dropdown::new(opts(), "tz").with_id("zone")),
+                row("Size", Dropdown::new(short(), "ab").with_id("size")),
+                row(
+                    "Filter",
+                    Dropdown::new(short(), "f")
+                        .caption("Level")
+                        .with_id("filter"),
+                ),
+                Box::new(Section::new(vec![row(
+                    "Nested",
+                    Dropdown::new(short(), "n").with_id("nested"),
+                )])),
+            ],
+        );
+        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let targets = app.targets();
+        let target = |id: &str| *targets.get(id).expect(id);
+        let (zone, size) = (target("zone"), target("size"));
+        assert!(
+            (zone.width() - size.width()).abs() < 0.5 && (zone.x1 - size.x1).abs() < 0.5,
+            "the section's choosers share the widest one's width and edges: {zone:?} / {size:?}"
+        );
+        assert!(
+            target("filter").width() < zone.width() - 1.0,
+            "a captioned filter keeps its own width"
+        );
+        assert!(
+            target("nested").width() < zone.width() - 1.0,
+            "a nested section shares its own width, not the outer one's"
+        );
+
+        let cap = f64::from(Theme::dark().tokens.metrics.chooser_width);
+        let section = Section::new(vec![
+            row("Size", Dropdown::new(short(), "ab").with_id("size")),
+            row(
+                "Device",
+                Dropdown::new(vec!["Built-in speakers and headphone jack".repeat(3)], "d")
+                    .with_id("device"),
+            ),
+        ]);
+        let app = crate::headless::Driver::new(crate::State::new(), Box::new(section), (900, 400));
+        let targets = app.targets();
+        let target = |id: &str| *targets.get(id).expect(id);
+        for id in ["size", "device"] {
+            assert!(
+                (target(id).width() - cap).abs() < 0.5,
+                "a long option caps the shared width at the chooser width: {id} {:?}",
+                target(id)
+            );
+        }
     }
 
     #[test]
