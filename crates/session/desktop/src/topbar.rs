@@ -2219,11 +2219,16 @@ impl TopBarChrome {
             &ws_text_style.clone().with_weight(ws_weight),
         );
         let ws_y = center_y - f64::from(ws_h) / 2.0;
+        // A bar control's height, grown with its label at a large text
+        // scale (as `ControlSize` grows), never taller than the bar.
+        let pill_h = BAR_CONTROL_PX
+            .max((f64::from(ws_h) + 2.0 * f64::from(tokens.spacing.s1)).ceil())
+            .min(self.rect.height().max(BAR_CONTROL_PX));
         let ws_pill_outer = Rect::new(
             x - pad,
-            center_y - BAR_CONTROL_PX / 2.0,
+            center_y - pill_h / 2.0,
             x + f64::from(ws_w) + pill_chrome - pad,
-            center_y + BAR_CONTROL_PX / 2.0,
+            center_y + pill_h / 2.0,
         );
         self.ws_pill_rect = ws_pill_outer;
         if let Some(chrome) = self.chrome.as_ref() {
@@ -5575,12 +5580,15 @@ mod tests {
         );
         assert_eq!(renderer.text_scale(), 2.0);
         renderer.set_text_scale(1.0);
+        // Measured in the style the pill draws its label in.
         let (_, height) = renderer.measure_style(
             "Home  1/1",
             None,
             &theme
-                .text(TextRole::Label)
-                .with_weight(TextWeight::Semibold),
+                .tokens
+                .typography
+                .style(TextRole::Caption)
+                .with_weight(bar.workspace_name_text_weight()),
         );
         assert!(f64::from(height) <= bar.ws_pill_rect.height());
         assert!(bar.ws_pill_rect.x1 <= bar.rect.center().x - bar.center_band_width(&theme) / 2.0);
