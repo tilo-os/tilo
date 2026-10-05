@@ -47,6 +47,7 @@ const SHOT_SCENARIOS: &[&str] = &[
     "sidebar",
     "collapsed",
     "context",
+    "row-actions",
     "new-playlist",
     "empty",
     "skeleton",

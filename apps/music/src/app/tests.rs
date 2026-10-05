@@ -139,26 +139,76 @@ fn track_context_menu_stays_in_bounds_and_dispatches_its_actions() {
         app.view = View::Songs;
         // Render one frame so row-menu hits + geometry exist.
         draw_once(&mut app, &mut doc);
-        // Find a track row's right-click target.
-        let target = app.row_menu_hits.first().cloned();
-        let target = target.expect("a track row registered a right-click target");
-        let p = target.rect.center();
+        // A track row is its own right-click target.
+        let p = track_row(&app, "tk_g2").center();
         send(&mut app, &cursor_at(p), &mut doc);
         let handled = send(&mut app, &press(MouseButton::Right), &mut doc);
         assert!(handled, "right-click on a row is consumed");
         assert!(app.context.is_open(), "right-click opens the context menu");
     }
 
-    // Phase `draw_registers_row_menu_hits`.
+    // Phase `the_songs_table_is_the_shared_table_with_a_row_per_track`.
     {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
+        let table = app.track_tables.first().expect("the songs table");
+        assert_eq!(table.table.rows().len(), app.lib.tracks.len());
         assert!(
-            !app.row_menu_hits.is_empty(),
-            "the songs table registers per-row right-click targets"
+            table.table.row_rect(0).is_some(),
+            "its first row is in view"
         );
     }
+}
+
+/// A track row is the shared table's: a press plays it from the table's
+/// queue, and its actions are the toolkit's buttons under the pointer.
+#[test]
+fn track_rows_play_and_act_through_the_shared_table() {
+    // Phase `a_press_on_a_row_plays_it_from_the_tables_queue`.
+    let (mut app, mut doc) = app_with_doc();
+    app.view = View::Songs;
+    draw_once(&mut app, &mut doc);
+    draw_once(&mut app, &mut doc);
+    click_track(&mut app, &mut doc, "tk_g2");
+    assert_eq!(app.pb.current.as_deref(), Some("tk_g2"));
+    assert_eq!(
+        app.pb.queue.len(),
+        app.lib.tracks.len(),
+        "the whole list is queued behind it"
+    );
+
+    // Phase `the_queue_rows_reorder_and_remove_with_their_buttons`.
+    app.view = View::Queue;
+    draw_once(&mut app, &mut doc);
+    draw_once(&mut app, &mut doc);
+    let next = app.pb.queue[app.pb.queue_index + 1].clone();
+    let after = app.pb.queue[app.pb.queue_index + 2].clone();
+    let down = track_control(&mut app, &mut doc, &next, "down", draw_once);
+    send(&mut app, &cursor_at(down.center()), &mut doc);
+    send(&mut app, &press(MouseButton::Left), &mut doc);
+    send(&mut app, &released(MouseButton::Left), &mut doc);
+    assert_eq!(
+        app.pb.queue[app.pb.queue_index + 1],
+        after,
+        "Move down swaps the row with the one below"
+    );
+    assert_eq!(
+        app.pb.current.as_deref(),
+        Some("tk_g2"),
+        "playback is untouched"
+    );
+    let before = app.pb.queue.len();
+    draw_once(&mut app, &mut doc);
+    let remove = track_control(&mut app, &mut doc, &after, "remove", draw_once);
+    send(&mut app, &cursor_at(remove.center()), &mut doc);
+    send(&mut app, &press(MouseButton::Left), &mut doc);
+    send(&mut app, &released(MouseButton::Left), &mut doc);
+    assert_eq!(
+        app.pb.queue.len(),
+        before - 1,
+        "Remove takes the row out of the queue"
+    );
 }
 
 /// Test and shot constructors own their caches and never read the real profile;
@@ -478,6 +528,54 @@ use winit::keyboard::NamedKey;
 fn synth_device() -> DeviceId {
     unsafe { std::mem::zeroed() }
 }
+/// Where the row of track `id` stands in the page's track tables.
+fn track_row(app: &MusicApp, id: &str) -> Rect {
+    app.track_tables
+        .iter()
+        .find_map(|slot| {
+            let index = slot.table.rows().iter().position(|row| row.id == id)?;
+            slot.table.row_rect(index)
+        })
+        .unwrap_or_else(|| panic!("track {id} has a row in view"))
+}
+
+/// Bring the pointer over the row of track `id` so it shows its actions,
+/// redraw with `draw`, and return where its control `name` stands.
+fn track_control(
+    app: &mut MusicApp,
+    doc: &mut AutoCommit,
+    id: &str,
+    name: &str,
+    draw: impl Fn(&mut MusicApp, &mut AutoCommit),
+) -> Rect {
+    let row = track_row(app, id);
+    send(
+        app,
+        &cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y)),
+        doc,
+    );
+    draw(app, doc);
+    app.track_tables
+        .iter()
+        .find_map(|slot| {
+            let index = slot.table.rows().iter().position(|row| row.id == id)?;
+            slot.table.control_rect(index, name)
+        })
+        .unwrap_or_else(|| panic!("track {id} shows its {name} control under the pointer"))
+}
+
+/// Press and release the left button on the row of track `id`.
+fn click_track(app: &mut MusicApp, doc: &mut AutoCommit, id: &str) {
+    let row = track_row(app, id);
+    send(
+        app,
+        &cursor_at(Point::new(row.x0 + row.width() * 0.3, row.center().y)),
+        doc,
+    );
+    send(app, &press(MouseButton::Left), doc);
+    send(app, &released(MouseButton::Left), doc);
+}
+
 fn cursor_at(p: Point) -> WindowEvent {
     WindowEvent::CursorMoved {
         device_id: synth_device(),
@@ -1203,18 +1301,25 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
             .insert("tk_g3".into(), "network ended".into());
         draw_once(&mut app, &mut doc);
 
-        let has_action = |track: &str, keep: bool| {
-            app.hits.iter().any(|hit| {
-                matches!(
-                    &hit.action,
-                    Action::SetOffline { track: id, keep: candidate }
-                        if id == track && *candidate == keep
-                )
-            })
-        };
-        assert!(has_action("tk_g1", false), "active download has Cancel/X");
-        assert!(has_action("tk_g2", false), "cached media has Remove");
-        assert!(has_action("tk_g3", true), "failed download has Retry");
+        // Each row's one action, under the pointer, is the toolkit's button.
+        for (track, name) in [
+            ("tk_g1", "Cancel download"),
+            ("tk_g2", "Remove download"),
+            ("tk_g3", "network ended"),
+        ] {
+            let control = track_control(&mut app, &mut doc, track, "offline", draw_once);
+            send(&mut app, &cursor_at(control.center()), &mut doc);
+            assert_eq!(ui::widget::Widget::tooltip(&app), Some(name), "{track}");
+        }
+        // Pressing the failed row's control retries it.
+        let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once);
+        send(&mut app, &cursor_at(retry.center()), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+        send(&mut app, &released(MouseButton::Left), &mut doc);
+        assert!(
+            !app.offline_errors.contains_key("tk_g3"),
+            "Retry clears the failure"
+        );
     }
 
     // Phase `large_text_download_failure_exposes_full_hover_and_assistive_recovery`.
@@ -1228,17 +1333,8 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
             .insert("tk_g3".into(), "connection reset while downloading".into());
         draw_once_large_text(&mut app, &mut doc);
 
-        let retry_hit = app
-            .hits
-            .iter()
-            .find(|hit| {
-                matches!(
-                    &hit.action,
-                    Action::SetOffline { track, keep: true } if track == "tk_g3"
-                )
-            })
-            .expect("large-text failed row has Retry action");
-        app.mouse = retry_hit.rect.center();
+        let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once_large_text);
+        send(&mut app, &cursor_at(retry.center()), &mut doc);
         assert_eq!(
             app.tooltip(),
             Some("connection reset while downloading"),
@@ -1516,19 +1612,13 @@ fn large_text_rows_elide_and_keep_one_identity() {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_at(&mut app, &mut doc, 1_280.0, 800.0);
-        let queues = app
-            .hits
-            .iter()
-            .filter_map(|hit| match &hit.action {
-                Action::Play { queue, .. } if queue.len() > 1 => Some(queue),
-                _ => None,
-            })
-            .take(2)
-            .collect::<Vec<_>>();
-        assert_eq!(queues.len(), 2, "two visible track-row actions");
+        let table = app.track_tables.first().expect("the songs table");
+        assert!(table.queue.len() > 1 && table.table.rows().len() == table.queue.len());
+        let before = Arc::clone(&table.queue);
+        draw_at(&mut app, &mut doc, 1_280.0, 800.0);
         assert!(
-            Arc::ptr_eq(queues[0], queues[1]),
-            "rows share one immutable queue instead of cloning it per row"
+            Arc::ptr_eq(&before, &app.track_tables[0].queue),
+            "the rows share one queue, kept across frames while it is the same"
         );
     }
 
@@ -1537,14 +1627,11 @@ fn large_text_rows_elide_and_keep_one_identity() {
         let (mut app, mut doc) = app_with_doc();
         app.snap_album_page();
         draw_once_large_text(&mut app, &mut doc);
-        let queue = app
-            .hits
-            .iter()
-            .find_map(|hit| match &hit.action {
-                Action::Play { queue, .. } => Some(queue),
-                _ => None,
-            })
-            .expect("album exposes playable rows");
+        let queue = &app
+            .track_tables
+            .first()
+            .expect("album exposes playable rows")
+            .queue;
         assert_eq!(
             queue.len(),
             5,
@@ -4142,15 +4229,9 @@ fn canonical_actions_converge_through_the_platform_document() {
         let (mut app, mut doc) = app_with_doc();
         app.view = View::Songs;
         draw_once(&mut app, &mut doc);
-        // Find a real like-heart hit the draw pass registered.
-        let (id, center) = app
-            .hits
-            .iter()
-            .find_map(|h| match &h.action {
-                Action::ToggleLike(id) => Some((id.clone(), h.rect.center())),
-                _ => None,
-            })
-            .expect("a song row registers a like-heart hit");
+        // The like control of a song's row, shown under the pointer.
+        let id = String::from("tk_g2");
+        let center = track_control(&mut app, &mut doc, &id, "like", draw_once).center();
         // The sample library seeds some tracks as already-liked, so assert the
         // membership *flips* rather than assuming a fixed direction.
         let before = doc::load_library(&doc).is_liked(&id);
@@ -4158,6 +4239,7 @@ fn canonical_actions_converge_through_the_platform_document() {
 
         send(&mut app, &cursor_at(center), &mut doc);
         send(&mut app, &press(MouseButton::Left), &mut doc);
+        send(&mut app, &released(MouseButton::Left), &mut doc);
 
         assert_eq!(
             app.actions.last_dispatched(),

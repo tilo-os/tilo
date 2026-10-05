@@ -22,10 +22,9 @@ use ui::chrome::{self, HeaderRowFace, NavCount, NavRowFace, NavSectionFace, Sele
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::surface;
-use ui::text_render::TextKind;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
-use ui::widget::data_table::{ColumnWidth, DataTableFace, FaceColumn};
+use ui::widget::data_table::DataTableFace;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
 use ui::widget::{
     Button, ButtonFace, ButtonRole, CardFace, ControlSize, EmptyState, EmptyStateContent,
@@ -93,7 +92,6 @@ struct Look {
     tight: f64,
     /// The minimum pointer target: icon buttons, the sidebar toggle.
     target: f64,
-    reduce_motion: bool,
 }
 
 impl Look {
@@ -110,7 +108,6 @@ impl Look {
             related: f64::from(rhythm.related),
             tight: f64::from(rhythm.tight),
             target: f64::from(theme.tokens.metrics.min_pointer_target),
-            reduce_motion: theme.reduce_motion,
         }
     }
 }
@@ -122,7 +119,7 @@ fn line_of(ctx: &mut PaintCtx<'_>, style: &TextStyle) -> f64 {
 
 /// Paint one line of `text`, elided to `max_w`, with its line box's top at
 /// `origin`. Returns the line's height.
-fn text_line(
+pub(super) fn text_line(
     ctx: &mut PaintCtx<'_>,
     text: &str,
     style: &TextStyle,
@@ -153,7 +150,7 @@ fn text_in_band(
 
 /// Paint one line of `text` ending at `x1`, centred on its line box inside
 /// `band`. Returns the x the text starts at.
-fn text_right_in_band(
+pub(super) fn text_right_in_band(
     ctx: &mut PaintCtx<'_>,
     text: &str,
     style: &TextStyle,
@@ -169,7 +166,7 @@ fn text_right_in_band(
 }
 
 /// A square of `side` centred on `c`.
-fn square_around(c: Point, side: f64) -> Rect {
+pub(super) fn square_around(c: Point, side: f64) -> Rect {
     Rect::from_center_size(c, (side, side))
 }
 
@@ -449,11 +446,14 @@ impl<'a> TrackTable<'a> {
 /// right-aligned duration.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct TrackColumns {
-    pub index: Option<Rect>,
     pub title_x: f64,
     pub title_x1: f64,
     pub album: Option<(f64, f64)>,
     /// The leading edge of the action cluster.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "read by the column layout's tests")
+    )]
     pub actions_x: f64,
 }
 
@@ -488,7 +488,6 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
         gap,
         min_text,
     } = w;
-    let index = (index_w > 0.0).then(|| Rect::new(left, 0.0, left + index_w, 0.0));
     let title_x = if index_w > 0.0 {
         left + index_w + gap
     } else {
@@ -506,7 +505,6 @@ pub(super) fn track_columns(left: f64, right: f64, w: ColumnWidths, album: bool)
         (actions_x - gap, None)
     };
     TrackColumns {
-        index,
         title_x,
         title_x1,
         album,
@@ -593,16 +591,6 @@ struct DetailHeader<'a> {
     queue: Vec<String>,
 }
 
-/// One visible row of a [`TrackTable`]: its track and index in the table, its
-/// band, and whether it is the current track or under the pointer.
-struct TrackRow<'a> {
-    track: &'a TrackDisp,
-    index: usize,
-    band: Rect,
-    is_current: bool,
-    hovered: bool,
-}
-
 /// The lyrics view's one column: on the content gutter like every other
 /// page, bounded to a readable width, inside the gutter top and bottom. The
 /// song itself is named by the transport bar, so the column is lyrics only.
@@ -646,6 +634,29 @@ fn eq_bars(playing: bool, reduce_motion: bool) -> [f64; 3] {
         *o = 0.15 + 0.85 * (0.5 + 0.5 * (ti * speed + phase).sin());
     }
     out
+}
+
+/// The now-playing equalizer, ending at `end`: three bars that move while
+/// the track plays and hold still when it is paused (or motion is reduced).
+pub(super) fn paint_equalizer(ctx: &mut PaintCtx<'_>, playing: bool, end: Point) {
+    let theme = ctx.theme;
+    let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+    let bars = eq_bars(playing, theme.reduce_motion);
+    let bar_w = tight - 1.0;
+    let pitch = tight + tight / 2.0;
+    let max_h = f64::from(theme.tokens.metrics.icon_sm);
+    let x0 = end.x - (pitch * 2.0 + bar_w);
+    for (i, &frac) in bars.iter().enumerate() {
+        let x = x0 + i as f64 * pitch;
+        let h = max_h * (0.3 + 0.7 * frac);
+        ctx.scene.fill(
+            Fill::NonZero,
+            ctx.transform,
+            theme.text_primary,
+            None,
+            &Rect::new(x, end.y - h / 2.0, x + bar_w, end.y + h / 2.0),
+        );
+    }
 }
 
 /// A responsive grid of media cards: the column count that keeps each card
@@ -2026,16 +2037,16 @@ impl MusicApp {
     /// Pointer and key input the header, the sidebar and the scroll region
     /// left for the page.
     fn on_input(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.drag.is_none() && self.bar_press.is_none() && self.route_track_tables(event, ctx) {
+            if let WindowEvent::CursorMoved { .. } = event {
+                self.on_cursor_moved(event, ctx.scale_factor, ctx.state, ctx.handled);
+            }
+            self.dirty = true;
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { .. } => {
                 self.on_cursor_moved(event, ctx.scale_factor, ctx.state, ctx.handled);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Right,
-                ..
-            } => {
-                self.on_right_click(ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2083,6 +2094,9 @@ impl MusicApp {
             } else {
                 "Show sidebar"
             });
+        }
+        if let Some(name) = &self.table_tooltip {
+            return Some(name.as_str());
         }
         self.hits
             .iter()
@@ -2203,15 +2217,6 @@ impl MusicApp {
         } else if self.bar_press.is_some() {
             // A now-playing-bar swipe is in progress; consume moves so
             // the gesture is resolved on release.
-            *handled = true;
-        }
-    }
-
-    /// Right-click: open a track's context menu where one is registered.
-    fn on_right_click(&mut self, state: &mut AutoCommit, handled: &mut bool) {
-        if let Some((row, action)) = self.row_menu_at(self.mouse) {
-            self.menu_anchor_row = Some(row);
-            self.dispatch(action, state);
             *handled = true;
         }
     }
@@ -2594,7 +2599,7 @@ impl MusicApp {
     ) {
         let ctx = &mut PaintCtx::new(scene, t, tr, theme);
         self.hits.clear();
-        self.row_menu_hits.clear();
+        self.track_tables_drawn = 0;
         self.sync_context_menu_geometry(ctx.theme);
         // Fold in any streaming-worker results (resolved stream URLs → audio
         // engine, real search hits → library), then keep live search results
@@ -2668,6 +2673,8 @@ impl MusicApp {
         let start_y = body.y0 - scrolled;
         let end_y = self.draw_body(ctx, &look, body, start_y);
         ctx.scene.pop_layer();
+        self.body_hits = self.hits.len();
+        self.track_tables.truncate(self.track_tables_drawn);
         self.content_height = (end_y + scrolled) - body.y0 + look.gutter;
         self.body_scroll
             .set_content_size(body.width(), self.content_height);
@@ -2724,9 +2731,9 @@ impl MusicApp {
         let Some(track) = self.staged_menu_track.take() else {
             return;
         };
-        let row = self.row_menu_hits.iter().find_map(|hit| match &hit.action {
-            Action::OpenTrackMenu { track: t, .. } if *t == track => Some(hit.rect),
-            _ => None,
+        let row = self.track_tables.iter().find_map(|slot| {
+            let index = slot.table.rows().iter().position(|row| row.id == track)?;
+            slot.table.row_rect(index)
         });
         if let Some(row) = row {
             self.mouse = Point::new(row.x0 + row.width() * 0.3, row.center().y);
@@ -3365,24 +3372,79 @@ impl MusicApp {
     // ---- track table ------------------------------------------------------
 
     /// The track list every view shares (songs, an album, a playlist, liked
-    /// songs, downloads, the queue): index or equalizer, title over artist,
-    /// album, the row's actions (shown on hover, or muted for a liked or
-    /// downloaded song) and a right-aligned duration in tabular figures.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one table pass measures its columns, registers each row's hits and paints it"
-    )]
+    /// songs, downloads, the queue): the toolkit's table, embedded in the
+    /// page and windowed by its scroll. Its rows lift, play, open their menu
+    /// and show their actions themselves; what they ask for comes back
+    /// through [`Self::route_track_tables`]. Returns the y below the table.
     fn draw_track_table(
         &mut self,
         ctx: &mut PaintCtx<'_>,
         look: &Look,
         body: Rect,
-        mut y: f64,
+        y: f64,
         table: &TrackTable<'_>,
     ) -> f64 {
+        use super::track_table::TrackTableHost;
         let theme = ctx.theme;
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
+        let downloads = matches!(self.view, View::Downloads);
+        let shape = Self::track_table_shape(ctx, look, (left, right), table, downloads);
+        let offset = table.queue_offset.unwrap_or(0);
+        let len = table.rows.len();
+        let rows: Vec<_> = table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, tk)| self.track_cell(tk, i, len, table, downloads))
+            .collect();
+        // A membership opened from search stays lifted on its row.
+        let selected = table.playlist.and_then(|playlist| {
+            let (owner, track) = self.revealed_membership.as_ref()?;
+            (owner == playlist)
+                .then(|| table.rows.iter().position(|tk| &tk.id == track))
+                .flatten()
+        });
+
+        let slot_index = self.track_tables_drawn;
+        self.track_tables_drawn += 1;
+        if self.track_tables.len() <= slot_index {
+            self.track_tables.push(super::TrackTableSlot {
+                table: TrackTableHost::new(shape, theme),
+                queue: Arc::default(),
+                playlist: None,
+                queue_offset: None,
+            });
+        }
+        let clip = self.body_rect;
+        let Some(slot) = self.track_tables.get_mut(slot_index) else {
+            return y;
+        };
+        if slot.queue.as_slice() != table.queue {
+            slot.queue = Arc::new(table.queue.to_vec());
+        }
+        slot.playlist = table.playlist.map(str::to_owned);
+        slot.queue_offset = table.queue_offset.map(|_| offset);
+        slot.table.update(shape, rows, selected, theme);
+        if slot_index == 0
+            && let Some(row) = self.staged_row_pointer.take()
+        {
+            slot.table.stage_pointer(row);
+        }
+        slot.table.place(ctx, (left, right), y, clip)
+    }
+
+    /// A track table's columns in `[left, right]`: which show, and their
+    /// measured widths.
+    fn track_table_shape(
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        (left, right): (f64, f64),
+        table: &TrackTable<'_>,
+        downloads: bool,
+    ) -> super::track_table::Shape {
+        use super::track_table::{Actions, Second, Shape};
+        let theme = ctx.theme;
         let numeric = theme.text(TextRole::Caption).numeric();
         let index_w = if table.number_col {
             f64::from(ctx.text.measure_style("000", None, &numeric).0)
@@ -3390,13 +3452,20 @@ impl MusicApp {
             0.0
         };
         let duration_w = f64::from(ctx.text.measure_style("00:00", None, &numeric).0);
-        let action_w = ButtonFace::height(ControlSize::Small, theme);
-        let downloads = matches!(self.view, View::Downloads);
-        let reorder = table.playlist.is_some() || table.queue_offset.is_some();
+        let action_w = super::track_table::action_side(theme);
         let actions = if downloads {
-            1
+            Actions::Download
+        } else if table.playlist.is_some() || table.queue_offset.is_some() {
+            Actions::Reorder {
+                playlist: table.playlist.is_some(),
+            }
         } else {
-            2 + if reorder { 3 } else { 0 }
+            Actions::Track
+        };
+        let action_count = match actions {
+            Actions::Download => 1,
+            Actions::Track => 2,
+            Actions::Reorder { .. } => 5,
         };
         let title_style = theme.text(TextRole::Body).strong();
         let caption = theme.text(TextRole::Caption);
@@ -3417,473 +3486,197 @@ impl MusicApp {
                 index: index_w,
                 duration: duration_w,
                 action: action_w,
-                actions,
+                actions: action_count,
                 title: title_need,
                 gap: look.gutter,
                 min_text: MediaSize::Small.extent(theme),
             },
             second_column,
         );
-        // The table is the toolkit's DataTable face: its header, row
-        // heights, zebra and lift. The album and duration cells are its text;
-        // the index, the song over its artist and the actions are painted
-        // into their columns over it.
-        let pad = f64::from(theme.tokens.spacing.s2);
-        let fixed = |x0: f64, x1: f64| ColumnWidth::Fixed(((x1 - x0).max(0.0) + 2.0 * pad) as f32);
-        let mut columns = Vec::new();
-        if let Some(index) = cols.index {
-            columns
-                .push(FaceColumn::new("", fixed(index.x0, index.x1)).with_kind(TextKind::Numeric));
-        }
-        let title_width = if cols.album.is_some() {
-            fixed(cols.title_x, cols.title_x1)
-        } else {
-            ColumnWidth::Flex(1.0)
-        };
-        columns.push(FaceColumn::new("Title", title_width));
-        if cols.album.is_some() {
-            let label = if downloads { "Status" } else { "Album" };
-            columns.push(FaceColumn::new(label, ColumnWidth::Flex(1.0)));
-        }
-        columns.push(FaceColumn::new(
-            "",
-            ColumnWidth::Fixed((action_w * actions as f64 + 2.0 * pad) as f32),
-        ));
-        columns.push(FaceColumn::new("Time", fixed(0.0, duration_w)).with_kind(TextKind::Numeric));
-        let album_col = cols.album.map(|_| columns.len() - 3);
-
-        let rect = Rect::new(left, y, right, y);
-        let header = DataTableFace::new(&columns, &[]);
-        let header = if second_column && table.header {
-            header
-        } else {
-            header.without_header()
-        };
-        // Where each column's content stands: its cell, inside the cell's
-        // padding.
-        let cells = header.column_rects(rect, ctx.text, theme);
-        let inner = |i: usize| {
-            cells
-                .get(i)
-                .map_or((left, left), |cell| (cell.x0 + pad, cell.x1 - pad))
-        };
-        let mut k = 0;
-        let index = cols.index.map(|_| {
-            k += 1;
-            let (x0, x1) = inner(0);
-            Rect::new(x0, 0.0, x1, 0.0)
-        });
-        let (title_x, title_x1) = inner(k);
-        let album = album_col.map(inner);
-        let (actions_x, _) = inner(columns.len() - 2);
-        let cols = TrackColumns {
-            index,
-            title_x,
-            title_x1,
-            album,
-            actions_x,
-        };
-        let header_h = header.height(theme);
-        header.paint(ctx, rect);
-        y += header_h;
-
-        // Only the rows inside the body are handed to the face; stripes
-        // keep their parity through `first_row`.
-        let row_h = DataTableFace::new(&columns, &[])
-            .two_line()
-            .row_height(theme);
-        let n = table.rows.len();
-        let first = (((self.body_rect.y0 - y) / row_h).floor().max(0.0) as usize).min(n);
-        let last = ((((self.body_rect.y1 - y) / row_h).ceil().max(0.0)) as usize).min(n);
-        let shown = table.rows.get(first..last).unwrap_or_default();
-        let durations: Vec<String> = shown
-            .iter()
-            .map(|tk| {
-                if tk.dur > 0 {
-                    ui::format::timecode(u64::from(tk.dur))
+        // Widths on the half pixel, so a table is rebuilt for a real change
+        // of its columns and never for float noise.
+        let half = |v: f64| ((v * 2.0).round() / 2.0) as f32;
+        Shape {
+            numbers: table.number_col,
+            second: cols.album.map(|_| {
+                if downloads {
+                    Second::Status
                 } else {
-                    String::new()
+                    Second::Album
                 }
-            })
-            .collect();
-        let cells_text: Vec<Vec<&str>> = shown
-            .iter()
-            .zip(&durations)
-            .map(|(tk, dur)| {
-                let mut row = Vec::with_capacity(columns.len());
-                if cols.index.is_some() {
-                    row.push("");
-                }
-                row.push("");
-                if cols.album.is_some() {
-                    row.push(if downloads { "" } else { tk.album.as_str() });
-                }
-                row.push("");
-                row.push(dur.as_str());
-                row
-            })
-            .collect();
-        let rows: Vec<&[&str]> = cells_text.iter().map(Vec::as_slice).collect();
-        let rows_top = y + row_h * first as f64;
-        let body_rows = Rect::new(
-            left,
-            rows_top,
-            right,
-            rows_top + row_h * (last - first) as f64,
-        );
+            }),
+            title_width: cols.album.map(|_| half(cols.title_x1 - cols.title_x)),
+            header: table.header,
+            actions,
+            row_height: half(DataTableFace::new(&[], &[]).two_line().row_height(theme)),
+            index_width: half(index_w),
+            duration_width: half(duration_w),
+            action_width: half(action_w),
+        }
+    }
 
-        let shared_queue = Arc::new(table.queue.to_vec());
-        let offset = table.queue_offset.unwrap_or(0);
-        let mut hovered_row = None;
-        let mut revealed_row = None;
-        let mut painted = Vec::with_capacity(last - first);
-        for (slot, tk) in shown.iter().enumerate() {
-            let i = first + slot;
-            let row_rect = Rect::new(
-                left - look.related,
-                rows_top + row_h * slot as f64,
-                right + look.related,
-                rows_top + row_h * (slot + 1) as f64,
-            );
-            let band = Rect::new(left, row_rect.y0, right, row_rect.y1);
-            let is_current = if table.queue_offset.is_some() {
-                self.pb.queue_index == offset + i && self.pb.current.is_some()
+    /// One row of a track table as its cells show it.
+    fn track_cell(
+        &self,
+        tk: &TrackDisp,
+        index: usize,
+        len: usize,
+        table: &TrackTable<'_>,
+        downloads: bool,
+    ) -> super::track_table::TrackCell {
+        use super::track_table::{Offline, Place, Playback};
+        let current = if let Some(offset) = table.queue_offset {
+            self.pb.queue_index == offset + index && self.pb.current.is_some()
+        } else {
+            self.pb.current.as_deref() == Some(tk.id.as_str())
+        };
+        let failed = self.offline_errors.contains_key(&tk.id);
+        let offline = if failed {
+            Offline::Failed
+        } else {
+            match self.lib.cache_state(&tk.id) {
+                CacheState::Downloading(progress) => {
+                    Offline::Downloading((progress * 100.0).round().clamp(0.0, 100.0) as u8)
+                }
+                CacheState::Cached => Offline::Cached,
+                CacheState::Streamed => Offline::Streamed,
+            }
+        };
+        let second = if downloads {
+            self.download_status(&tk.id).0
+        } else {
+            tk.album.clone()
+        };
+        super::track_table::TrackCell {
+            id: tk.id.clone(),
+            title: tk.title.clone(),
+            artist: tk.artist.clone(),
+            second,
+            number: tk.no.max(index as u32 + 1),
+            duration: if tk.dur > 0 {
+                ui::format::timecode(u64::from(tk.dur))
             } else {
-                self.pb.current.as_deref() == Some(tk.id.as_str())
+                String::new()
+            },
+            playback: match (current, self.pb.playing) {
+                (false, _) => Playback::Idle,
+                (true, false) => Playback::Paused,
+                (true, true) => Playback::Playing,
+            },
+            liked: self.lib.is_liked(&tk.id),
+            offline,
+            offline_error: self.offline_errors.get(&tk.id).cloned(),
+            local: self.is_local_file(&tk.id),
+            place: Place::of(index, len),
+        }
+    }
+
+    /// Route `event` to the page's track tables and turn what their rows
+    /// asked for into actions. Chrome painted over the page (the queue
+    /// preview, a floating sidebar and its scrim) takes the pointer first.
+    /// Returns whether a table took the event.
+    fn route_track_tables(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        use super::track_table::{Offline, RowEvent};
+        let pointer = matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        );
+        if !pointer {
+            return false;
+        }
+        let mouse = match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor)
+            }
+            _ => self.mouse,
+        };
+        let covered = !self.body_rect.contains(mouse)
+            || self
+                .hits
+                .get(self.body_hits..)
+                .is_some_and(|chrome| chrome.iter().any(|hit| hit.rect.contains(mouse)))
+            || (self.volume_popover_open && self.volume_popover_rect.contains(mouse));
+        let mut asked = Vec::new();
+        let mut tooltip = None;
+        for (index, slot) in self.track_tables.iter_mut().enumerate() {
+            if covered {
+                // The pointer is not over the page: no row stays lifted.
+                if let WindowEvent::CursorMoved { device_id, .. } = event {
+                    slot.table.handle_event(
+                        &WindowEvent::CursorLeft {
+                            device_id: *device_id,
+                        },
+                        ctx,
+                    );
+                }
+                continue;
+            }
+            slot.table.handle_event(event, ctx);
+            tooltip = tooltip.or_else(|| slot.table.tooltip_at(mouse));
+            asked.extend(slot.table.take_events().into_iter().map(|ask| (index, ask)));
+        }
+        if tooltip != self.table_tooltip {
+            self.table_tooltip = tooltip;
+            self.dirty = true;
+        }
+        let took = *ctx.handled;
+        for (index, ask) in asked {
+            let Some(slot) = self.track_tables.get(index) else {
+                continue;
             };
-            let hovered = self.body_hit(
-                row_rect,
-                Action::Play {
-                    queue: Arc::clone(&shared_queue),
+            let offset = slot.queue_offset.unwrap_or(0);
+            let row = |i: usize| slot.table.rows().get(i);
+            let up = matches!(ask, RowEvent::MoveUp(_));
+            let action = match ask {
+                RowEvent::Play(i) => Some(Action::Play {
+                    queue: Arc::clone(&slot.queue),
                     index: offset + i,
-                },
-            );
-            // Right-click anywhere on the row opens its context menu (bound to
-            // this playlist when in one, so "Remove from playlist" targets it).
-            self.push_row_menu(
-                row_rect,
-                Action::OpenTrackMenu {
-                    track: tk.id.clone(),
-                    in_playlist: table.playlist.map(str::to_string),
-                    queue_index: table.queue_offset.map(|o| o + i),
-                },
-            );
-            let revealed = table.playlist.is_some_and(|playlist| {
-                self.revealed_membership
-                    .as_ref()
-                    .is_some_and(|(owner, track)| owner == playlist && track == &tk.id)
-            });
-            if hovered {
-                hovered_row = Some(slot);
-            }
-            if revealed {
-                revealed_row = Some(slot);
-            }
-            painted.push(TrackRow {
-                track: tk,
-                index: i,
-                band,
-                is_current,
-                hovered,
-            });
-        }
-        DataTableFace::new(&columns, &rows)
-            .two_line()
-            .without_header()
-            .first_row(first)
-            .hovered(hovered_row)
-            .selected(revealed_row)
-            .paint(ctx, body_rows);
-        for row in &painted {
-            self.draw_track_row(ctx, look, &cols, table, row);
-        }
-        y + row_h * n as f64
-    }
-
-    /// One row's content inside its band.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "each column of the row is a few lines; together they are one row"
-    )]
-    fn draw_track_row(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        cols: &TrackColumns,
-        table: &TrackTable<'_>,
-        row: &TrackRow<'_>,
-    ) {
-        let theme = ctx.theme;
-        let band = row.band;
-        let tk = row.track;
-        let numeric = theme.text(TextRole::Caption).numeric();
-
-        // Index column: Play under the pointer, the equalizer for the playing
-        // track, else the track number.
-        if let Some(index) = cols.index {
-            let slot = Rect::new(index.x0, band.y0, index.x1, band.y1);
-            if row.hovered {
-                let side = f64::from(theme.tokens.metrics.icon_sm);
-                Icon::Play.draw(
-                    ctx.scene,
-                    ctx.transform,
-                    square_around(Point::new(slot.x1 - side / 2.0, slot.center().y), side),
-                    look.text,
-                );
-            } else if row.is_current {
-                self.draw_equalizer(ctx, look, slot);
-            } else {
-                let num = format!("{}", tk.no.max(row.index as u32 + 1));
-                text_right_in_band(ctx, &num, &numeric, look.faint, slot.x1, slot);
-            }
-        }
-
-        // Title over artist, centred as one block.
-        let title_style = if row.is_current {
-            theme.text(TextRole::Body).strong()
-        } else {
-            theme.text(TextRole::Body)
-        };
-        let caption = theme.text(TextRole::Caption);
-        let block = line_of(ctx, &title_style) + line_of(ctx, &caption);
-        let top = band.y0 + (band.height() - block) / 2.0;
-        let text_w = cols.title_x1 - cols.title_x;
-        let title_h = text_line(
-            ctx,
-            &tk.title,
-            &title_style,
-            look.text,
-            Point::new(cols.title_x, top),
-            text_w,
-        );
-        text_line(
-            ctx,
-            &tk.artist,
-            &caption,
-            look.dim,
-            Point::new(cols.title_x, top + title_h),
-            text_w,
-        );
-
-        let downloads = matches!(self.view, View::Downloads);
-        // The face sets the album; a download's status is painted here, in
-        // danger ink when it failed.
-        if let Some((album_x, album_x1)) = cols.album
-            && downloads
-        {
-            let (status, failed) = self.download_status(&tk.id);
-            let ink = if failed { look.danger } else { look.dim };
-            text_in_band(
-                ctx,
-                &status,
-                &caption,
-                ink,
-                album_x,
-                band,
-                album_x1 - album_x,
-            );
-        }
-
-        // The action cluster, left to right.
-        let action_w = ButtonFace::height(ControlSize::Small, theme);
-        let mid = band.center().y;
-        let slot = |k: usize| {
-            let x = cols.actions_x + k as f64 * action_w;
-            Rect::new(x, mid - action_w / 2.0, x + action_w, mid + action_w / 2.0)
-        };
-        let local = self.is_local_file(&tk.id);
-        if downloads {
-            if !local {
-                self.draw_download_action(ctx, look, slot(0), &tk.id, true);
-            }
-        } else {
-            let mut k = 0;
-            if table.playlist.is_some() || table.queue_offset.is_some() {
-                if row.hovered {
-                    self.draw_reorder_actions(ctx, table, row, [slot(0), slot(1), slot(2)]);
+                }),
+                RowEvent::Menu(i, rect) => row(i).map(|track| {
+                    self.menu_anchor_row = Some(rect);
+                    Action::OpenTrackMenu {
+                        track: track.id.clone(),
+                        in_playlist: slot.playlist.clone(),
+                        queue_index: slot.queue_offset.map(|o| o + i),
+                    }
+                }),
+                RowEvent::Like(i) => row(i).map(|track| Action::ToggleLike(track.id.clone())),
+                RowEvent::Offline(i) => row(i).map(|track| Action::SetOffline {
+                    track: track.id.clone(),
+                    keep: matches!(track.offline, Offline::Streamed | Offline::Failed),
+                }),
+                RowEvent::MoveUp(i) | RowEvent::MoveDown(i) => {
+                    let to = if up { i.saturating_sub(1) } else { i + 1 };
+                    Some(match &slot.playlist {
+                        Some(playlist) => Action::MovePlaylistItem {
+                            playlist: playlist.clone(),
+                            from: i,
+                            to,
+                        },
+                        None => Action::MoveQueueItem {
+                            from: offset + i,
+                            to: offset + to,
+                        },
+                    })
                 }
-                k = 3;
+                RowEvent::Remove(i) => match &slot.playlist {
+                    Some(playlist) => row(i).map(|track| Action::RemoveFromPlaylist {
+                        playlist: playlist.clone(),
+                        track: track.id.clone(),
+                    }),
+                    None => Some(Action::RemoveFromQueue(offset + i)),
+                },
+            };
+            if let Some(action) = action {
+                self.dispatch(action, ctx.state);
+                self.dirty = true;
             }
-            if !local {
-                self.draw_like_action(ctx, look, slot(k), &tk.id, row.hovered);
-                self.draw_download_action(ctx, look, slot(k + 1), &tk.id, row.hovered);
-            }
         }
-    }
-
-    /// The now-playing equalizer: three bars that move while the track plays
-    /// and hold still when it is paused (or motion is reduced).
-    fn draw_equalizer(&self, ctx: &mut PaintCtx<'_>, look: &Look, slot: Rect) {
-        let bars = eq_bars(self.pb.playing, look.reduce_motion);
-        let bar_w = look.tight - 1.0;
-        let pitch = look.tight + look.tight / 2.0;
-        let max_h = f64::from(ctx.theme.tokens.metrics.icon_sm);
-        let x0 = slot.x1 - (pitch * 2.0 + bar_w);
-        let mid = slot.center().y;
-        for (i, &frac) in bars.iter().enumerate() {
-            let x = x0 + i as f64 * pitch;
-            let h = max_h * (0.3 + 0.7 * frac);
-            ctx.scene.fill(
-                Fill::NonZero,
-                ctx.transform,
-                look.text,
-                None,
-                &Rect::new(x, mid - h / 2.0, x + bar_w, mid + h / 2.0),
-            );
-        }
-    }
-
-    /// Move up, move down and remove for a playlist or queue row.
-    fn draw_reorder_actions(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        table: &TrackTable<'_>,
-        row: &TrackRow<'_>,
-        slots: [Rect; 3],
-    ) {
-        let i = row.index;
-        let len = table.rows.len();
-        let (up, down, remove) = if let Some(pl) = table.playlist {
-            (
-                Action::MovePlaylistItem {
-                    playlist: pl.to_string(),
-                    from: i,
-                    to: i.saturating_sub(1),
-                },
-                Action::MovePlaylistItem {
-                    playlist: pl.to_string(),
-                    from: i,
-                    to: i + 1,
-                },
-                Action::RemoveFromPlaylist {
-                    playlist: pl.to_string(),
-                    track: row.track.id.clone(),
-                },
-            )
-        } else {
-            let abs = table.queue_offset.unwrap_or(0) + i;
-            (
-                Action::MoveQueueItem {
-                    from: abs,
-                    to: abs.saturating_sub(1),
-                },
-                Action::MoveQueueItem {
-                    from: abs,
-                    to: abs + 1,
-                },
-                Action::RemoveFromQueue(abs),
-            )
-        };
-        if i > 0 {
-            self.icon_button(
-                ctx,
-                ButtonFace::icon_only(slots[0], Icon::ChevronUp, "Move up")
-                    .control_size(ControlSize::Small),
-                false,
-                up,
-            );
-        }
-        if i + 1 < len {
-            self.icon_button(
-                ctx,
-                ButtonFace::icon_only(slots[1], Icon::ChevronDown, "Move down")
-                    .control_size(ControlSize::Small),
-                false,
-                down,
-            );
-        }
-        let name = if table.playlist.is_some() {
-            "Remove from playlist"
-        } else {
-            "Remove from queue"
-        };
-        self.icon_button(
-            ctx,
-            ButtonFace::icon_only(slots[2], Icon::X, name).control_size(ControlSize::Small),
-            false,
-            remove,
-        );
-    }
-
-    /// Like: a plain button under the pointer; a liked song keeps a muted
-    /// filled mark when the row is at rest.
-    fn draw_like_action(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        slot: Rect,
-        track: &str,
-        row_hovered: bool,
-    ) {
-        let liked = self.lib.is_liked(track);
-        let glyph = square_around(slot.center(), f64::from(ctx.theme.tokens.metrics.icon_sm));
-        if row_hovered {
-            let name = if liked { "Unlike" } else { "Like" };
-            self.icon_button(
-                ctx,
-                ButtonFace::icon_only(slot, Icon::Heart, name).control_size(ControlSize::Small),
-                false,
-                Action::ToggleLike(track.to_string()),
-            );
-            if liked {
-                Icon::Heart.draw_filled(ctx.scene, ctx.transform, glyph, look.text);
-            }
-        } else if liked {
-            self.push_hit(slot, Action::ToggleLike(track.to_string()));
-            Icon::Heart.draw_filled(ctx.scene, ctx.transform, glyph, look.dim);
-        }
-    }
-
-    /// The offline state of a song and its one action: keep offline, cancel
-    /// a download, remove a download or retry a failed one. At rest only a
-    /// downloaded (or failed) song shows its mark, muted.
-    fn draw_download_action(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        look: &Look,
-        slot: Rect,
-        track: &str,
-        show: bool,
-    ) {
-        let state = self.lib.cache_state(track);
-        let failed = self.offline_errors.contains_key(track);
-        let downloading = matches!(state, CacheState::Downloading(_));
-        let cached = matches!(state, CacheState::Cached);
-        let (icon, name, keep) = if failed {
-            (Icon::Refresh, "Retry download", true)
-        } else if downloading {
-            (Icon::X, "Cancel download", false)
-        } else if cached {
-            (Icon::Trash2, "Remove download", false)
-        } else {
-            (Icon::Download, "Keep offline", true)
-        };
-        let action = Action::SetOffline {
-            track: track.to_string(),
-            keep,
-        };
-        if show {
-            self.icon_button(
-                ctx,
-                ButtonFace::icon_only(slot, icon, name).control_size(ControlSize::Small),
-                false,
-                action,
-            );
-            return;
-        }
-        let glyph = square_around(slot.center(), f64::from(ctx.theme.tokens.metrics.icon_sm));
-        if failed {
-            self.push_hit(slot, action);
-            Icon::TriangleAlert.draw(ctx.scene, ctx.transform, glyph, look.danger);
-        } else if cached {
-            self.push_hit(slot, action);
-            Icon::Check.draw(ctx.scene, ctx.transform, glyph, look.dim);
-        } else if let CacheState::Downloading(progress) = state {
-            self.push_hit(slot, action);
-            let pct = format!("{:.0}%", progress * 100.0);
-            let numeric = ctx.theme.text(TextRole::Caption).numeric();
-            text_right_in_band(ctx, &pct, &numeric, look.dim, slot.x1, slot);
-        }
+        took
     }
 
     /// A song's offline status in words, and whether it failed. A failure

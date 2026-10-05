@@ -227,6 +227,15 @@ struct Hit {
     action: Action,
 }
 
+/// One track table of the page and what its rows stand for: the queue a
+/// press plays from, and the playlist or queue position the rows belong to.
+struct TrackTableSlot {
+    table: track_table::TrackTableHost,
+    queue: Arc<Vec<String>>,
+    playlist: Option<String>,
+    queue_offset: Option<usize>,
+}
+
 #[derive(Clone, Debug)]
 struct PendingMediaHandoff {
     uri: String,
@@ -410,10 +419,16 @@ pub struct MusicApp {
 
     mouse: Point,
     hits: Vec<Hit>,
-    /// Per-row right-click targets, captured during draw and matched on a
-    /// right mouse press (kept separate from `hits` so a left-click plays the
-    /// row while a right-click opens its context menu).
-    row_menu_hits: Vec<Hit>,
+    /// How many of `hits` belong to the page body; the rest are the chrome
+    /// painted over it, which takes the pointer first.
+    body_hits: usize,
+    /// The page's track tables, in the order this frame drew them, each
+    /// with what its rows play and belong to.
+    track_tables: Vec<TrackTableSlot>,
+    /// How many of them this frame has drawn so far.
+    track_tables_drawn: usize,
+    /// The name of the row control under the pointer, for its tooltip.
+    table_tooltip: Option<String>,
     drag: Option<Drag>,
     /// A horizontal swipe in progress on the now-playing bar: `(start point,
     /// tap action under the press)`. On release a large horizontal delta skips
@@ -500,6 +515,9 @@ pub struct MusicApp {
     /// A staged track whose context menu opens over its row once the row is
     /// laid out.
     staged_menu_track: Option<String>,
+    /// A row of the page's first track table a capture shows under the
+    /// pointer.
+    staged_row_pointer: Option<usize>,
     /// Open the narrow transport's More menu once the bar is laid out.
     staged_player_menu: bool,
 
@@ -749,7 +767,10 @@ impl MusicApp {
             bar_h: 0.0,
             mouse: Point::ZERO,
             hits: Vec::new(),
-            row_menu_hits: Vec::new(),
+            body_hits: 0,
+            track_tables: Vec::new(),
+            track_tables_drawn: 0,
+            table_tooltip: None,
             drag: None,
             bar_press: None,
             scrubber_rect: Rect::ZERO,
@@ -781,6 +802,7 @@ impl MusicApp {
             lyrics_synced: false,
             shot_stage: None,
             staged_menu_track: None,
+            staged_row_pointer: None,
             staged_player_menu: false,
             images: ImageStore::new(&image_fetcher()),
             art_urls: HashMap::new(),
@@ -3817,22 +3839,6 @@ impl MusicApp {
         hovered
     }
 
-    /// Register a right-click context target for a track row. Matched only on
-    /// a right mouse press (left-clicks still play the row).
-    fn push_row_menu(&mut self, rect: Rect, action: Action) {
-        self.row_menu_hits.push(Hit { rect, action });
-    }
-
-    /// Topmost right-click target containing `p` (later-drawn = on top), and
-    /// the row it belongs to.
-    fn row_menu_at(&self, p: Point) -> Option<(Rect, Action)> {
-        self.row_menu_hits
-            .iter()
-            .rev()
-            .find(|h| h.rect.contains(p))
-            .map(|h| (h.rect, h.action.clone()))
-    }
-
     // ---- adaptive sidebar geometry (delegated to `SidebarDrawer`) --------
 
     /// The width-driven sidebar layout (docked vs overlay). Computed straight
@@ -3885,6 +3891,13 @@ impl MusicApp {
     pub fn snap_sidebar(&mut self, open: bool) {
         self.drawer.snap(open);
         self.dirty = true;
+    }
+
+    /// Stage the Songs list with one row under the pointer, showing its
+    /// actions, for a `--shots` frame.
+    pub fn snap_row_actions(&mut self) {
+        self.view = View::Songs;
+        self.staged_row_pointer = Some(2);
     }
 
     /// Stage a track context menu open for a `--shots` frame. Deferred to the
@@ -4896,6 +4909,7 @@ fn image_fetcher() -> ui::Fetcher {
 
 mod local_files;
 mod render;
+mod track_table;
 
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
