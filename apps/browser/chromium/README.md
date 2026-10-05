@@ -26,7 +26,7 @@ target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host
 
 Linux produces `target/chromium/tilo-chromium-host` and adjacent CEF resources;
 run the browser against it with `TILO_CHROMIUM_HOST` set to that path. On Tilo
-OS the engine is the signed runtime bundle `tilo-runtime/2026.10.0-chromium`
+OS the engine is the signed runtime bundle `tilo-runtime/2026.10.1-chromium`
 (`ui::webview::chromium::runtime`): the image build runs
 `build-host.py --sdk-archive … --runtime …` and signs the resulting tree, the
 browser's manifest lists it under `optional-runtimes`, and the launcher mounts
@@ -203,6 +203,20 @@ python3 apps/browser/chromium/tests/nested_bundle.py \
 It requires the nested location and verifies initialization, local HTTP navigation,
 frame delivery, and clean shutdown using the packaged executable.
 
+## Native navigation receipt regression
+
+```sh
+cargo run --locked -p browser --example native_navigation_completion
+```
+
+On Linux this builds the pinned, digest-verified engine with the maintained host
+helper and drives the real Browser's registered actions against an isolated local
+HTTP fixture. It verifies trusted fragment-link Back/Forward receipts, one durable
+history visit per completion, a concrete refused-connection failure, and recovery
+followed by the same history route. Chromium runs unprivileged with its sandbox
+enabled. A fixture supervisor reaps its descendants before the ordinary isolated
+test profile is removed. Missing engine dependencies or observations fail the run.
+
 ## Remaining integration work
 
 - Browser UI extension management and Chrome extension behavior remain separate
@@ -215,4 +229,5 @@ frame delivery, and clean shutdown using the packaged executable.
   macOS native and Linux X11 key mappings. Physical codes use a US layout because
   IPC carries logical names; IME, composed text, other layouts and full native
   shortcut handling need platform integration.
-- Linux runtime execution and macOS release signing/notarization remain unverified.
+- The isolated Linux ARM64 native navigation receipt regression is verified.
+  Packaged hardware acceptance and macOS release signing/notarization remain separate checks.
