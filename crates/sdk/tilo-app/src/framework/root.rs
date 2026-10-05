@@ -1388,6 +1388,40 @@ impl<R: Resource> AppWidget for ResourceRoot<R> {
         None
     }
 
+    fn device_shell_operation(
+        &mut self,
+        operation: &ui_core::floating_surface::DeviceShellOperation,
+    ) -> Result<serde_json::Value, String> {
+        fn perform<R: Resource>(
+            widget: &mut dyn Widget,
+            operation: &ui_core::floating_surface::DeviceShellOperation,
+        ) -> Option<Result<serde_json::Value, String>> {
+            if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)
+                && surface.supports_device_shell()
+            {
+                return Some(surface.device_shell_operation(operation));
+            }
+            widget
+                .children_mut()
+                .into_iter()
+                .find_map(|child| perform::<R>(child, operation))
+        }
+        perform::<R>(self.content.as_mut(), operation)
+            .unwrap_or_else(|| Err("Terminal is not available".into()))
+    }
+
+    fn request_device_shell(&mut self) -> bool {
+        fn request<R: Resource>(widget: &mut dyn Widget) -> bool {
+            if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)
+                && surface.request_device_shell()
+            {
+                return true;
+            }
+            widget.children_mut().into_iter().any(request::<R>)
+        }
+        request::<R>(self.content.as_mut())
+    }
+
     fn take_host_intent(&mut self) -> Option<ui_core::widget::AppHostIntent> {
         fn take<R: Resource>(widget: &mut dyn Widget) -> Option<ui_core::widget::AppHostIntent> {
             if let Some(surface) = capability_mut::<dyn SurfacePublication<R>>(widget)

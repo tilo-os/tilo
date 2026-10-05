@@ -133,6 +133,11 @@ pub struct FloatingSurfaceProtocolRequest {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceClientMessage {
+    /// Bounded response to a trusted owner operation on this same connection.
+    DeviceShellOutcome {
+        request: u64,
+        result: Result<serde_json::Value, String>,
+    },
     /// Terminal asks for the existing host-shell permission prompt.
     AllowHostShell,
     /// Ask the trusted session shell to show its ordinary user-confirmed
@@ -223,12 +228,29 @@ pub enum FloatingSurfaceClientMessage {
     },
 }
 
+/// Owner-only operations on Terminal's existing device-shell PTY.
+/// Every input/read operation is bound to the exact currently open local session.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeviceShellOperation {
+    Select,
+    Inspect,
+    Run { session: String, command: String },
+    Read { session: String },
+}
+
 /// Shell → app lifecycle. The shell supplies one authoritative combined
 /// desktop coordinate space and explicitly acknowledges ownership changes;
 /// transports must not infer either from timing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FloatingSurfaceHostMessage {
+    /// The authenticated device owner selected Terminal's device-shell target.
+    /// This requests its ordinary permission flow; it is not a grant.
+    DeviceShellOperation {
+        request: u64,
+        operation: DeviceShellOperation,
+    },
     /// The trusted desktop's answer, after supervisor admission.
     HostShellAllowed {
         allowed: bool,

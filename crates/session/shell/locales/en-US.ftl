@@ -2377,3 +2377,15 @@ a11y-speaker-listener = { $group } can calibrate with this microphone
 a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
 speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
 speaker-error-listening-unavailable = choose a microphone that can listen where you sit
+search-provider-device-shell = Device shell
+terminal-request-device-shell = Request this device's own shell
+terminal-device-shell-owner-required = Only the device owner can request its own shell
+
+terminal-inspect-device-shell = Inspect this device's shell session
+terminal-run-device-shell = Run a command in this device's shell
+terminal-read-device-shell = Read this device's shell output
+
+terminal-device-shell-session-param = Exact local session UUID from Inspect
+terminal-device-shell-command-param = One reviewed command in this device shell
+
+terminal-device-shell-confirm-param = Confirm this reviewed device-shell operation

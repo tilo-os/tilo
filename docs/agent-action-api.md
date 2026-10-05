@@ -350,3 +350,27 @@ refuses it again at run time.
 | MCP shim | `scripts/tilo-mcp-server.py` |
 | Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |
+
+## This device's shell
+
+A live launcher-authenticated Terminal exposes owner operations through the
+Shell's `terminal-device-shell` provider. List `device shell` to obtain the
+exact per-connection addresses. Invoke `request@<connection>` with
+`confirm: true` to select the ordinary Host target. This does not grant it:
+answer its existing permission request using `permission-prompts`, then use
+`inspect@<connection>` to obtain the current local session UUID.
+
+`run@<connection>` requires that exact `session`, a single reviewed `command`
+(up to 8 KiB), and `confirm: true`. Its acknowledgement says `submitted` only
+after the existing PTY accepted the bytes; it does not claim an exit status.
+`read@<connection>` requires the same session UUID and returns at most 32 KiB
+of visible output, including retained output after the process exits. Read
+and inspect expose no clipboard, credential or arbitrary host-file API.
+
+Only a person administrator/owner may use this provider. App, agent and token
+principals remain refused even with an Admin override. Generic app-broker
+Terminal operations cannot open Host or send input to an existing Host PTY;
+Default environments retain their normal app actions. Closed connections,
+changed sessions, missing acknowledgement and unavailable PTYs fail visibly.
+The matched Shell, SDK runtime and Terminal versions are required for this
+owner lifecycle operation; unsupported workers do not report success.
