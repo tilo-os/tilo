@@ -83,7 +83,7 @@ fn seed(doc: &mut AutoCommit, t: &ObjId) {
 /// table's natural size, positioned at `(MARGIN, MARGIN)`.
 fn frame(
     table: &mut Table,
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
     t: &ObjId,
 ) -> Option<(TaffyTree<()>, NodeId, (f64, f64))> {
     table.sync(doc, t);
@@ -130,7 +130,7 @@ fn dispatch(
         &mut tilo_ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &mods,
-            state: doc,
+            state: tilo_ui::widget::Edits::lend(doc),
             path: t,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -185,10 +185,10 @@ pub fn run(_args: &[String]) {
     };
     seed(&mut doc, &t);
 
-    let mut table = Table::new("demo").with_header();
+    let mut table = Table::new("demo");
 
     // 1. base
-    let Some((taffy, node, size)) = frame(&mut table, &mut doc, &t) else {
+    let Some((taffy, node, size)) = frame(&mut table, &doc, &t) else {
         return;
     };
     shoot(&mut table, size, &dir.join("table-base.png"));
@@ -217,6 +217,10 @@ pub fn run(_args: &[String]) {
     let cols_before = table::dims(&doc, &t).1;
     dispatch(&mut table, &taffy, node, &mut doc, &t, &cursor(bx, by));
     dispatch(&mut table, &taffy, node, &mut doc, &t, &press());
+    // The owner applies what the table hands it.
+    for edit in table.take_edits() {
+        table::apply(&mut doc, &t, &edit);
+    }
     let cols_after = table::dims(&doc, &t).1;
     assert_eq!(
         cols_after,
@@ -224,7 +228,7 @@ pub fn run(_args: &[String]) {
         "middle click inserted a column"
     );
 
-    let Some((_taffy2, _node2, size2)) = frame(&mut table, &mut doc, &t) else {
+    let Some((_taffy2, _node2, size2)) = frame(&mut table, &doc, &t) else {
         return;
     };
     shoot(&mut table, size2, &dir.join("table-after-insert.png"));

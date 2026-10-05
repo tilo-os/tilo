@@ -27,8 +27,6 @@ mod support;
 mod active_group_wireup_test;
 #[path = "advertised_globals.rs"]
 mod advertised_globals;
-#[path = "apps_integration.rs"]
-mod apps_integration;
 #[path = "blend_layer_cost.rs"]
 mod blend_layer_cost;
 #[path = "bluetooth_pairing.rs"]

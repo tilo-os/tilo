@@ -1,4 +1,7 @@
-//! An in-memory replica of one resource: the harness for replay-based tests.
+//! An in-memory replica of one resource: the harness for replay-based tests,
+//! and a resource document held apart from any window — the contents of a
+//! file an app saves its resource to and opens it from ([`Replica::load`],
+//! [`Replica::save`]).
 //!
 //! A replica applies actions exactly as the host does — built from the same
 //! declarations the palette and agents use, applied by the same executor with
@@ -66,6 +69,20 @@ impl<R: Resource> Replica<R> {
             reader: None,
             marker: std::marker::PhantomData,
         }
+    }
+
+    /// A replica of a document [saved](Self::save) as bytes: a file's
+    /// contents.
+    ///
+    /// # Errors
+    /// Returns [`ModelError::Automerge`] when the bytes hold no document.
+    pub fn load(bytes: &[u8]) -> Result<Self, ModelError> {
+        Ok(Self::from_doc(Doc::load(bytes)?))
+    }
+
+    /// The document as bytes, for a file that carries the resource whole.
+    pub fn save(&mut self) -> Vec<u8> {
+        self.doc.save()
     }
 
     /// Attribute later actions to `author`, as the host does for a signed-in
@@ -163,7 +180,7 @@ impl<R: Resource> Replica<R> {
     /// Returns [`ModelError`] when the document does not hold the resource.
     pub fn live(&mut self) -> Result<&R::State, ModelError> {
         if let Some(reader) = &mut self.reader {
-            reader.sync(&mut self.doc)?;
+            reader.sync(&self.doc)?;
         } else {
             self.reader = Some(Reader::open(&mut self.doc)?);
         }

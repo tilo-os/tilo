@@ -18,6 +18,7 @@
 )]
 
 use tilo_automerge::ApplyIncoming;
+use ui::tilo_resource::Effect as _;
 use ui::time::Duration;
 
 use automerge::AutoCommit;
@@ -102,7 +103,7 @@ fn blocks(doc: &AutoCommit) -> Vec<tilo_doc::BlockView> {
 fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Resource> {
     let b = blocks(doc);
     let caret = b.last().map(|block| block.id.clone()).unwrap_or_default();
-    word_processor::actions::provide_resources(
+    word_processor::actions::published_for(
         &word_processor::actions::WpResourceCtx {
             caret_block: caret.clone(),
             caret_offset: 0,
@@ -117,7 +118,15 @@ fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Res
     )
 }
 
-/// The open photograph as Photos publishes it in its library's tree: the
+/// How far the library's one photograph is turned.
+fn photo_rotation(doc: &AutoCommit) -> u8 {
+    photos::doc::PhotosDoc::library(doc)
+        .photos
+        .first()
+        .map_or(0, |photo| photo.edits.rotate_quarters)
+}
+
+/// The photograph as Photos publishes it in its library's tree: the
 /// one resource this scenario edits, so the catalogue the agent plans
 /// against stays small.
 fn photos_resources(doc: &AutoCommit) -> Vec<Resource> {
@@ -295,7 +304,6 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 model_timeout: Duration::from_secs(1),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                directory: None,
                 permissions: granted("Scribe", APP),
                 content: ContentStore::memory(),
             },
@@ -374,7 +382,6 @@ fn a_discovered_operation_runs_only_when_granted_and_explicitly_confirmed() {
                 model_timeout: Duration::from_secs(1),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                directory: None,
                 permissions: only_answering("Scribe"),
                 content: ContentStore::memory(),
             },
@@ -446,7 +453,6 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
                 model_timeout: Duration::from_secs(1),
                 await_document: Duration::ZERO,
                 settle: Duration::ZERO,
-                directory: None,
                 permissions: granted("Scribe", APP),
                 content: ContentStore::memory(),
             },
@@ -550,7 +556,6 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
             model_timeout: Duration::from_secs(1),
             await_document: Duration::ZERO,
             settle: Duration::ZERO,
-            directory: None,
             permissions,
             content: content.clone(),
         };
@@ -598,11 +603,11 @@ fn a_discovered_operation_is_performed_once_and_its_result_carried_into_the_next
         assert!(
             acted,
             "the agent never completed the result-carrying plan; answered={done}, rotation={}, blocks={shown:?}",
-            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters
+            photo_rotation(&photo_replica)
         );
         assert!(done, "the consuming action never landed; blocks: {shown:?}");
         assert_eq!(
-            photos::doc::PhotosDoc::edits(&photo_replica).rotate_quarters,
+            photo_rotation(&photo_replica),
             1,
             "the discovered operation never reached the second application's document"
         );
@@ -658,7 +663,7 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
 }
 
 /// Connect the photo-editor peer to `sock` under the same room, announce it,
-/// and seed its replica with one open image — a second application's
+/// and seed its replica with one photograph — a second application's
 /// document the agent was never told about.
 fn connect_photo_editor(
     sock: &std::path::Path,
@@ -679,14 +684,17 @@ fn connect_photo_editor(
     .unwrap();
     let mut photo_replica = AutoCommit::new();
     photo_replica.set_actor(automerge::ActorId::from("photos-peer".as_bytes()));
-    photos::doc::PhotosDoc::seed(&mut photo_replica);
     let png = photos::pixels::encode_png(&photos::shots_pattern(40, 24))
         .expect("the source photograph encodes");
     let original = content.put(&png).expect("the source photograph is stored");
-    photos::doc::PhotosDoc::set_image(
-        &mut photo_replica,
-        Some(&photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original)),
+    let photo = photos::model::LibraryPhoto::from_image(
+        photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original),
     );
+    tilo_actions::Action::apply(
+        &photos::actions::PhotosAction::ImportPhoto { photo },
+        &mut photo_replica,
+    )
+    .expect("the photograph is imported");
     photo_replica.commit();
     (photo_peer, photo_replica)
 }
@@ -775,22 +783,21 @@ fn drive_photo_peer(
                         | tilo_actions::ActionInput::Deferred { .. } => None,
                     })
                     .expect("the published export has one immediate operation payload");
-                    let result =
-                        photos::actions::decode_operation(&encoded.type_id, &encoded.payload)
-                            .and_then(|operation| match operation {
-                                Some(photos::actions::PhotosOperation::ExportEditedContent {
-                                    resource_id,
-                                    source_content,
-                                    edits,
-                                }) => photos::actions::export_edited_content(
-                                    &resource_id,
-                                    &source_content,
-                                    edits,
-                                    &photo_replica,
-                                    content,
-                                ),
-                                _ => Err("the export descriptor did not encode an export".into()),
-                            });
+                    let result = photos::actions::PhotosEffect::from_payload(&encoded.payload)
+                        .and_then(|effect| match effect {
+                            photos::actions::PhotosEffect::ExportEditedContent {
+                                resource_id,
+                                source_content,
+                                edits,
+                            } => photos::actions::export_edited_content(
+                                &resource_id,
+                                &source_content,
+                                edits,
+                                &photos::doc::PhotosDoc::library(&photo_replica),
+                                content,
+                            ),
+                            _ => Err("the export descriptor did not encode an export".into()),
+                        });
                     let invocation =
                         tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
                     match result {

@@ -1637,6 +1637,42 @@ mod tests {
         explicit_drop_placement_survives_launch_until_toplevel_adoption();
     }
 
+    /// Files as the shell mounts it on a session without startup inputs of
+    /// its own (a Linux session): its own component, starting at `files`,
+    /// opening documents through the shell's opener.
+    fn mounted_files(
+        profile: &std::path::Path,
+        files: &std::path::Path,
+    ) -> ui::headless::FrameHarness {
+        let mut apps =
+            crate::shell::in_process::InProcessApps::at(&profile.join("profile"), "fixture-person")
+                .unwrap();
+        let startup = file_explorer::StartupInputs {
+            initial_dir: files.to_path_buf(),
+            workspace_roots: Vec::new(),
+            record_roots: Vec::new(),
+            remote_accounts: Vec::new(),
+            trusted_humans: file_explorer::identity_directory::TrustedHumanDirectory::default(),
+        };
+        let component = apps
+            .mount(
+                file_explorer::definition(),
+                "6a3f0c2e-0f1b-4c5d-9e8f-123456789abc",
+                9,
+                ui::record::RecordId::room_default(),
+                |context| context.lend(startup),
+            )
+            .unwrap();
+        let mut harness = ui::headless::FrameHarness::from_component(
+            component,
+            (1000, 700),
+            ui::application::ComponentRunnerInputs::from_native_process(),
+        )
+        .unwrap();
+        harness.relayout();
+        harness
+    }
+
     #[test]
     #[serial_test::serial(process_env)]
     #[allow(
@@ -1664,16 +1700,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()
@@ -1733,16 +1762,9 @@ mod tests {
             let chrome = chrome_with_workspace();
             crate::shell::install_document_opener(&chrome);
 
-            let mut explorer = file_explorer::FileExplorerWidget::with_startup_inputs(
-                file_explorer::StartupInputs {
-                    initial_dir: files.clone(),
-                    workspace_roots: Vec::new(),
-                    record_roots: Vec::new(),
-                    remote_accounts: Vec::new(),
-                    trusted_humans:
-                        file_explorer::identity_directory::TrustedHumanDirectory::default(),
-                },
-            );
+            let mut harness = mounted_files(tmp.path(), &files);
+            let explorer =
+                file_explorer::mounted_files_in(&mut harness).expect("the mounted Files");
             explorer.navigate(files);
             let idx = explorer
                 .displayed_entries()

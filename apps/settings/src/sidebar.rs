@@ -23,7 +23,7 @@
 //! (that lives in the app's top strip).
 
 use std::collections::HashMap;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -184,8 +184,11 @@ pub struct SidebarRow {
     /// Whether this row is the currently-selected category — drives the active
     /// highlight. Passed in at build time from the app's selection.
     active: bool,
-    /// One-shot local navigation request. Category selection is deliberately
-    /// not document state: it is only this window's current presentation.
+    /// Opens the category's pane through its row's open effect, the one way
+    /// search, agents and the sidebar open a pane. Bound by the host.
+    open: Option<ui::widget::ActionEmitter<()>>,
+    /// Outside a host (a bare widget in a test) there is no effect to
+    /// invoke: the row asks the app to select its pane directly.
     selection_request: ui::LocalState<Option<Category>>,
     rect: Rect,
     is_hovered: bool,
@@ -214,6 +217,7 @@ impl SidebarRow {
             category,
             label: category.label(),
             active,
+            open: None,
             selection_request,
             rect: Rect::ZERO,
             is_hovered: false,
@@ -258,16 +262,74 @@ impl SidebarRow {
         (line_height + 4.0 * spacing().s1).max(ROW_HEIGHT)
     }
 
-    /// Publish the same local presentation request for pointer, keyboard and
-    /// assistive-technology activation. The app consumes it as a one-shot
-    /// edge in `SettingsApp::sync`.
-    fn activate(&self) {
-        self.selection_request.set(Some(self.category));
+    /// Open the pane, the same way for pointer, keyboard and assistive
+    /// technology: through the row's open effect.
+    fn activate(&mut self) {
+        match &mut self.open {
+            Some(open) => {
+                if let Err(error) = open.emit(()) {
+                    tracing::warn!(%error, category = ?self.category, "the sidebar could not open its pane");
+                }
+            }
+            None => self.selection_request.set(Some(self.category)),
+        }
+    }
+}
+
+impl ui::framework::ActionControl<()> for SidebarRow {
+    fn bind_action(mut self, binding: ui::tilo_actions::ActionBinding<()>) -> Self {
+        self.open = Some(ui::widget::ActionEmitter::new(binding));
+        self
+    }
+
+    fn unavailable(self) -> Self {
+        self
+    }
+}
+
+impl ui::widget::controls::ActionControls for SidebarRow {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        if let Some(open) = &mut self.open {
+            let _ = open.install_custody(domain, attachment);
+        }
+    }
+
+    fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
+        self.open.as_mut().and_then(ui::widget::ActionEmitter::take)
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.open
+            .iter()
+            // The row's semantic node names the same address, so the audit
+            // pairs the binding with the control that offers it.
+            .map(|open| open.metadata(crate::effects::open_pane_address(self.category).encode()))
+            .collect()
+    }
+
+    fn has_action_control_bindings(&self) -> bool {
+        self.open.is_some()
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
+    ) {
+        if let Some(open) = &mut self.open {
+            open.refresh_availability(allowed);
+        }
     }
 }
 
 impl Widget for SidebarRow {
-    ui::provides!(dyn ui::undo::UndoPoints);
+    ui::provides!(
+        dyn ui::undo::UndoPoints,
+        dyn ui::widget::controls::ActionControls
+    );
 
     fn build_layout(
         &mut self,
@@ -523,7 +585,7 @@ impl Widget for SidebarRow {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
                 .with_name(&self.label)
-                .with_action_target(crate::actions::open_pane_address(self.category).encode())
+                .with_action_target(crate::effects::open_pane_address(self.category).encode())
                 .with_state(ui::a11y::AccessState {
                     focusable: true,
                     focused: self.is_focused,
@@ -559,7 +621,7 @@ impl Widget for SidebarRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -596,15 +658,23 @@ impl ui::undo::UndoPoints for SidebarRow {
 /// background so it reads as a single cohesive sidebar pane, with the rows
 /// inside a [`Scrollable`] so every category stays reachable on short windows.
 pub fn build(
+    cx: &crate::host::PaneCx,
     selected: Category,
     query: &str,
     selection_request: &ui::LocalState<Option<Category>>,
 ) -> Box<dyn Widget> {
-    build_with_scroll(selected, query, selection_request, std::rc::Rc::default())
+    build_with_scroll(
+        cx,
+        selected,
+        query,
+        selection_request,
+        std::rc::Rc::default(),
+    )
 }
 
 /// Rebuild the navigation with the same local scroll position as its predecessor.
 pub(crate) fn build_with_scroll(
+    cx: &crate::host::PaneCx,
     selected: Category,
     query: &str,
     selection_request: &ui::LocalState<Option<Category>>,
@@ -633,10 +703,15 @@ pub(crate) fn build_with_scroll(
         .with_gap(sp.s6);
 
     let row = |category: Category| -> El {
-        Box::new(SidebarRow::with_selection_request(
-            category,
-            category == selected,
-            selection_request.clone(),
+        Box::new(cx.bind_invocation(
+            SidebarRow::with_selection_request(
+                category,
+                category == selected,
+                selection_request.clone(),
+            ),
+            crate::effects::NavigationEffect::OpenPane {
+                pane: category.slug().to_owned(),
+            },
         ))
     };
 
@@ -752,7 +827,9 @@ mod tests {
             ("keyword filters", Category::Displays, "night", night),
             ("no match lists no rows", Category::Network, "zzzznope", 0),
         ] {
-            let sb = build(selected, query, &ui::LocalState::new(None));
+            let profile = tempfile::tempdir().unwrap();
+            let cx = crate::host::PaneCx::in_file(profile.path().join("settings.json"));
+            let sb = build(&cx, selected, query, &ui::LocalState::new(None));
             assert_eq!(count_rows(sb.as_ref()), rows, "case {case}");
         }
 
@@ -926,7 +1003,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &mods,
-                        state: &mut doc,
+                        state: ui::widget::Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -956,7 +1033,11 @@ mod tests {
             assert_eq!(node.state.checked, Some(false));
 
             let mut doc = AutoCommit::new();
-            assert!(row.perform_action(&ui::a11y::Action::Activate, &mut doc, &automerge::ROOT,));
+            assert!(row.perform_action(
+                &ui::a11y::Action::Activate,
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
             assert_eq!(
                 request.with(|selection| *selection),
                 Some(Category::Accessibility),

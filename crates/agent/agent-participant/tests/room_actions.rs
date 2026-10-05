@@ -43,7 +43,7 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_actions::{ConfirmationPolicy, InvocationId};
-use tilo_agent_participant::{AgentHost, HostedApp, ModelChoice, Seed, record_provider};
+use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed, record_provider};
 use tilo_browser_peer::{DocumentRoute, Host, PeerEvent, PeerEvents, PeerHandle};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
@@ -85,7 +85,6 @@ async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
         tilo_relay::agents::AgentOptions {
             state_dir: state.join("agents"),
             model: ModelChoice::Scripted,
-            host_profile: false,
             catalogue: Some(Arc::new(common::catalogue)),
         },
     )
@@ -234,7 +233,7 @@ impl Browser {
     /// it open afterwards.
     fn create(&mut self, app: &str) -> DocumentRoute {
         let mut page =
-            HostedApp::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
+            Replica::open(&common::catalogue(), app, ROOM, "ada", false, Seed::New).unwrap();
         let route = DocumentRoute {
             app_id: app.into(),
             cluster_id: ROOM.into(),
@@ -251,15 +250,14 @@ impl Browser {
             .entry(route.clone())
             .or_default()
             .push(([0; 32], bytes));
-        page.close();
         route
     }
 
     /// The record at `route` as this page has received it.
-    fn mount(&mut self, route: &DocumentRoute) -> HostedApp {
+    fn mount(&mut self, route: &DocumentRoute) -> Replica {
         self.pump();
         let changes = self.documents.get(route).cloned().unwrap_or_default();
-        HostedApp::open(
+        Replica::open(
             &common::catalogue(),
             &route.app_id,
             ROOM,
@@ -274,7 +272,7 @@ impl Browser {
     }
 }
 
-fn sheet_names(app: &HostedApp) -> Vec<String> {
+fn sheet_names(app: &Replica) -> Vec<String> {
     let body: serde_json::Value = app
         .read(|doc| serde_json::to_value(automerge::AutoSerde::from(doc)).unwrap())
         .unwrap();
@@ -289,8 +287,16 @@ fn sheet_names(app: &HostedApp) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The argument of Sheets' New sheet: the sheet's name.
+fn sheet_named(name: &str) -> InvokeArgument {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("name".into(), name.into());
+    InvokeArgument::Json(arguments)
+}
+
 fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> InvokeRequest {
     InvokeRequest {
+        on_behalf_of: None,
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.into(),
@@ -305,7 +311,6 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_listed_themes_action_is_one_the_host_can_run() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
@@ -324,17 +329,25 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         })
         .await
         .unwrap();
-    // The catalogue offers only what the record's door runs: a listed action
-    // may fail, need confirmation or other arguments, but is never unknown.
-    let new_theme = page
+    // The catalogue offers only what the record's door runs: the record's
+    // document operations — the host runs no app's code, so effects and
+    // views stay with the app where it is open. A listed operation may fail,
+    // need confirmation or other arguments, but is never unknown.
+    let listed: Vec<_> = page
         .rows
         .iter()
         .filter_map(|row| row.action.as_ref())
-        .filter(|action| action.action_label == "New theme");
-    assert_eq!(
-        new_theme.count(),
-        1,
-        "a launch-only action is not offered on an open record"
+        .collect();
+    assert!(!listed.is_empty(), "a themes record offers its operations");
+    assert!(
+        listed
+            .iter()
+            .all(|action| action.kind == tilo_actions::OperationKind::Document),
+        "{:?}",
+        listed
+            .iter()
+            .map(|action| &action.address)
+            .collect::<Vec<_>>()
     );
     for action in page.rows.iter().filter_map(|row| row.action.as_ref()) {
         let mut arguments = serde_json::Map::new();
@@ -343,6 +356,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
         }
         let receipt = browser
             .invoke(InvokeRequest {
+                on_behalf_of: None,
                 confirmation: Some(Confirmation::Confirmed),
                 ..request(
                     &provider,
@@ -379,7 +393,6 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
-    common::isolate_device();
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
@@ -431,11 +444,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
 
     // 2. Invoke on a record nobody has open: the host mounts it, runs the
     // action and commits the change as its own.
-    let add = request(
-        &sheets_provider,
-        new_sheet.clone(),
-        InvokeArgument::Text("Budget".into()),
-    );
+    let add = request(&sheets_provider, new_sheet.clone(), sheet_named("Budget"));
     let receipt = browser.invoke(add.clone()).await;
     assert!(
         matches!(receipt.status, ReceiptStatus::Completed { .. }),
@@ -451,7 +460,6 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         if by_host {
             let app = browser.mount(&sheets);
             let names = sheet_names(&app);
-            app.close();
             if names.iter().filter(|name| *name == "Budget").count() == 1 {
                 break;
             }
@@ -465,7 +473,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let retry = browser.invoke(add.clone()).await;
     assert_eq!(retry, receipt);
     let mut other = add.clone();
-    other.argument = InvokeArgument::Text("Other".into());
+    other.argument = sheet_named("Other");
     let conflict = browser.invoke(other).await;
     assert_eq!(
         conflict.status,
@@ -485,7 +493,6 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         sheet_names(&app)
     );
     assert!(!sheet_names(&app).contains(&"Other".to_owned()));
-    app.close();
 
     // 4. Confirmation: a destructive action is refused without the caller's
     // explicit confirmation, and nothing ran; confirmed, it runs.
@@ -518,6 +525,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         }
     );
     let confirmed = InvokeRequest {
+        on_behalf_of: None,
         confirmation: Some(Confirmation::Confirmed),
         ..unconfirmed
     };
@@ -541,13 +549,9 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let slow = request(
         &record_provider(&busy_route),
         new_sheet.clone(),
-        InvokeArgument::Text("Busy".into()),
+        sheet_named("Busy"),
     );
-    let queued = request(
-        &sheets_provider,
-        new_sheet,
-        InvokeArgument::Text("Never".into()),
-    );
+    let queued = request(&sheets_provider, new_sheet, sheet_named("Never"));
     browser.send(RemoteActionMessage::Invoke(slow.clone()));
     browser.send(RemoteActionMessage::Invoke(queued.clone()));
     browser.send(RemoteActionMessage::Cancel {
@@ -596,7 +600,6 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
             tokio::time::sleep(Duration::from_millis(500)).await;
             let app = browser.mount(&sheets);
             assert!(!sheet_names(&app).contains(&"Never".to_owned()));
-            app.close();
         }
         Err(error) => panic!("the queued invocation was not cancellable: {error:?}"),
     }

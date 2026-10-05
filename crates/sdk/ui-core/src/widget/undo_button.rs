@@ -15,7 +15,7 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -363,7 +363,7 @@ impl Widget for UndoButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
@@ -482,7 +482,7 @@ mod tests {
                 &mut crate::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &mods,
-                    state: &mut doc,
+                    state: crate::widget::Edits::lend(&mut doc),
                     path: &ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -611,13 +611,23 @@ mod tests {
             let mut b = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
             assert!(
-                !b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT),
+                !b.perform_action_at(
+                    &Action::Activate,
+                    &[],
+                    &mut crate::widget::Edits::lend(&mut doc),
+                    &ROOT
+                ),
                 "an unavailable verb declines the action"
             );
             assert_eq!(crate::undo::take_undo_request(&mut b), None);
 
             crate::undo::set_undo_status(&mut b, &mut || status(false, true));
-            assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
+            assert!(b.perform_action_at(
+                &Action::Activate,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &ROOT
+            ));
             assert_eq!(
                 crate::undo::take_undo_request(&mut b),
                 Some(UndoRequest::Redo)

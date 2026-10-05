@@ -168,4 +168,9 @@ impl ResourceSurface<Backups, BackupsEffect> for BackupsApp {
     fn live_row(&self, id: &str) -> Option<LiveRow> {
         crate::actions::live_row(self.resource_catalog(), self.blocked().as_ref(), id)
     }
+
+    /// Every loaded recovery point, older than the published page too.
+    fn search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        crate::search::snapshot_entries(self.resource_catalog())
+    }
 }

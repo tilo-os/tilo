@@ -10,7 +10,7 @@
 //! one-shot output; the parent drains it each frame and applies the
 //! resulting `Capability` grant.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -632,7 +632,7 @@ impl Widget for PermissionPrompt {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if matches!(action, crate::a11y::Action::Activate)
@@ -677,7 +677,7 @@ impl Widget for PermissionPrompt {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let [key] = key_path else {
@@ -759,7 +759,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut p,
                 &crate::a11y::Action::Activate,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Deny));
@@ -769,7 +769,7 @@ mod tests {
                 &mut p,
                 &crate::a11y::Action::Activate,
                 &[SESSION_KEY],
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(p.pending_choice, Some(PromptChoice::Session));
@@ -780,7 +780,7 @@ mod tests {
                     &mut p,
                     &crate::a11y::Action::Activate,
                     &[ALWAYS_KEY],
-                    &mut doc,
+                    &mut crate::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ),
                 "a disabled persistent grant cannot be activated through AT"
@@ -836,7 +836,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

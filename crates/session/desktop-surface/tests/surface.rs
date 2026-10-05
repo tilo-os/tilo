@@ -389,8 +389,8 @@ fn a_replaced_tree_builds_tabs_that_were_still_deferred() {
     let (mut surface, handle) = DesktopSurface::new(tree, 7, Box::new(Notices(Rc::clone(&built))));
     assert_eq!(built.get(), 1);
     handle.replace_tree(handle.read(Clone::clone));
-    let mut state = ui::automerge::AutoCommit::new();
-    ui::widget::Widget::update(&mut surface, &mut state, &ui::automerge::ROOT);
+    let state = ui::automerge::AutoCommit::new();
+    ui::widget::Widget::update(&mut surface, &state, &ui::automerge::ROOT);
     assert_eq!(
         built.get(),
         2,

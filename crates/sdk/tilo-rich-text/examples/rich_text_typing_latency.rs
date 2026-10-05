@@ -1,7 +1,8 @@
 //! What one keystroke costs in the SDK rich-text editor, on a long note and
-//! a long chat, against the toolkit's block editor writing its own CRDT list
-//! directly (the path notes and the calendar type through today). Both run
-//! in the same framework host, so the difference is the editor's own.
+//! a long chat, against the toolkit's block editor editing locally and
+//! handing its owner semantic block operations each frame (the path notes and
+//! the calendar type through). Both run in the same framework host, so the
+//! difference is the editor's own.
 //!
 //! A keystroke is both of its events plus one frame's sync, layout and draw,
 //! from the harness's own per-pass profiler — what the live app spends
@@ -19,8 +20,6 @@ use ui::widget::{AppModel, ModelPath};
 
 use tilo_document::{RichText, RichTextAction};
 use tilo_rich_text::RichTextViews;
-use ui::automerge::transaction::Transactable;
-use ui::automerge::{ObjType, ROOT, ReadDoc, Value};
 use ui::framework::testing::TestApp;
 use ui::framework::{ResourceApp, ViewCx};
 use ui::headless::FrameHarness;
@@ -48,11 +47,11 @@ impl ResourceApp for Document {
     }
 }
 
-/// The document the direct editor seeds, set before each run.
+/// The document the block editor starts from, set before each run.
 static SEED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
 
 /// A record holding nothing the framework reads: the block editor keeps its
-/// own list in it.
+/// blocks locally.
 struct Blocks;
 
 impl Resource for Blocks {
@@ -66,11 +65,10 @@ impl Resource for Blocks {
     }
 }
 
-/// The toolkit's block editor bound straight to a CRDT list, as notes and
-/// the calendar bind it.
+/// The toolkit's block editor as an action owner hosts it: edits stay local
+/// and the owner drains them as semantic operations every frame.
 struct Direct {
     editor: BlockEditor,
-    bound: bool,
 }
 
 impl Decorator for Direct {
@@ -84,18 +82,10 @@ impl Decorator for Direct {
         &mut self.editor
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
-        if !self.bound {
-            let list = match state.get(ROOT, "blocks") {
-                Ok(Some((Value::Object(ObjType::List), list))) => Some(list),
-                _ => state.put_object(ROOT, "blocks", ObjType::List).ok(),
-            };
-            if let Some(list) = list {
-                self.editor.bind_blocks(state, list);
-                self.bound = true;
-            }
-        }
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        // An owner would submit these as actions; draining them keeps the
+        // editor's own diffing cost in the reading.
+        std::hint::black_box(self.editor.take_edit_ops());
         self.editor.sync(state, path);
     }
 }
@@ -114,7 +104,6 @@ impl ResourceApp for DirectApp {
         let seed = SEED.lock().map(|seed| seed.clone()).unwrap_or_default();
         Box::new(Direct {
             editor: BlockEditor::from_markdown(&seed).with_wrap_lines(true),
-            bound: false,
         })
     }
 }
@@ -266,7 +255,7 @@ fn main() -> Result<(), String> {
     ] {
         println!("{label}, {chars} characters typed:");
         report(
-            "  block editor, direct CRDT",
+            "  block editor, semantic ops",
             direct(paragraph, count, chars)?,
         );
         report(

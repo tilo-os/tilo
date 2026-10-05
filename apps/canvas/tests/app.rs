@@ -69,9 +69,7 @@ fn look_and_inspect_answer_through_the_host_door() {
         .clone();
     assert_eq!(value["content"], json!(address));
     let hash = ui::tilo_actions::content_hash(&address).unwrap();
-    let jpeg = tilo_content::ContentStore::for_app()
-        .read(hash)
-        .expect("readable");
+    let jpeg = app.content().read(hash).expect("readable");
     assert!(jpeg.starts_with(&[0xff, 0xd8, 0xff]));
 
     app.invoke(ArtworkResource::PAINT.with((None, vec![stroke("pigment:ultramarine")])))
@@ -180,9 +178,7 @@ fn render_shows_the_whole_app_through_the_host_door() {
             .is_some_and(|drawn| drawn > u64::from(height) / 2 && drawn <= u64::from(height))
     );
     let hash = ui::tilo_actions::content_hash(output.resources.first().unwrap()).unwrap();
-    let png = tilo_content::ContentStore::for_app()
-        .read(hash)
-        .expect("readable");
+    let png = app.content().read(hash).expect("readable");
     assert!(png.starts_with(b"\x89PNG"));
 }
 

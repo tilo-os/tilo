@@ -156,6 +156,7 @@ impl Standalone {
                     apps,
                 })),
                 legacy_workspace: Some(Arc::clone(&workspace) as Arc<dyn LegacyWorkspaceProjection>),
+                record_content: Some(joined::record_content(&joined, &root.join(BLOB_SOCKET))),
                 ..HostServices::default()
             },
             channels,

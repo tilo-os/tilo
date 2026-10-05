@@ -13,9 +13,9 @@ fn soft_and_hard_line_breaks_round_trip_in_paragraphs_and_lists() {
             ("1. Alpha", "numbered:0"),
             ("- [ ] Alpha", "checklist:0:0"),
         ] {
-            let f = LegacyFixture::rich();
+            let f = NotebookFixture::rich();
             f.write_page(f.child, source.as_bytes());
-            let checkout = imported(&f);
+            let checkout = notebook(&f);
             let block = f
                 .records
                 .read(&checkout.id, |doc| {

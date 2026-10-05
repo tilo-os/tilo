@@ -44,9 +44,7 @@ ACTION_REGISTRY_DEFINITION = re.compile(
     r"\bfn\s+register\s*\([^)]*\bActionRegistry\b", re.DOTALL
 )
 LIVE_ACTION_REGISTRY_WIRING = re.compile(r"\bactions\s*::\s*register\s*\(")
-TOOLKIT_ACTION_HOST = re.compile(
-    r"\bresource_actions\s*::\s*(?:immediate|background)\s*\("
-)
+TOOLKIT_ACTION_HOST = re.compile(r"\bresource_actions\s*::\s*immediate\s*\(")
 TOOLKIT_RESOURCE_VALUE = re.compile(
     r"\bresource_actions\s*::\s*(?:resource|typed_resource)\s*\("
 )
@@ -77,6 +75,16 @@ LEGACY_ENTRY_POINTS = {
         r"\bstruct\s+(?:Automation|Agent|Mcp|Control)(?:Server|Socket)\b"
     ),
 }
+
+# The raw operation protocol between the host and the toolkit's own widgets.
+# An app answers operations as a typed effect vocabulary and, in a test that
+# drives a widget without a host, delivers one through
+# `ui::framework::HostDelivery`; it never
+# builds, routes or answers a raw operation, in its sources or its tests.
+RAW_OPERATION_PROTOCOL = re.compile(
+    r"\b(?:ResourceOperation|ResourceOperationStart|OperationRequest|start_in_children|host_operation)\b"
+    r"|(?:\.|::)\s*(?:start_operation|poll_resource_operation)\s*\("
+)
 
 SEARCH_PROVIDER_IMPL = re.compile(
     r"\bimpl(?:\s*<[^>{}]*>)?\s+SearchProvider\s+for\s+([A-Za-z_][A-Za-z0-9_]*)"
@@ -134,10 +142,10 @@ RATCHETS = {
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
     ),
-    "surface_document_actions": (
-        re.compile(r"\bfn\s+publishes_document_actions\s*\("),
-        "a surface publishing document actions of its own; bind edits to its view state with "
-        "ResourceSurface::bound_declarations and publish live rows with ResourceSurface::live_rows",
+    "widget_search_source": (
+        re.compile(r"\bSearchSource\s+for\b"),
+        "a content widget's own search provider beside the app's one search source; publish "
+        "SearchEntry values from Resource::search or ResourceSurface::search_entries",
     ),
 }
 
@@ -171,9 +179,23 @@ MODEL_RATCHETS = {
         "app-owned document; the framework owns the resource document",
     ),
 }
+# Counted over every line of a workspace app's sources but its test files: a
+# hook a widget implements anywhere in a file is the widget's.
+WORKSPACE_RATCHETS = {
+    "raw_operation_handler": (
+        re.compile(
+            r"\bfn\s+(?:start_operation|poll_resource_operation|local_resource_operation_handlers)\s*\("
+        ),
+        "raw resource-operation hook; answer a typed #[derive(Effect)] vocabulary in "
+        "ResourceSurface::effect (or ViewCx::effects) and offer item effects bound on their rows",
+    ),
+}
+# Ratchets that reached zero and stay there: a ceiling for one is refused.
+CLOSED_RATCHETS = {"raw_operation_handler"}
 RATCHET_REASONS = {
     **{rule: reason for rule, (_, reason) in RATCHETS.items()},
     **{rule: reason for rule, (_, reason) in MODEL_RATCHETS.items()},
+    **{rule: reason for rule, (_, reason) in WORKSPACE_RATCHETS.items()},
 }
 TEST_MODULE_START = re.compile(r"^\s*#\[cfg\((?:test|all\(test)", re.MULTILINE)
 
@@ -278,6 +300,11 @@ def load_ratchet_baseline(
             for relative, limit in entries.items():
                 if not (isinstance(relative, str) and isinstance(limit, int) and limit >= 0):
                     continue
+                if violations is not None and rule in CLOSED_RATCHETS:
+                    violations.append(
+                        Violation(path, 1, f"{rule} is closed: no ceiling for `{relative}`")
+                    )
+                    continue
                 if violations is not None and root / baseline_file(relative) != path:
                     violations.append(
                         Violation(path, 1, f"{rule} ceiling for `{relative}` belongs in {baseline_file(relative)}")
@@ -303,6 +330,11 @@ def audit_ratchets(
             rules += [
                 (rule, pattern, reason, production)
                 for rule, (pattern, reason) in MODEL_RATCHETS.items()
+            ]
+            shipped = "" if is_test_source(relative) else code
+            rules += [
+                (rule, pattern, reason, shipped)
+                for rule, (pattern, reason) in WORKSPACE_RATCHETS.items()
             ]
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
@@ -900,6 +932,22 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                         main_path if main_path.is_file() else manifest_path,
                         1,
                         "document action registry is not wired into the production app launch",
+                    )
+                )
+
+        app_dir = manifest_path.parent
+        for source in sorted(
+            [*(app_dir / "src").rglob("*.rs"), *(app_dir / "tests").rglob("*.rs")]
+        ):
+            raw = source.read_text(encoding="utf-8")
+            for match in RAW_OPERATION_PROTOCOL.finditer(rust_code_only(raw)):
+                violations.append(
+                    Violation(
+                        source,
+                        line_number(raw, match.start()),
+                        "the host's raw operation protocol is the toolkit's, not an app's: "
+                        "answer a typed effect vocabulary, and in a test deliver an "
+                        "operation through ui::framework::HostDelivery",
                     )
                 )
 

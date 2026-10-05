@@ -1,28 +1,24 @@
-//! Browser settings — a persistent preferences model plus the
-//! [`SettingsPane`] widget that edits it.
+//! Browser settings — the preferences the browser document holds plus the
+//! [`SettingsPane`] widget that edits them.
 //!
 //! Two layers live here:
 //!
-//!  * [`Settings`] — a plain serde struct persisted as JSON under
-//!    `tilo_paths::config_dir()/tilo-browser/settings.json`. It holds the
-//!    durable preferences (ad-blocking, clear-on-exit, search engine,
-//!    homepage) and knows how to [`Settings::load`] / [`Settings::save`]
-//!    itself.
+//!  * [`Settings`] — the durable preferences (ad-blocking, clear-on-exit,
+//!    search engine, homepage) as the [`Browser`](crate::resource::Browser)
+//!    resource reads them from its document.
 //!
 //!  * [`SettingsPane`] — a `ui` [`Widget`] that renders process-local
-//!    presentation mirrors of those preferences. Every control invokes a
-//!    canonical Browser action; it never writes click flags or preference
-//!    values into the collaborative document.
+//!    presentation mirrors of those preferences. Every control submits a
+//!    [`BrowserAction`] through the resource's dispatcher; it never writes
+//!    the document itself.
 //!
-//! The chrome owns the action bindings and engine side effects. Applied
-//! preference actions update [`Settings`], refresh the pane's local mirrors,
-//! and persist the device configuration. Clear-history and clear-site-data
-//! are explicit one-shot actions, while closing the pane is an explicit view
-//! operation. There is no per-frame intent polling channel.
-
-use std::path::{Path, PathBuf};
+//! The chrome applies the engine side effects of the preferences it is
+//! presented. Clear-history and clear-site-data are explicit one-shot
+//! effects, while closing the pane is an explicit view operation.
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+#[cfg(test)]
+use ui::widget::Edits;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -35,26 +31,24 @@ use ui::widget::{
 };
 
 use crate::actions::BrowserAction;
+use crate::resource::Browser;
 
-/// Resource bindings injected by Browser when this pane is hosted. They keep
-/// pointer, keyboard and assistive-tech changes on the exact same action path
-/// used by Ctrl+K and agents.
+/// The doors the pane's controls use, injected by Browser. Preferences are
+/// [`BrowserAction`]s submitted through the resource's dispatcher; the
+/// one-shot effects and closing the pane are the published operations, so
+/// pointer, keyboard and assistive-tech changes take the same path as Ctrl+K
+/// and agents.
 #[derive(Clone, Default)]
 pub struct SettingsActionBindings {
-    pub adblock: Option<tilo_actions::ActionBinding<bool>>,
-    pub clear_on_exit: Option<tilo_actions::ActionBinding<bool>>,
-    pub homepage: Option<tilo_actions::ActionBinding<String>>,
-    pub search_engine: Option<tilo_actions::ActionBinding<String>>,
+    /// The resource's dispatcher; `None` leaves the preference controls
+    /// inert (a pane nobody can edit through).
+    pub edits: Option<ui::framework::Dispatcher<Browser>>,
     pub clear_history: Option<tilo_actions::ActionBinding<()>>,
     pub clear_site_data: Option<tilo_actions::ActionBinding<()>>,
     /// Close is presentation-only, but it is still a canonical Browser view
     /// action.  Keeping it here means keyboard and assistive-tech activation
     /// have the same route as the Library's Done button.
     pub close: Option<tilo_actions::ActionBinding<()>>,
-    /// Hosted bookmark and preference edits. Used when the matching binding
-    /// is absent, so the surface submits a [`BrowserAction`] instead of
-    /// writing the document itself.
-    pub document_edits: Option<ui::LocalState<Vec<BrowserAction>>>,
 }
 
 /// Process-local mirrors used only to present the action-applied settings.
@@ -116,22 +110,13 @@ pub const DEFAULT_SEARCH_ENGINE: &str = "https://duckduckgo.com/?q=";
 /// Default homepage — matches the browser's startup URL.
 pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
 
-// === Persistent model ================================================
+// === Preferences ================================================
 
-/// Durable browser preferences, persisted as JSON.
+/// Durable browser preferences, as the browser document holds them.
 ///
 /// Defaults: ad-blocking on, clear-on-exit off, `DuckDuckGo` for both
-/// search and homepage. The struct is the single source of truth the
-/// chrome persists — the [`SettingsPane`] only edits the live CRDT
-/// mirror of these fields.
-///
-/// Persistence goes through `serde_json::Value` (see `Settings::to_json`
-/// / `Settings::from_json`) rather than a `#[derive(Serialize)]`: the
-/// browser crate depends on `serde_json` but not on `serde` with its
-/// derive feature, so the JSON shape is built explicitly here. The
-/// on-disk format is a flat object with the four field names as keys,
-/// identical to what a derive would emit — a future `serde` dependency
-/// could swap in the derive without changing the file format.
+/// search and homepage; a document that never set a preference reads its
+/// default.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     /// Block ads & trackers via the engine's content blocker.
@@ -151,100 +136,6 @@ impl Default for Settings {
             clear_on_exit: false,
             search_engine: DEFAULT_SEARCH_ENGINE.to_string(),
             homepage: DEFAULT_HOMEPAGE.to_string(),
-        }
-    }
-}
-
-impl Settings {
-    /// Absolute path of the on-disk settings file:
-    /// `tilo_paths::config_dir()/tilo-browser/settings.json`. `None` when the
-    /// platform has no config directory.
-    pub fn config_path() -> Option<PathBuf> {
-        crate::storage::config_dir().map(|d| d.join("settings.json"))
-    }
-
-    /// Load the settings from the standard config path. Any failure —
-    /// missing file, unreadable path, malformed JSON — falls back to
-    /// [`Settings::default`] so a first run (or a corrupt file) never
-    /// blocks startup.
-    pub fn load() -> Settings {
-        match Self::config_path() {
-            Some(path) => Self::load_from(&path),
-            None => Settings::default(),
-        }
-    }
-
-    /// Persist the settings to the standard config path, creating the
-    /// parent directory if needed. Errors are swallowed (best-effort
-    /// persistence) so a read-only home can't crash the browser.
-    pub fn save(&self) {
-        if let Some(path) = Self::config_path() {
-            let _ = self.save_to(&path);
-        }
-    }
-
-    /// Load from an explicit path (injectable for tests). Returns the
-    /// default settings on any I/O or parse error, and fills any missing
-    /// field from the default (forward-compatible with older files).
-    pub fn load_from(path: &Path) -> Settings {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .map(|v| Self::from_json(&v))
-            .unwrap_or_default()
-    }
-
-    /// Serialize to pretty JSON and write to an explicit path, creating
-    /// parent directories as required. Returns the underlying I/O error
-    /// on failure so tests can assert on it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the parent directory can't be created or if the
-    /// write itself fails.
-    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let json = serde_json::to_string_pretty(&self.to_json())
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-        std::fs::write(path, json)
-    }
-
-    /// Build the JSON representation persisted to disk — a flat object
-    /// keyed by the field names.
-    fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "adblock_enabled": self.adblock_enabled,
-            "clear_on_exit": self.clear_on_exit,
-            "search_engine": self.search_engine,
-            "homepage": self.homepage,
-        })
-    }
-
-    /// Reconstruct settings from parsed JSON, falling back to the
-    /// per-field default for any key that is missing or the wrong type.
-    fn from_json(v: &serde_json::Value) -> Settings {
-        let d = Settings::default();
-        Settings {
-            adblock_enabled: v
-                .get("adblock_enabled")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.adblock_enabled),
-            clear_on_exit: v
-                .get("clear_on_exit")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(d.clear_on_exit),
-            search_engine: v
-                .get("search_engine")
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-                .unwrap_or(d.search_engine),
-            homepage: v
-                .get("homepage")
-                .and_then(|x| x.as_str())
-                .map(str::to_string)
-                .unwrap_or(d.homepage),
         }
     }
 }
@@ -331,7 +222,7 @@ impl SettingsPane {
             ))
             .push(Box::new(Spacer::new()))
             .push(Box::new(button_with_action(
-                Button::new("settings.close", "Done", None)
+                Button::new("settings.close", "Done")
                     .with_size(if large_text { 112.0 } else { 96.0 }, action_height),
                 self.actions.close.clone(),
             )));
@@ -344,16 +235,16 @@ impl SettingsPane {
                     &self.presentation.homepage,
                     "settings.homepage_input",
                     DEFAULT_HOMEPAGE,
-                    self.actions.homepage.clone(),
-                    hosted_text(self.actions.document_edits.clone(), homepage_action),
+                    self.actions.edits.clone(),
+                    homepage_action,
                 ),
                 field_block(
                     "Search engine",
                     &self.presentation.search_engine,
                     "settings.search_engine_input",
                     DEFAULT_SEARCH_ENGINE,
-                    self.actions.search_engine.clone(),
-                    hosted_text(self.actions.document_edits.clone(), search_engine_action),
+                    self.actions.edits.clone(),
+                    search_engine_action,
                 ),
             ]),
         );
@@ -367,8 +258,7 @@ impl SettingsPane {
                     Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
                         .with_accessible_name("Block ads & trackers"),
-                    self.actions.adblock.clone(),
-                    self.actions.document_edits.as_ref(),
+                    self.actions.edits.clone(),
                     adblock_action,
                 )),
                 large_text,
@@ -380,8 +270,7 @@ impl SettingsPane {
                     Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name("Clear data when the browser closes"),
-                    self.actions.clear_on_exit.clone(),
-                    self.actions.document_edits.as_ref(),
+                    self.actions.edits.clone(),
                     clear_on_exit_action,
                 )),
                 large_text,
@@ -412,7 +301,7 @@ impl SettingsPane {
                     "Private browsing",
                     "Open a separate private window with memory-only browsing state.",
                     Box::new(
-                        Button::new("settings.new_private_window", "New Private Window", None)
+                        Button::new("settings.new_private_window", "New Private Window")
                             .with_size(180.0, 36.0)
                             .on_effect(move || request.set(true)),
                     ),
@@ -514,12 +403,12 @@ fn browsing_data_controls(
     action_height: f32,
 ) -> El {
     let clear_history = Box::new(button_with_action(
-        Button::new("settings.clear_history", "Clear history", None)
+        Button::new("settings.clear_history", "Clear history")
             .with_size(if large_text { 240.0 } else { 140.0 }, action_height),
         actions.clear_history.clone(),
     ));
     let clear_site_data = Box::new(button_with_action(
-        Button::new("settings.clear_cookies", "Request site-data clear", None)
+        Button::new("settings.clear_cookies", "Request site-data clear")
             .with_size(if large_text { 300.0 } else { 200.0 }, action_height),
         actions.clear_site_data.clone(),
     ));
@@ -537,35 +426,22 @@ fn browsing_data_controls(
     }
 }
 
-/// A labelled full-width text field: a caption above a [`TextInput`]
-/// bound to the CRDT `Text` object at `path`.
-#[allow(
-    clippy::type_complexity,
-    reason = "hosted LocalState+builder pair is local to settings chrome"
-)]
+/// A labelled full-width text field: a caption above a [`TextInput`] whose
+/// edits are the preference action `build` makes of the typed value.
 fn field_block(
     label: &str,
     state: &ui::LocalState<String>,
     id: &str,
     placeholder: &str,
-    action: Option<tilo_actions::ActionBinding<String>>,
-    hosted: Option<(
-        ui::LocalState<Vec<BrowserAction>>,
-        fn(String) -> BrowserAction,
-    )>,
+    edits: Option<ui::framework::Dispatcher<Browser>>,
+    build: fn(String) -> BrowserAction,
 ) -> El {
     let input = TextInput::from_state(state)
         .with_id(id)
         .with_placeholder(placeholder);
-    let input = if let Some(binding) = action {
-        input.on_action(binding)
-    } else if let Some((edits, build)) = hosted {
-        input.on_change(move |value| {
-            let next = build(value.to_string());
-            edits.update(|queue| queue.push(next));
-        })
-    } else {
-        input
+    let input = match edits {
+        Some(edits) => input.on_change(move |value| edits.apply(&build(value.to_string()))),
+        None => input,
     };
     Box::new(
         Column::new()
@@ -579,34 +455,13 @@ fn field_block(
 
 fn preference_toggle(
     toggle: Toggle,
-    action: Option<tilo_actions::ActionBinding<bool>>,
-    edits: Option<&ui::LocalState<Vec<BrowserAction>>>,
+    edits: Option<ui::framework::Dispatcher<Browser>>,
     build: fn(bool) -> BrowserAction,
 ) -> Toggle {
-    if let Some(binding) = action {
-        return toggle.on_action(binding);
+    match edits {
+        Some(edits) => toggle.on_change(move |enabled| edits.apply(&build(enabled))),
+        None => toggle,
     }
-    let Some(edits) = edits.cloned() else {
-        return toggle;
-    };
-    toggle.on_change(move |enabled| {
-        let next = build(enabled);
-        edits.update(|queue| queue.push(next));
-    })
-}
-
-#[allow(
-    clippy::type_complexity,
-    reason = "hosted LocalState+builder pair is local to settings chrome"
-)]
-fn hosted_text(
-    edits: Option<ui::LocalState<Vec<BrowserAction>>>,
-    build: fn(String) -> BrowserAction,
-) -> Option<(
-    ui::LocalState<Vec<BrowserAction>>,
-    fn(String) -> BrowserAction,
-)> {
-    edits.map(|queue| (queue, build))
 }
 
 fn adblock_action(enabled: bool) -> BrowserAction {
@@ -743,55 +598,13 @@ mod tests {
     use automerge::ReadDoc;
     use std::collections::HashMap;
 
-    /// Defaults, JSON and disk persistence.
     #[test]
-    fn settings_defaults_and_persistence_round_trip() {
-        // Phase `defaults_are_sensible`.
-        {
-            let s = Settings::default();
-            assert!(s.adblock_enabled, "ad-block defaults on");
-            assert!(!s.clear_on_exit, "clear-on-exit defaults off");
-            assert_eq!(s.search_engine, DEFAULT_SEARCH_ENGINE);
-            assert_eq!(s.homepage, DEFAULT_HOMEPAGE);
-        }
-
-        // Phase `json_round_trip_is_lossless`.
-        {
-            let s = Settings {
-                adblock_enabled: false,
-                clear_on_exit: true,
-                search_engine: "https://example.com/search?q=".to_string(),
-                homepage: "https://start.example".to_string(),
-            };
-            // Round-trip through the exact on-disk JSON shape.
-            let json = serde_json::to_string(&s.to_json()).unwrap();
-            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-            let back = Settings::from_json(&parsed);
-            assert_eq!(s, back);
-        }
-
-        // Phase `save_to_then_load_from_round_trips`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("settings.json");
-            let s = Settings {
-                adblock_enabled: false,
-                clear_on_exit: true,
-                search_engine: "https://s.example/?q=".to_string(),
-                homepage: "https://home.example".to_string(),
-            };
-            s.save_to(&path).expect("save_to writes the file");
-            let loaded = Settings::load_from(&path);
-            assert_eq!(s, loaded, "loaded settings must equal what was saved");
-        }
-
-        // Phase `load_from_missing_path_is_default`.
-        {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("does-not-exist.json");
-            // Never created — load must fall back to the default.
-            assert_eq!(Settings::load_from(&path), Settings::default());
-        }
+    fn preference_defaults_are_sensible() {
+        let s = Settings::default();
+        assert!(s.adblock_enabled, "ad-block defaults on");
+        assert!(!s.clear_on_exit, "clear-on-exit defaults off");
+        assert_eq!(s.search_engine, DEFAULT_SEARCH_ENGINE);
+        assert_eq!(s.homepage, DEFAULT_HOMEPAGE);
     }
 
     /// Presentation values, destructive controls and pane layout.
@@ -810,9 +623,9 @@ mod tests {
                 homepage: "https://home.example".to_string(),
             };
             let mut pane = SettingsPane::with_settings(&settings);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
             let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+            pane.sync(&doc, &root);
             assert!(doc.get(&root, ADBLOCK_PATH).unwrap().is_none());
             assert!(doc.get(&root, HOMEPAGE_PATH).unwrap().is_none());
             let presentation = SettingsPresentation::from_settings(&settings);
@@ -837,8 +650,8 @@ mod tests {
         // Phase `destructive_controls_have_no_document_fallback_paths`.
         {
             let mut pane = SettingsPane::new();
-            let mut doc = AutoCommit::new();
-            pane.sync(&mut doc, &automerge::ROOT);
+            let doc = AutoCommit::new();
+            pane.sync(&doc, &automerge::ROOT);
             assert!(
                 ui::widget::controls::control_action_bindings(&pane)
                     .iter()
@@ -881,7 +694,7 @@ mod tests {
             let mut pane = SettingsPane::new();
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
+            pane.sync(&doc, &root);
 
             let theme = Theme::dark();
             let mut taffy = TaffyTree::<()>::new();
@@ -898,7 +711,7 @@ mod tests {
                 .unwrap();
             pane.apply_layout(&taffy, node, Point::ZERO);
             // Re-sync so the toggle adopts its retained presentation state.
-            pane.sync(&mut doc, &root);
+            pane.sync(&doc, &root);
 
             let rect = find_toggle_rect(&pane, "settings.adblock")
                 .expect("ad-block toggle is addressable in the tree");
@@ -914,7 +727,7 @@ mod tests {
                     &mut ui::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &mods,
-                        state: &mut doc,
+                        state: Edits::lend(&mut doc),
                         path: &root,
                         handled: &mut handled,
                         focus_target: &mut focus,

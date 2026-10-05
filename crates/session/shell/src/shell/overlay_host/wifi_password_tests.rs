@@ -406,7 +406,13 @@ fn find_node<'a>(
 }
 
 fn act(h: &mut ShellOverlayHost, target: &str, action: &ui::a11y::Action) -> bool {
-    Widget::perform_semantic_action(h, target, action, &mut (), &())
+    Widget::perform_semantic_action(
+        h,
+        target,
+        action,
+        &mut ui::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &automerge::ROOT,
+    )
 }
 
 #[test]

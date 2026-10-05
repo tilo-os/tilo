@@ -14,6 +14,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 const PERSONAL_WORKSPACE: &str = "personal";
+/// Names the directory the launcher keeps the person's own records of an
+/// app in ([`crate::record::person`]): one per app, bound into its launches
+/// in every room, so a record of the person's is one record on the device.
+pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 const DEVICE_ID_FILE: &str = ".tilo-device-id";
 
 /// The host inputs a normal application process receives from the trusted
@@ -59,6 +63,9 @@ impl NativeProcessHost {
             tilo_actions::ActionContext::default(),
         )?;
         host.package_id = Some(resolved.package_id);
+        if let Some(person) = resolved.person_dir {
+            host.keep_person_records_in(Rc::new(app_state::FsStore::new(person)));
+        }
         Ok(Self {
             host,
             instance_id: resolved.instance_id,
@@ -87,6 +94,7 @@ struct NativeProcessEnvironment {
     quick_workspace_id: Option<String>,
     participation: Option<String>,
     continuity_instance: Option<String>,
+    person_dir: Option<PathBuf>,
     xdg_data_home: Option<PathBuf>,
     local_app_data: Option<PathBuf>,
     user_profile: Option<PathBuf>,
@@ -101,6 +109,9 @@ struct ResolvedNativeProcessHost {
     workspace_scoped: bool,
     instance_id: InstanceId,
     permissions: PermissionContext,
+    /// Where the launcher keeps the person's own records of this app,
+    /// shared by its launches in every room.
+    person_dir: Option<PathBuf>,
 }
 
 impl NativeProcessEnvironment {
@@ -123,6 +134,7 @@ impl NativeProcessEnvironment {
             quick_workspace_id: string("QUICK_CLUSTER_ID"),
             participation: string("TILO_PARTICIPATION"),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
+            person_dir: path(PERSON_DIR_ENV),
             xdg_data_home: path("XDG_DATA_HOME"),
             local_app_data: path("LOCALAPPDATA"),
             user_profile: path("USERPROFILE"),
@@ -168,6 +180,7 @@ impl NativeProcessEnvironment {
             workspace_scoped,
             instance_id,
             permissions,
+            person_dir: self.person_dir.filter(|dir| dir.is_absolute()),
         })
     }
 
@@ -415,6 +428,9 @@ pub struct ApplicationHost {
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
+    /// Where the person's own records are kept: the host's store unless the
+    /// host names another ([`Self::keep_person_records_in`]).
+    person: RecordOwners,
 }
 
 impl ApplicationHost {
@@ -441,6 +457,7 @@ impl ApplicationHost {
             action_context,
         )?;
         host.owners.retain_profile(lifetime.clone());
+        host.person.retain_profile(lifetime.clone());
         let views = Rc::try_unwrap(host.views).map_err(|_| LaunchError::BindingMismatch)?;
         host.views = Rc::new(views.with_profile_lifetime(lifetime));
         Ok(host)
@@ -490,6 +507,7 @@ impl ApplicationHost {
         );
         Ok(Self {
             package_id: None,
+            person: RecordOwners::with_store(Rc::clone(&store)),
             owners: RecordOwners::with_store(store),
             views,
             device_id,
@@ -497,6 +515,31 @@ impl ApplicationHost {
             author,
             action_context,
         })
+    }
+
+    /// Keep the person's own records ([`crate::record::person`]) in `store`
+    /// rather than the host's: the directory a launcher shares between an
+    /// app's launches in every room.
+    pub fn keep_person_records_in(&mut self, store: Rc<dyn durable_store::DurableStore>) {
+        self.person = RecordOwners::with_store(store);
+    }
+
+    /// Hand `context` the person's own records of `definition`'s app.
+    fn with_person_records(
+        &mut self,
+        definition: &ApplicationDefinition,
+        mut context: HostContext,
+    ) -> HostContext {
+        let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
+        match crate::record::person::PersonRecords::open(
+            &mut self.person,
+            package_id,
+            self.author.clone(),
+        ) {
+            Ok(records) => context.provide_person_records(records),
+            Err(error) => tracing::warn!(%error, "the person's records are unavailable"),
+        }
+        context
     }
 
     /// Return the unique canonical writer registry for this app and workspace.
@@ -613,7 +656,7 @@ impl ApplicationHost {
                 RestoreInput::Local(context.envelope(View::default(), Some(application)))
             });
             return Ok(PreparedComponentInputs {
-                context,
+                context: self.with_person_records(definition, context),
                 target,
                 restore,
                 runner_inputs,
@@ -632,7 +675,7 @@ impl ApplicationHost {
             initial_view,
         )?;
         Ok(PreparedComponentInputs {
-            context,
+            context: self.with_person_records(definition, context),
             target,
             restore,
             runner_inputs,
@@ -670,7 +713,7 @@ impl ApplicationHost {
         let (context, target, restore) =
             self.prepare_checkout(definition, records, instance_id, checkout, saved, None)?;
         Ok(PreparedComponentInputs {
-            context,
+            context: self.with_person_records(definition, context),
             target,
             restore,
             runner_inputs,
@@ -771,6 +814,7 @@ mod native_process_tests {
             required: vec![],
             optional: vec![],
             opens: &[],
+            room_record: false,
             create: rejected_factory,
         }
     }

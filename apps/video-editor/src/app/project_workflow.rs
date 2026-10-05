@@ -42,6 +42,19 @@ impl VideoEditorApp {
         }
     }
 
+    /// Follow the document's heads, which say whether the project changed
+    /// since it was saved. The first change after an open is the open
+    /// itself: the project as the file holds it, so saved.
+    pub(super) fn track_saved_heads(&mut self, heads: Vec<automerge::ChangeHash>) {
+        if heads == self.doc_heads {
+            return;
+        }
+        if std::mem::take(&mut self.project_sync.open_submitted) {
+            self.saved_heads = Some(heads.clone());
+        }
+        self.doc_heads = heads;
+    }
+
     /// Whether the project holds nothing a user would mind losing.
     pub(super) fn project_is_empty(&self) -> bool {
         self.project.clips.is_empty()
@@ -77,7 +90,7 @@ impl VideoEditorApp {
 
     /// Save straight back to the file the project came from, or fall through
     /// to Save As when it has never had one.
-    pub(super) fn save_project(&mut self, doc: &mut AutoCommit) {
+    pub(super) fn save_project(&mut self, doc: &AutoCommit) {
         match self.project_path.clone() {
             Some(path) => self.write_project_to(doc, path),
             None => self.request_save_as(),
@@ -113,7 +126,7 @@ impl VideoEditorApp {
     /// A failure is reported in the words the file layer produced and the
     /// project keeps its old path: claiming a save that did not happen is the
     /// one outcome that could actually cost someone their work.
-    pub(super) fn write_project_to(&mut self, doc: &mut AutoCommit, path: PathBuf) {
+    pub(super) fn write_project_to(&mut self, doc: &AutoCommit, path: PathBuf) {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
@@ -126,13 +139,13 @@ impl VideoEditorApp {
                 // that followed an edit in the same frame would otherwise
                 // stamp the pre-edit heads and leave the project reading as
                 // unsaved the instant after it was written.
-                self.doc_heads = doc.get_heads();
+                self.doc_heads = doc.committed_heads();
                 self.saved_heads = Some(self.doc_heads.clone());
                 // A save that was only standing in the way of an open now
                 // lets it through.
                 if let Some(next) = self.save_then_open.take() {
                     self.pending_open = None;
-                    self.load_project_file(doc, next);
+                    self.load_project_file(next);
                 }
             }
             Err(e) => {
@@ -144,12 +157,12 @@ impl VideoEditorApp {
 
     /// Start opening `path`, stopping to ask first if that would drop work
     /// that exists nowhere but this session.
-    pub(super) fn begin_open(&mut self, doc: &mut AutoCommit, path: PathBuf) {
+    pub(super) fn begin_open(&mut self, path: PathBuf) {
         // Already saved somewhere, or nothing worth keeping: just open it.
         // A project with a file behind it is not at risk — that file is still
         // there afterwards — so only a never-saved project raises the question.
         if self.project_path.is_some() || !self.project_is_dirty() {
-            self.load_project_file(doc, path);
+            self.load_project_file(path);
             return;
         }
         let losing = self.project_label();
@@ -161,7 +174,7 @@ impl VideoEditorApp {
     /// The replacement goes through the ordinary action pipeline, so opening
     /// a file is one undo boundary and replicates to a peer — see
     /// [`crate::actions::VideoEditorAction::LoadProject`].
-    pub(super) fn load_project_file(&mut self, doc: &mut AutoCommit, path: PathBuf) {
+    pub(super) fn load_project_file(&mut self, path: PathBuf) {
         let mut project = match crate::project_file::load(&path) {
             Ok(p) => p,
             Err(e) => {
@@ -194,15 +207,14 @@ impl VideoEditorApp {
         }
         self.project_notice = Some(notice);
 
-        self.actions.dispatch(
-            doc,
-            crate::actions::VIDEO_EDITOR_ACTION_TYPE,
-            &crate::actions::load_project_action(&project),
-        );
-        self.project = VideoDoc::load_project(doc);
+        self.submit(&crate::actions::load_project_action(&project));
+        // The host applies the open after this event; the document it leaves
+        // is the one the file holds, so that is what reads as saved.
+        // Recording today's heads instead would call the opened project
+        // unsaved the moment it arrived.
+        self.project = project;
         self.clip_edit_bases.clear();
-        self.doc_heads = doc.get_heads();
-        self.saved_heads = Some(self.doc_heads.clone());
+        self.project_sync.open_submitted = true;
         self.recents = crate::project_file::recents::remember(&self.recents, &path);
         self.project_path = Some(path);
         // The view belongs to the project that was open, not to this one.
@@ -246,7 +258,7 @@ impl VideoEditorApp {
     }
 
     /// Drain an in-flight project chooser. Mirrors [`Self::poll_export`].
-    pub(super) fn drain_project_portal(&mut self, doc: &mut AutoCommit) {
+    pub(super) fn drain_project_portal(&mut self, doc: &AutoCommit) {
         let mut outcome = None;
         let mut clear = false;
         if let Some(rx) = self.project_rx.as_ref() {
@@ -264,16 +276,12 @@ impl VideoEditorApp {
         }
         match outcome {
             Some(portal::ProjectOutcome::Save(path)) => self.write_project_to(doc, path),
-            Some(portal::ProjectOutcome::Open(path)) => self.begin_open(doc, path),
+            Some(portal::ProjectOutcome::Open(path)) => self.begin_open(path),
             Some(portal::ProjectOutcome::Cancelled) => {
                 self.save_then_open = None;
                 self.project_notice = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_operation = None;
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("project file selection was cancelled".into()),
-                    });
+                if self.resource_reply.is_some() {
+                    self.settle_resource_job(Err("project file selection was cancelled".into()));
                 }
             }
             Some(portal::ProjectOutcome::Failed(reason)) => {
@@ -294,7 +302,7 @@ impl VideoEditorApp {
     /// and Ctrl+Z puts the old project back. `Save` writes first and then
     /// continues into the open on its own, so the user does not have to
     /// remember what they were doing.
-    pub(super) fn resolve_pending_open(&mut self, doc: &mut AutoCommit, choice: DiscardChoice) {
+    pub(super) fn resolve_pending_open(&mut self, doc: &AutoCommit, choice: DiscardChoice) {
         let Some(pending) = self.pending_open.take() else {
             return;
         };
@@ -302,7 +310,7 @@ impl VideoEditorApp {
             DiscardChoice::Cancel => {
                 self.save_then_open = None;
             }
-            DiscardChoice::Discard => self.load_project_file(doc, pending.path),
+            DiscardChoice::Discard => self.load_project_file(pending.path),
             DiscardChoice::Save => {
                 self.save_then_open = Some(pending.path);
                 self.save_project(doc);
@@ -383,12 +391,12 @@ impl VideoEditorApp {
     }
 
     /// Act on a chosen project-menu row.
-    pub(super) fn run_project_menu_item(&mut self, doc: &mut AutoCommit, item: ProjectMenuItem) {
+    pub(super) fn run_project_menu_item(&mut self, item: ProjectMenuItem) {
         match item {
             ProjectMenuItem::Open => self.request_open_project(),
             ProjectMenuItem::Save => self.queue_save_project(),
             ProjectMenuItem::SaveAs => self.request_save_as(),
-            ProjectMenuItem::Recent(p) => self.begin_open(doc, p),
+            ProjectMenuItem::Recent(p) => self.begin_open(p),
         }
     }
 
@@ -448,12 +456,10 @@ impl VideoEditorApp {
             Some(portal::ExportDestOutcome::Opened(path)) => self.begin_export_to(path),
             Some(portal::ExportDestOutcome::Cancelled) => {
                 self.export_notice = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_operation = None;
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
-                        invocation,
-                        message: Some("export destination selection was cancelled".into()),
-                    });
+                if self.resource_reply.is_some() {
+                    self.settle_resource_job(Err(
+                        "export destination selection was cancelled".into()
+                    ));
                 }
             }
             Some(portal::ExportDestOutcome::Failed(reason)) => {

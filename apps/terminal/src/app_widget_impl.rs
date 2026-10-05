@@ -8,7 +8,7 @@ impl AppWidget for TerminalWidget {
 
     fn app_title(&self) -> &str {
         // Reflect an OSC 0/2 window title when the running program set one,
-        // falling back to "Terminal". `title()` returns the CRDT-mirrored
+        // falling back to "Terminal". `title()` returns the session-recorded
         // value so a collaborator sees the same title.
         self.title()
     }

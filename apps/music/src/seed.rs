@@ -6,7 +6,8 @@
 //! path ([`crate::backend`]) would
 //! replace these with live YouTube-Music ids resolved from a search.
 
-use crate::model::{Album, Artist, Library, Playback, Playlist, RepeatMode, Track};
+use crate::actions::{self, MusicAction};
+use crate::model::{Album, Artist, Library, Playlist, Track};
 
 fn artist(id: &str, name: &str, genre: &str, listeners: u64) -> Artist {
     Artist {
@@ -472,21 +473,41 @@ fn seed_liked_and_saved(lib: &mut Library) {
     }
 }
 
-/// Default playback used when seeding a fresh document: **idle**.
-///
-/// Nothing is loaded and nothing is playing until the user starts something.
-/// The app must never claim to be playing a track the user didn't choose — a
-/// fresh launch shows "Nothing playing" in the transport bar, not a fabricated
-/// now-playing state.
-pub fn sample_playback(_lib: &Library) -> Playback {
-    Playback {
-        current: None,
-        queue: Vec::new(),
-        queue_index: 0,
-        playing: false,
-        position_ms: 0,
-        shuffle: false,
-        repeat: RepeatMode::Off,
-        volume: 76,
+/// The sample catalogue as the actions that build it in a library: every
+/// track imported with its album and artist, the playlists created and
+/// filled, and the likes, saved albums and followed artists set. Screenshot
+/// scenarios stage it through the same door as every edit.
+pub fn sample_actions() -> Vec<MusicAction> {
+    let lib = sample_library();
+    let mut actions = Vec::new();
+    for track in lib.tracks.values() {
+        let (Some(album), Some(artist)) = (
+            lib.albums.get(&track.album_id),
+            lib.artists.get(&track.artist_id),
+        ) else {
+            continue;
+        };
+        actions.push(actions::import_track_action(track, album, artist));
     }
+    for playlist in &lib.playlists {
+        actions.push(actions::create_playlist_action(
+            &playlist.id,
+            &playlist.name,
+        ));
+        let mut rank = 0;
+        for track in &playlist.track_ids {
+            rank += Playlist::ORDER_STEP;
+            actions.push(actions::add_track_action(&playlist.id, track, rank));
+        }
+    }
+    for track in &lib.liked {
+        actions.push(actions::set_liked_action(track, true));
+    }
+    for album in &lib.saved_albums {
+        actions.push(actions::set_saved_album_action(album, true));
+    }
+    for artist in &lib.followed_artists {
+        actions.push(actions::set_followed_artist_action(artist, true));
+    }
+    actions
 }

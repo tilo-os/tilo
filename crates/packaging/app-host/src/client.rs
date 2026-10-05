@@ -19,6 +19,14 @@ pub enum FlatpakAction {
     Remove,
 }
 
+/// Host Flatpak availability and machine-readable installation/remote rows.
+#[derive(Clone, Debug, Default)]
+pub struct FlatpakStatus {
+    pub available: bool,
+    pub installed: String,
+    pub remotes: String,
+}
+
 pub struct BlockingClient {
     runtime: tokio::runtime::Runtime,
     local: tokio::task::LocalSet,
@@ -240,6 +248,20 @@ impl BlockingClient {
                 .map_err(|e| e.to_string())?
                 .get_json(),
         )
+    }
+
+    /// Read the host's Flatpak state without executing tools in the app sandbox.
+    ///
+    /// # Errors
+    /// Returns an error if the service cannot observe its host installation.
+    pub fn flatpak_status(&self) -> Result<FlatpakStatus, String> {
+        let response = self.wait(self.client.flatpak_status_request().send().promise)?;
+        let result = response.get().map_err(|e| e.to_string())?;
+        Ok(FlatpakStatus {
+            available: result.get_available(),
+            installed: text_result(result.get_installed())?,
+            remotes: text_result(result.get_remotes())?,
+        })
     }
 
     /// Add or remove a user Flatpak remote through the host service.
