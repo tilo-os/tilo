@@ -2127,6 +2127,38 @@ impl RecordSet {
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
 impl RecordStore {
+    /// Initialize only the exact host-created original record, never an empty restore.
+    pub(crate) fn initialize_admitted_record(
+        &self,
+        checkout: &RecordCheckout,
+        initialization: &crate::collaboration::native_initial::RecordInitialization,
+        initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+        seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<(), RecordOpenError> {
+        let original = self.read_checked(&checkout.id, Clone::clone)?;
+        let workspace = initialization.workspace().ok_or_else(|| {
+            RecordOpenError::Initialization("original creation scope unavailable".into())
+        })?;
+        if workspace.id != self.0.borrow().home {
+            return Err(RecordOpenError::IdentityMismatch);
+        }
+        let mut document = original.clone();
+        genesis(&mut document, checkout, &workspace.id, initialize)?;
+        let mut preserved = original;
+        document
+            .merge_incoming(&mut preserved)
+            .map_err(|error| RecordOpenError::Initialization(error.to_string()))?;
+        seed(&mut document).map_err(RecordOpenError::Initialization)?;
+        document.commit();
+        validate_identity(&document, checkout, &workspace.id)?;
+        let bytes = document.save();
+        initialization
+            .commit(checkout.kind.as_str(), bytes.clone())
+            .map_err(RecordOpenError::Initialization)?;
+        self.merge_peer_document(checkout, bytes)
+            .map_err(RecordOpenError::Initialization)?;
+        Ok(())
+    }
     pub(crate) fn from_owner(owner: std::rc::Rc<std::cell::RefCell<RecordSet>>) -> Self {
         Self(owner)
     }

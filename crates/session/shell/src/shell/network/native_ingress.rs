@@ -1,6 +1,58 @@
 use super::*;
 use crate::{network::actor::native_ingress, shell::native_workspace_owner::NativeWorkspaceOwner};
 impl ShellNetwork {
+    pub(crate) fn prepare_native_application(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        creator: &tilo_user_identity::DeviceCert,
+        route: &tilo_joined_room::ApplicationRecord,
+    ) -> Result<bool, String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native custody unavailable")?;
+        let (certificate, _) = owner.with_current(room, |view| {
+            identity.current_native_material(view.workspace())
+        })?;
+        if &certificate != creator {
+            return Err("application creator differs from selected native custody".into());
+        }
+        owner.prepare_application_record(
+            room,
+            &certificate,
+            &identity.device_signing_key,
+            route,
+            SystemTime::now(),
+        )
+    }
+
+    pub(crate) fn initialize_native_application(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        room: RoomId,
+        creator: &tilo_user_identity::DeviceCert,
+        initialization: tilo_joined_room::ApplicationInitialization<'_>,
+    ) -> Result<[u8; 32], String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native custody unavailable")?;
+        let (certificate, _) = owner.with_current(room, |view| {
+            identity.current_native_material(view.workspace())
+        })?;
+        if &certificate != creator {
+            return Err("application initialization creator custody changed".into());
+        }
+        owner.initialize_application_record(
+            room,
+            &certificate,
+            &identity.device_signing_key,
+            initialization,
+            SystemTime::now(),
+        )
+    }
+
     pub(crate) fn check_native_custody(
         &self,
         owner: &NativeWorkspaceOwner,

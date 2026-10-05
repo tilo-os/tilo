@@ -1056,7 +1056,8 @@ fn native_launch_manager(
     if !(spec.runtime_attachment)(args) {
         return Ok(crate::collaboration::CollaborationManager::disabled());
     }
-    crate::collaboration::CollaborationManager::for_native_launch().map_err(LaunchError::Operation)
+    crate::collaboration::CollaborationManager::for_native_launch(&spec.definition.record_kind)
+        .map_err(LaunchError::Operation)
 }
 
 fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), LaunchError> {
@@ -2288,7 +2289,9 @@ mod tests {
         let _environment = LaunchFixtureEnv::new();
         let mut env_override = tilo_test_env::ScopedEnv::new();
         env_override.set("TILO_SVC_COLLAB_FD", "-1");
-        let manager = crate::collaboration::CollaborationManager::for_native_launch();
+        let manager = crate::collaboration::CollaborationManager::for_native_launch(
+            &crate::record::RecordKind::new("launch-fixture.document"),
+        );
         let files = crate::record::RecordSet::for_local_files("so.tilo.launch-fixture");
         drop(env_override);
         assert!(

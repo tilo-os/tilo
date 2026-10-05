@@ -555,6 +555,7 @@ impl QuickSettingsState {
 pub struct ChromeState {
     identity_source: IdentitySource,
     pub(crate) hosted_inputs: super::hosted_inputs::HostedTileInputs,
+    pub(crate) native_app_opening: Option<super::launcher::NativeAppOpening>,
     /// Shared with the portal (grants) and peer-sync (replica), all
     /// holding clones of the same `Arc<RwLock<_>>`. Named `tree_handle`
     /// (not `tree`) so unmigrated call-sites get a type-mismatch error
@@ -823,6 +824,7 @@ impl ChromeState {
         Rc::new(RefCell::new(Self {
             tree_handle,
             hosted_inputs,
+            native_app_opening: None,
             identity_source,
             overlays: OverlayFlags::default(),
             quick_settings,

@@ -122,6 +122,8 @@ pub struct ServiceLaunchIdentity {
     pub workspace_id: String,
     pub allowed_compat_entry_ids: Vec<String>,
     pub compat_entry_generation: u64,
+    /// Original signed declaration snapshot, not the package currently installed.
+    pub application_creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
 }
 
 #[derive(Clone, Debug)]
@@ -285,6 +287,7 @@ pub fn register_in_process_launch(app_id: &str, workspace_id: &str) {
             workspace_id: workspace_id.to_owned(),
             allowed_compat_entry_ids: Vec::new(),
             compat_entry_generation: 0,
+            application_creation: None,
         },
         Instant::now(),
     ));
@@ -2088,6 +2091,7 @@ fn build_launch_command_for(
         document,
         uri,
     } = *extras;
+    let application_creation = original_application_creation(app);
     let mut args = vec![
         "run".to_string(),
         "--manifest".to_string(),
@@ -2101,6 +2105,12 @@ fn build_launch_command_for(
         "--app-id".to_string(),
         app.package_id.clone(),
     ];
+    if let Some(evidence) = &application_creation {
+        args.extend([
+            "--expected-package-hash".into(),
+            evidence.package_hash.clone(),
+        ]);
+    }
     if let Some(wayland_socket) = wayland_socket {
         args.push("--wayland-socket".to_string());
         args.push(wayland_socket.display().to_string());
@@ -2163,10 +2173,44 @@ fn build_launch_command_for(
                 Vec::new()
             },
             compat_entry_generation: windows_compat_entry_generation(),
+            application_creation,
         }),
         portal_workspace_id: None,
         managed_agent_id: None,
     }
+}
+
+fn original_application_creation(
+    app: &InstalledApp,
+) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
+    let installed = package_store::find_installed(&app.package_id).ok()??;
+    if installed.manifest_path != app.manifest_path || installed.payload_root != app.payload_root {
+        return None;
+    }
+    let record = package_store::integrity::read_record(
+        &package_store::integrity::record_dir(&installed),
+        &installed.id,
+        &installed.package_id_hex,
+    )
+    .ok()?;
+    if std::fs::read(&app.manifest_path).ok()? != record.manifest_bytes {
+        return None;
+    }
+    let original = std::str::from_utf8(&record.manifest_bytes).ok()?;
+    let parsed: launcher::manifest::MinimalManifest = toml::from_str(original).ok()?;
+    if parsed.package_id != app.package_id {
+        return None;
+    }
+    let manifest: toml::Value = toml::from_str(original).ok()?;
+    let kinds = manifest.get("resources")?.get("kinds")?.as_array()?;
+    let evidence = tilo_action_broker::services::ApplicationCreationEvidence {
+        package_hash: installed.package_id_hex,
+        declared_kinds: kinds
+            .iter()
+            .map(|kind| kind.as_str().map(str::to_owned))
+            .collect::<Option<_>>()?,
+    };
+    evidence.valid().then_some(evidence)
 }
 
 /// Resolve `package_id` and start it in `room`, with whatever the
@@ -2712,26 +2756,204 @@ pub fn queue_launch_target_in_workspace(
     workspace: &Workspace,
     uri: Option<String>,
 ) -> Result<(), LaunchError> {
+    let room = workspace.room;
+    let workspace = workspace.clone();
+    queue_prepared_launch(app, room, move || Ok(workspace), uri)
+}
+
+/// The session's existing authenticated broker, attached by its owning host.
+#[derive(Clone)]
+pub(crate) struct NativeAppOpening(pub super::collab_broker::AppActionBroker);
+
+impl std::fmt::Debug for NativeAppOpening {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeAppOpening")
+    }
+}
+
+/// Open only after the normal broker durably delegates app authorship for the
+/// retained local person. Missing or stale custody never grants in the cache.
+///
+/// # Errors
+/// Refuses unavailable owner/preflight workers; asynchronous authority and
+/// publication failures arrive through the ordinary launch event channel.
+pub(crate) fn queue_native_authoring_launch(
+    app: InstalledApp,
+    tree: super::state::WorkspaceTreeHandle,
+    room: RoomId,
+    opening: Option<NativeAppOpening>,
+) -> Result<(), LaunchError> {
+    let package = app.package_id.clone();
+    let expected = tree
+        .read()
+        .installed_native_owner()
+        .ok_or_else(|| LaunchError::IdentityUnavailable {
+            detail: "native app owner unavailable".into(),
+        })?
+        .with_current(room, |view| Ok(view.device().clone()))
+        .map_err(|detail| LaunchError::IdentityUnavailable { detail })?;
+    queue_prepared_launch(
+        app,
+        room,
+        move || {
+            let prepare = || -> Result<Workspace, String> {
+                let (_, certificate) =
+                    tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                        .map_err(|error| error.to_string())?;
+                if certificate != expected {
+                    return Err("native app opening identity changed before admission".into());
+                }
+                let owner = tree
+                    .read()
+                    .installed_native_owner()
+                    .ok_or("native app owner disappeared")?;
+                let access = native_app_open_access(&owner, room, &certificate, &package)?;
+                if access != NativeAppOpenAccess::Delegate {
+                    let mut workspace = native_launch_workspace(&tree, room)?;
+                    if access == NativeAppOpenAccess::Viewer {
+                        workspace
+                            .capabilities
+                            .push(collab_types::caps::CapOverride::new(
+                                Subject::app(&package),
+                                collab_types::caps::Scope::Workspace,
+                                collab_types::caps::Effect::Restrict,
+                                collab_types::caps::Verb::Read,
+                            ));
+                    }
+                    return Ok(workspace);
+                }
+                let broker = opening.ok_or("native app authorship broker unavailable")?;
+                let job = broker.0.change_workspace_membership(
+                    &room.to_string(),
+                    &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::GrantAppAuthorship {
+                        app: package,
+                    },
+                    &certificate,
+                )?;
+                let completed = job
+                    .completion
+                    .recv_timeout(Duration::from_secs(30))
+                    .map_err(|error| {
+                        format!("native app authorship did not durably complete: {error}")
+                    })?;
+                if !completed.code.is_empty() {
+                    return Err(format!(
+                        "native app authorship refused: {}",
+                        completed.message
+                    ));
+                }
+                native_launch_workspace(&tree, room)
+            };
+            prepare().map_err(|detail| LaunchError::IdentityUnavailable { detail })
+        },
+        None,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeAppOpenAccess {
+    Delegate,
+    Author,
+    Viewer,
+}
+
+#[cfg(test)]
+#[path = "launcher_native_open_tests.rs"]
+mod native_open_tests;
+
+fn native_app_open_access(
+    owner: &super::native_workspace_owner::NativeWorkspaceOwner,
+    room: RoomId,
+    certificate: &tilo_user_identity::DeviceCert,
+    package: &str,
+) -> Result<NativeAppOpenAccess, String> {
+    owner.with_current(room, |view| {
+        if view.device() != certificate || !view.peer().certificates().contains(certificate) {
+            return Err("native app opening certificate is no longer admitted".into());
+        }
+        let now = std::time::SystemTime::now();
+        let (role, caps, person) = view
+            .peer()
+            .permissions(certificate.device_public_key, now)?;
+        let administrator = view
+            .peer()
+            .check_workspace_administration(certificate.device_public_key, now)
+            .is_ok();
+        if view.peer().document(package, "").is_none() {
+            if administrator {
+                return Ok(NativeAppOpenAccess::Delegate);
+            }
+            return Err("creating an application requires governor-authorized authorship".into());
+        }
+        view.peer()
+            .check_document_read(certificate.device_public_key, package, "", now)?;
+        let seconds = now
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| "native app opening clock is before the Unix epoch")?
+            .as_secs();
+        let person =
+            collab_types::caps::Actor::person(Some(role), person).in_room(room.to_string());
+        let application = collab_types::caps::Actor::app(package).in_room(room.to_string());
+        let writes = |actor: &collab_types::caps::Actor| {
+            collab_types::caps::decide_capability(
+                actor,
+                &collab_types::caps::ResourceRef::Workspace,
+                collab_types::caps::Verb::Write,
+                &caps,
+                Some(seconds),
+            ) == collab_types::caps::CapDecision::Allow
+        };
+        if writes(&person) && writes(&application) {
+            return Ok(NativeAppOpenAccess::Author);
+        }
+        Ok(if administrator {
+            NativeAppOpenAccess::Delegate
+        } else {
+            NativeAppOpenAccess::Viewer
+        })
+    })
+}
+
+fn native_launch_workspace(
+    tree: &super::state::WorkspaceTreeHandle,
+    room: RoomId,
+) -> Result<Workspace, String> {
+    tree.read()
+        .desktop
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.room == room)
+        .cloned()
+        .ok_or_else(|| "native app launch room disappeared".into())
+}
+
+fn queue_prepared_launch(
+    app: InstalledApp,
+    room: RoomId,
+    prepare: impl FnOnce() -> Result<Workspace, LaunchError> + Send + 'static,
+    uri: Option<String>,
+) -> Result<(), LaunchError> {
     let package_id = app.package_id.clone();
     let display_name = app.display_name.clone();
-    let room = workspace.room;
-    let capabilities = workspace.capabilities.clone();
     spawn_reporting(
         std::thread::Builder::new().name("tilo-launch-preflight".to_string()),
         move || {
-            let app_capabilities = capabilities
-                .into_iter()
-                .filter(|capability| capability.subject == Subject::app(&package_id))
-                .collect();
-            let outcome = execute_installed(
-                app,
-                room,
-                None,
-                uri.as_deref(),
-                None,
-                None,
-                Some(app_capabilities),
-            );
+            let outcome = prepare().and_then(|workspace| {
+                let app_capabilities = workspace
+                    .capabilities
+                    .into_iter()
+                    .filter(|capability| capability.subject == Subject::app(&package_id))
+                    .collect();
+                execute_installed(
+                    app,
+                    room,
+                    None,
+                    uri.as_deref(),
+                    None,
+                    None,
+                    Some(app_capabilities),
+                )
+            });
             if let Err(error) = outcome {
                 push_event(LaunchEvent {
                     package_id,
@@ -5679,6 +5901,7 @@ mod tests {
                     workspace_id: "room-1".into(),
                     allowed_compat_entry_ids: vec!["windows-reader".into()],
                     compat_entry_generation: 7,
+                    application_creation: None,
                 },
             );
             let (_, start_time) = proc_stat(pid).expect("launcher process stat");

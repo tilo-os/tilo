@@ -308,6 +308,23 @@ pub struct AppActionBroker {
 }
 
 impl AppActionBroker {
+    /// Invoke one closed native workspace-membership command as the retained
+    /// certified person. The owner still rechecks current Admin authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the broker, published action, or caller custody
+    /// is unavailable.
+    pub fn change_workspace_membership(
+        &self,
+        room: &str,
+        command: &tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<crate::collab_broker_capnp::InvocationJob, String> {
+        self.state
+            .while_live(|state| state.invoke_workspace_membership(room, command, certificate))
+    }
+
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production hosts construct this facade
     /// through `BrokerHandle`; arbitrary state injection is test-only.

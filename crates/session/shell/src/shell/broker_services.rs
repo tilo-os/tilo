@@ -81,6 +81,50 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
     }
 }
 
+impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitService {
+    fn requires_room(&self, room: &str) -> bool {
+        tilo_peer_state::owner_commit::OwnerCommitService::requires_room(self, room)
+    }
+
+    fn health(&self) -> Result<(), String> {
+        self.owner
+            .as_ref()
+            .ok_or("native membership owner unavailable")?
+            .health()
+    }
+
+    fn execute(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        let owner = self.owner.clone();
+        let network = self.network.clone();
+        Box::pin(async move {
+            let owner = owner.ok_or("native membership owner unavailable")?;
+            let room = super::state::RoomId::parse(&request.room)
+                .ok_or("invalid native membership room")?;
+            if let Some(network) = network.as_ref() {
+                network.check_native_custody(&owner, room)?;
+                if network.governed_elsewhere(room) {
+                    return Err("workspace membership requires the governing owner".into());
+                }
+            }
+            let (key, governor) = tilo_identity_host::broker::trusted_current_device(&request.room)
+                .map_err(|error| format!("workspace governor is unavailable: {error}"))?;
+            let receipt = owner.commit_workspace_membership_command(
+                request,
+                &governor,
+                &key,
+                std::time::SystemTime::now(),
+            )?;
+            if let Some(network) = network {
+                network.schedule_native_owner_publication(room);
+            }
+            Ok(receipt)
+        })
+    }
+}
+
 /// Have the governor of `room` record an effect receipt this device's broker
 /// produced, and answer with this device's committed view of the room.
 async fn record_receipt_elsewhere(
@@ -538,6 +582,17 @@ impl LauncherServices for NativeLauncher {
     fn attest_process(&self, pid: u32, app: &str, room: &str) -> bool {
         super::launcher::attest_trusted_service_launch_for_pid(pid, app, room).is_some()
             || super::launcher::consume_in_process_launch(pid, app, room)
+    }
+    fn application_creation_evidence(
+        &self,
+        pid: u32,
+        app: &str,
+        room: &str,
+    ) -> Result<Option<tilo_action_broker::services::ApplicationCreationEvidence>, String> {
+        Ok(
+            super::launcher::attest_trusted_service_launch_for_pid(pid, app, room)
+                .and_then(|identity| identity.application_creation),
+        )
     }
     fn note_acted_on(&self, app: &str, _room: &str) {
         super::launcher::note_launch_acted_on(app);
@@ -1130,6 +1185,10 @@ pub fn native_services(
         Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
             as Arc<dyn NativeDocumentReads>
     });
+    let workspace_memberships = membership.as_ref().map(|tree| {
+        Arc::new(NativeOwnerCommitService::new(tree.clone(), network.clone()))
+            as Arc<dyn tilo_action_broker::services::WorkspaceMemberships>
+    });
     let governance = membership.as_ref().map(|tree| {
         Arc::new(NativeWorkspaceGovernance(tree.clone(), network.clone()))
             as Arc<dyn WorkspaceGovernanceServices>
@@ -1153,6 +1212,7 @@ pub fn native_services(
         app_action_access: Some(super::app_action_access::installed_resolver()),
         app_action_grants,
         committed_documents,
+        workspace_memberships,
         desktop_commands: None,
         native_certificates: Some(Arc::new(NativeCertificates)),
         legacy_workspace: membership.map(|tree| {

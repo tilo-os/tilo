@@ -22,6 +22,11 @@ impl Reads {
     pub(super) fn close_for_test(&self, key: &str) -> Arc<AtomicBool> {
         self.pending(key).unwrap()
     }
+    #[cfg(test)]
+    pub(super) fn stage_for_test(&self, key: &str, read: CommittedDocument) {
+        let ready = self.pending(key).unwrap();
+        self.stage(key, &ready, read).unwrap();
+    }
     pub(super) fn publishable(&self, key: &str) -> bool {
         self.0
             .lock()
@@ -132,6 +137,9 @@ pub struct CommittedDocument {
     data: Arc<Captured>,
     merged: Arc<AtomicBool>,
     valid: Arc<AtomicBool>,
+    creation: Option<runtime_collab::committed_document::CreationReceipt>,
+    revision: [u8; 32],
+    initialized: Arc<AtomicBool>,
 }
 impl std::fmt::Debug for CommittedDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -144,6 +152,39 @@ impl std::fmt::Debug for CommittedDocument {
     }
 }
 impl CommittedDocument {
+    pub(crate) fn creation_workspace(
+        &self,
+    ) -> Option<&runtime_collab::committed_document::CreationWorkspace> {
+        self.is_current().then_some(())?;
+        if self.initialized.load(Ordering::Acquire) {
+            return None;
+        }
+        self.creation.as_ref().map(|receipt| &receipt.workspace)
+    }
+    pub(crate) fn initialization_request(
+        &self,
+        kind: &str,
+        document: Vec<u8>,
+    ) -> Result<Request, String> {
+        if self.creation_workspace().is_none() {
+            return Err("original application creation receipt unavailable".into());
+        }
+        let receipt = self
+            .creation
+            .as_ref()
+            .ok_or("creation receipt unavailable")?;
+        let request = Request::Initialize {
+            token: receipt.token,
+            revision: self.revision,
+            kind: kind.into(),
+            document,
+        };
+        request.encode().map_err(str::to_owned)?;
+        Ok(request)
+    }
+    pub(crate) fn initialized(&self) {
+        self.initialized.store(true, Ordering::Release);
+    }
     pub(crate) fn with_mutation<T>(
         &self,
         apply: impl FnOnce(&collab_types::DocumentMutation) -> T,
@@ -275,6 +316,9 @@ mod tests {
             }),
             merged: Arc::new(AtomicBool::new(false)),
             valid: Arc::new(AtomicBool::new(true)),
+            creation: None,
+            revision: [0; 32],
+            initialized: Arc::new(AtomicBool::new(false)),
         };
         reads.stage("route", &ready, read.clone()).unwrap();
         reads.pending("route").unwrap();
@@ -361,11 +405,15 @@ async fn read_capture(
     })
     .await
 }
-async fn read_capture_using(
+pub(super) async fn read_capture_using(
     first: Reply,
     budget: &ByteBudget,
     mut send: impl AsyncFnMut(Request) -> Result<Reply, String>,
 ) -> Result<(CommittedDocument, [u8; 32]), String> {
+    let (first, creation) = match first {
+        Reply::Created { receipt, chunk } => (chunk.into_reply(), Some(receipt)),
+        reply => (reply, None),
+    };
     // Reserve before the full-document destination allocation. Every clone of
     // the event retains this one shared reservation until the last owner drops.
     let (first_id, first_token) = match &first {
@@ -440,6 +488,9 @@ async fn read_capture_using(
             }),
             merged: Arc::new(AtomicBool::new(false)),
             valid: Arc::new(AtomicBool::new(true)),
+            creation,
+            revision: assembly.revision,
+            initialized: Arc::new(AtomicBool::new(false)),
         },
         assembly.revision,
     ))
@@ -468,7 +519,7 @@ pub(super) async fn install(
     }
     let ready = inbound.state.document_reads.pending(&key)?;
     let (initial, revision) = match first {
-        Reply::Chunk { .. } => match read_capture(channel, first).await {
+        Reply::Chunk { .. } | Reply::Created { .. } => match read_capture(channel, first).await {
             Ok((read, revision)) => (Some(read), Some(revision)),
             Err(_) => (None, None),
         },

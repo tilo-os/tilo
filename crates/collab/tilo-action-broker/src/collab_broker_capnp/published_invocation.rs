@@ -32,6 +32,109 @@ pub(super) struct OriginalInvocationData {
     execution: Option<tilo_actions::remote::ExecutionLease>,
 }
 impl OriginalInvocationData {
+    fn current_person_certificate(
+        &self,
+        state: &CapnpBrokerState,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self
+            .execution
+            .as_ref()
+            .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("original invocation execution session ended".into());
+        }
+        let (_, now) = state.checked_policy_time(Some(&self.time))?;
+        let admitted = match &self.caller {
+            InvocationCaller::Certified { caller, .. } => state.current_action_caller(caller)?,
+            InvocationCaller::Local { route, admitted } => {
+                if route != &self.route {
+                    return Err("original local caller route changed".into());
+                }
+                *admitted.clone()
+            }
+        };
+        if admitted.agent_id.is_some() {
+            return Err("this action requires an authenticated person".into());
+        }
+        let certificate = admitted
+            .certificate
+            .ok_or("original person certificate unavailable")?;
+        tilo_user_identity::verify_device_cert_at(&certificate, now)
+            .map_err(|_| "original invocation certificate expired")?;
+        let tree = state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .snapshot()?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == self.route.cluster_id)
+            .ok_or("original invocation workspace unavailable")?;
+        let mut person = state.certified_person(&self.route.cluster_id, &certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.caller
+        {
+            person.capped |= super::cap_applies_in(
+                state.certificate_authority.get().map(AsRef::as_ref),
+                &self.route.cluster_id,
+                *foreign_restriction,
+                Some(&certificate.device_public_key),
+            );
+        }
+        let seconds = now / 1_000_000_000;
+        let actor = person.policy_in(workspace, seconds);
+        let verb = match self.spec.contract.permission {
+            tilo_actions::PermissionRequirement::None => None,
+            tilo_actions::PermissionRequirement::Read => Some(Verb::Read),
+            tilo_actions::PermissionRequirement::Comment => Some(Verb::Comment),
+            tilo_actions::PermissionRequirement::Write => Some(Verb::Write),
+            tilo_actions::PermissionRequirement::Invite => Some(Verb::Invite),
+            tilo_actions::PermissionRequirement::Admin => Some(Verb::Admin),
+        };
+        if verb.is_some_and(|verb| {
+            workspace.decide_at(
+                &actor,
+                &ResourceRef::Action {
+                    app: self.route.app_id.clone(),
+                    action: self.request.address.action.clone(),
+                },
+                verb,
+                seconds,
+            ) != CapDecision::Allow
+        }) {
+            return Err("original invocation caller is no longer authorized".into());
+        }
+        drop(tree);
+        Ok(certificate)
+    }
+
+    /// Recover a person's original certified custody for a native owner turn.
+    /// This is not an allow decision: the owner rechecks current room rights.
+    pub(super) fn owner_person_certificate(
+        &self,
+        state: &CapnpBrokerState,
+        room: &str,
+        envelope: &super::InvocationEnvelope,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self.route.cluster_id != room
+            || self.request.wire_id != envelope.id
+            || self.request.invocation != envelope.invocation
+            || self.request.address.resource != envelope.resource
+            || self.request.address.action != envelope.action
+            || self.request.argument != envelope.argument
+            || self
+                .execution
+                .as_ref()
+                .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("owner invocation original binding changed".into());
+        }
+        self.current_person_certificate(state)
+    }
+
     pub(super) fn capture(
         request: PublishedInvocationRequest,
         route: CrdtRoute,
