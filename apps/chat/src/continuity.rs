@@ -224,7 +224,7 @@ impl ChatApp {
         self.realtime.target_media_ready = true;
     }
 
-    pub(crate) fn apply_realtime_stop(&mut self, _doc: &mut AutoCommit) {
+    pub(crate) fn apply_realtime_stop(&mut self) {
         if self.realtime.stop_source.take().is_none() || !self.call.active {
             return;
         }
