@@ -44,6 +44,8 @@ pub struct Embedded<W: Widget> {
     /// A press inside the child asked for keyboard focus since the owner
     /// last looked ([`Embedded::take_focus_request`]).
     focus_request: bool,
+    /// The child takes exactly the rectangle it is given.
+    fill: bool,
 }
 
 impl<W: Widget + 'static> Embedded<W> {
@@ -60,7 +62,17 @@ impl<W: Widget + 'static> Embedded<W> {
             text_color: None,
             laid: None,
             focus_request: false,
+            fill: false,
         }
+    }
+
+    /// The child takes exactly the rectangle it is laid out in, rather than
+    /// its content's height: a viewport of its own (a terminal, a viewer)
+    /// that scrolls inside the rectangle the owner gives it.
+    #[must_use]
+    pub fn filling(mut self) -> Self {
+        self.fill = true;
+        self
     }
 
     /// Place the child's own space in the owner's: layout rectangles are in
@@ -152,8 +164,21 @@ impl<W: Widget + 'static> Embedded<W> {
         };
         let available = Size {
             width: AvailableSpace::Definite(rect.width() as f32),
-            height: AvailableSpace::MaxContent,
+            height: if self.fill {
+                AvailableSpace::Definite(rect.height() as f32)
+            } else {
+                AvailableSpace::MaxContent
+            },
         };
+        if self.fill
+            && let Ok(mut style) = self.tree.style(root).cloned()
+        {
+            style.size = Size {
+                width: taffy::Dimension::length(rect.width() as f32),
+                height: taffy::Dimension::length(rect.height() as f32),
+            };
+            let _ = self.tree.set_style(root, style);
+        }
         // SAFETY: the tree, node map and bindings were built from this exact
         // boxed widget, which nothing else borrows while the layout runs.
         let solved = unsafe {

@@ -60,6 +60,9 @@ mod inner {
 pub mod sessions;
 
 mod app_widget_impl;
+mod view;
+
+pub use view::TerminalView;
 
 /// A short scripted session, typed into a freshly spawned login shell, that
 /// prints a few recognisable lines in that shell's own syntax. Hosts use it to

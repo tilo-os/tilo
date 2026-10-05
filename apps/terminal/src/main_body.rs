@@ -6,8 +6,8 @@ use ui::{
     text_render::{TextRenderer, TextStyle, TextWeight},
     tokens::TextRole,
     widget::{
-        Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, FindBar, FindOptions,
-        Findable, PressOutcome, ScrollMetrics, Scrollbar, Widget, paint_find_match,
+        Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, FindOptions, Findable,
+        PressOutcome, ScrollMetrics, Scrollbar, Widget, paint_find_match,
     },
 };
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
@@ -611,18 +611,23 @@ pub struct TerminalWidget {
     /// Shared toolkit interaction model for the terminal history bar.
     scrollbar: Scrollbar,
 
-    /// Local find-in-scrollback state. It is intentionally not mirrored into
-    /// the CRDT or resource tree: a find term and its matching output can be
-    /// sensitive, while the shared terminal transcript already has its own
-    /// carefully bounded collaboration contract.
     conventions: ui::PlatformConventions,
-    /// The toolkit's find bar while find is open, hosted as a band above the
-    /// grid. `None` when closed.
-    find_bar: Option<FindBar>,
+    /// Local find-in-scrollback state: the matches the find scope that hosts
+    /// this terminal asked for ([`Findable`]), painted over their cells. It
+    /// is intentionally not mirrored into the CRDT or resource tree: a find
+    /// term and its matching output can be sensitive, while the shared
+    /// terminal transcript already has its own carefully bounded
+    /// collaboration contract.
     find_matches: Vec<FindMatch>,
     find_current: usize,
-    /// Height of the find band and, below it, the session banner, as laid out
-    /// by the last `draw`. The grid starts under both.
+    /// The context menu's Find entry was chosen: the hosting find scope
+    /// opens its bar ([`Self::take_find_request`]).
+    find_request: bool,
+    /// Bumped whenever a sync brings fresh output, so an open find bar finds
+    /// again and its counter follows ([`Findable::content_revision`]).
+    content_revision: u64,
+    /// Height of the session banner, as laid out by the last `draw`. The
+    /// grid starts under it.
     chrome_top_band: f64,
     /// Where the session banner is painted by the last `draw`; empty while the
     /// session is live.
@@ -873,9 +878,10 @@ impl TerminalWidget {
             wheel_remainder_px: 0.0,
             scrollbar: Scrollbar::vertical(),
             conventions: ui::PlatformConventions::default(),
-            find_bar: None,
             find_matches: Vec::new(),
             find_current: 0,
+            find_request: false,
+            content_revision: 0,
             chrome_top_band: 0.0,
             banner_rect: Rect::ZERO,
             headless: false,
@@ -1438,47 +1444,13 @@ impl TerminalWidget {
         self.grid.iter().rposition(|l| l.contains(needle))
     }
 
-    /// Open the local find bar and focus its query. This does not publish the
-    /// query, the result positions, or a command to collaborators/agents:
-    /// scrollback may contain credentials and the feature is only a viewport
-    /// aid.
-    pub fn open_find(&mut self) {
-        let conventions = self.conventions;
-        self.find_bar
-            .get_or_insert_with(|| {
-                let mut bar = FindBar::new();
-                Widget::set_platform_conventions(&mut bar, conventions);
-                bar
-            })
-            .focus_query();
-    }
-
-    /// Whether the find bar is open.
-    fn find_is_open(&self) -> bool {
-        self.find_bar.is_some()
-    }
-
-    /// Set the local find text for a host or screenshot, as typing it would.
-    pub fn set_find_query(&mut self, query: &str) {
-        let bounded: String = query.chars().take(MAX_FIND_QUERY_CHARS).collect();
-        self.open_find();
-        if let Some(bar) = self.find_bar.as_mut() {
-            bar.set_query(&bounded);
-        }
-        self.drive_find();
-    }
-
-    /// Carry what the person did in the find bar (a new query, a step, a
-    /// close) to the scrollback. The bar is taken out of the widget while it
-    /// drives it, since the widget is the bar's [`Findable`].
-    fn drive_find(&mut self) {
-        let Some(mut bar) = self.find_bar.take() else {
-            return;
-        };
-        bar.drive(self);
-        if !bar.close_requested() {
-            self.find_bar = Some(bar);
-        }
+    /// Whether the context menu's Find entry was chosen since the last call.
+    /// The find scope that hosts this terminal opens its bar; the terminal
+    /// itself holds no bar. Nothing here publishes a query, a match or a
+    /// command to collaborators or agents: scrollback may contain
+    /// credentials, and find is only a viewport aid.
+    pub fn take_find_request(&mut self) -> bool {
+        std::mem::take(&mut self.find_request)
     }
 
     /// Match `query` against the retained scrollback. Matches are literal;
@@ -1530,18 +1502,6 @@ impl TerminalWidget {
         self.find_current = self
             .find_current
             .min(self.find_matches.len().saturating_sub(1));
-    }
-
-    /// Re-scan after fresh output reached a sync, so the painted matches stay
-    /// on the text they were found on. The view does not move: only a step or
-    /// a new query scrolls to a match.
-    fn refresh_find_matches(&mut self) {
-        let Some(bar) = self.find_bar.as_mut() else {
-            return;
-        };
-        // The bar finds again and its counter follows, without a reveal.
-        bar.refresh();
-        self.drive_find();
     }
 
     fn reveal_current_find_match(&mut self) {
@@ -1655,27 +1615,10 @@ impl TerminalWidget {
         let start = max_top.saturating_sub(scroll);
         self.grid.iter().skip(start).take(vis).cloned().collect()
     }
-    /// Find bar state for geometry and privacy regressions. Kept test-only:
-    /// production hosts use the explicit open/set APIs and do not inspect
-    /// another person's local query/matches.
+    /// The rows of the painted find matches, for regressions.
     #[cfg(test)]
-    pub fn find_test_state(&self) -> (bool, Vec<usize>) {
-        (
-            self.find_is_open(),
-            self.find_matches.iter().map(|found| found.row).collect(),
-        )
-    }
-    /// The find band after the real draw pass, `None` while find is closed.
-    #[cfg(test)]
-    pub fn find_test_band(&self) -> Option<Rect> {
-        self.find_bar.as_ref().map(Widget::get_rect)
-    }
-    /// The find bar's query and `(current, total)` counter.
-    #[cfg(test)]
-    pub fn find_test_counter(&self) -> Option<(String, Option<(usize, usize)>)> {
-        self.find_bar
-            .as_ref()
-            .map(|bar| (bar.query().to_owned(), bar.position()))
+    pub fn find_test_matches(&self) -> Vec<usize> {
+        self.find_matches.iter().map(|found| found.row).collect()
     }
     /// The painted session banner after the real draw pass.
     #[cfg(test)]
@@ -2531,10 +2474,15 @@ impl Findable for TerminalWidget {
         self.find_matches.clear();
         self.find_current = 0;
     }
+
+    fn content_revision(&self) -> u64 {
+        self.content_revision
+    }
 }
 
 impl Widget for TerminalWidget {
     ui::provides!(
+        dyn Findable,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
@@ -2667,7 +2615,9 @@ impl Widget for TerminalWidget {
         self.refresh_title_and_links(state, root);
         self.refresh_image_placements(state);
         self.refresh_cursor_from_crdt(state, line_ids.len());
-        self.refresh_find_matches();
+        // Fresh output reached the grid: an open find bar finds again, so
+        // the painted matches stay on the text they were found on.
+        self.content_revision = self.content_revision.wrapping_add(1);
     }
 
     fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
@@ -2757,7 +2707,7 @@ impl Widget for TerminalWidget {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
+        _presence: &ui::presence::PresenceCtx,
     ) {
         // Every visual parameter comes from the theme. The grid is document
         // content in the `Code` role; the window ground under it is the
@@ -2830,7 +2780,7 @@ impl Widget for TerminalWidget {
         // shell that has not drawn its prompt yet shows its blank grid.
         if !self.alt_active && !self.ever_nonblank && (self.headless || self.is_disconnected()) {
             self.draw_empty_state(scene, transform, text_renderer, theme);
-            self.draw_top_bands(scene, transform, text_renderer, theme, presence);
+            self.draw_top_bands(scene, transform, text_renderer, theme);
             return;
         }
 
@@ -2853,7 +2803,7 @@ impl Widget for TerminalWidget {
         // A themed scrollbar indicator in the reserved right gutter, shown only
         // when the buffer overflows the viewport.
         self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
-        self.draw_top_bands(scene, transform, text_renderer, theme, presence);
+        self.draw_top_bands(scene, transform, text_renderer, theme);
     }
 
     /// The right-click Copy/Paste menu is a floating Panel: it paints in the
@@ -2908,27 +2858,6 @@ impl Widget for TerminalWidget {
         }
 
         if self.route_target_chrome(event, ctx) {
-            return;
-        }
-
-        if let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-            && self.find_shortcut_matches(ctx.modifiers.state())
-            && matches!(logical_key, Key::Character(key) if key.eq_ignore_ascii_case("f"))
-        {
-            self.open_find();
-            *ctx.handled = true;
-            return;
-        }
-
-        if self.find_is_open() && self.handle_find_event(event, ctx) {
             return;
         }
 
@@ -2996,6 +2925,9 @@ impl Widget for TerminalWidget {
     fn name(&self) -> &'static str {
         "Terminal"
     }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
@@ -3008,9 +2940,6 @@ impl Widget for TerminalWidget {
 
     fn set_platform_conventions(&mut self, conventions: ui::PlatformConventions) {
         self.conventions = conventions;
-        if let Some(bar) = self.find_bar.as_mut() {
-            Widget::set_platform_conventions(bar, conventions);
-        }
         self.context_menu.set_platform_conventions(conventions);
     }
 
@@ -3027,9 +2956,6 @@ impl Widget for TerminalWidget {
     }
 
     fn ime_cursor_rect(&self) -> Option<Rect> {
-        if let Some(bar) = self.find_bar.as_ref().filter(|bar| bar.is_focused()) {
-            return bar.ime_cursor_rect();
-        }
         self.focused.then(|| {
             let row = self
                 .grid
@@ -3084,22 +3010,6 @@ impl Widget for TerminalWidget {
         transcript
             .children
             .extend(self.visible_link_accessibility());
-        if let Some(mut find) = self.find_bar.as_ref().and_then(Widget::accessibility) {
-            // The query is reachable through the terminal, like the bar's
-            // buttons, so assistive technology can type it without a PTY
-            // keystroke. The target carries the pane id so embedded terminals
-            // do not collide.
-            let query_target = format!("terminal.find:{}:query", self.pane_id);
-            if let Some(field) = find.children.iter_mut().find(|c| c.role == Role::TextInput) {
-                field.action_target = Some(query_target);
-                field.name = Some("Find in scrollback".to_string());
-            }
-            transcript.children.push(
-                find.with_name("Find in scrollback").with_description(
-                    "Local only. Find text and matches are not shared with collaborators or exposed as terminal resources.",
-                ),
-            );
-        }
         if let Some(menu) = self.context_menu_accessibility() {
             transcript.children.push(menu);
         }
@@ -3148,26 +3058,6 @@ impl Widget for TerminalWidget {
     ) -> bool {
         if target == self.terminal_transcript_target() {
             return self.perform_action(action, state, path);
-        }
-        if target == format!("terminal.find:{}:query", self.pane_id) {
-            return match action {
-                ui::a11y::Action::SetValue(value) => {
-                    self.set_find_query(value);
-                    true
-                }
-                ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
-                    self.open_find();
-                    true
-                }
-                _ => false,
-            };
-        }
-        if target.starts_with("find-")
-            && let Some(bar) = self.find_bar.as_mut()
-        {
-            let handled = Widget::perform_semantic_action(bar, target, action, state, path);
-            self.drive_find();
-            return handled;
         }
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -3459,52 +3349,6 @@ impl ui::history_mode::capability::DocumentHistory for TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// Route an event to the find bar before terminal input. While the bar
-    /// has focus, keystrokes must not leak into the foreground process: the
-    /// query is a private viewport aid, not shell input. Enter steps through
-    /// matches, Shift+Enter reverses, and Escape closes the bar and restores
-    /// direct terminal typing. A press in the grid hands focus back to the
-    /// terminal and leaves the bar open. Returns whether the event was
-    /// consumed; pointer events outside the band fall through to the grid.
-    fn handle_find_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
-    ) -> bool {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor_pos =
-                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-        let pointer = self.last_cursor_pos;
-        let is_press = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            }
-        );
-        let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
-        let Some(bar) = self.find_bar.as_mut() else {
-            return false;
-        };
-        let in_band = Widget::get_rect(bar).contains(pointer);
-        if is_press && in_band && !bar.is_focused() {
-            Widget::set_focus(bar, true);
-        } else if is_press && !in_band {
-            Widget::set_focus(bar, false);
-        }
-        let routed = (bar.is_focused() || in_band)
-            && bar.route(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
-        let focused = bar.is_focused();
-        self.drive_find();
-        if focused && is_key {
-            *ctx.handled = true;
-            return true;
-        }
-        routed && in_band
-    }
-
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
     fn handle_wheel_event(
         &mut self,
@@ -3778,18 +3622,6 @@ impl TerminalWidget {
         if self.grid_rect.contains(self.last_cursor_pos) {
             self.open_context_menu_at_cursor();
             *handled = true;
-        }
-    }
-
-    /// Find uses a desktop command chord, leaving terminal Ctrl+F and
-    /// Meta-Ctrl+F available to the foreground program on every platform.
-    fn find_shortcut_matches(&self, modifiers: winit::keyboard::ModifiersState) -> bool {
-        if !self.conventions.command_modifier_down(modifiers) || modifiers.alt_key() {
-            return false;
-        }
-        match self.conventions.platform() {
-            ui::Platform::MacOs => !modifiers.control_key() && !modifiers.shift_key(),
-            _ => modifiers.shift_key() && !modifiers.super_key(),
         }
     }
 
@@ -4163,22 +3995,13 @@ impl TerminalWidget {
         }
     }
 
-    /// Lay out the bands that stand above the grid: the target header, the find bar, then the
-    /// session banner. Records where they are and how much of the widget they
-    /// take, which the grid geometry subtracts.
+    /// Lay out the bands that stand above the grid: the target header, then
+    /// the session banner. Records where they are and how much of the widget
+    /// they take, which the grid geometry subtracts.
     fn layout_top_bands(&mut self, theme: &Theme, tr: &mut TextRenderer) {
         let gutter = f64::from(theme.tokens.spacing.s3);
         // The header with the session's target comes first.
         let mut y = self.rect.y0 + self.header_h();
-        if let Some(bar) = self.find_bar.as_mut() {
-            let height = bar.height(theme);
-            bar.layout(
-                Rect::new(self.rect.x0, y, self.rect.x1, y + height),
-                theme,
-                tr,
-            );
-            y += height;
-        }
         self.banner_rect = Rect::ZERO;
         if self.is_disconnected() && self.rect.width() > gutter * 2.0 {
             let width = self.rect.width() - gutter * 2.0;
@@ -4204,19 +4027,15 @@ impl TerminalWidget {
         )
     }
 
-    /// Paint the find bar and the session banner laid out by
+    /// Paint the session banner laid out by
     /// [`layout_top_bands`](Self::layout_top_bands).
     fn draw_top_bands(
-        &mut self,
+        &self,
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(bar) = self.find_bar.as_mut() {
-            bar.paint(scene, transform, tr, theme, presence);
-        }
         if self.banner_rect.width() > 0.0 {
             // Persistent, not a toast: when a shell exits there is no live
             // process to recover by retrying, so both sighted users and
@@ -5068,7 +4887,7 @@ impl TerminalWidget {
             return;
         }
         if self.find_menu_index == Some(index) {
-            self.open_find();
+            self.find_request = true;
             return;
         }
         if self.copy_on_select_menu_index == Some(index) {
