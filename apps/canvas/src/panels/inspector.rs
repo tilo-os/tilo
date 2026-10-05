@@ -159,7 +159,7 @@ fn brush_and_artwork(cx: &ViewCx<ArtworkResource>, tools: &Tools) -> Element {
                     // Picking lays no paint: nothing to set.
                     Tool::Select => return Box::new(Spacer::fixed(0.0)) as Element,
                     Tool::Marquee | Tool::Oval | Tool::Lasso | Tool::Wand => {
-                        area_tool(cx, &tools, tool)
+                        area_tool(&tools, tool)
                     }
                     Tool::Bucket => section(vec![
                         brush(cx, &tools, layer, tool),
@@ -457,20 +457,27 @@ fn sampling(tools: &Tools) -> Element {
 
 /// A selecting tool: how it adds to and takes from the selection, and for
 /// the magic wand how alike the colours it takes in are.
-fn area_tool(cx: &ViewCx<ArtworkResource>, tools: &Tools, tool: Tool) -> Element {
+fn area_tool(tools: &Tools, tool: Tool) -> Element {
     let lookup = ui::i18n::I18nManager::lookup_plain;
     let mut parts: Vec<Element> = vec![heading(tool.label())];
-    // The photo's subject in one click, found on this device.
-    let subject = Button::new(
-        "canvas-select-subject",
-        &lookup("canvas-select-subject"),
-        None,
-    )
-    .with_icon(Icon::Sparkles)
-    .tooltip(lookup("canvas-select-subject-hint"));
+    // The photo's subject in one click, found on this device: off the
+    // window's thread, so the window keeps drawing; the canvas says it is
+    // under way and applies the area as one step.
+    let finding = std::rc::Rc::clone(&tools.finding);
     parts.push(Box::new(
-        cx.actions()
-            .bind(subject, ArtworkResource::SELECT_SUBJECT.map(|()| true)),
+        Button::new(
+            "canvas-select-subject",
+            &lookup("canvas-select-subject"),
+            None,
+        )
+        .with_icon(Icon::Sparkles)
+        .tooltip(lookup("canvas-select-subject-hint"))
+        .on_view(move || {
+            finding.borrow_mut().wanted = Some(crate::selection::Select {
+                subject: Some(true),
+                ..crate::selection::Select::default()
+            });
+        }),
     ));
     if tool == Tool::Wand {
         parts.push(tolerance(tools));
