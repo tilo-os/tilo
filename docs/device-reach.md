@@ -169,5 +169,7 @@ passphrase.
 - On hardware, a board on Ethernet and a laptop on Wi-Fi each run a swap and a
   rollback through the `device` slot, then sleep and are woken by name.
 - A VM with an encrypted disk reboots and is unlocked by its paired sibling
-  after `device.unlock` is approved. A request that is denied, or comes from
-  a boot key that was never certified, leaves it at the passphrase prompt.
+  after `device.unlock` is approved (`os/dev/test-nearby-pairing.sh
+  --unlock`). A denied request, a replayed earlier exchange, a boot key that
+  was never certified, and a device removed from the fleet each leave it at
+  the passphrase prompt, with the attempt in the owner's history.
