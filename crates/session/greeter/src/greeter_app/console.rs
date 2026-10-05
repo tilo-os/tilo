@@ -78,6 +78,26 @@ impl GreeterApp {
         args: &mut serde_json::Map<String, Value>,
     ) -> String {
         match action {
+            "configure-session-diagnostics" => {
+                let mut flags = [false; 4];
+                for (flag, (param, _)) in flags.iter_mut().zip(&super::SESSION_DIAGNOSTICS) {
+                    let Some(enabled) = args.get(*param).and_then(Value::as_bool) else {
+                        return wire::error(
+                            "invalid_arguments",
+                            "Diagnostic options must be booleans",
+                        );
+                    };
+                    *flag = enabled;
+                }
+                if flags[3] && !flags[2] {
+                    return wire::error(
+                        "invalid_arguments",
+                        "GPU dispatch timing requires GPU timestamps",
+                    );
+                }
+                self.next_sign_in_diagnostics = Some(flags);
+            }
+
             "respond-challenge" => return self.respond_console_challenge(args),
             "cancel-authentication" => return self.cancel_console_authentication(),
             "sign-in" => {
@@ -215,6 +235,11 @@ impl GreeterApp {
             "session": self.sessions.get(self.selected_session).map(|session| session.name.clone()),
             "sessions": self.sessions.iter().map(|session| session.name.clone()).collect::<Vec<_>>(),
             "session_choice": self.offers_session_choice(),
+            "session_diagnostics": self.next_sign_in_diagnostics.map(|flags| {
+                super::SESSION_DIAGNOSTICS.iter().zip(flags).map(|((param, _), enabled)| {
+                    ((*param).to_owned(), json!(enabled))
+                }).collect::<serde_json::Map<String, Value>>()
+            }),
             "status": if self.phase == AuthPhase::Authenticating { super::t("greeter-signing-in") } else { self.status_text() },
             "username": self.attempt_username(),
             "challenge": self.auth_session.as_ref().and_then(crate::auth::AuthSession::question).map(|(challenge, question)| json!({
@@ -265,10 +290,28 @@ fn conversation_actions(challenge: Option<crate::auth::Challenge>) -> Vec<Action
     specs
 }
 
+fn diagnostics_action() -> ActionSpec {
+    console_action(
+        "configure-session-diagnostics",
+        "greeter-session-diagnostics",
+        super::SESSION_DIAGNOSTICS
+            .iter()
+            .map(|(param, _)| {
+                ActionParam::required(
+                    param,
+                    ParamType::Boolean,
+                    "Content-free timing for this sign-in",
+                )
+            })
+            .collect(),
+    )
+}
+
 impl ui::resources::PublishesResources for GreeterApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
         let mut resource = Resource::new(PROVIDER, "greeter.sign-in", super::t("greeter-sign-in"));
         let mut specs = vec![
+            diagnostics_action(),
             console_action(
                 "sign-in",
                 "greeter-sign-in",
@@ -452,7 +495,7 @@ mod authentication_tests {
             app.attempt_username(),
             Zeroizing::new(SECRET.to_owned()),
             app.sessions.get(app.selected_session).unwrap().argv.clone(),
-            GreeterApp::session_env(),
+            GreeterApp::session_env(app.next_sign_in_diagnostics),
             std::sync::Arc::clone(&app.challenge_sequence),
             move |update| observed.lock().unwrap().push(update),
         ));
@@ -515,6 +558,103 @@ mod authentication_tests {
         let line =
             json!({"op":"actions_invoke","provider":PROVIDER,"id":id,"args":args}).to_string();
         serde_json::from_str(&app.answer_console(&line, &AutoCommit::new())).unwrap()
+    }
+
+    #[test]
+    fn declared_session_diagnostics_are_bounded_transient_and_secret_free() {
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        assert!(app.next_sign_in_diagnostics.is_none());
+        *app.password_buffer.lock().unwrap() = SECRET.into();
+        let options = json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false});
+        let reply = invoke(&mut app, "configure-session-diagnostics@greeter", &options);
+        assert_eq!(reply["answer"]["status"], "accepted");
+        assert_eq!(app.console_state()["session_diagnostics"], options);
+        assert!(!reply.to_string().contains(SECRET));
+        assert!(!app.console_state().to_string().contains(SECRET));
+        let env = GreeterApp::session_env(app.next_sign_in_diagnostics);
+        assert_eq!(
+            &env[3..],
+            [
+                "TILO_PROFILE_PRESENTATION=1",
+                "TILO_PROFILE_GPU_STAGES=1",
+                "VELLO_GPU_TIMESTAMPS=1"
+            ]
+        );
+        let refused = invoke(
+            &mut app,
+            "configure-session-diagnostics@greeter",
+            &json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":false,"gpu_dispatch_timestamps":true}),
+        );
+        assert_eq!(refused["err"]["code"], "invalid_arguments");
+        assert_eq!(app.console_state()["session_diagnostics"], options);
+        let refused = invoke(
+            &mut app,
+            "configure-session-diagnostics@greeter",
+            &json!({"presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false,"environment":{"TILO_NATIVE_SCENARIO":SECRET}}),
+        );
+        assert_eq!(refused["err"]["code"], "invalid_arguments");
+        assert!(!refused.to_string().contains(SECRET));
+        let disabled = json!({"presentation":false,"gpu_stages":false,"gpu_timestamps":false,"gpu_dispatch_timestamps":false});
+        let reply = invoke(&mut app, "configure-session-diagnostics@greeter", &disabled);
+        assert_eq!(reply["answer"]["status"], "accepted");
+        assert_eq!(
+            GreeterApp::session_env(app.next_sign_in_diagnostics).len(),
+            3
+        );
+        assert_eq!(app.console_state()["session_diagnostics"], disabled);
+        app.phase = AuthPhase::Authenticating;
+        let refused = invoke(&mut app, "configure-session-diagnostics@greeter", &options);
+        assert_eq!(refused["err"]["code"], "action_unavailable");
+        assert_eq!(app.console_state()["session_diagnostics"], disabled);
+        assert!(
+            GreeterApp::for_shot(AuthScenario::PersonalSessions)
+                .next_sign_in_diagnostics
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn session_diagnostics_reach_the_ordinary_authenticated_greetd_start() {
+        let root = tempfile::tempdir().unwrap();
+        let socket = root.path().join("greetd.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let daemon = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            password_exchange(&mut stream);
+            respond(&mut stream, &json!({"type":"success"}));
+            let request = read_request(&mut stream);
+            assert_eq!(
+                request,
+                json!({
+                    "type":"start_session", "cmd":["/usr/libexec/tilo-session"],
+                    "env":["XDG_SESSION_TYPE=wayland","XDG_SESSION_DESKTOP=tilo","XDG_CURRENT_DESKTOP=tilo",
+                        "TILO_PROFILE_PRESENTATION=1","TILO_PROFILE_GPU_STAGES=1","VELLO_GPU_TIMESTAMPS=1"]
+                })
+            );
+            assert!(!request.to_string().contains(SECRET));
+            respond(&mut stream, &json!({"type":"success"}));
+        });
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
+        let configured = invoke(
+            &mut app,
+            "configure-session-diagnostics@greeter",
+            &json!({
+                "presentation":true,"gpu_stages":true,"gpu_timestamps":true,"gpu_dispatch_timestamps":false
+            }),
+        );
+        assert_eq!(configured["answer"]["status"], "accepted");
+        let updates = start_worker(&mut app, &socket);
+        tilo_test_env::wait_until("authenticated greetd StartSession", || {
+            updates
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, crate::auth::AuthUpdate::Accepted))
+        });
+        assert_eq!(app.selected_session, 0);
+        assert_eq!(app.attempt_username(), "ada");
+        assert!(!app.console_state().to_string().contains(SECRET));
+        daemon.join().unwrap();
     }
 
     #[test]

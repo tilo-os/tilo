@@ -587,6 +587,13 @@ struct Requests {
     accessibility: Cell<Option<AccessibilityRequest>>,
 }
 
+const SESSION_DIAGNOSTICS: [(&str, &str); 4] = [
+    ("presentation", "TILO_PROFILE_PRESENTATION"),
+    ("gpu_stages", "TILO_PROFILE_GPU_STAGES"),
+    ("gpu_timestamps", "VELLO_GPU_TIMESTAMPS"),
+    ("gpu_dispatch_timestamps", "VELLO_GPU_DISPATCH_TIMESTAMPS"),
+];
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent lifecycle flags: rebuild, focus reset, keyboard focus, screen reader, pinned clock"
@@ -666,6 +673,8 @@ pub struct GreeterApp {
     /// Queued console requests (see [`console`]); `None` in shots and tests
     /// that do not exercise the console.
     console: Option<console_control::ConsoleServer>,
+    /// Transient fixed diagnostic options for this ordinary sign-in.
+    next_sign_in_diagnostics: Option<[bool; 4]>,
     /// Whether the compositor has given this window the keyboard. Until it
     /// has, keys typed at the greeter go nowhere, so the console reports
     /// sign-in as accepting input only once this is set.
@@ -804,6 +813,7 @@ impl GreeterApp {
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
             layout_text_scale: 1.0,
             console: None,
+            next_sign_in_diagnostics: None,
             keyboard_focus: false,
         }
     }
@@ -1681,7 +1691,7 @@ impl GreeterApp {
 
     /// Environment handed to greetd's `StartSession`. Mirrors the
     /// `DesktopNames=tilo` advertised by the session `.desktop` file.
-    fn session_env() -> Vec<String> {
+    fn session_env(diagnostics: Option<[bool; 4]>) -> Vec<String> {
         let mut env = vec![
             "XDG_SESSION_TYPE=wayland".to_string(),
             "XDG_SESSION_DESKTOP=tilo".to_string(),
@@ -1690,13 +1700,11 @@ impl GreeterApp {
         // Explicit host diagnostics must survive greetd's clean session
         // environment. Forward fixed booleans only; never forward scenarios,
         // input gates, arbitrary environment or caller-supplied session argv.
-        for name in [
-            "TILO_PROFILE_PRESENTATION",
-            "TILO_PROFILE_GPU_STAGES",
-            "VELLO_GPU_TIMESTAMPS",
-            "VELLO_GPU_DISPATCH_TIMESTAMPS",
-        ] {
-            if std::env::var(name).is_ok_and(|value| value == "1") {
+        let flags = diagnostics.unwrap_or_else(|| {
+            SESSION_DIAGNOSTICS.map(|(_, name)| std::env::var(name).is_ok_and(|value| value == "1"))
+        });
+        for ((_, name), enabled) in SESSION_DIAGNOSTICS.iter().zip(flags) {
+            if enabled {
                 env.push(format!("{name}=1"));
             }
         }
@@ -1783,7 +1791,7 @@ impl GreeterApp {
         };
 
         let argv = session.argv.clone();
-        let env = Self::session_env();
+        let env = Self::session_env(self.next_sign_in_diagnostics);
 
         self.begin_authenticating();
 
@@ -2327,7 +2335,7 @@ mod tests {
             .set("TILO_PROFILE_GPU_STAGES", "true")
             .set("VELLO_GPU_TIMESTAMPS", "1;unexpected")
             .set("VELLO_GPU_DISPATCH_TIMESTAMPS", "0");
-        let baseline = GreeterApp::session_env();
+        let baseline = GreeterApp::session_env(None);
         assert_eq!(
             baseline,
             vec![
@@ -2341,7 +2349,7 @@ mod tests {
             .set("TILO_PROFILE_GPU_STAGES", "1")
             .set("VELLO_GPU_TIMESTAMPS", "1")
             .set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
-        let enabled = GreeterApp::session_env();
+        let enabled = GreeterApp::session_env(None);
         assert_eq!(&enabled[..3], baseline.as_slice());
         assert_eq!(
             &enabled[3..],

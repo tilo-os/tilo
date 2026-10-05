@@ -194,14 +194,16 @@ pub fn push_clean_environment(argv: &mut Vec<String>) {
         argv.push(value.to_string_lossy().into_owned());
     }
     push_accessibility_environment(argv);
-    // A boolean content-free presentation observer, not an input injector or
-    // output path. Keep arbitrary profiling/scenario environment stripped.
-    if std::env::var("TILO_PROFILE_PRESENTATION").is_ok_and(|value| value == "1") {
-        argv.extend([
-            "--setenv".into(),
-            "TILO_PROFILE_PRESENTATION".into(),
-            "1".into(),
-        ]);
+    // Fixed content-free presentation/GPU timing booleans, never an input
+    // injector or output path. Keep arbitrary profiling/scenario environment stripped.
+    for name in [
+        "TILO_PROFILE_PRESENTATION",
+        "VELLO_GPU_TIMESTAMPS",
+        "VELLO_GPU_DISPATCH_TIMESTAMPS",
+    ] {
+        if std::env::var(name).is_ok_and(|value| value == "1") {
+            argv.extend(["--setenv".into(), name.into(), "1".into()]);
+        }
     }
 }
 
@@ -1355,7 +1357,8 @@ mod tests {
                 .set("TILO_NATIVE_SCENARIO", "/private/input.json")
                 .set("TILO_NATIVE_INPUT_GATE", "private-approval")
                 .set("TILO_PROFILE_OUT", "/private/log")
-                .set("VELLO_GPU_DISPATCH_TIMESTAMPS", "1");
+                .set("VELLO_GPU_DISPATCH_TIMESTAMPS", value)
+                .set("VELLO_GPU_TIMESTAMPS", value);
             let argv = build_bwrap_argv(
                 &mk_manifest("off"),
                 Path::new("/host/pkg"),
@@ -1370,11 +1373,13 @@ mod tests {
                 setenv_value(&argv, "TILO_PROFILE_PRESENTATION"),
                 (value == "1").then_some("1")
             );
+            for key in ["VELLO_GPU_TIMESTAMPS", "VELLO_GPU_DISPATCH_TIMESTAMPS"] {
+                assert_eq!(setenv_value(&argv, key), (value == "1").then_some("1"));
+            }
             for key in [
                 "TILO_NATIVE_SCENARIO",
                 "TILO_NATIVE_INPUT_GATE",
                 "TILO_PROFILE_OUT",
-                "VELLO_GPU_DISPATCH_TIMESTAMPS",
             ] {
                 assert_eq!(
                     setenv_value(&argv, key),
