@@ -977,7 +977,11 @@ impl SheetsApp {
                 "the workbook is not open for editing".into(),
             ));
         };
-        dispatch.apply_now_with(doc, action, actions::history_context(action))?;
+        dispatch.apply_now_with(
+            &mut ui::widget::Edits::lend(doc),
+            action,
+            actions::history_context(action),
+        )?;
         #[cfg(test)]
         {
             *self.last_action.borrow_mut() = Some(action.clone());
@@ -4626,8 +4630,8 @@ impl Widget for SheetsApp {
         &crate::cell_actions::READERS
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document_ref(state, path);
         if let Some(locale) = &self.locale {
             self.global = locale.get();
         }

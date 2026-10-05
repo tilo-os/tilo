@@ -354,19 +354,25 @@ impl Widget for CounterCard {
         dyn crate::widget::controls::ActionControls
     );
 
-    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
-        let (s, p) = crate::doc::document(s, p);
+    fn sync(&mut self, s: &AppModel, p: &ModelPath) {
+        let (s, p) = crate::doc::document_ref(s, p);
         self.button.sync(s, p);
+        // A finished job submits its edit as the counter's own action,
+        // continuing the invocation it answers.
+        let bump = || tilo_actions::ControlInvocation {
+            address: tilo_actions::ActionAddress::new("test.counter", "bump"),
+            arguments: serde_json::Map::new(),
+        };
         for scope in std::mem::take(&mut self.scoped_jobs) {
             let invocation = scope.invocation();
-            let result = scope.with_document_mutation(s, |doc| {
-                CounterAction::Bump.apply(doc).map_err(|e| e.to_string())
-            });
-            self.scoped_results.push(match result {
-                Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                },
+            self.scoped_results.push(match scope.check() {
+                Ok(()) => {
+                    self.follow_ups.push((bump(), Some(invocation)));
+                    tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput::default(),
+                    }
+                }
                 Err(message) => tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {
@@ -379,7 +385,7 @@ impl Widget for CounterCard {
             });
         }
         if let Some(invocation) = self.pending_bump.take() {
-            CounterAction::Bump.apply(s).unwrap();
+            self.follow_ups.push((bump(), Some(invocation)));
             self.resource_result = Some(tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),

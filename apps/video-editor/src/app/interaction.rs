@@ -444,7 +444,7 @@ impl VideoEditorApp {
         clippy::too_many_lines,
         reason = "one hit test per pressable region, in paint order"
     )]
-    pub(super) fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions, shift: bool) {
+    pub(super) fn handle_press(&mut self, state: &AutoCommit, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
         // Modals own all clicks. The unsaved-work question is asked over the

@@ -2833,7 +2833,7 @@ impl ui::widget::controls::ActionControls for GitClientApp {
 impl Widget for GitClientApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.adopt_preferences();
         self.drain_remote();
         self.publish_shared_repo_if_needed();

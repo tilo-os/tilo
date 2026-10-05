@@ -2105,7 +2105,7 @@ impl TerminalWidget {
 
 impl TerminalWidget {
     /// Open the session, drain the PTY and mirror the document's screen.
-    fn sync_document(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync_document(&mut self, state: &AppModel, root: &ModelPath) {
         if self.sessions.is_live() {
             self.ensure_session();
         }
@@ -2116,21 +2116,19 @@ impl TerminalWidget {
         // still advances the terminal: pumping from `sync`, driven by the
         // waker (or an embedding host's own pump), is what shows output.
         self.pump();
-        let (doc, _) = ui::doc::document(state, root);
-        self.record(doc);
     }
 
     /// Bring the session record up to date with this terminal: the session
     /// changes waiting since the last sync, in order, then what the output
     /// parsed since did to the screen, as one action. Nothing is recorded
     /// for a terminal that has no record.
-    fn record(&mut self, doc: &mut AutoCommit) {
+    fn record(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(dispatch) = self.dispatch.clone() else {
             self.pending_actions.clear();
             return;
         };
         for action in std::mem::take(&mut self.pending_actions) {
-            if dispatch.apply_now(doc, &action).is_err() {
+            if dispatch.apply_now(edits, &action).is_err() {
                 self.synced = None;
             }
         }
@@ -2145,7 +2143,7 @@ impl TerminalWidget {
         // A refused write leaves the record's screen unknown: the next one
         // replaces it whole.
         self.synced = dispatch
-            .apply_now(doc, &output)
+            .apply_now(edits, &output)
             .is_ok()
             .then(|| self.screen.clone());
     }
@@ -2323,17 +2321,16 @@ impl Widget for TerminalWidget {
         taffy::Size::ZERO
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.sync_document(state, root);
     }
 
-    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
-        let pumped = self.pump();
-        if pumped {
-            let (doc, _) = ui::doc::document(state, root);
-            self.record(doc);
-        }
-        pumped
+    fn update(&mut self, _state: &AppModel, _root: &ModelPath) -> bool {
+        self.pump()
+    }
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _root: &ObjId) {
+        self.record(edits);
     }
 
     /// Whether queued output needs another visual frame. A standalone terminal

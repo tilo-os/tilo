@@ -273,7 +273,7 @@ impl Widget for BrowserWindow {
         dyn ui::widget::controls::ActionControls,
         dyn ui::component_lifecycle::ComponentLifecycle
     );
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
             && !fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
         {

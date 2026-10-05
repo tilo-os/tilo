@@ -379,7 +379,10 @@ impl HexView {
         }
         for edit in edits {
             if dispatch
-                .apply_now(doc, &HexEditorAction::from_edit(edit))
+                .apply_now(
+                    &mut ui::widget::Edits::lend(doc),
+                    &HexEditorAction::from_edit(edit),
+                )
                 .is_err()
             {
                 if let Some(live) = &self.live {
@@ -1820,7 +1823,7 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
-    fn sync(&mut self, _doc: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _doc: &AppModel, _path: &ModelPath) {
         // Drain a closed file chooser first, so a freshly opened buffer is
         // submitted before this frame lays out.
         self.drain_chooser();

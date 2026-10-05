@@ -54,7 +54,7 @@ impl Section {
 }
 
 impl Widget for Section {
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 

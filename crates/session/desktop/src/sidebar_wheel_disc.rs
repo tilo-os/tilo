@@ -1180,7 +1180,7 @@ impl Widget for SidebarWheelDisc {
         spring_active || self.wheel_last_event.is_some() || self.drag_from.is_some()
     }
 
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Real (clamped) frame dt keeps the spring wall-clock-correct
         // under frame drops. Clamped to 1/30 s: semi-implicit Euler
         // stays stable, and a long stall just resumes rather than

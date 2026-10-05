@@ -345,7 +345,7 @@ impl CalculatorApp {
         if let Some(dispatch) = &self.dispatch {
             // A refusal (a participant who may only view) writes nothing, and
             // the stored rows are presented again.
-            let _ = dispatch.apply_now(doc, action);
+            let _ = dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action);
         }
     }
 
@@ -1206,7 +1206,7 @@ impl Widget for CalculatorApp {
             .then_some(winit::window::ImePurpose::Normal)
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(effect) = self.pending_effect.take() {
             let (doc, _) = ui::doc::document(state, path);
             self.perform_effect(effect, doc);

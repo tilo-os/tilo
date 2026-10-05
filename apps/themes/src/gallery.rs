@@ -317,7 +317,7 @@ impl Gallery {
 }
 
 impl Widget for Gallery {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.name_input.sync(state, path);
     }
 

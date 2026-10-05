@@ -53,7 +53,7 @@ impl Widget for Owner {
             crate::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
         }))
     }
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         t: &mut taffy::TaffyTree<()>,

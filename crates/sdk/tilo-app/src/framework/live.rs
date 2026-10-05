@@ -94,7 +94,7 @@ impl<R: Resource> Live<R> {
     ///
     /// # Errors
     /// Returns [`ModelError`] when the document no longer holds the resource.
-    pub fn sync(&self, doc: &mut Doc) -> Result<bool, ModelError> {
+    pub fn sync(&self, doc: &Doc) -> Result<bool, ModelError> {
         self.inner.borrow_mut().sync(doc)
     }
 }

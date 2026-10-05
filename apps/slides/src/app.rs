@@ -5081,7 +5081,7 @@ impl Widget for SlidesApp {
         dyn ui::resources::PublishesResources
     );
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
         self.adopt_deferred();
         // One-time view bootstrap: open on the second slide with its title

@@ -1021,7 +1021,7 @@ impl MergeView {
 }
 
 impl Widget for MergeView {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document(state, path);
         self.merged_editor.pull(doc);
     }

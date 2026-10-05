@@ -11,6 +11,7 @@ use ui::automerge::{AutoCommit, ChangeHash};
 use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
+use ui::widget::Edits;
 use ui::widget::{Block, BlockContent, BlockEditor, Decorator, EditScope, EventCtx, Widget};
 use ui::winit::event::WindowEvent;
 
@@ -160,18 +161,18 @@ impl<S: RichTextSource> RichTextSurface<S> {
 
     /// Put `text` at the caret as the person typing would (an emoji picked
     /// from a menu), through the source's edits.
-    pub fn insert_text(&mut self, doc: &mut AutoCommit, text: &str) {
+    pub fn insert_text(&mut self, edits: &mut Edits<'_>, text: &str) {
         if self.editor.insert_text(text) {
-            self.commit(doc);
+            self.commit(edits);
         }
     }
 
     /// Put a mention of the participant `id`, shown as `label`, at the caret
     /// (replacing a selection, such as the typed query the person picked it
     /// from), through the source's edits.
-    pub fn insert_mention(&mut self, doc: &mut AutoCommit, id: &str, label: &str) {
+    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &str, label: &str) {
         if self.editor.insert_mention(id, label) {
-            self.commit(doc);
+            self.commit(edits);
         }
     }
 
@@ -276,7 +277,7 @@ impl<S: RichTextSource> RichTextSurface<S> {
     /// Refuses read-only, composing, missing or changed selection targets.
     pub fn image_paste_action(
         &mut self,
-        doc: &mut AutoCommit,
+        doc: &AutoCommit,
         target: &ui::widget::block_editor::ImagePasteTarget,
         text: String,
     ) -> Result<RichTextAction, ActionError> {
@@ -304,14 +305,14 @@ impl<S: RichTextSource> RichTextSurface<S> {
             })
     }
 
-    fn replace_find_match(&mut self, doc: &mut AutoCommit) -> bool {
+    fn replace_find_match(&mut self, edits: &mut Edits<'_>) -> bool {
         if self.source.read_only() || self.is_composing() {
             return false;
         }
         let Some((target, replacement)) = self.editor.find_replace_request() else {
             return false;
         };
-        self.source.sync(doc);
+        self.source.sync(edits.doc());
         let action = self
             .source
             .with_state(|state| {
@@ -335,24 +336,24 @@ impl<S: RichTextSource> RichTextSurface<S> {
         let Some(action) = action else {
             return false;
         };
-        if let Err(error) = self.source.apply(doc, &action) {
+        if let Err(error) = self.source.apply(edits, &action) {
             tracing::debug!(%error, "find replacement refused");
             return false;
         }
-        self.source.sync(doc);
+        self.source.sync(edits.doc());
         self.present_state(None);
         self.editor.finish_find_replace(&target, replacement.len());
         true
     }
 
-    fn replace_all_find_matches(&mut self, doc: &mut AutoCommit) -> bool {
+    fn replace_all_find_matches(&mut self, edits: &mut Edits<'_>) -> bool {
         if self.source.read_only() || self.is_composing() {
             return false;
         }
         let Some(batch) = self.editor.find_replace_all_request() else {
             return false;
         };
-        self.source.sync(doc);
+        self.source.sync(edits.doc());
         let action = self
             .source
             .with_state(|state| {
@@ -403,22 +404,22 @@ impl<S: RichTextSource> RichTextSurface<S> {
         let Some(action) = action else {
             return false;
         };
-        if let Err(error) = self.source.apply(doc, &action) {
+        if let Err(error) = self.source.apply(edits, &action) {
             tracing::debug!(%error, "find replace all refused");
             return false;
         }
-        self.source.sync(doc);
+        self.source.sync(edits.doc());
         self.present_state(None);
         self.editor.finish_find_replace_all();
         true
     }
 
-    fn drain_find_replace(&mut self, doc: &mut AutoCommit) {
+    fn drain_find_replace(&mut self, edits: &mut Edits<'_>) {
         if self.editor.take_find_replace_all_request() {
-            self.replace_all_find_matches(doc);
+            self.replace_all_find_matches(edits);
         }
         if self.editor.take_find_replace_request() {
-            self.replace_find_match(doc);
+            self.replace_find_match(edits);
         }
     }
 
@@ -589,12 +590,12 @@ impl<S: RichTextSource> RichTextSurface<S> {
         self.editor.is_composing()
     }
 
-    fn move_selected_blocks(&mut self, doc: &mut AutoCommit, up: bool) -> bool {
+    fn move_selected_blocks(&mut self, edits: &mut Edits<'_>, up: bool) -> bool {
         if self.source.read_only() || self.is_composing() {
             return false;
         }
-        self.commit(doc);
-        self.source.sync(doc);
+        self.commit(edits);
+        self.source.sync(edits.doc());
         if self.source.revision() != self.revision {
             self.present_state(None);
         }
@@ -616,11 +617,11 @@ impl<S: RichTextSource> RichTextSurface<S> {
             blocks: ids.clone(),
             after,
         };
-        if let Err(error) = self.source.apply(doc, &action) {
+        if let Err(error) = self.source.apply(edits, &action) {
             tracing::debug!(%error, "block movement refused");
             return false;
         }
-        self.source.sync(doc);
+        self.source.sync(edits.doc());
         self.present_state(None);
         if selection.is_some() {
             self.editor.retain_block_selection(ids, reverse);
@@ -659,12 +660,12 @@ impl<S: RichTextSource> RichTextSurface<S> {
         }
     }
 
-    fn duplicate_blocks(&mut self, doc: &mut AutoCommit, target: Option<&str>) -> bool {
+    fn duplicate_blocks(&mut self, edits: &mut Edits<'_>, target: Option<&str>) -> bool {
         if self.source.read_only() || self.is_composing() {
             return false;
         }
-        self.commit(doc);
-        self.source.sync(doc);
+        self.commit(edits);
+        self.source.sync(edits.doc());
         if self.source.revision() != self.revision {
             self.present_state(None);
         }
@@ -689,11 +690,11 @@ impl<S: RichTextSource> RichTextSurface<S> {
         let Some(action) = crate::block_commands::duplicate(&self.sources, range) else {
             return false;
         };
-        if let Err(error) = self.source.apply(doc, &action) {
+        if let Err(error) = self.source.apply(edits, &action) {
             tracing::debug!(%error, "block duplication refused");
             return false;
         }
-        self.source.sync(doc);
+        self.source.sync(edits.doc());
         self.editor.clear_document_selection();
         self.present_state(None);
         self.editor
@@ -722,7 +723,7 @@ impl<S: RichTextSource> RichTextSurface<S> {
     /// Replace the text with `text`, a paragraph per line, as an edit: the
     /// editor's paragraphs keep their ids where there are as many, so the
     /// document sees text replaced rather than paragraphs recreated.
-    fn set_text(&mut self, doc: &mut AutoCommit, text: &str) {
+    fn set_text(&mut self, edits: &mut Edits<'_>, text: &str) {
         let ids: Vec<String> = self
             .editor
             .blocks()
@@ -748,13 +749,13 @@ impl<S: RichTextSource> RichTextSurface<S> {
             .collect();
         self.editor.present_blocks(&lines);
         self.editor.note_edit_anywhere();
-        self.commit(doc);
+        self.commit(edits);
     }
 
     /// Apply what the person did since the last presentation, then show the
     /// document as the edit left it. A participant who may only view is
     /// shown the document again, as if their edit never happened.
-    fn commit(&mut self, doc: &mut AutoCommit) {
+    fn commit(&mut self, edits: &mut Edits<'_>) {
         let Some((start, presented_end, edited_end)) = self.changed() else {
             return;
         };
@@ -774,12 +775,12 @@ impl<S: RichTextSource> RichTextSurface<S> {
                 .iter()
                 .map(Block::content)
                 .collect();
-            let mut host = Through(&mut self.source);
-            match edit::commit(&mut host, doc, presented, &edited) {
+            let mut host = Through(&mut self.source, std::marker::PhantomData);
+            match edit::commit(&mut host, edits, presented, &edited) {
                 Ok(renames) => rename(&mut self.editor, &renames),
                 Err(error) => tracing::debug!(%error, "rich-text edit not applied"),
             }
-            self.source.sync(doc);
+            self.source.sync(edits.doc());
         }
         let local = (presented_end == edited_end).then_some(start..edited_end);
         self.present_state(local.as_ref());
@@ -851,15 +852,22 @@ fn rename(editor: &mut BlockEditor, renames: &[(String, String)]) {
 }
 
 /// A source as the edit host: edits applied through it, results read back.
-struct Through<'a, S>(&'a mut S);
+/// The source, applying to the document a pass lends as `Edits<'e>`.
+struct Through<'a, 'e, S>(&'a mut S, std::marker::PhantomData<fn(&'e ())>);
 
-impl<S: RichTextSource> Host for Through<'_, S> {
-    fn apply(&mut self, doc: &mut Doc, action: &RichTextAction) -> Result<(), ActionError> {
-        self.0.apply(doc, action)
+impl<'e, S: RichTextSource> Host for Through<'_, 'e, S> {
+    type Doc = Edits<'e>;
+
+    fn apply(&mut self, edits: &mut Edits<'e>, action: &RichTextAction) -> Result<(), ActionError> {
+        self.0.apply(edits, action)
     }
 
-    fn read<T>(&mut self, doc: &mut Doc, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        self.0.sync(doc);
+    fn read<T>(
+        &mut self,
+        edits: &mut Edits<'e>,
+        read: impl FnOnce(&RichTextState) -> T,
+    ) -> Option<T> {
+        self.0.sync(edits.doc());
         self.0.with_state(read)
     }
 }
@@ -904,12 +912,17 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         node
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    /// An edit made outside an input event (a programmatic change of the
+    /// editor, a find-and-replace asked for) is written here.
+    fn settle(&mut self, edits: &mut Edits<'_>, path: &ui::automerge::ObjId) {
+        self.commit(edits);
+        self.drain_find_replace(edits);
+        self.editor.settle(edits, path);
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         self.source.sync(state);
-        // An edit made outside an input event (an accessibility action).
-        self.commit(state);
-        self.drain_find_replace(state);
         if self.source.revision() != self.revision {
             self.present_state(None);
         }
@@ -923,18 +936,19 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             return;
         }
         if self.is_duplicate_key(event, *ctx.modifiers) {
-            self.duplicate_blocks(ctx.state, None);
+            self.duplicate_blocks(&mut ctx.edits(), None);
             *ctx.handled = true;
             return;
         }
         if let Some(up) = self.move_key(event, *ctx.modifiers) {
-            self.move_selected_blocks(ctx.state, up);
+            self.move_selected_blocks(&mut ctx.edits(), up);
             *ctx.handled = true;
             return;
         }
         self.editor.handle_event(event, ctx);
-        self.commit(ctx.state);
-        self.drain_find_replace(ctx.state);
+        let mut edits = ctx.edits();
+        self.commit(&mut edits);
+        self.drain_find_replace(&mut edits);
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -999,36 +1013,38 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.replace_all_find_matches(state);
+            return self.replace_all_find_matches(&mut Edits::lend(state));
         }
         if target == "notes.find:replace" {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.replace_find_match(state);
+            return self.replace_find_match(&mut Edits::lend(state));
         }
         if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.move_selected_blocks(state, target.ends_with(":move-up"));
+            return self
+                .move_selected_blocks(&mut Edits::lend(state), target.ends_with(":move-up"));
         }
         if target == "notes.editor:duplicate" {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.duplicate_blocks(state, None);
+            return self.duplicate_blocks(&mut Edits::lend(state), None);
         }
         if let Some(id) = target.strip_prefix("notes.block-duplicate:") {
             if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
             let (state, _) = ui::doc::document(state, path);
-            return self.duplicate_blocks(state, Some(id));
+            return self.duplicate_blocks(&mut Edits::lend(state), Some(id));
         }
+        // What the action edited is written by the settle pass that follows.
         self.editor
             .perform_semantic_action(target, action, state, path)
     }
@@ -1055,9 +1071,11 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
                 if self.source.read_only() || self.source.revision().is_none() {
                     return false;
                 }
-                self.set_text(state, text);
+                self.set_text(&mut Edits::lend(state), text);
                 true
             }
+            // What the action edited is written by the settle pass that
+            // follows.
             _ => self.editor.perform_action(action, state, path),
         }
     }

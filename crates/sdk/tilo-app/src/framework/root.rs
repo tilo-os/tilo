@@ -592,7 +592,7 @@ impl<R: Resource> ResourceRoot<R> {
     /// Follow the document when it moved — a local action, a
     /// collaborator's change, an undo or a restore — reading only what the
     /// change touched.
-    fn refresh(&self, doc: &mut AutoCommit) {
+    fn refresh(&self, doc: &AutoCommit) {
         if let Err(error) = self.live.sync(doc) {
             tracing::warn!(%error, kind = R::KIND, "resource unreadable");
         }
@@ -861,12 +861,16 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         owners
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui_core::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui_core::doc::document_ref(state, path);
         self.refresh_access();
         self.refresh(state);
         self.storage.refresh();
         self.content.sync(state, path);
+    }
+
+    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+        self.content.settle(edits, path);
     }
 
     fn draw(

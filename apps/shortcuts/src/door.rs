@@ -616,7 +616,7 @@ impl Decorator for Door {
         self.content.as_mut()
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.remote.poll();
         if let Ok(mut core) = self.core.try_borrow_mut() {
             core.pump();

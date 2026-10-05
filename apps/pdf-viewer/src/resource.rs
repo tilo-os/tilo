@@ -278,7 +278,6 @@ mod tests {
     use super::*;
     use ui::tilo_actions::OperationKind;
     use ui::tilo_resource::Effect;
-    use ui::widget::Widget;
 
     #[test]
     fn published_pages_carry_duplicate_and_delete() {
@@ -350,7 +349,7 @@ mod tests {
 
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
-        Widget::sync(&mut app, &mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         app.stage_find_for_test("sandbox");
         assert!(
             app.find_match_count_for_test() > 0,

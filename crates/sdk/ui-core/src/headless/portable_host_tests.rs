@@ -209,7 +209,7 @@ impl Widget for Scheduled {
         None
     }
 
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         self.updates.set(self.updates.get() + 1);
         false
     }

@@ -1058,7 +1058,7 @@ fn duration_english(options: &[(&'static str, u32)], shown: &str) -> String {
 }
 
 impl Widget for PowerPane {
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, shared: &AppModel, root: &ModelPath) {
         // The controls are built from the values: a change rebuilds them.
         if self.prefs.refresh() {
             self.structure_dirty = true;

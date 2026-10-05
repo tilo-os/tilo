@@ -364,9 +364,9 @@ impl App {
                 _ => None,
             };
             if let Some(dir) = nav {
-                let consumed =
-                    app.root_widget
-                        .on_nav_gesture(dir, &mut app.state.doc, &app.state.root);
+                let consumed = app
+                    .root_widget
+                    .on_nav_gesture(dir, &app.state.doc, &app.state.root);
                 if consumed {
                     app.needs_sync = true;
                     window.request_redraw();

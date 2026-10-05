@@ -959,7 +959,7 @@ impl StandaloneHistoryHost {
         content_origin
     }
 
-    pub(crate) fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
+    pub(crate) fn sync(&mut self, doc: &AutoCommit, path: &ObjId) {
         for button in self.in_window_controls_mut() {
             button.sync(doc, path);
         }

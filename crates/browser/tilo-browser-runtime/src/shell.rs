@@ -568,7 +568,7 @@ fn welcome_copy(mac: bool) -> LaunchpadCopy {
 }
 
 impl Widget for BrowserShell {
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let intents = std::mem::take(&mut *self.chrome.intents.borrow_mut());
         let mut changed = !intents.is_empty();
         for intent in intents {

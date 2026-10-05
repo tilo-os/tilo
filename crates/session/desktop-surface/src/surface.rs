@@ -877,7 +877,7 @@ impl DesktopSurface {
         clippy::too_many_lines,
         reason = "one pass: every command against the tree, then its widget follow-ups in order"
     )]
-    fn apply_commands(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn apply_commands(&mut self, state: &AutoCommit, path: &ObjId) {
         let queue = std::mem::take(&mut self.shared.borrow_mut().queue);
         if queue.is_empty() {
             return;
@@ -1505,19 +1505,19 @@ impl Widget for DesktopSurface {
         "DesktopSurface"
     }
 
-    fn sync(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         if let Some(row) = self.shown_row() {
             row.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let before = self.shared.borrow().revision;
         let search_was_open = self.search.is_open();
         self.reconcile();
         self.harvest();
         {
-            let (doc, root) = ui::doc::document(state, path);
+            let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             // Search opens over the tree as these commands left it, and what
             // it chose applies in this same pass.
@@ -1536,7 +1536,7 @@ impl Widget for DesktopSurface {
         self.refresh_notifications();
         if !self.shared.borrow().queue.is_empty() {
             // The pane or the centre opened a window.
-            let (doc, root) = ui::doc::document(state, path);
+            let (doc, root) = ui::doc::document_ref(state, path);
             self.apply_commands(doc, root);
             self.show_active_strip();
             self.present();
@@ -2023,7 +2023,7 @@ mod tests {
                     "g",
                 )
                 .unwrap();
-            surface.update(&mut state, &ui::automerge::ROOT);
+            surface.update(&state, &ui::automerge::ROOT);
             let snapshot = handle.snapshot("g", vec![]);
             let activity = snapshot.workspace_activity.unwrap();
             assert_eq!(activity.view, view);
@@ -2041,7 +2041,7 @@ mod tests {
             "Ada",
             3_000,
         ));
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert_eq!(surface.activity.as_ref().unwrap().pane().entries().len(), 2);
         handle
             .dispatch(
@@ -2052,7 +2052,7 @@ mod tests {
                 "g",
             )
             .unwrap();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(surface.activity.is_none());
         assert!(handle.snapshot("g", vec![]).workspace_activity.is_none());
     }
@@ -2098,7 +2098,7 @@ mod tests {
                 label: "Clocks".into(),
             });
         let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(handle.focus_app("so.tilo.clocks"));
         assert_eq!(handle.snapshot("g", vec![]).entries.len(), 1);
         assert_eq!(notifications.counts(), (0, 1));
@@ -2125,7 +2125,7 @@ mod tests {
             )
             .unwrap();
         let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         let snapshot = handle.snapshot("g", vec![]);
         assert_eq!(
             snapshot.notifications,
@@ -2145,7 +2145,7 @@ mod tests {
                 "g",
             )
             .unwrap();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         assert!(
             !handle
                 .snapshot("g", vec![])
@@ -2158,7 +2158,7 @@ mod tests {
 
     fn focused(surface: &mut DesktopSurface, handle: &DesktopHandle) -> usize {
         let mut state = AutoCommit::new();
-        surface.update(&mut state, &ui::automerge::ROOT);
+        surface.update(&state, &ui::automerge::ROOT);
         handle.read(|tree| {
             let active = navigation::active_route(tree).unwrap();
             tree.workspaces[0].strips[0]

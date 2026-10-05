@@ -139,11 +139,11 @@ impl Widget for Probe {
         }
         Ok(())
     }
-    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
+    fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u, s + 1));
     }
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u + 1, s));
         false

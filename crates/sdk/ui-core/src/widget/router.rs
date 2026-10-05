@@ -386,12 +386,12 @@ impl Router {
 }
 
 impl Widget for Router {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -482,7 +482,7 @@ impl Widget for Router {
     fn on_nav_gesture(
         &mut self,
         direction: NavDirection,
-        state: &mut AppModel,
+        state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         if self.child.on_nav_gesture(direction, state, path) {
@@ -616,9 +616,9 @@ mod tests {
             .unwrap();
             let handle = router.handle();
             handle.push("broken").unwrap();
-            let mut state = crate::State::new();
+            let state = crate::State::new();
             let root = state.root.clone();
-            router.sync(&mut state.doc, &root);
+            router.sync(&state.doc, &root);
             assert_eq!(handle.current(), "home");
             assert!(matches!(
                 router.last_error(),
@@ -643,9 +643,9 @@ mod tests {
             let handle = router.handle();
             handle.state.borrow_mut().revision = u64::MAX - 1;
             assert!(handle.push("broken").unwrap());
-            let mut state = crate::State::new();
+            let state = crate::State::new();
             let root = state.root.clone();
-            router.sync(&mut state.doc, &root);
+            router.sync(&state.doc, &root);
             assert_eq!(handle.current(), "home");
             assert_eq!(router.seen.revision, u64::MAX);
             assert_eq!(handle.snapshot().revision, u64::MAX);
@@ -667,9 +667,9 @@ mod tests {
             assert_eq!(router.handle().current(), "settings");
 
             router.handle().replace("home").unwrap();
-            let mut state = crate::State::new();
+            let state = crate::State::new();
             let root = state.root.clone();
-            router.sync(&mut state.doc, &root);
+            router.sync(&state.doc, &root);
             assert!(router.take_structure_dirty());
             assert!(router.take_focus_reset());
             assert!(!router.take_focus_reset(), "focus reset is edge-triggered");

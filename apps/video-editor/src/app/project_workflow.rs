@@ -90,7 +90,7 @@ impl VideoEditorApp {
 
     /// Save straight back to the file the project came from, or fall through
     /// to Save As when it has never had one.
-    pub(super) fn save_project(&mut self, doc: &mut AutoCommit) {
+    pub(super) fn save_project(&mut self, doc: &AutoCommit) {
         match self.project_path.clone() {
             Some(path) => self.write_project_to(doc, path),
             None => self.request_save_as(),
@@ -126,7 +126,7 @@ impl VideoEditorApp {
     /// A failure is reported in the words the file layer produced and the
     /// project keeps its old path: claiming a save that did not happen is the
     /// one outcome that could actually cost someone their work.
-    pub(super) fn write_project_to(&mut self, doc: &mut AutoCommit, path: PathBuf) {
+    pub(super) fn write_project_to(&mut self, doc: &AutoCommit, path: PathBuf) {
         match crate::project_file::save(&path, &self.project) {
             Ok(()) => {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
@@ -139,7 +139,7 @@ impl VideoEditorApp {
                 // that followed an edit in the same frame would otherwise
                 // stamp the pre-edit heads and leave the project reading as
                 // unsaved the instant after it was written.
-                self.doc_heads = doc.get_heads();
+                self.doc_heads = doc.committed_heads();
                 self.saved_heads = Some(self.doc_heads.clone());
                 // A save that was only standing in the way of an open now
                 // lets it through.
@@ -258,7 +258,7 @@ impl VideoEditorApp {
     }
 
     /// Drain an in-flight project chooser. Mirrors [`Self::poll_export`].
-    pub(super) fn drain_project_portal(&mut self, doc: &mut AutoCommit) {
+    pub(super) fn drain_project_portal(&mut self, doc: &AutoCommit) {
         let mut outcome = None;
         let mut clear = false;
         if let Some(rx) = self.project_rx.as_ref() {
@@ -302,7 +302,7 @@ impl VideoEditorApp {
     /// and Ctrl+Z puts the old project back. `Save` writes first and then
     /// continues into the open on its own, so the user does not have to
     /// remember what they were doing.
-    pub(super) fn resolve_pending_open(&mut self, doc: &mut AutoCommit, choice: DiscardChoice) {
+    pub(super) fn resolve_pending_open(&mut self, doc: &AutoCommit, choice: DiscardChoice) {
         let Some(pending) = self.pending_open.take() else {
             return;
         };

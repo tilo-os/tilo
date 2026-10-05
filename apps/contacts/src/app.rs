@@ -6203,7 +6203,7 @@ impl ContactsApp {
 }
 
 impl Widget for ContactsApp {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some((token, import_as_new)) = self.pending_conflict_resolution.take()
             && let Err(error) = self.resolve_import_conflict(&token, import_as_new)
         {

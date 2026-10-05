@@ -1293,7 +1293,7 @@ impl Widget for LazyOwnerRoot {
     fn get_rect(&self) -> Rect {
         self.child.get_rect()
     }
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         if !self.during_layout {
             self.mount_owner();
         } else if self.mount.get() && !self.mounted {

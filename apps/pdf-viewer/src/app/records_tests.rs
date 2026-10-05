@@ -4,7 +4,6 @@
 
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::ApplyIncoming;
-use ui::Widget;
 
 use super::*;
 use crate::actions::{
@@ -271,7 +270,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     {
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         let author = ui::collaboration::local_user_id();
 
         app.perform_action(&mut state.doc, &highlight("first", "source-1", 100.0));
@@ -311,7 +310,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     {
         let mut app = crate::scenarios::sample_reader();
         let mut state = crate::scenarios::sample_state();
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         let before = PdfDoc::list_annotations_with_hidden(&state.doc).len();
 
         // The host says the participant may only view.
@@ -456,7 +455,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -568,7 +567,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -599,7 +598,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
         app.perform_action(&mut state.doc, &rotate_page_action("source-3", 90));
         app.perform_action(&mut state.doc, &move_page_plan_action("source-3", None));
         app.perform_action(&mut state.doc, &delete_page_plan_action("source-2"));
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         let stored = PdfDoc::list_annotations(&state.doc);
         assert_eq!(stored.len(), 1);
         assert_eq!(

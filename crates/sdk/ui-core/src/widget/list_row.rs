@@ -214,7 +214,7 @@ impl crate::widget::Decorator for ListRow {
         self.id.as_deref()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(choice) = &self.choice {
             let selected = (choice.is_chosen)();
             self.dirty |= selected != self.selected;

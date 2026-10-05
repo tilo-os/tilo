@@ -3028,7 +3028,7 @@ impl Widget for OnboardingView {
         clippy::too_many_lines,
         reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
     )]
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         let before = self.flow.screen();
         let tour_before = self.tour_page;

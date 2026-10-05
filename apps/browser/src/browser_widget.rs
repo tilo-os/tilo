@@ -4365,7 +4365,7 @@ impl Widget for BrowserWidget {
         clippy::too_many_lines,
         reason = "Browser's frame-level input routing remains ordered in one place."
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.sync_frame(state, path);
         self.settle_replies();
     }
@@ -5607,8 +5607,8 @@ impl BrowserWidget {
         self.pending_replies.push((invocation, reply));
     }
 
-    fn sync_frame(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync_frame(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         if self.private_window_request.get() {
             self.private_window_request.set(false);
             self.private_window_notice = crate::private_window::launch(None).err();

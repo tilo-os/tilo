@@ -3328,7 +3328,7 @@ impl StoreApp {
 }
 
 impl Widget for StoreApp {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.drain_worker();
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);

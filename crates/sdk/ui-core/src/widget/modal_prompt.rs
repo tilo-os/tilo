@@ -146,7 +146,7 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for PromptBody {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.input.sync(state, path);
     }
 

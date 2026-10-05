@@ -271,7 +271,7 @@ impl ShortcutPane {
 }
 
 impl Widget for ShortcutPane {
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let document = self.cx.storage().settings_document();
         let revision = document.revision();
         if revision != self.seen {

@@ -138,7 +138,7 @@ impl BottomPanelToggle {
 impl Widget for BottomPanelToggle {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
 
@@ -1142,7 +1142,7 @@ impl CodeApp {
         action: &actions::CodeEditorAction,
     ) -> Result<(), tilo_actions::ActionError> {
         match &self.dispatch {
-            Some(dispatch) => dispatch.apply_now(doc, action),
+            Some(dispatch) => dispatch.apply_now(&mut ui::widget::Edits::lend(doc), action),
             None => Err(tilo_actions::ActionError::Refused(
                 "the editor is not open on a project".into(),
             )),
@@ -3286,7 +3286,7 @@ impl Widget for CodeApp {
         clippy::too_many_lines,
         reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         #[cfg(test)]
         if let Some(hook) = self.test_hook.take() {
@@ -3882,7 +3882,7 @@ impl Widget for CodeApp {
 
     /// The explorer eases wheel scrolling and row transitions on its own
     /// clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.sidebar.update(state, path)
     }
 

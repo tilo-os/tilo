@@ -3,7 +3,7 @@
 
 use super::Widget;
 use crate::invocation_scope::ResourceInvocationScope;
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, ObjId};
 
 /// Result of admitting an effect/view operation into a widget.
 ///
@@ -164,10 +164,9 @@ pub(crate) fn start_without_document_writes(
     path: &ObjId,
 ) -> Result<Option<ResourceOperationStart>, String> {
     // `get_heads` would commit the caller's open transaction.
-    let heads = doc.base_heads();
-    let pending = doc.pending_ops();
+    let before = super::settle_mark(doc);
     let started = widget.start_operation(op, doc, path);
-    if doc.pending_ops() != pending || doc.base_heads() != heads {
+    if super::settle_mark(doc) != before {
         return Err("a read-only operation wrote the document; bytes were retained".into());
     }
     started
@@ -204,6 +203,7 @@ pub fn start_in_children<W: Widget + ?Sized>(
 mod tests {
     use super::*;
     use crate::widget::{Button, Decorator};
+    use automerge::transaction::Transactable;
 
     /// Answers `"probe.write"` by writing `written` into the document.
     struct Writer {

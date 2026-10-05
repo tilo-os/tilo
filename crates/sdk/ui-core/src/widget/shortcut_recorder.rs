@@ -107,11 +107,11 @@ impl ShortcutRecorder {
         binding_from_text(&self.value)
     }
 
-    fn write(&mut self, state: &mut AppModel, root: &ModelPath, value: String) {
+    fn write(&mut self, _state: &AppModel, _root: &ModelPath, value: String) {
         if let Some(action) = &mut self.action {
             let _ = action.emit(value.clone());
         } else {
-            self.stored.push(state, root, &value);
+            self.stored.publish(&value);
         }
         self.value = value;
         self.capturing = false;
@@ -135,7 +135,7 @@ impl Widget for ShortcutRecorder {
         self.interaction = environment;
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Pulled::Value(value) = self.stored.pull(state, root) {
             self.value = value;
         }

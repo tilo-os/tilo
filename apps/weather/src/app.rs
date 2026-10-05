@@ -482,7 +482,7 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
-    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // Semantic actions reach the owning pane directly, so finish their
         // navigation here as well as on pointer input.
         let navigate = self.core.borrow_mut().take_nav_request();
@@ -492,7 +492,7 @@ impl Widget for WeatherApp {
         navigate.is_some()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.nav.sync(state, path);
     }
 

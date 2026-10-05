@@ -1396,7 +1396,7 @@ impl CameraApp {
         };
         dispatcher
             .apply_now_with(
-                doc,
+                &mut ui::widget::Edits::lend(doc),
                 action,
                 tilo_actions::ActionContext::for_action("so.tilo.camera", "Camera", action),
             )
@@ -2715,7 +2715,7 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "sync is the one ordered document/lifecycle boundary"
     )]
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.forget_cancelled();
         self.poll_document_job();

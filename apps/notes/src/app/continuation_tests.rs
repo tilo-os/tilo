@@ -40,7 +40,7 @@ fn continuation_navigation_identity_covers_actual_destination_not_availability()
     );
     assert!(app.navigate_history(ui::NavAction::Back));
     // Canonical navigation queues the real Select event for the owner model pass.
-    app.sync(&mut doc, &automerge::ROOT);
+    app.frame(&mut doc, &automerge::ROOT);
     assert_eq!(app.workspace.selected(), Some(a));
     app.route_history = ui::NavStack::new(None);
     app.route_history.push(Some(c));
@@ -55,6 +55,6 @@ fn continuation_navigation_identity_covers_actual_destination_not_availability()
     );
     assert_ne!(original, app.notes_invocation_domain(&doc));
     assert!(app.navigate_history(ui::NavAction::Back));
-    app.sync(&mut doc, &automerge::ROOT);
+    app.frame(&mut doc, &automerge::ROOT);
     assert_eq!(app.workspace.selected(), Some(c));
 }

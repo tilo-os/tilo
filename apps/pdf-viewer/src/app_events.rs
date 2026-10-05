@@ -1418,7 +1418,7 @@ mod event_tests {
     fn sample_app() -> (PdfApp, ui::State) {
         let mut app = crate::scenarios::sample_reader();
         let mut st = crate::scenarios::sample_state();
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -2187,7 +2187,7 @@ mod event_tests {
         // open panel dismisses the panels.
         let mut app = crate::scenarios::sample_reader();
         let mut st = crate::scenarios::sample_state();
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         // Narrow window -> overlay mode; panels auto-close on the transition.
         app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
         app.reconcile_overlay();
@@ -2351,7 +2351,7 @@ mod event_tests {
         // A portal-chosen file loads through the per-frame drain.
         let mut app = PdfApp::empty();
         let mut st = ui::State::new();
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -2365,7 +2365,7 @@ mod event_tests {
         ui::host::scoped(&services, || {
             app.apply_toolbar(&ToolbarHit::Open, &mut st.doc);
         });
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         assert!(
             app.has_document,
             "a portal-chosen PDF loads through the frame drain"
@@ -2390,7 +2390,7 @@ mod event_tests {
             app.portal_rx.is_some(),
             "Open issued a host chooser request"
         );
-        app.sync(&mut st.doc, &st.root);
+        app.sync_settled(&mut st.doc, &st.root);
         assert_eq!(
             app.has_document, before,
             "cancel does not change the open state"

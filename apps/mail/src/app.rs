@@ -4737,7 +4737,7 @@ impl MailApp {
 }
 
 impl Widget for MailApp {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, path) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         self.adopt_person_accounts();

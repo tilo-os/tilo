@@ -82,7 +82,7 @@ impl Decorator for Direct {
         &mut self.editor
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // An owner would submit these as actions; draining them keeps the
         // editor's own diffing cost in the reading.
         std::hint::black_box(self.editor.take_edit_ops());

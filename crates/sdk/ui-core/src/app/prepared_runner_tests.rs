@@ -1069,7 +1069,7 @@ fn a_window_shows_the_record_its_component_asked_for_in_its_place() {
             started,
             Some(crate::widget::ResourceOperationStart::Accepted)
         ));
-        tile.sync(&mut state.doc, &state.root);
+        tile.sync(&state.doc, &state.root);
         let shown = tile.callback_binding().unwrap();
         assert_eq!(shown.checkout.id, wanted);
         assert!(!first.lifetime.is_active());

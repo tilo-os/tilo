@@ -159,9 +159,9 @@ fn restore_checkpoint_and_diff_address_versions_by_name_or_change() {
     add(&mut doc, ALICE, "sky", "blue");
     add(&mut doc, ALICE, "sun", "yellow");
     verb(&mut doc, ALICE, |doc| checkpoint(doc, "before rework")).unwrap();
-    let before = resolve(&mut doc, "before rework").unwrap();
+    let before = resolve(&doc, "before rework").unwrap();
     let first = version_of(&mut doc);
-    assert_eq!(resolve(&mut doc, &first).unwrap(), doc.get_heads());
+    assert_eq!(resolve(&doc, &first).unwrap(), doc.get_heads());
 
     recolour(&mut doc, ALICE, "sky", "mud");
     recolour(&mut doc, ALICE, "sun", "mud");
@@ -202,7 +202,7 @@ fn restore_checkpoint_and_diff_address_versions_by_name_or_change() {
     verb(&mut doc, ALICE, |doc| undo(doc, &scope(ALICE), 1)).unwrap();
     assert!(ids(&doc).contains(&"smear".to_owned()));
 
-    let unknown = resolve(&mut doc, "nope").unwrap_err();
+    let unknown = resolve(&doc, "nope").unwrap_err();
     assert!(unknown.contains("before rework"), "{unknown}");
     assert!(verb(&mut doc, ALICE, |doc| checkpoint(doc, "  ")).is_err());
 }

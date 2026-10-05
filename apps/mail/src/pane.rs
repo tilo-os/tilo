@@ -3224,7 +3224,7 @@ impl Pane {
 }
 
 impl Widget for Pane {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(i) = self.search_input.as_mut() {
             i.sync(state, path);
         }

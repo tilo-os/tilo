@@ -122,7 +122,7 @@ impl RichTextSource for PageBody {
         self.field.read_only()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit) {
+    fn sync(&mut self, doc: &AutoCommit) {
         self.field.sync(doc);
     }
 
@@ -140,10 +140,10 @@ impl RichTextSource for PageBody {
 
     fn apply(
         &mut self,
-        doc: &mut AutoCommit,
+        edits: &mut ui::widget::Edits<'_>,
         edit: &tilo_document::RichTextAction,
     ) -> Result<(), ui::tilo_actions::ActionError> {
-        self.field.apply(doc, edit)
+        self.field.apply(edits, edit)
     }
 
     fn presence_keys(&self) -> Option<ui::widget::PresenceKeyFn> {
@@ -1266,8 +1266,8 @@ impl Widget for MainPanel {
         }
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document_ref(state, path);
         self.date_index.sync(state);
         let dates = self
             .page_id

@@ -759,8 +759,8 @@ impl Widget for Text {
         dyn crate::presence::capability::PublishesPresence
     );
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         let label = match self.source.as_mut() {
@@ -1282,8 +1282,8 @@ mod tests {
             assert!(!Widget::needs_redraw(&text));
             assert!(!Widget::is_layout_dirty(&text));
             revision.set(1);
-            let mut document = AutoCommit::new();
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            let document = AutoCommit::new();
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert!(Widget::needs_redraw(&text));
             assert!(Widget::is_layout_dirty(&text));
         }
@@ -1664,13 +1664,13 @@ mod tests {
                 Some("Hello, Ada")
             );
 
-            let mut document = AutoCommit::new();
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            let document = AutoCommit::new();
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert!(!Widget::needs_redraw(&text));
             assert!(!Widget::is_layout_dirty(&text));
 
             state.set(String::from("Grace"));
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert!(Widget::needs_redraw(&text));
             assert!(Widget::is_layout_dirty(&text));
             assert_eq!(
@@ -1690,8 +1690,8 @@ mod tests {
             text.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 200.0, 40.0));
             Widget::mark_drawn(&mut text);
 
-            let mut document = AutoCommit::new();
-            Widget::sync(&mut text, &mut document, &automerge::ROOT);
+            let document = AutoCommit::new();
+            Widget::sync(&mut text, &document, &automerge::ROOT);
             assert_eq!(calls.get(), 2);
             assert!(!Widget::needs_redraw(&text));
             assert!(!Widget::is_layout_dirty(&text));
@@ -1717,8 +1717,8 @@ mod tests {
             let mut master = Text::from_document_string("title");
             let mut detail =
                 Text::from_document(|doc, root| format!("Editing: {}", title(doc, root)));
-            Widget::sync(&mut master, &mut state.doc, &state.root);
-            Widget::sync(&mut detail, &mut state.doc, &state.root);
+            Widget::sync(&mut master, &state.doc, &state.root);
+            Widget::sync(&mut detail, &state.doc, &state.root);
             assert_eq!(
                 Widget::accessibility(&master).unwrap().name.as_deref(),
                 Some("Alpha")
@@ -1734,8 +1734,8 @@ mod tests {
             Widget::mark_drawn(&mut detail);
             state.doc.put(&state.root, "title", "Beta").unwrap();
             state.commit_action(None, None);
-            Widget::sync(&mut master, &mut state.doc, &state.root);
-            Widget::sync(&mut detail, &mut state.doc, &state.root);
+            Widget::sync(&mut master, &state.doc, &state.root);
+            Widget::sync(&mut detail, &state.doc, &state.root);
             assert_eq!(
                 Widget::accessibility(&master).unwrap().name.as_deref(),
                 Some("Beta")
@@ -1748,8 +1748,8 @@ mod tests {
             assert!(Widget::needs_redraw(&detail));
 
             state.undo(None, None).unwrap();
-            Widget::sync(&mut master, &mut state.doc, &state.root);
-            Widget::sync(&mut detail, &mut state.doc, &state.root);
+            Widget::sync(&mut master, &state.doc, &state.root);
+            Widget::sync(&mut detail, &state.doc, &state.root);
             assert_eq!(
                 Widget::accessibility(&master).unwrap().name.as_deref(),
                 Some("Alpha")

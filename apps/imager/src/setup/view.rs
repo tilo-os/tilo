@@ -3054,7 +3054,7 @@ impl Drop for SetupApp {
 }
 
 impl Widget for SetupApp {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.poll_background();
         self.drain_commands();
         self.open_requested_imports();
@@ -3063,7 +3063,7 @@ impl Widget for SetupApp {
         }
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         self.open_requested_imports();
         if let Some(composed) = &mut self.composed {

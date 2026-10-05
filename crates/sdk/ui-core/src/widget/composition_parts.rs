@@ -84,7 +84,7 @@ macro_rules! retained_parts {
         }
         fn update(
             &mut self,
-            state: &mut crate::widget::AppModel,
+            state: &crate::widget::AppModel,
             path: &crate::widget::ModelPath,
         ) -> bool {
             let mut changed = false;
@@ -93,7 +93,7 @@ macro_rules! retained_parts {
             }
             changed
         }
-        fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
             for child in &mut self.parts.children {
                 child.sync(state, path);
             }

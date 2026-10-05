@@ -4796,7 +4796,7 @@ impl BackupsApp {
 }
 
 impl Widget for BackupsApp {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // Another window, or the Settings app, moved this device's backup
         // location: show the repository there.
         if let Some(location) = self.location.as_ref().map(Setting::get)

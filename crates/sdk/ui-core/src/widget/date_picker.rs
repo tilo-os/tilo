@@ -297,7 +297,7 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         if let Some(date) = self
             .local_state
             .as_mut()
@@ -959,11 +959,11 @@ mod tests {
             let state = crate::LocalState::new(first);
             let mut left = DatePicker::from_state(&state);
             let mut right = DatePicker::from_state(&state);
-            let mut doc = AutoCommit::new();
+            let doc = AutoCommit::new();
 
             left.set_selected(second);
             assert_eq!(state.with(|date| *date), second);
-            Widget::sync(&mut right, &mut doc, &automerge::ROOT);
+            Widget::sync(&mut right, &doc, &automerge::ROOT);
             assert_eq!(right.selected(), second);
             assert_eq!(right.month_view(), (2027, 8));
         }

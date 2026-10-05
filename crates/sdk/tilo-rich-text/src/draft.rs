@@ -58,7 +58,7 @@ impl Draft {
         }
         doc.commit();
         self.revision = self.revision.wrapping_add(1);
-        self.field = FieldState::read(&mut doc, ROOT, self.revision).ok();
+        self.field = FieldState::read(&doc, ROOT, self.revision).ok();
         self.doc = doc;
     }
 
@@ -108,14 +108,16 @@ impl RichTextSource for Draft {
         false
     }
 
-    fn sync(&mut self, _doc: &mut Doc) {
+    fn sync(&mut self, _doc: &Doc) {
         let Some(field) = self.field.as_mut() else {
             return;
         };
-        if let Err(error) = field.refresh(&mut self.doc) {
+        // The draft's own edits are read once committed.
+        self.doc.commit();
+        if let Err(error) = field.refresh(&self.doc) {
             tracing::debug!(%error, "draft reread");
             self.revision = self.revision.wrapping_add(1);
-            self.field = FieldState::read(&mut self.doc, ROOT, self.revision).ok();
+            self.field = FieldState::read(&self.doc, ROOT, self.revision).ok();
         }
     }
 
@@ -127,7 +129,11 @@ impl RichTextSource for Draft {
         self.field.as_ref().map(|field| read(&field.state))
     }
 
-    fn apply(&mut self, _doc: &mut Doc, edit: &RichTextAction) -> Result<(), ActionError> {
+    fn apply(
+        &mut self,
+        _edits: &mut ui::widget::Edits<'_>,
+        edit: &RichTextAction,
+    ) -> Result<(), ActionError> {
         edit.apply(&mut self.doc)?;
         self.doc.commit();
         Ok(())
@@ -264,11 +270,15 @@ mod tests {
     fn a_mention_and_an_emoji_go_through_the_field_as_edits() {
         let mut field = Field::new(SubmitKey::Enter);
         field.type_text("hi ");
+        field.host.widget_mut().insert_mention(
+            &mut ui::widget::Edits::lend(&mut field.doc),
+            "u-ada",
+            "@Ada",
+        );
         field
             .host
             .widget_mut()
-            .insert_mention(&mut field.doc, "u-ada", "@Ada");
-        field.host.widget_mut().insert_text(&mut field.doc, "🎉");
+            .insert_text(&mut ui::widget::Edits::lend(&mut field.doc), "🎉");
         let draft = field.host.widget().source();
         assert_eq!(draft.plain_text(), "hi @Ada 🎉");
         let blocks = draft.blocks();

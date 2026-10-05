@@ -4925,7 +4925,7 @@ impl FloatingSurfaceProvider for MapsApp {
 impl Widget for MapsApp {
     ui::provides!(dyn ui::widget::FloatingSurfaceProvider);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // Pull any background network results into the model first.
         self.drain_net();
         // Fold in a device-location fix if the portal worker has one.

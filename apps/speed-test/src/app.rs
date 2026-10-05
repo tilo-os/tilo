@@ -309,7 +309,7 @@ impl Default for SpeedTestApp {
 }
 
 impl Widget for SpeedTestApp {
-    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _doc: &AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
         if let Some(run) = &self.run {
             let phase = match run.phase() {

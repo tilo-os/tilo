@@ -1079,7 +1079,7 @@ impl NavShell {
 impl Widget for NavShell {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.overview.sync(state, path);
         if let Some(d) = self.detail.as_mut() {
             d.sync(state, path);
@@ -1221,7 +1221,7 @@ impl Widget for NavShell {
         false
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         // Slides advance from the draw path (`self_tick`). The admitted
         // primary-frame update forwards model/momentum updates to every pane.
         let mut any = self.overview.update(state, path);
@@ -1958,7 +1958,7 @@ mod tests {
                 Box::new(Text::new("places")),
                 Box::new(Text::from_document_string("label")),
             );
-            ns.sync(&mut doc, &automerge::ROOT);
+            ns.sync(&doc, &automerge::ROOT);
             lay_out(&mut ns, 420.0, 500.0);
             ns.snap_sidebar(true);
             let theme = Theme::dark();
@@ -1983,7 +1983,7 @@ mod tests {
                 "first line\nsecond line\nthird line",
             )
             .unwrap();
-            ns.sync(&mut doc, &automerge::ROOT);
+            ns.sync(&doc, &automerge::ROOT);
             assert!(ns.overlay_sidebar_is_modal());
             assert!(ns.overview.layout_needs_measure());
             assert!(

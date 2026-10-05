@@ -98,8 +98,10 @@ impl Session {
 
         let mut doc = AutoCommit::new();
         let content = tilo_content::ContentStore::memory();
-        let mut app = editing(PhotosApp::with_content(content.clone()));
-        app.open_path(&mut doc, &path);
+        let dispatch = ui::framework::testing::dispatcher("so.tilo.photos");
+        let mut app = PhotosApp::with_content(content.clone()).with_dispatcher(dispatch.clone());
+        app.open_path(&path);
+        ui::framework::testing::resolve(&dispatch, &mut doc).expect("the photograph imports");
         assert!(
             app.open_photo_id().is_some() && PhotosDoc::library(&doc).photos.len() == 1,
             "the fixture failed to open its own staged photograph, so nothing \
@@ -341,9 +343,4 @@ fn one_content_is_one_openable_address_that_survives_missing_content() {
             "the address resolved to bytes that are not the photograph it names"
         );
     }
-}
-
-/// `app`, editing through a test's dispatcher of the library.
-fn editing(app: PhotosApp) -> PhotosApp {
-    app.with_dispatcher(ui::framework::testing::dispatcher("so.tilo.photos"))
 }

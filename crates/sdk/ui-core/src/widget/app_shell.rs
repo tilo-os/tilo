@@ -690,7 +690,7 @@ fn paint_child(
 }
 
 impl Widget for AppShell {
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.back_requested.replace(false) {
             self.back();
         }
@@ -1433,7 +1433,7 @@ mod tests {
 
             screen.set(NarrowScreen::Content);
             let mut document = AutoCommit::new();
-            shell.sync(&mut document, &automerge::ROOT);
+            shell.sync(&document, &automerge::ROOT);
             assert!(shell.take_structure_dirty());
             lay(&mut shell, 460.0, 820.0);
 

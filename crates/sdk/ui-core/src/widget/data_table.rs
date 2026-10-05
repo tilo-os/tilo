@@ -1824,7 +1824,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.visible_window_changed();
     }
 
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let model_changes = self
             .model
             .as_deref_mut()
@@ -3034,7 +3034,7 @@ mod tests {
             changed.set(true);
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let after = Widget::accessibility(&table).expect("loaded semantics");
@@ -3117,7 +3117,7 @@ mod tests {
                 .push(TableModelChange::RowsChanged { keys: vec![2] });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -3148,7 +3148,7 @@ mod tests {
                 .push(TableModelChange::RowsInserted { index: 0, count: 1 });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -3162,7 +3162,7 @@ mod tests {
             });
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             let _ = lay_out(&mut table);
@@ -3909,7 +3909,7 @@ mod tests {
             );
             assert!(Widget::update(
                 &mut table,
-                &mut AutoCommit::new(),
+                &AutoCommit::new(),
                 &automerge::ROOT,
             ));
             assert!(

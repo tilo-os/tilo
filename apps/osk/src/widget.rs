@@ -2295,7 +2295,7 @@ struct Correction {
 }
 
 impl Widget for OskWidget {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.poll_hold(Instant::now());
     }
 

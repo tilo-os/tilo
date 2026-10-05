@@ -206,10 +206,7 @@ impl super::App {
     }
 
     pub(super) fn update_model(&mut self) -> bool {
-        if !self
-            .root_widget
-            .update(&mut self.state.doc, &self.state.root)
-        {
+        if !self.root_widget.update(&self.state.doc, &self.state.root) {
             return false;
         }
         self.invalidate_widget_resource_cache();
@@ -222,7 +219,27 @@ impl super::App {
         if !force && !self.needs_sync {
             return false;
         }
-        self.root_widget.sync(&mut self.state.doc, &self.state.root);
+        // What the widgets took up since the last frame (an edit a child
+        // made on its own) is written before the document is read again.
+        self.root_widget.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        self.root_widget.sync(&self.state.doc, &self.state.root);
+        // A sync reads the document only. What it took up is written now,
+        // through actions, and shown in this same frame.
+        let before = crate::widget::settle_mark(&self.state.doc);
+        self.root_widget.settle(
+            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &self.state.root,
+        );
+        let settled = crate::widget::settle_mark(&self.state.doc) != before;
+        let submitted =
+            crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref())
+                && self.dispatch_control_invocations() != 0;
+        if settled || submitted {
+            self.root_widget.sync(&self.state.doc, &self.state.root);
+        }
         self.invalidate_widget_resource_cache();
         self.needs_sync = false;
         self.forget_replaced_widgets();

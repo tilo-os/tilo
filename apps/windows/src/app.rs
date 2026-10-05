@@ -1391,7 +1391,7 @@ impl WindowsApp {
 impl Widget for WindowsApp {
     ui::provides!(dyn ui::widget::controls::ActionControls);
 
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.drain_portal();
         self.drain_document_portal();
         self.drain_iso_portal();

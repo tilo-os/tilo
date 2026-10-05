@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use tilo_document::{RichText, RichTextAction};
-use tilo_rich_text::{DirectField, RichTextSurface};
+use tilo_rich_text::{Draft, RichTextSurface};
 use ui::automerge::{AutoCommit, ROOT};
 use ui::bound_dispatch::BoundNodeMap;
 use ui::kurbo::{Affine, Point, Rect};
@@ -252,17 +252,19 @@ fn block_editor(paragraphs: usize) -> Retained {
 
 fn rich_text(paragraphs: usize) -> Result<Retained, String> {
     let mut doc = AutoCommit::new();
-    RichText::initialize_under(&mut doc, &ROOT).map_err(|error| error.to_string())?;
+    // A draft holds its own text: what the editor costs, without an app's
+    // action host around it.
+    let mut draft = Draft::new();
+    let mut seed = AutoCommit::new();
+    RichText::initialize_under(&mut seed, &ROOT).map_err(|error| error.to_string())?;
     RichTextAction::ReplaceBody {
         markdown: markdown(paragraphs),
     }
-    .apply(&mut doc)
+    .apply(&mut seed)
     .map_err(|error| error.to_string())?;
-    doc.commit();
-    // The editor writing to the document itself: what the editor costs,
-    // without an app's action host around it.
-    let mut surface = RichTextSurface::over(DirectField::new(|_| Some(ROOT)))
-        .with_editor(BlockEditor::new().with_wrap_lines(true));
+    draft.reset(&tilo_rich_text::blocks_under(&seed, &ROOT).map_err(|error| error.to_string())?);
+    let mut surface =
+        RichTextSurface::over(draft).with_editor(BlockEditor::new().with_wrap_lines(true));
     // The first sync reads the document and shows it.
     Widget::sync(&mut surface, &mut doc, &ROOT);
     surface.set_focus(true);

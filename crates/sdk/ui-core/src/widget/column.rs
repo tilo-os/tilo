@@ -274,7 +274,7 @@ impl Widget for Column {
     /// Forward the per-frame update pass; every child runs, and a
     /// change in any of them is a change here. Not short-circuited —
     /// a child that skipped its pass would miss a frame of state.
-    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
