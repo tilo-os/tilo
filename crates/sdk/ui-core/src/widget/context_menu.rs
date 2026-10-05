@@ -6,7 +6,7 @@
 //! Callers push `MenuItem::action(label, fn)` and optional
 //! `MenuItem::separator()` entries, then call `open_at` on right-click.
 
-use crate::widget::ModelPath;
+use crate::widget::{AppModel, ModelPath};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
@@ -1635,6 +1635,9 @@ pub struct MenuButton {
     menu: ContextMenu,
     /// Set by the button's click; the menu opens on the next turn.
     request: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Pointer opening leaves selection under the pointer; keyboard and
+    /// semantic activation start at the first action.
+    request_keyboard: bool,
     /// The window the top layer last painted over.
     window: Option<Rect>,
     align: PanelAlign,
@@ -1650,6 +1653,7 @@ impl crate::widget::Button {
             button: self.on_view(move || flag.set(true)),
             menu: ContextMenu::with_items(items),
             request,
+            request_keyboard: true,
             window: None,
             align: PanelAlign::Leading,
         }
@@ -1713,6 +1717,8 @@ impl MenuButton {
             } else {
                 self.open(keyboard);
             }
+            // A later admitted semantic action has no raw pointer event.
+            self.request_keyboard = true;
         }
     }
 }
@@ -1726,6 +1732,13 @@ impl crate::widget::Decorator for MenuButton {
 
     fn inner_mut(&mut self) -> &mut crate::widget::Button {
         &mut self.button
+    }
+
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        Widget::sync(&mut self.button, state, path);
+        // Admitted view actions execute after event dispatch. Consume their
+        // one-shot request on the same real sync path as the next frame.
+        self.take_request(self.request_keyboard);
     }
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
@@ -1756,9 +1769,15 @@ impl crate::widget::Decorator for MenuButton {
             }
             return;
         }
+        match event {
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::Touch(_) => self.request_keyboard = false,
+            WindowEvent::KeyboardInput { .. } => self.request_keyboard = true,
+            _ => {}
+        }
         Widget::handle_event(&mut self.button, event, ctx);
-        let keyboard = matches!(event, WindowEvent::KeyboardInput { .. });
-        self.take_request(keyboard);
+        self.take_request(self.request_keyboard);
     }
 
     fn perform_action(
@@ -2916,6 +2935,11 @@ mod nested_and_anchored_tests {
             .expect("assistive activation invokes the same admitted opener");
         let _ = Framed::harness_mut(&mut framed).poll_frame();
         assert!(framed.is_open(), "assistive activation opens the same menu");
+        assert_eq!(
+            framed.menu_mut().hovered(),
+            Some(0),
+            "assistive opening selects the first command"
+        );
         assert!(
             framed
                 .menu_mut()
