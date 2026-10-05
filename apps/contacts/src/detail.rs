@@ -151,7 +151,7 @@ pub(crate) fn contact_page(
                     .copyable()
                     .action(
                         Icon::Pencil,
-                        "Edit phone",
+                        "Edit",
                         queue(shared, Request::EditField(contact.id, Slot::Phone(index))),
                     )
             }),
@@ -168,7 +168,7 @@ pub(crate) fn contact_page(
                     .copyable()
                     .action(
                         Icon::Pencil,
-                        "Edit email",
+                        "Edit",
                         queue(shared, Request::EditField(contact.id, Slot::Email(index))),
                     )
             }),
@@ -184,7 +184,7 @@ pub(crate) fn contact_page(
                     .copyable()
                     .action(
                         Icon::Pencil,
-                        "Edit address",
+                        "Edit",
                         queue(
                             shared,
                             Request::EditField(contact.id, Slot::AddrStreet(index)),
@@ -198,7 +198,7 @@ pub(crate) fn contact_page(
                 .with_kind(TextKind::Numeric)
                 .action(
                     Icon::Pencil,
-                    "Edit birthday",
+                    "Edit",
                     queue(shared, Request::EditField(contact.id, Slot::Birthday)),
                 ),
         );
@@ -210,7 +210,7 @@ pub(crate) fn contact_page(
                 .with_kind(TextKind::Identifier)
                 .action(
                     Icon::ExternalLink,
-                    "Open website",
+                    "Open",
                     queue(shared, Request::OpenWebsite(website.to_owned())),
                 ),
         );
@@ -219,7 +219,7 @@ pub(crate) fn contact_page(
     if !notes.is_empty() {
         facts.push(Property::new("Notes", notes).action(
             Icon::Pencil,
-            "Edit notes",
+            "Edit",
             queue(shared, Request::EditField(contact.id, Slot::Notes)),
         ));
     }

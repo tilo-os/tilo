@@ -32,7 +32,6 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_actions::{ActionBinding, ControlInvocation, Resource};
-use ui::tokens::TextRole;
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
     MediaElementInfo, NavigationDirection, PageFailure, PageReply, PageRequest, SharedEngine,
@@ -97,57 +96,6 @@ enum PagePhase {
     Sent,
     /// The action started a navigation; it completes when that settles.
     Navigating { reply: PageReply },
-}
-/// One shared desktop measure keeps the Library title, section switcher, and
-/// rows visually related instead of leaving the actions in a disconnected
-/// expanse of empty canvas. Compact chrome deliberately remains fluid.
-const LIBRARY_DESKTOP_CONTENT_WIDTH: f32 = 920.0;
-/// Below this window width the toolbar shrinks its navigation buttons, hides
-/// Forward and the optional commands, and protects the address field.
-const COMPACT_CHROME_MAX_WIDTH: f64 = 600.0;
-/// Below this window width the toolbar drops the optional commands that have
-/// another route — bookmark (Ctrl+D, `bookmark-page`), history pause
-/// (`browser.session/toggle-pause`, and the Library heading exactly as
-/// in compact chrome) and Picture in Picture (`browser.page/picture-in-picture`)
-/// — so the address field keeps a readable width. Between the compact
-/// breakpoint and this one, keeping every command left a tablet-width window
-/// an address field some 56px wide: room for "https:/" and nothing else. The
-/// site-information launcher stays: it has no action route yet, so hiding it
-/// would make site information click-only through the protection panel.
-const ROOMY_CHROME_MIN_WIDTH: f64 = 1000.0;
-/// The height of every control on the toolbar row — navigation buttons, site
-/// launchers, `DevTools`, Find and zoom, Private, Settings — and of the address
-/// field they sit beside, so the row has one top and one bottom edge. Also the
-/// find bar's controls, which sit beside a field of the same height.
-pub(crate) const TOOLBAR_CONTROL_HEIGHT: f32 = 40.0;
-
-/// Match the default single-line `TextInput` band: a 16px face with a 1.25
-/// line-height ratio and 8px vertical padding per side. Geometry integration
-/// tests keep this browser row aligned when the shared field metrics change.
-pub(crate) fn toolbar_control_height(text_scale: f32) -> f32 {
-    (20.0 * text_scale + 16.0).max(TOOLBAR_CONTROL_HEIGHT)
-}
-
-/// At or above this width the developer commands — `DevTools`, Find and the
-/// zoom readout — join the toolbar row.
-const DEVELOPER_CHROME_MIN_WIDTH: f64 = 1100.0;
-
-/// A labelled control's width: its explicit 1× width `base`, grown with the
-/// theme's `text_scale` so the label it carries fits its face — `Button`
-/// pins an explicit size, so a 2× label would otherwise paint past a 1×
-/// face. Icon-only controls keep their width: a glyph does not grow with
-/// the text. One rule for the toolbar, the find bar and the Library heading.
-pub(crate) fn labelled_width(base: f32, text_scale: f32) -> f32 {
-    base * text_scale.max(1.0)
-}
-
-/// The responsive tiers for a window `width`: `(compact, roomy)`. One rule for
-/// the retained layout pass and the one-frame capture seed.
-fn chrome_tiers(width: f64) -> (bool, bool) {
-    (
-        width < COMPACT_CHROME_MAX_WIDTH,
-        width >= ROOMY_CHROME_MIN_WIDTH,
-    )
 }
 
 fn decode_favicon_png(
@@ -296,11 +244,6 @@ pub(crate) enum BrowserOperation {
     },
     ClearLibraryFilter,
     ShowSettings,
-    /// Open the passwords panel, or the address autofill panel.
-    ShowAutofill {
-        addresses: bool,
-    },
-    NewPrivateWindow,
     ShowPage,
     ClearHistory,
     RequestWebsiteDataClear,
@@ -1279,11 +1222,6 @@ impl BrowserWidget {
                 self.show_settings = false;
                 self.structure_dirty = true;
             }
-            BrowserOperation::ShowAutofill { addresses } => {
-                (self.credentials.opener(addresses))()();
-                self.structure_dirty = true;
-            }
-            BrowserOperation::NewPrivateWindow => self.request_private_window(),
             BrowserOperation::SetLibraryFilter { query } => {
                 let query = query.trim();
                 if query.len() > MAX_LIBRARY_FILTER_BYTES {
@@ -4634,6 +4572,9 @@ impl BrowserWidget {
         self.tick_back_hold(ui::time::now());
         self.follow_history();
         self.apply_engine_events();
+        self.apply_panel_events();
+        self.structure_dirty |= self.run_pending_commands();
+        self.apply_review_stage();
         self.drive_page_operation();
         self.structure_dirty |= self.capabilities.downloads_changed();
         self.sync_search_and_suggestions();

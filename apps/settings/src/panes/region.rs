@@ -30,7 +30,7 @@ use crate::region::{
 };
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use crate::widgets::{caption, card, choice_row, choice_row_stacked, rows};
+use crate::widgets::{caption, card, rows};
 
 fn date_label(style: DateStyle) -> String {
     t(match style {
@@ -220,10 +220,6 @@ pub struct RegionPane {
     structure_dirty: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
-    /// The content width the host expects to give this pane, for the first
-    /// frame (before `apply_layout` has recorded a rect) — a cold capture
-    /// or a fresh navigation. After that the pane's own rect decides.
-    width_hint: Option<f32>,
 }
 
 impl RegionPane {
@@ -238,39 +234,11 @@ impl RegionPane {
             structure_dirty: false,
             composed: None,
             rect: Rect::ZERO,
-            width_hint: None,
         }
-    }
-
-    /// Seed the width the pane composes for until its first `apply_layout`.
-    #[must_use]
-    pub fn with_width_hint(mut self, width: f32) -> Self {
-        self.width_hint = Some(width);
-        self
     }
 
     pub fn locale(&self) -> Locale {
         *self.locale.get()
-    }
-
-    /// The width the host makes available to the pane. Prefer the host hint:
-    /// an intrinsic child rect may shrink to the stacked chooser width and
-    /// must not then force the next composition to stay stacked.
-    fn layout_width(&self) -> Option<f32> {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a logical-pixel width comfortably representable by f32"
-        )]
-        let allocated = (self.rect.width() > 0.0).then_some(self.rect.width() as f32);
-        self.width_hint.or(allocated)
-    }
-
-    /// Whether the Formats card composes its choosers beneath their labels.
-    /// One decision for the whole card, so no row is left inline while its
-    /// neighbours wrap.
-    fn stack_choices(&self) -> bool {
-        self.layout_width()
-            .is_some_and(|width| width < ui::tokens::Metrics::BASE.panel_width_list * 2.0)
     }
 
     #[allow(
@@ -278,11 +246,6 @@ impl RegionPane {
         reason = "one declarative card list mirroring the visible Region & Formats pane"
     )]
     fn build_composition(&self) -> Box<dyn Widget> {
-        let choice: fn(&str, Box<dyn Widget>) -> Box<dyn Widget> = if self.stack_choices() {
-            choice_row_stacked
-        } else {
-            choice_row
-        };
         let loc = *self.locale.get();
         let cx = &self.cx;
         let shown = &self.shown;
@@ -291,6 +254,7 @@ impl RegionPane {
             Dropdown::from_state(options, state)
                 .with_id(id)
                 .with_placeholder(&placeholder)
+                .fill()
         };
 
         // Currency dropdown — options are ISO codes (the stored form).
@@ -371,12 +335,14 @@ impl RegionPane {
         let formats = card(
             &t("settings-region-formats-card"),
             rows(vec![
-                choice(&currency_title, Box::new(currency)),
-                choice(&date_title, Box::new(date)),
-                choice(&time_title, Box::new(time)),
-                choice(&measure_title, Box::new(units)),
-                choice(&number_title, Box::new(number_style)),
-                choice(&first_title, Box::new(first_day)),
+                Box::new(ui::widget::Field::new(&currency_title, currency).with_trailing_control()),
+                Box::new(ui::widget::Field::new(&date_title, date).with_trailing_control()),
+                Box::new(ui::widget::Field::new(&time_title, time).with_trailing_control()),
+                Box::new(ui::widget::Field::new(&measure_title, units).with_trailing_control()),
+                Box::new(
+                    ui::widget::Field::new(&number_title, number_style).with_trailing_control(),
+                ),
+                Box::new(ui::widget::Field::new(&first_title, first_day).with_trailing_control()),
             ]),
         );
 

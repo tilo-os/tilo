@@ -405,7 +405,7 @@ mod tests {
         let state = MergeState::from_doc(&doc);
         assert_eq!(state.merge.as_ref(), Some(&inputs));
         assert_eq!(state.comparison.as_ref(), Some(&comparison));
-        assert_eq!(state.title, "Merge · ours ↔ theirs");
+        assert_eq!(state.title, "Merge of ours and theirs");
         assert!(state.composed);
         MergeDoc::set_merged(&mut doc, "edited by hand\n").unwrap();
         assert!(!MergeState::from_doc(&doc).composed);

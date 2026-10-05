@@ -1654,7 +1654,10 @@ impl Widget for Scrollable {
                         *ctx.handled = true;
                         return;
                     }
-                    CursorMoveOutcome::Coalesced => return,
+                    // Only the scrollbar bookkeeping is coalesced. Descendants
+                    // may have lost hover on CursorLeft, or changed their own
+                    // interaction state without moving this pointer.
+                    CursorMoveOutcome::Coalesced => {}
                 }
             }
             WindowEvent::MouseInput {
@@ -2246,6 +2249,187 @@ mod tests {
                 "content moving under a stationary pointer requires one fresh route",
             );
         }
+    }
+
+    #[test]
+    fn a_section_receives_same_position_motion_after_pointer_reentry() {
+        use crate::widget::{Section, SectionHeader, Text};
+
+        let opened = Rc::new(Cell::new(None));
+        let seen = Rc::clone(&opened);
+        let section = Section::new(vec![Box::new(Text::new("Details"))])
+            .with_header(SectionHeader::group("Advanced options"))
+            .collapsed()
+            .on_toggle(move |open| seen.set(Some(open)));
+        let mut scroll = Scrollable::new_vertical()
+            .with_height(150.0)
+            .with_child(Box::new(section));
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let mut text = TextRenderer::new();
+        let node = scroll.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        tree.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(150.0),
+            },
+            |known, available, node, _, _| {
+                nodes
+                    .get(&node)
+                    .map(|p| {
+                        // SAFETY: scroll exclusively owns the unchanged widget
+                        // tree; its layout map remains valid throughout measurement.
+                        unsafe { (**p).measure(known, available, &mut text) }
+                    })
+                    .unwrap_or(Size::ZERO)
+            },
+        )
+        .unwrap();
+        scroll.apply_layout(&tree, node, Point::ZERO);
+        let at = scroll.child.as_ref().unwrap().children()[0]
+            .get_rect()
+            .center();
+        assert!(scroll.content_viewport_rect().contains(at));
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        let mut focus = None;
+        let modifiers = winit::event::Modifiers::default();
+        let mut ctx = crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: crate::widget::Edits::lend(&mut doc),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &tree,
+        };
+        for event in [
+            cursor_moved(at.x, at.y),
+            WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+            cursor_moved(at.x, at.y),
+            mouse(ElementState::Pressed),
+            mouse(ElementState::Released),
+        ] {
+            *ctx.handled = false;
+            scroll.handle_event(&event, &mut ctx);
+        }
+        assert_eq!(opened.get(), Some(true), "the real disclosure must open");
+        assert!(scroll.child.as_ref().unwrap().children().len() > 1);
+    }
+
+    #[test]
+    fn a_scrolled_disclosure_gets_motion_after_leaving_a_text_field() {
+        use crate::LocalState;
+        use crate::widget::{Column, Section, SectionHeader, Spacer, Text, TextInput};
+
+        for scale in [1.0, 2.0] {
+            let opened = Rc::new(Cell::new(None));
+            let seen = Rc::clone(&opened);
+            let mut scroll = Scrollable::new_vertical()
+                .with_height(150.0)
+                .with_child(Box::new(
+                    Column::new()
+                        .with_intrinsic_height()
+                        .push(Box::new(TextInput::from_state(&LocalState::new(
+                            String::new(),
+                        ))))
+                        .push(Box::new(Spacer::fixed(300.0)))
+                        .push(Box::new(
+                            Section::new(vec![Box::new(Text::new("Details"))])
+                                .with_header(SectionHeader::group("Advanced options"))
+                                .collapsed()
+                                .on_toggle(move |open| seen.set(Some(open))),
+                        )),
+                ));
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let mut text = TextRenderer::new();
+            let node = scroll.build_layout(&mut tree, &theme, &mut nodes);
+            tree.compute_layout_with_measure(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(150.0),
+                },
+                |known, available, node, _, _| {
+                    nodes
+                        .get(&node)
+                        .map(|p| {
+                            // SAFETY: scroll exclusively owns the unchanged widget tree;
+                            // the node map remains valid for this measurement pass.
+                            unsafe { (**p).measure(known, available, &mut text) }
+                        })
+                        .unwrap_or(Size::ZERO)
+                },
+            )
+            .unwrap();
+            scroll.apply_layout(&tree, node, Point::ZERO);
+            let field = scroll.child.as_ref().unwrap().children()[0]
+                .get_rect()
+                .center();
+            dispatch_measured(&mut scroll, &tree, node, &cursor_moved(field.x, field.y));
+            scroll.set_offset_y(scroll.max_offset_y());
+            scroll.apply_layout(&tree, node, Point::ZERO);
+            assert!(
+                scroll.offset_y() > 0.0,
+                "the disclosure was scrolled into view"
+            );
+            let at = scroll.child.as_ref().unwrap().children()[2].children()[0]
+                .get_rect()
+                .center();
+            assert!(scroll.content_viewport_rect().contains(at));
+            assert!(
+                !dispatch_measured(&mut scroll, &tree, node, &cursor_moved(at.x, at.y)),
+                "hover transitions do not consume motion intended for a sibling"
+            );
+            assert!(dispatch_measured(
+                &mut scroll,
+                &tree,
+                node,
+                &mouse(ElementState::Pressed)
+            ));
+            assert!(dispatch_measured(
+                &mut scroll,
+                &tree,
+                node,
+                &mouse(ElementState::Released)
+            ));
+            assert_eq!(
+                opened.get(),
+                Some(true),
+                "the real scrolled disclosure opens at scale {scale}"
+            );
+        }
+    }
+
+    fn dispatch_measured(
+        s: &mut Scrollable,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        event: &WindowEvent,
+    ) -> bool {
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        s.handle_event(
+            event,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: crate::widget::Edits::lend(&mut doc),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
+        );
+        handled
     }
 
     #[test]

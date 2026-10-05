@@ -27,7 +27,6 @@ fn ics_filter() -> ui::portal::FileFilter {
         .mimetype("text/calendar")
         .glob("*.ics")
 }
-use std::fmt::Write as _;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};

@@ -52,7 +52,7 @@ use crate::net::{Request, RequestKind, Response};
 use crate::presentation::PlaceRowText;
 mod detail;
 use crate::resource::Weather;
-use crate::units::{self, Units};
+use crate::units::Units;
 use crate::wxcode::Sky;
 pub use detail::RETRY_KEY;
 

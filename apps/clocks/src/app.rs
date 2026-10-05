@@ -20,11 +20,10 @@ use std::{
 use taffy::{NodeId, TaffyTree};
 use ui::framework::{Actions, Dispatcher, Setting};
 use ui::icons::Icon;
-use ui::widget::toggle_group::Segment;
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, Card, CardGrid, Column, Container, Element, ModelView, ProgressBar, Row, Scrollable,
-    Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, ToggleGroup, Widget,
+    Spacer, Text, TextInput, TextInputKind, TimePicker, TimeValue, Widget,
 };
 use ui::{presence::PresenceCtx, text_render::TextRenderer, theme::Theme};
 use vello::{
@@ -169,7 +168,7 @@ fn city_time(zone: &str, now: chrono::DateTime<Utc>) -> String {
         |_| "Time unavailable".into(),
         |z| {
             now.with_timezone(&z)
-                .format("%H:%M · %a %-d %b · %Z · UTC%:z")
+                .format("%H:%M on %a %-d %b (%Z, UTC%:z)")
                 .to_string()
         },
     )
@@ -181,7 +180,7 @@ fn timezone_label(zone: &str) -> String {
     if region.is_empty() || region == city {
         city
     } else {
-        format!("{city} · {region}")
+        format!("{city}, in {region}")
     }
 }
 
@@ -218,7 +217,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
         let mut col = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(10.0);
+            .with_rhythm(ui::tokens::Rhythm::Related);
         if s.clocks.world_clocks.is_empty() {
             col = col.push(Box::new(
                 Text::new("No cities yet. Add one below to compare time at a glance.").dimmed(),
@@ -266,7 +265,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     });
     Box::new(
         Column::new()
-            .with_gap(18.0)
+            .with_rhythm(ui::tokens::Rhythm::Section)
             .push(Box::new(
                 Text::new("World clocks")
                     .with_role(ui::TextRole::LargeTitle)
@@ -285,7 +284,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                                 Column::new()
                                     .with_no_padding()
                                     .with_intrinsic_height()
-                                    .with_gap(6.0)
+                                    .with_rhythm(ui::tokens::Rhythm::Tight)
                                     .push(Box::new(
                                         Text::new(&here.format("%H:%M").to_string())
                                             .with_role(ui::TextRole::Display),
@@ -302,7 +301,7 @@ fn world_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
                             Column::new()
                                 .with_no_padding()
                                 .with_intrinsic_height()
-                                .with_gap(10.0)
+                                .with_rhythm(ui::tokens::Rhythm::Related)
                                 .push(Box::new(
                                     TextInput::from_state(&city_query)
                                         .with_id("clocks.world.search")
@@ -337,7 +336,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
         let mut col = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(10.0);
+            .with_rhythm(ui::tokens::Rhythm::Related);
         if s.clocks.alarms.is_empty() {
             col = col.push(Box::new(
                 Text::new("No alarms yet. Set one for a future time.").dimmed(),
@@ -352,7 +351,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                 ))
                 .push(Box::new(
                     Text::new(&format!(
-                        "{repeat} · {}",
+                        "{repeat}, currently {}",
                         if alarm.enabled { "On" } else { "Off" }
                     ))
                     .dimmed(),
@@ -381,7 +380,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
     });
     Box::new(
         Column::new()
-            .with_gap(18.0)
+            .with_rhythm(ui::tokens::Rhythm::Section)
             .push(Box::new(
                 Text::new("Alarms")
                     .with_role(ui::TextRole::LargeTitle)
@@ -447,7 +446,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                                     Column::new()
                                         .with_no_padding()
                                         .with_intrinsic_height()
-                                        .with_gap(8.0)
+                                        .with_rhythm(ui::tokens::Rhythm::Related)
                                         .push(Box::new(first_row))
                                         .push(Box::new(second_row)),
                                 )
@@ -603,15 +602,15 @@ fn timers_screen(
     let custom_seconds = ui::LocalState::new("00".to_string());
     let custom_label = ui::LocalState::new(String::new());
     let preset_specs = [
-        ("Tea", "Tea · 5m", 300),
-        ("Break", "Break · 10m", 600),
-        ("Focus", "Focus · 25m", 1500),
-        ("Laundry", "Laundry · 45m", 2700),
+        ("Tea", "Tea for 5 minutes", 300),
+        ("Break", "Break for 10 minutes", 600),
+        ("Focus", "Focus for 25 minutes", 1500),
+        ("Laundry", "Laundry for 45 minutes", 2700),
     ];
     let mut presets = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(8.0);
+        .with_rhythm(ui::tokens::Rhythm::Related);
     for preset_row in preset_specs.chunks(2) {
         let mut row = Row::new();
         for &(label, button_label, secs) in preset_row {
@@ -635,7 +634,7 @@ fn timers_screen(
         let mut col = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(10.0);
+            .with_rhythm(ui::tokens::Rhythm::Related);
         for (id, timer) in s.clocks.timers.iter() {
             let floating = s.device.floating_timers.contains(id.as_str());
             col = col.push(timer_card(id, timer, floating, &list_controls));
@@ -667,7 +666,7 @@ fn timers_screen(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(6.0)
+                .with_rhythm(ui::tokens::Rhythm::Tight)
                 .push(Box::new(Text::new("Hours").with_heading_level(4)))
                 .push(Box::new(
                     TextInput::from_state(&custom_hours)
@@ -681,7 +680,7 @@ fn timers_screen(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(6.0)
+                .with_rhythm(ui::tokens::Rhythm::Tight)
                 .push(Box::new(Text::new("Minutes").with_heading_level(4)))
                 .push(Box::new(
                     TextInput::from_state(&custom_minutes)
@@ -695,7 +694,7 @@ fn timers_screen(
             Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
-                .with_gap(6.0)
+                .with_rhythm(ui::tokens::Rhythm::Tight)
                 .push(Box::new(Text::new("Seconds").with_heading_level(4)))
                 .push(Box::new(
                     TextInput::from_state(&custom_seconds)
@@ -714,7 +713,7 @@ fn timers_screen(
                 Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .with_gap(10.0)
+                    .with_rhythm(ui::tokens::Rhythm::Related)
                     .push(Box::new(
                         Text::new("A focused timer is one tap away.").dimmed(),
                     ))
@@ -770,7 +769,7 @@ fn timers_screen(
     .with_card_width(ui::widget::CardWidth::Wide);
     Box::new(
         Column::new()
-            .with_gap(18.0)
+            .with_rhythm(ui::tokens::Rhythm::Section)
             .push(Box::new(
                 Text::new("Timers")
                     .with_role(ui::TextRole::LargeTitle)
@@ -794,7 +793,7 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
         let mut laps = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(5.0);
+            .with_rhythm(ui::tokens::Rhythm::Tight);
         for (i, ms) in stopwatch.laps_ms.iter().enumerate().rev() {
             laps = laps.push(Box::new(Text::new(&format!(
                 "Lap {}   {}",
@@ -869,7 +868,7 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
     });
     Box::new(
         Column::new()
-            .with_gap(14.0)
+            .with_rhythm(ui::tokens::Rhythm::Group)
             .push(Box::new(
                 Text::new("Stopwatch")
                     .with_role(ui::TextRole::Title)

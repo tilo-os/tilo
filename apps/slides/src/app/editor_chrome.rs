@@ -65,6 +65,8 @@ pub(super) struct ChromeMetrics {
     pub(super) growth: f64,
     /// A text field's inset from its edge to its text.
     pub(super) field_pad: f64,
+    /// One wheel notch follows the host's scrolling metric.
+    pub(super) wheel_line: f64,
     /// Height of the drop-to-delete zone at the foot of the sidebar.
     pub(super) drop_zone_h: f64,
 }
@@ -94,6 +96,7 @@ impl ChromeMetrics {
             lh_label: line(TextRole::Label),
             growth: theme.responsive_scale(),
             field_pad: s3,
+            wheel_line: f64::from(metrics.wheel_line),
             drop_zone_h: 2.0 * f64::from(sp.s4)
                 + f64::from(metrics.icon_lg)
                 + f64::from(sp.s2)
@@ -399,7 +402,7 @@ impl SlidesApp {
         let mut set = vec![
             (tr("slides-present"), Measure::Button { icon: true }),
             (self.deck.title.clone(), Measure::Heading),
-            (String::new(), Measure::FontInput),
+            (self.font_input.value().to_string(), Measure::FontInput),
             command(tr("slides-bring-front")),
             command(tr("slides-send-back")),
             command(tr("slides-duplicate")),
@@ -991,7 +994,7 @@ impl SlidesApp {
         let inside = |y: f64| y >= body.y0 && y <= body.y1;
         let kept: Vec<UiButton> = buttons
             .drain(first_button..)
-            .filter(|b| matches!(b.kind, ButtonKind::Notes) || inside(b.rect.center().y))
+            .filter(|b| inside(b.rect.center().y))
             .collect();
         buttons.extend(kept);
         let kept: Vec<Label> = labels
@@ -1309,18 +1312,10 @@ impl SlidesApp {
 
     // --- painting -----------------------------------------------------------
 
-    /// Whether a point falls in the slide sidebar.
-    pub(super) fn in_rail(chrome: &Chrome, p: Point) -> bool {
-        chrome.rail.width() > 1.0 && chrome.rail.contains(p)
-    }
-
     /// Whether a point falls in the inspector.
+    #[cfg(test)]
     pub(super) fn in_inspector(chrome: &Chrome, p: Point) -> bool {
         chrome.inspector.width() > 1.0 && chrome.inspector.contains(p)
-    }
-
-    pub(super) fn in_panel(chrome: &Chrome, p: Point) -> bool {
-        Self::in_rail(chrome, p) || Self::in_inspector(chrome, p)
     }
 
     /// The whole editor: the docked panels' regions, the canvas, the

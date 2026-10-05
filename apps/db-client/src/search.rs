@@ -166,7 +166,7 @@ fn index_relation(
             &[connection_id, &schema.name, &relation.name, &column.name],
         );
         let result = hit(&column.name, ActionAddress::new(&column_id, "browse")).subtitled(
-            format!("{}.{} · {}", schema.name, relation.name, column.decl_type),
+            format!("{} in {}.{}", column.decl_type, schema.name, relation.name),
         );
         let mut column_resource = Resource::new(&column_id, "database.column", &column.name);
         column_resource.actions.clone_from(&resource.actions);

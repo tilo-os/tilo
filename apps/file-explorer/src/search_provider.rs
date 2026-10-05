@@ -374,7 +374,7 @@ impl RemoteAccountSearch {
                     .invoking(remote_account_open_address(account))
                     .grouped(self.kind.clone())
                     .subtitled(format!(
-                        "{} · {} · {}",
+                        "{} on {} ({})",
                         account.kind.label(),
                         account.host,
                         account.health.label()

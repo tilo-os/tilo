@@ -276,26 +276,9 @@ impl AccountList {
         self.accounts.is_empty()
     }
 
-    #[cfg(test)]
-    pub(crate) fn scroll_offset(&self) -> f64 {
-        self.scroll
-    }
-
     /// Show `index`'s row hovered, as a capture of the hover state needs.
     pub(crate) fn stage_hover(&mut self, index: usize, code: bool) {
         self.hover = Some((index, if code { Zone::Code } else { Zone::Body }));
-    }
-
-    /// The row the pointer is over.
-    #[cfg(test)]
-    pub(crate) fn hovered_row(&self) -> Option<usize> {
-        self.hover.map(|(row, _)| row)
-    }
-
-    /// The rect the empty state's action was last painted at.
-    #[cfg(test)]
-    pub(crate) fn empty_action_rect(&self) -> Rect {
-        self.empty_action
     }
 
     /// The current painted bounds of an account's row, when it is on screen.
@@ -874,6 +857,27 @@ mod tests {
         assert!(AccountList::new().is_empty());
     }
 
+    #[test]
+    fn resting_hovered_and_code_rows_paint_in_both_themes() {
+        let mut list = list(600.0, 800.0, 1.0);
+        let mut text = TextRenderer::new();
+        let row = 2;
+        for mut theme in [Theme::dark(), Theme::light()] {
+            theme.reduce_motion = true;
+            for hover in [None, Some((row, Zone::Body)), Some((row, Zone::Code))] {
+                list.hover = hover;
+                let mut scene = vello::Scene::new();
+                list.draw(&mut PaintCtx::new(
+                    &mut scene,
+                    vello::kurbo::Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                ));
+                assert!(!scene.encoding().is_empty(), "actual row state paints");
+            }
+        }
+    }
+
     fn dispatch(list: &mut AccountList, event: &WindowEvent) -> bool {
         let mut handled = false;
         list.handle_event(event, 1.0, &mut handled);
@@ -906,5 +910,22 @@ mod tests {
         assert!((list.scroll - list.max_scroll()).abs() < 0.001);
         assert!(dispatch(&mut list, &wheel(100.0)));
         assert!(list.scroll.abs() < 0.001);
+        let first = list.accounts.first().unwrap().id;
+        let last = list.accounts.last().unwrap().id;
+        assert!(
+            list.account_bounds(last).is_none(),
+            "offscreen rows have no admitted bounds"
+        );
+        list.reveal(last);
+        let visible = list
+            .account_bounds(last)
+            .expect("the revealed row is admitted");
+        assert!(visible.y0 >= list.rect.y0 && visible.y1 <= list.rect.y1);
+        assert!(list.account_bounds(first).is_none());
+        assert!(
+            list.hit(Point::new(list.rect.center().x, list.rect.y0 - 1.0))
+                .is_none(),
+            "a pointer above the viewport cannot hit an offscreen row"
+        );
     }
 }

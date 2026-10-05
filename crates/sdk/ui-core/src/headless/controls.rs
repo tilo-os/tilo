@@ -292,7 +292,7 @@ impl FrameHarness {
                 .is_some_and(|palette| palette.is_presented()))
     }
 
-    fn retained_action_geometry(
+    pub(super) fn retained_action_geometry(
         &self,
     ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
         if !self.action_geometry_visible() {
@@ -699,6 +699,150 @@ mod locus_tests {
             },
             anchor: tilo_actions::InteractionAnchor::Resource,
             group: None,
+        }
+    }
+
+    #[test]
+    fn agent_marker_projects_real_action_without_reinvoking_and_retires_when_idle() {
+        for (viewport, reduced_motion) in [
+            ((1600, 900), false),
+            ((800, 600), false),
+            ((1600, 900), true),
+            ((800, 600), true),
+        ] {
+            let (mut frame, calls) = fixture();
+            let mut theme = frame.theme().clone();
+            theme.reduce_motion = reduced_motion;
+            frame.set_theme(theme);
+            frame.resize(viewport).unwrap();
+            frame
+                .invoke_action(
+                    &tilo_actions::ActionAddress::new("first", "edit"),
+                    &serde_json::Map::new(),
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(calls.get(), 1, "the actual semantic executor ran once");
+            let mut event = interaction("first");
+            event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+            let now = crate::time::now();
+            frame.update_presence(|presence| {
+                presence.apply_interaction_at(event.clone(), now).unwrap()
+            });
+            assert!(frame.poll_frame().unwrap());
+            assert_eq!(frame.semantic_locus(&event), Some(frame.targets()["first"]));
+            assert_eq!(
+                frame.frame_schedule().needs_animation_frame,
+                !reduced_motion
+            );
+            assert_eq!(
+                calls.get(),
+                1,
+                "painting is not a pointer click or an action"
+            );
+
+            // Observe already-settled host activity: no widget or input event
+            // is needed to keep its expiry deadline alive.
+            let mut presence = crate::presence::PresenceCtx::empty();
+            presence
+                .apply_interaction_at(
+                    event.clone(),
+                    now.checked_sub(crate::time::Duration::from_secs(2))
+                        .unwrap(),
+                )
+                .unwrap();
+            frame.set_presence_context(presence);
+            let schedule = frame.frame_schedule();
+            assert!(!schedule.needs_animation_frame, "settled dwell must sleep");
+            assert!(schedule.next_wake_deadline.is_some_and(|at| at > now));
+
+            // A discrete idle wake must clear an expired frame, including
+            // reduced-motion hosts which never have an animation pump.
+            let expired = now
+                .checked_sub(crate::time::Duration::from_secs(16))
+                .unwrap();
+            let mut terminal = event.clone();
+            terminal.sequence = 2;
+            terminal.phase = tilo_actions::InteractionPhase::Committed;
+            let mut expired_presence = crate::presence::PresenceCtx::empty();
+            expired_presence
+                .apply_interaction_at(terminal, expired)
+                .unwrap();
+            *frame.presence_mut() = expired_presence;
+            assert!(
+                !frame.frame_schedule().queued_work,
+                "no input/redraw notification"
+            );
+            assert!(
+                frame
+                    .frame_schedule()
+                    .next_wake_deadline
+                    .is_some_and(|at| at <= crate::time::now())
+            );
+            assert!(frame.poll_frame().unwrap());
+            assert!(
+                frame
+                    .presence_mut()
+                    .visible_interactions(crate::time::now())
+                    .is_empty()
+            );
+            assert!(frame.frame_schedule().next_wake_deadline.is_none());
+            assert!(!frame.frame_schedule().needs_animation_frame);
+            assert_eq!(calls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn agent_marker_full_size_render_evidence() {
+        let out = crate::env::var_os("TILO_UI_AGENT_MARKER_SHOTS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../target/agent-marker")
+            });
+        for (name, theme) in [
+            ("dark", crate::theme::Theme::dark()),
+            ("light", crate::theme::Theme::light()),
+            ("high-contrast", crate::theme::Theme::high_contrast()),
+        ] {
+            for viewport in [(1600, 900), (800, 600)] {
+                let (mut frame, calls) = fixture();
+                frame.relayout_themed(viewport, theme.clone()).unwrap();
+                let path = out
+                    .join(name)
+                    .join(format!("{}x{}", viewport.0, viewport.1));
+                std::fs::create_dir_all(&path).unwrap();
+                frame.render_png(&path.join("before.png"));
+                frame
+                    .invoke_action(
+                        &tilo_actions::ActionAddress::new("first", "edit"),
+                        &serde_json::Map::new(),
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                let mut event = interaction("first");
+                event.actor.id = "scribe".into();
+                event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+                let at = crate::time::now()
+                    .checked_sub(crate::time::Duration::from_secs(2))
+                    .unwrap();
+                frame.update_presence(|presence| {
+                    presence.apply_interaction_at(event.clone(), at).unwrap()
+                });
+                assert!(frame.poll_frame().unwrap());
+                frame.render_png(&path.join("after.png"));
+                assert_eq!(calls.get(), 1);
+                for file in ["before.png", "after.png"] {
+                    assert!(std::fs::metadata(path.join(file)).unwrap().len() > 0);
+                }
+                assert_ne!(
+                    std::fs::read(path.join("before.png")).unwrap(),
+                    std::fs::read(path.join("after.png")).unwrap(),
+                    "the capture must actually observe action presence"
+                );
+            }
         }
     }
 

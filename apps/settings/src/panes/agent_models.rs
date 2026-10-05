@@ -2097,7 +2097,7 @@ impl LocalModelControl for SampleManager {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 32,
-                accelerator: "GPU · 16 GiB".into(),
+                accelerator: "GPU with 16 GiB".into(),
                 accelerator_memory_gib: Some(16),
                 free_storage_gib: Some(120),
                 reason: t("agent-reason-good"),
@@ -2349,7 +2349,7 @@ mod tests {
             hardware: HardwareRecommendation {
                 fit: HardwareFit::Good,
                 memory_gib: 24,
-                accelerator: "GPU · 12 GiB".into(),
+                accelerator: "GPU with 12 GiB".into(),
                 accelerator_memory_gib: Some(12),
                 free_storage_gib: Some(80),
                 reason: "Balanced for this device".into(),

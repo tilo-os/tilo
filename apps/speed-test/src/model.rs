@@ -2,27 +2,6 @@
 //! how it is drawn: the phase, the readings measured so far, the recent
 //! results, and the dial's reading.
 
-use std::sync::mpsc::{self, Receiver};
-
-use ui::time::{Duration, Instant};
-
-use crate::measure::{self, WorkerMessage};
-
-/// How many finished tests the app remembers.
-const HISTORY_LEN: usize = 5;
-
-/// How long the dial's arc takes to close most of the distance to its target.
-const RING_SETTLE: Duration = Duration::from_millis(110);
-
-/// The largest step of one animation frame, so a stalled frame does not jump.
-const MAX_FRAME: f64 = 0.05;
-
-/// Where the dial reads full on its speed scale, in Mbps.
-const SPEED_SCALE_MBPS: u32 = 1000;
-
-/// Where the dial reads full on its latency scale, in milliseconds.
-const PING_SCALE_MS: u32 = 100;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
     Idle,
@@ -134,12 +113,6 @@ pub(crate) struct Model {
     pub error: Option<String>,
     /// How far the dial's arc has eased toward its target.
     ring: f64,
-    last_frame: Instant,
-    worker: Option<Receiver<WorkerMessage>>,
-    task: Option<ui::rt::JoinHandle<()>>,
-    /// Bumped whenever the shape of the screen changes: the phase, a stage's
-    /// result, the history. Live readings do not bump it.
-    revision: u64,
 }
 
 /// The canonical runtime's readings and recorded measurements for this frame.
@@ -147,6 +120,7 @@ pub(crate) struct Projection<'a> {
     pub phase: Phase,
     pub result: Option<(f64, f64, f64, f64)>,
     pub live: f64,
+    pub bytes: u64,
     pub ring: f64,
     pub history: &'a [crate::resource::Measurement],
     pub current: Option<&'a crate::resource::Measurement>,
@@ -171,6 +145,7 @@ impl Model {
             phase,
             result,
             live,
+            bytes,
             ring,
             history,
             current,
@@ -199,10 +174,12 @@ impl Model {
                 download: Some(download),
                 upload: Some(upload),
                 location: Some(server),
+                bytes,
                 ..Readings::default()
             },
             None => Readings {
                 location: Some(server),
+                bytes,
                 ..Readings::default()
             },
         };
@@ -217,153 +194,11 @@ impl Model {
             current: None,
             error: None,
             ring: 0.0,
-            last_frame: ui::time::now(),
-            worker: None,
-            task: None,
-            revision: 0,
         }
-    }
-
-    pub(crate) fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    fn changed(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
     }
 
     pub(crate) fn is_running(&self) -> bool {
         self.phase.is_running()
-    }
-
-    pub(crate) fn start(&mut self) {
-        if self.is_running() {
-            return;
-        }
-        self.cancel();
-        self.phase = Phase::Ping;
-        self.readings = Readings::default();
-        self.error = None;
-        self.live = 0.0;
-        self.last_frame = ui::time::now();
-        let (tx, rx) = mpsc::channel();
-        self.worker = Some(rx);
-        self.task = Some(ui::rt::app().spawn(measure::run(tx)));
-        self.changed();
-    }
-
-    pub(crate) fn stop(&mut self) {
-        if !self.is_running() {
-            return;
-        }
-        self.cancel();
-        self.phase = Phase::Idle;
-        self.readings = Readings::default();
-        self.live = 0.0;
-        self.changed();
-    }
-
-    fn cancel(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
-        self.worker = None;
-    }
-
-    /// Take in what the worker has reported. Returns whether anything changed.
-    pub(crate) fn poll(&mut self) -> bool {
-        let mut changed = false;
-        while let Some(message) = self.worker.as_ref().and_then(|rx| rx.try_recv().ok()) {
-            self.apply(message);
-            changed = true;
-        }
-        changed
-    }
-
-    pub(crate) fn apply(&mut self, message: WorkerMessage) {
-        match message {
-            WorkerMessage::Ping { sample } => self.live = sample,
-            WorkerMessage::Latency {
-                ping,
-                jitter,
-                location,
-            } => {
-                self.readings.ping = Some(ping);
-                self.readings.jitter = Some(jitter);
-                self.readings.location = location;
-                self.live = 0.0;
-                self.phase = Phase::Download;
-                self.changed();
-            }
-            WorkerMessage::Download { live } | WorkerMessage::Upload { live } => self.live = live,
-            WorkerMessage::DownloadDone { mbps, bytes } => {
-                self.readings.download = Some(mbps);
-                self.readings.bytes = self.readings.bytes.saturating_add(bytes);
-                self.live = 0.0;
-                self.phase = Phase::Upload;
-                self.changed();
-            }
-            WorkerMessage::Done { mbps, bytes } => {
-                self.readings.upload = Some(mbps);
-                self.readings.bytes = self.readings.bytes.saturating_add(bytes);
-                self.worker = None;
-                self.task = None;
-                self.phase = Phase::Complete;
-                if let Some(result) = self.finished() {
-                    self.history.insert(0, result);
-                    self.history.truncate(HISTORY_LEN);
-                }
-                self.changed();
-            }
-            WorkerMessage::Failed(message) => {
-                self.worker = None;
-                self.task = None;
-                self.error = Some(message);
-                self.phase = Phase::Error;
-                self.changed();
-            }
-        }
-    }
-
-    /// The finished test the readings add up to, once every stage is in.
-    fn finished(&self) -> Option<Finished> {
-        let readings = &self.readings;
-        Some(Finished {
-            at: ui::clock::local_now().timestamp(),
-            ping: readings.ping?,
-            jitter: readings.jitter?,
-            download: readings.download?,
-            upload: readings.upload?,
-        })
-    }
-
-    /// The reading the dial's arc is heading for.
-    fn target(&self) -> f64 {
-        match self.phase {
-            Phase::Idle | Phase::Error => 0.0,
-            Phase::Ping => (self.live / f64::from(PING_SCALE_MS)).clamp(0.0, 1.0),
-            Phase::Download | Phase::Upload => speed_fraction(self.live),
-            Phase::Complete => speed_fraction(self.readings.download.unwrap_or(0.0)),
-        }
-    }
-
-    /// Ease the arc toward its target. Returns whether it moved.
-    pub(crate) fn tick(&mut self, now: Instant) -> bool {
-        let delta = now
-            .duration_since(self.last_frame)
-            .as_secs_f64()
-            .min(MAX_FRAME);
-        self.last_frame = now;
-        let before = self.ring;
-        self.ring +=
-            (self.target() - self.ring) * (1.0 - (-delta / RING_SETTLE.as_secs_f64()).exp());
-        (before - self.ring).abs() > 0.0005
-    }
-
-    /// Whether frames are still needed: a test is running or the arc has
-    /// not settled.
-    pub(crate) fn is_animating(&self) -> bool {
-        self.is_running() || (self.ring - self.target()).abs() > 0.001
     }
 
     pub(crate) fn dial(&self) -> DialReading {
@@ -401,108 +236,6 @@ impl Model {
             .then(|| self.current.as_ref().or_else(|| self.history.first()))
             .flatten()
     }
-
-    /// Put the dial exactly where it belongs, without easing.
-    pub(crate) fn settle(&mut self) {
-        self.ring = self.target();
-    }
-
-    /// Stage a screenshot scenario: the state a person would have reached.
-    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
-        self.cancel();
-        let now = ui::clock::local_now().timestamp();
-        self.readings = Readings::default();
-        self.error = None;
-        self.live = 0.0;
-        self.history = Vec::new();
-        self.phase = Phase::Idle;
-        let earlier = [
-            Finished {
-                at: now - 2 * 3600,
-                ping: 12.4,
-                jitter: 1.8,
-                download: 618.2,
-                upload: 112.9,
-            },
-            Finished {
-                at: now - 26 * 3600,
-                ping: 14.1,
-                jitter: 2.2,
-                download: 584.6,
-                upload: 109.3,
-            },
-        ];
-        match scenario {
-            Some("running") => {
-                self.phase = Phase::Download;
-                self.readings.ping = Some(11.8);
-                self.readings.jitter = Some(1.6);
-                self.live = 386.4;
-                self.history = earlier.to_vec();
-            }
-            Some("error") => {
-                self.phase = Phase::Error;
-                self.error =
-                    Some("Could not reach the test server: the connection timed out.".to_owned());
-                self.history = earlier.to_vec();
-            }
-            Some("complete-slow") => {
-                self.phase = Phase::Complete;
-                self.readings = Readings {
-                    ping: Some(64.0),
-                    jitter: Some(9.3),
-                    download: Some(18.6),
-                    upload: Some(4.2),
-                    bytes: 8_000_000,
-                    location: Some("Frankfurt".to_owned()),
-                };
-                let mut history = vec![Finished {
-                    at: now,
-                    ping: 64.0,
-                    jitter: 9.3,
-                    download: 18.6,
-                    upload: 4.2,
-                }];
-                history.extend(earlier);
-                self.history = history;
-            }
-            Some(name) if name.starts_with("complete") => {
-                self.phase = Phase::Complete;
-                self.readings = Readings {
-                    ping: Some(11.8),
-                    jitter: Some(1.6),
-                    download: Some(642.7),
-                    upload: Some(118.4),
-                    bytes: 12_000_000,
-                    location: Some("Frankfurt".to_owned()),
-                };
-                let mut history = vec![Finished {
-                    at: now,
-                    ping: 11.8,
-                    jitter: 1.6,
-                    download: 642.7,
-                    upload: 118.4,
-                }];
-                history.extend(earlier);
-                self.history = history;
-            }
-            _ => {}
-        }
-        self.settle();
-        self.changed();
-    }
-}
-
-impl Drop for Model {
-    fn drop(&mut self) {
-        self.cancel();
-    }
-}
-
-/// How far a speed reads along the dial: logarithmic, so a slow line and a
-/// fast one both move the arc.
-pub(crate) fn speed_fraction(mbps: f64) -> f64 {
-    ((1.0 + mbps.max(0.0)).ln() / (1.0 + f64::from(SPEED_SCALE_MBPS)).ln()).clamp(0.0, 1.0)
 }
 
 /// "12 MB", from a byte count.
@@ -530,52 +263,73 @@ pub(crate) fn age_label(now: i64, at: i64) -> String {
 mod tests {
     use super::*;
 
-    fn latency() -> WorkerMessage {
-        WorkerMessage::Latency {
-            ping: 12.0,
-            jitter: 1.5,
-            location: Some("Frankfurt".to_owned()),
+    fn project<'a>(phase: Phase, history: &'a [crate::resource::Measurement]) -> Projection<'a> {
+        Projection {
+            phase,
+            result: None,
+            live: 0.0,
+            bytes: 0,
+            ring: 0.0,
+            history,
+            current: None,
+            error: None,
+            server: "Cloudflare".to_owned(),
         }
     }
 
     #[test]
     fn idle_dial_is_empty_with_no_arc() {
-        let model = Model::new();
+        let mut model = Model::new();
+        model.present(project(Phase::Idle, &[]));
         let dial = model.dial();
         assert_eq!(dial.value, "—");
         assert!(dial.frac.abs() < f64::EPSILON, "no stub arc at idle");
-        assert!(!model.is_animating());
+        assert!(!model.is_running());
     }
 
     #[test]
-    fn ping_is_known_as_soon_as_latency_finishes() {
+    fn a_running_projection_keeps_only_measurements_known_so_far() {
         let mut model = Model::new();
-        model.phase = Phase::Ping;
-        model.apply(WorkerMessage::Ping { sample: 13.0 });
+        let mut projection = project(Phase::Ping, &[]);
+        projection.live = 13.0;
+        model.present(projection);
         assert_eq!(model.readings.ping, None, "a sample is not yet the result");
-        model.apply(latency());
-        assert_eq!(model.phase, Phase::Download);
+        assert_eq!(model.dial().value, "13");
+        assert_eq!(model.dial().unit, "ms");
+        let mut projection = project(Phase::Download, &[]);
+        projection.live = 300.0;
+        projection.bytes = 10_000_000;
+        model.present(projection);
+        assert!(model.is_running());
+        assert_eq!(model.stage(), 1);
+        assert_eq!(
+            model.readings.download, None,
+            "running rate is not a final result"
+        );
+        assert_eq!(model.dial().value, "300.0");
+    }
+
+    #[test]
+    fn a_full_run_shows_the_canonical_history_and_measured_transfer_total() {
+        let measurement = crate::resource::Measurement {
+            ping: 12.0,
+            jitter: 1.5,
+            download: 300.0,
+            upload: 40.0,
+            ..Default::default()
+        };
+        let history = [measurement];
+        let mut projection = project(Phase::Complete, &history);
+        projection.current = history.first();
+        projection.result = Some((12.0, 1.5, 300.0, 40.0));
+        projection.bytes = 12_000_000;
+        let mut model = Model::new();
+        model.present(projection);
+        assert_eq!(model.phase, Phase::Complete);
+        assert_eq!(model.stage(), 3);
         assert_eq!(model.readings.ping, Some(12.0));
         assert_eq!(model.readings.jitter, Some(1.5));
-        assert_eq!(model.readings.download, None);
-    }
-
-    #[test]
-    fn a_full_run_lands_in_the_history() {
-        let mut model = Model::new();
-        model.phase = Phase::Ping;
-        model.apply(latency());
-        model.apply(WorkerMessage::DownloadDone {
-            mbps: 300.0,
-            bytes: 10_000_000,
-        });
-        assert_eq!(model.phase, Phase::Upload);
-        assert_eq!(model.stage(), 2);
-        model.apply(WorkerMessage::Done {
-            mbps: 40.0,
-            bytes: 2_000_000,
-        });
-        assert_eq!(model.phase, Phase::Complete);
+        assert_eq!(model.readings.upload, Some(40.0));
         assert_eq!(model.readings.bytes, 12_000_000);
         assert_eq!(model.history.len(), 1);
         assert_eq!(model.latest().map(|r| r.download), Some(300.0));
@@ -583,40 +337,42 @@ mod tests {
 
     #[test]
     fn failure_keeps_the_reason_and_clears_the_dial() {
+        let mut projection = project(Phase::Error, &[]);
+        projection.error = Some("offline".to_owned());
         let mut model = Model::new();
-        model.phase = Phase::Ping;
-        model.apply(WorkerMessage::Failed("offline".to_owned()));
+        model.present(projection);
         assert_eq!(model.phase, Phase::Error);
         assert_eq!(model.error.as_deref(), Some("offline"));
         assert_eq!(model.dial().value, "—");
     }
 
     #[test]
-    fn history_keeps_the_newest_few() {
-        let mut model = Model::new();
-        for index in 0..8 {
-            model.phase = Phase::Ping;
-            model.readings = Readings::default();
-            model.apply(latency());
-            model.apply(WorkerMessage::DownloadDone {
-                mbps: f64::from(index),
-                bytes: 1,
-            });
-            model.apply(WorkerMessage::Done {
-                mbps: 1.0,
-                bytes: 1,
-            });
+    fn history_keeps_the_newest_canonical_limit() {
+        use crate::resource::{KEPT, SpeedTest};
+        use ui::prelude::Replica;
+        let mut replica = Replica::<SpeedTest>::new();
+        for index in 0..(KEPT + 3) {
+            replica
+                .apply(SpeedTest::RECORD.with((
+                    12.0,
+                    1.5,
+                    f64::from(u32::try_from(index).unwrap()),
+                    40.0,
+                    "Cloudflare".to_owned(),
+                    "test-device".to_owned(),
+                )))
+                .expect("the published record action succeeds");
         }
-        assert_eq!(model.history.len(), HISTORY_LEN);
-        assert_eq!(model.history.first().map(|r| r.download), Some(7.0));
-    }
-
-    #[test]
-    fn the_speed_scale_is_monotonic_and_bounded() {
-        assert!(speed_fraction(0.0).abs() < f64::EPSILON);
-        assert!(speed_fraction(10.0) < speed_fraction(100.0));
-        assert!(speed_fraction(100.0) < speed_fraction(900.0));
-        assert!((speed_fraction(50_000.0) - 1.0).abs() < f64::EPSILON);
+        let state = replica.state().expect("canonical measurements");
+        let history: Vec<_> = state.newest_first().cloned().collect();
+        let mut model = Model::new();
+        model.present(project(Phase::Idle, &history));
+        assert_eq!(model.history.len(), KEPT);
+        assert_eq!(
+            model.history.first().map(|r| r.download),
+            Some(f64::from(u32::try_from(KEPT + 2).unwrap()))
+        );
+        assert_eq!(model.history.last().map(|r| r.download), Some(3.0));
     }
 
     #[test]

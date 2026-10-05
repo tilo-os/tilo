@@ -15,7 +15,7 @@
 //! request is the draft this person is composing until they save it.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
@@ -30,7 +30,6 @@ use winit::event::WindowEvent;
 use crate::actions::{self, ApiTesterAction, ApiTesterEffect, RowSection};
 use crate::commands::{AuthField, Cmd, FormMode, FormTarget, RowEdit, Sink, Table};
 use crate::dialog::{self, Fields};
-use crate::doc::ApiDoc;
 use crate::http::{self, Outgoing};
 use crate::kv::{KvChange, KvQueue};
 use crate::model::{
@@ -77,53 +76,6 @@ fn pane(slot: Swap, below_divider: bool) -> Column {
             .with_fill_remaining_height()
             .push(Box::new(slot)),
     ))
-}
-
-/// Something the document keeps by id.
-trait Keyed {
-    fn key(&self) -> uuid::Uuid;
-    /// The records inside it, when it holds any.
-    fn order_within(&mut self, _known: &Self) {}
-}
-
-impl Keyed for Request {
-    fn key(&self) -> uuid::Uuid {
-        self.id
-    }
-}
-
-impl Keyed for Environment {
-    fn key(&self) -> uuid::Uuid {
-        self.id
-    }
-}
-
-impl Keyed for Collection {
-    fn key(&self) -> uuid::Uuid {
-        self.id
-    }
-
-    fn order_within(&mut self, known: &Self) {
-        self.requests = in_known_order(&known.requests, std::mem::take(&mut self.requests));
-    }
-}
-
-/// `fresh` in the order `known` has it, what `known` lacks after. The
-/// document hands records back by id, which is not the order they were made
-/// in, so a rename or a pick would otherwise shuffle the lists on screen.
-fn in_known_order<T: Keyed>(known: &[T], mut fresh: Vec<T>) -> Vec<T> {
-    for item in &mut fresh {
-        if let Some(before) = known.iter().find(|before| before.key() == item.key()) {
-            item.order_within(before);
-        }
-    }
-    fresh.sort_by_key(|item| {
-        known
-            .iter()
-            .position(|before| before.key() == item.key())
-            .unwrap_or(usize::MAX)
-    });
-    fresh
 }
 
 /// What stands where a sheet goes while none is open.
@@ -232,13 +184,10 @@ pub struct ApiTesterApp {
     secrets: Option<SecretStore>,
     credentials: HashMap<uuid::Uuid, String>,
     read_only: bool,
-    seeded: bool,
     adopted: bool,
     /// Mounted on a record another participant created: its content is
     /// theirs to seed, so an empty document is left untouched.
-    joined: bool,
     dirty: bool,
-    persisted_once: bool,
 }
 
 impl ApiTesterApp {
@@ -343,11 +292,8 @@ impl ApiTesterApp {
             secrets: None,
             credentials: HashMap::new(),
             read_only: false,
-            seeded: false,
             adopted: false,
-            joined: false,
             dirty: true,
-            persisted_once: false,
         };
         app.refresh_env_vars();
         app
@@ -802,12 +748,6 @@ impl ApiTesterApp {
     /// the selected environment) from the document after an action mutated them.
     /// Deliberately leaves the request being composed and per-peer view state
     /// untouched — those are not what an action changed.
-
-    /// `id`, when an environment with it still exists: the document keeps the
-    /// id of an environment that has since been deleted.
-    fn existing_environment(&self, id: Option<uuid::Uuid>) -> Option<uuid::Uuid> {
-        id.filter(|id| self.environments.iter().any(|e| e.id == *id))
-    }
 
     /// Where the saved request `id` sits in the collections.
     fn position_of(&self, id: uuid::Uuid) -> Option<(usize, usize)> {

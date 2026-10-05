@@ -1609,8 +1609,8 @@ impl UpdatesModel {
                 let mut entries = Vec::new();
                 for item in history.iter().take(8) {
                     let versions = match (&item.from_version, &item.to_version) {
-                        (Some(from), Some(to)) => format!("{from} → {to} · {}", item.state),
-                        (_, Some(to)) => format!("{to} · {}", item.state),
+                        (Some(from), Some(to)) => format!("{from} → {to}\n{}", item.state),
+                        (_, Some(to)) => format!("{to}\n{}", item.state),
                         _ => item.state.clone(),
                     };
                     entries.push(value_row(&item.device, &versions));

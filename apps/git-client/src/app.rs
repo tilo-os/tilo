@@ -17,7 +17,9 @@ use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
+use automerge::ObjId;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -237,7 +239,7 @@ pub struct GitClientApp {
     opened: Option<String>,
     presented: bool,
     preferences: Option<ui::framework::Setting<Settings>>,
-    armed_discard: Option<DiscardTarget>,
+    control_actions: Option<ui::framework::Actions<crate::resource::GitClient>>,
 
     /// No repository is bound and none was reachable at launch — the app shows
     /// the honest "open a repository" empty state rather than any placeholder
@@ -266,7 +268,6 @@ pub struct GitClientApp {
     /// Fingerprint of the last shared-repo projection written to the document.
     shared_repo_fingerprint: Option<String>,
     /// Set once after the first sync seeds the settings into the doc.
-    settings_seeded: bool,
     /// An initial preference was forced at construction (the split-diff
     /// screenshot scenario), so the first sync keeps it rather than adopting
     /// the document's persisted value. Interactive toggles never set this —
@@ -449,7 +450,7 @@ impl GitClientApp {
             opened: None,
             presented: false,
             preferences: None,
-            armed_discard: None,
+            control_actions: None,
             model,
             diffs,
             graph_layout,
@@ -463,7 +464,6 @@ impl GitClientApp {
             remote_job: None,
             settings: Settings::default(),
             shared_repo_fingerprint: None,
-            settings_seeded: false,
             settings_forced: false,
             screen: Screen::Changes,
             rect: Rect::ZERO,
@@ -606,18 +606,6 @@ impl GitClientApp {
     #[doc(hidden)]
     pub fn test_last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
-    }
-
-    fn load_repo() -> Option<(std::path::PathBuf, RepoModel, DiffMap)> {
-        let path = std::env::var("GIT_CLIENT_REPO").map_or_else(
-            |_| std::env::current_dir().unwrap_or_else(|_| ".".into()),
-            std::path::PathBuf::from,
-        );
-        // Anchor actions on the working directory so later opens are stable
-        // even if the CWD changes; fall back to the given path when bare.
-        let anchor = crate::repo::workdir(&path).unwrap_or_else(|| path.clone());
-        let (model, diffs) = crate::repo::load(&path)?;
-        Some((anchor, model, diffs))
     }
 
     /// Re-read the live repository into the model after a mutation, so the
@@ -931,7 +919,6 @@ impl GitClientApp {
         if self.repository_busy() {
             return;
         }
-        self.armed_discard = None;
         let Some(path) = self.repo() else { return };
         let list = match area {
             ChangeArea::Staged => &self.model.staged,
@@ -1024,12 +1011,6 @@ impl GitClientApp {
         }
     }
 
-    /// Borrow the current external repository projection for the bounded
-    /// resource catalogue. Presentation-only state is intentionally excluded.
-    pub(crate) fn resource_model(&self) -> Option<&RepoModel> {
-        (!self.awaiting_repo).then_some(&self.model)
-    }
-
     /// The last preference [`EncodedAction`](tilo_actions::EncodedAction) an
     /// on-screen control dispatched, for the affordance == `ActionSpec`
     /// covenant test.
@@ -1043,11 +1024,6 @@ impl GitClientApp {
 
     pub(crate) fn is_hosted(&self) -> bool {
         self.dispatcher.is_some()
-    }
-
-    /// Label for an in-flight fetch/pull/push, when one is running.
-    pub(crate) fn remote_job_label(&self) -> Option<String> {
-        self.remote_job.as_ref().map(|job| job.label.clone())
     }
 
     /// Write the shared repository projection when branches/commits/remotes move.
@@ -1893,11 +1869,32 @@ impl GitClientApp {
 
     /// Do what `hit` names: the one path pointer presses, keys and
     /// assistive actions share.
-    fn activate(&mut self, hit: Hit, doc: &mut ui::widget::Edits<'_>) {
+    fn activate(&mut self, hit: Hit, _doc: &mut ui::widget::Edits<'_>) {
+        if let (Some(dispatcher), Some((row, effect))) =
+            (&self.dispatcher, self.effect_for_hit(&hit))
+        {
+            if matches!(hit, Hit::DiffLayout(layout) if layout == self.preferences.as_ref().map_or(self.settings.diff_layout, |preferences| preferences.get().diff_layout))
+            {
+                return;
+            }
+            if let Some(row) = row {
+                dispatcher.effect_on(&row, &effect);
+            } else {
+                dispatcher.effect(&effect);
+            }
+            return;
+        }
         let in_drawer = self.drawer_is_modal();
         match hit {
             Hit::SidebarToggle => self.drawer.toggle(),
-            Hit::Scrim => self.drawer.close(),
+            Hit::Scrim => {
+                if !self
+                    .pointer
+                    .is_some_and(|point| self.drawer.sidebar_rect().contains(point))
+                {
+                    self.drawer.close();
+                }
+            }
             Hit::Screen(screen) => self.switch_screen(screen),
             Hit::DiffLayout(layout) => {
                 if self.settings.diff_layout != layout {
@@ -3196,9 +3193,72 @@ impl ui::widget::WindowHeader for GitClientApp {
     }
 }
 
+impl GitClientApp {
+    pub(crate) fn attach_control_actions(
+        &mut self,
+        actions: ui::framework::Actions<crate::resource::GitClient>,
+    ) {
+        self.control_actions = Some(actions);
+    }
+
+    fn effect_for_hit(&self, hit: &Hit) -> Option<(Option<String>, GitClientEffect)> {
+        let effect = match hit {
+            Hit::Screen(Screen::Changes) => GitClientEffect::ShowChanges,
+            Hit::Screen(Screen::History) => GitClientEffect::ShowHistory,
+            Hit::Screen(Screen::Panels) => GitClientEffect::ShowBranches,
+            Hit::DiffLayout(_) => GitClientEffect::DiffLayout,
+            Hit::SyntaxHighlight => GitClientEffect::SyntaxHighlight,
+            Hit::Diff(DiffHit::StageFile | DiffHit::DiscardFile) => {
+                let (area, _) = self.selected_change?;
+                let path = self.current_path()?;
+                let row = crate::actions::change_resource_id(area, &path);
+                let effect = match hit {
+                    Hit::Diff(DiffHit::DiscardFile) => GitClientEffect::DiscardFile { path },
+                    _ if area == ChangeArea::Staged => GitClientEffect::UnstageFile { path },
+                    _ => GitClientEffect::StageFile { path },
+                };
+                return Some((Some(row), effect));
+            }
+            Hit::Change(ChangesHit::StageAll(_)) => GitClientEffect::StageAll,
+            Hit::Change(ChangesHit::UnstageAll(_)) => GitClientEffect::UnstageAll,
+            Hit::Change(ChangesHit::Commit) => GitClientEffect::Commit {
+                message: self.commit_input.value().to_owned(),
+            },
+            _ => return None,
+        };
+        Some((None, effect))
+    }
+
+    fn binding_for_hit(&self, hit: &Hit) -> Option<ui::tilo_actions::ActionBinding<()>> {
+        use ui::tilo_resource::Effect as _;
+        let (row, effect) = self.effect_for_hit(hit)?;
+        if let Some(row) = row {
+            let published = self.working_tree_row(&row)?.into_resource();
+            ui::tilo_actions::ActionBinding::unit_for(&published, effect.id()).ok()
+        } else {
+            self.control_actions.as_ref()?.effect(&effect)
+        }
+    }
+}
+
 impl ui::widget::controls::ActionControls for GitClientApp {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         self.history.take()
+    }
+
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.semantic_entries()
+            .into_iter()
+            .map(
+                |(id, _, _, hit)| match hit.as_ref().and_then(|hit| self.binding_for_hit(hit)) {
+                    Some(binding) => ui::widget::ControlBindingMetadata {
+                        control_id: id,
+                        kind: ui::widget::ControlBindingKind::Action(binding.address().clone()),
+                    },
+                    None => ui::widget::ControlBindingMetadata::semantic(id),
+                },
+            )
+            .collect()
     }
 }
 
@@ -3219,12 +3279,12 @@ mod tests {
         app
     }
 
-    fn target(self) -> &'static str {
-        match self {
-            Screen::Changes => "git.screen.changes",
-            Screen::History => "git.screen.history",
-            Screen::Panels => "git.screen.branches",
-        }
+    fn target(app: &GitClientApp, hit: &Hit) -> Option<Rect> {
+        app.targets
+            .iter()
+            .rev()
+            .find(|target| target.hit == *hit)
+            .map(|target| target.rect)
     }
 
     fn press(app: &mut GitClientApp, pos: Point, doc: &mut AutoCommit) {
@@ -3359,7 +3419,10 @@ mod tests {
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.drawer.resolve(app.rect);
         assert!(app.drawer.is_docked());
-        assert!(app.drawer.is_open());
+        assert!(
+            !app.drawer.is_open(),
+            "resizing preserves the person's docked choice"
+        );
     }
 
     /// Semantic parity: semantic open-repository and text edits reach their
@@ -3481,7 +3544,8 @@ mod tests {
         assert_eq!(targets.len(), node.children.len());
         assert!(targets.contains("git.screen.changes"));
         assert!(targets.contains("git.screen.history"));
-        assert!(targets.contains("git.diff-layout"));
+        assert!(targets.contains("git.diff-layout.unified"));
+        assert!(targets.contains("git.diff-layout.split"));
         assert!(targets.contains("git.syntax-highlight"));
         assert!(targets.contains("git.commit-message"));
         for (index, child) in node.children.iter().enumerate() {
@@ -3496,7 +3560,7 @@ mod tests {
         let before = app.settings.diff_layout;
         assert!(Widget::perform_semantic_action(
             &mut app,
-            "git.diff-layout",
+            "git.diff-layout.split",
             &ui::a11y::Action::Activate,
             &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
@@ -3530,10 +3594,6 @@ mod tests {
         );
     }
 
-    fn intersects(a: Rect, b: Rect) -> bool {
-        a.area() > 0.0 && b.area() > 0.0 && a.intersect(b).area() > 0.0
-    }
-
     fn appbar_controls_stay_inside_the_window_and_never_overlap() {
         appbar_controls_stay_visible_and_separate_at_narrow_widths();
     }
@@ -3557,9 +3617,18 @@ mod tests {
         for width in [320.0, 480.0, 1280.0] {
             let app = app_at(width, Screen::Changes);
             let header = GitClientApp::header_height(&Theme::dark());
-            for b in &app.diff_hunk_buttons {
+            let document_actions = app
+                .targets
+                .iter()
+                .filter(|target| matches!(target.hit, Hit::Diff(_)))
+                .collect::<Vec<_>>();
+            assert!(
+                !document_actions.is_empty(),
+                "the selected sample file publishes diff actions"
+            );
+            for target in document_actions {
                 assert!(
-                    b.rect.y0 >= header,
+                    target.rect.y0 >= header,
                     "document action stays below its header"
                 );
             }
@@ -3904,12 +3973,6 @@ impl GitClientApp {
                     .map(|index| (ChangeArea::Untracked, index))
             })
     }
-}
-
-#[derive(Clone)]
-enum DiscardTarget {
-    /// Revert a single hunk of the file's worktree changes.
-    Hunk(usize),
 }
 
 impl GitClientApp {

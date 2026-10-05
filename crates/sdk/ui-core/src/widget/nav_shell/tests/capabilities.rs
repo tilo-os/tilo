@@ -372,6 +372,41 @@ fn an_open_drawer_keeps_the_window_under_its_scrim() {
 }
 
 #[test]
+fn enlarged_drawers_leave_a_pointer_target_on_the_dismissible_scrim() {
+    for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
+        let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
+        for inspector in [false, true] {
+            let shell = NavShell::new()
+                .sidebar(Probe::boxed("sidebar").0)
+                .content(Probe::boxed("content").0)
+                .inspector(Probe::boxed("inspector").0);
+            let mut h = harness(shell, 480, 800, theme.clone());
+            if inspector {
+                h.root_mut::<NavShell>().open_inspector();
+            } else {
+                h.root_mut::<NavShell>().open_sidebar();
+            }
+            settle(&mut h, 480, 800);
+            let g = geometry(&h);
+            let x = if inspector {
+                assert!(g.inspector_column.x0 >= band - 0.5);
+                g.inspector_column.x0 / 2.0
+            } else {
+                assert!(480.0 - g.sidebar_column.x1 >= band - 0.5);
+                (480.0 + g.sidebar_column.x1) / 2.0
+            };
+            h.click_at(x, g.scrim.center().y);
+            settle(&mut h, 480, 800);
+            assert_eq!(
+                geometry(&h).scrim,
+                Rect::ZERO,
+                "scrim press closes the drawer"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_bound_state_opens_a_drawer_and_hears_the_persons_choice() {
     let open = LocalState::new(true);
     let shell = mail_shell().with_sidebar_state(&open);

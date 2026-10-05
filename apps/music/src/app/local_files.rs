@@ -360,7 +360,11 @@ mod tests {
             let _host = ui::host::enter(&services);
             recorder.respond_to_pick(ui::portal::PortalOutcome::Cancelled);
             let mut app = ui::framework::testing::TestApp::<crate::MusicShell>::new().unwrap();
-            let on_home = app.harness().focus_order().len();
+            let home_focus = app.harness().focus_order();
+            assert!(
+                app.harness().targets().contains_key("music-open-file"),
+                "Home exposes its file picker"
+            );
             app.call_on(
                 &crate::actions::view_resource_id("songs"),
                 "open",
@@ -368,10 +372,18 @@ mod tests {
             )
             .unwrap();
             app.settle();
+            assert!(
+                !app.harness().targets().contains_key("music-open-file"),
+                "leaving Home removes the picker"
+            );
             assert_eq!(
-                app.harness().focus_order().len() + 1,
-                on_home,
-                "the picker leaves the focus order with Home"
+                app.harness().focus_order().len(),
+                home_focus.len(),
+                "the shared page Back control replaces the Home picker in focus order"
+            );
+            assert!(
+                app.harness().a11y_node_named("Back").is_some(),
+                "the page offers Back"
             );
             app.call_on(
                 &crate::actions::view_resource_id("home"),
@@ -380,7 +392,13 @@ mod tests {
             )
             .unwrap();
             app.settle();
-            assert_eq!(app.harness().focus_order().len(), on_home);
+            assert_eq!(
+                app.harness().focus_order().len(),
+                home_focus.len() + 1,
+                "returning Home restores the picker and keeps Back to the prior page"
+            );
+            assert!(app.harness().a11y_node_named("Back").is_some());
+            assert!(app.harness().targets().contains_key("music-open-file"));
             #[cfg(feature = "audio")]
             {
                 app.call("open-file", serde_json::json!({})).unwrap();

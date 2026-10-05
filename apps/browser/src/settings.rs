@@ -26,7 +26,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
+    Button, Card, Column, Container, Row, ScrollAxis, Scrollable, Section, Spacer, Text, TextInput,
     Toggle, Widget,
 };
 
@@ -217,7 +217,6 @@ impl SettingsPane {
     /// gap — a plain `.push().push()` renders the rows touching.
     fn build_composition(&self, theme: &Theme) -> Box<dyn Widget> {
         let large_text = theme.text_scale >= 1.5;
-        let action_height = if large_text { 56.0 } else { 36.0 };
         let header = Row::new()
             .push(Box::new(
                 Text::new("Settings")
@@ -252,7 +251,7 @@ impl SettingsPane {
             ]),
         );
 
-        let browsing_controls = browsing_data_controls(&self.actions, large_text, action_height);
+        let browsing_controls = browsing_data_controls(&self.actions, large_text);
         let mut privacy_rows = vec![
             setting_row_described(
                 "Block ads & trackers",
@@ -291,14 +290,13 @@ impl SettingsPane {
         let privacy = card("Privacy & Security", rows(privacy_rows));
 
         let mut body = Column::new()
+            .with_rhythm(ui::tokens::Rhythm::Group)
             .with_intrinsic_height()
             .push(Box::new(header))
-            .push(vgap(20.0))
             .push(general)
-            .push(vgap(CARD_GAP))
             .push(privacy);
         if let Some(request) = self.private_window_request.clone() {
-            body = body.push(vgap(CARD_GAP)).push(card(
+            body = body.push(card(
                 "Windows",
                 rows(vec![setting_row_described(
                     "Private browsing",
@@ -338,41 +336,9 @@ impl Default for SettingsPane {
 // field — so the pane reads consistently. Repeated vertical rhythm comes from
 // the shared `Section`, matching the system Settings app.
 
-/// Gap between stacked cards.
-const CARD_GAP: f32 = 16.0;
-/// Gap between a card's title and its body.
-const CARD_TITLE_GAP: f32 = 12.0;
-/// Gap between rows inside one card.
-const ROW_GAP: f32 = 12.0;
-
-/// The dim foreground colour, read from the OS dark theme (the builders
-/// run before `draw`, where the live `Theme` would otherwise supply it).
-/// A fixed-height empty box, to inject deliberate vertical space.
-fn vgap(px: f32) -> El {
-    Box::new(Container::new().with_no_padding().with_height(px))
-}
-
-/// A titled card: a heading above a bordered, padded surface holding the
-/// body. Keeping the title inside the background `Container` makes it draw
-/// reliably (a bare `Text` in a column can be dropped by the cached draw).
+/// A named section uses the shared card's heading, inset and surface.
 fn card(title: &str, body: El) -> El {
-    let inner = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(
-            Row::new().push(Box::new(
-                Text::new(title)
-                    .with_role(ui::TextRole::Heading)
-                    .with_heading_level(2),
-            )),
-        ))
-        .push(vgap(CARD_TITLE_GAP))
-        .push(body);
-    Box::new(
-        Container::new()
-            .with_background()
-            .with_child(Box::new(inner)),
-    )
+    Box::new(Card::new(body).with_title(title))
 }
 
 /// A vertical stack of rows with explicit inter-row spacing.
@@ -384,10 +350,10 @@ fn rows(items: Vec<El>) -> El {
 /// control. The `Spacer` pushes the control to the trailing edge.
 fn setting_row_described(label: &str, description: &str, control: El, large_text: bool) -> El {
     let text_block = Column::new()
+        .with_rhythm(ui::tokens::Rhythm::Tight)
         .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
-        .push(vgap(2.0))
         .push(Box::new(
             Text::new(description)
                 .with_role(ui::TextRole::Caption)
@@ -396,10 +362,10 @@ fn setting_row_described(label: &str, description: &str, control: El, large_text
     if large_text {
         Box::new(
             Column::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(text_block))
-                .push(vgap(10.0))
                 .push(control),
         )
     } else {
@@ -412,11 +378,7 @@ fn setting_row_described(label: &str, description: &str, control: El, large_text
     }
 }
 
-fn browsing_data_controls(
-    actions: &SettingsActionBindings,
-    large_text: bool,
-    action_height: f32,
-) -> El {
+fn browsing_data_controls(actions: &SettingsActionBindings, large_text: bool) -> El {
     let clear_history = Box::new(button_with_action(
         Button::new("settings.clear_history", "Clear history")
             .control_size(ui::widget::ControlSize::Large),
@@ -430,10 +392,10 @@ fn browsing_data_controls(
     if large_text {
         Box::new(
             Column::new()
+                .with_rhythm(ui::tokens::Rhythm::Related)
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(clear_history)
-                .push(vgap(8.0))
                 .push(clear_site_data),
         )
     } else {
@@ -463,7 +425,6 @@ fn field_block(
             .with_no_padding()
             .with_intrinsic_height()
             .push(Box::new(Text::new(label).with_role(ui::TextRole::Body)))
-            .push(vgap(6.0))
             .push(Box::new(input)),
     )
 }
@@ -780,7 +741,7 @@ mod tests {
 }
 
 impl SettingsPane {
-    pub fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
+    pub(crate) fn with_notices(mut self, notices: Vec<crate::notice::Notice>) -> Self {
         self.notices = notices;
         self
     }

@@ -238,16 +238,12 @@ fn note_context_menus_open_everywhere_and_keep_selection_and_drawer() {
         let second = add_note(&mut app, "Second", "");
         open(&mut app, second);
         let toggle = surface(&mut app, |notes| notes.menu_btn_center_for_test());
-        dispatch(
-            &mut app,
-            Modifiers::default(),
-            &cursor_moved(toggle.x, toggle.y),
+        app.harness().click_at(toggle.x, toggle.y);
+        assert!(
+            app.harness().control_failures().is_empty(),
+            "{:?}",
+            app.harness().control_failures()
         );
-        let mut left = mouse_press_right();
-        if let WindowEvent::MouseInput { button, .. } = &mut left {
-            *button = MouseButton::Left;
-        }
-        dispatch(&mut app, Modifiers::default(), &left);
         assert!(surface(&mut app, |notes| notes.drawer_open_for_test()));
         app.harness().relayout_at((480, 800)).unwrap();
         let row = surface(&mut app, |notes| notes.sidebar_row_center_for_test(0)).unwrap();

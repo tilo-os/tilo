@@ -326,7 +326,7 @@ fn radio_shown(radio: Radio) -> String {
 
 fn profile_label(profile: &SavedNetworkProfile) -> String {
     let short_uuid: String = profile.uuid.chars().take(8).collect();
-    format!("{} · {}", profile.name, short_uuid)
+    format!("{} ({})", profile.name, short_uuid)
 }
 
 /// A comma-separated list, trimmed, at most 17 entries.

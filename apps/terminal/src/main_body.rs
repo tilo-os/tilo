@@ -1070,6 +1070,21 @@ impl TerminalWidget {
             .collect()
     }
 
+    fn target_picker_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::Button)
+                .with_name(self.chip_label()?)
+                .with_action_target(format!("terminal.target:{}", self.pane_id))
+                .with_bounds(self.chip_rect)
+                .with_state(AccessState {
+                    focusable: true,
+                    expanded: Some(self.target_menu_rows.is_some()),
+                    ..Default::default()
+                }),
+        )
+    }
+
     fn context_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -2049,7 +2064,7 @@ impl TerminalWidget {
 
 impl TerminalWidget {
     /// Open the session, drain the PTY and mirror the document's screen.
-    fn sync_document(&mut self, state: &AppModel, root: &ModelPath) {
+    fn sync_document(&mut self, _state: &AppModel, _root: &ModelPath) {
         if self.sessions.is_live() {
             self.ensure_session();
         }
@@ -2669,6 +2684,9 @@ impl Widget for TerminalWidget {
                 context_menu: true,
                 ..Default::default()
             });
+        if let Some(picker) = self.target_picker_accessibility() {
+            transcript.children.push(picker);
+        }
         transcript
             .children
             .extend(self.visible_link_accessibility());
@@ -2721,6 +2739,16 @@ impl Widget for TerminalWidget {
         if target == self.terminal_transcript_target() {
             return self.perform_action(action, state, path);
         }
+        if target == format!("terminal.target:{}", self.pane_id)
+            && matches!(
+                action,
+                ui::a11y::Action::Activate | ui::a11y::Action::Expand
+            )
+        {
+            self.open_target_menu();
+            return true;
+        }
+
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
@@ -2744,7 +2772,10 @@ impl Widget for TerminalWidget {
         };
         self.context_menu.click_item(index);
         if let Some(index) = self.context_menu.take_selection() {
-            self.activate_context_menu_item(index);
+            if !self.activate_target_menu_item(index) {
+                self.activate_context_menu_item(index);
+            }
+            self.forget_closed_target_menu();
             true
         } else {
             false

@@ -774,6 +774,8 @@ impl TypstApp {
     fn set_compact_view(&mut self, view: CompactPane) {
         self.compact_view = view;
         self.editor.focused = matches!(view, CompactPane::Editor);
+        self.layout_in(self.rect);
+        self.dirty = true;
     }
 
     /// Announce something worth noticing once: the transient bubble shows it
@@ -994,13 +996,6 @@ impl TypstApp {
     }
 }
 
-/// A file's name as the person knows it, for a transient announcement.
-fn file_label(path: &std::path::Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map_or_else(|| path.display().to_string(), str::to_owned)
-}
-
 impl Default for TypstApp {
     fn default() -> Self {
         Self::new()
@@ -1021,6 +1016,16 @@ impl Widget for TypstApp {
         dyn ui::widget::controls::ActionControls,
         dyn ui::widget::WindowHeader
     );
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        for child in self.chrome.children_mut() {
+            child.settle(edits, path);
+        }
+        for command in self.chrome.take() {
+            self.run_command(command, edits.doc());
+            self.dirty = true;
+        }
+    }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
         let (doc, _) = ui::doc::document_ref(doc, path);
@@ -1802,6 +1807,20 @@ mod tests {
 
     /// A workspace of the bundled examples, presented to an editor showing
     /// the first, synced once so it compiled.
+    fn live_fixture(
+        viewport: (u32, u32),
+    ) -> ui::framework::testing::TestApp<crate::resource::TypstEditorShell> {
+        use ui::framework::ResourceApp;
+        let mut app =
+            ui::framework::testing::TestApp::<crate::resource::TypstEditorShell>::new().unwrap();
+        for invoke in crate::resource::TypstEditorShell::scenario(None) {
+            app.invoke(invoke).unwrap();
+        }
+        app.harness().resize(viewport).unwrap();
+        app.settle();
+        app
+    }
+
     fn fresh() -> (TypstApp, AutoCommit) {
         workspace(None)
     }
@@ -1885,7 +1904,9 @@ mod tests {
     /// Pump one event through the production `Widget::handle_event`, returning
     /// whether it was consumed.
     fn send(app: &mut TypstApp, doc: &mut AutoCommit, ev: &WindowEvent) -> bool {
-        let taffy = TaffyTree::<()>::new();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = HashMap::new();
+        let node = app.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
@@ -1897,7 +1918,7 @@ mod tests {
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
-                node_id: NodeId::new(0),
+                node_id: node,
                 taffy: &taffy,
             },
         );
@@ -1912,10 +1933,6 @@ mod tests {
         let mut scene = Scene::new();
         let presence = PresenceCtx::empty();
         app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    }
-
-    fn center(r: Rect) -> Point {
-        Point::new(f64::midpoint(r.x0, r.x1), f64::midpoint(r.y0, r.y1))
     }
 
     #[test]
@@ -2039,7 +2056,7 @@ mod tests {
             assert!(!app.status_left_label().is_empty());
             assert!(!app.status_right_label().is_empty());
             let now = ui::time::now();
-            app.status = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
+            app.status = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(5));
             app.status.show("Compiled", now);
             assert!(app.status.is_visible(now));
             let past = now
@@ -2095,7 +2112,9 @@ mod tests {
         ev: &WindowEvent,
         mods: Modifiers,
     ) -> bool {
-        let taffy = TaffyTree::<()>::new();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = HashMap::new();
+        let node = app.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
         let mut handled = false;
         let mut focus = None;
         app.handle_event(
@@ -2107,7 +2126,7 @@ mod tests {
                 path: &ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
-                node_id: NodeId::new(0),
+                node_id: node,
                 taffy: &taffy,
             },
         );
@@ -2191,6 +2210,7 @@ mod tests {
             app.sync(&doc, &ROOT);
             app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
 
+            render_once(&mut app);
             let diags = app.diagnostics.diags().to_vec();
             assert!(
                 diags.iter().any(|d| d.kind == DiagKind::Error),
@@ -2209,12 +2229,9 @@ mod tests {
                 "rows target distinct lines"
             );
 
-            // HEADER_H (30) + ROW_H (26) mirror the diagnostics panel geometry.
-            let list_top = app.diag_rect.y0 + 30.0;
             for (i, d) in diags.iter().enumerate() {
                 let Some(line) = d.line else { continue };
-                let y = list_top + (i as f64 + 0.5) * 26.0;
-                let p = Point::new(app.diag_rect.x0 + 40.0, y);
+                let p = app.diagnostics.row_rect(i).center();
                 send(&mut app, &mut doc, &cursor(p));
                 assert!(
                     send(&mut app, &mut doc, &press()),
@@ -2294,43 +2311,55 @@ mod tests {
             );
             assert!(tree.children.iter().all(|node| node.semantic_key.is_some()));
         }
-        // Case `native_toolbar_controls_are_exposed_without_focus_activation`.
+        // The retained toolbar's actual published controls keep file/compile
+        // actions accessible; focusing a pane selector never invokes it.
         {
-            let (mut app, mut doc) = fresh();
-            let tree = app.accessibility().expect("Typst semantics");
-            for target in [
-                "typst.open",
-                "typst.save",
-                "typst.export-pdf",
-                "typst.compile",
-                "typst.show-preview",
-            ] {
+            let mut app = live_fixture((560, 720));
+            let id = app
+                .harness()
+                .a11y_node_named("Preview")
+                .expect("shared preview selector");
+            app.harness()
+                .perform_a11y_action(id, &ui::a11y::Action::Focus)
+                .unwrap();
+            app.settle();
+            assert!(
+                app.with_widget(|surface: &mut TypstApp| matches!(
+                    surface.compact_view,
+                    CompactPane::Editor
+                ))
+                .unwrap(),
+                "focus does not activate"
+            );
+            let id = app
+                .harness()
+                .a11y_node_named("Preview")
+                .expect("shared preview selector");
+            app.harness()
+                .perform_a11y_action(id, &ui::a11y::Action::Activate)
+                .unwrap();
+            app.settle();
+            assert!(
+                app.with_widget(|surface: &mut TypstApp| matches!(
+                    surface.compact_view,
+                    CompactPane::Preview
+                ))
+                .unwrap()
+            );
+            app.harness().resize((390, 720)).unwrap();
+            let more = app
+                .harness()
+                .a11y_node_named("More commands")
+                .expect("shared toolbar overflow");
+            app.harness()
+                .perform_a11y_action(more, &ui::a11y::Action::Activate)
+                .unwrap();
+            for command in ["Open", "Save", "Export PDF", "Compile"] {
                 assert!(
-                    tree.children
-                        .iter()
-                        .any(|node| node.action_target.as_deref() == Some(target)),
-                    "missing control {target}"
+                    app.harness().a11y_node_named(command).is_some(),
+                    "published command {command}"
                 );
             }
-            app.compact = true;
-            assert!(matches!(app.compact_view, CompactPane::Editor));
-            assert!(app.perform_semantic_action(
-                "typst.show-preview",
-                &ui::a11y::Action::Focus,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT
-            ));
-            assert!(
-                matches!(app.compact_view, CompactPane::Editor),
-                "focusing a control must not activate it"
-            );
-            assert!(app.perform_semantic_action(
-                "typst.show-preview",
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
-                &ROOT
-            ));
-            assert!(matches!(app.compact_view, CompactPane::Preview));
         }
     }
     fn control_rects(app: &TypstApp) -> Vec<(String, Rect)> {
@@ -2436,15 +2465,11 @@ mod tests {
 
     #[test]
     fn compact_view_switch_and_overflow_menu_act_and_stay_reachable() {
-        let mut app =
-            ui::framework::testing::TestApp::<crate::resource::TypstEditorShell>::capture_at(
-                None,
-                (560, 720),
-            )
-            .unwrap();
+        let mut app = live_fixture((560, 720));
         let switch = app.harness().targets()["typst.view"];
         app.harness()
             .click_at(switch.x1 - switch.width() / 4.0, switch.center().y);
+        app.settle();
         assert!(
             app.with_widget(|surface: &mut TypstApp| matches!(
                 surface.compact_view,
@@ -2455,6 +2480,7 @@ mod tests {
         );
         app.harness()
             .click_at(switch.x0 + switch.width() / 4.0, switch.center().y);
+        app.settle();
         assert!(
             app.with_widget(|surface: &mut TypstApp| matches!(
                 surface.compact_view,

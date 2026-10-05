@@ -182,8 +182,8 @@ pub(crate) fn reader_settings_panel(settings: ReadSettings, requests: &Requests)
     let scale = ScaleField {
         input: NumberInput::new(settings.percent())
             .with_range(
-                f64::from(ReadSettings::FONT_MIN) * 100.0,
-                f64::from(ReadSettings::FONT_MAX) * 100.0,
+                f64::from(*ReadSettings::TEXT_PERCENT_RANGE.start()),
+                f64::from(*ReadSettings::TEXT_PERCENT_RANGE.end()),
             )
             .with_step(10.0)
             .with_suffix("%")

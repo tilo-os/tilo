@@ -200,14 +200,6 @@ impl SignInFlow {
         matches!(self.stage, Stage::Code { .. } | Stage::PastedCode { .. })
     }
 
-    /// Fill the name and server fields, as a capture of a form being
-    /// completed shows them.
-    #[cfg(not(feature = "thin"))]
-    pub(crate) fn prefill(&self, name: &str, server: &str) {
-        self.name.set(name.into());
-        self.server.set(server.into());
-    }
-
     #[doc(hidden)]
     pub fn set_fields_for_test(&self, name: &str, server: &str, apple_id: &str, password: &str) {
         self.name.set(name.into());

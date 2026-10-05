@@ -267,7 +267,7 @@ impl ReadFont {
 #[serde(default)]
 pub struct ReadSettings {
     /// How much larger than its text role the article is set (1.0 is the
-    /// role's own size), clamped to [`Self::FONT_MIN`, `Self::FONT_MAX`].
+    /// role's own size), clamped to the reader’s percentage range.
     pub font_scale: f32,
     pub font: ReadFont,
     pub theme: ReadTheme,
@@ -288,13 +288,16 @@ impl ui::storage::SettingsSchema for ReadSettings {
 }
 
 impl ReadSettings {
-    pub const FONT_MIN: f32 = 0.8;
-    pub const FONT_MAX: f32 = 1.8;
-    /// One step of the reader's text size controls.
-    pub const FONT_STEP: f32 = 0.1;
-    /// Base body size in logical px before the scale multiplier.
-    pub const BASE_SIZE: f32 = 16.0;
+    /// Accessible reader control bounds, expressed in whole percentages.
+    pub const TEXT_PERCENT_RANGE: std::ops::RangeInclusive<u16> = 80..=180;
+    /// One increment of the percentage control, also used by its actions.
+    pub const TEXT_PERCENT_STEP: u16 = 10;
 
+    pub fn adjust_text_percent(&mut self, direction: i16) {
+        let next = self.percent() + f64::from(direction) * f64::from(Self::TEXT_PERCENT_STEP);
+        self.font_scale = (next / 100.0) as f32;
+        *self = self.clone().clamped();
+    }
     /// The reading scale as a whole percentage (`110` for 1.1).
     pub fn percent(&self) -> f64 {
         (f64::from(self.font_scale) * 100.0).round()
@@ -302,7 +305,10 @@ impl ReadSettings {
 
     #[must_use]
     pub fn clamped(mut self) -> Self {
-        self.font_scale = self.font_scale.clamp(Self::FONT_MIN, Self::FONT_MAX);
+        self.font_scale = self.font_scale.clamp(
+            f32::from(*Self::TEXT_PERCENT_RANGE.start()) / 100.0,
+            f32::from(*Self::TEXT_PERCENT_RANGE.end()) / 100.0,
+        );
         self
     }
 }
@@ -773,13 +779,19 @@ mod tests {
                 ..Default::default()
             }
             .clamped();
-            assert_eq!(s.font_scale, ReadSettings::FONT_MAX);
+            assert_eq!(
+                s.font_scale,
+                f32::from(*ReadSettings::TEXT_PERCENT_RANGE.end()) / 100.0
+            );
             let s = ReadSettings {
                 font_scale: 0.1,
                 ..Default::default()
             }
             .clamped();
-            assert_eq!(s.font_scale, ReadSettings::FONT_MIN);
+            assert_eq!(
+                s.font_scale,
+                f32::from(*ReadSettings::TEXT_PERCENT_RANGE.start()) / 100.0
+            );
             let s = ReadSettings {
                 font_scale: 1.1,
                 ..Default::default()

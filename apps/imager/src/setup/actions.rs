@@ -802,7 +802,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "{}, {} by default, {}{}",
+            "{}, {} by default, {}{}. With help {} and imports {}.",
             experience_phrase(state.selection.experience),
             mode_phrase(state.selection.common_mode).to_lowercase(),
             folders_phrase(state.selection.folder_count),
@@ -810,6 +810,16 @@ pub fn row(state: &SetupProjection) -> LiveRow {
                 String::new()
             } else {
                 format!(", {} to bring over", state.selection.active_folder_count)
+            },
+            if state.selection.help_open {
+                "open"
+            } else {
+                "closed"
+            },
+            if state.selection.imports_open {
+                "open"
+            } else {
+                "closed"
             },
         )),
         badge: Some("Selection".into()),
@@ -837,7 +847,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "ready {} · current page {}",
+            "Review ready: {}. Current page: {}.",
             yes_no(state.review.ready),
             state.page
         )),
@@ -851,7 +861,7 @@ pub fn row(state: &SetupProjection) -> LiveRow {
     )
     .presentation(ResourcePresentation {
         detail: Some(format!(
-            "Desktop {} · Full OS {} · Connected {} · Next {} · Back {} · Folder policies {} · Folder edits {} · Help {} · Imports {}",
+            "Available experiences: desktop {0}, full OS {1}. Connected: {2}. Navigation: next {3}, back {4}. Folder permissions: policies {5}, edits {6}. Help: {7}. Imports: {8}.",
             yes_no(state.availability.desktop),
             yes_no(state.availability.full_os),
             yes_no(state.availability.connected),
@@ -920,27 +930,6 @@ fn folders_phrase(count: usize) -> String {
         0 => "no folders".into(),
         1 => "1 folder".into(),
         count => format!("{count} folders"),
-    }
-}
-
-/// What setup can do right now, as one phrase.
-fn available_phrase(availability: &AvailabilityProjection) -> String {
-    let offered = [
-        (availability.desktop, "Tilo Desktop"),
-        (availability.full_os, "Full Tilo"),
-        (availability.connected, "connected folders"),
-        (availability.folder_policies, "folder choices"),
-        (availability.open_imports, "folder imports"),
-        (availability.next, "continuing"),
-        (availability.back, "going back"),
-    ]
-    .into_iter()
-    .filter_map(|(on, what)| on.then_some(what))
-    .collect::<Vec<_>>();
-    if offered.is_empty() {
-        "Nothing is available right now".into()
-    } else {
-        format!("Available now: {}", offered.join(", "))
     }
 }
 

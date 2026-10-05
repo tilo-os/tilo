@@ -293,6 +293,7 @@ struct Metrics {
     overview: f64,
     inspector: f64,
     drawer: f64,
+    drawer_dismiss_band: f64,
     content_min: f64,
     detail_min: f64,
     filter: f64,
@@ -319,6 +320,7 @@ impl Metrics {
             overview: f64::from(m.overview_width) * growth,
             inspector: f64::from(m.inspector_width) * growth,
             drawer: f64::from(m.drawer_width) * growth,
+            drawer_dismiss_band: f64::from(m.min_pointer_target + s.s4),
             content_min: f64::from(m.content_min_width) * growth,
             detail_min: f64::from(m.detail_min_width) * growth,
             filter: crate::widget::text_control_height(
@@ -832,7 +834,9 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         SidebarPlacement::Drawer => {
             if sidebar_reveal > 0.001 {
-                let dw = m.drawer.min((w - 2.0 * m.gap).max(0.0));
+                // Keep a pointer-sized strip of the scrim exposed so the
+                // drawer can be dismissed even when enlarged text fills it.
+                let dw = m.drawer.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
                 let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
                 g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
                 (sidebar_header, sidebar_body) =
@@ -888,7 +892,7 @@ fn plan(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         }
         InspectorPlacement::Drawer => {
             if inspector_reveal > 0.001 {
-                let dw = iw.min((w - 2.0 * m.gap).max(0.0));
+                let dw = iw.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
                 let x1 = w - m.gap + (dw + m.gap) * (1.0 - inspector_reveal);
                 g.inspector_column = Rect::new(x1 - dw, drawer_top, x1, drawer_bottom);
                 (inspector_header, inspector_body) = drawer_split(

@@ -5135,6 +5135,7 @@ mod tests {
         }
 
         let (mut app, mut doc) = app();
+        let configured_email = app.shared.borrow().accounts.active_config().email;
         let (outgoing, outgoing_rx) = std::sync::mpsc::channel();
         let (incoming, incoming_rx) = std::sync::mpsc::channel();
         app.engine = Some(EngineHandle {
@@ -5150,7 +5151,7 @@ mod tests {
         };
         app.shared.borrow().ingest_fetched(
             &mut ui::widget::Edits::lend(&mut doc),
-            "you@example.test",
+            &configured_email,
             std::slice::from_ref(&message),
         );
         app.shared
@@ -5171,7 +5172,7 @@ mod tests {
         else {
             panic!("a flag change is a flag store: {request:?}");
         };
-        assert_eq!(account.email, "you@example.test");
+        assert_eq!(account.email, configured_email);
         assert_eq!(
             located.rfc_message_id.as_deref(),
             Some("launch@example.test")

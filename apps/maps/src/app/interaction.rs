@@ -1,4 +1,4 @@
-use super::{Hit, Key, MapInfo, MapsApp, NamedKey, Panel, WindowEvent};
+use super::{Key, MapInfo, MapsApp, NamedKey, Panel, WindowEvent};
 
 impl MapsApp {
     /// Route a keystroke into the focused endpoint field. Enter runs its

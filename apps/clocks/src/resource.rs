@@ -220,7 +220,7 @@ fn live_rows(shown: &Shown) -> Vec<LiveRow> {
         )
         .presentation(ResourcePresentation {
             detail: Some(format!(
-                "{} · {}",
+                "At {0}, repeating {1}.",
                 alarm.local_time().format("%H:%M"),
                 repeat_summary(&alarm.weekdays())
             )),
@@ -275,7 +275,7 @@ fn timer_row(
         &timer.label,
     )
     .presentation(ResourcePresentation {
-        detail: Some(format!("{status} · {remaining} remaining")),
+        detail: Some(format!("{status}, with {remaining} remaining.")),
         badge: floating.then(|| "Floating".into()),
         preview: None,
     })

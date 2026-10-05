@@ -38,7 +38,6 @@ use crate::i18n::{count, t, t_args};
 use crate::model::{MergeHunk, MergeModel, Resolution};
 use crate::pane::{self, CodeMetrics};
 use crate::scroll::{HScroll, wheel_pixels};
-use ui::icons::Icon;
 
 /// Row metrics measured from the renderer the panel paints with.
 ///
@@ -504,16 +503,6 @@ impl MergeView {
                 )
         }));
         controls
-    }
-
-    /// Show the source an accessibility action names (`base`, `ours`,
-    /// `theirs`). Returns whether it named one.
-    pub(crate) fn select_source_tagged(&mut self, tag: &str) -> bool {
-        let Some(source) = SourcePane::ALL.into_iter().find(|s| s.tag() == tag) else {
-            return false;
-        };
-        self.select_source(source);
-        true
     }
 
     fn first_conflict(&self) -> Option<usize> {
@@ -1125,7 +1114,6 @@ impl Widget for MergeView {
             self.reveal_hunk(hunk);
         }
         let r = self.rect;
-        let m = self.metrics;
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
 
         self.draw_column_headers(&mut ctx);

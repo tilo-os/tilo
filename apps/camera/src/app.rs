@@ -51,9 +51,8 @@ use crate::frame::{self, FrameBuf};
 use crate::library;
 use crate::model::{
     CameraDevicePreferences, Capture, CaptureKind, CaptureMode, CapturePreferences, CodeKind,
-    Facing, PhotoFormat, Resolution, ScanEntry, ScannedCode, Screen, Settings, Timer, classify,
+    Facing, PhotoFormat, Resolution, ScanEntry, ScannedCode, Screen, Settings, Timer,
 };
-use crate::paint as p;
 use crate::resource::Camera;
 
 mod document_view;
@@ -3409,23 +3408,6 @@ impl ui::widget::controls::ActionControls for CameraApp {
 // Shared chrome + control helpers
 // ====================================================================
 
-/// Icon/title/subtitle/style bundle for [`CameraApp::draw_empty_state`].
-#[derive(Clone, Copy)]
-struct EmptyStateContent<'a> {
-    icon: &'a str,
-    title: &'a str,
-    subtitle: Option<&'a str>,
-    glass: bool,
-    recovery: bool,
-}
-
-/// Geometry returned by the shared sparse-state renderer so its owner can add
-/// real recovery controls without duplicating the card layout.
-struct EmptyStateLayout {
-    panel: Rect,
-    icon: Rect,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3762,23 +3744,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    fn escape_key() -> winit::event::KeyEvent {
-        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
-        // SAFETY: the zeroed fields that own data are overwritten without
-        // being dropped; the dialog reads only `logical_key` and `state`.
-        let mut event: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
-        unsafe {
-            std::ptr::addr_of_mut!(event.logical_key).write(Key::Named(NamedKey::Escape));
-            std::ptr::addr_of_mut!(event.physical_key)
-                .write(PhysicalKey::Unidentified(NativeKeyCode::Unidentified));
-            std::ptr::addr_of_mut!(event.text).write(None);
-        }
-        event.location = KeyLocation::Standard;
-        event.state = winit::event::ElementState::Pressed;
-        event.repeat = false;
-        event
     }
 
     #[test]
@@ -4719,30 +4684,6 @@ mod tests {
                     force: None,
                     id: 17,
                 })
-            }
-            fn dispatch(
-                app: &mut CameraApp,
-                event: &WindowEvent,
-                doc: &mut AutoCommit,
-                node: NodeId,
-                tree: &TaffyTree<()>,
-            ) {
-                let mut handled = false;
-                let mut focus = None;
-                app.handle_event(
-                    event,
-                    &mut ui::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &winit::event::Modifiers::default(),
-                        state: Edits::lend(doc),
-                        path: &automerge::ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus,
-                        node_id: node,
-                        taffy: tree,
-                    },
-                );
-                assert!(handled);
             }
 
             let (mut app, mut doc, root) = sample_app();

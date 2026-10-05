@@ -1222,13 +1222,15 @@ impl TextInput {
         self
     }
 
-    fn notify_user_change(&mut self) {
+    fn notify_user_change(&mut self, physical_text: bool) {
         if !self.dirty || self.last_notified_text == self.text {
             return;
         }
         self.last_notified_text.clone_from(&self.text);
         if let Some(action) = &mut self.action {
-            let _ = action.emit(self.text.clone());
+            let _ = crate::bound_dispatch::with_physical_text(physical_text, || {
+                action.emit(self.text.clone())
+            });
         } else {
             self.publish_local_state();
         }
@@ -4879,7 +4881,7 @@ impl Widget for TextInput {
             && self.accept_suggestion()
         {
             *ctx.handled = true;
-            self.notify_user_change();
+            self.notify_user_change(false);
             return;
         }
 
@@ -4955,7 +4957,10 @@ impl Widget for TextInput {
             }
             _ => {}
         }
-        self.notify_user_change();
+        self.notify_user_change(matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(winit::event::Ime::Commit(_))
+        ));
     }
 
     fn name(&self) -> &'static str {
@@ -5224,7 +5229,7 @@ impl Widget for TextInput {
                 } else {
                     self.insert_str(&cleaned);
                 }
-                self.notify_user_change();
+                self.notify_user_change(false);
                 true
             }
             Action::SetSelection { anchor, focus } => {
@@ -5885,9 +5890,9 @@ impl TextInput {
         handled: &mut bool,
     ) {
         let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-        if self.update_pointer_position(logical_pos) {
-            *handled = true;
-        }
+        // Hover damage updates this field, but siblings still need the same
+        // motion to clear/arm their hover state. Only an owned drag consumes it.
+        self.update_pointer_position(logical_pos);
         let over_accessory = self
             .accessory_rect()
             .is_some_and(|rect| rect.contains(logical_pos));
@@ -5898,6 +5903,7 @@ impl TextInput {
         if !self.is_dragging {
             return;
         }
+        *handled = true;
         let raw_position = self.resolve_position(logical_pos);
         let raw = raw_position.byte;
         let (anchor_lo, anchor_hi) = self.drag_anchor_span;

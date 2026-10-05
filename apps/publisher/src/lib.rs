@@ -24,7 +24,7 @@ use registry_client::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use ui::prelude::*;
 use ui::secrets::SecretStore;
-use ui::widget::{BannerKind, ButtonRole, Field, FormSection};
+use ui::widget::{BannerKind, Field};
 
 /// What to apply for, and where. Stored, synced and undoable; the key is not
 /// part of it.
@@ -162,14 +162,6 @@ impl Notice {
     /// Why an operation failed.
     fn error(detail: impl Into<String>) -> Self {
         Self::new(BannerKind::Error, "publisher-failed-title").detailed(detail)
-    }
-
-    fn banner(&self) -> Banner {
-        let banner = Banner::new(self.kind, self.title.clone());
-        match &self.message {
-            Some(message) => banner.with_message(message.clone()),
-            None => banner,
-        }
     }
 }
 
@@ -398,41 +390,6 @@ fn key_section(pane: &Pane, actions: &Actions<Publisher>) -> Element {
     }
     Box::new(column)
 }
-
-/// The namespaces to claim and the registry to claim them from.
-fn namespaces_section(cx: &ViewCx<Publisher>) -> FormSection {
-    let registry = cx
-        .input(|profile| profile.registry.clone(), Publisher::SET_REGISTRY)
-        .with_id("registry-input");
-    let domain = cx
-        .input(|profile| profile.domain.clone(), Publisher::SET_DOMAIN)
-        .with_id("domain-input")
-        .with_placeholder("publisher-domain-placeholder");
-    let forge = cx
-        .input(
-            |profile| profile.forge_account.clone(),
-            Publisher::SET_FORGE_ACCOUNT,
-        )
-        .with_id("forge-input")
-        .with_placeholder("publisher-forge-placeholder");
-    let contact = cx
-        .input(|profile| profile.contact.clone(), Publisher::SET_CONTACT)
-        .with_id("contact-input")
-        .with_placeholder("publisher-contact-placeholder");
-    FormSection::new("publisher-namespace-heading")
-        .field(Field::new("publisher-domain-label", domain).with_help("publisher-domain-help"))
-        .field(Field::new("publisher-forge-label", forge).with_help("publisher-forge-help"))
-        .field(Field::new("publisher-contact-label", contact).with_help("publisher-contact-help"))
-        .field(Field::new("publisher-registry-label", registry))
-}
-
-/// What the last operation did, if one is under way or has finished, above the
-/// two buttons that start an application. Pinned under the scrolling form, so
-/// the outcome and the action it came from are always in view and showing it
-/// moves nothing above.
-/// The public half of the key a capture shows: a capture never reads the
-/// key on the machine it runs on.
-const CAPTURE_PUBLIC_KEY: &str = "5f0c3a9e1d2b4c6f8a7e9d0b1c2a3f4e5d6c7b8a9f0e1d2c3b4a5f6e7d8c9b0a";
 
 /// The app: the key on this machine, and an application for namespaces.
 pub struct App;

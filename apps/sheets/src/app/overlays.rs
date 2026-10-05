@@ -10,10 +10,10 @@
 //! the status bubble.
 
 use super::{
-    Affine, AutoCommit, ContextMenu, Currency, DATE_STYLES, MenuItem, MenuRow, Point, PresenceCtx,
-    Rect, Scene, SettingChip, SettingKind, SettingsPanel, SheetsApp, TAB_MENU_ACTIONS,
-    TAB_PALETTE_LEN, TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent,
-    count_f64, tab_action_label,
+    Affine, ContextMenu, Currency, DATE_STYLES, MenuItem, MenuRow, Point, PresenceCtx, Rect, Scene,
+    SettingChip, SettingKind, SettingsPanel, SheetsApp, TAB_MENU_ACTIONS, TAB_PALETTE_LEN,
+    TIME_STYLES, TabAction, TextRenderer, TextRole, Theme, Widget, WindowEvent, count_f64,
+    tab_action_label,
 };
 use ui::widget::modal_dialog::{self, ModalAction, ModalHit, ModalLayout, ModalSpec};
 use ui::widget::{

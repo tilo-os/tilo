@@ -72,6 +72,26 @@ fn first_named(root: &dyn Widget, label: &str) -> Rect {
         .unwrap_or_else(|| panic!("no widget named {label:?}"))
 }
 
+/// A typed field announces its label through its control. Geometry still
+/// reads the actual retained visual label, rather than the named control.
+fn field_label_by_control(root: &dyn Widget, id: &str) -> Rect {
+    let mut out = None;
+    walk(root, &mut |widget| {
+        if widget.name() != "Field" {
+            return;
+        }
+        let mut contains = false;
+        walk(widget, &mut |child| contains |= child.test_id() == Some(id));
+        if contains {
+            out = widget
+                .children()
+                .first()
+                .and_then(|label| label.children().first().map(|text| text.get_rect()));
+        }
+    });
+    out.unwrap_or_else(|| panic!("no retained field label for {id:?}"))
+}
+
 fn by_test_id(root: &dyn Widget, id: &str) -> Rect {
     let mut out = None;
     walk(root, &mut |w| {
@@ -145,19 +165,19 @@ fn sidebar_rows_share_an_edge_and_the_toolkit_row_height() {
     assert_eq!(selected[0].label, Category::Appearance.label());
 
     // Case `rows_grow_with_large_text`.
-    // 1600 px is above the scaled breakpoint, so the sidebar stays docked.
+    // 1800 px is above the scaled breakpoint, so the sidebar stays docked.
     let large = config
         .app()
         .with_category(Category::Appearance)
-        .with_width_hint(1600.0);
-    let large = lay_out_scaled(large, (1600.0, 900.0), 2.0);
+        .with_width_hint(1800.0);
+    let large = lay_out_scaled(large, (1800.0, 900.0), 2.0);
     let rows: Vec<_> = crate::support::nav_rows(&*large)
         .into_iter()
         .filter(|row| Category::ALL.iter().any(|c| c.label() == row.label))
         .collect();
     assert!(
         !rows.is_empty(),
-        "the sidebar is still docked at 1600 px / 200 %"
+        "the sidebar is still docked at 1800 px / 200 %"
     );
     let shortest = rows
         .iter()
@@ -242,15 +262,24 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let config = crate::support::ScratchConfig::new();
         let app = config.app().with_category(Category::RegionFormats);
         let app = lay_out(app, WIDE);
-        let label = first_named(&*app, "Currency");
+        let label = field_label_by_control(&*app, "region.currency");
         let control = by_test_id(&*app, "region.currency");
-        // Label and trailing chooser stay on one centre line (to the engine's
-        // half-pixel: the 13 px label's line box is odd-height since F2)…
-        same_centre_line(
-            label.center().y,
-            control.center().y,
-            "label vs dropdown centre",
-        );
+        // Automatic fields stack when the label and chooser cannot fit the
+        // readable form measure; both arrangements keep a deliberate alignment.
+        if control.y0 >= label.y1 {
+            close(control.x0, label.x0, "stacked chooser starts at its label");
+            let gap = control.y0 - label.y1;
+            assert!(
+                gap >= 0.0 && gap <= f64::from(spacing().s2) + 1.0,
+                "stacked chooser hugs its label by the shared field gap: {gap}"
+            );
+        } else {
+            same_centre_line(
+                label.center().y,
+                control.center().y,
+                "inline label vs dropdown centre",
+            );
+        }
         // …inside the toolkit's readable form measure (720) rather than the full
         // detail width, so the pair no longer drifts ~600 px apart.
         let card_inner = control.x1 - label.x0;
@@ -314,9 +343,9 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
             .with_width_hint(phone.0);
         let app = lay_out(app, phone);
         let sp = spacing();
-        for (id, label) in rows {
+        for (id, _label) in rows {
             let control = by_test_id(&*app, id);
-            let label = first_named(&*app, label);
+            let label = field_label_by_control(&*app, id);
             assert!(
                 control.y0 >= label.y1,
                 "phone: {id} {control:?} sits beneath its label {label:?}"
@@ -340,15 +369,15 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
 
         // A window wide enough for the chooser and a label: still one screen
         // (below the docking breakpoint), but every row sits inline.
-        let medium = (600.0, 820.0);
+        let medium = (700.0, 820.0);
         let app = config
             .app()
             .with_category(Category::RegionFormats)
-            .with_width_hint(NARROW.0);
-        let app = lay_out(app, NARROW);
-        for (id, label) in rows {
+            .with_width_hint(medium.0);
+        let app = lay_out(app, medium);
+        for (id, _label) in rows {
             let control = by_test_id(&*app, id);
-            let label = first_named(&*app, label);
+            let label = field_label_by_control(&*app, id);
             assert!(
                 control.x0 > label.x1,
                 "medium: {id} {control:?} sits beside its label {label:?}"

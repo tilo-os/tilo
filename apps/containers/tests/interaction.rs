@@ -80,10 +80,6 @@ impl Driver {
     fn frame(&mut self) {
         self.frame.relayout();
     }
-    fn frame_sized(&mut self, width: u32, height: u32) {
-        let theme = self.frame.theme().clone();
-        self.frame.relayout_themed((width, height), theme).unwrap();
-    }
     fn click(&mut self, x: f64, y: f64) {
         self.frame.click_at(x, y);
     }
@@ -93,12 +89,6 @@ impl Driver {
             TestKey::Named(k) => format!("{k:?}"),
         };
         self.frame.key(&spec);
-    }
-    fn type_char(&mut self, text: &str) {
-        self.frame.type_text(text);
-    }
-    fn rgba(&self) -> Vec<u8> {
-        self.frame.render_rgba()
     }
 }
 fn offline() -> Driver {

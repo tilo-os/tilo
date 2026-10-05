@@ -11,27 +11,25 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use ui::framework::Actions;
 use ui::tilo_resource::Invoke;
 use ui::time::{Duration, Instant};
 use ui::widget::Element;
 use ui::widget::{AppModel, ModelPath};
 
-use ui::ColorCompat;
-use ui::a11y::{AccessNode, AccessState, Role};
+use ui::a11y::AccessNode;
 use ui::framework::{
     Dispatcher, EffectCx, EffectStatus, Effected, Progress, ResourceSurface, SurfaceCx,
 };
 use ui::presence::PresenceCtx;
-use ui::taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::taffy::{NodeId, TaffyTree};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::vello::Scene;
-use ui::vello::kurbo::{Affine, Arc as Sweep, Circle, Point, Rect, RoundedRect, Stroke};
-use ui::vello::peniko::Fill;
-use ui::widget::{Button, ButtonFace, Widget};
-use ui::winit::event::{ElementState, MouseButton, WindowEvent};
+use ui::vello::kurbo::{Affine, Point, Rect};
+use ui::widget::Widget;
+use ui::winit::event::WindowEvent;
 
 use crate::resource::{Measurement, SpeedEffect, SpeedTest};
 
@@ -55,6 +53,7 @@ struct ResultSet {
 
 /// A finished run, as the worker measured it.
 struct Run {
+    bytes: u64,
     result: ResultSet,
     server: String,
 }
@@ -64,6 +63,8 @@ struct Run {
 struct RunSignal {
     phase: AtomicU8,
     stop: AtomicBool,
+    live_bits: AtomicU64,
+    bytes: AtomicU64,
 }
 
 impl RunSignal {
@@ -107,8 +108,8 @@ pub struct SpeedTestApp {
     structure_dirty: bool,
     view_phase: Option<Phase>,
     rect: Rect,
-    pointer: Point,
     phase: Phase,
+    transferred: u64,
     result: Option<ResultSet>,
     display_value: f64,
     ring_progress: f64,
@@ -141,6 +142,7 @@ impl SpeedTestApp {
                 .result
                 .map(|r| (r.ping, r.jitter, r.download, r.upload)),
             live: self.display_value,
+            bytes: self.transferred,
             ring: self.ring_progress,
             history: self.history(),
             current: (self.phase == Phase::Complete)
@@ -172,8 +174,8 @@ impl SpeedTestApp {
             structure_dirty: true,
             view_phase: None,
             rect: Rect::ZERO,
-            pointer: Point::ZERO,
             phase: Phase::Idle,
+            transferred: 0,
             result: None,
             display_value: 0.0,
             ring_progress: 0.0,
@@ -195,6 +197,7 @@ impl SpeedTestApp {
         self.run = Some(Arc::clone(&signal));
         self.phase = Phase::Ping;
         self.display_value = 0.0;
+        self.transferred = 0;
         self.started = Some(ui::time::now());
         self.last_animation = ui::time::now();
         signal
@@ -206,6 +209,8 @@ impl SpeedTestApp {
             run.stop.store(true, Ordering::Release);
         }
         self.phase = Phase::Idle;
+        self.display_value = 0.0;
+        self.transferred = 0;
         self.result = None;
         self.error = None;
         self.started = None;
@@ -228,7 +233,12 @@ impl SpeedTestApp {
         self.run = None;
         self.started = None;
         match answer {
-            Ok(Run { result, server }) => {
+            Ok(Run {
+                result,
+                server,
+                bytes,
+            }) => {
+                self.transferred = bytes;
                 self.result = Some(result);
                 self.display_value = result.download;
                 self.phase = Phase::Complete;
@@ -249,19 +259,6 @@ impl SpeedTestApp {
         }
     }
 
-    /// Start or stop, as the primary button does: through the same door as
-    /// the palette and agents.
-    fn toggle_test(&self) {
-        let Some(dispatcher) = &self.dispatcher else {
-            return;
-        };
-        if self.is_running() {
-            dispatcher.effect(&SpeedEffect::Stop);
-        } else {
-            dispatcher.effect(&SpeedEffect::Start);
-        }
-    }
-
     /// The measurements below the dial: all of them, except the one the
     /// dial shows.
     fn history(&self) -> &[Measurement] {
@@ -279,19 +276,21 @@ impl SpeedTestApp {
             .map_or("Nearest Cloudflare server", |latest| latest.server.as_str())
     }
 
-    fn is_running(&self) -> bool {
-        matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload)
+    /// The shared dial and frame scheduler use the same bounded reading.
+    fn dial_target(&self) -> f64 {
+        match self.phase {
+            Phase::Idle | Phase::Error => 0.0,
+            Phase::Ping => (self.display_value / 50.0).clamp(0.08, 0.92),
+            Phase::Download => (self.display_value / 750.0).clamp(0.06, 1.0),
+            Phase::Upload => (self.display_value / 180.0).clamp(0.06, 1.0),
+            Phase::Complete => self
+                .result
+                .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
+        }
     }
 
-    fn phase_label(&self) -> &'static str {
-        match self.phase {
-            Phase::Idle => "Ready when you are",
-            Phase::Ping => "Finding the quickest route",
-            Phase::Download => "Measuring download",
-            Phase::Upload => "Measuring upload",
-            Phase::Complete => "Connection looks great",
-            Phase::Error => "Test interrupted",
-        }
+    fn is_running(&self) -> bool {
+        matches!(self.phase, Phase::Ping | Phase::Download | Phase::Upload)
     }
 }
 
@@ -377,17 +376,17 @@ impl Widget for SpeedTestApp {
                 }
             }
         }
-        if self.is_running() && !self.shot {
-            let elapsed = self
-                .started
-                .map_or(0.0, |start| start.elapsed().as_secs_f64());
-            self.display_value = match self.phase {
-                Phase::Ping => 8.0 + elapsed.sin().abs() * 7.0,
-                Phase::Download => 420.0 + (elapsed * 2.7).sin() * 110.0,
-                Phase::Upload => 95.0 + (elapsed * 3.1).sin() * 24.0,
-                _ => self.display_value,
-            };
-            changed = true;
+        if self.is_running()
+            && !self.shot
+            && let Some(run) = &self.run
+        {
+            let measured = f64::from_bits(run.live_bits.load(Ordering::Acquire));
+            let bytes = run.bytes.load(Ordering::Acquire);
+            if measured != self.display_value || bytes != self.transferred {
+                self.display_value = measured;
+                self.transferred = bytes;
+                changed = true;
+            }
         }
         let now = ui::time::now();
         let delta = now
@@ -395,15 +394,7 @@ impl Widget for SpeedTestApp {
             .as_secs_f64()
             .min(0.05);
         self.last_animation = now;
-        let target = match self.phase {
-            Phase::Idle | Phase::Error => 0.0,
-            Phase::Ping => (self.display_value / 50.0).clamp(0.08, 0.92),
-            Phase::Download => (self.display_value / 750.0).clamp(0.06, 1.0),
-            Phase::Upload => (self.display_value / 180.0).clamp(0.06, 1.0),
-            Phase::Complete => self
-                .result
-                .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
-        };
+        let target = self.dial_target();
         let eased = 1.0 - (-delta * 9.0).exp();
         let previous = self.ring_progress;
         self.ring_progress += (target - self.ring_progress) * eased;
@@ -472,15 +463,7 @@ impl Widget for SpeedTestApp {
         self.rect == Rect::ZERO
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let target = match self.phase {
-            Phase::Idle | Phase::Error => 0.0,
-            Phase::Ping => (self.display_value / 50.0).clamp(0.08, 0.92),
-            Phase::Download => (self.display_value / 750.0).clamp(0.06, 1.0),
-            Phase::Upload => (self.display_value / 180.0).clamp(0.06, 1.0),
-            Phase::Complete => self
-                .result
-                .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
-        };
+        let target = self.dial_target();
         (self.is_running() || (self.ring_progress - target).abs() > 0.001)
             .then(|| ui::time::now() + Duration::from_millis(16))
     }
@@ -617,25 +600,36 @@ async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String>
         .user_agent("Tilo Speed Test/0.1")
         .build()
         .map_err(|error| error.to_string())?;
-    let ping_start = ui::time::now();
-    let reached = client
-        .get("https://speed.cloudflare.com/__down?bytes=1")
-        .send()
-        .await
-        .and_then(tilo_net::Response::error_for_status)
-        .map_err(|error| format!("Could not reach the test server: {error}"))?;
-    let ping = ping_start.elapsed().as_secs_f64() * 1000.0;
-    // The data centre that answered, by its airport code.
-    let server = reached
-        .headers()
-        .get("cf-meta-colo")
-        .and_then(|colo| colo.to_str().ok())
-        .map_or_else(
-            || "Cloudflare".to_owned(),
-            |colo| format!("Cloudflare · {colo}"),
-        );
-
+    let mut samples = Vec::new();
+    let mut server = "Cloudflare".to_owned();
+    for request in 0..6 {
+        stopped(signal, progress)?;
+        let ping_start = ui::time::now();
+        let reached = client
+            .get("https://speed.cloudflare.com/__down?bytes=1")
+            .send()
+            .await
+            .and_then(tilo_net::Response::error_for_status)
+            .map_err(|error| format!("Could not reach the test server: {error}"))?;
+        let sample = ping_start.elapsed().as_secs_f64() * 1000.0;
+        if request == 0 {
+            server = reached
+                .headers()
+                .get("cf-meta-colo")
+                .and_then(|colo| colo.to_str().ok())
+                .map_or_else(
+                    || "Cloudflare".to_owned(),
+                    |colo| format!("Cloudflare at {colo}"),
+                );
+        } else {
+            samples.push(sample);
+            signal.live_bits.store(sample.to_bits(), Ordering::Release);
+        }
+    }
+    let (ping, jitter) = crate::measure::latency_stats(&samples)
+        .ok_or_else(|| "The test server did not answer.".to_owned())?;
     stopped(signal, progress)?;
+    signal.live_bits.store(0.0_f64.to_bits(), Ordering::Release);
     signal.set(RunSignal::DOWNLOAD);
     progress.report("download", Some(1), Some(3));
     let download_start = ui::time::now();
@@ -652,9 +646,15 @@ async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String>
     {
         stopped(signal, progress)?;
         bytes += chunk.len();
+        signal.bytes.store(bytes as u64, Ordering::Release);
+        signal.live_bits.store(
+            crate::measure::mbps(bytes as u64, download_start.elapsed()).to_bits(),
+            Ordering::Release,
+        );
     }
-    let download = bytes as f64 * 8.0 / download_start.elapsed().as_secs_f64() / 1_000_000.0;
+    let download = crate::measure::mbps(bytes as u64, download_start.elapsed());
 
+    signal.live_bits.store(0.0_f64.to_bits(), Ordering::Release);
     signal.set(RunSignal::UPLOAD);
     progress.report("upload", Some(2), Some(3));
     let upload_body = vec![0_u8; 2_000_000];
@@ -666,11 +666,12 @@ async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String>
         .await
         .map_err(|error| format!("Upload test failed: {error}"))?;
     stopped(signal, progress)?;
-    let upload = 16.0 / upload_start.elapsed().as_secs_f64();
+    let upload = crate::measure::mbps(2_000_000, upload_start.elapsed());
     Ok(Run {
+        bytes: bytes as u64 + 2_000_000,
         result: ResultSet {
             ping,
-            jitter: ping * 0.08,
+            jitter,
             download,
             upload,
         },
@@ -696,6 +697,65 @@ mod tests {
                 || panic!("{id} is published"),
                 |action| action.contract.availability.clone(),
             )
+    }
+
+    #[test]
+    fn the_speed_scale_is_monotonic_and_bounded() {
+        let mut app = SpeedTestApp::new();
+        assert_eq!(app.dial_target(), 0.0);
+        for phase in [Phase::Download, Phase::Upload] {
+            app.phase = phase;
+            let values: Vec<_> = [0.0, 10.0, 100.0, 500.0, 50_000.0]
+                .into_iter()
+                .map(|value| {
+                    app.display_value = value;
+                    app.dial_target()
+                })
+                .collect();
+            assert!(values.windows(2).all(|pair| pair[0] <= pair[1]));
+            assert!(values.iter().all(|value| (0.0..=1.0).contains(value)));
+            assert!((values.last().unwrap() - 1.0).abs() < f64::EPSILON);
+        }
+    }
+
+    #[test]
+    fn the_host_shows_measured_worker_progress_and_stop_clears_it() {
+        let mut app = TestApp::<SpeedTestShell>::new().expect("the production host opens");
+        let signal = app
+            .with_widget(|surface: &mut SpeedTestApp| surface.begin())
+            .expect("the canonical surface is mounted");
+        signal
+            .live_bits
+            .store(13.0_f64.to_bits(), Ordering::Release);
+        app.settle();
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(matches!(surface.phase, Phase::Ping));
+            assert_eq!(surface.display_value, 13.0);
+            assert_eq!(surface.shared.borrow().readings.ping, None);
+        })
+        .expect("the surface remains mounted");
+        signal.set(RunSignal::DOWNLOAD);
+        signal
+            .live_bits
+            .store(300.0_f64.to_bits(), Ordering::Release);
+        signal.bytes.store(10_000_000, Ordering::Release);
+        app.settle();
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(matches!(surface.phase, Phase::Download));
+            assert_eq!(surface.display_value, 300.0);
+            assert_eq!(surface.transferred, 10_000_000);
+            assert_eq!(surface.shared.borrow().stage(), 1);
+        })
+        .expect("the surface remains mounted");
+        app.effect(&SpeedEffect::Stop)
+            .expect("the published stop effect succeeds");
+        assert!(signal.stop.load(Ordering::Acquire));
+        app.with_widget(|surface: &mut SpeedTestApp| {
+            assert!(matches!(surface.phase, Phase::Idle));
+            assert_eq!(surface.display_value, 0.0);
+            assert_eq!(surface.transferred, 0);
+        })
+        .expect("the stopped surface remains mounted");
     }
 
     #[test]
@@ -758,7 +818,7 @@ mod tests {
             3,
             "an idle dial leaves every run below"
         );
-        assert_eq!(app.server_label(), "Cloudflare · LHR");
+        assert_eq!(app.server_label(), "Cloudflare at LHR");
 
         ResourceSurface::<SpeedTest, SpeedEffect>::stage(&mut app, Some("complete"));
         let shown = app.result.expect("the newest run is on the dial");

@@ -376,11 +376,11 @@ impl ResourceSurface<Feeds, FeedsEffect> for FeedsApp {
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderTextLarger => {
-                self.change_read_settings(|s| s.font_scale += ReadSettings::FONT_STEP)?;
+                self.change_read_settings(|s| s.adjust_text_percent(1))?;
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderTextSmaller => {
-                self.change_read_settings(|s| s.font_scale -= ReadSettings::FONT_STEP)?;
+                self.change_read_settings(|s| s.adjust_text_percent(-1))?;
                 Ok(Effected::done())
             }
             FeedsEffect::ReaderFont { font } => {

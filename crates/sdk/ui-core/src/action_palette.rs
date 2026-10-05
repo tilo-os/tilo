@@ -1379,6 +1379,7 @@ impl ActionPalette {
                         || RowResolution::Address(address.clone()),
                         |binding| {
                             RowResolution::Bound(crate::bound_dispatch::BoundActionTarget {
+                                physical_text: false,
                                 binding: (*binding).clone(),
                                 address: crate::bound_dispatch::BoundActionAddress {
                                     instance_id: binding.instance_id,
@@ -1968,6 +1969,7 @@ impl ActionPalette {
                         fa.resource_label, fa.action.label, snapshot.binding.instance_id
                     );
                     let target = crate::bound_dispatch::BoundActionTarget {
+                        physical_text: false,
                         binding: snapshot.binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: snapshot.binding.instance_id,

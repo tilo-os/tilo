@@ -1359,18 +1359,6 @@ impl PdfApp {
         true
     }
 
-    /// While the search strip is open it owns the keyboard. Returns whether
-    /// it consumed this key.
-    fn drive_search_input(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut ui::widget::Edits<'_>,
-    ) {
-        self.route_find_bar(event, scale, modifiers, state);
-    }
-
     fn on_key_search(
         &mut self,
         event: &WindowEvent,

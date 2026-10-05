@@ -23,12 +23,12 @@ use ui::widget::{
     Button, ButtonRole, Column, Container, ControlSize, ListRow, Row, Section, SectionHeader,
     Spacer, Text, ToggleGroup, Widget, toggle_group::Segment,
 };
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::{Scene, peniko::Fill};
 use winit::event::WindowEvent;
 
 use super::actions::SetupEffect;
-use super::controller::{FolderDestination, SetupController, SetupPage};
+use super::controller::{SetupController, SetupPage};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
 use super::desktop_flow::{DesktopFailureKind, DesktopFlow, DesktopFlowState, DesktopSelection};
 use super::folders::{self, FolderScan, SkipReason, SkippedEntry};
@@ -1634,7 +1634,7 @@ impl SetupApp {
                 format!("Checking the installed Tilo session on {}.", selection.host)
             }
             DesktopFlowState::Installed { selection, result } => format!(
-                "Tilo Desktop {} is installed on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
+                "Tilo Desktop {} is installed and verified on {}. Save your work and sign out when you are ready, then choose Tilo on the login screen. Your current session stays the default.",
                 result.version, selection.host
             ),
             DesktopFlowState::Failed { kind, message, .. } => {
@@ -3023,13 +3023,6 @@ impl Widget for SetupApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &self.rect,
-        );
         if let Some(composed) = &mut self.composed {
             composed.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -5089,8 +5082,22 @@ mod tests {
                 .detail
                 .as_deref()
                 .unwrap();
-            assert!(detail.contains("Full OS no"), "{detail}");
-            assert!(detail.contains("Connected no"), "{detail}");
+            assert!(detail.contains("Experience page"), "{detail}");
+            let status = window
+                .effect(&SetupEffect::ReadSetupStatus)
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(
+                status["availability"]["full_os"],
+                serde_json::json!(false),
+                "the published setup status refuses Full Tilo"
+            );
+            assert_eq!(
+                status["availability"]["connected"],
+                serde_json::json!(false),
+                "the published setup status refuses connected folders"
+            );
             for id in ["choose-experience", "open-imports", "read-setup-status"] {
                 let action = root_action(&mut window, id);
                 assert_eq!(
@@ -5203,7 +5210,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 detail,
-                "no experience chosen yet, copy by default, 2 folders, 1 to bring over"
+                "no experience chosen yet, copy by default, 2 folders, 1 to bring over. With help closed and imports closed."
             );
             assert_eq!(selection.children.len(), 2);
             assert_eq!(selection.children[0].kind, "imager.setup.folder");
@@ -5255,7 +5262,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("Not ready")
+                    .contains("Review ready: No.")
             );
             let availability = child_resource(&root, "imager.setup.availability");
             assert!(
@@ -5266,7 +5273,7 @@ mod tests {
                     .detail
                     .as_deref()
                     .unwrap()
-                    .contains("Tilo Desktop")
+                    .contains("Available experiences: desktop Yes, full OS Yes.")
             );
         }
     }

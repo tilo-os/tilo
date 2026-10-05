@@ -1179,8 +1179,12 @@ fn publish_reaction(
     Resource::new(
         format!("chat.reaction:{}:{}", m.id, reaction.emoji),
         "chat.reaction",
-        format!("{} · {}", reaction.emoji, reaction.count),
+        reaction.emoji.clone(),
     )
+    .with_presentation(ui::tilo_actions::ResourcePresentation {
+        detail: Some(format!("{} reactions", reaction.count)),
+        ..Default::default()
+    })
     .with_action(reveal)
     .with_action(immediate_spec(
         "add",

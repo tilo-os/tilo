@@ -1090,7 +1090,7 @@ fn history_resource(entry: &HistoryEntry) -> Resource {
 fn history_label(entry: &HistoryEntry) -> String {
     let Some((scheme, remainder)) = entry.url.split_once("://") else {
         return format!(
-            "{} request history · {}",
+            "{} request returned status {}",
             entry.method.as_str(),
             entry.status
         );
@@ -1099,14 +1099,14 @@ fn history_label(entry: &HistoryEntry) -> String {
     let Some((authority, path)) = safe.split_once('/') else {
         let authority = safe.rsplit('@').next().unwrap_or_default();
         return format!(
-            "{} {scheme}://{authority} · {}",
+            "{} {scheme}://{authority} returned status {}",
             entry.method.as_str(),
             entry.status
         );
     };
     let authority = authority.rsplit('@').next().unwrap_or_default();
     format!(
-        "{} {scheme}://{authority}/{path} · {}",
+        "{} {scheme}://{authority}/{path} returned status {}",
         entry.method.as_str(),
         entry.status
     )

@@ -118,7 +118,7 @@ impl Capabilities {
                     .unwrap_or(0)
                     .min(100);
                 return Some(format!(
-                    "{count} {} · {percent}%",
+                    "{count} {} at {percent}%",
                     if count == 1 { "download" } else { "downloads" }
                 ));
             }
@@ -638,7 +638,7 @@ mod tests {
             }
             assert_eq!(
                 capabilities.toolbar_status().as_deref(),
-                Some("4 downloads · 50%")
+                Some("4 downloads at 50%")
             );
         }
 
@@ -660,7 +660,7 @@ mod tests {
             });
             assert_eq!(
                 capabilities.toolbar_status().as_deref(),
-                Some("1 download · 25%")
+                Some("1 download at 25%")
             );
 
             capabilities.apply(WebViewEvent::DownloadUpdated {

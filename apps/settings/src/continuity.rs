@@ -103,16 +103,6 @@ impl AuditEntry {
             &[("subject", subject.into())],
         )
     }
-
-    /// How long ago it changed (`2 hours ago`), read through the toolkit clock.
-    pub(crate) fn when(&self) -> String {
-        let now = ui::time::wall()
-            .duration_since(ui::time::SystemTime::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_secs());
-        ui::format::relative(
-            i64::try_from(now.saturating_sub(self.recorded_at_secs)).unwrap_or(i64::MAX),
-        )
-    }
 }
 
 /// The release policy, the person's `continuity` settings.

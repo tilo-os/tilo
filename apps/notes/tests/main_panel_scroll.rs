@@ -155,7 +155,9 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
                 0.0,
             );
             let window_bottom = surface(&mut app, |notes| notes.get_rect().y1);
-            let pill_top = window_bottom - 14.0 - pill_height;
+            let pill_top = window_bottom
+                - f64::from(Theme::dark().with_text_scale(scale).tokens.spacing.s4)
+                - pill_height;
             let content_bottom = panel(&mut app, |panel| panel.editor().content_bottom());
             let gap = pill_top - content_bottom;
             let theme = Theme::dark().with_text_scale(scale);

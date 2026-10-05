@@ -1116,7 +1116,6 @@ pub struct BooksApp {
     pending_seek_fraction: Option<f32>,
     cur_page_count: usize,
     /// Capture-only clean page and drawers, applied after layout resolution.
-    shot_clean_reader: bool,
     shot_drawers: Option<(bool, bool)>,
     shelf_focus_visible: bool,
     file_hover: bool,
@@ -1325,7 +1324,6 @@ impl BooksApp {
             progress_dragging: false,
             pending_seek_fraction: None,
             cur_page_count: 1,
-            shot_clean_reader: false,
             shot_drawers: None,
             shelf_focus_visible: false,
             file_hover: false,
@@ -10121,19 +10119,6 @@ impl BooksApp {
         );
     }
 }
-
-/// A reader's notes for the long-annotations capture, cycled over the
-/// book's paragraphs.
-const SHOT_NOTES: [&str; 8] = [
-    "Compare with the keeper's log in the third chapter.",
-    "The light as a promise rather than a warning.",
-    "Read this aloud at the reading group.",
-    "Isolde never says why she stays. Ask about this on Thursday.",
-    "Lovely rhythm in this sentence.",
-    "Seven hands in the almanac: who wrote the last entry?",
-    "The same image as the opening, turned around.",
-    "Look up what a tide-house actually was.",
-];
 
 /// The legend printed on `key`'s cap in the active keyboard layout, as a
 /// shortcut row and its messages name it.

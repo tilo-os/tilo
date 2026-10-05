@@ -163,3 +163,77 @@ fn placeholders_and_badges_paint_without_seams() {
     assert_eq!(node.name.as_deref(), Some("Building a compositor in Rust"));
     assert!(node.value.as_deref().unwrap().contains("40% played"));
 }
+
+#[test]
+fn overlay_badges_paint_legible_ink_in_every_theme() {
+    use crate::color::contrast_ratio;
+    use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+
+    let mut text = TextRenderer::new();
+    let art = Rect::new(0.0, 0.0, 320.0, 180.0);
+    for name in Theme::ALL {
+        let theme = Theme::named(name).expect("every shipped theme resolves");
+        for reduce_transparency in [false, true] {
+            let theme = theme.clone().with_reduce_transparency(reduce_transparency);
+            let metrics = MediaMetrics::new(&theme);
+            let live_fill = theme.tokens.colors.semantic.danger;
+            let live_ink =
+                theme
+                    .tokens
+                    .colors
+                    .ink_on(live_fill, theme.text_primary, ON_FILL_MIN_CONTRAST);
+            // Material::Floating paints the opaque panel ground when no backdrop
+            // compositor is recording, also under reduced transparency.
+            let duration_fill = crate::chrome::panel_ground(&theme);
+            for (badge, fill, ink) in [
+                (MediaBadge::Live, live_fill, live_ink),
+                (
+                    MediaBadge::Duration("12:04"),
+                    duration_fill,
+                    theme.text_primary,
+                ),
+            ] {
+                let mut scene = Scene::new();
+                paint_badge(
+                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                    &metrics,
+                    art,
+                    badge,
+                );
+                for color in [fill, ink] {
+                    assert!(
+                        scene
+                            .encoding()
+                            .draw_data
+                            .contains(&color.premultiply().to_rgba8().to_u32()),
+                        "{name}, transparency reduced {reduce_transparency}: {badge:?} paints its fill and ink"
+                    );
+                }
+                assert!(
+                    contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
+                    "{name}: {badge:?} ink is legible on its actual plate"
+                );
+            }
+            let mut progress = Scene::new();
+            paint_badge(
+                &mut PaintCtx::new(&mut progress, Affine::IDENTITY, &mut text, &theme),
+                &metrics,
+                art,
+                MediaBadge::Progress(0.5),
+            );
+            assert!(
+                progress.encoding().draw_data.contains(
+                    &theme
+                        .tokens
+                        .colors
+                        .intent
+                        .inverted
+                        .premultiply()
+                        .to_rgba8()
+                        .to_u32()
+                ),
+                "{name}: playback progress uses the shared accent"
+            );
+        }
+    }
+}

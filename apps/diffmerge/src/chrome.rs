@@ -70,18 +70,6 @@ impl Chrome {
         }
     }
 
-    /// What the controls show now.
-    #[cfg(test)]
-    pub(crate) fn header(&self) -> Header {
-        self.header.get()
-    }
-
-    /// Queue `command` as a control would.
-    #[cfg(test)]
-    pub(crate) fn push(&self, command: Command) {
-        self.commands.borrow_mut().push_back(command);
-    }
-
     fn request(&self, command: Command) -> impl FnMut() + 'static {
         let commands = Rc::clone(&self.commands);
         move || commands.borrow_mut().push_back(command)

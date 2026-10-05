@@ -7,7 +7,6 @@
 
 use std::fmt::Write as _;
 
-use automerge::AutoCommit;
 use chrono::NaiveDate;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

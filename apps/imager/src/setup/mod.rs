@@ -38,17 +38,3 @@ mod strings;
 #[cfg(all(test, target_os = "linux"))]
 mod test_support;
 pub mod view;
-
-use ui::widget::Column;
-
-/// A padding-free, content-sized column: one section of a page.
-pub(crate) fn stack() -> Column {
-    Column::new().with_no_padding().with_intrinsic_height()
-}
-
-/// A page body: its header, then each section a `GROUP` apart.
-pub(crate) fn page(header: Column) -> Column {
-    stack()
-        .with_rhythm(ui::tokens::Rhythm::Group)
-        .push(Box::new(header))
-}

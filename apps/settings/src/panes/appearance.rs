@@ -988,33 +988,33 @@ mod tests {
         let cx = PaneCx::in_file(profile.path().join("settings.json"));
         cx.settings::<AppearancePrefs>()
             .set(&AppearancePrefs {
-                theme: "Nord".into(),
+                theme: "Dark cool".into(),
                 text_scale: 1.15,
                 ui_scale: 1.25,
                 ..AppearancePrefs::default()
             })
             .unwrap();
         let mut pane = AppearancePane::new(cx.clone(), LocalState::new(None));
-        assert_eq!(pane.shown.theme.get(), "Nord");
+        assert_eq!(pane.shown.theme.get(), "Dark cool");
         assert_eq!(pane.shown.text_size.get(), text_size_label(1.15));
         assert_eq!(pane.shown.ui_scale.get(), "125%");
 
         cx.settings::<AppearancePrefs>()
             .update(|prefs| {
-                prefs.theme = "Gruvbox".into();
+                prefs.theme = "Dark graphite".into();
                 prefs.reduce_motion = true;
             })
             .unwrap();
         let doc = ui::automerge::AutoCommit::new();
         pane.sync(&doc, &ui::automerge::ROOT);
-        assert_eq!(pane.shown.theme.get(), "Gruvbox");
+        assert_eq!(pane.shown.theme.get(), "Dark graphite");
         assert!(pane.shown.reduce_motion.get());
         assert!(pane.take_structure_dirty());
 
         let intent = pane
             .appearance_intent()
             .expect("the appearance pane always expresses an intent");
-        assert_eq!(intent.base_theme.name, "Gruvbox");
+        assert_eq!(intent.base_theme.name, "Dark graphite");
         assert_eq!(intent.ui_scale, 1.25);
         assert_eq!(intent.text_scale, 1.15);
         assert!(intent.reduce_motion);

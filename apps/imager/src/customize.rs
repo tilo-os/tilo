@@ -171,15 +171,29 @@ pub(crate) fn field_action(f: CzField, value: String) -> ImagerAction {
     }
 }
 
-fn text_field(profile: &InstallProfile, field: CzField, commands: &Commands) -> Field {
+fn text_field(
+    profile: &InstallProfile,
+    field: CzField,
+    commands: &Commands,
+    actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
+) -> Field {
     let sink = Rc::clone(commands);
     let input = TextInput::local()
         .with_id(&field.id())
-        .with_initial_value(&shown_value(profile, field))
-        .on_change(move |value| {
+        .with_initial_value(&shown_value(profile, field));
+    let input = if let Some(binding) = actions.and_then(|actions| {
+        actions.binding(ui::tilo_resource::ActionRef::<
+            crate::resource::Imager,
+            String,
+        >::new(field.key(), &["value"]))
+    }) {
+        input.on_action(binding)
+    } else {
+        input.on_change(move |value| {
             sink.borrow_mut()
                 .push(Command::Profile(field, value.to_string()));
-        });
+        })
+    };
     let control = if field == CzField::Username {
         input.with_kind(ui::widget::TextInputKind::Username)
     } else {
@@ -225,7 +239,12 @@ fn choice_field(
 
 /// The customization form for `profile`. `timezone_open` poses the
 /// time-zone chooser open for a documentation frame.
-pub(crate) fn form(profile: &InstallProfile, commands: &Commands, timezone_open: bool) -> Form {
+pub(crate) fn form(
+    profile: &InstallProfile,
+    commands: &Commands,
+    actions: Option<&ui::framework::Actions<crate::resource::Imager>>,
+    timezone_open: bool,
+) -> Form {
     let keyboards = KEYBOARDS
         .iter()
         .map(|(label, _)| (*label).to_string())
@@ -238,9 +257,9 @@ pub(crate) fn form(profile: &InstallProfile, commands: &Commands, timezone_open:
     Form::new()
         .section(
             FormSection::new("Identity")
-                .field(text_field(profile, CzField::Hostname, commands))
-                .field(text_field(profile, CzField::FullName, commands))
-                .field(text_field(profile, CzField::Username, commands)),
+                .field(text_field(profile, CzField::Hostname, commands, actions))
+                .field(text_field(profile, CzField::FullName, commands, actions))
+                .field(text_field(profile, CzField::Username, commands, actions)),
         )
         .section(
             FormSection::new("Region")

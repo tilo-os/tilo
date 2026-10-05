@@ -3891,8 +3891,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
     /// nodes rather than as child widgets; without this, an AT could describe
     /// row 4 but activating it would land a click in the middle of the table.
     /// `key_path` is `[row]` for a row and `[row, column]` for a cell — the
-    /// table acts on the row either way, since a cell has no independent
-    /// behaviour here.
+    /// checkbox cells toggle their own checked value; other cells activate
+    /// their row.
     ///
     /// Rows carry no explicit key, so the path element is the row's display
     /// index (its ordinal among the table's synthetic children); the
@@ -3932,6 +3932,20 @@ impl<Row: 'static> Widget for DataTable<Row> {
                 true
             }
             Action::Activate | Action::ToggleCheck => {
+                if let Some(&column_key) = key_path.get(1) {
+                    let Ok(column) = usize::try_from(column_key) else {
+                        return false;
+                    };
+                    let Some(cell) = self.columns.get(column) else {
+                        return false;
+                    };
+                    if cell.checked.is_some() {
+                        return self.toggle_check(row, column);
+                    }
+                    if matches!(action, Action::ToggleCheck) {
+                        return false;
+                    }
+                }
                 self.select_only_index(row);
                 let source = self.source_row(row);
                 if let Some(cb) = &mut self.on_activate {
@@ -7107,6 +7121,21 @@ mod content_edge_tests {
             false,
         );
         assert_eq!(*checks.borrow(), [(1, true)]);
+        let mut state = crate::state::State::new();
+        assert!(table.perform_action_at(
+            &crate::a11y::Action::ToggleCheck,
+            &[0, 0],
+            &mut crate::widget::Edits::lend(&mut state.doc),
+            &state.root,
+        ));
+        assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
+        assert!(!table.perform_action_at(
+            &crate::a11y::Action::ToggleCheck,
+            &[0, 99],
+            &mut crate::widget::Edits::lend(&mut state.doc),
+            &state.root,
+        ));
+        assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
         let a11y = Widget::accessibility(&table).unwrap();
         let cell = &a11y.children[0].children[0];
         assert_eq!(cell.role, crate::a11y::Role::Checkbox);

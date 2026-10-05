@@ -803,3 +803,67 @@ fn full_relayout_valve_forces_the_rebuild_path() {
         "clearing the override restores retention"
     );
 }
+
+#[test]
+fn raw_root_dispatch_maps_history_composition_to_retained_input_and_returns_focus() {
+    let registration = crate::history_mode::HistoryRegistration::new(
+        &PORTABLE_HISTORY,
+        vec![
+            crate::history_mode::HistorySourceRegistration::Unversioned {
+                scope: "document",
+                reason: "fixture history is unavailable",
+            },
+        ],
+    )
+    .unwrap();
+    let value = crate::local_state::LocalState::new(String::new());
+    let root = Column::new().push(Box::new(
+        crate::widget::TextInput::from_state(&value).with_id("raw-input"),
+    ));
+    let mut frame = FrameHarness::from_managed_root(
+        State::new(),
+        crate::history_mode::ManagedRoot::new(Box::new(root), registration),
+        (600, 360),
+    )
+    .unwrap();
+    let rect = *frame
+        .targets()
+        .get("raw-input")
+        .expect("retained input target");
+    assert!(rect.width() > 0.0 && rect.height() > 0.0);
+    let center = rect.center();
+    let modifiers = winit::event::Modifiers::default();
+    let frames = frame.relayout_frames();
+    let heads = frame.state.doc.get_heads();
+    let focused = frame.focused;
+    frame.dispatch_to_root_outcome(&move_to(center.x, center.y), &modifiers);
+    let result = frame.dispatch_to_root_outcome(
+        &WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        },
+        &modifiers,
+    );
+    assert!(
+        result.handled,
+        "wrapped input receives the actual pointer press"
+    );
+    let input_node = result.focus_target.expect("input requests focus");
+    assert!(frame.node_map.contains_key(&input_node));
+    assert_ne!(
+        input_node, frame.child_node,
+        "focus belongs to the retained input"
+    );
+    assert_eq!(
+        frame.focused, focused,
+        "raw dispatch reports focus without host routing"
+    );
+    assert_eq!(
+        frame.relayout_frames(),
+        frames,
+        "raw dispatch runs no frame"
+    );
+    assert_eq!(frame.state.doc.get_heads(), heads);
+    assert!(value.get().is_empty());
+}

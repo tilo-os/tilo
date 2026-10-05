@@ -242,12 +242,7 @@ fn notes_editor(
 )]
 pub struct MainPanel {
     header: crate::note_header::NoteHeader,
-    backlinks: Vec<BacklinkChip>,
-    backlink_rects: Vec<Rect>,
-    backlink_area_height: f64,
     pending_backlink_open: Option<PageId>,
-    focused_backlink: Option<PageId>,
-    hovered_backlink: Option<PageId>,
     header_node: Option<NodeId>,
     metadata_height: f64,
     /// Currently displayed page (None until a selection lands). Also the
@@ -277,21 +272,16 @@ pub struct MainPanel {
     /// Durable tags assigned to the open page, rendered as quiet chips. The
     /// selection/filter around them belongs to the app and is intentionally
     /// local; this view only receives the document-derived labels.
-    tags: Vec<TagChip>,
     /// Exact hit geometry for the wrapped tag chips. This is computed during
     /// layout, shared by pointer + semantic activation, and deliberately
     /// avoids making the title's entire metadata band accidentally editable.
-    tag_rects: Vec<Rect>,
     /// The height reserved for wrapped tag rows. It is recalculated whenever
     /// width, text scale, or membership changes, so large text and long tag
     /// names never collide with the first document block.
-    tag_area_height: f64,
     /// A tag chip is a local navigation control. The app opens the tag it
     /// names, checking the tag still exists, before changing the local browse
     /// view.
     pending_tag_open: Option<crate::model::TagId>,
-    focused_tag: Option<crate::model::TagId>,
-    hovered_tag: Option<crate::model::TagId>,
     /// Set while a new chip height is being discovered so the host rebuilds
     /// the absolute editor inset on the immediately following layout pass.
     tag_layout_dirty: bool,
@@ -367,22 +357,12 @@ impl MainPanel {
             title_rect: Rect::ZERO,
             last_pointer: Point::ZERO,
             pending_rename: None,
-            tags: Vec::new(),
-            tag_rects: Vec::new(),
-            tag_area_height: 0.0,
             pending_tag_open: None,
-            focused_tag: None,
-            hovered_tag: None,
             header: NoteHeader::default(),
             header_node: None,
             metadata_height: 0.0,
             tag_layout_dirty: false,
-            backlinks: Vec::new(),
-            backlink_rects: Vec::new(),
-            backlink_area_height: 0.0,
             pending_backlink_open: None,
-            focused_backlink: None,
-            hovered_backlink: None,
             editor: notes_editor(None, None),
             notebook: None,
             image_store: None,
@@ -2273,7 +2253,7 @@ mod tests {
             );
             // Each visible chip publishes the exact stable resource address,
             // so accessibility and the palette resolve the same identity.
-            let bindings = ui::widget::controls::control_action_bindings(&**panel);
+            let bindings = ui::widget::controls::control_action_bindings(&*panel);
             for tag in &tags {
                 let expected = crate::actions::open_tag_binding(*tag, "label").unwrap();
                 assert!(

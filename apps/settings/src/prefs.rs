@@ -555,7 +555,7 @@ pub struct AppearancePrefs {
 }
 
 fn default_mode() -> String {
-    "dark".to_string()
+    "light".to_string()
 }
 
 fn default_dark_theme() -> String {
@@ -810,7 +810,7 @@ impl AppearancePrefs {
     ];
     pub fn choose_legacy_theme(&mut self, name: String) {
         self.theme = name.clone();
-        if settings_store::day_schedule::is_automatic(&name) {
+        if settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()) {
             self.mode = "automatic".into();
         } else if let Some(preset) = ui::theme::Preset::find(&name) {
             let doc = preset.document();
@@ -1731,7 +1731,7 @@ mod tests {
             (
                 "high contrast overrides the preset",
                 prefs("Dark graphite", true, false, 1.0, 1.0),
-                "High Contrast",
+                "High contrast",
                 1.0,
                 false,
             ),
@@ -1747,7 +1747,7 @@ mod tests {
         // Every advertised preset maps to a distinct real constructor.
         for name in AppearancePrefs::THEMES
             .iter()
-            .filter(|name| !settings_store::day_schedule::is_automatic(name))
+            .filter(|name| !settings_store::day_schedule::is_automatic(&name.to_ascii_lowercase()))
         {
             let t = theme_by_name(name);
             assert_eq!(&t.name, name, "{name} must resolve to its own theme");

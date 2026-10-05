@@ -265,3 +265,37 @@ fn stripes_are_a_derived_tint_that_registers() {
         assert!(crate::surface::edge_delta(stripe, ground) > 0.0);
     }
 }
+
+#[test]
+fn published_property_action_bounds_follow_the_painted_hit_target() {
+    for scale in [1.0, 2.0] {
+        let activated = Rc::new(Cell::new(false));
+        let signal = activated.clone();
+        let theme = Theme::dark().with_text_scale(scale);
+        let mut harness = FrameHarness::new_with_theme(
+            crate::State::new(),
+            Box::new(PropertyList::new(vec![
+                Property::new("Website", "https://example.org").action(
+                    Icon::ExternalLink,
+                    "Open",
+                    move || signal.set(true),
+                ),
+            ])),
+            (480, 240),
+            theme,
+        );
+        let (_, action) = harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(_, node)| node.label() == Some("Open Website"))
+            .expect("the measured property publishes its action");
+        let bounds = action.bounds().expect("the synthetic action has bounds");
+        assert!(bounds.width() > 0.0 && bounds.height() > 0.0);
+        let center = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1).center();
+        harness.click_at(center.x, center.y);
+        assert!(
+            activated.get(),
+            "published bounds reach the real painted action at {scale}x"
+        );
+    }
+}

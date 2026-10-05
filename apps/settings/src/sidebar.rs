@@ -64,7 +64,7 @@ pub fn sections() -> Vec<NavSection> {
                     NavItem::new(category.slug(), category.label()).icon(category.icon())
                 })
                 .collect();
-            NavSection::new(section.slug(), section.label(), items)
+            NavSection::new(section.slug(), section.label(), items).filterable()
         })
         .collect()
 }

@@ -284,6 +284,7 @@ impl ResourceSurface<Imager, ImagerEffect> for ImagerApp {
     }
 
     fn attach(&mut self, cx: SurfaceCx<Imager>) {
+        self.attach_control_actions(cx.actions());
         self.attach_framework(cx.dispatcher(), cx.jobs(), cx.mode());
     }
 
@@ -381,11 +382,14 @@ mod tests {
             };
             assert_eq!(actual, expected);
         }
-        assert!(perform(
-            &mut app,
-            "imager:profile:timezone",
-            "Europe/Not_A_Real_Zone"
-        ));
+        assert!(
+            !perform(
+                &mut app,
+                "imager:profile:timezone",
+                "Europe/Not_A_Real_Zone"
+            ),
+            "the shared chooser refuses a value outside its canonical catalog"
+        );
         assert_eq!(app.state().profile.timezone, "Europe/Berlin");
     }
 
@@ -409,6 +413,25 @@ mod tests {
             app.state().profile.hostname,
             "",
             "the keystrokes of one field are one step"
+        );
+        assert!(app.redo(), "the grouped field edit can be redone");
+        assert_eq!(app.state().profile.hostname, "lab01");
+
+        let previous_name = app.state().profile.user.full_name.clone();
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&ImagerAction::SetFullName {
+                value: "Second field".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(app.state().profile.user.full_name, "Second field");
+        assert!(app.undo(), "a different field is a separate step");
+        assert_eq!(app.state().profile.user.full_name, previous_name);
+        assert_eq!(
+            app.state().profile.hostname,
+            "lab01",
+            "undoing another field keeps the prior typed word"
         );
     }
 
@@ -642,7 +665,7 @@ mod tests {
         for (scenario, shown) in [
             (
                 "confirm",
-                ["Tilo 1.0", "Wi-Fi network", "Enroll this machine"],
+                ["Tilo 1.0", "Wi-Fi network", "Enroll as a new device"],
             ),
             (
                 "customize",

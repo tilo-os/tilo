@@ -651,9 +651,10 @@ mod tests {
                 );
                 let frame = app.harness().inspection_json().unwrap();
                 match *scenario {
-                    "firstrun" => assert!(frame.contains("Welcome to Mail"), "{frame}"),
+                    "firstrun" => assert!(frame.contains("No email account yet"), "{frame}"),
                     "setup" | "setup_narrow" => {
-                        assert!(frame.contains("you@example.test"), "{scenario}: {frame}");
+                        let email = crate::sample::sample_account_store().active_config().email;
+                        assert!(frame.contains(&email), "{scenario}: {frame}");
                     }
                     "error" => assert!(frame.contains("Couldn’t connect to IMAP"), "{frame}"),
                     _ => {}
@@ -788,7 +789,9 @@ mod tests {
                 .state()
                 .messages
                 .iter()
-                .find(|message| message.folder == Folder::Inbox && !message.read)
+                .find(|message| {
+                    message.folder == Folder::Inbox && !message.read && !message.starred
+                })
                 .cloned()
                 .expect("an unread inbox message");
             let fetched = IngestBaseline {
@@ -796,7 +799,7 @@ mod tests {
                 read: Some(false),
                 starred: Some(false),
                 folder: Some("inbox".into()),
-                account: Some("you@example.test".into()),
+                account: Some(crate::sample::sample_account_store().active_config().email),
                 locator: Some("launch@example.test".into()),
             };
             app.invoke(
@@ -862,8 +865,10 @@ mod tests {
             let latest = app.versions().last().map(|version| version.hash).unwrap();
             let past = app.past_version(&[latest]).unwrap();
             let shown = past.texts().join("\n");
-            assert!(shown.contains("Welcome to Mail"), "{shown}");
-            assert!(!shown.contains("you@example.test"), "{shown}");
+            assert!(shown.contains("No email account yet"), "{shown}");
+            for account in crate::sample::sample_account_store().accounts {
+                assert!(!shown.contains(&account.config.email), "{shown}");
+            }
         }
     }
 

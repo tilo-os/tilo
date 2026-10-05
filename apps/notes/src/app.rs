@@ -19,7 +19,6 @@ use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
-use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -42,7 +41,6 @@ use crate::doc::NotesDoc;
 use crate::effect::NotesEffect;
 use crate::main_panel::{BacklinkChip, MainPanel, TagChip};
 use crate::model::{PageId, TagId, Workspace};
-use crate::num;
 use crate::shortcuts_overlay::ShortcutsOverlay;
 use crate::sidebar::{OutEvent, PageSidebar, SidebarTransfer};
 use crate::status_bar::{SaveStatus, StatusBarState, StatusModel, count_words};
@@ -63,9 +61,6 @@ thread_local! {
 pub fn present_history_in_shell_for_test(present: bool) {
     SHELL_PRESENTS_HISTORY.set(present);
 }
-
-/// The resource the window's History control acts on.
-const HISTORY_RESOURCE: &str = "tilo.host:history";
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -348,7 +343,6 @@ pub struct NotesApp {
     /// this through taffy node ids; it's a flex sub-container whose
     /// rect we never need outside of layout. Tracked locally for
     /// completeness.
-    content_node: Option<NodeId>,
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
@@ -375,14 +369,10 @@ pub struct NotesApp {
     /// whole page tree only when one of them moved instead of every frame.
     canonical_synced: Option<CanonicalProjectionKey>,
     /// Top-bar taffy node — present only while `built_narrow`.
-    topbar_node: Option<NodeId>,
     /// Rect of the narrow-mode top bar, from `apply_layout`.
-    topbar_rect: Rect,
     /// Hit rect of the drawer toggle (hamburger) button.
-    menu_btn_rect: Rect,
     /// Rect of the content area (between top bar and status bar). Used
     /// to place the drawer scrim in narrow mode.
-    content_rect: Rect,
     /// Where the notebook's edits go: the framework's dispatcher, once the
     /// surface is attached. A notebook shown before (or without) it is read
     /// only.
@@ -420,11 +410,9 @@ pub struct NotesApp {
     /// Last theme text scale, captured during layout. Responsive chrome uses
     /// it for width/height reservations so 200% text switches to the drawer
     /// before page labels or the title stack can collide.
-    text_scale: f64,
     /// Effective reduced-motion setting provided by the host. Notes owns one
     /// small app-local animation (the transient save-status bubble), so it
     /// retains the value instead of relying on the default child forwarding.
-    motion_reduced: bool,
     prepared_local_focus: Option<crate::local_view::PreparedFocus>,
     // The first measured width resolves the saved drawer and Sidebar intent once.
     pending_responsive_view: Option<(bool, bool)>,
@@ -541,7 +529,6 @@ impl NotesApp {
             shortcuts_return_to_tree: false,
             main_node: None,
             theme: Theme::dark(),
-            content_node: None,
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
             canonical_asset_manifest: Vec::new(),
@@ -552,10 +539,6 @@ impl NotesApp {
             laid_out: false,
             self_dirty: false,
             canonical_synced: None,
-            topbar_node: None,
-            topbar_rect: Rect::ZERO,
-            menu_btn_rect: Rect::ZERO,
-            content_rect: Rect::ZERO,
             dispatcher: None,
             active_tag_filter: None,
             route_history: ui::NavStack::new(initial_route),
@@ -564,8 +547,6 @@ impl NotesApp {
             search_blocks: HashMap::new(),
             backlink_index: HashMap::new(),
             search_heads: None,
-            text_scale: 1.0,
-            motion_reduced: false,
             prepared_local_focus: None,
             pending_responsive_view: None,
             save_status: None,
@@ -1784,7 +1765,8 @@ impl NotesApp {
     /// Test hook: centre of the shell's sidebar toggle.
     #[doc(hidden)]
     pub fn menu_btn_center_for_test(&self) -> Point {
-        self.shell.geometry().toggle.center()
+        self.header_button_rect("nav-shell-sidebar")
+            .map_or(Point::ZERO, |rect| rect.center())
     }
 
     /// Test hook: centre of sidebar row `idx`, for click targeting.
@@ -2110,7 +2092,15 @@ impl Widget for NotesApp {
         self.main.settle(edits, path);
     }
 
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // The retained shell owns queued header views, responsive bindings
+        // and navigation. It participates in the same lifecycle as the
+        // separately projected notebook content in its column slots.
+        self.shell.update(state, path)
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        self.shell.sync(state, path);
         self.drain_header_requests();
         let (state, path) = ui::doc::document_ref(state, path);
         if let Some(saved) = self.save_status.as_ref().map(ui::LocalState::get)
@@ -2275,6 +2265,11 @@ impl Widget for NotesApp {
             }
         }
         if let Some(n) = self.main_node {
+            self.main.set_bottom_inset(
+                ui::status_bubble::pill_height(&self.theme)
+                    + f64::from(self.theme.tokens.spacing.s4)
+                    + f64::from(self.theme.tokens.spacing.rhythm.group),
+            );
             self.main
                 .apply_layout(taffy, n, self.columns.content.rect().origin());
         }
@@ -3313,6 +3308,86 @@ mod tests {
         }
     }
 
+    /// A retry must recover the actual record writer, not leave a latch for
+    /// the test to consume after the production owner already took it.
+    fn assert_real_save_retry(expected_target: &str) {
+        use ui::tilo_resource::Resource as _;
+
+        let profile = TempDir::new().unwrap();
+        let mut host =
+            ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
+        host.flush().unwrap();
+        let directory = profile
+            .path()
+            .join("so.tilo.notes")
+            .join("rooms")
+            .join("personal")
+            .join("records")
+            .join(host.record().storage_key());
+        assert!(directory.is_dir(), "observe the real record directory");
+        let backup = profile.path().join("held-record");
+        std::fs::rename(&directory, &backup).unwrap();
+        // A regular file in place of this test's directory makes writes fail
+        // for root as well as ordinary users; no permission assumptions.
+        std::fs::write(&directory, b"deliberate test storage fault").unwrap();
+        let page = uuid::Uuid::new_v4();
+        host.invoke(
+            ui::tilo_resource::Invoke::apply(&crate::actions::NotesAction::AppendPage {
+                id: page.to_string(),
+                title: "Retry receipt".into(),
+                parent: String::new(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(host.flush().is_err(), "the actual writer must fail");
+        host.settle();
+        let hosted_retry = host
+            .surface::<NotesApp, _>(|notes| {
+                assert!(matches!(
+                    notes.record_save_status,
+                    ui::record::RecordSaveStatus::Failed(_)
+                ));
+                let failure = notes
+                    .accessibility()
+                    .unwrap()
+                    .children
+                    .into_iter()
+                    .find(|node| node.children.len() == 2)
+                    .expect("the actual writer failure offers retry");
+                failure.children[0]
+                    .action_target
+                    .clone()
+                    .expect("live retry target")
+            })
+            .unwrap();
+        assert_eq!(hosted_retry, expected_target);
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::rename(&backup, &directory).unwrap();
+        host.harness()
+            .perform_named(&hosted_retry, &ui::a11y::Action::Activate)
+            .unwrap();
+        host.settle();
+        host.surface::<NotesApp, _>(|notes| {
+            assert_eq!(
+                notes.record_save_status,
+                ui::record::RecordSaveStatus::Saved,
+                "the real owner must acknowledge the repaired writer"
+            );
+            assert!(!notes.save_retry, "the owner consumed the request");
+            assert!(notes.save_surface.failure().is_none());
+        })
+        .unwrap();
+        assert!(!host.take_save_retry().unwrap(), "no second retry remains");
+        let bytes = std::fs::read(directory.join("state.automerge")).unwrap();
+        let persisted = automerge::AutoCommit::load(&bytes).unwrap();
+        let notebook = crate::resource::Notebook::read(&persisted).unwrap();
+        assert!(
+            notebook.pages().iter().any(|meta| meta.id == page),
+            "the retry must make the failed edit durable on disk"
+        );
+    }
+
     #[test]
     fn status_reports_live_word_counts_persistent_failures_and_calm_motion() {
         eprintln!(
@@ -3357,16 +3432,7 @@ mod tests {
                 .action_target
                 .clone()
                 .expect("Try again is a target");
-            let mut host =
-                ui::prelude::TestApp::<crate::NotesShell>::capture(Some("save_error")).unwrap();
-            host.harness()
-                .perform_semantic_named("NotesApp", Some(&retry), &ui::a11y::Action::Activate)
-                .unwrap();
-            assert!(
-                host.take_save_retry().unwrap(),
-                "Try again asks the real record owner to save again"
-            );
-            assert!(!host.take_save_retry().unwrap(), "once");
+            assert_real_save_retry(&retry);
 
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
@@ -3380,7 +3446,10 @@ mod tests {
         eprintln!("phase reduced_motion_stops_notes_owned_status_bubble_frames");
         {
             let (mut app, _state, _tmp, _) = app_seeded_into_doc();
-            app.save_surface.poke(ui::clock::Instant::now());
+            app.theme.reduce_motion = false;
+            app.shots_save_status = Some(SaveStatus::Saved);
+            app.refresh_status();
+            app.save_surface.poke(ui::time::now());
             assert!(app.needs_animation_frame(), "normal fade requests frames");
 
             app.theme.reduce_motion = true;

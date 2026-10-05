@@ -135,7 +135,7 @@ impl ResourceApp for SpeedTestShell {
                 jitter,
                 download,
                 upload,
-                "Cloudflare · LHR".to_owned(),
+                "Cloudflare at LHR".to_owned(),
                 "capture-device".to_owned(),
             ))
         };

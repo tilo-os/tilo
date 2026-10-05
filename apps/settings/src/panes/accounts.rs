@@ -844,7 +844,7 @@ impl AccountsPane {
         let mut introduction = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
-            .with_gap(8.0);
+            .with_gap(ui::tokens::Spacing::BASE.s2);
         for line in intro {
             introduction = introduction.push(line);
         }

@@ -136,6 +136,7 @@ pub struct DiffView {
     left_spans: Vec<Vec<Span>>,
     right_spans: Vec<Vec<Span>>,
     rect: Rect,
+    focused: bool,
     scroll_y: f64,
     /// Index into `model.blocks` of the most recently navigated-to change.
     active_block: Option<usize>,
@@ -172,6 +173,7 @@ impl DiffView {
             left_spans: Vec::new(),
             right_spans: Vec::new(),
             rect: Rect::ZERO,
+            focused: false,
             scroll_y: 0.0,
             active_block: None,
             dirty: true,
@@ -574,6 +576,17 @@ impl Widget for DiffView {
         true
     }
 
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.dirty = true;
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -588,7 +601,7 @@ impl Widget for DiffView {
                     "{changes} change{}. Scroll to review the aligned source lines.",
                     if changes == 1 { "" } else { "s" }
                 ))
-                .with_state(AccessState::new().focusable(true))
+                .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_bounds(self.rect),
         )
     }

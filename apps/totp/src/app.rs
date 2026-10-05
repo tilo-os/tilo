@@ -932,6 +932,16 @@ impl AuthenticatorApp {
 }
 
 impl Widget for AuthenticatorApp {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        // Hosted controls can enqueue a local request after event routing.
+        // Settle the retained sheet first, then consume those requests in
+        // the same frame even when no document action changed the vault.
+        if let Some(sheet) = self.add_panel.widget_mut() {
+            sheet.settle(edits, path);
+        }
+        self.drain_add_panel();
+    }
+
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Pull in any QR image the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
@@ -996,6 +1006,7 @@ impl Widget for AuthenticatorApp {
             x0 + f64::from(layout.size.width),
             y0 + f64::from(layout.size.height),
         );
+        self.add_panel.set_window_height(layout.size.height);
         let layers = taffy.children(node).unwrap_or_default();
         if let (Some(sheet), Some(layer)) = (self.add_panel.widget_mut(), layers.first()) {
             sheet.apply_layout(taffy, *layer, Point::new(x0, y0));
@@ -1519,12 +1530,12 @@ mod tests {
         assert!(
             selected
                 .iter()
-                .any(|n| n.name.as_deref() == Some("SHA256") && n.state.selected)
+                .any(|n| n.name.as_deref() == Some("SHA256") && n.state.checked == Some(true))
         );
         assert!(
             selected
                 .iter()
-                .any(|n| n.name.as_deref() == Some("8") && n.state.selected)
+                .any(|n| n.name.as_deref() == Some("8") && n.state.checked == Some(true))
         );
     }
 
@@ -1608,16 +1619,36 @@ mod tests {
             empty.results.is_empty(),
             "canonical provider reports no matches"
         );
-        app.harness().key("/");
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .unwrap();
         settle(&mut app);
         assert_eq!(
-            app.harness().global_search_query(),
-            Some(""),
-            "search is the platform service"
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("the hosted palette exposes its query")
+                .role,
+            ui::a11y::Role::TextInput,
+            "platform search owns its query field"
         );
         app.harness().type_text("github");
         settle(&mut app);
-        assert_eq!(app.harness().global_search_query(), Some("github"));
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("query child")
+                .value
+                .as_deref(),
+            Some("github")
+        );
         assert_eq!(
             app.state().len(),
             count,
@@ -1625,7 +1656,10 @@ mod tests {
         );
         app.harness().key("Escape");
         settle(&mut app);
-        assert!(app.harness().global_search_query().is_none());
+        assert!(
+            app.harness().inspection_json().unwrap().contains("GitHub"),
+            "closing search restores account content"
+        );
     }
 
     /// The persistence banner has its own bounded click and accessibility retry.
@@ -1762,7 +1796,7 @@ mod tests {
         }
     }
 
-    /// Add button, Ctrl+N, slash/Ctrl+F, Escape and the modal's gating of global search.
+    /// Add button, Ctrl+N, Escape and the modal's gating of platform search.
     #[test]
     fn shortcuts_and_clicks_open_the_modal_and_focus_search() {
         let mut app = hosted((1000, 800), None);
@@ -1772,33 +1806,59 @@ mod tests {
         app.harness().key("Escape");
         settle(&mut app);
         assert!(!panel(&mut app, |p| p.is_open()));
-        app.harness().key("Ctrl+n");
+        app.harness().set_modifiers(&["ctrl".into()]);
+        app.harness().key("n");
+        app.harness().set_modifiers(&[]);
         settle(&mut app);
         assert!(
             panel(&mut app, |p| p.is_open()),
             "Ctrl+N opens canonical add flow"
         );
-        app.harness().key("/");
-        settle(&mut app);
         assert!(
-            app.harness().global_search_query().is_none(),
-            "modal isolates global search shortcut"
+            app.harness()
+                .open_search(&ui::search::SearchRequest::this_app())
+                .is_err(),
+            "modal isolates platform search"
         );
         assert!(panel(&mut app, |p| p.is_open()));
         app.harness().key("Escape");
         settle(&mut app);
-        app.harness().key("/");
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .unwrap();
         settle(&mut app);
-        assert_eq!(app.harness().global_search_query(), Some(""));
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("the hosted palette exposes its query")
+                .role,
+            ui::a11y::Role::TextInput
+        );
         app.harness().type_text("github");
         settle(&mut app);
-        assert_eq!(app.harness().global_search_query(), Some("github"));
+        assert_eq!(
+            app.harness()
+                .focused_access_node()
+                .unwrap()
+                .children
+                .into_iter()
+                .find(|node| node.name.as_deref() == Some("Search"))
+                .expect("query child")
+                .value
+                .as_deref(),
+            Some("github")
+        );
         app.harness().key("Escape");
         settle(&mut app);
-        assert!(
-            app.harness().global_search_query().is_none(),
-            "Escape dismisses platform search"
-        );
+        app.harness()
+            .open_search(&ui::search::SearchRequest::this_app())
+            .expect("Escape dismissed the preceding search");
+        app.harness().key("Escape");
+        settle(&mut app);
     }
 
     /// Rasterise `data` as a QR code into a greyscale PNG on disk, scaling

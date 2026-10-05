@@ -975,6 +975,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 self.bound_actions.insert(
                     (id.clone(), spec.id.clone()),
                     crate::bound_dispatch::BoundActionTarget {
+                        physical_text: false,
                         binding: binding.clone(),
                         address: crate::bound_dispatch::BoundActionAddress {
                             instance_id: binding.instance_id,

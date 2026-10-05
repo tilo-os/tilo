@@ -11,7 +11,8 @@ use std::io::Write;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
+#[cfg(test)]
+use automerge::AutoCommit;
 use ui::framework::{Dispatcher, EffectReply, LiveRow, SurfaceCx};
 use ui::tilo_resource::{PlainText, TextEdit};
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
@@ -1267,6 +1268,19 @@ mod tests {
 
     use crate::model::{ConnectionProfile, Engine};
 
+    fn of_kind<'a>(
+        resources: &'a [tilo_actions::Resource],
+        kind: &str,
+    ) -> Option<&'a tilo_actions::Resource> {
+        resources.iter().find_map(|resource| {
+            if resource.kind == kind {
+                Some(resource)
+            } else {
+                of_kind(&resource.children, kind)
+            }
+        })
+    }
+
     fn synced() -> (DbClientApp, AutoCommit) {
         let mut app = DbClientApp::sampled();
         let mut doc = sample_document();
@@ -1679,15 +1693,33 @@ mod tests {
         assert_eq!(state.connections.len(), 1);
         assert_eq!(state.connections[0].name, "Local files");
 
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&crate::actions::DbAction::EditSql(
+                ui::tilo_resource::TextEdit::ReplaceText {
+                    text: "SELECT value FROM proof".into(),
+                },
+            ))
+            .unwrap(),
+        )
+        .unwrap();
         let mut app = app.reopen().unwrap();
+        let inspection = app.harness().inspection_json().unwrap();
+        assert!(
+            inspection.contains("SELECT value FROM proof"),
+            "{inspection}"
+        );
+        assert!(
+            of_kind(&app.harness().resources(), "database.schema").is_none(),
+            "saved SQL and its filename do not mean the connection is open"
+        );
         let connection = crate::resource::connection_resource_id(state.connections[0].id);
+
         app.call_on(&connection, "connect", serde_json::json!({}))
             .unwrap();
         tilo_test_env::wait_until("the connection to open its catalog", || {
             app.settle();
-            app.harness()
-                .inspection_json()
-                .is_ok_and(|inspection| inspection.contains("proof"))
+            of_kind(&app.harness().resources(), "database.schema")
+                .is_some_and(|schema| schema.label == "main")
         });
         let heads = app.read_document(|doc| doc.clone().get_heads());
         app.effect_confirmed(&crate::resource::DbEffect::Query {
@@ -1725,7 +1757,7 @@ mod tests {
         // --- phase: resource_query_is_pending_until_the_database_worker_finishes ---
         {
             use ui::framework::testing::TestApp;
-            let mut app = TestApp::<crate::resource::DbClientShell>::capture(Some("data")).unwrap();
+            let mut app = TestApp::<crate::resource::DbClientShell>::new().unwrap();
             app.effect_confirmed(&DbEffect::Query {
                 sql: "SELECT 1".into(),
             })

@@ -40,7 +40,6 @@ use super::migration_worker::{
 };
 use super::view::system_folder_reason;
 // Page rhythm (HIG §7b): the crate's steps and the shared page sections.
-use super::{page, stack};
 use crate::resource::{Imager, ImagerState};
 
 use ui::framework::{
