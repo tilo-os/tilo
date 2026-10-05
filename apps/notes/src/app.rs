@@ -973,7 +973,7 @@ impl NotesApp {
                 .pages()
                 .iter()
                 .filter(|page| page.parent.is_none())
-                .min_by_key(|page| (page.order, page.id))
+                .min_by(|a, b| crate::model::sibling_order(a, b))
                 .map(|page| page.id);
             workspace.set_selected(first);
         }
@@ -2594,8 +2594,7 @@ impl NotesApp {
     }
 
     /// Turn the page-tree change [`apply_event`] just made into the matching
-    /// action(s). Deletes are dispatched before upserts so a delete's own sibling
-    /// renumber (which `apply` recomputes in the document) doesn't double-write.
+    /// action(s). Deletes are dispatched before upserts.
     fn dispatch_tree_diff(
         &mut self,
         doc: &mut AutoCommit,
