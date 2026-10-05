@@ -353,6 +353,49 @@ fn runtime(root: &std::path::Path) -> ManagedRuntime {
         bwrap: std::env::current_exe().unwrap(),
     }
 }
+
+#[test]
+fn managed_runtime_resolves_the_declared_bundle_only_with_host_policy() {
+    let (root, package, trust) = installed();
+    let fixture = runtime(root.path());
+    let manifest = package.revalidate(&trust).unwrap();
+    let mut options = crate::run::RunOptions {
+        runtime_root: Some(fixture.bundle_root.clone()),
+        require_runtime_publisher: Some(fixture.runtime_publisher.clone()),
+        ..Default::default()
+    };
+    let resolve = |options: &crate::run::RunOptions| {
+        ManagedRuntime::from_launch_options(
+            &manifest,
+            options,
+            fixture.sandbox_shim.clone(),
+            fixture.bwrap.clone(),
+        )
+    };
+    let selected = resolve(&options).unwrap();
+    assert_eq!(selected.bundle_root, fixture.bundle_root);
+    assert_eq!(selected.runtime_publisher, fixture.runtime_publisher);
+    options.require_runtime_publisher = Some("00".repeat(32));
+    assert!(resolve(&options).is_err());
+    options.require_runtime_publisher = Some(fixture.runtime_publisher);
+    options.allow_unsigned_runtime = true;
+    assert!(resolve(&options).is_err());
+    options.allow_unsigned_runtime = false;
+    options.allow_missing_runtime = true;
+    assert!(resolve(&options).is_err());
+    options.allow_missing_runtime = false;
+    let mut wrong_version = manifest;
+    wrong_version.runtime = Some("tilo-runtime/another-version".into());
+    assert!(
+        ManagedRuntime::from_launch_options(
+            &wrong_version,
+            &options,
+            fixture.sandbox_shim,
+            fixture.bwrap,
+        )
+        .is_err()
+    );
+}
 struct CurrentAuthority(std::sync::atomic::AtomicBool);
 impl ManagedLaunchAuthority for CurrentAuthority {
     fn claim_launch(&self, binding: &ManagedBinding) -> Result<(), String> {
