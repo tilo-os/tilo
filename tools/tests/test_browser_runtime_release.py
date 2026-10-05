@@ -1,0 +1,168 @@
+"""Exercise engine-only authority, native payload rejection and source coherence."""
+import importlib.util
+import os
+import json
+import re
+import sys
+from unittest.mock import patch
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / 'tools/apps/browser_runtime_release.py'
+spec = importlib.util.spec_from_file_location('browser_runtime_release', SCRIPT)
+release = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(release)
+
+
+class BrowserRuntimeRelease(unittest.TestCase):
+    def plan(self, overrides):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / 'output'
+            environment = dict(os.environ, GITHUB_OUTPUT=str(output), ENGINE_RUNTIME_ONLY='true',
+                               GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main',
+                               GITHUB_SHA=release.head())
+            for key in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
+                        'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256',
+                        'VERIFY_FINAL_RECEIPT', 'REQUESTED_APPS', 'REQUESTED_COLLECTION'):
+                environment.pop(key, None)
+            environment.update(overrides)
+            result = subprocess.run(['python3', str(SCRIPT), 'plan'], env=environment,
+                                    capture_output=True, text=True)
+            return result, output.read_text() if output.exists() else ''
+
+    def test_only_explicit_exact_main_dispatch_enables_engine_release(self):
+        result, output = self.plan({})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, 'engine_runtime_only=true\n')
+        for overrides in ({'GITHUB_EVENT_NAME': 'push'}, {'GITHUB_EVENT_NAME': 'pull_request'},
+                          {'GITHUB_REF': 'refs/heads/codex/task'}, {'GITHUB_REF': 'refs/tags/v1'},
+                          {'GITHUB_SHA': 'a' * 40}, {'ENGINE_RUNTIME_ONLY': 'yes'}):
+            with self.subTest(overrides=overrides):
+                result, output = self.plan(overrides)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, '')
+        result, output = self.plan({'ENGINE_RUNTIME_ONLY': 'false', 'GITHUB_EVENT_NAME': 'push'})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(output, 'engine_runtime_only=false\n')
+
+    def test_no_qualification_or_unrelated_app_inputs_are_accepted(self):
+        for key in ('COORDINATOR_INTENT', 'REQUESTED_BUILDER', 'BASELINE_SHA', 'BASELINE_RUN_ID',
+                    'BASELINE_EVIDENCE', 'BASELINE_RECEIPT_SHA256', 'COORDINATOR_POLICY_SHA256',
+                    'VERIFY_FINAL_RECEIPT', 'REQUESTED_APPS', 'REQUESTED_COLLECTION'):
+            with self.subTest(key=key):
+                result, output = self.plan({key: 'unexpected'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(output, '')
+
+    def test_runtime_source_manifest_and_os_recipe_must_agree(self):
+        self.assertTrue(release.runtime_version(ROOT).endswith('-chromium'))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ('crates/sdk/ui-core/src/webview/chromium/runtime.rs',
+                         'apps/browser/tilo-app.toml', 'os/Containerfile'):
+                target = root / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((ROOT / name).read_text())
+            version = release.runtime_version(root)
+            manifest = root / 'apps/browser/tilo-app.toml'
+            manifest.write_text(manifest.read_text().replace(version, 'wrong-chromium'))
+            with self.assertRaisesRegex(ValueError, 'Browser optional runtime differs'):
+                release.runtime_version(root)
+
+    def test_native_payload_rejects_foreign_machine_missing_elf_and_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'engine'
+            root.mkdir()
+            with self.assertRaisesRegex(ValueError, 'no native ELF'):
+                release.native_payload(root, 'aarch64')
+            header = bytearray(20)
+            header[:6] = b'\x7fELF\x02\x01'
+            header[18:20] = (183).to_bytes(2, 'little')
+            (root / 'host').write_bytes(header)
+            release.native_payload(root, 'aarch64')
+            with self.assertRaisesRegex(ValueError, 'foreign ELF'):
+                release.native_payload(root, 'x86_64')
+            outside = Path(directory) / 'outside'
+            outside.write_bytes(header)
+            (root / 'escape').symlink_to(outside)
+            with self.assertRaisesRegex(ValueError, 'escapes'):
+                release.native_payload(root, 'aarch64')
+
+    def test_workflow_only_admits_validated_manual_mode_and_confines_keys(self):
+        workflow = (ROOT / '.forgejo/workflows/release-apps.yml').read_text()
+        plan = workflow.split('\n  plan:\n', 1)[1].split('\n  authorize-publish:', 1)[0]
+        self.assertLess(plan.index('id: engine-mode'), plan.index('id: builder'))
+        self.assertIn('engine_runtime_only: ${{ steps.engine-mode.outputs.engine_runtime_only }}', plan)
+        for job in ('build', 'publish'):
+            block = workflow.split('\n  ' + job + ':\n', 1)[1]
+            block = re.split(r'\n  [a-z][a-z-]+:\n', block, maxsplit=1)[0]
+            self.assertIn("needs.plan.outputs.engine_runtime_only != 'true'", block)
+        engine = workflow.split('\n  build-engine-runtime:\n', 1)[1].split('\n  publish-engine-runtime:', 1)[0]
+        self.assertIn("if: needs.plan.outputs.engine_runtime_only == 'true'", engine)
+        self.assertIn('needs: [plan, authorize-publish]', engine)
+        compile_step, sealing = engine.split('      - name: Seal the verified engine', 1)
+        self.assertNotIn('secrets.', compile_step)
+        self.assertIn('secrets.RUNTIME_BUNDLE_SIGNING_KEY', sealing)
+        upload = sealing.split('      - uses: actions/upload-artifact', 1)[1]
+        self.assertIn('dist/browser-runtime-release/package/**', upload)
+        self.assertNotIn('/work/', upload)
+        publisher = (ROOT / 'tools/apps/publish-browser-runtime.sh').read_text()
+        self.assertLess(publisher.index('browser_runtime_release.py verify'), publisher.index('jwt=$(curl'))
+        self.assertIn('tools/apps/publish-runtime-package.sh', publisher)
+        self.assertIn('GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main', publisher)
+
+    def test_cross_architecture_verification_executes_only_host_tools(self):
+        # The fake verifier isolates executable routing; the explicit native fixture
+        # separately proves the actual signed archive and thin-object reconstruction.
+        source = release.head()
+        key = 'b' * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host_bin = root / 'host-bin'
+            host_bin.mkdir()
+            trace = root / 'executed'
+            cli = host_bin / 'tilo-app-package'
+            cli.write_text('#!' + sys.executable + '\nimport sys\nfrom pathlib import Path\n'
+                           + f'with Path({str(trace)!r}).open("a") as output: output.write(sys.argv[1] + "\\n")\n'
+                           + 'if sys.argv[1] == "inspect": print(Path(sys.argv[-1]).read_text())\n')
+            cli.chmod(0o755)
+            for architecture in ('aarch64', 'x86_64'):
+                out = root / architecture
+                (out / 'bin').mkdir(parents=True)
+                foreign = out / 'bin/tilo-app-package'
+                foreign.write_text('#!/bin/sh\nexit 97\n')
+                foreign.chmod(0o755)
+                package = out / 'package'
+                package.mkdir()
+                proof = release.provenance(architecture, source)
+                version = '0.1.9+g' + source
+                proof.update(package_version=version, app_publisher=key)
+                tapp = package / 'engine.tapp'
+                isa = 'v3' if architecture == 'x86_64' else 'aarch64'
+                tapp.write_text('--- manifest.toml ---\n[package]\n'
+                                + f'id = "{release.PACKAGE}"\nversion = "{version}"\n'
+                                + f'provides = "{proof["runtime"]}"\nkind = "runtime"\n'
+                                + f'[package.isa]\n{architecture} = "{isa}"\n'
+                                + '--- payload (0 files) ---\n')
+                proof['files'] = {tapp.name: release.digest(tapp)}
+                (package / 'provenance.json').write_text(json.dumps(proof))
+                with patch.dict(os.environ, TILO_ENGINE_VERIFIER_BIN_DIR=str(host_bin)):
+                    release.verify_package(out, architecture, source, '9', key)
+                    with self.assertRaisesRegex(ValueError, 'publisher differs'):
+                        release.verify_package(out, architecture, source, '9', 'c' * 64)
+            self.assertEqual(trace.read_text().splitlines(), ['verify', 'inspect', 'verify', 'inspect'])
+
+    def test_publication_wrong_event_stops_before_tools_credentials_or_network(self):
+        for event, ref in (('push', 'refs/heads/main'), ('workflow_dispatch', 'refs/heads/task')):
+            result = subprocess.run(['bash', str(ROOT / 'tools/apps/publish-browser-runtime.sh')],
+                                    env={'PATH': os.environ['PATH'], 'GITHUB_EVENT_NAME': event,
+                                         'GITHUB_REF': ref}, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stderr, '')
+
+
+if __name__ == '__main__':
+    unittest.main()
