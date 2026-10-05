@@ -80,7 +80,7 @@ impl SearchProvider for PermissionPromptsProvider {
             )),
             badge: Some(self.display_name()),
             score: 0,
-            params: vec![ActionParam::required(
+            params: vec![ActionParam::required_owned(
                 "confirm",
                 ParamType::Boolean,
                 t("permission-request-confirm"),
