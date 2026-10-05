@@ -43,6 +43,25 @@ created. The existing image-encrypted AirPlay test remains the cryptographic
 transport check; physical receiver compatibility needs a separately authorized
 lab run.
 
+## Interrupted receive: decline after restart
+
+Files exposes the `decline` action on a recovered incoming transfer in
+`AwaitingDestination`, including when no writable destination is available. The
+action is now declared destructive, so semantic callers confirm deletion of
+retained partial bytes through the normal action system. The runtime now resolves that decision against the durable inbox
+instead of requiring the vanished in-memory offer. It removes only the selected
+checkpoint and metadata, records cancellation, and uses the existing exact-peer,
+request-and-transfer-bound cancellation message. Notification is best-effort:
+a sender being offline cannot block deletion of unwanted local bytes.
+
+The broker still checks continuity policy and the authenticated Files connection,
+workspace and receiving-direction handle. No destination or new pairing grant is
+needed to decline; accepting and resuming continue to require an approved
+writable destination. A later sender re-offer requires a fresh receiver decision.
+Fixture coverage exercises the actual durable store across reopen, offline
+notification, unrelated-transfer preservation, and Files' published semantic
+action. This is not a claim of a live two-device transport test.
+
 ## Compatibility candidates
 
 | Protocol | Primary implementation or documentation | Integration decision |
