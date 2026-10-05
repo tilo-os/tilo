@@ -254,10 +254,10 @@ impl App {
 
     fn queue_owned_documents_after_refresh(&mut self) -> Result<(), &'static str> {
         fn collect(root: &dyn Widget, owners: &mut Vec<crate::history_mode::HistoryOwner>) {
-            if let Some(owner) = root.history_owner()
-                && !owners.iter().any(|known| known.same_owner(&owner))
-            {
-                owners.push(owner);
+            for owner in root.history_owner().into_iter().chain(root.record_owners()) {
+                if !owners.iter().any(|known| known.same_owner(&owner)) {
+                    owners.push(owner);
+                }
             }
             for child in root.children() {
                 collect(child, owners);
@@ -415,10 +415,29 @@ impl App {
                                     == entry.sent_heads
                         })
                         .unwrap_or(false);
+                // A peer's whole document that this replica merges and is
+                // still ahead of: the sender lacks something only we hold.
+                let sender_heads = match mutation {
+                    collab_types::DocumentMutation::Snapshot(bytes) if entry.answers_snapshots => {
+                        automerge::AutoCommit::load(bytes)
+                            .ok()
+                            .map(|mut sent| crate::history_mode::sorted_heads(sent.get_heads()))
+                    }
+                    _ => None,
+                };
                 match owner.merge_remote(mutation) {
                     Ok(Some(applied)) => {
                         entry.pending.pop_applied();
                         changed |= applied;
+                        if let Some(sender_heads) = sender_heads
+                            && store
+                                .read_checked(&checkout.id, |doc| {
+                                    crate::history_mode::sorted_heads(doc.base_heads())
+                                })
+                                .is_ok_and(|heads| heads != sender_heads)
+                        {
+                            entry.needs_snapshot = true;
+                        }
                         if applied {
                             store.schedule_committed_history(&checkout.id);
                             if fully_sent

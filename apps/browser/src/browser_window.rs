@@ -17,6 +17,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
+#[cfg(test)]
+use ui::widget::Edits;
 use ui::widget::{
     AppKind, AppWidget, Continuable, FloatingSurfaceProvider, FullscreenProvider, IconDescriptor,
     TaffyTreeExt, Widget, WindowCloseAdmission,
@@ -88,6 +90,59 @@ impl BrowserWindow {
 
     pub fn engine_handle(&self) -> ui::webview::SharedEngine {
         self.page.engine_handle()
+    }
+
+    /// Present the document's bookmarks, preferences and site exceptions.
+    pub(crate) fn present_state(&mut self, state: &crate::resource::BrowserState) {
+        self.page.present_state(state);
+    }
+
+    /// Submit the page's bookmark and preference edits through `dispatcher`.
+    pub(crate) fn attach_dispatcher(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Browser>,
+    ) {
+        self.page.attach_dispatcher(dispatcher);
+    }
+
+    /// Keep the page's downloads in this device's settings.
+    pub(crate) fn attach_downloads(
+        &mut self,
+        store: ui::storage::Settings<crate::downloads::Stored>,
+    ) {
+        self.page.attach_downloads(store);
+    }
+
+    /// Keep the page's visits in the person's browsing history.
+    pub(crate) fn attach_history(
+        &mut self,
+        record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
+    ) {
+        self.page.attach_history(record);
+    }
+
+    /// Fill the page's forms from the person's address book.
+    pub(crate) fn attach_address_book(
+        &mut self,
+        book: ui::framework::PersonRecord<crate::autofill::AddressBook>,
+    ) {
+        self.page.attach_address_book(book);
+    }
+
+    /// The page this window shows.
+    pub(crate) fn page(&self) -> &BrowserWidget {
+        &self.page
+    }
+
+    /// The page this window shows, to act on.
+    pub(crate) fn page_mut(&mut self) -> &mut BrowserWidget {
+        &mut self.page
+    }
+
+    /// Stage a screenshot scenario on the page.
+    pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
+        self.page.stage(scenario);
+        self.dirty = true;
     }
 
     fn immersive(&self) -> bool {
@@ -164,16 +219,12 @@ impl BrowserWindow {
             column = column.push(Box::new(
                 Row::new()
                     .push(Box::new(
-                        Button::new("browser.download-exit.keep", "Keep downloading", None)
+                        Button::new("browser.download-exit.keep", "Keep downloading")
                             .on_effect(move || keep.set(Some(false))),
                     ))
                     .push(Box::new(
-                        Button::new(
-                            "browser.download-exit.cancel",
-                            "Cancel downloads and quit",
-                            None,
-                        )
-                        .on_effect(move || cancel.set(Some(true))),
+                        Button::new("browser.download-exit.cancel", "Cancel downloads and quit")
+                            .on_effect(move || cancel.set(Some(true))),
                     )),
             ));
         }
@@ -220,11 +271,11 @@ impl Widget for BrowserWindow {
         dyn ui::widget::FullscreenProvider,
         dyn ui::widget::FloatingSurfaceProvider,
         dyn ui::widget::Continuable,
+        dyn ui::application_view::ApplicationViewState,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::search::capability::SearchSource,
         dyn ui::component_lifecycle::ComponentLifecycle
     );
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if self.fullscreen_hint_deadline.is_some()
             && !fullscreen_hint_visible(self.fullscreen_hint_deadline, ui::time::now())
         {
@@ -469,7 +520,7 @@ impl Widget for BrowserWindow {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self
@@ -492,16 +543,6 @@ impl Widget for BrowserWindow {
     ) {
         self.page
             .draw_overlay(scene, transform, tr, theme, presence);
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: ui::tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<ui::tilo_actions::InvocationUpdate> {
-        self.page
-            .poll_resource_operation(invocation, cancellation_requested, doc, path)
     }
     fn children(&self) -> Vec<&dyn Widget> {
         if self.immersive() {
@@ -600,12 +641,6 @@ impl ui::component_lifecycle::ComponentLifecycle for BrowserWindow {
     }
 }
 
-impl ui::search::capability::SearchSource for BrowserWindow {
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        self.page.search_providers()
-    }
-}
-
 impl ui::widget::controls::ActionControls for BrowserWindow {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(invocation) = self
@@ -630,11 +665,47 @@ impl Continuable for BrowserWindow {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         self.page
             .restore_continuation_metadata(metadata, state, root)
+    }
+}
+
+/// Version of the page a window saves to show again when it reopens.
+const SAVED_PAGE_VERSION: u32 = 1;
+
+/// A reopened window shows the page it showed; the page is the window's own,
+/// kept with the window rather than in a file beside the app.
+impl ui::application_view::ApplicationViewState for BrowserWindow {
+    fn capture_application_view(
+        &self,
+    ) -> Result<Option<ui::application_view::ApplicationLocalView>, ui::view::ThawError> {
+        Ok(self
+            .page
+            .restorable_page()
+            .map(|payload| ui::application_view::ApplicationLocalView {
+                app_id: <crate::resource::BrowserShell as ui::framework::ResourceApp>::ID.into(),
+                version: SAVED_PAGE_VERSION,
+                payload,
+            }))
+    }
+
+    fn restore_application_view(
+        &mut self,
+        local: &ui::application_view::ApplicationLocalView,
+        _doc: &AutoCommit,
+    ) -> Result<ui::application_view::ApplicationFocusRestore, ui::view::ThawError> {
+        if local.version != SAVED_PAGE_VERSION || !self.page.restore_page(&local.payload) {
+            return Err(ui::view::ThawError::State(
+                "the saved page cannot be shown".into(),
+            ));
+        }
+        // The window shows a page again; the caret has no address to wait in.
+        self.focus_address = false;
+        self.dirty = true;
+        Ok(ui::application_view::ApplicationFocusRestore::Generic)
     }
 }
 
@@ -716,6 +787,7 @@ impl AppWidget for BrowserWindow {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    use ui::framework::HostDelivery as _;
     use ui::webview::{FrameSlot, WebViewCommand, WebViewEngine, WebViewEvent};
 
     /// A page engine that records commands and replays queued events and new
@@ -828,7 +900,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::from(modifiers),
-                state: &mut AutoCommit::new(),
+                state: Edits::lend(&mut AutoCommit::new()),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut None,
@@ -846,20 +918,21 @@ mod tests {
             .find(|widget| unsafe { (&***widget).test_id() == Some(id) })
             .expect("exit choice button");
         assert!(unsafe {
-            (&mut *button).perform_action(&ui::a11y::Action::Activate, doc, &automerge::ROOT)
+            (&mut *button).perform_action(
+                &ui::a11y::Action::Activate,
+                &mut Edits::lend(doc),
+                &automerge::ROOT,
+            )
         });
         let invocation = ui::widget::controls::take_control_invocation(window)
             .expect("exit choice must reach the root action broker");
         assert_eq!(invocation.address.resource, format!("tilo.control:{id}"));
         assert!(
             window
-                .start_operation(
-                    &ui::widget::ResourceOperation::local(
-                        ui::tilo_actions::InvocationId::new(),
-                        ui::tilo_actions::OperationKind::Effect,
-                        "tilo.ui.control.invoke",
-                        &serde_json::to_vec(id).unwrap()
-                    ),
+                .start_encoded(
+                    ui::tilo_actions::OperationKind::Effect,
+                    "tilo.ui.control.invoke",
+                    &serde_json::to_vec(id).unwrap(),
                     doc,
                     &automerge::ROOT
                 )
@@ -895,7 +968,7 @@ mod tests {
                 ("https://front.test/".to_owned(), false),
                 ("https://behind.test/".to_owned(), true),
             ]);
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 ui::shell_tabs::take_requests(),
                 vec![
@@ -921,7 +994,7 @@ mod tests {
             let _ = ui::shell_tabs::take_requests();
             let (mut window, engine) = window();
             engine.emit(WebViewEvent::TabClosed);
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(
                 ui::shell_tabs::take_requests(),
                 vec![ui::shell_tabs::TabRequest::CloseThis]
@@ -962,7 +1035,7 @@ mod tests {
         {
             let (mut window, engine) = window();
             engine.emit(WebViewEvent::FullscreenChanged(true));
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert_eq!(window.fullscreen_intent(), Some(true));
 
             window.on_fullscreen_changed(true);
@@ -1005,7 +1078,7 @@ mod tests {
             window.on_fullscreen_changed(true);
             let (tree, root, _nodes) = layout(&mut window);
             engine.emit(WebViewEvent::FullscreenChanged(true));
-            window.sync(&mut AutoCommit::new(), &automerge::ROOT);
+            window.sync(&AutoCommit::new(), &automerge::ROOT);
             assert!(window.fullscreen_hint.is_some());
             assert!(dispatch(
                 &mut window,
@@ -1034,6 +1107,42 @@ mod tests {
 
     /// Window close and the download-exit choice.
     #[test]
+    fn a_reopened_window_shows_its_page_and_a_private_one_keeps_none() {
+        use ui::application_view::ApplicationViewState as View;
+        let page = br#"{"url":"https://example.test/read?token=1"}"#;
+        let (mut first, _engine) = window();
+        assert!(first.page_mut().restore_page(page));
+        let saved = View::capture_application_view(&first)
+            .unwrap()
+            .expect("the window saves its page");
+        assert!(
+            !String::from_utf8_lossy(&saved.payload).contains("token"),
+            "a one-shot token in the query is not kept"
+        );
+
+        let (mut reopened, _engine) = window();
+        reopened.focus_address = true;
+        View::restore_application_view(&mut reopened, &saved, &AutoCommit::new()).unwrap();
+        assert!(!reopened.focus_address, "the window shows its page again");
+        assert_eq!(
+            reopened.page().restorable_page(),
+            first.page().restorable_page()
+        );
+
+        let mut private = BrowserWindow::new(
+            BrowserWidget::with_engine_mode(
+                PageEngine::new(),
+                true,
+                crate::browsing_mode::BrowsingMode::Private,
+            ),
+            false,
+        );
+        assert!(!private.page_mut().restore_page(page));
+        assert!(View::capture_application_view(&private).unwrap().is_none());
+        assert!(View::restore_application_view(&mut private, &saved, &AutoCommit::new()).is_err());
+    }
+
+    #[test]
     fn window_close_waits_for_an_explicit_download_choice() {
         let running = WebViewEvent::DownloadUpdated {
             id: 11,
@@ -1060,7 +1169,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             engine.emit(WebViewEvent::FullscreenChanged(true));
             engine.emit(runtime(1, 0, true));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             window.on_fullscreen_changed(true);
             let _immersive = layout(&mut window);
             assert_eq!(window.fullscreen_intent(), Some(true));
@@ -1077,7 +1186,7 @@ mod tests {
             }
             assert_eq!(engine.sent(&WebViewCommand::CancelAllDownloads), 0);
             invoke_exit_choice(&mut window, "browser.download-exit.keep", &mut doc);
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert!(window.exit_panel.is_none());
             assert!(!ui::component_lifecycle::take_window_close_intent(
                 &mut window
@@ -1091,13 +1200,13 @@ mod tests {
             let mut doc = AutoCommit::new();
             engine.emit(running);
             engine.emit(runtime(1, 0, true));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert_eq!(
                 ui::component_lifecycle::on_window_close_requested(&mut window),
                 WindowCloseAdmission::Defer
             );
             invoke_exit_choice(&mut window, "browser.download-exit.cancel", &mut doc);
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert_eq!(engine.sent(&WebViewCommand::CancelAllDownloads), 1);
             assert!(!ui::component_lifecycle::take_window_close_intent(
                 &mut window
@@ -1119,13 +1228,13 @@ mod tests {
                 error: String::new(),
             });
             engine.emit(runtime(0, 1, false));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert!(
                 !ui::component_lifecycle::take_window_close_intent(&mut window),
                 "the physical owner is still closing"
             );
             engine.emit(runtime(0, 0, false));
-            window.sync(&mut doc, &automerge::ROOT);
+            window.sync(&doc, &automerge::ROOT);
             assert!(ui::component_lifecycle::take_window_close_intent(
                 &mut window
             ));
@@ -1177,12 +1286,13 @@ mod tests {
         let mut failures = Vec::new();
         for (name, events) in &scenarios {
             for split in SPLITS {
-                let (window, engine) = window();
-                let mut harness = ui::headless::FrameHarness::new(
-                    ui::state::State::new(),
-                    Box::new(window),
-                    (1000, 700),
-                );
+                // Browser runs in its own app host, which routes the address
+                // bar's typed navigate action to the page's engine.
+                let engine = PageEngine::new();
+                crate::browser_widget::test_window_engine::install(engine.clone());
+                let mut app = ui::framework::testing::TestApp::<crate::BrowserShell>::new()
+                    .expect("Browser opens");
+                let harness = app.harness();
                 for _ in 0..3 {
                     harness.relayout();
                 }
@@ -1194,7 +1304,7 @@ mod tests {
                     harness.relayout();
                 };
                 if split == 0 {
-                    emit(&mut harness);
+                    emit(harness);
                 }
                 harness.send_host_event(&WindowEvent::ModifiersChanged(
                     winit::keyboard::ModifiersState::CONTROL.into(),
@@ -1206,16 +1316,16 @@ mod tests {
                 harness.relayout();
                 for (at, ch) in URL.chars().enumerate() {
                     if split == at + 1 {
-                        emit(&mut harness);
+                        emit(harness);
                     }
                     harness.key(&ch.to_string());
                     harness.relayout();
                 }
                 if split == URL.len() + 1 {
-                    emit(&mut harness);
+                    emit(harness);
                 }
                 harness.key("Enter");
-                harness.relayout();
+                app.settle();
                 let commands = engine.commands.lock().unwrap().clone();
                 let navigated: Vec<_> = commands
                     .iter()

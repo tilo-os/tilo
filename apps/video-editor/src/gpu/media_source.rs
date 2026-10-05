@@ -147,6 +147,12 @@ impl MediaFrameSource {
         self.undecodable.contains(&media)
     }
 
+    /// Whether `media` may still be served a decoded picture: it has bytes
+    /// this source can decode, and it has not been written off.
+    pub fn may_serve(&self, media: MediaId) -> bool {
+        self.sources.contains_key(&media) && !self.undecodable.contains(&media)
+    }
+
     /// How many times a pipeline has been asked for a frame. For tests: it is
     /// what tells "stopped asking" apart from "still asking and still
     /// failing", which look identical from the outside.

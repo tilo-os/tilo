@@ -642,11 +642,7 @@ mod tests {
         doc.commit();
         let wp = &surface::CONTRACTS[0];
         assert_eq!(wp.namespace, "word-processor");
-        surface::offers(
-            &[(wp, &doc)],
-            &surface::View::default(),
-            &permitting("so.tilo.word-processor"),
-        )
+        surface::offers(&[(wp, &doc)], &[], &permitting("so.tilo.word-processor"))
     }
 
     fn permitting(app: &str) -> ui::permissions::PermissionContext {

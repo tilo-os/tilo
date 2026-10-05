@@ -292,7 +292,7 @@ impl FrameHarness {
                 .is_some_and(|palette| palette.is_presented()))
     }
 
-    fn retained_action_geometry(
+    pub(super) fn retained_action_geometry(
         &self,
     ) -> Option<(SemanticTree, Vec<crate::widget::ControlBindingMetadata>)> {
         if !self.action_geometry_visible() {
@@ -580,9 +580,19 @@ impl FrameHarness {
         let handled = self
             .dispatch_semantic_node(owner, verb, |widget, doc, root| {
                 if let Some(key_path) = &key_path {
-                    widget.perform_action_at(verb, key_path, doc, root)
+                    widget.perform_action_at(
+                        verb,
+                        key_path,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 } else {
-                    widget.perform_semantic_action(&semantic_target, verb, doc, root)
+                    widget.perform_semantic_action(
+                        &semantic_target,
+                        verb,
+                        &mut crate::widget::Edits::lend(doc),
+                        root,
+                    )
                 }
             })
             .map_err(|error| format!("component dispatch refused: {error:?}"))?;
@@ -648,12 +658,12 @@ mod locus_tests {
         let calls = Rc::new(Cell::new(0));
         let mut column = Column::new();
         for id in ["first", "second"] {
-            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit", false);
+            let mut resource = resource_actions::resource(id, "Same label", "edit", "Edit");
             resource.id = tilo_actions::ResourceId::new(id);
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             let counter = calls.clone();
             column = column.push(resource_actions::immediate(
-                Box::new(Button::new(id, "Same label", None).on_action(binding)),
+                Box::new(Button::new(id, "Same label").on_action(binding)),
                 resource,
                 move |_| {
                     counter.set(counter.get() + 1);
@@ -693,6 +703,150 @@ mod locus_tests {
     }
 
     #[test]
+    fn agent_marker_projects_real_action_without_reinvoking_and_retires_when_idle() {
+        for (viewport, reduced_motion) in [
+            ((1600, 900), false),
+            ((800, 600), false),
+            ((1600, 900), true),
+            ((800, 600), true),
+        ] {
+            let (mut frame, calls) = fixture();
+            let mut theme = frame.theme().clone();
+            theme.reduce_motion = reduced_motion;
+            frame.set_theme(theme);
+            frame.resize(viewport).unwrap();
+            frame
+                .invoke_action(
+                    &tilo_actions::ActionAddress::new("first", "edit"),
+                    &serde_json::Map::new(),
+                    false,
+                    None,
+                )
+                .unwrap();
+            assert_eq!(calls.get(), 1, "the actual semantic executor ran once");
+            let mut event = interaction("first");
+            event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+            let now = crate::time::now();
+            frame.update_presence(|presence| {
+                presence.apply_interaction_at(event.clone(), now).unwrap()
+            });
+            assert!(frame.poll_frame().unwrap());
+            assert_eq!(frame.semantic_locus(&event), Some(frame.targets()["first"]));
+            assert_eq!(
+                frame.frame_schedule().needs_animation_frame,
+                !reduced_motion
+            );
+            assert_eq!(
+                calls.get(),
+                1,
+                "painting is not a pointer click or an action"
+            );
+
+            // Observe already-settled host activity: no widget or input event
+            // is needed to keep its expiry deadline alive.
+            let mut presence = crate::presence::PresenceCtx::empty();
+            presence
+                .apply_interaction_at(
+                    event.clone(),
+                    now.checked_sub(crate::time::Duration::from_secs(2))
+                        .unwrap(),
+                )
+                .unwrap();
+            frame.set_presence_context(presence);
+            let schedule = frame.frame_schedule();
+            assert!(!schedule.needs_animation_frame, "settled dwell must sleep");
+            assert!(schedule.next_wake_deadline.is_some_and(|at| at > now));
+
+            // A discrete idle wake must clear an expired frame, including
+            // reduced-motion hosts which never have an animation pump.
+            let expired = now
+                .checked_sub(crate::time::Duration::from_secs(16))
+                .unwrap();
+            let mut terminal = event.clone();
+            terminal.sequence = 2;
+            terminal.phase = tilo_actions::InteractionPhase::Committed;
+            let mut expired_presence = crate::presence::PresenceCtx::empty();
+            expired_presence
+                .apply_interaction_at(terminal, expired)
+                .unwrap();
+            *frame.presence_mut() = expired_presence;
+            assert!(
+                !frame.frame_schedule().queued_work,
+                "no input/redraw notification"
+            );
+            assert!(
+                frame
+                    .frame_schedule()
+                    .next_wake_deadline
+                    .is_some_and(|at| at <= crate::time::now())
+            );
+            assert!(frame.poll_frame().unwrap());
+            assert!(
+                frame
+                    .presence_mut()
+                    .visible_interactions(crate::time::now())
+                    .is_empty()
+            );
+            assert!(frame.frame_schedule().next_wake_deadline.is_none());
+            assert!(!frame.frame_schedule().needs_animation_frame);
+            assert_eq!(calls.get(), 1);
+        }
+    }
+
+    #[test]
+    fn agent_marker_full_size_render_evidence() {
+        let out = crate::env::var_os("TILO_UI_AGENT_MARKER_SHOTS")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../target/agent-marker")
+            });
+        for (name, theme) in [
+            ("dark", crate::theme::Theme::dark()),
+            ("light", crate::theme::Theme::light()),
+            ("high-contrast", crate::theme::Theme::high_contrast()),
+        ] {
+            for viewport in [(1600, 900), (800, 600)] {
+                let (mut frame, calls) = fixture();
+                frame.relayout_themed(viewport, theme.clone()).unwrap();
+                let path = out
+                    .join(name)
+                    .join(format!("{}x{}", viewport.0, viewport.1));
+                std::fs::create_dir_all(&path).unwrap();
+                frame.render_window_png(&path.join("before.png"));
+                frame
+                    .invoke_action(
+                        &tilo_actions::ActionAddress::new("first", "edit"),
+                        &serde_json::Map::new(),
+                        false,
+                        None,
+                    )
+                    .unwrap();
+                let mut event = interaction("first");
+                event.actor.id = "scribe".into();
+                event.actor.kind = tilo_actions::InteractionActorKind::Agent;
+                let at = crate::time::now()
+                    .checked_sub(crate::time::Duration::from_secs(2))
+                    .unwrap();
+                frame.update_presence(|presence| {
+                    presence.apply_interaction_at(event.clone(), at).unwrap()
+                });
+                assert!(frame.poll_frame().unwrap());
+                frame.render_window_png(&path.join("after.png"));
+                assert_eq!(calls.get(), 1);
+                for file in ["before.png", "after.png"] {
+                    assert!(std::fs::metadata(path.join(file)).unwrap().len() > 0);
+                }
+                assert_ne!(
+                    std::fs::read(path.join("before.png")).unwrap(),
+                    std::fs::read(path.join("after.png")).unwrap(),
+                    "the capture must actually observe action presence"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn semantic_locus_never_matches_labels_or_unbound_semantic_ids() {
         let (frame, calls) = fixture();
         let mut event = interaction("first");
@@ -726,17 +880,15 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_multiple_affordances_for_one_action() {
-        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let root = resource_actions::immediate(
             Box::new(
                 Column::new()
                     .push(Box::new(
-                        Button::new("a", "Same label", None).on_action(binding.clone()),
+                        Button::new("a", "Same label").on_action(binding.clone()),
                     ))
-                    .push(Box::new(
-                        Button::new("b", "Same label", None).on_action(binding),
-                    )),
+                    .push(Box::new(Button::new("b", "Same label").on_action(binding))),
             ),
             resource,
             |_| panic!("observation must not execute"),
@@ -755,11 +907,11 @@ mod locus_tests {
     fn semantic_locus_refuses_control_id_reuse_across_distinct_resources() {
         let mut root = Column::new();
         for kind in ["one", "two"] {
-            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit", false);
+            let resource = resource_actions::resource(kind, "Same label", "edit", "Edit");
             let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
             root = root.push(resource_actions::immediate(
                 Box::new(Column::new().with_id(kind).push(Box::new(
-                    Button::new("edit", "Same label", None).on_action(binding),
+                    Button::new("edit", "Same label").on_action(binding),
                 ))),
                 resource,
                 |_| panic!("observation must not execute"),
@@ -841,11 +993,11 @@ mod locus_tests {
 
     #[test]
     fn semantic_locus_refuses_a_control_whose_resource_is_no_longer_published() {
-        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("stale", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let frame = FrameHarness::new(
             State::new(),
-            Box::new(Button::new("stale-control", "Same label", None).on_action(binding)),
+            Box::new(Button::new("stale-control", "Same label").on_action(binding)),
             (400, 240),
         );
         assert_eq!(frame.semantic_locus(&interaction("stale:root")), None);
@@ -939,17 +1091,15 @@ mod locus_tests {
 
     #[test]
     fn exact_resource_bounds_preserves_ambiguity_and_ranked_order() {
-        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit", false);
+        let resource = resource_actions::resource("shared", "Same label", "edit", "Edit");
         let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
         let root = resource_actions::immediate(
             Box::new(
                 Column::new()
                     .push(Box::new(
-                        Button::new("b", "Same label", None).on_action(binding.clone()),
+                        Button::new("b", "Same label").on_action(binding.clone()),
                     ))
-                    .push(Box::new(
-                        Button::new("a", "Same label", None).on_action(binding),
-                    )),
+                    .push(Box::new(Button::new("a", "Same label").on_action(binding))),
             ),
             resource,
             |_| panic!("observation must not execute"),
@@ -986,7 +1136,7 @@ mod locus_tests {
         let moved = frame.action_ui_routes(&address)[0].bounds;
         assert_eq!(moved, Some(frame.targets()["first"]));
         assert_ne!(before, moved);
-        frame.root = Box::new(Button::new("replacement", "Same label", None));
+        frame.root = Box::new(Button::new("replacement", "Same label"));
         frame.invalidate_layout_tree();
         frame.relayout();
         assert!(frame.action_ui_routes(&address).is_empty());

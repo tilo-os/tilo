@@ -133,7 +133,7 @@ impl FilePickerOverlay {
             &mut ui::widget::EventCtx {
                 scale_factor: ctx.scale_factor,
                 modifiers: ctx.modifiers,
-                state: &mut *ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 handled: &mut *ctx.handled,
                 focus_target: &mut *ctx.focus_target,
@@ -393,7 +393,7 @@ mod tests {
                 &mut ui::widget::EventCtx {
                     scale_factor: 1.0,
                     modifiers: &modifiers,
-                    state: &mut doc,
+                    state: ui::widget::Edits::lend(&mut doc),
                     path: &automerge::ROOT,
                     handled: &mut handled,
                     focus_target: &mut focus_target,

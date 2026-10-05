@@ -45,8 +45,8 @@ pub(crate) const WEB_KEYCHAIN: &str =
     "Browsers have no keychain; Tilo encrypts secrets with a key the browser keeps.";
 pub(crate) const WEB_BLOCKING: &str = "The browser's storage answers asynchronously.";
 
-/// Every feature with its availability on Linux, macOS and the web, in that
-/// order. A Linux session without a Secret Service provides less; the macOS
+/// Every feature with its availability on Linux (and Windows), macOS and the
+/// web, in that order. A Linux session without a Secret Service provides less; the macOS
 /// Keychain may ask the user to allow access.
 pub const CAPABILITIES: &[(Feature, [Availability; 3])] = {
     use Availability::{Available, Unsupported};

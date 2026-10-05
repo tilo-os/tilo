@@ -80,7 +80,7 @@ const CONTRACTIONS: &[(&str, &str)] = &[
 ];
 
 /// Bound on remembered kept-as-typed words.
-const MAX_KEPT_WORDS: usize = 1_024;
+pub(crate) const MAX_KEPT_WORDS: usize = 1_024;
 
 /// Which letter keys touch each other on screen.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -248,6 +248,11 @@ impl Autocorrector {
     /// Whether `word` was kept as typed.
     pub fn is_kept(&self, word: &str) -> bool {
         self.kept.contains(&word.to_lowercase())
+    }
+
+    /// Take `kept` as the words kept as typed.
+    pub fn adopt_kept<'a>(&mut self, kept: impl IntoIterator<Item = &'a String>) {
+        self.kept = kept.into_iter().take(MAX_KEPT_WORDS).cloned().collect();
     }
 
     /// Forget every kept-as-typed word.

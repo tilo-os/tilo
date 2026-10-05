@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, Fixture, LiveRow, ResourceApp, ResourceSurface,
-    ViewCx,
+    RunMode, ViewCx,
 };
 use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
 use ui::widget::Element;
@@ -65,9 +65,12 @@ impl ResourceApp for PasswordsShell {
     };
 
     fn view(cx: &mut ViewCx<Passwords>) -> Element {
-        let model = match cx.fixture::<DemoVault>() {
-            Some(demo) => crate::PasswordsModel::open_in(&demo.0),
-            None => crate::PasswordsModel::open(),
+        // Items live in this device's vault, not the document: a past
+        // version has none to show, and a capture shows its synthetic vault.
+        let model = match (cx.mode(), cx.fixture::<DemoVault>()) {
+            (RunMode::Past, _) => crate::PasswordsModel::closed(),
+            (_, Some(demo)) => crate::PasswordsModel::open_in(&demo.0),
+            (_, None) => crate::PasswordsModel::open(),
         };
         cx.surface(PasswordsSurface::new(model))
     }

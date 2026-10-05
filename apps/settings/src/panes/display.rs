@@ -1,61 +1,39 @@
-#![allow(
-    clippy::expect_used,
-    clippy::items_after_statements,
-    clippy::needless_pass_by_value,
-    clippy::struct_excessive_bools,
-    clippy::too_many_lines,
-    reason = "display transactions and their closed static action bindings stay together so rollback and hardware state remain auditable"
-)]
-
-//! Display pane — real connected-output list, brightness, and the display
-//! comfort preferences.
+//! Display pane — the connected outputs, their arrangement, brightness and
+//! the display comfort preferences.
 //!
 //! - **Displays** consumes the active compositor's private runtime snapshot.
 //!   Settings never independently guesses modes or output capabilities from
-//!   sysfs; the process that owns KMS is the authority.
-//! - **Brightness** forwards to `os_actions::set_brightness`
-//!   (`brightnessctl`), sampled once on construction.
-//! - **Automatic brightness / Night light** are durable preferences
-//!   persisted to the shared store ([`crate::prefs::SystemPrefs`]); the
-//!   compositor's output layer reads them.
-//! - **Scale** is the `HiDPI` display-scale factor. Unlike resolution/mode
-//!   setting (which stays the compositor's to own), scale is a shared
-//!   preference: the compositor reads `display.scale` from the settings
-//!   file at session start and advertises it to clients as the preferred
-//!   `wp_fractional_scale`, and `ui` apps render crisp at the fractional
-//!   factor. That makes it a legitimate, compositor-agnostic control here.
+//!   sysfs; the process that owns KMS is the authority. An arrangement is
+//!   staged, then applied as a transaction the person keeps or reverts.
+//! - **Brightness** forwards to `os_actions` (`brightnessctl`, or DDC/CI for
+//!   an external monitor).
+//! - **Automatic brightness, Night Light and the display scale** are the
+//!   person's `display` settings; the compositor's output layer reads them.
 //!
-//! Resolution / mode-setting is deliberately *not* offered: there is no
-//! unprivileged, compositor-agnostic way to apply a mode from this app, so
-//! a picker would list modes it could not switch to. The connector list
-//! shows the real hardware instead.
-//
-// CRDT keys this pane reads / writes:
-//   `display.brightness`        — f64 in `[0.0, 1.0]`, slider value
-//   `display.auto_brightness`   — bool, durable preference
-//   `display.night_light`       — bool, durable preference
-//   `display.scale`             — string label ("150%"), durable preference
+//! Every change is a [`DisplayEffect`] the area's [`DisplayModel`] carries
+//! out.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use tilo_clock::unix_now_ms;
-use ui::doc::{read_bool, read_str_or_text};
 use ui::time::{Duration, Instant, SystemTime};
-use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::Dispatcher;
-use taffy::{NodeId, TaffyTree};
 use tracing::warn;
-use ui::theme::Theme;
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, Effected, LiveRow};
+use ui::tilo_resource::{self, ActionRef, Effect};
 use ui::widget::{Button, Dropdown, Slider, Toggle, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
-use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::effects::{SettingsEffect, effect};
+use crate::host::{Followed, PaneCx};
 use crate::i18n::{t, t_args};
-use crate::prefs::{DisplayPrefs, SystemPrefs};
+use crate::panes::model::{PaneModel, Shared};
+use crate::prefs::DisplayPrefs;
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
 use crate::widgets::{
     El, caption, card, choice_row, error_row, rows, setting_row, setting_row_described, value_row,
 };
@@ -65,19 +43,118 @@ use settings_store::hardware::{
     OutputTransform, logical_extent,
 };
 
-/// CRDT key the brightness slider writes into.
-pub const BRIGHTNESS_KEY: &str = "display.brightness";
-/// CRDT key the auto-brightness toggle writes into.
-pub const AUTO_BRIGHTNESS_KEY: &str = "display.auto_brightness";
-/// CRDT key the night-light toggle writes into.
-pub const NIGHT_LIGHT_KEY: &str = "display.night_light";
-pub const NIGHT_LIGHT_SCHEDULE_KEY: &str = "display.night_light_schedule";
-pub const NIGHT_LIGHT_TEMPERATURE_KEY: &str = "display.night_light_temperature";
-/// CRDT key the display-scale dropdown writes into.
-pub const DISPLAY_SCALE_KEY: &str = "display.scale";
-pub const APPLY_DISPLAY_KEY: &str = "display.apply";
-pub const KEEP_DISPLAY_KEY: &str = "display.keep";
-pub const REVERT_DISPLAY_KEY: &str = "display.revert";
+impl ui::storage::SettingsSchema for DisplayPrefs {
+    const SCOPE: ui::storage::Scope = ui::storage::Scope::Shared("display");
+}
+
+/// What Displays changes: this device's outputs and their arrangement, its
+/// brightness, and the person's display comforts.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum DisplayEffect {
+    /// The built-in panel's brightness, from 0 to 1.
+    #[effect(idempotent)]
+    SetBrightness { brightness: f64 },
+    /// Follow the ambient light.
+    #[effect(idempotent)]
+    SetAutomaticBrightness { on: bool },
+    /// Warm the screen's colours.
+    #[effect(idempotent)]
+    SetNightLight { on: bool },
+    /// Warm the colours from sunset to sunrise.
+    #[effect(idempotent)]
+    SetNightLightSchedule { on: bool },
+    /// How warm Night Light makes the screen.
+    #[effect(idempotent)]
+    SetNightLightWarmth {
+        #[param("The warmth, as the list names it")]
+        warmth: String,
+    },
+    /// The scale apps prefer for their interface.
+    #[effect(idempotent)]
+    SetDisplayScale {
+        #[param("100%, 125%, 150%, 175% or 200%")]
+        scale: String,
+    },
+    /// An external monitor's brightness, from 0 to 1.
+    #[effect(row, idempotent)]
+    SetMonitorBrightness { display: String, brightness: f64 },
+    /// Use a display, or turn it off. Staged until applied.
+    #[effect(row, idempotent)]
+    UseDisplay { display: String, on: bool },
+    /// Make a display the one panels and new windows open on.
+    #[effect(row, idempotent, label = "Make primary")]
+    SetPrimaryDisplay { display: String },
+    /// A display's scale. Staged until applied.
+    #[effect(row, idempotent)]
+    SetOutputScale { display: String, scale: String },
+    /// Place a display beside another: `Right of …`, `Left of …`, `Above …`,
+    /// `Below …`. Staged until applied.
+    #[effect(row)]
+    PlaceDisplay { display: String, position: String },
+    /// Put a display's top-left corner at a point of the desktop, as
+    /// dragging it does. Staged until applied.
+    #[effect(row)]
+    MoveDisplay { display: String, x: i32, y: i32 },
+    /// Show another display's picture, or extend the workspace. Staged
+    /// until applied.
+    #[effect(row)]
+    MirrorDisplay { display: String, mirror: String },
+    /// A display's resolution and refresh rate. Staged until applied.
+    #[effect(row, idempotent)]
+    SetDisplayMode { display: String, mode: String },
+    /// A display's rotation. Staged until applied.
+    #[effect(row, idempotent)]
+    RotateDisplay { display: String, rotation: String },
+    /// High dynamic range on a display that offers it. Staged until applied.
+    #[effect(row, idempotent)]
+    SetHdr { display: String, on: bool },
+    /// How bright SDR content is while a display runs in HDR, from 0 to 1.
+    #[effect(row, idempotent)]
+    SetSdrBrightness { display: String, brightness: f64 },
+    /// Variable refresh rate on a display that offers it. Staged until
+    /// applied.
+    #[effect(row, idempotent)]
+    SetVrr { display: String, on: bool },
+    /// A display's colour profile, or `System default`. Staged until applied.
+    #[effect(row, idempotent)]
+    SetColorProfile { display: String, profile: String },
+    /// Show each display's number and name on it for a few seconds.
+    #[effect(label = "Identify displays")]
+    IdentifyDisplays,
+    /// Preview the staged arrangement; it is kept only when confirmed.
+    #[effect(label = "Apply display changes")]
+    ApplyDisplayChanges,
+    /// Keep the arrangement being previewed.
+    #[effect(label = "Keep display changes")]
+    KeepDisplayChanges,
+    /// Go back to the arrangement before the preview.
+    #[effect(label = "Revert display changes")]
+    RevertDisplayChanges,
+    /// Ask again before keeping display changes from a layout tool.
+    #[effect(row, label = "Ask again")]
+    ForgetDisplayTool {
+        #[param("The tool's executable")]
+        tool: String,
+    },
+}
+
+/// Answer `effect` on the area's model.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "every area answers through the effect vocabulary's one signature"
+)]
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: DisplayEffect,
+    _cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    app.displays()
+        .model()
+        .borrow_mut()
+        .apply(&effect)
+        .map(Effected::value)
+}
 
 const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
     ("Subtle · 4500 K", 4_500),
@@ -481,15 +558,136 @@ fn output_brightness_from(
         .collect()
 }
 
-/// Display pane widget.
-pub struct DisplayPane {
-    dispatcher: Arc<dyn Dispatcher + Send + Sync>,
+/// The panel's backlight and external monitors' brightness.
+pub trait BrightnessControl: Send + Sync {
+    /// # Errors
+    /// Why the panel's brightness could not be set.
+    fn set_brightness(&self, percent: f32) -> Result<(), String>;
+    /// # Errors
+    /// Why the monitor on `connector` could not be set.
+    fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String>;
+}
+
+/// Brightness through the system's dispatcher.
+struct SystemBrightness(Arc<dyn Dispatcher + Send + Sync>);
+
+impl BrightnessControl for SystemBrightness {
+    fn set_brightness(&self, percent: f32) -> Result<(), String> {
+        self.0.set_brightness(percent)
+    }
+    fn set_display_brightness(&self, connector: &str, percent: f32) -> Result<(), String> {
+        self.0.set_display_brightness(connector, percent)
+    }
+}
+
+/// Brightness that changes nothing, for a screenshot and the crate's tests.
+struct NoBrightness;
+
+impl BrightnessControl for NoBrightness {
+    fn set_brightness(&self, _: f32) -> Result<(), String> {
+        Ok(())
+    }
+    fn set_display_brightness(&self, _: &str, _: f32) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The panel brightness (or why it could not be read) and whether an
+/// ambient light sensor is present, as the background probe found them.
+type HardwareProbe = (Result<f32, String>, bool);
+
+/// What the Displays area keeps for the window: the model, read when first
+/// needed.
+pub struct DisplayArea {
+    cx: PaneCx,
+    model: std::cell::OnceCell<Shared<DisplayModel>>,
+}
+
+impl DisplayArea {
+    pub fn new(cx: &PaneCx) -> Self {
+        Self {
+            cx: cx.clone(),
+            model: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// The model over this device's displays, or over a sample panel for a
+    /// screenshot.
+    pub fn model(&self) -> &Shared<DisplayModel> {
+        self.model.get_or_init(|| {
+            let model = if self.cx.reaches_devices() {
+                DisplayModel::of_device(self.cx.clone())
+            } else {
+                DisplayModel::sample(self.cx.clone())
+            };
+            Rc::new(std::cell::RefCell::new(model))
+        })
+    }
+
+    /// Take in background results, if the model exists.
+    pub(crate) fn poll(&self) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().poll_background();
+        }
+    }
+
+    /// One row per connected display and per trusted layout tool.
+    pub(crate) fn rows(&self) -> Vec<LiveRow> {
+        let model = self.model().borrow();
+        let offer = |effect: DisplayEffect| SettingsEffect::from(effect).bound();
+        let config = model.staged();
+        let mut rows: Vec<LiveRow> = model
+            .connected_outputs()
+            .into_iter()
+            .map(|output| {
+                let display = output.connector.clone();
+                let resolved = config
+                    .outputs
+                    .get(&display)
+                    .cloned()
+                    .unwrap_or_else(|| output.unconfigured());
+                let mut row = LiveRow::new(
+                    format!("settings.display-output:{display}"),
+                    "settings.display-output",
+                    output_title(output),
+                )
+                .operation(offer(DisplayEffect::UseDisplay {
+                    display: display.clone(),
+                    on: !resolved.enabled,
+                }));
+                if !resolved.primary {
+                    row = row.operation(offer(DisplayEffect::SetPrimaryDisplay { display }));
+                }
+                row
+            })
+            .collect();
+        if model.of_device {
+            for tool in &settings_store::display_tools::TrustedDisplayTools::load().tools {
+                rows.push(
+                    LiveRow::new(
+                        format!("settings.display-tool:{}", tool.executable),
+                        "settings.display-tool",
+                        tool.name().to_owned(),
+                    )
+                    .operation(offer(DisplayEffect::ForgetDisplayTool {
+                        tool: tool.executable.clone(),
+                    })),
+                );
+            }
+        }
+        rows
+    }
+}
+
+pub struct DisplayModel {
+    cx: PaneCx,
+    /// Whether the outputs, arrangement and transactions are this device's.
+    of_device: bool,
+    brightness_control: Arc<dyn BrightnessControl>,
     outputs: Vec<DisplayOutput>,
     ambient_sensor_available: bool,
-    initial_brightness: f32,
-    initial_prefs: DisplayPrefs,
-    last_brightness: f32,
-    last_prefs: DisplayPrefs,
+    brightness: f32,
+    prefs: Followed<DisplayPrefs>,
     output_config: DisplayConfig,
     /// External monitors whose brightness is set over DDC/CI, by output key,
     /// with their last known level. The built-in panel's backlight is the
@@ -505,36 +703,19 @@ pub struct DisplayPane {
     brightness_error: Option<String>,
     brightness_tx: Option<std::sync::mpsc::Sender<f32>>,
     brightness_result_rx: Option<std::sync::mpsc::Receiver<Result<f32, String>>>,
-    pending_brightness: Option<(f32, f32)>,
-    operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
-    command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    local_doc: AutoCommit,
-    isolate_document: bool,
-    require_operation_token: bool,
-    needs_seed: bool,
+    pending_brightness: Option<f32>,
+    /// What the last change, or the compositor's answer to it, said.
+    notice: Option<String>,
     /// The arrangement canvas's in-progress drag; kept here because the
     /// composition is rebuilt between frames.
-    arrangement_drag: ui::LocalState<Option<super::display_arrangement::ArrangementDrag>>,
-    composed: Option<Box<dyn Widget>>,
-    /// Hardware facts changed under the retained composition. The host holds
-    /// raw pointers into it until the next build, so it must not be dropped.
-    structure_dirty: bool,
-    rect: Rect,
+    arrangement_drag: LocalState<Option<super::display_arrangement::ArrangementDrag>>,
+    changed: bool,
 }
 
-/// The panel brightness (or why it could not be read) and whether an
-/// ambient light sensor is present, as the background probe found them.
-type HardwareProbe = (Result<f32, String>, bool);
-
-impl Default for DisplayPane {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DisplayPane {
-    pub fn new() -> Self {
-        let initial = 0.5;
+impl DisplayModel {
+    /// This device's displays; brightness is probed and set off the UI
+    /// thread.
+    fn of_device(cx: PaneCx) -> Self {
         let (probe_tx, probe_rx) = std::sync::mpsc::channel();
         let brightness_error = std::thread::Builder::new()
             .name("settings-display-probe".into())
@@ -546,18 +727,17 @@ impl DisplayPane {
             })
             .err()
             .map(|error| format!("the brightness probe could not start: {error}"));
-        let dispatcher = dispatcher_or_real(None);
+        let control: Arc<dyn BrightnessControl> =
+            Arc::new(SystemBrightness(dispatcher_or_real(None)));
         let (brightness_tx, brightness_rx) = std::sync::mpsc::channel::<f32>();
-        let (brightness_result_tx, brightness_result_rx) = std::sync::mpsc::channel();
-        let worker_dispatcher = Arc::clone(&dispatcher);
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = Arc::clone(&control);
         std::thread::Builder::new()
             .name("settings-brightness-apply".into())
             .spawn(move || {
                 while let Ok(percent) = brightness_rx.recv() {
-                    let result = worker_dispatcher
-                        .set_brightness(percent)
-                        .map(|()| percent / 100.0);
-                    let _ = brightness_result_tx.send(result);
+                    let _ =
+                        result_tx.send(worker.set_brightness(percent).map(|()| percent / 100.0));
                 }
             })
             .ok();
@@ -565,15 +745,15 @@ impl DisplayPane {
         let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         let output_brightness = read_output_brightness(&outputs);
         Self {
-            dispatcher,
-            output_brightness,
+            prefs: cx.follow::<DisplayPrefs>(),
+            cx,
+            of_device: true,
+            brightness_control: control,
             outputs,
             ambient_sensor_available: false,
-            initial_brightness: initial,
-            initial_prefs: SystemPrefs::load().display,
-            last_brightness: initial,
-            last_prefs: DisplayPrefs::default(),
+            brightness: 0.5,
             output_config,
+            output_brightness,
             pending_candidate: None,
             last_seen_transaction: None,
             last_snapshot_check: ui::time::now(),
@@ -582,62 +762,54 @@ impl DisplayPane {
             hardware_probe: Some(probe_rx),
             brightness_error,
             brightness_tx: Some(brightness_tx),
-            brightness_result_rx: Some(brightness_result_rx),
+            brightness_result_rx: Some(result_rx),
             pending_brightness: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            needs_seed: true,
-            arrangement_drag: ui::LocalState::new(None),
-            composed: None,
-            structure_dirty: false,
-            rect: Rect::ZERO,
+            notice: None,
+            arrangement_drag: LocalState::new(None),
+            changed: false,
         }
     }
 
-    /// Test / `--shots` constructor: inject the dispatcher, initial
-    /// brightness, and a deterministic output list so the render/assertions
-    /// don't depend on the host's hardware.
-    pub fn with_dispatcher(
-        dispatcher: Arc<dyn Dispatcher + Send + Sync>,
-        initial_brightness: f32,
-    ) -> Self {
+    /// A built-in panel at 62 %, with an ambient light sensor; nothing it
+    /// does reaches the device or its files.
+    fn sample(cx: PaneCx) -> Self {
+        let mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        Self::detached(cx).with_outputs(vec![DisplayOutput {
+            label: "Built-in display".into(),
+            connected: true,
+            builtin: true,
+            connector: "eDP-1".into(),
+            connector_label: "eDP-1".into(),
+            modes: vec![mode],
+            current_mode: Some(mode),
+            scale: 1.0,
+            hdr: false,
+            sink_hdr: false,
+            hdr_unavailable_reason: None,
+            vrr: false,
+            sink_vrr: false,
+            vrr_unavailable_reason: None,
+            color_profiles: Vec::new(),
+            color_profile_labels: BTreeMap::new(),
+            monitor: None,
+        }])
+    }
+
+    /// A model with no outputs whose brightness changes nothing; tests give
+    /// it what they drive.
+    fn detached(cx: PaneCx) -> Self {
         Self {
-            dispatcher,
-            outputs: vec![DisplayOutput {
-                label: "Built-in display".into(),
-                connected: true,
-                builtin: true,
-                connector: "eDP-1".into(),
-                connector_label: "eDP-1".into(),
-                modes: vec![OutputMode {
-                    width: 1920,
-                    height: 1080,
-                    refresh_mhz: 60_000,
-                }],
-                current_mode: Some(OutputMode {
-                    width: 1920,
-                    height: 1080,
-                    refresh_mhz: 60_000,
-                }),
-                scale: 1.0,
-                hdr: false,
-                sink_hdr: false,
-                hdr_unavailable_reason: None,
-                vrr: false,
-                sink_vrr: false,
-                vrr_unavailable_reason: None,
-                color_profiles: Vec::new(),
-                color_profile_labels: BTreeMap::new(),
-                monitor: None,
-            }],
+            prefs: cx.follow::<DisplayPrefs>(),
+            cx,
+            of_device: false,
+            brightness_control: Arc::new(NoBrightness),
+            outputs: Vec::new(),
             ambient_sensor_available: true,
-            initial_brightness,
-            initial_prefs: DisplayPrefs::default(),
-            last_brightness: initial_brightness,
-            last_prefs: DisplayPrefs::default(),
+            brightness: 0.62,
             output_config: DisplayConfig::default(),
             output_brightness: BTreeMap::new(),
             pending_candidate: None,
@@ -649,245 +821,16 @@ impl DisplayPane {
             brightness_tx: None,
             brightness_result_rx: None,
             pending_brightness: None,
-            operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
-            command_state: ui::LocalState::new(None),
-            local_doc: AutoCommit::new(),
-            isolate_document: false,
-            require_operation_token: false,
-            needs_seed: true,
-            arrangement_drag: ui::LocalState::new(None),
-            composed: None,
-            structure_dirty: false,
-            rect: Rect::ZERO,
+            notice: None,
+            arrangement_drag: LocalState::new(None),
+            changed: false,
         }
     }
 
-    /// Pin the output list (tests / `--shots`).
     #[must_use]
-    pub fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
+    fn with_outputs(mut self, outputs: Vec<DisplayOutput>) -> Self {
         self.outputs = outputs;
         self
-    }
-
-    /// Pin which monitors have a brightness control (tests / `--shots`).
-    #[must_use]
-    pub fn with_monitor_brightness(mut self, levels: &[os_actions::MonitorLevel]) -> Self {
-        self.output_brightness = output_brightness_from(&self.outputs, levels);
-        self
-    }
-
-    #[must_use]
-    pub fn with_ambient_sensor(mut self, available: bool) -> Self {
-        self.ambient_sensor_available = available;
-        self
-    }
-
-    #[must_use]
-    pub fn with_operation_status(
-        mut self,
-        status: &ui::LocalState<crate::actions::LocalOperationStatus>,
-    ) -> Self {
-        self.operation_status = status.clone();
-        self.require_operation_token = true;
-        self
-    }
-
-    #[must_use]
-    pub fn with_command_state(
-        mut self,
-        commands: &ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
-    ) -> Self {
-        self.command_state = commands.clone();
-        self.isolate_document = true;
-        self
-    }
-
-    fn execute_local_command(
-        &mut self,
-        local: &mut AutoCommit,
-        operation: crate::actions::DisplayOperation,
-    ) {
-        let root = automerge::ROOT;
-        self.prepare_running_operation(local, &root, &operation);
-        let transaction_key = match operation {
-            crate::actions::DisplayOperation::Apply => Some(APPLY_DISPLAY_KEY),
-            crate::actions::DisplayOperation::Confirm => Some(KEEP_DISPLAY_KEY),
-            crate::actions::DisplayOperation::Revert => Some(REVERT_DISPLAY_KEY),
-            _ => None,
-        };
-        if let Some(key) = transaction_key {
-            // Transaction commands are one-shot edges. Do not reinterpret the
-            // authoritative control projection as a new output edit first.
-            let _ = local.put(&root, key, true);
-            self.sync_transaction_controls(local, &root);
-            return;
-        }
-        self.sync_brightness(local, &root);
-        self.sync_output_brightness(local, &root);
-        self.sync_comfort_prefs(local, &root, true);
-        let connected: Vec<_> = self
-            .outputs
-            .iter()
-            .filter(|o| o.connected)
-            .cloned()
-            .collect();
-        self.sync_output_config(local, &root, &connected);
-        self.sync_transaction_controls(local, &root);
-    }
-
-    fn finish_display_operation(&self, result: Result<String, String>) {
-        let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
-        else {
-            return;
-        };
-        if !token.starts_with(crate::actions::DISPLAY_OPERATION_TYPE) {
-            return;
-        }
-        self.operation_status.set(match result {
-            Ok(message) => crate::actions::LocalOperationStatus::Succeeded { token, message },
-            Err(message) => crate::actions::LocalOperationStatus::Failed { token, message },
-        });
-    }
-
-    fn running_operation(&self) -> Option<crate::actions::DisplayOperation> {
-        if !self.require_operation_token {
-            return None;
-        }
-        let crate::actions::LocalOperationStatus::Running { token } = self.operation_status.get()
-        else {
-            return None;
-        };
-        let payload =
-            token.strip_prefix(&format!("{}:", crate::actions::DISPLAY_OPERATION_TYPE))?;
-        serde_json::from_str(payload).ok()
-    }
-
-    /// Replace the pane's transient document controls with authoritative
-    /// device state, then project only the operation admitted by the local
-    /// executor. This makes concurrently received CRDT edits inert even while
-    /// a legitimate display operation is in flight.
-    fn prepare_running_operation(
-        &self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        operation: &crate::actions::DisplayOperation,
-    ) {
-        let _ = state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
-        let _ = state.put(root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
-        let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
-        let _ = state.put(root, APPLY_DISPLAY_KEY, false);
-        let _ = state.put(root, KEEP_DISPLAY_KEY, false);
-        let _ = state.put(root, REVERT_DISPLAY_KEY, false);
-        let committed = self.output_config.clone();
-        self.write_output_controls(state, root, &committed);
-
-        use crate::actions::DisplayOperation as Op;
-        match operation {
-            Op::SetBrightness { value } => {
-                let _ = state.put(root, BRIGHTNESS_KEY, *value);
-            }
-            Op::SetAutoBrightness { enabled } => {
-                let _ = state.put(root, AUTO_BRIGHTNESS_KEY, *enabled);
-            }
-            Op::SetNightLight { enabled } => {
-                let _ = state.put(root, NIGHT_LIGHT_KEY, *enabled);
-            }
-            Op::SetNightLightSchedule { enabled } => {
-                let _ = state.put(root, NIGHT_LIGHT_SCHEDULE_KEY, *enabled);
-            }
-            Op::SetNightLightTemperature { label } => {
-                let _ = state.put(root, NIGHT_LIGHT_TEMPERATURE_KEY, label.as_str());
-            }
-            Op::SetScale { label } => {
-                let _ = state.put(root, DISPLAY_SCALE_KEY, label.as_str());
-            }
-            Op::SetEnabled { connector, enabled } => {
-                let _ = state.put(root, output_key(connector, "enabled"), *enabled);
-            }
-            Op::SetOutputBrightness { connector, value } => {
-                let _ = state.put(root, output_key(connector, "brightness"), *value);
-            }
-            Op::SetPrimary { connector, primary } => {
-                let _ = state.put(root, output_key(connector, "primary"), *primary);
-            }
-            Op::SetOutputScale { connector, label } => {
-                let _ = state.put(root, output_key(connector, "scale"), label.as_str());
-            }
-            Op::SetPosition { connector, label } => {
-                let _ = state.put(root, output_key(connector, "position"), label.as_str());
-                // A relative position replaces an exact one from a drag.
-                let _ = state.delete(root, output_key(connector, "x"));
-                let _ = state.delete(root, output_key(connector, "y"));
-            }
-            Op::MoveOutput { connector, x, y } => {
-                let _ = state.put(root, output_key(connector, "x"), i64::from(*x));
-                let _ = state.put(root, output_key(connector, "y"), i64::from(*y));
-            }
-            Op::ForgetDisplayTool { executable } => {
-                self.finish_display_operation(
-                    settings_store::display_tools::TrustedDisplayTools::forget(executable)
-                        .map(|()| crate::i18n::t("display-tools-forgotten"))
-                        .map_err(|error| format!("The display tool was not forgotten: {error}")),
-                );
-            }
-            Op::Identify => {
-                self.finish_display_operation(
-                    settings_store::display_identify::IdentifyRequest::request()
-                        .map(|_| "Each display shows its number.".into())
-                        .map_err(|error| format!("Displays could not be identified: {error}")),
-                );
-            }
-            Op::SetMirror { connector, label } => {
-                let _ = state.put(root, output_key(connector, "mirror"), label.as_str());
-            }
-            Op::SetModeLabel { connector, label } => {
-                let _ = state.put(root, output_key(connector, "mode"), label.as_str());
-            }
-            Op::SetTransformLabel { connector, label } => {
-                let _ = state.put(root, output_key(connector, "transform"), label.as_str());
-            }
-            Op::SetColorProfileLabel { connector, label } => {
-                let _ = state.put(root, output_key(connector, "color_profile"), label.as_str());
-            }
-            Op::SetMode { connector, mode } => {
-                let _ = state.put(root, output_key(connector, "mode"), mode.label());
-            }
-            Op::SetTransform {
-                connector,
-                transform,
-            } => {
-                let _ = state.put(
-                    root,
-                    output_key(connector, "transform"),
-                    transform_label(*transform),
-                );
-            }
-            Op::SetHdr { connector, enabled } => {
-                let _ = state.put(root, output_key(connector, "hdr"), *enabled);
-            }
-            Op::SetSdrBrightness { connector, value } => {
-                let _ = state.put(root, output_key(connector, "sdr_brightness"), *value);
-            }
-            Op::SetVrr { connector, enabled } => {
-                let _ = state.put(root, output_key(connector, "vrr"), *enabled);
-            }
-            Op::SetColorProfile { connector, profile } => {
-                let label = profile.as_ref().map_or_else(
-                    || "System default".to_string(),
-                    |id| {
-                        self.outputs
-                            .iter()
-                            .find(|output| output.connector == *connector)
-                            .and_then(|output| output.color_profile_labels.get(id))
-                            .map_or_else(|| id.clone(), |name| format!("{name} · {id}"))
-                    },
-                );
-                let _ = state.put(root, output_key(connector, "color_profile"), label);
-            }
-            // Only execute_local_command admits these one-shot edges. Polling
-            // a pending token must not overwrite the compositor's response.
-            Op::Apply | Op::Confirm | Op::Revert => {}
-        }
     }
 
     pub fn outputs(&self) -> &[DisplayOutput] {
@@ -902,17 +845,486 @@ impl DisplayPane {
         self.outputs.iter().filter(|o| o.connected).collect()
     }
 
+    /// The arrangement as it stands: the staged one, else the committed one.
+    fn staged(&self) -> &DisplayConfig {
+        self.pending_candidate
+            .as_ref()
+            .unwrap_or(&self.output_config)
+    }
+
+    /// `control`'s widget id for `field` of `display`.
+    fn id(display: &str, field: &str) -> String {
+        output_key(display, field)
+    }
+
+    /// A toggle for `field` of `display`, invoking `set` with it.
+    fn toggle(
+        &self,
+        display: &str,
+        field: &str,
+        on: bool,
+        set: ActionRef<SettingsEffect, (String, bool)>,
+    ) -> Toggle {
+        let display = display.to_owned();
+        self.cx.bind(
+            Toggle::from_state(&LocalState::new(on)).with_id(&Self::id(&display, field)),
+            set.map(move |on: bool| (display.clone(), on)),
+        )
+    }
+
+    /// A slider for `field` of `display`, invoking `set` with it.
+    fn slider(
+        &self,
+        display: &str,
+        field: &str,
+        value: f64,
+        set: ActionRef<SettingsEffect, (String, f64)>,
+    ) -> Slider {
+        let display = display.to_owned();
+        self.cx.bind(
+            Slider::from_state(&LocalState::new(value)).with_id(&Self::id(&display, field)),
+            set.map(move |value: f64| (display.clone(), value)),
+        )
+    }
+
+    /// A chooser for `field` of `display`, invoking `set` with the choice.
+    fn choice(
+        &self,
+        display: &str,
+        field: &str,
+        choices: Vec<String>,
+        current: &str,
+        set: ActionRef<SettingsEffect, (String, String)>,
+    ) -> Dropdown {
+        let display = display.to_owned();
+        self.cx.bind(
+            Dropdown::from_state(choices, &LocalState::new(current.to_owned()))
+                .with_id(&Self::id(&display, field))
+                .with_placeholder(current),
+            set.map(move |choice: String| (display.clone(), choice)),
+        )
+    }
+
+    /// Carry out `effect`; what it reported.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per effect; the staged ones share `stage`"
+    )]
+    fn apply(&mut self, effect: &DisplayEffect) -> Result<String, String> {
+        self.changed = true;
+        let reported = match effect {
+            DisplayEffect::SetBrightness { brightness } => self.set_brightness(*brightness),
+            DisplayEffect::SetAutomaticBrightness { on } => {
+                if *on && !self.ambient_sensor_available {
+                    return Err(
+                        "Automatic brightness is unavailable because this device has no ambient-light sensor."
+                            .into(),
+                    );
+                }
+                let on = *on;
+                self.save(|prefs| prefs.auto_brightness = on)?;
+                Ok(if on {
+                    "Automatic brightness enabled.".into()
+                } else {
+                    "Automatic brightness disabled.".into()
+                })
+            }
+            DisplayEffect::SetNightLight { on } => {
+                let on = *on;
+                self.save(|prefs| prefs.night_light = on)?;
+                Ok(String::new())
+            }
+            DisplayEffect::SetNightLightSchedule { on } => {
+                let on = *on;
+                self.save(|prefs| prefs.night_light_schedule = on)?;
+                Ok(String::new())
+            }
+            DisplayEffect::SetNightLightWarmth { warmth } => {
+                let kelvin = temperature_from_label(warmth)
+                    .ok_or_else(|| format!("`{warmth}` is not a Night Light warmth"))?;
+                self.save(|prefs| prefs.night_light_temperature = kelvin)?;
+                Ok(String::new())
+            }
+            DisplayEffect::SetDisplayScale { scale } => {
+                let factor =
+                    scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
+                self.save(|prefs| prefs.scale = factor)?;
+                Ok(format!("Display scale set to {scale}."))
+            }
+            DisplayEffect::SetMonitorBrightness {
+                display,
+                brightness,
+            } => {
+                let level = (*brightness as f32).clamp(0.0, 1.0);
+                let label = self
+                    .outputs
+                    .iter()
+                    .find(|output| &output.connector == display)
+                    .filter(|_| self.output_brightness.contains_key(display))
+                    .map(|output| output.connector_label.clone())
+                    .ok_or_else(|| "that monitor's brightness cannot be set".to_string())?;
+                self.brightness_control
+                    .set_display_brightness(&label, level * 100.0)
+                    .map_err(|error| {
+                        warn!(target: "tilo::settings", op = "set_display_brightness", %error, "display brightness failed");
+                        format!("Brightness could not be changed: {error}")
+                    })?;
+                self.output_brightness.insert(display.clone(), level);
+                Ok(format!("Brightness set to {}%.", (level * 100.0).round()))
+            }
+            DisplayEffect::UseDisplay { display, on } => self.stage(display, |cfg, _, _| {
+                cfg.enabled = *on;
+                if !on {
+                    cfg.primary = false;
+                }
+                Ok(())
+            }),
+            DisplayEffect::SetPrimaryDisplay { display } => self.stage(display, |cfg, _, _| {
+                cfg.primary = true;
+                Ok(())
+            }),
+            DisplayEffect::SetOutputScale { display, scale } => {
+                let factor =
+                    scale_factor_of(scale).ok_or_else(|| format!("`{scale}` is not a scale"))?;
+                self.stage(display, |cfg, _, _| {
+                    cfg.scale = factor;
+                    Ok(())
+                })
+            }
+            DisplayEffect::PlaceDisplay { display, position } => self
+                .stage(display, |cfg, next, connected| {
+                    place_beside(display, position, cfg, next, connected)
+                }),
+            DisplayEffect::MoveDisplay { display, x, y } => self.stage(display, |cfg, _, _| {
+                cfg.x = *x;
+                cfg.y = *y;
+                Ok(())
+            }),
+            DisplayEffect::MirrorDisplay { display, mirror } => {
+                self.stage(display, |cfg, _, connected| {
+                    cfg.mirror_of = if mirror == "Extend workspace" {
+                        None
+                    } else {
+                        Some(
+                            connected
+                                .iter()
+                                .find(|candidate| *mirror == format!("Mirror {}", candidate.label))
+                                .map(|candidate| candidate.connector.clone())
+                                .ok_or_else(|| format!("`{mirror}` is not a display to mirror"))?,
+                        )
+                    };
+                    Ok(())
+                })
+            }
+            DisplayEffect::SetDisplayMode { display, mode } => {
+                self.stage(display, |cfg, _, connected| {
+                    cfg.mode = Some(
+                        output_of(connected, display)?
+                            .modes
+                            .iter()
+                            .copied()
+                            .find(|candidate| candidate.label() == *mode)
+                            .ok_or_else(|| format!("`{mode}` is not a mode of this display"))?,
+                    );
+                    Ok(())
+                })
+            }
+            DisplayEffect::RotateDisplay { display, rotation } => {
+                let transform = transform_from_label(rotation)
+                    .ok_or_else(|| format!("`{rotation}` is not a rotation"))?;
+                self.stage(display, |cfg, _, _| {
+                    cfg.transform = transform;
+                    Ok(())
+                })
+            }
+            DisplayEffect::SetHdr { display, on } => self.stage(display, |cfg, _, connected| {
+                if !output_of(connected, display)?.hdr {
+                    return Err("this display does not offer HDR".into());
+                }
+                cfg.hdr = *on;
+                Ok(())
+            }),
+            DisplayEffect::SetSdrBrightness {
+                display,
+                brightness,
+            } => self.stage(display, |cfg, _, connected| {
+                if !output_of(connected, display)?.hdr {
+                    return Err("this display does not offer HDR".into());
+                }
+                cfg.sdr_brightness_nits = sdr_brightness_nits(*brightness);
+                Ok(())
+            }),
+            DisplayEffect::SetVrr { display, on } => self.stage(display, |cfg, _, connected| {
+                if !output_of(connected, display)?.vrr {
+                    return Err("this display does not offer a variable refresh rate".into());
+                }
+                cfg.vrr = *on;
+                Ok(())
+            }),
+            DisplayEffect::SetColorProfile { display, profile } => {
+                self.stage(display, |cfg, _, connected| {
+                    cfg.color_profile = if profile == "System default" {
+                        None
+                    } else {
+                        let output = output_of(connected, display)?;
+                        Some(
+                            output
+                                .color_profile_labels
+                                .iter()
+                                .find_map(|(id, label)| {
+                                    (*profile == format!("{label} · {id}") || profile == id)
+                                        .then(|| id.clone())
+                                })
+                                .ok_or_else(|| format!("`{profile}` is not a colour profile"))?,
+                        )
+                    };
+                    Ok(())
+                })
+            }
+            DisplayEffect::IdentifyDisplays => {
+                settings_store::display_identify::IdentifyRequest::request()
+                    .map(|_| "Each display shows its number.".into())
+                    .map_err(|error| format!("Displays could not be identified: {error}"))
+            }
+            DisplayEffect::ApplyDisplayChanges => {
+                let candidate = self
+                    .pending_candidate
+                    .clone()
+                    .ok_or_else(|| "There are no staged display changes to apply.".to_string())?;
+                DisplayTransaction::request(self.display_set(), candidate)
+                    .map(|_| "Previewing the display changes.".into())
+                    .map_err(|error| format!("Display configuration could not be staged: {error}"))
+            }
+            DisplayEffect::KeepDisplayChanges => {
+                let mut transaction = DisplayTransaction::load()
+                    .ok_or_else(|| "There is no display transaction to keep.".to_string())?;
+                transaction
+                    .request_confirmation()
+                    .map(|()| "Keeping the display changes.".into())
+                    .map_err(|error| format!("Display configuration could not be kept: {error}"))
+            }
+            DisplayEffect::RevertDisplayChanges => {
+                let mut transaction = DisplayTransaction::load()
+                    .ok_or_else(|| "There is no display transaction to revert.".to_string())?;
+                transaction
+                    .request_revert()
+                    .map(|()| "Reverting the display changes.".into())
+                    .map_err(|error| {
+                        format!("Display configuration could not be reverted: {error}")
+                    })
+            }
+            DisplayEffect::ForgetDisplayTool { tool } => {
+                settings_store::display_tools::TrustedDisplayTools::forget(tool)
+                    .map(|()| t("display-tools-forgotten"))
+                    .map_err(|error| format!("The display tool was not forgotten: {error}"))
+            }
+        };
+        self.notice = Some(match &reported {
+            Ok(message) => message.clone(),
+            Err(error) => error.clone(),
+        })
+        .filter(|notice| !notice.is_empty());
+        reported
+    }
+
+    /// Set the panel's brightness: queued for the worker, or set now.
+    fn set_brightness(&mut self, brightness: f64) -> Result<String, String> {
+        let level = (brightness as f32).clamp(0.0, 1.0);
+        let percent = level * 100.0;
+        if let Some(sender) = &self.brightness_tx {
+            sender.send(percent).map_err(|_| {
+                "Brightness worker is unavailable; the display was not changed.".to_string()
+            })?;
+            self.pending_brightness = Some(level);
+            return Ok(format!("Setting the brightness to {}%.", percent.round()));
+        }
+        self.brightness_control
+            .set_brightness(percent)
+            .map_err(|error| format!("Brightness could not be changed: {error}"))?;
+        self.brightness = level;
+        Ok(format!("Brightness set to {}%.", percent.round()))
+    }
+
+    /// Change the person's display settings.
+    fn save(&mut self, change: impl FnOnce(&mut DisplayPrefs)) -> Result<(), String> {
+        self.prefs.settings().update(change).map_err(|error| {
+            warn!(target: "tilo::settings", op = "display_prefs_save", %error, "failed to persist display prefs");
+            format!("Display preference could not be saved: {error}")
+        })?;
+        self.prefs.refresh();
+        Ok(())
+    }
+
+    /// Stage a change of `display`: `edit` changes its entry of the staged
+    /// arrangement, which is then made consistent (one primary display,
+    /// mirrored pairs on a shared mode) and checked against what the
+    /// displays can do. Nothing reaches the compositor until it is applied.
+    fn stage(
+        &mut self,
+        display: &str,
+        edit: impl FnOnce(&mut OutputConfig, &DisplayConfig, &[DisplayOutput]) -> Result<(), String>,
+    ) -> Result<String, String> {
+        let connected: Vec<DisplayOutput> = self.connected_outputs().into_iter().cloned().collect();
+        let output = output_of(&connected, display)?;
+        let mut next = self.staged().clone();
+        for (index, candidate) in connected.iter().enumerate() {
+            next.outputs
+                .entry(candidate.connector.clone())
+                .or_insert_with(|| OutputConfig {
+                    primary: index == 0,
+                    ..candidate.unconfigured()
+                });
+        }
+        let mut cfg = next
+            .outputs
+            .get(&output.connector)
+            .cloned()
+            .unwrap_or_else(|| output.unconfigured());
+        let was_primary = cfg.primary;
+        edit(&mut cfg, &next, &connected)?;
+        let preferred = (cfg.primary && !was_primary).then(|| display.to_owned());
+        next.outputs.insert(output.connector.clone(), cfg);
+        choose_primary(&mut next, &connected, preferred.as_deref());
+        mirror_on_shared_modes(&mut next, &connected);
+        let descriptors: Vec<_> = connected.iter().map(Self::output_descriptor).collect();
+        next.validate_for(&descriptors).map_err(|error| {
+            warn!(target: "tilo::settings", ?error, "rejected invalid display configuration");
+            format!("That display configuration is not possible: {error:?}")
+        })?;
+        self.pending_candidate = Some(next);
+        Ok("Display change staged. Apply it to preview the new configuration.".into())
+    }
+
+    /// Reconstruct the compositor's descriptor contract from a Settings
+    /// output. `label` is presentation-only and may include `· <bus-id>`;
+    /// validation must retain the raw DRM connector label separately.
+    fn output_descriptor(output: &DisplayOutput) -> OutputDescriptor {
+        OutputDescriptor {
+            connector: output.connector.clone(),
+            connector_label: output.connector_label.clone(),
+            modes: output.modes.clone(),
+            hdr: output.hdr,
+            vrr: output.vrr,
+            color_profiles: output.color_profiles.clone(),
+            monitor: output.monitor.clone(),
+        }
+    }
+
+    /// The connected monitors, whose saved arrangement this pane edits.
+    fn display_set(&self) -> DisplaySet {
+        Self::display_set_of(&self.outputs)
+    }
+
+    fn display_set_of(outputs: &[DisplayOutput]) -> DisplaySet {
+        let descriptors: Vec<_> = outputs
+            .iter()
+            .filter(|output| output.connected)
+            .map(Self::output_descriptor)
+            .collect();
+        DisplaySet::of_descriptors(&descriptors)
+    }
+
+    /// Take in the brightness probe and the brightness worker's answers.
+    fn poll_background(&mut self) {
+        if let Some(receiver) = &self.hardware_probe {
+            match receiver.try_recv() {
+                Ok((brightness, ambient)) => {
+                    self.ambient_sensor_available = ambient;
+                    match brightness {
+                        Ok(brightness) => {
+                            self.brightness = brightness;
+                            self.brightness_error = None;
+                        }
+                        Err(error) => self.brightness_error = Some(error),
+                    }
+                    self.hardware_probe = None;
+                    self.changed = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.hardware_probe = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(result) = self
+            .brightness_result_rx
+            .as_ref()
+            .and_then(|receiver| receiver.try_recv().ok())
+            && let Some(requested) = self.pending_brightness.take()
+        {
+            match result {
+                Ok(applied) => self.brightness = applied,
+                Err(error) => {
+                    warn!(target: "tilo::settings", op = "set_brightness", %error, requested, "display worker dispatch failed");
+                    self.notice = Some(format!("Brightness could not be changed: {error}"));
+                }
+            }
+            self.changed = true;
+        }
+    }
+
+    /// Re-read the compositor's output snapshot when it moved, at most once
+    /// a second, and take in a settled display transaction.
+    fn poll_device(&mut self) {
+        if !self.of_device || self.last_snapshot_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        self.last_snapshot_check = ui::time::now();
+        let stamp = settings_store::hardware::display_snapshot_path()
+            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
+        if stamp != self.snapshot_stamp {
+            self.snapshot_stamp = stamp;
+            self.outputs = read_outputs();
+            self.output_config = DisplayConfig::load_for(&self.display_set());
+            self.changed = true;
+        }
+        // Monitor probing finishes in the background; a monitor that turns
+        // out to speak DDC/CI gains its slider once the probe lands.
+        let controllable = read_output_brightness(&self.outputs);
+        if controllable.keys().ne(self.output_brightness.keys()) {
+            self.output_brightness = controllable;
+            self.changed = true;
+        }
+        if let Some(transaction) = DisplayTransaction::load() {
+            self.settle(&transaction);
+        }
+    }
+
+    /// Once the compositor settled `transaction` (kept, reverted or
+    /// rejected), show the committed arrangement again.
+    fn settle(&mut self, transaction: &DisplayTransaction) {
+        let marker = (transaction.id, transaction.state);
+        if self.last_seen_transaction == Some(marker) {
+            return;
+        }
+        self.last_seen_transaction = Some(marker);
+        self.changed = true;
+        let notice = match transaction.state {
+            DisplayTransactionState::Confirmed => "Display changes kept.".to_owned(),
+            DisplayTransactionState::Reverted => "Display changes reverted.".to_owned(),
+            DisplayTransactionState::Rejected => transaction
+                .message
+                .clone()
+                .unwrap_or_else(|| "Display configuration was rejected.".into()),
+            _ => return,
+        };
+        self.output_config = DisplayConfig::load_for(&self.display_set());
+        self.pending_candidate = None;
+        self.notice = Some(notice);
+    }
+
     fn build_composition(&self) -> Box<dyn Widget> {
         let connected = self.connected_outputs();
         let arrangement = self.build_arrangement_card(&connected);
         let brightness = self.build_brightness_card();
 
         let mut cards = vec![arrangement];
+        if let Some(notice) = &self.notice {
+            cards.push(card(&t("display-card-title"), rows(vec![caption(notice)])));
+        }
         for (index, output) in connected.iter().enumerate() {
             cards.push(self.build_output_card(index, output, &connected));
         }
         cards.push(self.build_safety_card());
-        if let Some(tools) = Self::build_trusted_tools_card() {
+        if let Some(tools) = self.build_trusted_tools_card() {
             cards.push(tools);
         }
         cards.push(brightness);
@@ -936,7 +1348,12 @@ impl DisplayPane {
             .iter()
             .filter(|display| display.movable)
             .filter_map(|display| {
-                crate::actions::display_output_move_binding(display.connector.clone())
+                let connector = display.connector.clone();
+                self.cx
+                    .binding(
+                        effect(DisplayEffect::MOVE_DISPLAY)
+                            .map(move |(x, y): (i32, i32)| (connector.clone(), x, y)),
+                    )
                     .map(|binding| (display.connector.clone(), binding))
             })
             .collect();
@@ -950,15 +1367,13 @@ impl DisplayPane {
             setting_row(
                 &crate::i18n::t("display-identify-row"),
                 Box::new(
-                    Button::new(
-                        "settings.display.identify",
-                        &crate::i18n::t("display-identify"),
-                        None,
-                    )
-                    .content_sized()
-                    .on_action(
-                        crate::actions::display_unit_binding("identify")
-                            .expect("display identify action is published"),
+                    self.cx.bind_invocation(
+                        Button::new(
+                            "settings.display.identify",
+                            &crate::i18n::t("display-identify"),
+                        )
+                        .content_sized(),
+                        DisplayEffect::IdentifyDisplays,
                     ),
                 ),
             ),
@@ -1047,17 +1462,16 @@ impl DisplayPane {
 
     /// The brightness slider + night-light comfort preferences card.
     fn build_brightness_card(&self) -> El {
+        let prefs = *self.prefs.get();
         let automatic_brightness = if self.ambient_sensor_available {
             setting_row(
                 &t("display-auto-brightness"),
                 Box::new(
-                    Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
-                        .with_id("display.auto_brightness")
-                        .on_action(
-                            crate::actions::display_bool_binding("auto_brightness").expect(
-                                "automatic brightness is part of the static resource contract",
-                            ),
-                        ),
+                    self.cx.bind(
+                        Toggle::from_state(&LocalState::new(prefs.auto_brightness))
+                            .with_id("display.auto_brightness"),
+                        effect(DisplayEffect::SET_AUTOMATIC_BRIGHTNESS),
+                    ),
                 ),
             )
         } else {
@@ -1069,18 +1483,19 @@ impl DisplayPane {
                 match &self.brightness_error {
                     Some(error) => error_row(
                         &t("display-brightness"),
-                        &t_args("display-brightness-error", &[("error", error.as_str().into())]),
+                        &t_args(
+                            "display-brightness-error",
+                            &[("error", error.as_str().into())],
+                        ),
                     ),
                     None => setting_row(
                         &t("display-brightness"),
                         Box::new(
-                            Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
-                                .with_id("display.brightness")
-                                .on_action(
-                                    crate::actions::display_number_binding("brightness").expect(
-                                        "brightness is part of the static resource contract",
-                                    ),
-                                ),
+                            self.cx.bind(
+                                Slider::from_state(&LocalState::new(f64::from(self.brightness)))
+                                    .with_id("display.brightness"),
+                                effect(DisplayEffect::SET_BRIGHTNESS),
+                            ),
                         ),
                     ),
                 },
@@ -1088,47 +1503,36 @@ impl DisplayPane {
                 setting_row(
                     &t("display-night-light"),
                     Box::new(
-                        Toggle::new("settings.display.night_light", NIGHT_LIGHT_KEY)
-                            .with_id("display.night_light")
-                            .on_action(
-                                crate::actions::display_bool_binding("night_light")
-                                    .expect("Night Light is part of the static resource contract"),
-                            ),
+                        self.cx.bind(
+                            Toggle::from_state(&LocalState::new(prefs.night_light))
+                                .with_id("display.night_light"),
+                            effect(DisplayEffect::SET_NIGHT_LIGHT),
+                        ),
                     ),
                 ),
                 setting_row_described(
                     &t("display-night-light-schedule"),
                     &t("display-night-light-schedule-desc"),
                     Box::new(
-                        Toggle::new(
-                            "settings.display.night_light_schedule",
-                            NIGHT_LIGHT_SCHEDULE_KEY,
-                        )
-                        .with_id("display.night_light_schedule")
-                        .on_action(
-                            crate::actions::display_bool_binding("night_light_schedule").expect(
-                                "the Night Light schedule is part of the static resource contract",
-                            ),
+                        self.cx.bind(
+                            Toggle::from_state(&LocalState::new(prefs.night_light_schedule))
+                                .with_id("display.night_light_schedule"),
+                            effect(DisplayEffect::SET_NIGHT_LIGHT_SCHEDULE),
                         ),
                     ),
                 ),
                 choice_row(
                     &t("display-night-light-warmth"),
                     Box::new(
-                        Dropdown::new(
-                            temperature_options(),
-                            NIGHT_LIGHT_TEMPERATURE_KEY,
-                        )
-                        .with_id("display.night_light_temperature")
-                        .on_action(
-                            crate::actions::display_choice_binding("night_light_temperature")
-                                .expect(
-                                    "Night Light warmth is part of the static resource contract",
-                                ),
-                        )
-                        .with_placeholder(&temperature_label(
-                            self.initial_prefs.night_light_temperature,
-                        )),
+                        self.cx.bind(
+                            Dropdown::from_state(
+                                temperature_options(),
+                                &LocalState::new(temperature_label(prefs.night_light_temperature)),
+                            )
+                            .with_id("display.night_light_temperature")
+                            .with_placeholder(&temperature_label(prefs.night_light_temperature)),
+                            effect(DisplayEffect::SET_NIGHT_LIGHT_WARMTH),
+                        ),
                     ),
                 ),
                 caption(&t("display-night-light-caption")),
@@ -1145,7 +1549,9 @@ impl DisplayPane {
         connected: &[&DisplayOutput],
     ) -> El {
         let config = self
-            .output_config
+            .pending_candidate
+            .as_ref()
+            .unwrap_or(&self.output_config)
             .outputs
             .get(&output.connector)
             .cloned()
@@ -1159,36 +1565,33 @@ impl DisplayPane {
             output_rows.push(setting_row(
                 &t("display-brightness"),
                 Box::new(
-                    Slider::new(
-                        &format!("settings.display.{}.brightness", output.connector),
-                        &output_key(&output.connector, "brightness"),
-                    )
-                    .with_id(&output_key(&output.connector, "brightness"))
-                    .on_action(
-                        crate::actions::display_output_brightness_binding(output.connector.clone())
-                            .expect("monitor brightness is part of the resource contract"),
+                    self.slider(
+                        &output.connector,
+                        "brightness",
+                        f64::from(
+                            self.output_brightness
+                                .get(&output.connector)
+                                .copied()
+                                .unwrap_or_default(),
+                        ),
+                        effect(DisplayEffect::SET_MONITOR_BRIGHTNESS),
                     ),
                 ),
             ));
         }
-        output_rows.extend(Self::build_output_primary_rows(output, connected, &config));
-        output_rows.extend(Self::build_output_mode_and_rotation_rows(output, &config));
-        output_rows.extend(Self::build_output_capability_rows(output, &config));
+        output_rows.extend(self.build_output_primary_rows(output, connected, &config));
+        output_rows.extend(self.build_output_mode_and_rotation_rows(output, &config));
+        output_rows.extend(self.build_output_capability_rows(output, &config));
         card(&output_title(output), rows(output_rows))
     }
 
     /// Enable/primary toggles + scale/position/mirroring dropdowns.
     fn build_output_primary_rows(
+        &self,
         output: &DisplayOutput,
         connected: &[&DisplayOutput],
         config: &OutputConfig,
     ) -> Vec<El> {
-        let primary_key = output_key(&output.connector, "primary");
-        let enabled_key = output_key(&output.connector, "enabled");
-        let scale_key = output_key(&output.connector, "scale");
-        let position_key = output_key(&output.connector, "position");
-        let mirror_key = output_key(&output.connector, "mirror");
-        let toggle_id = format!("settings.display.{}.primary", output.connector);
         let scale_choices: Vec<String> = DISPLAY_SCALES
             .iter()
             .map(|(label, _)| (*label).into())
@@ -1224,96 +1627,68 @@ impl DisplayPane {
                 || "Extend workspace".into(),
                 |target| format!("Mirror {}", target.label),
             );
+        let position_current = "Automatic".to_owned();
         vec![
             setting_row(
                 &t("display-use"),
-                Box::new(
-                    Toggle::new(
-                        &format!("settings.display.{}.enabled", output.connector),
-                        &enabled_key,
-                    )
-                    .with_id(&enabled_key)
-                    .on_action(
-                        crate::actions::display_output_bool_binding(
-                            "enabled",
-                            output.connector.clone(),
-                        )
-                        .expect("output enabled action is part of the resource contract"),
-                    ),
-                ),
+                Box::new(self.toggle(
+                    &output.connector,
+                    "enabled",
+                    config.enabled,
+                    effect(DisplayEffect::USE_DISPLAY),
+                )),
             ),
             setting_row(
                 &t("display-primary"),
-                Box::new(
-                    Toggle::new(&toggle_id, &primary_key)
-                        .with_id(&primary_key)
-                        .on_action(
-                            crate::actions::display_output_bool_binding(
-                                "primary",
-                                output.connector.clone(),
-                            )
-                            .expect("primary output action is part of the resource contract"),
-                        ),
-                ),
+                Box::new({
+                    let display = output.connector.clone();
+                    self.cx.bind(
+                        Toggle::from_state(&LocalState::new(config.primary))
+                            .with_id(&Self::id(&output.connector, "primary")),
+                        effect(DisplayEffect::SET_PRIMARY_DISPLAY)
+                            .map(move |_: bool| display.clone()),
+                    )
+                }),
             ),
             choice_row(
                 &t("display-scale"),
-                Box::new(
-                    Dropdown::new(scale_choices.clone(), &scale_key)
-                        .with_id(&scale_key)
-                        .on_action(
-                            crate::actions::display_output_choice_binding(
-                                "scale",
-                                output.connector.clone(),
-                                scale_choices,
-                            )
-                            .expect("output scale action is part of the resource contract"),
-                        )
-                        .with_placeholder(scale_label(config.scale)),
-                ),
+                Box::new(self.choice(
+                    &output.connector,
+                    "scale",
+                    scale_choices,
+                    scale_label(config.scale),
+                    effect(DisplayEffect::SET_OUTPUT_SCALE),
+                )),
             ),
             choice_row(
                 &t("display-position"),
-                Box::new(
-                    Dropdown::new(position_choices.clone(), &position_key)
-                        .with_id(&position_key)
-                        .on_action(
-                            crate::actions::display_output_choice_binding(
-                                "position",
-                                output.connector.clone(),
-                                position_choices,
-                            )
-                            .expect("output position action is part of the resource contract"),
-                        )
-                        .with_placeholder("Automatic"),
-                ),
+                Box::new(self.choice(
+                    &output.connector,
+                    "position",
+                    position_choices,
+                    &position_current,
+                    effect(DisplayEffect::PLACE_DISPLAY),
+                )),
             ),
             choice_row(
                 &t("display-mirroring"),
-                Box::new(
-                    Dropdown::new(mirror_choices.clone(), &mirror_key)
-                        .with_id(&mirror_key)
-                        .on_action(
-                            crate::actions::display_output_choice_binding(
-                                "mirror",
-                                output.connector.clone(),
-                                mirror_choices,
-                            )
-                            .expect("output mirror action is part of the resource contract"),
-                        )
-                        .with_placeholder(&mirror_placeholder),
-                ),
+                Box::new(self.choice(
+                    &output.connector,
+                    "mirror",
+                    mirror_choices,
+                    &mirror_placeholder,
+                    effect(DisplayEffect::MIRROR_DISPLAY),
+                )),
             ),
         ]
     }
 
     /// Resolution/refresh-rate dropdown (or an unavailable note) + rotation.
     fn build_output_mode_and_rotation_rows(
+        &self,
         output: &DisplayOutput,
         config: &OutputConfig,
     ) -> Vec<El> {
-        let mode_key = output_key(&output.connector, "mode");
-        let transform_key = output_key(&output.connector, "transform");
         let mut out_rows = Vec::new();
         if output.modes.is_empty() {
             out_rows.push(value_row(
@@ -1333,85 +1708,58 @@ impl DisplayPane {
                 .map_or_else(|| "Preferred".into(), OutputMode::label);
             out_rows.push(choice_row(
                 "Resolution & refresh rate",
-                Box::new(
-                    Dropdown::new(mode_choices.clone(), &mode_key)
-                        .with_id(&mode_key)
-                        .on_action(
-                            crate::actions::display_output_choice_binding(
-                                "mode",
-                                output.connector.clone(),
-                                mode_choices,
-                            )
-                            .expect("output mode action is part of the resource contract"),
-                        )
-                        .with_placeholder(&mode_placeholder),
-                ),
+                Box::new(self.choice(
+                    &output.connector,
+                    "mode",
+                    mode_choices,
+                    &mode_placeholder,
+                    effect(DisplayEffect::SET_DISPLAY_MODE),
+                )),
             ));
         }
         let rotation = transform_options();
         let rotation_current = transform_label(config.transform);
         out_rows.push(choice_row(
             &t("display-rotation"),
-            Box::new(
-                Dropdown::new(rotation.clone(), &transform_key)
-                    .with_id(&transform_key)
-                    .on_action(
-                        crate::actions::display_output_choice_binding(
-                            "transform",
-                            output.connector.clone(),
-                            rotation,
-                        )
-                        .expect("output transform action is part of the resource contract"),
-                    )
-                    .with_placeholder(&rotation_current),
-            ),
+            Box::new(self.choice(
+                &output.connector,
+                "transform",
+                rotation,
+                &rotation_current,
+                effect(DisplayEffect::ROTATE_DISPLAY),
+            )),
         ));
         out_rows
     }
 
     /// HDR / variable-refresh-rate / colour-profile rows.
-    fn build_output_capability_rows(output: &DisplayOutput, config: &OutputConfig) -> Vec<El> {
-        let hdr_key = output_key(&output.connector, "hdr");
-        let vrr_key = output_key(&output.connector, "vrr");
-        let profile_key = output_key(&output.connector, "color_profile");
+    fn build_output_capability_rows(
+        &self,
+        output: &DisplayOutput,
+        config: &OutputConfig,
+    ) -> Vec<El> {
         let mut out_rows = Vec::new();
 
         if output.hdr {
             out_rows.push(setting_row_described(
                 &crate::i18n::t("display-hdr"),
                 &crate::i18n::t("display-hdr-description"),
-                Box::new(
-                    Toggle::new(
-                        &format!("settings.display.{}.hdr", output.connector),
-                        &hdr_key,
-                    )
-                    .with_id(&hdr_key)
-                    .on_action(
-                        crate::actions::display_output_bool_binding(
-                            "hdr",
-                            output.connector.clone(),
-                        )
-                        .expect("HDR action is part of the resource contract"),
-                    ),
-                ),
+                Box::new(self.toggle(
+                    &output.connector,
+                    "hdr",
+                    config.hdr,
+                    effect(DisplayEffect::SET_HDR),
+                )),
             ));
-            let sdr_key = output_key(&output.connector, "sdr_brightness");
             out_rows.push(setting_row_described(
                 &crate::i18n::t("display-hdr-sdr-brightness"),
                 &crate::i18n::t("display-hdr-sdr-brightness-description"),
-                Box::new(
-                    Slider::new(
-                        &format!("settings.display.{}.sdr_brightness", output.connector),
-                        &sdr_key,
-                    )
-                    .with_id(&sdr_key)
-                    .on_action(
-                        crate::actions::display_output_sdr_brightness_binding(
-                            output.connector.clone(),
-                        )
-                        .expect("SDR brightness is part of the resource contract"),
-                    ),
-                ),
+                Box::new(self.slider(
+                    &output.connector,
+                    "sdr_brightness",
+                    sdr_brightness_fraction(config.sdr_brightness_nits),
+                    effect(DisplayEffect::SET_SDR_BRIGHTNESS),
+                )),
             ));
         } else {
             out_rows.push(value_row(
@@ -1426,20 +1774,12 @@ impl DisplayPane {
             out_rows.push(setting_row_described(
                 &crate::i18n::t("display-vrr"),
                 &crate::i18n::t("display-vrr-description"),
-                Box::new(
-                    Toggle::new(
-                        &format!("settings.display.{}.vrr", output.connector),
-                        &vrr_key,
-                    )
-                    .with_id(&vrr_key)
-                    .on_action(
-                        crate::actions::display_output_bool_binding(
-                            "vrr",
-                            output.connector.clone(),
-                        )
-                        .expect("VRR action is part of the resource contract"),
-                    ),
-                ),
+                Box::new(self.toggle(
+                    &output.connector,
+                    "vrr",
+                    config.vrr,
+                    effect(DisplayEffect::SET_VRR),
+                )),
             ));
         } else {
             out_rows.push(value_row(
@@ -1475,19 +1815,13 @@ impl DisplayPane {
                 .unwrap_or_else(|| "System default".into());
             out_rows.push(choice_row(
                 &t("display-colour-profile"),
-                Box::new(
-                    Dropdown::new(choices.clone(), &profile_key)
-                        .with_id(&profile_key)
-                        .on_action(
-                            crate::actions::display_output_choice_binding(
-                                "color-profile",
-                                output.connector.clone(),
-                                choices,
-                            )
-                            .expect("colour profile action is part of the resource contract"),
-                        )
-                        .with_placeholder(&placeholder),
-                ),
+                Box::new(self.choice(
+                    &output.connector,
+                    "color_profile",
+                    choices,
+                    &placeholder,
+                    effect(DisplayEffect::SET_COLOR_PROFILE),
+                )),
             ));
         }
         out_rows
@@ -1496,7 +1830,7 @@ impl DisplayPane {
     /// The safety/apply-transaction card, driven by the on-disk
     /// [`DisplayTransaction`] state machine.
     fn build_safety_card(&self) -> El {
-        let transaction = DisplayTransaction::load();
+        let transaction = self.of_device.then(DisplayTransaction::load).flatten();
         match transaction.as_ref().map(|transaction| transaction.state) {
             Some(DisplayTransactionState::AwaitingConfirmation) => {
                 let seconds = transaction
@@ -1516,25 +1850,17 @@ impl DisplayPane {
                         )),
                         setting_row(
                             &t("display-keep-ok"),
-                            Box::new(
-                                Button::new("settings.display.keep", &keep, None)
-                                    .content_sized()
-                                    .on_action(
-                                        crate::actions::display_unit_binding("confirm")
-                                            .expect("display confirm action is published"),
-                                    ),
-                            ),
+                            Box::new(self.cx.bind_invocation(
+                                Button::new("settings.display.keep", &keep).content_sized(),
+                                DisplayEffect::KeepDisplayChanges,
+                            )),
                         ),
                         setting_row(
                             &t("display-keep-wrong"),
-                            Box::new(
-                                Button::new("settings.display.revert", &revert, None)
-                                    .content_sized()
-                                    .on_action(
-                                        crate::actions::display_unit_binding("revert")
-                                            .expect("display revert action is published"),
-                                    ),
-                            ),
+                            Box::new(self.cx.bind_invocation(
+                                Button::new("settings.display.revert", &revert).content_sized(),
+                                DisplayEffect::RevertDisplayChanges,
+                            )),
                         ),
                     ]),
                 )
@@ -1560,14 +1886,10 @@ impl DisplayPane {
                     let try_again = t("display-try-again");
                     content.push(setting_row(
                         &t("display-retry"),
-                        Box::new(
-                            Button::new("settings.display.apply", &try_again, None)
-                                .content_sized()
-                                .on_action(
-                                    crate::actions::display_unit_binding("apply")
-                                        .expect("display apply action is published"),
-                                ),
-                        ),
+                        Box::new(self.cx.bind_invocation(
+                            Button::new("settings.display.apply", &try_again).content_sized(),
+                            DisplayEffect::ApplyDisplayChanges,
+                        )),
                     ));
                 }
                 card(&t("display-rejected-title"), rows(content))
@@ -1580,14 +1902,10 @@ impl DisplayPane {
                         caption(&t("display-apply-caption")),
                         setting_row(
                             &t("display-apply-row"),
-                            Box::new(
-                                Button::new("settings.display.apply", &apply, None)
-                                    .content_sized()
-                                    .on_action(
-                                        crate::actions::display_unit_binding("apply")
-                                            .expect("display apply action is published"),
-                                    ),
-                            ),
+                            Box::new(self.cx.bind_invocation(
+                                Button::new("settings.display.apply", &apply).content_sized(),
+                                DisplayEffect::ApplyDisplayChanges,
+                            )),
                         ),
                     ]),
                 )
@@ -1601,1094 +1919,180 @@ impl DisplayPane {
 
     /// Layout tools whose display changes are kept without asking, each
     /// with a way to be asked again. Absent while no tool is trusted.
-    fn build_trusted_tools_card() -> Option<El> {
+    fn build_trusted_tools_card(&self) -> Option<El> {
+        if !self.of_device {
+            return None;
+        }
         let trusted = settings_store::display_tools::TrustedDisplayTools::load();
         if trusted.tools.is_empty() {
             return None;
         }
         let mut content = vec![caption(&crate::i18n::t("display-tools-caption"))];
         for tool in &trusted.tools {
-            let Some(binding) = crate::actions::display_tool_forget_binding(tool) else {
-                continue;
-            };
             content.push(setting_row(
                 tool.name(),
-                Box::new(
+                Box::new(self.cx.bind_invocation(
                     Button::new(
                         "settings.display.tool.forget",
                         &crate::i18n::t("display-tools-forget"),
-                        None,
-                    )
-                    .on_action(binding),
-                ),
+                    ),
+                    DisplayEffect::ForgetDisplayTool {
+                        tool: tool.executable.clone(),
+                    },
+                )),
             ));
         }
         Some(card(&crate::i18n::t("display-tools-title"), rows(content)))
     }
-
-    /// Load prefs fresh, apply `f` to the display section, persist.
-    fn persist_display(f: impl FnOnce(&mut DisplayPrefs)) -> Result<(), String> {
-        let mut p = SystemPrefs::load();
-        f(&mut p.display);
-        p.save().map(|_| ()).map_err(|e| {
-            warn!(target: "tilo::settings", op = "display_prefs_save", error = %e, "failed to persist display prefs");
-            format!("Display preference could not be saved: {e}")
-        })
-    }
-
-    fn write_output_controls(&self, state: &mut AutoCommit, root: &ObjId, config: &DisplayConfig) {
-        let connected = self.connected_outputs();
-        for (index, output) in connected.iter().enumerate() {
-            let cfg = config
-                .outputs
-                .get(&output.connector)
-                .cloned()
-                .unwrap_or_else(|| OutputConfig {
-                    primary: index == 0,
-                    x: index as i32 * 1920,
-                    ..output.unconfigured()
-                });
-            let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
-            let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
-            if let Some(level) = self.output_brightness.get(&output.connector) {
-                let _ = state.put(
-                    root,
-                    output_key(&output.connector, "brightness"),
-                    f64::from(*level),
-                );
-            }
-            let _ = state.put(
-                root,
-                output_key(&output.connector, "scale"),
-                scale_label(cfg.scale),
-            );
-            let _ = state.put(
-                root,
-                output_key(&output.connector, "transform"),
-                transform_label(cfg.transform),
-            );
-            let _ = state.put(root, output_key(&output.connector, "hdr"), cfg.hdr);
-            let _ = state.put(
-                root,
-                output_key(&output.connector, "sdr_brightness"),
-                sdr_brightness_fraction(cfg.sdr_brightness_nits),
-            );
-            let _ = state.put(root, output_key(&output.connector, "vrr"), cfg.vrr);
-            let profile = cfg
-                .color_profile
-                .as_ref()
-                .and_then(|id| {
-                    output
-                        .color_profile_labels
-                        .get(id)
-                        .map(|label| format!("{label} · {id}"))
-                })
-                .unwrap_or_else(|| "System default".into());
-            let _ = state.put(
-                root,
-                output_key(&output.connector, "color_profile"),
-                profile,
-            );
-            if let Some(mode) = cfg.mode.or(output.current_mode) {
-                let _ = state.put(root, output_key(&output.connector, "mode"), mode.label());
-            }
-        }
-    }
 }
 
-pub fn build() -> Box<dyn Widget> {
-    Box::new(DisplayPane::new())
-}
-
-impl Widget for DisplayPane {
-    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
-        let (shared, _) = ui::doc::document(shared, root);
-        let isolated = self.isolate_document;
-        let mut state = if isolated {
-            std::mem::take(&mut self.local_doc)
-        } else {
-            std::mem::take(shared)
-        };
-        let root = automerge::ROOT;
-        self.poll_brightness_result(&mut state, &root);
-        self.poll_hardware_probe(&mut state, &root);
-        self.refresh_outputs_if_stale();
-        if self.needs_seed {
-            self.seed_state(&mut state, &root);
-        }
-        if let Some(crate::actions::LocalPaneCommand::Display(operation)) = self.command_state.get()
-        {
-            self.command_state.set(None);
-            self.execute_local_command(&mut state, operation);
-        }
-        let running_operation = self.running_operation();
-        if let Some(operation) = &running_operation {
-            self.prepare_running_operation(&mut state, &root, operation);
-        } else if self.require_operation_token {
-            let committed = self.output_config.clone();
-            self.write_output_controls(&mut state, &root, &committed);
-            let _ = state.put(&root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
-            let _ = state.put(&root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
-            let _ = state.put(&root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
-            let _ = state.put(&root, APPLY_DISPLAY_KEY, false);
-            let _ = state.put(&root, KEEP_DISPLAY_KEY, false);
-            let _ = state.put(&root, REVERT_DISPLAY_KEY, false);
-        }
-        let has_pending_operation = !self.require_operation_token || running_operation.is_some();
-        if has_pending_operation {
-            self.sync_brightness(&mut state, &root);
-            self.sync_output_brightness(&mut state, &root);
-        }
-        self.sync_comfort_prefs(&mut state, &root, has_pending_operation);
-
-        let connected: Vec<_> = self
-            .outputs
-            .iter()
-            .filter(|o| o.connected)
-            .cloned()
-            .collect();
-        if has_pending_operation {
-            if !matches!(
-                running_operation.as_ref(),
-                Some(
-                    crate::actions::DisplayOperation::Apply
-                        | crate::actions::DisplayOperation::Confirm
-                        | crate::actions::DisplayOperation::Revert
-                )
-            ) {
-                self.sync_output_config(&mut state, &root, &connected);
-            }
-            self.sync_transaction_controls(&mut state, &root);
-        }
-
-        if let Some(c) = &mut self.composed {
-            c.sync(&mut state, &root);
-        }
-        if isolated {
-            self.local_doc = state;
-        } else {
-            *shared = state;
-        }
+impl PaneModel for DisplayModel {
+    fn compose(&self) -> Box<dyn Widget> {
+        self.build_composition()
     }
 
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let mut composed = self.build_composition();
-        let child = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
-        let style = taffy::Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            size: taffy::Size {
-                width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        // `new_with_children` only fails when a child belongs to a different
-        // tree; `child` was just built in this one above.
-        #[allow(
-            clippy::unwrap_used,
-            reason = "child was just created in this same tree"
-        )]
-        let node = taffy.new_with_children(style, &[child]).unwrap();
-        node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let Ok(l) = taffy.layout(node) else {
-            return;
-        };
-        self.rect = Rect::new(
-            origin.x + f64::from(l.location.x),
-            origin.y + f64::from(l.location.y),
-            origin.x + f64::from(l.location.x) + f64::from(l.size.width),
-            origin.y + f64::from(l.location.y) + f64::from(l.size.height),
-        );
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
-            && let Some(&cn) = children.first()
-        {
-            c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
+    fn poll(&mut self) -> bool {
+        self.poll_background();
+        self.poll_device();
+        if self.prefs.refresh() {
+            self.changed = true;
         }
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        if let Some(c) = &mut self.composed {
-            c.draw(scene, transform, text_renderer, theme, presence);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let Some(c) = &mut self.composed
-            && let Ok(children) = ctx.taffy.children(ctx.node_id)
-            && let Some(&cn) = children.first()
-        {
-            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
-        }
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.composed
-            .as_ref()
-            .map(|c| c.as_ref() as &dyn Widget)
-            .into_iter()
-            .collect()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed
-            .as_mut()
-            .map(|c| c.as_mut() as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        std::mem::take(&mut self.changed)
     }
 
     fn name(&self) -> &'static str {
         "DisplayPane"
     }
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+    fn busy(&self) -> bool {
+        self.hardware_probe.is_some() || self.pending_brightness.is_some()
     }
 
-    fn take_structure_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.structure_dirty)
-            || self
-                .composed
-                .as_mut()
-                .is_some_and(|c| c.take_structure_dirty())
+    fn next_wake(&self) -> Option<Instant> {
+        self.of_device
+            .then(|| self.last_snapshot_check + Duration::from_secs(1))
     }
 }
 
-/// `sync` helper methods, split out of the trait method above (which must
-/// stay a plain dispatcher) purely to stay under the line-count lint.
-impl DisplayPane {
-    /// Drain the background brightness/ambient-sensor probe, seeding the
-    /// CRDT and dropping the receiver once it has reported (or hung up).
-    fn poll_hardware_probe(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(receiver) = &self.hardware_probe else {
-            return;
-        };
-        match receiver.try_recv() {
-            Ok((brightness, ambient)) => {
-                self.ambient_sensor_available = ambient;
-                match brightness {
-                    Ok(brightness) => {
-                        self.initial_brightness = brightness;
-                        self.last_brightness = brightness;
-                        self.brightness_error = None;
-                        let _ = state.put(
-                            root,
-                            BRIGHTNESS_KEY,
-                            automerge::ScalarValue::F64(f64::from(brightness)),
-                        );
-                    }
-                    Err(error) => self.brightness_error = Some(error),
-                }
-                self.hardware_probe = None;
-                self.structure_dirty = true;
+/// The connected output `display`.
+fn output_of<'a>(
+    connected: &'a [DisplayOutput],
+    display: &str,
+) -> Result<&'a DisplayOutput, String> {
+    connected
+        .iter()
+        .find(|output| output.connector == display)
+        .ok_or_else(|| "that display is no longer connected".to_string())
+}
+
+/// Place `display` beside another as `position` says (`Right of …`), by
+/// the neighbour's logical extent: a 2x panel's right-hand neighbour starts
+/// 1280 in, not 2560.
+fn place_beside(
+    display: &str,
+    position: &str,
+    cfg: &mut OutputConfig,
+    next: &DisplayConfig,
+    connected: &[DisplayOutput],
+) -> Result<(), String> {
+    let output = output_of(connected, display)?;
+    if position == "Automatic" {
+        return Ok(());
+    }
+    let (side, reference) = ["Left", "Right", "Above", "Below"]
+        .iter()
+        .find_map(|side| {
+            let label = position.strip_prefix(&format!("{side} of "))?;
+            let target = connected
+                .iter()
+                .find(|candidate| candidate.label == label && candidate.connector != display)?;
+            Some((*side, target))
+        })
+        .ok_or_else(|| format!("`{position}` is not a place beside another display"))?;
+    let reference_cfg = next
+        .outputs
+        .get(&reference.connector)
+        .cloned()
+        .unwrap_or_else(|| reference.unconfigured());
+    let (width, height) = logical_extent_of(output, cfg);
+    let (reference_width, reference_height) = logical_extent_of(reference, &reference_cfg);
+    (cfg.x, cfg.y) = match side {
+        "Left" => (reference_cfg.x.saturating_sub(width), reference_cfg.y),
+        "Right" => (
+            reference_cfg.x.saturating_add(reference_width),
+            reference_cfg.y,
+        ),
+        "Above" => (reference_cfg.x, reference_cfg.y.saturating_sub(height)),
+        _ => (
+            reference_cfg.x,
+            reference_cfg.y.saturating_add(reference_height),
+        ),
+    };
+    Ok(())
+}
+
+/// Exactly one enabled display is primary: `preferred` when given, else the
+/// one already primary, else the first enabled one.
+fn choose_primary(next: &mut DisplayConfig, connected: &[DisplayOutput], preferred: Option<&str>) {
+    let enabled = |connector: &str| {
+        next.outputs
+            .get(connector)
+            .is_some_and(|config| config.enabled)
+    };
+    let selected = preferred
+        .filter(|connector| enabled(connector))
+        .map(str::to_owned)
+        .or_else(|| {
+            connected.iter().find_map(|output| {
+                next.outputs
+                    .get(&output.connector)
+                    .filter(|config| config.enabled && config.primary)
+                    .map(|_| output.connector.clone())
+            })
+        })
+        .or_else(|| {
+            connected
+                .iter()
+                .find(|output| enabled(&output.connector))
+                .map(|output| output.connector.clone())
+        });
+    if let Some(selected) = selected {
+        for output in connected {
+            if let Some(config) = next.outputs.get_mut(&output.connector) {
+                config.primary = output.connector == selected;
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.hardware_probe = None;
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
         }
     }
+}
 
-    /// Re-read the DRM connector snapshot when its mtime has moved, at most
-    /// once a second.
-    fn refresh_outputs_if_stale(&mut self) {
-        if self.last_snapshot_check.elapsed() < Duration::from_secs(1) {
-            return;
-        }
-        self.last_snapshot_check = ui::time::now();
-        let stamp = settings_store::hardware::display_snapshot_path()
-            .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
-        if stamp != self.snapshot_stamp {
-            self.snapshot_stamp = stamp;
-            self.outputs = read_outputs();
-            self.output_config = DisplayConfig::load_for(&self.display_set());
-            self.needs_seed = true;
-            self.structure_dirty = true;
-        }
-        // Monitor probing finishes in the background; a monitor that turns
-        // out to speak DDC/CI gains its slider once the probe lands.
-        let controllable = read_output_brightness(&self.outputs);
-        if controllable.keys().ne(self.output_brightness.keys()) {
-            self.output_brightness = controllable;
-            self.needs_seed = true;
-            self.structure_dirty = true;
-        }
-    }
-
-    /// First-sync seed: writes the initial brightness/comfort preferences
-    /// and every connected output's current config into the CRDT.
-    fn seed_state(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let _ = state.put(
-            root,
-            BRIGHTNESS_KEY,
-            automerge::ScalarValue::F64(f64::from(self.initial_brightness)),
-        );
-        let _ = state.put(
-            root,
-            AUTO_BRIGHTNESS_KEY,
-            automerge::ScalarValue::Boolean(self.initial_prefs.auto_brightness),
-        );
-        let _ = state.put(
-            root,
-            NIGHT_LIGHT_KEY,
-            automerge::ScalarValue::Boolean(self.initial_prefs.night_light),
-        );
-        let _ = state.put(
-            root,
-            NIGHT_LIGHT_SCHEDULE_KEY,
-            automerge::ScalarValue::Boolean(self.initial_prefs.night_light_schedule),
-        );
-        let _ = state.put(
-            root,
-            NIGHT_LIGHT_TEMPERATURE_KEY,
-            temperature_label(self.initial_prefs.night_light_temperature),
-        );
-        let _ = state.put(
-            root,
-            DISPLAY_SCALE_KEY,
-            scale_label(self.initial_prefs.scale),
-        );
-        let _ = state.put(root, APPLY_DISPLAY_KEY, false);
-        let _ = state.put(root, KEEP_DISPLAY_KEY, false);
-        let _ = state.put(root, REVERT_DISPLAY_KEY, false);
-        let connected: Vec<_> = self
-            .outputs
-            .iter()
-            .filter(|o| o.connected)
-            .cloned()
-            .collect();
-        for (index, output) in connected.iter().enumerate() {
-            let cfg = self
-                .output_config
-                .outputs
-                .entry(output.connector.clone())
-                .or_insert_with(|| OutputConfig {
-                    primary: index == 0,
-                    x: index as i32 * 1920,
-                    ..Default::default()
-                });
-            let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
-            let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
-            let _ = state.put(
-                root,
-                output_key(&output.connector, "scale"),
-                scale_label(cfg.scale),
-            );
-            let _ = state.put(root, output_key(&output.connector, "position"), "Automatic");
-            let mirror = cfg
+/// Mirroring is one viewport sampled by two sinks: pick the best pixel
+/// extent both advertise, then each sink's best refresh for that extent.
+fn mirror_on_shared_modes(next: &mut DisplayConfig, connected: &[DisplayOutput]) {
+    let pairs: Vec<(String, String)> = next
+        .outputs
+        .iter()
+        .filter_map(|(connector, config)| {
+            config
                 .mirror_of
                 .as_ref()
-                .and_then(|target| {
-                    connected
-                        .iter()
-                        .find(|candidate| candidate.connector == *target)
-                })
-                .map_or_else(
-                    || "Extend workspace".into(),
-                    |target| format!("Mirror {}", target.label),
-                );
-            let _ = state.put(root, output_key(&output.connector, "mirror"), mirror);
-            if let Some(mode) = cfg.mode {
-                let _ = state.put(root, output_key(&output.connector, "mode"), mode.label());
-            }
-            let _ = state.put(
-                root,
-                output_key(&output.connector, "transform"),
-                transform_label(cfg.transform),
-            );
-            let _ = state.put(root, output_key(&output.connector, "hdr"), cfg.hdr);
-            let _ = state.put(root, output_key(&output.connector, "vrr"), cfg.vrr);
-            let profile = cfg
-                .color_profile
-                .as_ref()
-                .and_then(|id| {
-                    output
-                        .color_profile_labels
-                        .get(id)
-                        .map(|label| format!("{label} · {id}"))
-                })
-                .unwrap_or_else(|| "System default".into());
-            let _ = state.put(
-                root,
-                output_key(&output.connector, "color_profile"),
-                &profile,
-            );
-        }
-        self.last_prefs = self.initial_prefs;
-        self.needs_seed = false;
-    }
-
-    /// Brightness → dispatcher, guarded so we don't shell out every frame.
-    fn sync_brightness(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Ok(Some((val, _))) = state.get(root, BRIGHTNESS_KEY)
-            && let Value::Scalar(s) = val
-            && let automerge::ScalarValue::F64(f) = s.as_ref()
-        {
-            let new = *f as f32;
-            if (new - self.last_brightness).abs() > 0.001 && self.pending_brightness.is_none() {
-                let percent = new.clamp(0.0, 1.0) * 100.0;
-                if let Some(sender) = &self.brightness_tx {
-                    if sender.send(percent).is_ok() {
-                        self.pending_brightness = Some((self.last_brightness, new));
-                    } else {
-                        let _ = state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
-                        self.finish_display_operation(Err(
-                            "Brightness worker is unavailable; the display was not changed.".into(),
-                        ));
-                    }
-                } else {
-                    match self.dispatcher.set_brightness(percent) {
-                        Ok(()) => {
-                            self.last_brightness = new;
-                            self.finish_display_operation(Ok(format!(
-                                "Brightness set to {}%.",
-                                percent.round()
-                            )));
-                        }
-                        Err(e) => {
-                            let _ =
-                                state.put(root, BRIGHTNESS_KEY, f64::from(self.last_brightness));
-                            self.finish_display_operation(Err(format!(
-                                "Brightness could not be changed: {e}"
-                            )));
-                            warn!(target: "tilo::settings", op = "set_brightness", error = %e, "display pane dispatch failed");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    /// Each external monitor's slider → its brightness over DDC/CI. The
-    /// write is queued, not awaited: a monitor needs tens of milliseconds
-    /// per command and the slider must keep up with the pointer.
-    fn sync_output_brightness(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let changed: Vec<(String, f32)> = self
-            .output_brightness
-            .iter()
-            .filter_map(|(connector, last)| {
-                let Ok(Some((Value::Scalar(value), _))) =
-                    state.get(root, output_key(connector, "brightness"))
-                else {
-                    return None;
-                };
-                let automerge::ScalarValue::F64(level) = value.as_ref() else {
-                    return None;
-                };
-                let level = (*level as f32).clamp(0.0, 1.0);
-                ((level - last).abs() > 0.001).then(|| (connector.clone(), level))
-            })
-            .collect();
-        for (connector, level) in changed {
-            let Some(label) = self
-                .outputs
+                .map(|target| (connector.clone(), target.clone()))
+        })
+        .collect();
+    for (connector, target) in pairs {
+        let (Some(source), Some(sink)) = (
+            connected
                 .iter()
-                .find(|output| output.connector == connector)
-                .map(|output| output.connector_label.clone())
-            else {
-                continue;
-            };
-            match self
-                .dispatcher
-                .set_display_brightness(&label, level * 100.0)
-            {
-                Ok(()) => {
-                    self.output_brightness.insert(connector, level);
-                    self.finish_display_operation(Ok(format!(
-                        "Brightness set to {}%.",
-                        (level * 100.0).round()
-                    )));
-                }
-                Err(error) => {
-                    let previous = self
-                        .output_brightness
-                        .get(&connector)
-                        .copied()
-                        .unwrap_or_default();
-                    let _ = state.put(
-                        root,
-                        output_key(&connector, "brightness"),
-                        f64::from(previous),
-                    );
-                    self.finish_display_operation(Err(format!(
-                        "Brightness could not be changed: {error}"
-                    )));
-                    warn!(target: "tilo::settings", op = "set_display_brightness", %error, "display pane dispatch failed");
-                }
-            }
-        }
-    }
-
-    fn poll_brightness_result(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let Some(receiver) = &self.brightness_result_rx else {
-            return;
+                .find(|output| output.connector == connector),
+            connected.iter().find(|output| output.connector == target),
+        ) else {
+            continue;
         };
-        let Ok(result) = receiver.try_recv() else {
-            return;
-        };
-        let Some((previous, requested)) = self.pending_brightness.take() else {
-            return;
-        };
-        match result {
-            Ok(applied) => {
-                self.last_brightness = applied;
-                self.finish_display_operation(Ok(format!(
-                    "Brightness set to {}%.",
-                    (applied * 100.0).round()
-                )));
+        if let Some((source_mode, sink_mode)) = best_mirror_modes(source, sink) {
+            if let Some(config) = next.outputs.get_mut(&connector) {
+                config.mode = Some(source_mode);
             }
-            Err(error) => {
-                self.last_brightness = previous;
-                let _ = state.put(root, BRIGHTNESS_KEY, f64::from(previous));
-                self.finish_display_operation(Err(format!(
-                    "Brightness could not be changed: {error}"
-                )));
-                warn!(target: "tilo::settings", op = "set_brightness", %error, requested, "display worker dispatch failed");
-            }
-        }
-    }
-
-    /// Comfort preferences → persist to the shared store on change.
-    fn sync_comfort_prefs(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        has_pending_operation: bool,
-    ) {
-        if has_pending_operation
-            && let Some(b) = read_bool(state, root, AUTO_BRIGHTNESS_KEY)
-            && b ^ self.last_prefs.auto_brightness
-        {
-            let effective = b && self.ambient_sensor_available;
-            if b && !self.ambient_sensor_available {
-                let _ = state.put(root, AUTO_BRIGHTNESS_KEY, false);
-                self.finish_display_operation(Err(
-                    "Automatic brightness is unavailable because this device has no ambient-light sensor."
-                        .into(),
-                ));
-            } else {
-                match Self::persist_display(|d| d.auto_brightness = effective) {
-                    Ok(()) => {
-                        self.last_prefs.auto_brightness = effective;
-                        self.finish_display_operation(Ok(if effective {
-                            "Automatic brightness enabled.".into()
-                        } else {
-                            "Automatic brightness disabled.".into()
-                        }));
-                    }
-                    Err(error) => {
-                        let _ =
-                            state.put(root, AUTO_BRIGHTNESS_KEY, self.last_prefs.auto_brightness);
-                        self.finish_display_operation(Err(error));
-                    }
-                }
-            }
-        }
-        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_KEY)
-            && b ^ self.last_prefs.night_light
-        {
-            self.last_prefs.night_light = b;
-            let _ = Self::persist_display(|d| d.night_light = b);
-        }
-        if let Some(b) = read_bool(state, root, NIGHT_LIGHT_SCHEDULE_KEY)
-            && b ^ self.last_prefs.night_light_schedule
-        {
-            self.last_prefs.night_light_schedule = b;
-            let _ = Self::persist_display(|d| d.night_light_schedule = b);
-        }
-        if let Some(label) = read_str_or_text(state, root, NIGHT_LIGHT_TEMPERATURE_KEY)
-            && let Some(kelvin) = temperature_from_label(&label)
-            && kelvin != self.last_prefs.night_light_temperature
-        {
-            self.last_prefs.night_light_temperature = kelvin;
-            let _ = Self::persist_display(|d| d.night_light_temperature = kelvin);
-        }
-        // Display scale → persist to the shared store on change. The
-        // compositor reads `display.scale` at session start and advertises
-        // it as the preferred fractional scale.
-        if has_pending_operation
-            && let Some(label) = read_str_or_text(state, root, DISPLAY_SCALE_KEY)
-            && let Some(v) = scale_factor_of(&label)
-            && (v - self.last_prefs.scale).abs() > f64::EPSILON
-        {
-            match Self::persist_display(|d| d.scale = v) {
-                Ok(()) => {
-                    self.last_prefs.scale = v;
-                    self.finish_display_operation(Ok(format!("Display scale set to {label}.")));
-                }
-                Err(error) => {
-                    let _ = state.put(root, DISPLAY_SCALE_KEY, scale_label(self.last_prefs.scale));
-                    self.finish_display_operation(Err(error));
-                }
-            }
-        }
-    }
-
-    /// Per-output intent is staged in a clone and only atomically saved
-    /// after capability validation. Invalid/transient CRDT values never
-    /// reach the compositor.
-    fn sync_output_config(
-        &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        connected: &[DisplayOutput],
-    ) {
-        let mut next = self.output_config.clone();
-        let mut changed = false;
-        for output in connected {
-            let mut cfg = next
-                .outputs
-                .get(&output.connector)
-                .cloned()
-                .unwrap_or_else(|| output.unconfigured());
-            if Self::apply_output_field_overrides(state, root, output, &mut next, &mut cfg) {
-                changed = true;
-            }
-            if Self::apply_output_placement_overrides(
-                state, root, output, connected, &next, &mut cfg,
-            ) {
-                changed = true;
-            }
-            next.outputs.insert(output.connector.clone(), cfg);
-        }
-        self.apply_primary_selection(state, root, connected, &mut next, &mut changed);
-        Self::apply_mirror_pairs(connected, &mut next, &mut changed);
-        if changed {
-            self.stage_output_candidate(connected, next);
-            self.finish_display_operation(Ok(
-                "Display change staged. Apply it to preview the new configuration.".into(),
-            ));
-        }
-    }
-
-    /// Enable/primary/scale/mode/transform/HDR/VRR/colour-profile overrides
-    /// for one output. Returns whether anything changed.
-    fn apply_output_field_overrides(
-        state: &AutoCommit,
-        root: &ObjId,
-        output: &DisplayOutput,
-        next: &mut DisplayConfig,
-        cfg: &mut OutputConfig,
-    ) -> bool {
-        let mut changed = false;
-        if let Some(enabled) = read_bool(state, root, output_key(&output.connector, "enabled"))
-            && enabled != cfg.enabled
-        {
-            cfg.enabled = enabled;
-            if !enabled {
-                cfg.primary = false;
-            }
-            changed = true;
-        }
-        if let Some(primary) = read_bool(state, root, output_key(&output.connector, "primary"))
-            && primary != cfg.primary
-        {
-            if primary {
-                for other in next.outputs.values_mut() {
-                    other.primary = false;
-                }
-            }
-            cfg.primary = primary;
-            changed = true;
-        }
-        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "scale"))
-            && let Some(scale) = scale_factor_of(&label)
-            && (scale - cfg.scale).abs() > f64::EPSILON
-        {
-            cfg.scale = scale;
-            changed = true;
-        }
-        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "mode"))
-            && let Some(mode) = output
-                .modes
-                .iter()
-                .copied()
-                .find(|mode| mode.label() == label)
-            && cfg.mode != Some(mode)
-        {
-            cfg.mode = Some(mode);
-            changed = true;
-        }
-        if let Some(label) =
-            read_str_or_text(state, root, output_key(&output.connector, "transform"))
-            && let Some(transform) = transform_from_label(&label)
-            && transform != cfg.transform
-        {
-            cfg.transform = transform;
-            changed = true;
-        }
-        if output.hdr
-            && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "hdr"))
-            && enabled != cfg.hdr
-        {
-            cfg.hdr = enabled;
-            changed = true;
-        }
-        if output.hdr
-            && let Some(fraction) =
-                ui::doc::read_f64(state, root, output_key(&output.connector, "sdr_brightness"))
-            && sdr_brightness_nits(fraction) != cfg.sdr_brightness_nits
-        {
-            cfg.sdr_brightness_nits = sdr_brightness_nits(fraction);
-            changed = true;
-        }
-        if output.vrr
-            && let Some(enabled) = read_bool(state, root, output_key(&output.connector, "vrr"))
-            && enabled != cfg.vrr
-        {
-            cfg.vrr = enabled;
-            changed = true;
-        }
-        if let Some(label) =
-            read_str_or_text(state, root, output_key(&output.connector, "color_profile"))
-        {
-            let selected = if label == "System default" {
-                None
-            } else {
-                output
-                    .color_profile_labels
-                    .iter()
-                    .find_map(|(id, candidate)| {
-                        (label == format!("{candidate} · {id}")).then(|| id.clone())
-                    })
-            };
-            if selected != cfg.color_profile {
-                cfg.color_profile = selected;
-                changed = true;
-            }
-        }
-        changed
-    }
-
-    /// Mirror-target/relative-position overrides for one output. Returns
-    /// whether anything changed.
-    fn apply_output_placement_overrides(
-        state: &AutoCommit,
-        root: &ObjId,
-        output: &DisplayOutput,
-        connected: &[DisplayOutput],
-        next: &DisplayConfig,
-        cfg: &mut OutputConfig,
-    ) -> bool {
-        let mut changed = false;
-        if let Some(label) = read_str_or_text(state, root, output_key(&output.connector, "mirror"))
-        {
-            let mirror = if label == "Extend workspace" {
-                None
-            } else {
-                connected
-                    .iter()
-                    .find(|candidate| label == format!("Mirror {}", candidate.label))
-                    .map(|candidate| candidate.connector.clone())
-            };
-            if mirror != cfg.mirror_of {
-                cfg.mirror_of = mirror;
-                changed = true;
-            }
-        }
-        let exact = ui::doc::read_i64_coerced(state, root, output_key(&output.connector, "x"))
-            .zip(ui::doc::read_i64_coerced(
-                state,
-                root,
-                output_key(&output.connector, "y"),
-            ))
-            .and_then(|(x, y)| Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?)));
-        if let Some((x, y)) = exact {
-            if (cfg.x, cfg.y) != (x, y) {
-                cfg.x = x;
-                cfg.y = y;
-                changed = true;
-            }
-        } else if let Some(position) =
-            read_str_or_text(state, root, output_key(&output.connector, "position"))
-        {
-            let relative = ["Left", "Right", "Above", "Below"].iter().find_map(|side| {
-                let label = position.strip_prefix(&format!("{side} of "))?;
-                let target = connected
-                    .iter()
-                    .find(|candidate| candidate.label == label)?;
-                Some((*side, target))
-            });
-            if let Some((side, reference)) = relative {
-                let reference_cfg = next
-                    .outputs
-                    .get(&reference.connector)
-                    .cloned()
-                    .unwrap_or_else(|| reference.unconfigured());
-                // Positions are logical, so neighbours are placed by their
-                // logical extent (mode over scale, rotated), not their mode:
-                // a 2x panel's right-hand neighbour starts 1280 in, not 2560.
-                let (width, height) = logical_extent_of(output, cfg);
-                let (reference_width, reference_height) =
-                    logical_extent_of(reference, &reference_cfg);
-                let point = match side {
-                    "Left" => Some((reference_cfg.x.saturating_sub(width), reference_cfg.y)),
-                    "Right" => Some((
-                        reference_cfg.x.saturating_add(reference_width),
-                        reference_cfg.y,
-                    )),
-                    "Above" => Some((reference_cfg.x, reference_cfg.y.saturating_sub(height))),
-                    "Below" => Some((
-                        reference_cfg.x,
-                        reference_cfg.y.saturating_add(reference_height),
-                    )),
-                    _ => None,
-                };
-                if let Some((x, y)) = point
-                    && (cfg.x, cfg.y) != (x, y)
-                {
-                    cfg.x = x;
-                    cfg.y = y;
-                    changed = true;
-                }
-            }
-        }
-        changed
-    }
-
-    /// Which output should be primary this frame: a newly-toggled one wins,
-    /// else keep whichever staged output is already both enabled and
-    /// primary, else fall back to the first enabled output. Always writes
-    /// the resolved `primary` key back so exactly one output reads true.
-    fn apply_primary_selection(
-        &self,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        connected: &[DisplayOutput],
-        next: &mut DisplayConfig,
-        changed: &mut bool,
-    ) {
-        let newly_selected_primary = connected.iter().find(|output| {
-            read_bool(state, root, output_key(&output.connector, "primary")) == Some(true)
-                && !self
-                    .output_config
-                    .outputs
-                    .get(&output.connector)
-                    .is_some_and(|config| config.primary)
-        });
-        let selected_primary = newly_selected_primary
-            .map(|output| output.connector.as_str())
-            .or_else(|| {
-                connected.iter().find_map(|output| {
-                    next.outputs
-                        .get(&output.connector)
-                        .filter(|config| config.enabled && config.primary)
-                        .map(|_| output.connector.as_str())
-                })
-            })
-            .or_else(|| {
-                connected.iter().find_map(|output| {
-                    next.outputs
-                        .get(&output.connector)
-                        .filter(|config| config.enabled)
-                        .map(|_| output.connector.as_str())
-                })
-            });
-        if let Some(selected) = selected_primary {
-            for output in connected {
-                let primary = output.connector == selected;
-                if let Some(config) = next.outputs.get_mut(&output.connector)
-                    && config.primary != primary
-                {
-                    config.primary = primary;
-                    *changed = true;
-                }
-                let _ = state.put(root, output_key(&output.connector, "primary"), primary);
-            }
-        }
-    }
-
-    /// Mirroring is one viewport sampled by two sinks. Pick the best pixel
-    /// extent both advertise, then each sink's best refresh for that extent.
-    /// Merely sharing an origin with unrelated extents is not mirroring.
-    fn apply_mirror_pairs(
-        connected: &[DisplayOutput],
-        next: &mut DisplayConfig,
-        changed: &mut bool,
-    ) {
-        let mirror_pairs: Vec<(String, String)> = next
-            .outputs
-            .iter()
-            .filter_map(|(connector, config)| {
-                config
-                    .mirror_of
-                    .as_ref()
-                    .map(|target| (connector.clone(), target.clone()))
-            })
-            .collect();
-        for (connector, target) in mirror_pairs {
-            let Some(source) = connected
-                .iter()
-                .find(|output| output.connector == connector)
-            else {
-                continue;
-            };
-            let Some(sink) = connected.iter().find(|output| output.connector == target) else {
-                continue;
-            };
-            if let Some((source_mode, sink_mode)) = best_mirror_modes(source, sink) {
-                if let Some(config) = next.outputs.get_mut(&connector)
-                    && config.mode != Some(source_mode)
-                {
-                    config.mode = Some(source_mode);
-                    *changed = true;
-                }
-                if let Some(config) = next.outputs.get_mut(&target)
-                    && config.mode != Some(sink_mode)
-                {
-                    config.mode = Some(sink_mode);
-                    *changed = true;
-                }
-            }
-        }
-    }
-
-    /// Validate the staged config against real output capabilities and, if
-    /// valid, make it the pending candidate the "Apply" button can request.
-    fn stage_output_candidate(&mut self, connected: &[DisplayOutput], next: DisplayConfig) {
-        let descriptors: Vec<_> = connected.iter().map(Self::output_descriptor).collect();
-        match next.validate_for(&descriptors) {
-            Ok(()) => self.pending_candidate = Some(next),
-            Err(error) => {
-                warn!(target: "tilo::settings", ?error, "rejected invalid display configuration");
-            }
-        }
-    }
-
-    /// Reconstruct the compositor's descriptor contract from a Settings
-    /// output. `label` is presentation-only and may include `· <bus-id>`;
-    /// validation must retain the raw DRM connector label separately.
-    fn output_descriptor(output: &DisplayOutput) -> OutputDescriptor {
-        OutputDescriptor {
-            connector: output.connector.clone(),
-            connector_label: output.connector_label.clone(),
-            modes: output.modes.clone(),
-            hdr: output.hdr,
-            vrr: output.vrr,
-            color_profiles: output.color_profiles.clone(),
-            monitor: output.monitor.clone(),
-        }
-    }
-
-    /// The connected monitors, whose saved arrangement this pane edits.
-    fn display_set(&self) -> DisplaySet {
-        Self::display_set_of(&self.outputs)
-    }
-
-    fn display_set_of(outputs: &[DisplayOutput]) -> DisplaySet {
-        let descriptors: Vec<_> = outputs
-            .iter()
-            .filter(|output| output.connected)
-            .map(Self::output_descriptor)
-            .collect();
-        DisplaySet::of_descriptors(&descriptors)
-    }
-
-    /// Apply/Keep/Revert button keys, plus reseeding controls once the
-    /// compositor settles a transaction (confirmed, reverted, or rejected).
-    fn sync_transaction_controls(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if read_bool(state, root, APPLY_DISPLAY_KEY) == Some(true) {
-            let _ = state.put(root, APPLY_DISPLAY_KEY, false);
-            match self.pending_candidate.clone() {
-                Some(candidate) => {
-                    if let Err(error) = DisplayTransaction::request(self.display_set(), candidate) {
-                        warn!(target: "tilo::settings", %error, "failed to stage display configuration");
-                        self.finish_display_operation(Err(format!(
-                            "Display configuration could not be staged: {error}"
-                        )));
-                    }
-                }
-                None => self.finish_display_operation(Err(
-                    "There are no staged display changes to apply.".into(),
-                )),
-            }
-        }
-        if read_bool(state, root, KEEP_DISPLAY_KEY) == Some(true) {
-            let _ = state.put(root, KEEP_DISPLAY_KEY, false);
-            match DisplayTransaction::load() {
-                Some(mut transaction) => {
-                    if let Err(error) = transaction.request_confirmation() {
-                        warn!(target: "tilo::settings", %error, "failed to confirm display configuration");
-                        self.finish_display_operation(Err(format!(
-                            "Display configuration could not be kept: {error}"
-                        )));
-                    }
-                }
-                None => self.finish_display_operation(Err(
-                    "There is no display transaction to keep.".into(),
-                )),
-            }
-        }
-        if read_bool(state, root, REVERT_DISPLAY_KEY) == Some(true) {
-            let _ = state.put(root, REVERT_DISPLAY_KEY, false);
-            match DisplayTransaction::load() {
-                Some(mut transaction) => {
-                    if let Err(error) = transaction.request_revert() {
-                        warn!(target: "tilo::settings", %error, "failed to revert display configuration");
-                        self.finish_display_operation(Err(format!(
-                            "Display configuration could not be reverted: {error}"
-                        )));
-                    }
-                }
-                None => self.finish_display_operation(Err(
-                    "There is no display transaction to revert.".into(),
-                )),
-            }
-        }
-        if let Some(transaction) = DisplayTransaction::load() {
-            let marker = (transaction.id, transaction.state);
-            if self.last_seen_transaction != Some(marker) {
-                self.last_seen_transaction = Some(marker);
-                if transaction.state == DisplayTransactionState::AwaitingConfirmation
-                    && matches!(
-                        self.running_operation(),
-                        Some(crate::actions::DisplayOperation::Apply)
-                    )
-                {
-                    self.finish_display_operation(Ok(
-                        "Display preview applied. Keep the changes to retain this configuration."
-                            .into(),
-                    ));
-                }
-                if matches!(
-                    transaction.state,
-                    DisplayTransactionState::Confirmed
-                        | DisplayTransactionState::Reverted
-                        | DisplayTransactionState::Rejected
-                ) {
-                    self.output_config = DisplayConfig::load_for(&self.display_set());
-                    self.pending_candidate = None;
-                    let committed = self.output_config.clone();
-                    self.write_output_controls(state, root, &committed);
-                    let result = match transaction.state {
-                        DisplayTransactionState::Confirmed => Ok("Display changes kept.".into()),
-                        DisplayTransactionState::Reverted => Ok("Display changes reverted.".into()),
-                        DisplayTransactionState::Rejected => Err(transaction
-                            .message
-                            .unwrap_or_else(|| "Display configuration was rejected.".into())),
-                        _ => return,
-                    };
-                    self.finish_display_operation(result);
-                }
+            if let Some(config) = next.outputs.get_mut(&target) {
+                config.mode = Some(sink_mode);
             }
         }
     }
@@ -2699,81 +2103,60 @@ mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
 
-    fn probed_pane() -> (DisplayPane, std::sync::mpsc::Sender<HardwareProbe>) {
+    fn model(outputs: Vec<DisplayOutput>) -> DisplayModel {
+        let profile = tempfile::tempdir().unwrap().keep();
+        DisplayModel::detached(PaneCx::in_file(profile.join("settings.json"))).with_outputs(outputs)
+    }
+
+    fn recording(outputs: Vec<DisplayOutput>) -> (DisplayModel, Arc<RecordingDispatcher>) {
         let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
-        pane.hardware_probe = Some(probe_rx);
-        (pane, probe_tx)
+        let mut model = model(outputs);
+        model.brightness_control = Arc::new(SystemBrightness(
+            Arc::clone(&rec) as Arc<dyn Dispatcher + Send + Sync>
+        ));
+        (model, rec)
+    }
+
+    fn panel() -> DisplayOutput {
+        display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            }],
+        )
     }
 
     /// A brightness that could not be read is shown as that failure, not as
-    /// a slider resting at a made-up level.
+    /// a slider resting at a made-up level; a probe that lands asks for a
+    /// rebuild once.
     #[test]
-    fn an_unreadable_brightness_is_shown_as_an_error() {
-        let (mut pane, probe_tx) = probed_pane();
+    fn the_brightness_probe_lands_once_and_a_failure_is_shown() {
+        let mut model = model(vec![panel()]);
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        model.hardware_probe = Some(probe_rx);
         probe_tx
             .send((Err("no backlight device".into()), false))
             .expect("probe receiver is alive");
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(model.poll(), "the landed probe requests a rebuild");
+        assert!(!model.poll(), "and reports it once");
+        let text = crate::widgets::announced_text(model.build_composition().as_ref());
         assert!(
             text.iter()
                 .any(|line| line == "Can't read the brightness: no backlight device"),
             "{text:#?}"
         );
-    }
 
-    /// A brightness probe that lands after the pane was composed keeps the
-    /// widgets the host's layout tree points into, and asks for a rebuild.
-    #[test]
-    fn late_hardware_probe_keeps_the_retained_tree_and_requests_a_rebuild() {
-        let (mut pane, probe_tx) = probed_pane();
-        let mut taffy = TaffyTree::new();
-        let mut node_map = HashMap::new();
-        pane.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let composed = |pane: &DisplayPane| {
-            pane.children()
-                .first()
-                .map(|c| std::ptr::from_ref(*c).cast::<()>())
-        };
-        let before = composed(&pane);
-        assert!(before.is_some(), "build_layout composes the pane");
-
-        probe_tx
-            .send((Ok(0.8), false))
-            .expect("probe receiver is alive");
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            composed(&pane),
-            before,
-            "the host still holds layout pointers into this composition"
-        );
-        assert!(
-            pane.take_structure_dirty(),
-            "the landed probe requests a rebuild"
-        );
-        assert!(!pane.take_structure_dirty(), "and reports it once");
-        let brightness = doc
-            .get(&automerge::ROOT, BRIGHTNESS_KEY)
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| value.as_f64());
-        assert_eq!(brightness, Some(f64::from(0.8_f32)));
-
-        let (pane, probe_tx) = probed_pane();
-        let mut harness =
-            ui::headless::FrameHarness::new(ui::State::new(), Box::new(pane), (900, 700));
-        probe_tx
-            .send((Ok(0.8), false))
-            .expect("probe receiver is alive");
-        harness.relayout();
-        assert!(
-            harness.last_relayout().rebuilt,
-            "the headless host recomposes the pane after the probe lands"
-        );
+        let mut model = self::model(vec![panel()]);
+        let (probe_tx, probe_rx) = std::sync::mpsc::channel();
+        model.hardware_probe = Some(probe_rx);
+        probe_tx.send((Ok(0.8), true)).unwrap();
+        assert!(model.poll());
+        assert!((model.brightness - 0.8).abs() < f32::EPSILON);
+        assert!(model.ambient_sensor_available);
     }
 
     #[test]
@@ -2815,15 +2198,15 @@ mod tests {
                 refresh_mhz: 60_000,
             })
         };
-        let panel = || DisplayOutput {
+        let panel = DisplayOutput {
             current_mode: mode(2560, 1600),
             ..classify_connector("card0-eDP-1", "connected")
         };
-        let monitor = || DisplayOutput {
+        let monitor = DisplayOutput {
             current_mode: mode(1920, 1080),
             ..classify_connector("card0-HDMI-A-1", "connected")
         };
-        let connected = [panel(), monitor()];
+        let connected = [panel, monitor];
         let mut next = DisplayConfig::default();
         next.outputs.insert(
             "eDP-1".into(),
@@ -2833,25 +2216,15 @@ mod tests {
             },
         );
         let place = |label: &str, cfg: &mut OutputConfig| {
-            let mut doc = AutoCommit::new();
-            doc.put(automerge::ROOT, output_key("HDMI-A-1", "position"), label)
-                .expect("put");
-            DisplayPane::apply_output_placement_overrides(
-                &doc,
-                &automerge::ROOT,
-                &monitor(),
-                &connected,
-                &next,
-                cfg,
-            )
+            place_beside("HDMI-A-1", label, cfg, &next, &connected)
         };
 
         // The 2x panel is 1280 logical pixels wide, so its right-hand
         // neighbour starts there — not at its 2560-pixel mode width.
         let mut cfg = OutputConfig::default();
-        assert!(place("Right of Built-in display", &mut cfg));
+        place("Right of Built-in display", &mut cfg).unwrap();
         assert_eq!((cfg.x, cfg.y), (1280, 0));
-        assert!(place("Below of Built-in display", &mut cfg));
+        place("Below of Built-in display", &mut cfg).unwrap();
         assert_eq!((cfg.x, cfg.y), (0, 800));
 
         // A monitor rotated to portrait is 1080 wide on the left.
@@ -2859,11 +2232,13 @@ mod tests {
             transform: OutputTransform::Rotate90,
             ..Default::default()
         };
-        assert!(place("Left of Built-in display", &mut portrait));
+        place("Left of Built-in display", &mut portrait).unwrap();
         assert_eq!((portrait.x, portrait.y), (-1080, 0));
+        assert!(place("Left of Nowhere", &mut portrait).is_err());
     }
 
-    /// Builtin/external classification, distinct duplicate labels, migration and virtual connector filtering.
+    /// Builtin/external classification, distinct duplicate labels, staging
+    /// per connector and virtual connector filtering.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -2932,7 +2307,7 @@ mod tests {
                 connector_label: first.label().to_string(),
                 ..classify_connector("card0-HDMI-A-1", "connected")
             };
-            let staged = DisplayPane::output_descriptor(&display);
+            let staged = DisplayModel::output_descriptor(&display);
             assert_eq!(staged.connector, "pci:0000:01:00.0/HDMI-A-1");
             assert_eq!(
                 staged.connector_label, "HDMI-A-1",
@@ -2940,25 +2315,22 @@ mod tests {
             );
         }
 
-        // Case `duplicate_connector_migration_keeps_legacy_intent_without_cross_targeting`.
+        // Case `duplicate_connectors_are_staged_apart_and_keep_the_old_key`.
         {
-            let rec = Arc::new(RecordingDispatcher::default());
             let first = "pci:0000:01:00.0/HDMI-A-1";
             let second = "pci:0000:03:00.0/HDMI-A-1";
-            let mut pane =
-                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                    .with_outputs(vec![
-                        DisplayOutput {
-                            label: "HDMI-A-1 · pci:0000:01:00.0".into(),
-                            connector: first.into(),
-                            ..classify_connector("card0-HDMI-A-1", "connected")
-                        },
-                        DisplayOutput {
-                            label: "HDMI-A-1 · pci:0000:03:00.0".into(),
-                            connector: second.into(),
-                            ..classify_connector("card1-HDMI-A-1", "connected")
-                        },
-                    ]);
+            let mut pane = model(vec![
+                DisplayOutput {
+                    label: "HDMI-A-1 · pci:0000:01:00.0".into(),
+                    connector: first.into(),
+                    ..classify_connector("card0-HDMI-A-1", "connected")
+                },
+                DisplayOutput {
+                    label: "HDMI-A-1 · pci:0000:03:00.0".into(),
+                    connector: second.into(),
+                    ..classify_connector("card1-HDMI-A-1", "connected")
+                },
+            ]);
             pane.output_config.outputs.insert(
                 "HDMI-A-1".into(),
                 OutputConfig {
@@ -2966,34 +2338,14 @@ mod tests {
                     ..Default::default()
                 },
             );
-
-            let mut doc = AutoCommit::new();
-            pane.seed_state(&mut doc, &automerge::ROOT);
-
-            // The ambiguous old key remains intact for a future one-card
-            // topology, but the current topology gets independent safe defaults
-            // and independent CRDT/persistence keys.
-            assert!(!pane.output_config.outputs["HDMI-A-1"].enabled);
-            assert!(pane.output_config.outputs.contains_key(first));
-            assert!(pane.output_config.outputs.contains_key(second));
-            let persisted =
-                serde_json::to_value(&pane.output_config).expect("display config serialises");
-            let persisted_outputs = persisted
-                .get("outputs")
-                .and_then(serde_json::Value::as_object)
-                .expect("outputs map");
-            assert!(persisted_outputs.contains_key(first));
-            assert!(persisted_outputs.contains_key(second));
-            assert!(
-                doc.get(&automerge::ROOT, output_key(first, "enabled"))
-                    .unwrap()
-                    .is_some()
-            );
-            assert!(
-                doc.get(&automerge::ROOT, output_key(second, "enabled"))
-                    .unwrap()
-                    .is_some()
-            );
+            pane.apply(&DisplayEffect::SetPrimaryDisplay {
+                display: second.into(),
+            })
+            .unwrap();
+            let staged = pane.pending_candidate.as_ref().unwrap();
+            assert!(!staged.outputs["HDMI-A-1"].enabled, "the old key is kept");
+            assert!(staged.outputs[second].primary);
+            assert!(!staged.outputs[first].primary);
         }
 
         // Case `virtual_connectors_are_filtered`.
@@ -3009,269 +2361,125 @@ mod tests {
         }
     }
 
-    /// Brightness drags dispatch once, unchanged values rest, latches are inert, and seeding writes brightness.
+    /// The panel's slider sets its brightness; an external monitor's sets
+    /// that monitor's, and only a monitor that has a control gets one.
     #[test]
-    fn brightness_dispatches_only_local_changes() {
-        // Case `brightness_slider_invokes_set_brightness_on_drag`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            assert!(rec.calls().is_empty(), "seed sync should not dispatch");
-            let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
-            pane.sync(&mut doc, &root);
-            let calls = rec.calls();
-            assert_eq!(calls.len(), 1, "expected one dispatch, got {calls:?}");
-            assert!(calls[0].starts_with("set_brightness("));
-            assert!(calls[0].contains("75."), "expected 75% in {:?}", calls[0]);
-        }
+    fn brightness_reaches_the_panel_and_each_monitor() {
+        let (mut pane, rec) = recording(vec![panel()]);
+        pane.apply(&DisplayEffect::SetBrightness { brightness: 0.75 })
+            .unwrap();
+        assert_eq!(rec.calls(), ["set_brightness(75.00)"]);
+        assert!((pane.brightness - 0.75).abs() < f32::EPSILON);
 
-        // Case `brightness_unchanged_does_not_redispatch`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, BRIGHTNESS_KEY, automerge::ScalarValue::F64(0.75));
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root);
-            pane.sync(&mut doc, &root);
-            assert_eq!(rec.calls().len(), 1);
-        }
-
-        // Case `replicated_display_latches_are_inert_without_an_execution_token`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-            let commands = ui::LocalState::new(None);
-            let mut pane =
-                DisplayPane::with_dispatcher(rec.clone() as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                    .with_command_state(&commands)
-                    .with_operation_status(&status);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            let initial_heads = doc.get_heads();
-            pane.sync(&mut doc, &root);
-            assert_eq!(doc.get_heads(), initial_heads);
-            let _ = doc.put(&root, BRIGHTNESS_KEY, 0.9);
-            let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
-            pane.sync(&mut doc, &root);
-
-            assert!(rec.calls().is_empty());
-            assert!((pane.last_brightness - 0.5).abs() < f32::EPSILON);
-        }
-
-        // Case `seed_writes_initial_brightness_into_crdt`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.42);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let (val, _) = doc.get(&root, BRIGHTNESS_KEY).unwrap().unwrap();
-            match val {
-                automerge::Value::Scalar(s) => match s.as_ref() {
-                    automerge::ScalarValue::F64(f) => assert!((f - 0.42).abs() < 1e-6, "got {f}"),
-                    other => panic!("expected F64 scalar, got {other:?}"),
-                },
-                automerge::Value::Object(obj_type) => {
-                    panic!("expected scalar, got object {obj_type:?}")
-                }
-            }
-        }
+        let level = |connector: &str, level: f32| os_actions::MonitorLevel {
+            connector: connector.into(),
+            level,
+        };
+        let (mut pane, rec) = recording(vec![
+            display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
+            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
+            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
+        ]);
+        pane.output_brightness =
+            output_brightness_from(&pane.outputs, &[level("eDP-1", 0.5), level("DP-2", 0.3)]);
+        assert_eq!(
+            pane.output_brightness.keys().collect::<Vec<_>>(),
+            ["DP-2"],
+            "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
+        );
+        pane.apply(&DisplayEffect::SetMonitorBrightness {
+            display: "DP-2".into(),
+            brightness: 0.8,
+        })
+        .unwrap();
+        assert!(
+            rec.calls()
+                .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
+            "{:?}",
+            rec.calls()
+        );
+        assert!(
+            pane.apply(&DisplayEffect::SetMonitorBrightness {
+                display: "DP-3".into(),
+                brightness: 0.8,
+            })
+            .is_err()
+        );
     }
 
-    /// The arrangement follows injected, connected outputs and switches mirror/extend.
+    /// Mirroring picks a shared mode; extending again keeps the origin.
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "cases merged from separate tests; each case stays self-contained"
-    )]
-    fn display_arrangement_reflects_outputs_and_mirror_modes() {
-        // Case `arrangement_reflects_injected_outputs`.
-        // The arrangement card is driven by the injected output list, proving
-        // it renders real hardware rather than a hard-coded pair.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                .with_outputs(vec![
-                    DisplayOutput {
-                        label: "Built-in display".into(),
-                        connected: true,
-                        builtin: true,
-                        connector: "eDP-1".into(),
-                        modes: Vec::new(),
-                        hdr: false,
-                        vrr: false,
-                        color_profiles: Vec::new(),
-                        ..classify_connector("card0-eDP-1", "connected")
-                    },
-                    DisplayOutput {
-                        label: "HDMI-A-1".into(),
-                        connected: true,
-                        builtin: false,
-                        connector: "HDMI-A-1".into(),
-                        modes: Vec::new(),
-                        hdr: false,
-                        vrr: false,
-                        color_profiles: Vec::new(),
-                        ..classify_connector("card0-HDMI-A-1", "connected")
-                    },
-                ]);
-            assert_eq!(pane.outputs().len(), 2);
-            assert_eq!(pane.outputs()[1].label, "HDMI-A-1");
-        }
+    fn mirroring_and_extending_are_staged() {
+        let full_hd_60 = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let full_hd_5994 = OutputMode {
+            refresh_mhz: 59_940,
+            ..full_hd_60
+        };
+        let panel = display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]);
+        let usb_c = display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]);
+        assert_eq!(
+            best_mirror_modes(&usb_c, &panel),
+            Some((full_hd_5994, full_hd_60)),
+            "software mirroring needs a shared extent, not identical connector clocks"
+        );
 
-        // Case `mirror_negotiation_allows_usb_c_monitor_refresh_to_differ`.
-        {
-            let full_hd_60 = OutputMode {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-            };
-            let full_hd_5994 = OutputMode {
-                refresh_mhz: 59_940,
-                ..full_hd_60
-            };
-            let panel = display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]);
-            let usb_c = display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]);
+        let mut pane = model(vec![panel, usb_c]);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                mode: Some(full_hd_60),
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "DP-1".into(),
+            OutputConfig {
+                x: 1920,
+                mode: Some(full_hd_5994),
+                ..Default::default()
+            },
+        );
+        pane.apply(&DisplayEffect::MirrorDisplay {
+            display: "DP-1".into(),
+            mirror: "Mirror Built-in display".into(),
+        })
+        .unwrap();
+        let mirrored = pane.pending_candidate.clone().expect("mirror plan staged");
+        assert_eq!(mirrored.outputs["DP-1"].mirror_of.as_deref(), Some("eDP-1"));
+        assert_eq!(mirrored.outputs["DP-1"].mode, Some(full_hd_5994));
+        assert_eq!(mirrored.outputs["eDP-1"].mode, Some(full_hd_60));
 
-            assert_eq!(
-                best_mirror_modes(&usb_c, &panel),
-                Some((full_hd_5994, full_hd_60)),
-                "software mirroring needs a shared extent, not identical connector clocks"
-            );
-        }
+        pane.output_config = mirrored;
+        pane.pending_candidate = None;
+        pane.apply(&DisplayEffect::MirrorDisplay {
+            display: "DP-1".into(),
+            mirror: "Extend workspace".into(),
+        })
+        .unwrap();
+        let extended = pane.pending_candidate.as_ref().expect("extend plan staged");
+        assert_eq!(extended.outputs["DP-1"].mirror_of, None);
+        assert_eq!(
+            (extended.outputs["DP-1"].x, extended.outputs["DP-1"].y),
+            (1920, 0)
+        );
 
-        // Case `settings_switches_usb_c_display_between_mirror_and_extend`.
-        {
-            let _guard = crate::prefs::test_env::ConfigGuard::new();
-            let full_hd_60 = OutputMode {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-            };
-            let full_hd_5994 = OutputMode {
-                refresh_mhz: 59_940,
-                ..full_hd_60
-            };
-            let outputs = vec![
-                display_with_modes("eDP-1", "Built-in display", true, vec![full_hd_60]),
-                display_with_modes("DP-1", "USB-C display", false, vec![full_hd_5994]),
-            ];
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                    .with_outputs(outputs);
-            pane.output_config.outputs.insert(
-                "eDP-1".into(),
-                OutputConfig {
-                    primary: true,
-                    mode: Some(full_hd_60),
-                    ..Default::default()
-                },
-            );
-            pane.output_config.outputs.insert(
-                "DP-1".into(),
-                OutputConfig {
-                    x: 1920,
-                    mode: Some(full_hd_5994),
-                    ..Default::default()
-                },
-            );
-
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(
-                &root,
-                output_key("DP-1", "mirror"),
-                "Mirror Built-in display",
-            );
-            pane.sync(&mut doc, &root);
-            let mirrored = pane.pending_candidate.clone().expect("mirror plan staged");
-            assert_eq!(mirrored.outputs["DP-1"].mirror_of.as_deref(), Some("eDP-1"));
-            assert_eq!(mirrored.outputs["DP-1"].mode, Some(full_hd_5994));
-            assert_eq!(mirrored.outputs["eDP-1"].mode, Some(full_hd_60));
-
-            // Simulate Keep, then select Extend. The saved independent origin was
-            // never overwritten by mirroring and becomes active again.
-            pane.output_config = mirrored;
-            pane.pending_candidate = None;
-            let _ = doc.put(&root, output_key("DP-1", "mirror"), "Extend workspace");
-            pane.sync(&mut doc, &root);
-            let extended = pane.pending_candidate.as_ref().expect("extend plan staged");
-            assert_eq!(extended.outputs["DP-1"].mirror_of, None);
-            assert_eq!(extended.outputs["DP-1"].x, 1920);
-            assert_eq!(extended.outputs["DP-1"].y, 0);
-        }
-
-        // Case `arrangement_lists_only_connected_outputs`.
-        // Only connected outputs become rows; a laptop's dozen idle DP ports are
-        // summarised in a caption rather than enumerated one-per-row.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-                .with_outputs(vec![
-                    DisplayOutput {
-                        label: "Built-in display".into(),
-                        connected: true,
-                        builtin: true,
-                        connector: "eDP-1".into(),
-                        modes: Vec::new(),
-                        hdr: false,
-                        vrr: false,
-                        color_profiles: Vec::new(),
-                        ..classify_connector("card0-eDP-1", "connected")
-                    },
-                    DisplayOutput {
-                        label: "DP-1".into(),
-                        connected: false,
-                        builtin: false,
-                        connector: "DP-1".into(),
-                        modes: Vec::new(),
-                        hdr: false,
-                        vrr: false,
-                        color_profiles: Vec::new(),
-                        ..classify_connector("card0-DP-1", "disconnected")
-                    },
-                    DisplayOutput {
-                        label: "DP-2".into(),
-                        connected: false,
-                        builtin: false,
-                        connector: "DP-2".into(),
-                        modes: Vec::new(),
-                        hdr: false,
-                        vrr: false,
-                        color_profiles: Vec::new(),
-                        ..classify_connector("card0-DP-2", "disconnected")
-                    },
-                    DisplayOutput {
-                        label: "HDMI-A-1".into(),
-                        connected: false,
-                        builtin: false,
-                        connector: "HDMI-A-1".into(),
-                        modes: Vec::new(),
-                        hdr: false,
-                        vrr: false,
-                        color_profiles: Vec::new(),
-                        ..classify_connector("card0-HDMI-A-1", "disconnected")
-                    },
-                ]);
-            let shown = pane.connected_outputs();
-            assert_eq!(
-                shown.len(),
-                1,
-                "only the connected built-in display is listed"
-            );
-            assert_eq!(shown[0].label, "Built-in display");
-        }
+        let shown = model(vec![
+            self::panel(),
+            DisplayOutput {
+                connected: false,
+                ..display_with_modes("DP-2", "DP-2", false, Vec::new())
+            },
+        ]);
+        assert_eq!(
+            shown.connected_outputs().len(),
+            1,
+            "idle ports are not listed"
+        );
     }
 
     fn display_with_modes(
@@ -3302,219 +2510,133 @@ mod tests {
     }
 
     #[test]
-    fn local_apply_previews_the_staged_mode_and_completes_at_confirmation_prompt() {
-        use crate::actions::{
-            DisplayOperation as Op, LocalOperationStatus as Status, LocalPaneCommand,
-        };
+    fn preview_and_keep_preserve_the_staged_refresh_rate() {
         let _guard = crate::prefs::test_env::ConfigGuard::new();
         let current = OutputMode {
             width: 2944,
             height: 1840,
-            refresh_mhz: 59999,
+            refresh_mhz: 59_999,
         };
         let requested = OutputMode {
-            refresh_mhz: 89999,
+            refresh_mhz: 89_999,
             ..current
         };
-        let status = ui::LocalState::new(Status::Idle);
-        let commands = ui::LocalState::new(None);
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(vec![display_with_modes(
-                "eDP-1",
-                "Built-in display",
-                true,
-                vec![current, requested],
-            )])
-            .with_command_state(&commands)
-            .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        for operation in [
-            Op::SetMode {
-                connector: "eDP-1".into(),
-                mode: requested,
-            },
-            Op::Apply,
-        ] {
-            status.set(Status::Running {
-                token: crate::actions::local_operation_token_for(
-                    crate::actions::DISPLAY_OPERATION_TYPE,
-                    &operation,
-                ),
-            });
-            commands.set(Some(LocalPaneCommand::Display(operation)));
-            pane.sync(&mut doc, &automerge::ROOT);
-        }
-        let mut transaction =
-            DisplayTransaction::load().expect("actual Apply wrote a preview request");
-        assert_eq!(
-            transaction.candidate.outputs["eDP-1"].mode,
-            Some(requested),
-            "Apply must retain the staged 90Hz candidate"
-        );
+        let mut pane = model(vec![display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![current, requested],
+        )]);
+        pane.apply(&DisplayEffect::SetDisplayMode {
+            display: "eDP-1".into(),
+            mode: requested.label(),
+        })
+        .unwrap();
+        pane.apply(&DisplayEffect::ApplyDisplayChanges).unwrap();
+        let mut transaction = DisplayTransaction::load().expect("Apply requests a preview");
         assert_eq!(transaction.state, DisplayTransactionState::Requested);
-        assert!(
-            matches!(status.get(), Status::Running { .. }),
-            "Apply cannot report staging as preview completion"
+        assert_eq!(transaction.candidate.outputs["eDP-1"].mode, Some(requested));
+        let preview_id = transaction.id;
+        pane.settle(&transaction);
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+
+        transaction.state = DisplayTransactionState::AwaitingConfirmation;
+        transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
+        transaction.save().unwrap();
+        pane.settle(&transaction);
+        pane.apply(&DisplayEffect::KeepDisplayChanges).unwrap();
+        let mut kept = DisplayTransaction::load().unwrap();
+        assert_eq!(kept.id, preview_id, "Keep confirms the original preview");
+        assert_eq!(kept.state, DisplayTransactionState::ConfirmRequested);
+        assert_eq!(kept.candidate.outputs["eDP-1"].mode, Some(requested));
+        pane.settle(&kept);
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+
+        // The compositor commits the kept arrangement before acknowledging it.
+        kept.candidate.save_for(&kept.set).unwrap();
+        kept.state = DisplayTransactionState::Confirmed;
+        kept.deadline_unix_ms = None;
+        kept.save().unwrap();
+        pane.settle(&DisplayTransaction::load().unwrap());
+        assert!(pane.pending_candidate.is_none());
+        assert_eq!(pane.staged().outputs["eDP-1"].mode, Some(requested));
+    }
+
+    /// Scale labels, the person's display scale, and a staged plan that is
+    /// applied, kept and reverted.
+    #[test]
+    fn display_scale_and_plans_persist_confirm_and_revert() {
+        for (label, factor) in DISPLAY_SCALES {
+            assert_eq!(scale_label(*factor), *label);
+            assert_eq!(scale_factor_of(label), Some(*factor));
+        }
+        assert_eq!(scale_label(1.48), "150%");
+        assert_eq!(scale_factor_of("bogus"), None);
+
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = model(vec![panel()]);
+        pane.apply(&DisplayEffect::SetDisplayScale {
+            scale: "150%".into(),
+        })
+        .unwrap();
+        assert!((pane.cx.settings::<DisplayPrefs>().get().scale - 1.5).abs() < 1e-9);
+
+        let mut committed = DisplayConfig::default();
+        committed.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                mode: pane.outputs[0].current_mode,
+                ..Default::default()
+            },
         );
-        pane.sync(&mut doc, &automerge::ROOT);
+        let set = pane.display_set();
+        committed.save_for(&set).unwrap();
+        pane.output_config = committed.clone();
+        pane.apply(&DisplayEffect::RotateDisplay {
+            display: "eDP-1".into(),
+            rotation: "Portrait right".into(),
+        })
+        .unwrap();
         assert_eq!(
-            DisplayTransaction::load().unwrap().id,
-            transaction.id,
-            "polling must retain the original preview request"
+            pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].transform,
+            OutputTransform::Rotate90
+        );
+        assert_eq!(
+            DisplayConfig::load_for(&set),
+            committed,
+            "editing is only staged"
+        );
+
+        pane.apply(&DisplayEffect::ApplyDisplayChanges).unwrap();
+        let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
+        assert_eq!(transaction.state, DisplayTransactionState::Requested);
+        assert_eq!(
+            transaction.set, set,
+            "the plan is for the monitors it was arranged on"
         );
         transaction.state = DisplayTransactionState::AwaitingConfirmation;
         transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
         transaction.save().unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(
-            matches!(status.get(), Status::Succeeded { .. }),
-            "the successful preview allows the next Keep operation"
-        );
-        let operation = Op::Confirm;
-        status.set(Status::Running {
-            token: crate::actions::local_operation_token_for(
-                crate::actions::DISPLAY_OPERATION_TYPE,
-                &operation,
-            ),
-        });
-        commands.set(Some(LocalPaneCommand::Display(operation)));
-        pane.sync(&mut doc, &automerge::ROOT);
+        pane.apply(&DisplayEffect::KeepDisplayChanges).unwrap();
         assert_eq!(
             DisplayTransaction::load().unwrap().state,
             DisplayTransactionState::ConfirmRequested
         );
-        assert_eq!(
-            pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].mode,
-            Some(requested)
-        );
-        let mut transaction = DisplayTransaction::load().unwrap();
-        transaction.state = DisplayTransactionState::Confirmed;
+
+        transaction.state = DisplayTransactionState::Reverted;
+        transaction.deadline_unix_ms = None;
         transaction.save().unwrap();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(matches!(status.get(), Status::Succeeded { .. }));
+        pane.settle(&DisplayTransaction::load().unwrap());
         assert!(pane.pending_candidate.is_none());
+        assert_eq!(
+            pane.staged().outputs["eDP-1"].transform,
+            OutputTransform::Normal,
+            "revert shows the last known-good arrangement, not the failed plan"
+        );
     }
 
-    /// Scale labels, seeding, fractional persistence and staged display plans.
-    #[test]
-    fn display_scale_and_plans_persist_confirm_and_revert() {
-        // Case `scale_label_and_factor_round_trip`.
-        {
-            for (label, factor) in DISPLAY_SCALES {
-                assert_eq!(scale_label(*factor), *label);
-                assert_eq!(scale_factor_of(label), Some(*factor));
-            }
-            // Nearest-label mapping for an off-grid stored value.
-            assert_eq!(scale_label(1.48), "150%");
-            assert_eq!(scale_factor_of("bogus"), None);
-        }
-
-        // Case `seed_writes_initial_scale_label_into_crdt`.
-        {
-            let rec = Arc::new(RecordingDispatcher::default());
-            // with_dispatcher seeds initial_prefs = DisplayPrefs::default() (1.0).
-            let mut pane =
-                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            assert_eq!(
-                read_str_or_text(&doc, &root, DISPLAY_SCALE_KEY).as_deref(),
-                Some("100%"),
-                "seed should write the default 100% scale label"
-            );
-        }
-
-        // Case `changing_scale_persists_fractional_factor_to_disk`.
-        // Changing the scale dropdown's CRDT key drives the real persist path
-        // and lands a fractional factor in the shared settings store.
-        {
-            let _guard = crate::prefs::test_env::ConfigGuard::new();
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root); // seed
-            // User picks 150% in the dropdown.
-            let _ = doc.put(&root, DISPLAY_SCALE_KEY, "150%");
-            pane.sync(&mut doc, &root);
-            let reloaded = SystemPrefs::load().display.scale;
-            assert!(
-                (reloaded - 1.5).abs() < 1e-9,
-                "expected persisted display scale 1.5, got {reloaded}"
-            );
-        }
-
-        // Case `display_plan_stages_confirms_and_reseeds_after_revert`.
-        {
-            let _guard = crate::prefs::test_env::ConfigGuard::new();
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane =
-                DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5);
-            let mut committed = DisplayConfig::default();
-            committed.outputs.insert(
-                "eDP-1".into(),
-                OutputConfig {
-                    primary: true,
-                    mode: pane.outputs[0].current_mode,
-                    ..Default::default()
-                },
-            );
-            let set = pane.display_set();
-            committed.save_for(&set).unwrap();
-            pane.output_config = committed.clone();
-
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let transform_key = output_key("eDP-1", "transform");
-            let _ = doc.put(&root, &transform_key, "Portrait right");
-            pane.sync(&mut doc, &root);
-            assert_eq!(
-                pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].transform,
-                OutputTransform::Rotate90
-            );
-            assert_eq!(
-                DisplayConfig::load_for(&set),
-                committed,
-                "editing is only staged"
-            );
-
-            let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
-            pane.sync(&mut doc, &root);
-            let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
-            assert_eq!(transaction.state, DisplayTransactionState::Requested);
-            assert_eq!(
-                transaction.set, set,
-                "the plan is staged for the monitors it was arranged on"
-            );
-            transaction.state = DisplayTransactionState::AwaitingConfirmation;
-            transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
-            transaction.save().unwrap();
-            let _ = doc.put(&root, KEEP_DISPLAY_KEY, true);
-            pane.sync(&mut doc, &root);
-            assert_eq!(
-                DisplayTransaction::load().unwrap().state,
-                DisplayTransactionState::ConfirmRequested
-            );
-
-            transaction.state = DisplayTransactionState::Reverted;
-            transaction.deadline_unix_ms = None;
-            transaction.save().unwrap();
-            pane.sync(&mut doc, &root);
-            assert!(pane.pending_candidate.is_none());
-            assert_eq!(
-                read_str_or_text(&doc, &root, &transform_key).as_deref(),
-                Some("Landscape"),
-                "revert resets controls to last known-good rather than reoffering the failed plan"
-            );
-        }
-    }
-
-    fn laptop_with_monitor_pane() -> DisplayPane {
+    fn laptop_with_monitor() -> DisplayModel {
         let full_hd = OutputMode {
             width: 1920,
             height: 1080,
@@ -3525,12 +2647,10 @@ mod tests {
             height: 1440,
             refresh_mhz: 60_000,
         };
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(vec![
-                display_with_modes("HDMI-A-1", "Desk monitor", false, vec![qhd]),
-                display_with_modes("eDP-1", "Built-in display", true, vec![full_hd]),
-            ]);
+        let mut pane = model(vec![
+            display_with_modes("HDMI-A-1", "Desk monitor", false, vec![qhd]),
+            display_with_modes("eDP-1", "Built-in display", true, vec![full_hd]),
+        ]);
         pane.output_config.outputs.insert(
             "eDP-1".into(),
             OutputConfig {
@@ -3550,7 +2670,7 @@ mod tests {
 
     #[test]
     fn the_arrangement_numbers_and_sizes_displays_like_identify() {
-        let pane = laptop_with_monitor_pane();
+        let pane = laptop_with_monitor();
         let connected = pane.connected_outputs();
         let displays = pane.arranged_displays(&connected);
         let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
@@ -3578,12 +2698,10 @@ mod tests {
             height: 1080,
             refresh_mhz: 60_000,
         };
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(vec![
-                display_with_modes("eDP-1", "Built-in display", true, vec![panel_mode]),
-                display_with_modes("HDMI-A-1", "Desk monitor", false, vec![monitor_mode]),
-            ]);
+        let mut pane = model(vec![
+            display_with_modes("eDP-1", "Built-in display", true, vec![panel_mode]),
+            display_with_modes("HDMI-A-1", "Desk monitor", false, vec![monitor_mode]),
+        ]);
         pane.output_config.outputs.insert(
             "eDP-1".into(),
             OutputConfig {
@@ -3631,36 +2749,32 @@ mod tests {
             }],
         );
         panel.scale = 2.0;
-        let rec = Arc::new(RecordingDispatcher::default());
-        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
-            .with_outputs(vec![panel]);
+        let mut pane = model(vec![panel]);
         let connected = pane.connected_outputs();
         let displays = pane.arranged_displays(&connected);
         assert_eq!(displays[0].placement.width, 1280);
         assert_eq!(displays[0].placement.height, 800);
-
-        let mut doc = AutoCommit::new();
-        pane.write_output_controls(&mut doc, &automerge::ROOT, &pane.output_config);
-        assert_eq!(
-            read_str_or_text(&doc, &automerge::ROOT, output_key("eDP-1", "scale")).as_deref(),
-            Some("200%"),
-            "the scale control shows the scale the display runs at"
+        pane.apply(&DisplayEffect::RotateDisplay {
+            display: "eDP-1".into(),
+            rotation: "Landscape".into(),
+        })
+        .unwrap();
+        assert!(
+            (pane.staged().outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON,
+            "staging keeps the scale the display runs at"
         );
     }
 
     #[test]
     fn a_dropped_display_stages_its_exact_position() {
         let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = laptop_with_monitor_pane();
-        let mut doc = AutoCommit::new();
-        pane.execute_local_command(
-            &mut doc,
-            crate::actions::DisplayOperation::MoveOutput {
-                connector: "HDMI-A-1".into(),
-                x: -2560,
-                y: -360,
-            },
-        );
+        let mut pane = laptop_with_monitor();
+        pane.apply(&DisplayEffect::MoveDisplay {
+            display: "HDMI-A-1".into(),
+            x: -2560,
+            y: -360,
+        })
+        .unwrap();
         let staged = pane.pending_candidate.as_ref().expect("the drop is staged");
         assert_eq!(
             (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
@@ -3670,15 +2784,11 @@ mod tests {
             DisplayTransaction::load().is_none(),
             "a drop is staged like every other edit, not applied"
         );
-
-        // Choosing a relative position afterwards replaces the exact one.
-        pane.execute_local_command(
-            &mut doc,
-            crate::actions::DisplayOperation::SetPosition {
-                connector: "HDMI-A-1".into(),
-                label: "Right of Built-in display".into(),
-            },
-        );
+        pane.apply(&DisplayEffect::PlaceDisplay {
+            display: "HDMI-A-1".into(),
+            position: "Right of Built-in display".into(),
+        })
+        .unwrap();
         let staged = pane.pending_candidate.as_ref().unwrap();
         assert_eq!(
             (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
@@ -3689,27 +2799,17 @@ mod tests {
     #[test]
     fn identify_asks_the_compositor_to_number_the_displays() {
         let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = laptop_with_monitor_pane();
+        let mut pane = laptop_with_monitor();
         assert!(settings_store::display_identify::IdentifyRequest::load().is_none());
         let before = unix_now_ms();
-        pane.execute_local_command(
-            &mut AutoCommit::new(),
-            crate::actions::DisplayOperation::Identify,
-        );
+        pane.apply(&DisplayEffect::IdentifyDisplays).unwrap();
         let after = unix_now_ms();
         let request = settings_store::display_identify::IdentifyRequest::load()
             .expect("Identify writes the request the compositor polls");
-        // Judge the request against the moment it was issued, not against a
-        // clock read after the command returned: a loaded machine can take
-        // longer than the identify window just to run the command.
-        assert!(
-            (before..=after).contains(&request.requested_unix_ms),
-            "the request is stamped with the time Identify ran"
-        );
+        assert!((before..=after).contains(&request.requested_unix_ms));
         assert_eq!(
             request.remaining_ms(request.requested_unix_ms),
-            Some(settings_store::display_identify::IDENTIFY_MS),
-            "a fresh request shows the numbers for the whole identify window"
+            Some(settings_store::display_identify::IDENTIFY_MS)
         );
     }
 
@@ -3717,62 +2817,17 @@ mod tests {
     fn a_trusted_display_tool_is_listed_and_can_be_asked_again() {
         use settings_store::display_tools::{DisplayTool, TrustedDisplayTools};
         let _guard = crate::prefs::test_env::ConfigGuard::new();
-        assert!(DisplayPane::build_trusted_tools_card().is_none());
+        let mut pane = laptop_with_monitor();
+        pane.of_device = true;
+        assert!(pane.build_trusted_tools_card().is_none());
         let kanshi = DisplayTool::new("/usr/bin/kanshi");
         TrustedDisplayTools::trust(kanshi.clone()).expect("trust");
-        assert!(DisplayPane::build_trusted_tools_card().is_some());
-        let section = crate::actions::displays_section(&AutoCommit::new(), &SystemPrefs::default());
-        assert!(
-            section.children.iter().any(|resource| {
-                resource.id.0 == "settings.display-tool:/usr/bin/kanshi"
-                    && resource.actions.iter().any(|action| action.id == "forget")
-            }),
-            "revoking is an action, not only a button"
-        );
-
-        let mut pane = laptop_with_monitor_pane();
-        pane.execute_local_command(
-            &mut AutoCommit::new(),
-            crate::actions::DisplayOperation::ForgetDisplayTool {
-                executable: kanshi.executable.clone(),
-            },
-        );
+        assert!(pane.build_trusted_tools_card().is_some());
+        pane.apply(&DisplayEffect::ForgetDisplayTool {
+            tool: kanshi.executable.clone(),
+        })
+        .unwrap();
         assert!(!TrustedDisplayTools::load().contains(&kanshi));
-        assert!(DisplayPane::build_trusted_tools_card().is_none());
-    }
-
-    #[test]
-    fn an_external_monitor_card_sets_that_monitors_brightness() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let level = |connector: &str, level: f32| os_actions::MonitorLevel {
-            connector: connector.into(),
-            level,
-        };
-        let mut pane = DisplayPane::with_dispatcher(
-            Arc::clone(&rec) as Arc<dyn Dispatcher + Send + Sync>,
-            0.5,
-        )
-        .with_outputs(vec![
-            display_with_modes("eDP-1", "Built-in display", true, Vec::new()),
-            display_with_modes("DP-2", "Dell U2720Q · DP-2", false, Vec::new()),
-            display_with_modes("DP-3", "LG 27GL850 · DP-3", false, Vec::new()),
-        ])
-        .with_monitor_brightness(&[level("eDP-1", 0.5), level("DP-2", 0.3)]);
-        assert_eq!(
-            pane.output_brightness.keys().collect::<Vec<_>>(),
-            ["DP-2"],
-            "the panel keeps the Brightness card; a monitor without DDC/CI gets no slider"
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, output_key("DP-2", "brightness"), 0.8);
-        pane.sync(&mut doc, &root);
-        assert!(
-            rec.calls()
-                .contains(&"set_display_brightness(DP-2, 80.00)".to_string()),
-            "{:?}",
-            rec.calls()
-        );
+        assert!(pane.build_trusted_tools_card().is_none());
     }
 }

@@ -2300,9 +2300,27 @@ fn dispatch_click(
     // Pointer motion can be consumed merely by hover handling, so only a button event qualifies
     // the action as delivered. The motion still precedes it exactly as it does on the native wire.
     let [cursor, press, release] = events;
-    let _ = frame.dispatch_event(&cursor, &modifiers, document, &ROOT, focus);
-    let pressed = frame.dispatch_event(&press, &modifiers, document, &ROOT, focus);
-    let released = frame.dispatch_event(&release, &modifiers, document, &ROOT, focus);
+    let _ = frame.dispatch_event(
+        &cursor,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
+    let pressed = frame.dispatch_event(
+        &press,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
+    let released = frame.dispatch_event(
+        &release,
+        &modifiers,
+        &mut ui::widget::Edits::lend(document),
+        &ROOT,
+        focus,
+    );
     if pressed || released {
         Ok(())
     } else {

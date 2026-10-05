@@ -28,12 +28,12 @@ fn move_selection(live: &mut ui::headless::Driver, up: bool, semantic: bool) {
 
 #[test]
 fn moving_a_table_during_cell_composition_is_refused_without_losing_the_commit() {
-    let f = LegacyFixture::rich();
+    let f = NotebookFixture::rich();
     f.write_page(
         f.child,
         b"| Name | Value |\n| --- | --- |\n| first | second |\n\nAfter\n",
     );
-    let checkout = imported(&f);
+    let checkout = notebook(&f);
     let before = f
         .records
         .read(&checkout.id, |doc| snapshot(doc, f.child))
@@ -86,9 +86,9 @@ fn moving_a_table_during_cell_composition_is_refused_without_losing_the_commit()
 
 #[test]
 fn empty_selected_root_stays_in_the_batch_at_the_end_of_the_document() {
-    let f = LegacyFixture::rich();
+    let f = NotebookFixture::rich();
     f.write_page(f.child, b"- A\n- \n- C\n");
-    let checkout = imported(&f);
+    let checkout = notebook(&f);
     let before = f
         .records
         .read(&checkout.id, |doc| snapshot(doc, f.child))
@@ -265,12 +265,12 @@ fn batch_movement_refuses_composition_and_viewers_and_preserves_peer_text_on_und
 #[test]
 fn selected_sibling_subtrees_move_atomically_and_keep_the_batch_selected() {
     for (semantic, reverse) in [(false, false), (true, true)] {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(
             f.child,
             "- **Ä parent**\n  - child α\n- *B parent*\n  - child β\n- C\n- D\n".as_bytes(),
         );
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let before = f
             .records
             .read(&checkout.id, |doc| snapshot(doc, f.child))
@@ -399,9 +399,9 @@ fn edit(doc: &mut AutoCommit, page: notes::PageId, edit: RichTextAction) {
 }
 
 fn move_group_and_verify(source: &str, order: &[usize], keyboard: bool) {
-    let f = LegacyFixture::rich();
+    let f = NotebookFixture::rich();
     f.write_page(f.child, source.as_bytes());
-    let checkout = imported(&f);
+    let checkout = notebook(&f);
     let before = f
         .records
         .read(&checkout.id, |doc| snapshot(doc, f.child))
@@ -540,9 +540,9 @@ fn adjacent_same_language_fences_move_independently_with_undo_and_reopen() {
 fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
     eprintln!("phase moving_a_block_preserves_concurrent_text_and_marks");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, b"**First**\n\nSecond\n");
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
         let before = NotesDoc::page_block_snapshots(&local, f.child);
         assert_eq!(before.len(), 2);
@@ -595,9 +595,9 @@ fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
         "phase concurrent_insertions_into_one_gap_remain_distinct_and_allow_insertion_between_them"
     );
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, b"Before\n\nAfter\n");
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
         let before = NotesDoc::page_block_snapshots(&local, f.child);
         let mut peer = local.fork();
@@ -637,9 +637,9 @@ fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
 
     eprintln!("phase concurrent_moves_converge");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, b"A\n\nB\n\nC\n\nD\n");
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut local = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
         let before = NotesDoc::page_block_snapshots(&local, f.child);
         let mut peer = local.fork();
@@ -672,9 +672,9 @@ fn concurrent_moves_and_order_upgrades_converge_without_replacing_text() {
 
     eprintln!("phase repeated_middle_insertions_keep_their_order");
     {
-        let f = LegacyFixture::rich();
+        let f = NotebookFixture::rich();
         f.write_page(f.child, b"Before\n\nAfter\n");
-        let checkout = imported(&f);
+        let checkout = notebook(&f);
         let mut doc = f.records.read(&checkout.id, AutoCommit::clone).unwrap();
         let rows = NotesDoc::page_block_snapshots(&doc, f.child);
         let mut predecessor = rows[0].0.clone();

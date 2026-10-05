@@ -15,7 +15,7 @@ fn counted_control_app(
         counts: counts.clone(),
         visible: visible.clone(),
         duplicate,
-        button: Button::new("flip", "Flip", None)
+        button: Button::new("flip", "Flip")
             .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
     };
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));
@@ -146,7 +146,7 @@ impl Widget for SemanticCountingPublisher {
         dyn crate::resources::PublishesResources
     );
 
-    fn sync(&mut self, _s: &mut AppModel, _p: &ModelPath) {}
+    fn sync(&mut self, _s: &AppModel, _p: &ModelPath) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -227,7 +227,7 @@ fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
             counts: std::rc::Rc::new([Cell::new(0), Cell::new(0)]),
             visible: std::rc::Rc::new(Cell::new(true)),
             duplicate: false,
-            button: Button::new("custom-flip", "Flip", None)
+            button: Button::new("custom-flip", "Flip")
                 .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
             enabled: enabled.clone(),
         }),
@@ -303,7 +303,7 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
                 visible: std::rc::Rc::new(Cell::new(true)),
                 duplicate: false,
                 enabled: std::rc::Rc::new(Cell::new(false)),
-                button: Button::new("fast-flip", "Flip", None)
+                button: Button::new("fast-flip", "Flip")
                     .on_action(tilo_actions::ActionBinding::unit_for(&resource, "flip").unwrap()),
             };
             let root: Box<dyn Widget> = match wrapper {

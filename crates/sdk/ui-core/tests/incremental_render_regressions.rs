@@ -68,7 +68,6 @@ fn panel(title_key: &'static str, idx: usize) -> Box<dyn Widget> {
                         .push(Box::new(Button::new(
                             leak(&format!("dash_btn_{row_idx}")),
                             leak(&format!("dash_btnlbl_{row_idx}")),
-                            None,
                         ))),
                 ));
             }

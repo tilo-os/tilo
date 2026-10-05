@@ -22,7 +22,7 @@ fn ctrl_v(editor: &mut BlockEditor, doc: &mut AutoCommit) -> bool {
         &mut crate::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &Modifiers::from(ModifiersState::CONTROL),
-            state: doc,
+            state: crate::widget::Edits::lend(doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut None,
