@@ -231,7 +231,8 @@ impl PermissionPrompt {
     }
 }
 
-fn button_label(choice: PromptChoice) -> String {
+/// Shared localized label for pointer and semantic permission decisions.
+pub fn button_label(choice: PromptChoice) -> String {
     crate::i18n!(match choice {
         PromptChoice::Allow => "permission-prompt-allow",
         PromptChoice::Session => "permission-prompt-session",
