@@ -68,6 +68,16 @@ fn act_named(d: &mut Driver, name: &str, action: &ui::a11y::Action) {
 }
 
 fn environment_command(d: &mut Driver, choice: &str) {
+    if !d.targets().contains_key("api.env") {
+        d.perform_named("nav-shell-sidebar", &ui::a11y::Action::Focus)
+            .expect("the actual sidebar control is reachable");
+        d.key("Enter");
+        assert!(d.settle_for_capture(ui::time::Duration::from_secs(1)));
+        assert!(
+            d.targets().contains_key("api.env"),
+            "the opened sidebar exposes its environment picker"
+        );
+    }
     d.perform_named("api.env", &ui::a11y::Action::SetValue(choice.into()))
         .unwrap();
 }

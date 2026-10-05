@@ -1270,40 +1270,54 @@ mod tests {
         ResizableSplit::new(TestLeaf::new(), TestLeaf::new(), orientation)
     }
 
+    fn hosted_segment_bounds(
+        harness: &crate::headless::FrameHarness,
+        left: bool,
+        index: usize,
+    ) -> Rect {
+        let split = harness.root::<ResizableSplit<crate::widget::Column, crate::widget::Column>>();
+        let pane = if left { &split.left } else { &split.right };
+        pane.children()[0].accessibility().unwrap().children[index]
+            .bounds
+            .expect("the actual retained segment publishes bounds")
+            .to_rect()
+    }
+
     #[test]
     fn hosted_pointer_moves_between_panes_without_activating_stale_hover() {
-        use crate::widget::{Segment, ToggleGroup};
+        use crate::widget::{Column, Segment, ToggleGroup};
         let left = std::rc::Rc::new(std::cell::Cell::new(0));
         let right = std::rc::Rc::new(std::cell::Cell::new(0));
         let left_changed = left.clone();
         let right_changed = right.clone();
         let split = ResizableSplit::new(
-            ToggleGroup::new(
-                vec![Segment::new("Left first"), Segment::new("Left second")],
-                0,
-            )
-            .on_view("left", move |index| left_changed.set(index)),
-            ToggleGroup::new(
-                vec![Segment::new("Right first"), Segment::new("Right second")],
-                0,
-            )
-            .on_view("right", move |index| right_changed.set(index)),
+            Column::new().with_no_padding().push(Box::new(
+                ToggleGroup::new(
+                    vec![Segment::new("Left first"), Segment::new("Left second")],
+                    0,
+                )
+                .on_view("left", move |index| left_changed.set(index)),
+            )),
+            Column::new().with_no_padding().push(Box::new(
+                ToggleGroup::new(
+                    vec![Segment::new("Right first"), Segment::new("Right second")],
+                    0,
+                )
+                .on_view("right", move |index| right_changed.set(index)),
+            )),
             SplitOrientation::Vertical,
-        );
+        )
+        .with_divider_id("pointer-divider");
         let mut harness = crate::headless::FrameHarness::for_root(
             crate::State::new(),
             split,
             (400, 300),
             Theme::dark(),
         );
-        for label in ["Left second", "Right second"] {
-            let (_, node) = harness
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| node.label() == Some(label))
-                .unwrap();
-            let rect = node.bounds().unwrap();
-            harness.click_at((rect.x0 + rect.x1) / 2.0, (rect.y0 + rect.y1) / 2.0);
+        for left in [true, false] {
+            let rect = hosted_segment_bounds(&harness, left, 1);
+            assert!(rect.width() > 0.0 && rect.height() > 0.0);
+            harness.click_at(rect.center().x, rect.center().y);
         }
         assert_eq!(left.get(), 1);
         assert_eq!(right.get(), 1, "the right pane receives its physical press");
@@ -1311,48 +1325,65 @@ mod tests {
 
     #[test]
     fn hosted_child_drag_keeps_capture_and_releases_outside_its_pane() {
-        use crate::widget::{Segment, TextInput, ToggleGroup};
+        use crate::widget::{Column, Segment, TextInput, ToggleGroup};
+        type Split = ResizableSplit<Column, Column>;
         let split = ResizableSplit::new(
-            TextInput::local()
-                .with_initial_value("select this text")
-                .with_id("drag-text"),
-            ToggleGroup::new(
-                vec![Segment::new("Other first"), Segment::new("Other second")],
-                0,
-            )
-            .on_view("other", |_| {}),
+            Column::new()
+                .with_no_padding()
+                .push(Box::new(TextInput::local().with_id("drag-text"))),
+            Column::new().with_no_padding().push(Box::new(
+                ToggleGroup::new(
+                    vec![Segment::new("Other first"), Segment::new("Other second")],
+                    0,
+                )
+                .on_view("other", |_| {}),
+            )),
             SplitOrientation::Horizontal,
-        );
+        )
+        .with_divider_id("capture-divider");
         let mut harness = crate::headless::FrameHarness::for_root(
             crate::State::new(),
             split,
             (600, 200),
             Theme::dark(),
         );
+        harness
+            .perform_named(
+                "drag-text",
+                &crate::a11y::Action::SetValue("select this text".into()),
+            )
+            .unwrap();
+        let input = harness.root::<Split>().left.children()[0]
+            .as_any()
+            .unwrap()
+            .downcast_ref::<TextInput>()
+            .unwrap();
+        assert_eq!(
+            input.value(),
+            "select this text",
+            "the hosted subject contains real text before dragging"
+        );
         let text = harness.targets()["drag-text"];
+        assert!(text.width() > 0.0 && text.height() > 0.0);
         harness.drag_at((text.x0 + 20.0, text.center().y), (590.0, text.center().y));
-        let split = harness.root::<ResizableSplit<TextInput, ToggleGroup>>();
-        let (start, end) = split
-            .left
+        let input = harness.root::<Split>().left.children()[0]
+            .as_any()
+            .unwrap()
+            .downcast_ref::<TextInput>()
+            .unwrap();
+        let (start, end) = input
             .selection_range_public()
             .expect("actual drag selects text");
         assert!(start < end);
         assert_eq!(end, "select this text".len());
         assert!(
-            !split.left.wants_pointer_capture(),
+            !input.wants_pointer_capture(),
             "release reaches the capturing text field"
         );
-        let (_, node) = harness
-            .a11y_nodes()
-            .into_iter()
-            .find(|(_, node)| node.label() == Some("Other second"))
-            .unwrap();
-        let bounds = node.bounds().unwrap();
-        harness.click_at((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
+        let bounds = hosted_segment_bounds(&harness, false, 1);
+        harness.click_at(bounds.center().x, bounds.center().y);
         assert_eq!(
-            harness
-                .root::<ResizableSplit<TextInput, ToggleGroup>>()
-                .right
+            harness.root::<Split>().right.children()[0]
                 .accessibility()
                 .unwrap()
                 .value
