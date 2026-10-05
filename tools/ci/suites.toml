@@ -666,6 +666,12 @@ readers = ["crates/doc/tilo-doc-codecs/src/bulk_equivalence.rs", "crates/doc/til
            "crates/doc/tilo-doc-codecs/tests/binary_inputs.rs", "crates/doc/tilo-doc-codecs/tests/office_fidelity.rs"]
 
 [[cargo]]
+package = "ush"
+# Native reexec proof reads the actual shipped supervisor unit.
+inputs = ["os/usr/lib/systemd/user/tilo-ush.service"]
+readers = ["crates/runtime/ush/tests/serve_handoff.rs"]
+
+[[cargo]]
 package = "tilo-font-catalog"
 # Compiles in the catalog's manifest and verifies the checkout's copy; the PDF
 # helper reads the fonts through it.

@@ -110,9 +110,11 @@ containerfile="$repo/os/Containerfile"
 # deliberate removals: those apps ship only as packages in the app store.
 # The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
 # which says what app builds this OS can run, is a deliberate addition.
+# The ush service unit is installed through its component manifest so normal
+# component updates carry the same owned reexec path as the OS image.
 # The public /usr/bin/ush symlink deliberately exposes the same confined
 # runtime already installed at /usr/libexec/tilo-ush.
-expected_contract=e72d495b17a33d169df34f23c66810e444549fddf1e6ae2e75e68e9a59d713f4
+expected_contract=a192031eac51818062fa12249d9f2786af41c7395be29119ad246d7a86d8ddd4
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
