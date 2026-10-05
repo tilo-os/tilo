@@ -4244,6 +4244,12 @@ impl CapnpBrokerState {
         .map_err(|error| error.to_string())
     }
 
+    /// Invalidate retained discovery only after a real service-surface mutation.
+    fn publish_changed_action_catalogue(&self) {
+        self.surface_generation.fetch_add(1, Ordering::Relaxed);
+        self.publish_action_catalogue();
+    }
+
     fn publish_action_catalogue(&self) {
         let subscribers = self
             .action_catalogue_subscribers
