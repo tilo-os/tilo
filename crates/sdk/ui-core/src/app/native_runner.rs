@@ -1507,7 +1507,10 @@ impl AppHandler {
             if let Err(reason) = self.init_render(window) {
                 // Retrying every redraw would only spin.
                 crate::diag!("tilo: {reason}");
-                event_loop.exit();
+                stop_abnormally(
+                    event_loop,
+                    format!("its renderer could not start: {reason}"),
+                );
                 return;
             }
             tilo_startup_metrics::mark("first-redraw-init-render-done");
@@ -1588,8 +1591,9 @@ impl AppHandler {
             }
         }
         if surface_gone {
-            tracing::info!("drawing surface is gone; closing the window");
-            event_loop.exit();
+            let reason = crate::render_thread::take_surface_loss()
+                .unwrap_or_else(|| "its drawing surface was lost".to_owned());
+            stop_abnormally(event_loop, reason);
             return;
         }
         // Do not consume sync/layout/dirty state unless a finite render buffer
@@ -1602,8 +1606,7 @@ impl AppHandler {
             Ok(true) => {}
             Ok(false) => return,
             Err(_) => {
-                tracing::error!("ui-render thread died; closing window");
-                event_loop.exit();
+                stop_abnormally(event_loop, "its render thread stopped".to_owned());
                 return;
             }
         }
@@ -1748,8 +1751,7 @@ impl AppHandler {
         // wait on GPU work; aborted layouts retain it in the handle for retry.
         let __prof_pool_wait = app.profiler.as_ref().map(|_| crate::time::now());
         let Ok((mut scene, mut damage_regions)) = render.buffers.recv() else {
-            tracing::error!("ui-render thread died; closing window");
-            event_loop.exit();
+            stop_abnormally(event_loop, "its render thread stopped".to_owned());
             return;
         };
         if let Some(p) = app.profiler.as_mut() {
@@ -2024,10 +2026,9 @@ impl AppHandler {
                 );
             }
             if send_result.is_err() {
-                tracing::error!(
-                    "ui-render thread stopped; exiting (a lost drawing surface is logged above)"
-                );
-                event_loop.exit();
+                let reason = crate::render_thread::take_surface_loss()
+                    .unwrap_or_else(|| "its render thread stopped".to_owned());
+                stop_abnormally(event_loop, reason);
                 return;
             }
             mark_first_frame("first-frame-submitted");
@@ -3982,7 +3983,44 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+        // The app and its state are dropped (and saved) before the process
+        // reports how its window ended.
+        drop(handler);
+        if let Some(reason) = take_abnormal_stop() {
+            report_window_lost_and_exit(&reason);
+        }
     }
+}
+
+/// Why the window is stopping, when no one asked it to close.
+static ABNORMAL_STOP: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Stop the event loop because the window cannot go on, keeping why. The
+/// process then exits non-zero instead of looking like a deliberate quit.
+fn stop_abnormally(event_loop: &ActiveEventLoop, reason: String) {
+    tracing::error!(%reason, "{}", super::WINDOW_LOST);
+    ABNORMAL_STOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert(reason);
+    event_loop.exit();
+}
+
+fn take_abnormal_stop() -> Option<String> {
+    ABNORMAL_STOP
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
+#[allow(
+    clippy::exit,
+    reason = "the native app's lifecycle ends here; a window that stopped on \
+              its own must not report the clean exit a deliberate quit does"
+)]
+fn report_window_lost_and_exit(reason: &str) -> ! {
+    eprintln!("error: {}: {reason}", super::WINDOW_LOST);
+    std::process::exit(super::WINDOW_LOST_EXIT_CODE);
 }
 
 impl AppHandler {

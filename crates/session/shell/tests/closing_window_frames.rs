@@ -592,3 +592,65 @@ fn a_window_has_answered_input_after_two_pings_and_a_captured_frame() {
         Progress::TimedOut
     );
 }
+
+/// Open a window of [`APP_ID`] attributed to launch `key`, configured and
+/// drawn once.
+fn launched_window(
+    h: &mut Harness,
+    key: &str,
+) -> (
+    u64,
+    wl_surface::WlSurface,
+    xdg_surface::XdgSurface,
+    xdg_toplevel::XdgToplevel,
+) {
+    let qh = h.queue.handle();
+    let compositor = h.bind::<wl_compositor::WlCompositor>("wl_compositor", 4);
+    let wm = h.bind::<xdg_wm_base::XdgWmBase>("xdg_wm_base", 3);
+    let surface = compositor.create_surface(&qh, ());
+    let xdg = wm.get_xdg_surface(&surface, &qh, ());
+    let toplevel = xdg.get_toplevel(&qh, ());
+    toplevel.set_app_id(APP_ID.into());
+    surface.commit();
+    h.pump();
+    let id = adopted_surface(&h.state);
+    shell::shell::launcher::attribute_surface_launch(id, key);
+    shell::compositor::foreign::store()
+        .note_placement(id, vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0));
+    shell::shell::foreign::flush_configures(&mut h.state);
+    h.pump_until("the first configure", |c| c.configured);
+    let buffer = shm_buffer(h);
+    draw(&surface, &buffer, &qh, 1);
+    h.pump();
+    (id, surface, xdg, toplevel)
+}
+
+/// A window that goes away without the compositor asking and without the
+/// person ever reaching its app was lost, not closed: an app whose drawing
+/// surface died tore its window down and exited cleanly, and the desktop
+/// said nothing. A window the compositor asked to close is not.
+#[test]
+fn a_window_that_goes_away_unasked_is_lost_and_a_closed_one_is_not() {
+    let mut h = Harness::new();
+    let (_, surface, xdg, toplevel) = launched_window(&mut h, "org.example.Lost");
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        shell::shell::launcher::take_launch_vanished("org.example.Lost"),
+        "a window torn down unasked must be reported as lost"
+    );
+
+    let (id, surface, xdg, toplevel) = launched_window(&mut h, "org.example.Closed");
+    h.state.close_surface_on_request(id);
+    h.pump_until("the close request", |c| c.close_requested);
+    toplevel.destroy();
+    xdg.destroy();
+    surface.destroy();
+    h.pump();
+    assert!(
+        !shell::shell::launcher::take_launch_vanished("org.example.Closed"),
+        "a window the compositor asked to close was closed, not lost"
+    );
+}
