@@ -455,6 +455,8 @@ struct Sizes {
 /// What the summary depends on: the artwork as it is, and the settings.
 #[derive(PartialEq)]
 struct SizesKey {
+    /// The dialog is open: only then is the picture made to count it.
+    open: bool,
     art: usize,
     settings: Settings,
     selection: Vec<String>,
@@ -492,12 +494,24 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
             &[("width", width.into()), ("height", height.into())],
         )
     };
-    let text = text.get_or_insert_with(TextRenderer::new);
-    let bytes = tools
-        .renderer
-        .try_borrow_mut()
-        .ok()
-        .and_then(|mut renderer| estimate(&mut renderer, text, &part, region, settings).ok());
+    // Made only while the dialog is open, and where a picture can be made
+    // without waiting on the one thread a page has.
+    let open = tools
+        .sheet
+        .with(|sheet| *sheet == Some(crate::tools::Sheet::Export));
+    let threads = ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available;
+    let bytes = (open && threads)
+        .then(|| {
+            let text = text.get_or_insert_with(TextRenderer::new);
+            tools
+                .renderer
+                .try_borrow_mut()
+                .ok()
+                .and_then(|mut renderer| {
+                    estimate(&mut renderer, text, &part, region, settings).ok()
+                })
+        })
+        .flatten();
     if let Some(bytes) = bytes {
         said.push_str(" · ");
         said.push_str(&ui::i18n::I18nManager::format(
@@ -534,6 +548,9 @@ fn summary(cx: &ViewCx<crate::resource::ArtworkResource>, tools: &Tools) -> Text
         let selection = tools.selection.get();
         let view = tools.visible.get();
         let key = SizesKey {
+            open: tools
+                .sheet
+                .with(|sheet| *sheet == Some(crate::tools::Sheet::Export)),
             art: Rc::as_ptr(&art).addr(),
             settings,
             selection,
