@@ -1,5 +1,35 @@
 use crate::managed::*;
+use package_store::InstalledPackage;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
+#[test]
+fn configured_managed_trust_never_inherits_the_installed_publisher() {
+    let (root, package, _) = installed();
+    let trust = PackageTrust::from_config_paths(
+        &root.path().join("absent-attestors.toml"),
+        &root.path().join("absent-revocations.toml"),
+    )
+    .unwrap();
+    assert!(trust.publishers.is_empty());
+    assert!(trust.attestors.is_empty());
+    assert!(
+        package.revalidate(&trust).is_err(),
+        "the real signed fixture must not supply its own host trust"
+    );
+}
+
+#[test]
+fn malformed_managed_trust_or_revocation_configuration_fails_closed() {
+    let root = tempfile::tempdir().unwrap();
+    let attestors = root.path().join("attestors.toml");
+    let revoked = root.path().join("revoked.toml");
+    std::fs::write(&attestors, "[[attestor]]\nid = [").unwrap();
+    assert!(PackageTrust::from_config_paths(&attestors, &revoked).is_err());
+    std::fs::write(&attestors, "").unwrap();
+    std::fs::write(&revoked, "[[revoked]]\npubkey_hex = [").unwrap();
+    assert!(PackageTrust::from_config_paths(&attestors, &revoked).is_err());
+}
 
 fn installed() -> (tempfile::TempDir, InstalledManagedPackage, PackageTrust) {
     installed_bytes(b"#!/bin/sh\nexit 0\n")
@@ -81,6 +111,57 @@ type = "cli"
     (root, package, trust)
 }
 
+fn assert_normal_launch_expected_root(installed: &InstalledPackage) {
+    let original = &installed.package_id_hex;
+    let verify = |expected: &str| {
+        crate::run::verified_launch_installation(
+            installed,
+            &installed.manifest_path,
+            &installed.payload_root,
+            expected,
+        )
+    };
+    assert_eq!(
+        verify(original).unwrap().package_id,
+        WORKSPACE_AGENT_PACKAGE_ID
+    );
+    assert!(
+        verify(&"0".repeat(64)).is_err(),
+        "an upgraded root cannot inherit original declarations"
+    );
+    let opts = crate::run::RunOptions {
+        expected_package_hash: Some(original.clone()),
+        ..Default::default()
+    };
+    let manifest = verify(original).unwrap();
+    assert!(matches!(
+        crate::run::run_with(&manifest, &installed.payload_root, &opts),
+        Err(crate::run::RunError::InvalidServiceLaunch(_))
+    ));
+    assert!(
+        crate::run::verified_launch_installation(
+            installed,
+            Path::new("/wrong-manifest"),
+            &installed.payload_root,
+            original
+        )
+        .is_err(),
+        "another metadata path must be rejected before exec"
+    );
+    let mut renamed = installed.clone();
+    renamed.id = "so.tilo.chat".into();
+    assert!(
+        crate::run::verified_launch_installation(
+            &renamed,
+            &renamed.manifest_path,
+            &renamed.payload_root,
+            original,
+        )
+        .is_err(),
+        "a registry label cannot readdress signed package authority"
+    );
+}
+
 #[test]
 fn managed_package_verifies_actual_content_addressed_install() {
     let (_legacy_root, legacy, trust) = installed();
@@ -114,6 +195,7 @@ fn managed_package_verifies_actual_content_addressed_install() {
         .unwrap()
         .package;
     assert!(!installed.payload_root.join("manifest.toml").exists());
+    assert_normal_launch_expected_root(&installed);
     assert!(
         package_store::integrity::record_dir(&installed)
             .join("signed-root")
