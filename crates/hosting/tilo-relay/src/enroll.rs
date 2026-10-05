@@ -1815,7 +1815,10 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
             Err(error) => return Err(error.into()),
         }
     }
-    bail!("no approving Tilo device answered before the enrollment window closed")
+    Err(
+        WindowClosed("no approving Tilo device answered before the enrollment window closed")
+            .into(),
+    )
 }
 
 #[allow(
@@ -1922,13 +1925,59 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
             Err(error) => return Err(error.into()),
         }
     }
-    bail!("no trusted Tilo device approved nearby pairing before the window closed")
+    Err(
+        WindowClosed("no trusted Tilo device approved nearby pairing before the window closed")
+            .into(),
+    )
 }
 
 /// Publish first-use pairing progress for the UI that started this process.
 fn write_pairing_status(path: &std::path::Path, status: &serde_json::Value) -> anyhow::Result<()> {
     tilo_files::native::atomic::write_with_mode(path, &serde_json::to_vec(status)?, 0o644)?;
     restore_owner_from_parent(path)
+}
+
+/// An enrollment window ended with no device answering.
+#[derive(Debug)]
+struct WindowClosed(&'static str);
+
+impl std::fmt::Display for WindowClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for WindowClosed {}
+
+/// What made pairing fail, as the status file names it for the first-use UI:
+/// `permission_denied`, `storage_full`, `read_only`, `unreachable`,
+/// `timed_out`, or `unknown` when the error carries no cause the person can
+/// act on.
+fn pairing_failure_cause(error: &anyhow::Error) -> &'static str {
+    use std::io::ErrorKind;
+
+    if error
+        .chain()
+        .any(<dyn std::error::Error>::is::<WindowClosed>)
+    {
+        return "timed_out";
+    }
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .find_map(|io| match io.kind() {
+            ErrorKind::PermissionDenied => Some("permission_denied"),
+            ErrorKind::StorageFull | ErrorKind::QuotaExceeded => Some("storage_full"),
+            ErrorKind::ReadOnlyFilesystem => Some("read_only"),
+            ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::NetworkDown
+            | ErrorKind::AddrNotAvailable
+            | ErrorKind::ConnectionRefused => Some("unreachable"),
+            ErrorKind::TimedOut => Some("timed_out"),
+            _ => None,
+        })
+        .unwrap_or("unknown")
 }
 
 /// Record why pairing ended without joining, so the first-use UI shows the
@@ -1939,6 +1988,7 @@ fn report_pairing_failure(path: &std::path::Path, error: &anyhow::Error) {
         &serde_json::json!({
             "state": "failed",
             "error": format!("{error:#}"),
+            "cause": pairing_failure_cause(error),
         }),
     );
 }
@@ -3693,6 +3743,25 @@ mod tests {
                 .unwrap()
                 .contains("first-use requester exited"),
             "the reason reaches the UI: {recorded}"
+        );
+    }
+
+    #[test]
+    fn a_failed_pairing_names_its_cause() {
+        let denied = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EACCES))
+            .context("publish the enrollment commit");
+        assert_eq!(pairing_failure_cause(&denied), "permission_denied");
+        let full = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENOSPC));
+        assert_eq!(pairing_failure_cause(&full), "storage_full");
+        let read_only = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::EROFS));
+        assert_eq!(pairing_failure_cause(&read_only), "read_only");
+        let unreachable = anyhow::Error::from(std::io::Error::from_raw_os_error(libc::ENETUNREACH));
+        assert_eq!(pairing_failure_cause(&unreachable), "unreachable");
+        let closed = anyhow::Error::from(WindowClosed("the window closed"));
+        assert_eq!(pairing_failure_cause(&closed), "timed_out");
+        assert_eq!(
+            pairing_failure_cause(&anyhow::anyhow!("first-use requester exited")),
+            "unknown"
         );
     }
 
