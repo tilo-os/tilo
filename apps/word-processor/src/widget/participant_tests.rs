@@ -19,14 +19,14 @@ fn pid(name: &str) -> ParticipantId {
 fn widget_with(texts: &[&str]) -> (WordProcessorWidget, ui::State, Vec<String>) {
     let mut state = crate::initialized_state();
     let mut wp = WordProcessorWidget::detached();
-    wp.sync(&mut state.doc, &state.root);
+    wp.sync(&state.doc, &state.root);
     for (i, text) in texts.iter().enumerate() {
         if i > 0 {
             wp.model_mut().enter(&mut state.doc);
         }
         wp.model_mut().insert_str(&mut state.doc, text);
     }
-    wp.sync(&mut state.doc, &state.root);
+    wp.sync(&state.doc, &state.root);
     let ids = body_ids(&state.doc);
     assert_eq!(ids.len(), texts.len());
     (wp, state, ids)
@@ -138,7 +138,7 @@ fn participant_edits_match_the_pure_projection_of_its_view() {
 
 #[test]
 fn local_view_projects_to_the_published_resource_context() {
-    let (mut wp, mut state, ids) = widget_with(&["hello world", "second line"]);
+    let (mut wp, state, ids) = widget_with(&["hello world", "second line"]);
     wp.model_mut().set_caret(Caret {
         block: ids[0].clone(),
         offset: 2,
@@ -148,7 +148,7 @@ fn local_view_projects_to_the_published_resource_context() {
         block: ids[1].clone(),
         offset: 4,
     });
-    wp.sync(&mut state.doc, &state.root);
+    wp.sync(&state.doc, &state.root);
     let view = wp.local_participant_view();
     // `WpResourceCtx` has no `PartialEq`; its `Debug` form is what the
     // resource memo keys on, so equal forms mean an equal published tree.
@@ -181,7 +181,7 @@ fn views_rebase_under_concurrent_edits() {
         dm.splice_text(&ids[0], 0, 0, "Oh, ");
     }
     state.doc.merge_incoming(&mut remote).unwrap();
-    wp.sync(&mut state.doc, &state.root);
+    wp.sync(&state.doc, &state.root);
 
     assert_eq!(
         wp.participant_view(&writer, &state.doc),
@@ -233,7 +233,7 @@ fn views_rebase_under_concurrent_edits() {
     let containers = tilo_doc::model::open(&remote, &automerge::ROOT).unwrap();
     remote.delete(&containers.blocks, ids[1].as_str()).unwrap();
     state.doc.merge_incoming(&mut remote).unwrap();
-    wp.sync(&mut state.doc, &state.root);
+    wp.sync(&state.doc, &state.root);
     let parked = wp.participant_view(&reader, &state.doc).unwrap();
     assert_eq!(parked.anchor, None);
     assert_eq!(parked.caret, ViewPoint::new(&ids[0], 9));
@@ -433,13 +433,13 @@ fn assert_keyboard_action_parity(
     assert_eq!(inputs.len(), steps.len(), "{case}");
     let (mut keyboard, mut state, ids) = widget_with(texts);
     setup(&mut keyboard, &mut state, &ids);
-    keyboard.sync(&mut state.doc, &state.root);
+    keyboard.sync(&state.doc, &state.root);
     keyboard.lifecycle.focused = true;
 
     let mut agent_state = crate::initialized_state();
     agent_state.doc = state.doc.clone();
     let mut agent_widget = WordProcessorWidget::detached();
-    agent_widget.sync(&mut agent_state.doc, &agent_state.root);
+    agent_widget.sync(&agent_state.doc, &agent_state.root);
     let agent = pid("parity-agent");
     let invoker = ActionInvoker::actor("agent-actor").with_participant(agent.clone());
     agent_widget.set_participant_view(&agent, &keyboard.local_participant_view(), &agent_state.doc);
@@ -679,10 +679,10 @@ fn view_operations_move_only_the_invokers_view() {
 /// resolution are bound to the invoker's view, never this window's.
 #[test]
 fn a_delivered_invocation_builds_at_the_invokers_view() {
-    let (mut wp, mut state, ids) = widget_with(&["first paragraph", "tail"]);
+    let (mut wp, state, ids) = widget_with(&["first paragraph", "tail"]);
     let agent = pid("agent-task:5");
     wp.set_participant_view(&agent, &caret(&ids[1], 4), &state.doc);
-    wp.sync(&mut state.doc, &state.root);
+    wp.sync(&state.doc, &state.root);
     let (edits, tree) = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
@@ -725,8 +725,8 @@ fn a_delivered_invocation_builds_at_the_invokers_view() {
 /// participant: it builds against this window's own view.
 #[test]
 fn a_participantless_invocation_builds_at_the_windows_own_view() {
-    let (mut wp, mut state, ids) = widget_with(&["first paragraph"]);
-    wp.sync(&mut state.doc, &state.root);
+    let (mut wp, state, ids) = widget_with(&["first paragraph"]);
+    wp.sync(&state.doc, &state.root);
     let local: Vec<&str> = wp.bound_edits().iter().map(|edit| edit.id).collect();
     let edits = {
         let _scope =

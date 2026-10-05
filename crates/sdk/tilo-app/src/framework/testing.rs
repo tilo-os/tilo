@@ -1238,9 +1238,9 @@ pub fn detached_dispatcher<R: Resource>(author: &str) -> super::Dispatcher<R> {
 /// # Errors
 /// Returns why `doc` does not read as `R`.
 pub fn detached_live<R: Resource>(
-    doc: &mut tilo_resource::Doc,
+    doc: &tilo_resource::Doc,
 ) -> Result<super::Live<R>, tilo_resource::ModelError> {
-    Ok(super::Live::new(tilo_resource::Reader::open(doc)?))
+    Ok(super::Live::new(tilo_resource::Reader::read(doc)?))
 }
 
 /// Inspect the window `A`'s live launch opens: the same definition and

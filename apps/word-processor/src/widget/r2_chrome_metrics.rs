@@ -41,7 +41,7 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let theme = Theme::dark().with_text_scale(scale);
             let mut state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
-            wp.sync(&mut state.doc, &state.root);
+            wp.sync(&state.doc, &state.root);
             wp.model_mut().insert_str(&mut state.doc, "Panel rows");
             wp.set_styles_panel_open(true);
             let mut framed = mount_themed(state, wp, 1400, 900, &theme);
@@ -139,7 +139,7 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let theme = Theme::dark().with_text_scale(scale);
             let mut state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
-            wp.sync(&mut state.doc, &state.root);
+            wp.sync(&state.doc, &state.root);
             wp.model_mut()
                 .insert_str(&mut state.doc, "A report about the report");
             wp.stage_find_for_shot(&state.doc, "report");
@@ -223,7 +223,7 @@ fn panel_and_bar_controls_follow_their_measured_labels() {
             let theme = Theme::dark().with_text_scale(scale);
             let mut state = crate::initialized_state();
             let mut wp = WordProcessorWidget::detached();
-            wp.sync(&mut state.doc, &state.root);
+            wp.sync(&state.doc, &state.root);
             wp.model_mut().insert_str(&mut state.doc, "chips");
             let mut framed = mount_themed(state, wp, 1000, 700, &theme);
             let (wp, _) = Framed::split(&mut framed);
@@ -285,11 +285,11 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         let theme = Theme::dark().with_text_scale(2.0);
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
-        wp.sync(&mut state.doc, &state.root);
+        wp.sync(&state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Picture");
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_image_bytes(&mut state.doc, PNG);
-        wp.sync(&mut state.doc, &state.root);
+        wp.sync(&state.doc, &state.root);
         let image = tilo_doc::model::open(&state.doc, &state.root)
             .ok()
             .and_then(|c| {
@@ -412,7 +412,7 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         let theme = Theme::dark().with_text_scale(2.0);
         let mut state = crate::initialized_state();
         let mut wp = WordProcessorWidget::detached();
-        wp.sync(&mut state.doc, &state.root);
+        wp.sync(&state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Large text");
         wp.set_styles_panel_open(true);
         let mut framed = mount_themed(state, wp, 800, 900, &theme);
@@ -434,8 +434,8 @@ fn two_x_chrome_is_reserved_packed_and_never_overlapping() {
         );
         // And the same document at 1× draws the classic density.
         let mut wp1 = WordProcessorWidget::detached();
-        let mut state1 = crate::initialized_state();
-        wp1.sync(&mut state1.doc, &state1.root);
+        let state1 = crate::initialized_state();
+        wp1.sync(&state1.doc, &state1.root);
         let mut framed_wp1 = mount(state1, wp1, 800, 900);
         let (wp1, _) = Framed::split(&mut framed_wp1);
         assert!((wp1.toolbar_row_height - TOOLBAR_H).abs() < 0.01);

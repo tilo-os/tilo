@@ -1867,7 +1867,7 @@ impl WordProcessorWidget {
 
     /// Bring the kept state up to date with `state`. Returns whether it
     /// changed.
-    fn refresh_live(&self, state: &mut AutoCommit) -> bool {
+    fn refresh_live(&self, state: &AutoCommit) -> bool {
         self.source.as_ref().is_some_and(|live| {
             live.sync(state).unwrap_or_else(|error| {
                 eprintln!("word-processor: document unreadable: {error}");
@@ -1988,6 +1988,14 @@ impl WordProcessorWidget {
         let _ = self.try_perform_action(state, action);
     }
 
+    fn perform_edits(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        action: &crate::actions::RichTextAction,
+    ) {
+        let _ = self.try_perform_edits(state, action);
+    }
+
     /// Submit one document action. `false` when the host refuses it, so a
     /// caller can leave the document and caret as they were.
     fn try_perform_action(
@@ -1995,11 +2003,19 @@ impl WordProcessorWidget {
         state: &mut AutoCommit,
         action: &crate::actions::RichTextAction,
     ) -> bool {
+        self.try_perform_edits(&mut ui::widget::Edits::lend(state), action)
+    }
+
+    fn try_perform_edits(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        action: &crate::actions::RichTextAction,
+    ) -> bool {
         let context = tilo_actions::ActionContext::for_action("org.tilo.Writer", "Writer", action);
         let Some(dispatch) = self.dispatch.clone() else {
             return false;
         };
-        match dispatch.apply_now_with(&mut ui::widget::Edits::lend(state), action, context) {
+        match dispatch.apply_now_with(state, action, context) {
             Ok(()) => {
                 #[cfg(test)]
                 {
@@ -2128,13 +2144,24 @@ impl WordProcessorWidget {
             &AutoCommit,
         ) -> crate::actions::editing::EditResult,
     ) -> bool {
+        self.edit_with(&mut ui::widget::Edits::lend(state), primitive)
+    }
+
+    fn edit_with(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        primitive: impl FnOnce(
+            &crate::actions::participant::ParticipantView,
+            &AutoCommit,
+        ) -> crate::actions::editing::EditResult,
+    ) -> bool {
         let view = self.local_edit_view();
         match primitive(&view, state) {
             Err(crate::actions::editing::EditingError::NotYetImplemented(_)) => false,
             Err(_) => true,
             Ok((envelopes, next)) => {
                 for action in &envelopes {
-                    self.perform_action(state, action);
+                    self.perform_edits(state, action);
                 }
                 // A caret waiting on a block the edit created settles on the
                 // kept order, brought up to date, not on a listed body.
@@ -2153,7 +2180,7 @@ impl WordProcessorWidget {
 
     /// Bring the kept state up to date with `state` in the middle of an edit;
     /// the next refresh still copies what changed into the views.
-    fn sync_source(&mut self, state: &mut AutoCommit) {
+    fn sync_source(&mut self, state: &AutoCommit) {
         self.source_unseen |= self.refresh_live(state);
     }
 
@@ -2258,14 +2285,18 @@ impl WordProcessorWidget {
     /// represented by its own single envelope rather than a hidden UI-only
     /// sequence of splice/delete writes.
     fn insert_text_via_action(&mut self, state: &mut AutoCommit, text: &str) {
-        if self.edit_via_primitive(state, |view, doc| {
+        self.insert_text_edits(&mut ui::widget::Edits::lend(state), text);
+    }
+
+    fn insert_text_edits(&mut self, state: &mut ui::widget::Edits<'_>, text: &str) {
+        if self.edit_with(state, |view, doc| {
             crate::actions::editing::type_text(view, doc, text)
         }) {
             return;
         }
         if let Some((start, end)) = self.inner.selection_span(state) {
             let region = self.inner.region_kind();
-            self.perform_action(
+            self.perform_edits(
                 state,
                 &crate::actions::replace_selection_action(
                     region,
@@ -2282,13 +2313,15 @@ impl WordProcessorWidget {
         }
         let caret = self.inner.caret().clone();
         let region = self.inner.region_kind();
-        self.splice_via_action(
+        self.perform_edits(
             state,
-            region,
-            &caret.block,
-            caret.offset,
-            caret.offset,
-            text,
+            &crate::actions::splice_text_action(
+                region,
+                &caret.block,
+                caret.offset,
+                caret.offset,
+                text,
+            ),
         );
         self.inner.set_caret(Caret {
             block: caret.block,
@@ -3279,14 +3312,14 @@ impl WordProcessorWidget {
     }
 
     /// Stage `scenario`'s view state, and the review and image edits its
-    /// paragraphs carry, in the next sync.
+    /// paragraphs carry, in the next action settlement.
     /// A plain capture stages nothing.
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         self.staged_scenario = scenario.map(str::to_owned);
         self.lifecycle.dirty = true;
     }
 
-    fn run_staged_scenario(&mut self, state: &mut AutoCommit, scenario: &str) {
+    fn run_staged_scenario(&mut self, state: &mut ui::widget::Edits<'_>, scenario: &str) {
         match scenario {
             "styles" => self.set_styles_panel_open(true),
             "error" => self.stage_error_for_shot(),
@@ -3316,11 +3349,11 @@ impl WordProcessorWidget {
     /// A comment by one reviewer and a tracked insertion by another on the
     /// first paragraph, and with `thread` two replies and the thread panel
     /// open: the review a collaborator's document arrives with.
-    fn stage_review(&mut self, state: &mut AutoCommit, thread: bool) {
+    fn stage_review(&mut self, state: &mut ui::widget::Edits<'_>, thread: bool) {
         let Some((block, len)) = Self::first_text_block(state) else {
             return;
         };
-        self.perform_action(
+        self.perform_edits(
             state,
             &crate::actions::add_comment_action(
                 &block,
@@ -3331,7 +3364,7 @@ impl WordProcessorWidget {
                 "Could we make this opening more specific?",
             ),
         );
-        self.perform_action(
+        self.perform_edits(
             state,
             &crate::actions::RichTextAction::TrackInsert {
                 block,
@@ -3360,7 +3393,7 @@ impl WordProcessorWidget {
                 "Thanks — please keep the decision clear.",
             ),
         ] {
-            self.perform_action(
+            self.perform_edits(
                 state,
                 &crate::actions::reply_to_comment_action(&comment, author, date, text),
             );
@@ -3372,7 +3405,7 @@ impl WordProcessorWidget {
 
     /// An image placed after the first paragraph, framed at an intentional
     /// size and selected, with the object inspector open.
-    fn stage_selected_image(&mut self, state: &mut AutoCommit) {
+    fn stage_selected_image(&mut self, state: &mut ui::widget::Edits<'_>) {
         // A tiny valid RGB PNG: real decodable bytes cover the renderer's
         // blob and image-cache path, while the pixels do not matter.
         const SHOT_PNG: &[u8] = &[
@@ -3387,7 +3420,7 @@ impl WordProcessorWidget {
         let Ok(hash) = self.inner.content_store().put(SHOT_PNG) else {
             return;
         };
-        self.perform_action(
+        self.perform_edits(
             state,
             &crate::actions::insert_image_action(
                 &block,
@@ -3406,7 +3439,7 @@ impl WordProcessorWidget {
         let Some(image) = image else {
             return;
         };
-        self.perform_action(
+        self.perform_edits(
             state,
             &crate::actions::set_image_size_action(&image.id, 300, 180),
         );
@@ -3453,6 +3486,14 @@ impl WordProcessorWidget {
     /// content store and the document references them; the renderer/exporter
     /// decode them on demand.
     fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
+        self.insert_image_edits(&mut ui::widget::Edits::lend(state), path)
+    }
+
+    fn insert_image_edits(
+        &mut self,
+        state: &mut ui::widget::Edits<'_>,
+        path: &std::path::Path,
+    ) -> bool {
         let file = tilo_files::file_at(path);
         match file
             .as_ref()
@@ -3471,7 +3512,7 @@ impl WordProcessorWidget {
                     }
                 };
                 if self.inner.has_selection() {
-                    self.insert_text_via_action(state, "");
+                    self.insert_text_edits(state, "");
                 }
                 let caret = self.inner.caret().clone();
                 let before: std::collections::HashSet<String> =
@@ -3483,7 +3524,7 @@ impl WordProcessorWidget {
                     image.width = Some(i64::from(width));
                     image.height = Some(i64::from(height));
                 }
-                self.perform_action(
+                self.perform_edits(
                     state,
                     &crate::actions::insert_image_action(&caret.block, caret.offset, image),
                 );
@@ -3529,7 +3570,7 @@ impl WordProcessorWidget {
     /// Insert the image the host's chooser answered with, if it answered.
     /// A cancel or a chooser failure leaves the document as it was; a
     /// chooser gone without answering frees the request.
-    fn drain_image_choice(&mut self, state: &mut AutoCommit) {
+    fn drain_image_choice(&mut self, state: &mut ui::widget::Edits<'_>) {
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
         };
@@ -3538,7 +3579,7 @@ impl WordProcessorWidget {
                 self.portal_rx = None;
                 match outcome {
                     portal::PortalOutcome::Opened(path) => {
-                        self.insert_image_from_path(state, &path);
+                        self.insert_image_edits(state, &path);
                     }
                     portal::PortalOutcome::Failed(reason) => {
                         eprintln!("word-processor: portal error: {reason}");
@@ -3831,7 +3872,7 @@ impl WordProcessorWidget {
     /// Materialize the body only when its CRDT heads change, or when scrolling
     /// moves a large document's bounded working set. qdoc's requested-block API
     /// preserves the canonical id order without doing a whole-region traversal.
-    fn refresh_blocks(&mut self, state: &mut AutoCommit) {
+    fn refresh_blocks(&mut self, state: &AutoCommit) {
         self.refresh_blocks_after_text_edit(state, None);
     }
 
@@ -3839,11 +3880,7 @@ impl WordProcessorWidget {
     /// change re-reads only the paragraphs it touched, and only the window
     /// around the viewport is ever read. What changed is copied into the
     /// views the layout draws from, paragraph by paragraph.
-    fn refresh_blocks_after_text_edit(
-        &mut self,
-        state: &mut AutoCommit,
-        _text_block: Option<&str>,
-    ) {
+    fn refresh_blocks_after_text_edit(&mut self, state: &AutoCommit, _text_block: Option<&str>) {
         if self.inner.containers.is_none() {
             return;
         }
@@ -10396,13 +10433,7 @@ impl Widget for WordProcessorWidget {
                     .map(|()| tilo_actions::ActionOutput::default()),
             );
         }
-        // Fold in a chosen image, if the host's chooser answered.
-        self.drain_image_choice(state);
         self.refresh_blocks(state);
-        if let Some(scenario) = self.staged_scenario.take() {
-            self.run_staged_scenario(state, &scenario);
-            self.refresh_blocks(state);
-        }
         // Other participants' views follow local and remote edits alike; a
         // participant's own applied edit hands over its next view.
         let now = ui::time::now();
@@ -10431,6 +10462,14 @@ impl Widget for WordProcessorWidget {
             };
         }
         self.lifecycle.dirty = true;
+    }
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        self.drain_image_choice(edits);
+        if let Some(scenario) = self.staged_scenario.take() {
+            self.run_staged_scenario(edits, &scenario);
+        }
+        self.refresh_blocks(edits.doc());
     }
 
     fn build_layout(
@@ -13539,7 +13578,7 @@ mod canonical_scroll_tests {
 
         let mut state = crate::initialized_state();
         let mut widget = WordProcessorWidget::detached();
-        widget.sync(&mut state.doc, &state.root);
+        widget.sync(&state.doc, &state.root);
         for _ in 0..40 {
             widget
                 .model_mut()
