@@ -720,6 +720,19 @@ mod tests {
                 app.effect(&effect).unwrap();
                 app.settle();
             }
+            for name in match page {
+                "catalogue" => &["Refresh", "Remotes"][..],
+                "remotes" => &["Back to apps", "Refresh"][..],
+                _ => &[],
+            } {
+                let control = app
+                    .harness()
+                    .controls()
+                    .into_iter()
+                    .find(|control| control.name.as_deref() == Some(*name))
+                    .unwrap_or_else(|| panic!("{page}: missing control {name}"));
+                assert!(!control.disabled, "{page}: live owner control {name}");
+            }
             let resources = app.harness().resources();
             let bindings =
                 ui::widget::controls::control_action_bindings(app.harness().root_widget());
