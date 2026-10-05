@@ -2362,7 +2362,7 @@ mod tests {
         let resources = Framed::harness(&frame).resources();
         let overflow_ids: Vec<_> = resources
             .iter()
-            .filter(|resource| resource.id.starts_with("tilo.control:toolbar.overflow:"))
+            .filter(|resource| resource.id.0.starts_with("tilo.control:toolbar.overflow:"))
             .map(|resource| resource.id.as_str())
             .collect();
         assert_eq!(overflow_ids.len(), 2);
@@ -2985,7 +2985,7 @@ mod lifecycle_tests {
         while let Some(invocation) = crate::widget::controls::take_control_invocation(widget) {
             let resource = crate::resources::resources(widget, &doc)
                 .into_iter()
-                .find(|resource| resource.id == invocation.address.resource)
+                .find(|resource| resource.id.0 == invocation.address.resource)
                 .expect("the emitted operation has a real published resource");
             let spec = resource
                 .actions
