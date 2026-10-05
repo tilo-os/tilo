@@ -2501,7 +2501,10 @@ impl Widget for PlayerApp {
                 Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         let history_hovered = self.history.is_hovered();
-        let history_rect = if self.overlay_visible() {
+        // The library paints above the strip and its scrim owns background
+        // input. In particular its Close face overlaps the trailing History
+        // face, so that covered control must not consume the library click.
+        let history_rect = if self.overlay_visible() && !self.library_visible {
             self.history_button_rect
         } else {
             Rect::ZERO

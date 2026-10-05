@@ -765,11 +765,18 @@ mod tests {
 
         let mut tags = TestApp::<FeedsShell>::capture(Some("tags")).unwrap();
         assert_eq!(tags.harness().inspection().viewport, [1280, 800]);
+        let nodes = tags.harness().a11y_nodes();
         assert!(
-            tags.harness()
-                .inspection_json()
-                .unwrap()
-                .contains("Article tags")
+            nodes.iter().any(|(_, node)| {
+                node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Edit tags")
+            }),
+            "the capture stages the actual article-tag dialog"
+        );
+        assert!(
+            nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some("Save tags")),
+            "the staged dialog retains its real submission control"
         );
 
         let empty = TestApp::<FeedsShell>::capture(Some("empty")).unwrap();

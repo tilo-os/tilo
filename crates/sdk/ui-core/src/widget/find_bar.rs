@@ -1014,7 +1014,8 @@ impl Widget for FindBar {
             };
             let mut field = field
                 .with_name(tr("find-bar-placeholder"))
-                .with_bounds(self.field.get_rect());
+                .with_bounds(self.field.get_rect())
+                .with_action_target("find-query");
             if !position.is_empty() {
                 field = field.with_description(position);
             }
@@ -1026,7 +1027,8 @@ impl Widget for FindBar {
             children.push(
                 field
                     .with_name(tr("find-bar-replace-placeholder"))
-                    .with_bounds(self.replace_field.get_rect()),
+                    .with_bounds(self.replace_field.get_rect())
+                    .with_action_target("find-replacement"),
             );
         }
         for (part, rect) in &self.parts {
@@ -1059,9 +1061,29 @@ impl Widget for FindBar {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _: &mut crate::widget::Edits<'_>,
-        _: &ModelPath,
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
     ) -> bool {
+        let replacement = match target {
+            "find-query" => Some(false),
+            "find-replacement" if self.replace_row => Some(true),
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            if matches!(action, crate::a11y::Action::Focus) {
+                self.replace_focused = replacement;
+                self.set_focus(true);
+                return true;
+            }
+            let field = if replacement {
+                &mut self.replace_field
+            } else {
+                &mut self.field
+            };
+            // The shared text core owns edits, selection and validation;
+            // unsupported field operations remain explicitly unhandled.
+            return field.perform_action(action, state, path);
+        }
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
@@ -1685,6 +1707,74 @@ mod tests {
 
         let _ = send(&mut scope, &escape(), plain);
         assert!(!scope.is_open(), "Escape closes the bar");
+    }
+
+    #[test]
+    fn hosted_accessibility_edits_the_real_find_query_and_replacement() {
+        let page = Page {
+            doc: Doc {
+                text: "one two one".into(),
+                ..Doc::default()
+            },
+            rect: Rect::ZERO,
+        };
+        let mut scope = FindScope::new(Box::new(page));
+        scope.open();
+        let mut harness = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            scope,
+            (900, 400),
+            Theme::dark(),
+        );
+        let field = |harness: &crate::headless::FrameHarness, name: &str| {
+            harness
+                .a11y_nodes()
+                .into_iter()
+                .find(|(_, node)| {
+                    node.role() == accesskit::Role::TextInput && node.label() == Some(name)
+                })
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| panic!("missing exported find field {name}"))
+        };
+        let query = field(&harness, &tr("find-bar-placeholder"));
+        harness
+            .perform_a11y_action(query, &crate::a11y::Action::SetValue("one".into()))
+            .expect("the exported query enters the real find scope");
+        assert_eq!(harness.root::<FindScope>().bar.query(), "one");
+        assert_eq!(harness.root::<FindScope>().bar.position(), Some((1, 2)));
+        let query = field(&harness, &tr("find-bar-placeholder"));
+        harness
+            .perform_a11y_action(query, &crate::a11y::Action::Focus)
+            .expect("the exported query can take keyboard focus");
+        let query = field(&harness, &tr("find-bar-placeholder"));
+        harness
+            .perform_a11y_action(
+                query,
+                &crate::a11y::Action::SetSelection {
+                    anchor: 0,
+                    focus: 3,
+                },
+            )
+            .unwrap();
+        harness.type_text("two");
+        assert_eq!(harness.root::<FindScope>().bar.query(), "two");
+        assert_eq!(harness.root::<FindScope>().bar.position(), Some((1, 1)));
+        let replacement = field(&harness, &tr("find-bar-replace-placeholder"));
+        harness
+            .perform_a11y_action(replacement, &crate::a11y::Action::SetValue("three".into()))
+            .unwrap();
+        assert_eq!(
+            harness.root::<FindScope>().bar.replace_field.value(),
+            "three"
+        );
+        assert_eq!(harness.root::<FindScope>().bar.query(), "two");
+        let query = field(&harness, &tr("find-bar-placeholder"));
+        assert!(
+            harness
+                .perform_a11y_action(query, &crate::a11y::Action::ToggleCheck)
+                .is_err()
+        );
+        assert_eq!(harness.root::<FindScope>().bar.query(), "two");
     }
 
     #[test]

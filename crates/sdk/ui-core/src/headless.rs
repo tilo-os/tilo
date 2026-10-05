@@ -4123,7 +4123,7 @@ impl FrameHarness {
                     let c = rect.center();
                     self.click_at(c.x, c.y);
                 }
-                _ => {}
+                _ => return Err(format!("the current control did not handle {action:?}")),
             }
         }
         // The widget may have mutated the document from `perform_action_at` —
@@ -12088,6 +12088,22 @@ mod dispatched_action_driver_tests {
             assert!(d.perform_undo(), "and the history actually pops it");
             assert_eq!(body(&mut d), "");
         }
+    }
+
+    #[test]
+    fn unsupported_accessibility_edits_are_refused_without_mutating_document() {
+        let mut driver = action_driver();
+        let target = driver
+            .a11y_node_named("Editor")
+            .expect("the real canvas is published");
+        let heads = driver.state.doc.get_heads();
+        let result = driver.perform_a11y_action(
+            target,
+            &crate::a11y::Action::SetValue("unsupported replacement".into()),
+        );
+        assert!(result.is_err(), "an unhandled edit cannot report success");
+        assert_eq!(driver.state.doc.get_heads(), heads);
+        assert_eq!(body(&mut driver), "");
     }
 
     #[test]

@@ -221,6 +221,7 @@ pub(crate) fn section(
     let (slot, handle) = Swap::new(first.element);
     let column = Column::new()
         .with_no_padding()
+        .with_intrinsic_height()
         .push(Box::new(tabs))
         .push(Box::new(slot));
     Built {

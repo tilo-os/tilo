@@ -480,7 +480,12 @@ fn keyboard_pointer_and_semantic_navigation() {
         let mut hosted = TestApp::<ContainersShell>::capture(None).unwrap();
         let address = format!("container:{expected}");
         hosted
-            .call_on(&address, "select-container", serde_json::json!({}))
+            .effect_on(
+                &address,
+                &containers::resource::ContainersEffect::SelectContainer {
+                    id: Some(expected.clone()),
+                },
+            )
             .expect("the canonical published row action is admitted");
         hosted
             .with_widget::<ContainersApp, _>(|app| {

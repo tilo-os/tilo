@@ -81,8 +81,17 @@ impl ui::widget::Decorator for Swap {
         self.content.take_structure_dirty() | own
     }
 
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.adopt();
+        self.content.settle(edits, path);
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.pending.borrow().is_some() || self.content.needs_idle_sync()
+    }
+
     fn needs_redraw(&self) -> bool {
-        self.repaint.get() || self.content.needs_redraw()
+        self.pending.borrow().is_some() || self.repaint.get() || self.content.needs_redraw()
     }
 
     fn mark_drawn(&mut self) {

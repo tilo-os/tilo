@@ -49,11 +49,16 @@ pub(crate) fn build(mode: FormMode, subject: &str, fields: &Fields, sink: &Sink)
         body = body.push(field("Name", &fields.name, TextInputKind::Name, true));
     }
     if mode.needs_variable_fields() {
-        body = body.push(field("Variable", &fields.key, TextInputKind::Code, true));
+        body = body.push(field(
+            "Variable key",
+            &fields.key,
+            TextInputKind::Code,
+            true,
+        ));
         if mode.needs_value() {
             body = body
                 .push(field(
-                    "Value",
+                    "Variable value",
                     &fields.value,
                     TextInputKind::Password,
                     false,

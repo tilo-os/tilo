@@ -247,6 +247,17 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
     )
 }
 
+impl RequestsNav {
+    fn apply_pending(&mut self) {
+        if let Some((sections, selected)) = self.pending.borrow_mut().take() {
+            self.list.set_sections(sections);
+            if self.list.selected_id() != selected {
+                self.list.set_selected(selected.as_deref());
+            }
+        }
+    }
+}
+
 impl ui::widget::Decorator for RequestsNav {
     type Inner = NavList;
 
@@ -259,14 +270,17 @@ impl ui::widget::Decorator for RequestsNav {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let next = self.pending.borrow_mut().take();
-        if let Some((sections, selected)) = next {
-            self.list.set_sections(sections);
-            if self.list.selected_id() != selected {
-                self.list.set_selected(selected.as_deref());
-            }
-        }
+        self.apply_pending();
         Widget::sync(&mut self.list, state, path);
+    }
+
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+        self.apply_pending();
+        self.list.settle(edits, path);
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.pending.borrow().is_some() || self.list.needs_idle_sync()
     }
 
     fn name(&self) -> &'static str {

@@ -13,7 +13,7 @@
 //! through a queue its model drains.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -27,11 +27,6 @@ use ui::widget::{Button, ButtonRole, Checkbox, Column, Element, Spacer, TextInpu
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
-use crate::swap::Swap;
-
-/// What a row's controls do once the row holds a pair: put them in place of
-/// the empty cell they replace, by the column they belong to.
-type Reveal = Rc<RefCell<HashMap<&'static str, Box<dyn Fn()>>>>;
 
 /// One row as the table shows it. The states are shared with the cells.
 #[derive(Clone)]
@@ -43,7 +38,6 @@ pub(crate) struct KvRow {
     /// The row is the blank one: nothing typed yet, so no checkbox and no
     /// remove button.
     pending: LocalState<bool>,
-    reveal: Reveal,
 }
 
 impl KvRow {
@@ -54,7 +48,6 @@ impl KvRow {
             value: LocalState::new(row.value.clone()),
             enabled: LocalState::new(row.enabled),
             pending: LocalState::new(false),
-            reveal: Reveal::default(),
         }
     }
 
@@ -66,7 +59,6 @@ impl KvRow {
             value: LocalState::new(String::new()),
             enabled: LocalState::new(false),
             pending: LocalState::new(true),
-            reveal: Reveal::default(),
         }
     }
 }
@@ -74,11 +66,6 @@ impl KvRow {
 /// A change the app makes to a table's rows while it is on screen.
 #[derive(Clone)]
 pub(crate) enum KvChange {
-    /// A blank row appended at the end.
-    Append(String),
-    /// The blank row became a pair: it is checked from now on and gets its
-    /// checkbox and remove button.
-    Activate(String),
     /// A row removed.
     Remove(String),
 }
@@ -92,12 +79,6 @@ pub(crate) struct KvQueue {
 impl KvQueue {
     pub(crate) fn push(&self, change: KvChange) {
         self.changes.borrow_mut().push_back(change);
-    }
-
-    /// How many changes the table has not taken yet.
-    #[cfg(test)]
-    pub(crate) fn pending(&self) -> usize {
-        self.changes.borrow().len()
     }
 }
 
@@ -137,29 +118,10 @@ impl TableModel for KvModel {
         let drained: Vec<KvChange> = self.queue.changes.borrow_mut().drain(..).collect();
         let mut out = Vec::new();
         for change in drained {
-            match change {
-                KvChange::Append(id) => {
-                    self.rows.push(KvRow::blank(id));
-                    out.push(TableModelChange::RowsInserted {
-                        index: self.rows.len().saturating_sub(1),
-                        count: 1,
-                    });
-                }
-                KvChange::Activate(id) => {
-                    if let Some(row) = self.rows.iter().find(|row| row.id == id) {
-                        row.enabled.set(true);
-                        row.pending.set(false);
-                        for reveal in row.reveal.take().values() {
-                            reveal();
-                        }
-                    }
-                }
-                KvChange::Remove(id) => {
-                    if let Some(index) = self.rows.iter().position(|row| row.id == id) {
-                        self.rows.remove(index);
-                        out.push(TableModelChange::RowsRemoved { index, count: 1 });
-                    }
-                }
+            let KvChange::Remove(id) = change;
+            if let Some(index) = self.rows.iter().position(|row| row.id == id) {
+                self.rows.remove(index);
+                out.push(TableModelChange::RowsRemoved { index, count: 1 });
             }
         }
         out
@@ -232,17 +194,14 @@ fn centred(control: Element) -> Element {
     )
 }
 
-/// The control of a cell that only a pair has. The blank row's cell is empty
-/// until the row becomes a pair, when `control` takes its place.
-fn gated(row: &KvRow, column: &'static str, control: impl Fn() -> Element + 'static) -> Element {
-    if !row.pending.get() {
-        return centred(control());
+/// The trailing blank has no checkbox or removal control. Canonical state
+/// presentation rebuilds it as a durable pair after its first text edit.
+fn gated(row: &KvRow, control: impl Fn() -> Element + 'static) -> Element {
+    if row.pending.get() {
+        Box::new(Spacer::token(SpacingStep::S0))
+    } else {
+        centred(control())
     }
-    let (slot, handle) = Swap::new(Box::new(Spacer::token(SpacingStep::S0)));
-    row.reveal
-        .borrow_mut()
-        .insert(column, Box::new(move || handle.set(centred(control()))));
-    Box::new(slot)
 }
 
 /// A built table and the queue its rows change through.
@@ -275,7 +234,7 @@ pub(crate) fn build(
                 let sink = enabled_sink.clone();
                 let id = row.id.clone();
                 let state = row.enabled.clone();
-                gated(row, "enabled", move || -> Element {
+                gated(row, move || -> Element {
                     let sink = sink.clone();
                     let id = id.clone();
                     let control = Checkbox::from_state(&state).with_accessible_name("Use this row");
@@ -322,7 +281,7 @@ pub(crate) fn build(
             move |row: &KvRow, _| -> Element {
                 let sink = remove_sink.clone();
                 let id = row.id.clone();
-                gated(row, "remove", move || -> Element {
+                gated(row, move || -> Element {
                     let sink = sink.clone();
                     let row = id.clone();
                     Box::new(

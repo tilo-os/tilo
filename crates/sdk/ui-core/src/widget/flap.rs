@@ -159,7 +159,15 @@ impl FlapState {
         } else {
             (self.progress - step).max(target)
         };
-        (self.progress - target).abs() >= SETTLED
+        if (self.progress - target).abs() < SETTLED {
+            // A settled panel must land at its exact endpoint. Leaving the
+            // sub-threshold remainder would stop scheduling frames while
+            // its pointer targets still sit outside the resolved geometry.
+            self.progress = target;
+            false
+        } else {
+            true
+        }
     }
 
     /// The eased reveal in `0..=1`: the docked width share, the overlay
@@ -216,6 +224,23 @@ mod tests {
         // And the drawer did not stay open behind the person's back.
         flap.reconcile(SplitLayout::Overlay);
         assert!(!flap.is_open(SplitLayout::Overlay));
+    }
+
+    #[test]
+    fn settled_reveal_reaches_both_endpoints_before_frames_stop() {
+        for layout in [SplitLayout::Docked, SplitLayout::Overlay] {
+            let mut flap = FlapState::closed_by_default();
+            flap.reconcile(layout);
+            flap.open();
+            let almost_complete = BASE.as_secs_f64() * (1.0 - SETTLED / 2.0);
+            assert!(!flap.tick(layout, almost_complete, BASE));
+            assert!(!flap.is_animating(layout));
+            assert_eq!(flap.reveal_in(layout), 1.0);
+            flap.close();
+            assert!(!flap.tick(layout, almost_complete, BASE));
+            assert!(!flap.is_animating(layout));
+            assert_eq!(flap.reveal_in(layout), 0.0);
+        }
     }
 
     #[test]
