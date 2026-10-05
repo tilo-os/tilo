@@ -350,8 +350,69 @@ fn another_rail_destination_navigates() {
     }
 }
 
+/// A real viewport refresh between motion and press keeps the rail's hit state.
 #[test]
+fn rail_click_survives_a_layout_refresh_between_motion_and_press() {
+    let mut app = live_app();
+    app.with_surface::<TubeApp, _>(|surface| {
+        surface.stage_model_for_test(tube::model::TubeModel::default());
+    })
+    .expect("the actual live surface is mounted");
+    app.settle();
+    let queue = app
+        .harness()
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Queue"))
+        .and_then(|control| control.bounds)
+        .expect("the Queue rail destination is laid out");
+    assert!(queue.width() > 0.0 && queue.height() > 0.0);
+    let centre = queue.center();
+    app.harness().send(&winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(centre.x, centre.y),
+    });
+    // An actual viewport change forces the host's composition/layout passes,
+    // unlike a fixture-only model flag that cached layout may never observe.
+    app.harness().resize((VIEWPORT.0 + 1, VIEWPORT.1)).unwrap();
+    assert!(
+        app.harness()
+            .root_widget()
+            .get_rect()
+            .width()
+            .total_cmp(&f64::from(VIEWPORT.0 + 1))
+            .is_eq(),
+        "the host actually laid out the intermediate viewport"
+    );
+    app.harness().resize(VIEWPORT).unwrap();
+    let refreshed = app
+        .harness()
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("Queue"))
+        .and_then(|control| control.bounds)
+        .expect("Queue remains laid out after the refresh");
+    assert_eq!(refreshed, queue, "the destination did not move");
+    assert_eq!(route(&mut app), Route::Home, "refresh does not navigate");
+    for state in [
+        winit::event::ElementState::Pressed,
+        winit::event::ElementState::Released,
+    ] {
+        app.harness().send(&winit::event::WindowEvent::MouseInput {
+            device_id: winit::event::DeviceId::dummy(),
+            state,
+            button: winit::event::MouseButton::Left,
+        });
+    }
+    app.settle();
+    assert_eq!(route(&mut app), Route::Queue);
+    assert!(
+        app.harness().targets().contains_key("queue_page"),
+        "the physical click opens the laid-out shared queue"
+    );
+}
 
+#[test]
 fn pages_lay_out_without_overlap_at_every_size() {
     // Case `watch_page_parts_stack_in_reading_order`.
     for (viewport, scale) in [((1280, 800), 1.0), ((800, 600), 1.0), ((1280, 800), 2.0)] {
