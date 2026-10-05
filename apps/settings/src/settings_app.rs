@@ -102,9 +102,6 @@ pub struct SettingsApp {
     /// The live theme's text growth (at least 1×), recorded at layout so the
     /// readable measure and the first-frame width hint grow with the type.
     text_growth: f32,
-    /// Whether the panes were last composed with their choosers beneath
-    /// their labels (a phone-width page); a change after layout rebuilds them.
-    composed_stacked: bool,
     /// The window shell, created lazily on the first `build_layout` and
     /// persisted across rebuilds so its responsive state survives a category
     /// switch. Its content and header are swapped on selection.
@@ -160,7 +157,6 @@ impl SettingsApp {
             account_probe: None,
             rect: vello::kurbo::Rect::ZERO,
             text_growth: 1.0,
-            composed_stacked: false,
             shell: None,
         }
     }
@@ -309,38 +305,6 @@ impl SettingsApp {
                 .width_hint
                 .is_some_and(|w| w < Metrics::BASE.compact_breakpoint * self.text_growth),
         }
-    }
-
-    /// The width a pane can expect on the coming frame: the shell's content
-    /// column once laid out, else the window hint less the docked sidebar,
-    /// capped at the pane's readable measure. A pane that composes
-    /// differently at phone width (the Region formats section) reads this for
-    /// its first frame and its own rect thereafter.
-    fn content_width_hint(&self) -> Option<f32> {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a logical-pixel width comfortably representable by f32"
-        )]
-        let column = self
-            .shell
-            .as_ref()
-            .map(|shell| shell.geometry().content_column.width() as f32)
-            .filter(|width| *width > 0.0)
-            .or_else(|| {
-                self.width_hint.map(|w| {
-                    if self.is_narrow() {
-                        w
-                    } else {
-                        (w - Metrics::BASE.sidebar_width * self.text_growth).max(0.0)
-                    }
-                })
-            });
-        column.map(|width| {
-            let gutter = ui::tokens::Spacing::BASE.s6;
-            (width - 2.0 * gutter)
-                .min(MEASURE * self.text_growth)
-                .max(0.0)
-        })
     }
 
     /// Whether the sidebar / list is currently shown (always when wide, or the
@@ -1857,8 +1821,6 @@ impl Widget for SettingsApp {
         // category switches (which rebuild the content).
         crate::widgets::set_compose_text_growth(theme.text_growth());
         self.text_growth = theme.text_growth();
-        crate::widgets::set_compose_width(self.content_width_hint());
-        self.composed_stacked = crate::widgets::choices_stack();
         if self.shell.is_none() {
             self.shell = Some(self.build_shell());
         }
@@ -1908,13 +1870,6 @@ impl Widget for SettingsApp {
             && let Some(&shell_node) = children.first()
         {
             shell.apply_layout(taffy, shell_node, origin);
-        }
-        // The page width is only known once it has been laid out: a pane
-        // composed for the wrong form (inline or stacked choosers) is
-        // composed again for the right one.
-        crate::widgets::set_compose_width(self.content_width_hint());
-        if crate::widgets::choices_stack() != self.composed_stacked {
-            self.structure_dirty = true;
         }
     }
 

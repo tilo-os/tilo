@@ -17,7 +17,7 @@ use ui::doc::{read_bool, read_str_or_text};
 use ui::input::{KeyLegend, KeyboardBinding, KeyboardModifier};
 use ui::theme::Theme;
 use ui::widget::{AppModel, ModelPath};
-use ui::widget::{InputHint, Row, ShortcutRecorder, Text, Toggle, Widget};
+use ui::widget::{ControlSize, InputHint, Row, ShortcutRecorder, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -81,9 +81,11 @@ fn chords_keycaps(chords: &[KeyChord]) -> Box<dyn Widget> {
     if chords.is_empty() {
         return Box::new(Text::new(&t("settings-shortcut-unassigned")).dimmed());
     }
-    // The caps end on the column's trailing edge, where a recorder's do.
+    // The caps end on the column's trailing edge, where a recorder's do, on
+    // a line as tall as a recorder so every shortcut row keeps one rhythm.
     let mut row = Row::new()
         .no_wrap()
+        .with_min_height(ControlSize::Regular)
         .with_justify(taffy::JustifyContent::FlexEnd);
     for (index, chord) in chords.iter().enumerate() {
         if index > 0 {
