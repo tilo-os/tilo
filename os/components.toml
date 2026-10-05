@@ -185,22 +185,6 @@ files = [
   { from = "tilo-pdf-helper", to = "/usr/libexec/tilo-pdf-helper", mode = "0755" },
 ]
 
-# Standalone release builds of the system apps that are also directly invoked
-# (Files doubles as a recovery surface). Their packaged thin builds belong to
-# apps+runtime below.
-[[component]]
-name = "system-apps"
-kind = "userspace"
-scope = "session"
-packages = ["terminal", "file-explorer", "settings"]
-bins = ["terminal", "file-explorer", "settings"]
-layer = "desktop-binaries"
-files = [
-  { from = "terminal", to = "/usr/bin/terminal", mode = "0755" },
-  { from = "file-explorer", to = "/usr/bin/file-explorer", mode = "0755" },
-  { from = "settings", to = "/usr/bin/settings", mode = "0755" },
-]
-
 # ---- Session: package management and user services -------------------------
 
 [[component]]

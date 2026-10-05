@@ -54,19 +54,19 @@ impl LegacyFixture {
                         id: root,
                         title: "Projects".into(),
                         parent: None,
-                        order: 0,
+                        order: "a".into(),
                     },
                     PageMeta {
                         id: child,
                         title: "Launch".into(),
                         parent: Some(root),
-                        order: 0,
+                        order: "a".into(),
                     },
                     PageMeta {
                         id: empty,
                         title: "Empty".into(),
                         parent: None,
-                        order: 1,
+                        order: "b".into(),
                     },
                 ],
                 tags: vec![TagMeta {

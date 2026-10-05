@@ -140,6 +140,8 @@ pub enum TargetError {
          features in ascending order"
     )]
     WasmIsa(String),
+    #[error("interface requirements must be sorted, distinct `<name>@<version>` entries: {0}")]
+    Interfaces(String),
     #[error("web targets require a runtime")]
     MissingRuntime,
     #[error("web runtime {0:?} is not `tilo-runtime/<version>+wasm.<32 hex>`")]
@@ -391,6 +393,7 @@ impl RegistryTarget {
     ///
     /// Returns the first [`TargetError`] found.
     pub fn validate(&self) -> Result<(), TargetError> {
+        self.validate_interfaces()?;
         match self.platform.as_str() {
             platform @ (TILO_OS_PLATFORM | LINUX_PLATFORM | WINDOWS_PLATFORM | MACOS_PLATFORM
             | ANDROID_PLATFORM) => {
@@ -421,6 +424,24 @@ impl RegistryTarget {
             }
             other => Err(TargetError::Platform(other.to_string())),
         }
+    }
+
+    fn validate_interfaces(&self) -> Result<(), TargetError> {
+        let mut names = std::collections::BTreeSet::new();
+        let mut previous: Option<&String> = None;
+        for raw in &self.interfaces {
+            let requirement = raw
+                .parse::<crate::InterfaceRequirement>()
+                .map_err(|error| TargetError::Interfaces(error.to_string()))?;
+            if requirement.to_string() != *raw
+                || !names.insert(requirement.name)
+                || previous.is_some_and(|previous| previous >= raw)
+            {
+                return Err(TargetError::Interfaces(raw.clone()));
+            }
+            previous = Some(raw);
+        }
+        Ok(())
     }
 
     pub fn is_web(&self) -> bool {
@@ -463,6 +484,7 @@ mod tests {
             architecture: WASM32_ARCHITECTURE.into(),
             isa: isa.into(),
             runtime: runtime.map(Into::into),
+            interfaces: Vec::new(),
         }
     }
 
@@ -579,6 +601,7 @@ mod tests {
             architecture: "aarch64".into(),
             isa: "aarch64".into(),
             runtime: Some(id.clone()),
+            interfaces: Vec::new(),
         };
         assert_eq!(target.native_runtime().map(|r| r.digest), Some(DIGEST));
         let release_only = RegistryTarget {
@@ -620,12 +643,42 @@ mod tests {
     }
 
     #[test]
+    fn interface_requirements_have_one_canonical_list() {
+        let with = |interfaces: &[&str]| RegistryTarget {
+            platform: TILO_OS_PLATFORM.into(),
+            architecture: "x86_64".into(),
+            isa: "x86_64-v3".into(),
+            runtime: None,
+            interfaces: interfaces.iter().map(|s| (*s).to_string()).collect(),
+        };
+        assert_eq!(with(&[]).validate(), Ok(()));
+        assert_eq!(with(&["collab@1", "system@1"]).validate(), Ok(()));
+        for bad in [
+            &["system@1", "collab@1"][..],
+            &["system@1", "system@2"][..],
+            &["system@1", "system@1"][..],
+            &["system"][..],
+            &["system@01"][..],
+        ] {
+            assert!(
+                matches!(with(bad).validate(), Err(TargetError::Interfaces(_))),
+                "{bad:?} validated"
+            );
+        }
+        // An empty list is absent from the wire, so entries signed before
+        // the field existed keep their bytes.
+        let json = serde_json::to_string(&with(&[])).unwrap();
+        assert!(!json.contains("interfaces"));
+    }
+
+    #[test]
     fn tilo_os_targets_keep_their_rules() {
         let native = RegistryTarget {
             platform: TILO_OS_PLATFORM.into(),
             architecture: "aarch64".into(),
             isa: "aarch64-v8.2".into(),
             runtime: Some("tilo-runtime/2026.07".into()),
+            interfaces: Vec::new(),
         };
         assert_eq!(native.validate(), Ok(()));
         assert_eq!(native.web_runtime(), None);
@@ -641,6 +694,7 @@ mod tests {
                 architecture: "x86_64".into(),
                 isa: "x86_64-v2".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             };
             assert_eq!(desktop.validate(), Ok(()));
             let mut wasm = desktop.clone();
@@ -662,6 +716,7 @@ mod tests {
                 architecture: "aarch64".into(),
                 isa: "aarch64".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             }
             .validate(),
             Err(TargetError::Platform(_))
@@ -672,6 +727,7 @@ mod tests {
                 architecture: "x86_64".into(),
                 isa: "x86_64".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             }
             .validate(),
             Err(TargetError::Platform(_))
@@ -688,6 +744,7 @@ mod tests {
                 architecture: architecture.into(),
                 isa: isa.into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             };
             assert_eq!(android.validate(), Ok(()));
             assert!(!android.is_web());
@@ -700,6 +757,7 @@ mod tests {
                     architecture: architecture.into(),
                     isa: "aarch64".into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 }
                 .validate(),
                 Err(TargetError::Architecture {
@@ -714,6 +772,7 @@ mod tests {
                 architecture: "aarch64".into(),
                 isa: String::new(),
                 runtime: None,
+                interfaces: Vec::new(),
             }
             .validate(),
             Err(TargetError::EmptyIsa)

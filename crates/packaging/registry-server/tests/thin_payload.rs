@@ -138,6 +138,7 @@ fn publish(
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: manifest.package.native_runtime_binding().map(str::to_owned),
+                interfaces: Vec::new(),
             },
         }],
         updated_at_unix: 1,
@@ -282,6 +283,27 @@ async fn thin_packages_review_from_hosted_objects_and_install_from_chunks() {
             .unwrap()
             .unwrap();
         assert_eq!(list.chunks.len(), 6);
+
+        // Publication inspects what collection stored while it holds the
+        // registry lock, and must not take it again.
+        let thin = std::fs::read(published.objects.join("package.tapp")).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (held_storage, held_entry) = (storage.clone(), published.entry.clone());
+        std::thread::spawn(move || {
+            let _registry = held_storage.lock_snapshot().unwrap();
+            let inspected = registry_server::inspect_stored_bytes(
+                &held_storage,
+                &held_entry,
+                &held_entry.versions[0],
+                &thin,
+                None,
+            );
+            let _ = done_tx.send(inspected.map(|inspection| inspection.payload_bytes));
+        });
+        let under_lock = done_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("inspecting a stored thin package under the registry lock returns");
+        assert_eq!(under_lock.unwrap(), inspection.payload_bytes);
 
         // Approval keeps the thin form for installers.
         storage

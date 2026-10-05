@@ -4489,7 +4489,7 @@ fn global_search_real_notes_and_chat_body_hits_select_exact_admitted_tab() {
                         id: page,
                         title: "Ordinary notebook page".into(),
                         parent: None,
-                        order: 0,
+                        order: "a".into(),
                     },
                 );
                 NotesDoc::fill_page_body(

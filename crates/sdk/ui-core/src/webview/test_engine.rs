@@ -33,6 +33,8 @@ struct Inner {
     page_replies: std::collections::VecDeque<Result<PageReply, PageFailure>>,
     next_download: u64,
     downloads: std::collections::HashMap<String, String>,
+    /// Every `set_visible` the engine was told, oldest first.
+    visibility: Vec<bool>,
     /// What a paint capture answers with; `None` until a test sets one.
     paint_snapshot: Option<String>,
     paint_resources: std::collections::HashMap<String, Vec<u8>>,
@@ -69,6 +71,11 @@ impl TestEngine {
     /// Configure the deterministic response to a media-element probe.
     pub fn set_media_element(&self, media: Option<MediaElementInfo>) {
         self.lock_inner().media_element = media;
+    }
+
+    /// Every visibility change the engine was told, oldest first.
+    pub fn visibility_changes(&self) -> Vec<bool> {
+        self.lock_inner().visibility.clone()
     }
 
     /// Answer every later paint capture with this layout snapshot (raw
@@ -244,6 +251,9 @@ impl TestEngine {
 }
 
 impl WebViewEngine for TestEngine {
+    fn set_visible(&self, visible: bool) {
+        self.lock_inner().visibility.push(visible);
+    }
     #[allow(
         clippy::too_many_lines,
         reason = "the deterministic command interpreter keeps each WebView command's recorded test effect in one exhaustive match"

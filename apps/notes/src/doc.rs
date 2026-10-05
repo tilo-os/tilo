@@ -7,7 +7,7 @@
 //!     └── <page-id> (Map)
 //!         ├── "title"  (Text)   # collaborative title
 //!         ├── "parent" (Str)    # PageId string, or "" for a root page
-//!         ├── "order"  (Int)
+//!         ├── "order"  (Str)    # fractional key; siblings sort by key, then id
 //!         └── "body"   (Map)    # qdoc rich text, edited in the SDK editor
 //! ```
 //!
@@ -25,7 +25,6 @@ use ui::widget::marks::Mark;
 
 use crate::actions::{InlineMark, InlineMarkSpan};
 use crate::model::{PageId, PageMeta, TagId, TagMeta};
-use crate::num;
 
 /// Namespace for the workspace document helpers. Stateless — every
 /// function takes the doc explicitly.
@@ -253,8 +252,8 @@ impl NotesDoc {
         let parent_str = meta.parent.map(|p| p.to_string()).unwrap_or_default();
         put_if_changed(doc, &page, "parent", parent_str);
 
-        // order (int)
-        put_if_changed(doc, &page, "order", i64::from(meta.order));
+        // order (fractional key string)
+        put_if_changed(doc, &page, "order", meta.order.clone());
 
         // A page owns its body from its very first action, so a later editor
         // bind never creates collaborative structure outside the canonical
@@ -288,8 +287,8 @@ impl NotesDoc {
         }
     }
 
-    /// Read every page's metadata out of the document, sorted by
-    /// `order`. Pages with an unparseable id key are skipped.
+    /// Read every page's metadata out of the document, in
+    /// [`crate::model::sibling_order`]. Pages with an unparseable id key are skipped.
     pub fn list_pages(doc: &AutoCommit) -> Vec<PageMeta> {
         let Ok(Some((Value::Object(ObjType::Map), pages))) = doc.get(&ROOT, "pages") else {
             return Vec::new();
@@ -319,8 +318,11 @@ impl NotesDoc {
             };
 
             let order = match doc.get(&page, "order") {
-                Ok(Some((Value::Scalar(v), _))) => num::u32_of_i64(v.as_i64().unwrap_or(0)),
-                _ => 0,
+                Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                    automerge::ScalarValue::Str(s) => s.to_string(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
             };
 
             out.push(PageMeta {
@@ -330,7 +332,7 @@ impl NotesDoc {
                 order,
             });
         }
-        out.sort_by_key(|p| p.order);
+        out.sort_by(crate::model::sibling_order);
         out
     }
 
@@ -568,7 +570,7 @@ mod tests {
                     id,
                     title: "Hello".into(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
             );
             let pages = NotesDoc::list_pages(&doc);
@@ -576,7 +578,7 @@ mod tests {
             assert_eq!(pages[0].id, id);
             assert_eq!(pages[0].title, "Hello");
             assert_eq!(pages[0].parent, None);
-            assert_eq!(pages[0].order, 0);
+            assert_eq!(pages[0].order, "a");
         }
 
         eprintln!("phase parent_and_order_round_trip");
@@ -590,7 +592,7 @@ mod tests {
                     id: root,
                     title: "Root".into(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
             );
             NotesDoc::upsert_page_meta(
@@ -599,7 +601,7 @@ mod tests {
                     id: child,
                     title: "Child".into(),
                     parent: Some(root),
-                    order: 0,
+                    order: "a".into(),
                 },
             );
             let pages = NotesDoc::list_pages(&doc);
@@ -617,7 +619,7 @@ mod tests {
                     id,
                     title: "Old".into(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
             );
             NotesDoc::upsert_page_meta(
@@ -626,7 +628,7 @@ mod tests {
                     id,
                     title: "New".into(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
             );
             let pages = NotesDoc::list_pages(&doc);
@@ -651,7 +653,7 @@ mod tests {
                     id: ida,
                     title: "A".into(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
             );
 
@@ -664,7 +666,7 @@ mod tests {
                     id: idb,
                     title: "B".into(),
                     parent: None,
-                    order: 1,
+                    order: "b".into(),
                 },
             );
 
@@ -700,7 +702,7 @@ mod tests {
                     id,
                     title: long.into(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
             );
             let before = doc.save().len();
@@ -712,7 +714,7 @@ mod tests {
                     id,
                     title: longer.clone(),
                     parent: None,
-                    order: 0,
+                    order: "a".into(),
                 },
             );
             let grew = doc.save().len() - before;
@@ -733,7 +735,7 @@ mod tests {
                 id,
                 title: "Stable".into(),
                 parent: None,
-                order: 3,
+                order: "d".into(),
             };
             NotesDoc::upsert_page_meta(&mut doc, &meta);
             let before = doc.save().len();
@@ -750,7 +752,7 @@ mod tests {
 
     fn page(doc: &mut AutoCommit, title: &str) -> PageId {
         let id = Uuid::new_v4();
-        let order = u32::try_from(NotesDoc::list_pages(doc).len()).unwrap();
+        let order = crate::model::key_after(&NotesDoc::list_pages(doc));
         NotesDoc::upsert_page_meta(
             doc,
             &PageMeta {
@@ -818,7 +820,7 @@ mod tests {
                 id,
                 title: "Renamed".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             },
         );
         assert_eq!(NotesDoc::page_block_snapshots(&doc, id)[0].1, "cafe bold");
