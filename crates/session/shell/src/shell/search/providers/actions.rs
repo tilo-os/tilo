@@ -228,6 +228,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
         }
+        id if id.starts_with("navigation.axis.") => {
+            contract = ActionContract::view();
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
+        }
         // Each is one step: repeating it steps again.
         id if WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
             contract = ActionContract::view();
@@ -272,7 +277,9 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
-        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
+        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
+            tilo_actions::OperationKind::View
+        }
         _ => tilo_actions::OperationKind::Effect,
     }
 }
@@ -936,6 +943,37 @@ const fn chrome(
 
 impl Action {
     const ALL: &'static [Action] = &[
+        chrome(
+            "navigation.axis.enable",
+            "search-action-axis-enable",
+            "search-action-axis-enable-subtitle",
+            |st, _| {
+                st.set_axis_navigation_enabled(true);
+                Ok(())
+            },
+        ),
+        chrome(
+            "navigation.axis.disable",
+            "search-action-axis-disable",
+            "search-action-axis-disable-subtitle",
+            |st, _| {
+                st.set_axis_navigation_enabled(false);
+                Ok(())
+            },
+        ),
+        chrome(
+            "navigation.axis.gather",
+            "search-action-axis-gather",
+            "search-action-axis-gather-subtitle",
+            |st, _| {
+                if !st.axis_navigation_enabled() {
+                    return Err(ActionError::Refused(t("axis-navigation-disabled")));
+                }
+                active_workspace_id(st)?;
+                st.request_axis_gather();
+                Ok(())
+            },
+        ),
         chrome(
             "overview.toggle",
             "search-action-overview-toggle",
@@ -3274,6 +3312,36 @@ mod tests {
             &ActionArgs::none(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn axis_navigation_action_door_is_session_local_and_opt_in() {
+        let chrome = chrome_with_room();
+        let results = action_results(&ActionsProvider::new(), &chrome);
+        assert!(!chrome.borrow().axis_navigation_enabled());
+        let gather = results
+            .iter()
+            .find(|row| row.id == "navigation.axis.gather")
+            .unwrap();
+        let mut document = AutoCommit::new();
+        assert!(
+            (gather.on_open)(
+                &mut ui::widget::Edits::lend(&mut document),
+                &automerge::ROOT,
+                &chrome,
+                &ActionArgs::none()
+            )
+            .is_err()
+        );
+        invoke_action(&results, "navigation.axis.enable", &chrome);
+        assert!(chrome.borrow().axis_navigation_enabled());
+        invoke_action(&results, "navigation.axis.gather", &chrome);
+        assert!(chrome.borrow_mut().take_axis_gather_request());
+        let other = chrome_with_room();
+        assert!(!other.borrow().axis_navigation_enabled());
+        invoke_action(&results, "navigation.axis.disable", &chrome);
+        assert!(!chrome.borrow().axis_navigation_enabled());
+        assert!(!chrome.borrow_mut().take_axis_gather_request());
     }
 
     fn begin_lifecycle_action(
