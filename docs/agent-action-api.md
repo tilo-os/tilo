@@ -117,6 +117,18 @@ are deliberately indistinguishable, so probing cannot map what you may not see:
         "message":"no visible action addressed by (actions, nope) in the current catalogue"}}
 ```
 
+## Reading a terminal session
+
+For Terminal, `tilo-control read so.tilo.terminal --json` returns the shared
+session target, screen and cursor, with an explicit truncation flag when output
+exceeds 64 KiB. That record can outlive the process or describe a collaborator's
+screen. Discover and invoke the read-only **Inspect session** action for this
+participant's actual lifecycle, attached process identity, input availability
+and startup cause. Neither getter opens, restarts or grants a session. A command
+is unavailable until the local process has opened; sending to a placeholder
+writer cannot report success. The device's own shell continues to require the
+person, device ownership and an explicit grant; agents use managed environments.
+
 ## Why enumeration and invocation are separate steps
 
 They answer different questions and carry different risk. "What can I do here"
