@@ -1616,7 +1616,7 @@ impl BooksApp {
 
     /// Persist the live reading position for the open book (deduped so we don't
     /// churn the document when nothing moved).
-    fn persist_progress(&mut self, doc: &mut AutoCommit) {
+    fn persist_progress(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(action) = self.progress_to_record() {
             self.edit(doc, &action);
         }
@@ -1843,7 +1843,7 @@ impl BooksApp {
 
     /// Open the book a launch, an effect or a bundled start asked for, once
     /// the shelf holds it.
-    fn open_pending_book(&mut self, doc: &mut AutoCommit) {
+    fn open_pending_book(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(id) = self.pending_open_book.as_deref() else {
             return;
         };
@@ -1856,7 +1856,7 @@ impl BooksApp {
 
     /// Open the book at library index `i` in the reader, restoring where the
     /// reader left off and stamping the open time for the "recently opened" sort.
-    fn open_book_at(&mut self, doc: &mut AutoCommit, i: usize) {
+    fn open_book_at(&mut self, doc: &mut ui::widget::Edits<'_>, i: usize) {
         if self.library.is_empty() {
             return;
         }
@@ -2041,7 +2041,7 @@ impl BooksApp {
         ))
     }
 
-    fn drain_import_worker(&mut self, doc: &mut AutoCommit) {
+    fn drain_import_worker(&mut self, doc: &mut ui::widget::Edits<'_>) {
         while let Some(outcome) = self.import_worker.as_ref().map(ImportWorker::try_recv) {
             let completed = match outcome {
                 Ok(completed) => completed,
@@ -2162,7 +2162,11 @@ impl BooksApp {
     }
 
     #[cfg(test)]
-    fn import_and_open_for_test(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+    fn import_and_open_for_test(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &std::path::Path,
+    ) {
         let book = content::parse_path_detailed(path).expect("test EPUB parses");
         let (book, entry) = content::prepare_imported_book(path, book);
         self.edit(doc, &crate::actions::restore_library_book_action(&entry));
@@ -2201,7 +2205,7 @@ impl BooksApp {
 
     // --- Action dispatch (event side — has the document) --------------------
 
-    fn dispatch(&mut self, action: Action, doc: &mut AutoCommit) {
+    fn dispatch(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::OpenBook(i) => {
                 self.open_book_at(doc, i);
@@ -2293,7 +2297,11 @@ impl BooksApp {
         }
     }
 
-    fn dispatch_reading_settings(&mut self, action: ReadingSettingsAction, doc: &mut AutoCommit) {
+    fn dispatch_reading_settings(
+        &mut self,
+        action: ReadingSettingsAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         match action {
             ReadingSettingsAction::Swallow => {}
             ReadingSettingsAction::Dismiss => self.reading_settings.close(),
@@ -2373,7 +2381,7 @@ impl BooksApp {
         }
     }
 
-    fn on_set_mode(&mut self, mode: ReadMode, doc: &mut AutoCommit) {
+    fn on_set_mode(&mut self, mode: ReadMode, doc: &mut ui::widget::Edits<'_>) {
         // Preserve the reading position across the switch: entering
         // continuous scroll lands on the current page's flow offset;
         // leaving it snaps back to the nearest page (resolved in draw).
@@ -2422,7 +2430,7 @@ impl BooksApp {
         }
     }
 
-    fn on_cycle_font(&mut self, doc: &mut AutoCommit) {
+    fn on_cycle_font(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Cycle through the fonts offered in quick settings.
         let shown = self.shown_fonts();
         if !shown.is_empty() {
@@ -2434,7 +2442,7 @@ impl BooksApp {
         }
     }
 
-    fn on_set_color(&mut self, c: HiColor, doc: &mut AutoCommit) {
+    fn on_set_color(&mut self, c: HiColor, doc: &mut ui::widget::Edits<'_>) {
         self.hi_color = c;
         // Picking the same colour again clears it; a different colour
         // replaces it. Resolves to the same action the palette's
@@ -2447,7 +2455,7 @@ impl BooksApp {
         }
     }
 
-    fn on_add_note(&mut self, doc: &mut AutoCommit) {
+    fn on_add_note(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // A note anchors to the live text selection; the composer
         // floats on-page near the passage rather than a separate screen.
         if let Some(draft) = self.selection_note_draft(String::new()) {
@@ -2490,7 +2498,7 @@ impl BooksApp {
         }
     }
 
-    fn on_delete_annotation(&mut self, id: Uuid, doc: &mut AutoCommit) {
+    fn on_delete_annotation(&mut self, id: Uuid, doc: &mut ui::widget::Edits<'_>) {
         if self.composing == Some(id) {
             self.composing = None;
             self.note_composer.close();
@@ -2512,7 +2520,7 @@ impl BooksApp {
         self.comment_overlay.close();
     }
 
-    fn on_delete_highlight(&mut self, group: Uuid, doc: &mut AutoCommit) {
+    fn on_delete_highlight(&mut self, group: Uuid, doc: &mut ui::widget::Edits<'_>) {
         self.edit(doc, &crate::actions::delete_highlight_action(group));
         if self.comment_overlay.group() == Some(group) {
             self.comment_overlay.close();
@@ -2521,7 +2529,7 @@ impl BooksApp {
         self.note_composer.close();
     }
 
-    fn on_add_comment(&mut self, group: Uuid, doc: &mut AutoCommit) {
+    fn on_add_comment(&mut self, group: Uuid, doc: &mut ui::widget::Edits<'_>) {
         // Anchor to the highlight's first piece so it sorts with the range.
         self.comment_overlay.finish_editing();
         let anchor = self
@@ -2566,7 +2574,7 @@ impl BooksApp {
         }
     }
 
-    fn on_delete_comment(&mut self, id: Uuid, doc: &mut AutoCommit) {
+    fn on_delete_comment(&mut self, id: Uuid, doc: &mut ui::widget::Edits<'_>) {
         if self.comment_overlay.editing_id() == Some(id) {
             self.comment_overlay.finish_editing();
         }
@@ -2623,7 +2631,7 @@ impl BooksApp {
         )
     }
 
-    fn commit_pending_share(&mut self, doc: &mut AutoCommit) {
+    fn commit_pending_share(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(pending) = self.pending_share.take() else {
             return;
         };
@@ -2659,7 +2667,7 @@ impl BooksApp {
         self.dirty = true;
     }
 
-    fn on_share_to_workspace(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_share_to_workspace(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if let Err(error) = self.begin_share_book(id) {
             self.load_error = Some(error);
             return;
@@ -2667,7 +2675,7 @@ impl BooksApp {
         self.commit_pending_share(doc);
     }
 
-    fn on_remove_from_library(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_remove_from_library(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         let Some(i) = self.library.iter().position(|book| book.id == id) else {
             return;
         };
@@ -2717,7 +2725,7 @@ impl BooksApp {
         self.settings_scroll = 0.0;
     }
 
-    fn on_close_settings(&mut self, doc: &mut AutoCommit) {
+    fn on_close_settings(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.font_picker = false;
         self.color_picker.cancel();
@@ -2732,7 +2740,7 @@ impl BooksApp {
         };
     }
 
-    fn on_set_settings_tab(&mut self, tab: SettingsTab, doc: &mut AutoCommit) {
+    fn on_set_settings_tab(&mut self, tab: SettingsTab, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.default_font_menu = false;
         self.color_picker.cancel();
@@ -2742,7 +2750,7 @@ impl BooksApp {
         self.settings_scroll = 0.0;
     }
 
-    fn on_toggle_scheme_enabled(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_toggle_scheme_enabled(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         let mut sc = self.schemes.clone();
         let mut now_disabled = false;
         let changed = if let Some(s) = sc.iter_mut().find(|s| s.id == id) {
@@ -2760,7 +2768,7 @@ impl BooksApp {
         }
     }
 
-    fn on_duplicate_scheme(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_duplicate_scheme(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         let mut sc = self.schemes.clone();
         if let Some(src) = sc.iter().find(|s| s.id == id).cloned() {
             let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
@@ -2780,7 +2788,7 @@ impl BooksApp {
         }
     }
 
-    fn on_delete_scheme(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_delete_scheme(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if self.schemes.iter().any(|s| s.id == id && !s.builtin) {
             self.edit(doc, &crate::actions::delete_color_scheme_action(id));
         }
@@ -2792,17 +2800,17 @@ impl BooksApp {
         }
     }
 
-    fn on_edit_scheme(&mut self, id: String, doc: &mut AutoCommit) {
+    fn on_edit_scheme(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.editing_scheme = Some(id);
     }
 
-    fn on_close_scheme_editor(&mut self, doc: &mut AutoCommit) {
+    fn on_close_scheme_editor(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.editing_scheme = None;
     }
 
-    fn on_new_scheme_via_picker(&mut self, doc: &mut AutoCommit) {
+    fn on_new_scheme_via_picker(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Open the colour picker to choose a background; the scheme is
         // derived + created when the picker is committed.
         self.commit_rename(doc);
@@ -2810,7 +2818,7 @@ impl BooksApp {
             .open(PickTarget::NewScheme, [0x1B, 0x18, 0x16]);
     }
 
-    fn on_pick_scheme_color(&mut self, id: String, slot: usize, doc: &mut AutoCommit) {
+    fn on_pick_scheme_color(&mut self, id: String, slot: usize, doc: &mut ui::widget::Edits<'_>) {
         // Edit any scheme colour through the same picker.
         self.commit_rename(doc);
         let cur = self
@@ -2822,7 +2830,7 @@ impl BooksApp {
         self.color_picker.open(PickTarget::Slot(id, slot), cur);
     }
 
-    fn on_begin_rename_scheme(&mut self, id: String, doc: &mut AutoCommit) {
+    fn on_begin_rename_scheme(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         let name = self
             .schemes
@@ -2845,19 +2853,19 @@ impl BooksApp {
         });
     }
 
-    fn on_set_default_font(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_set_default_font(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         self.edit(doc, &crate::actions::set_default_font_action(id));
         self.default_font_menu = false;
     }
 
-    fn on_toggle_font_shown(&self, id: &str, doc: &mut AutoCommit) {
+    fn on_toggle_font_shown(&self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if let Some(mut font) = self.fonts.iter().find(|entry| entry.id == id).cloned() {
             font.shown = !font.shown;
             self.edit(doc, &crate::actions::upsert_font_action(font));
         }
     }
 
-    fn on_remove_font(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_remove_font(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         self.edit(doc, &crate::actions::delete_font_action(id));
         if self.settings.font_id == id {
             self.bump_setting(doc, |s| s.font_id = String::new());
@@ -2872,7 +2880,7 @@ impl BooksApp {
         self.picker_scroll = 0.0;
     }
 
-    fn on_add_system_font(&mut self, family: &str, doc: &mut AutoCommit) {
+    fn on_add_system_font(&mut self, family: &str, doc: &mut ui::widget::Edits<'_>) {
         let f = self.fonts.clone();
         let dup = f
             .iter()
@@ -2886,7 +2894,7 @@ impl BooksApp {
         self.font_picker = false;
     }
 
-    fn on_begin_rename_font(&mut self, id: String, doc: &mut AutoCommit) {
+    fn on_begin_rename_font(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         let entry = self.fonts.iter().find(|e| e.id == id);
         let name = entry.map(|e| e.name.clone()).unwrap_or_default();
@@ -2903,7 +2911,7 @@ impl BooksApp {
         });
     }
 
-    fn on_set_sort(&mut self, sort: crate::model::LibrarySort, doc: &mut AutoCommit) {
+    fn on_set_sort(&mut self, sort: crate::model::LibrarySort, doc: &mut ui::widget::Edits<'_>) {
         let before = self.library_prefs;
         let mut p = before;
         p.sort = sort;
@@ -2915,7 +2923,7 @@ impl BooksApp {
         self.shelf_controls.close_sort_menu();
     }
 
-    fn on_toggle_hide_read(&mut self, doc: &mut AutoCommit) {
+    fn on_toggle_hide_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let before = self.library_prefs;
         let mut p = before;
         p.hide_read = !p.hide_read;
@@ -2926,7 +2934,11 @@ impl BooksApp {
         );
     }
 
-    fn dispatch_shelf_control(&mut self, action: ShelfControlAction, doc: &mut AutoCommit) {
+    fn dispatch_shelf_control(
+        &mut self,
+        action: ShelfControlAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         match action {
             ShelfControlAction::ToggleSortMenu => self.shelf_controls.toggle_sort_menu(),
             ShelfControlAction::SetSort(sort) => self.on_set_sort(sort, doc),
@@ -2935,7 +2947,7 @@ impl BooksApp {
         }
     }
 
-    fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut AutoCommit) {
+    fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut ui::widget::Edits<'_>) {
         let action = match action {
             CommentAction::Close => Action::CloseComments,
             CommentAction::Swallow => Action::Swallow,
@@ -2950,7 +2962,7 @@ impl BooksApp {
     /// Apply a confirmed pick: create the new scheme (for a from-background
     /// pick) or write the slot edit. Nothing is written while the picker is
     /// open, so *Cancel* leaves the scheme exactly as it was.
-    fn commit_picker(&mut self, doc: &mut AutoCommit, edit: ColorEdit) {
+    fn commit_picker(&mut self, doc: &mut ui::widget::Edits<'_>, edit: ColorEdit) {
         match edit.target {
             PickTarget::NewScheme => {
                 let sc = self.schemes.clone();
@@ -2976,7 +2988,7 @@ impl BooksApp {
     /// Force an in-progress inline rename to commit, then persist the
     /// result. Called before an action that would replace or dismiss the
     /// rename. No-op when nothing is being renamed.
-    fn commit_rename(&mut self, doc: &mut AutoCommit) {
+    fn commit_rename(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(rn) = self.renaming.as_mut() {
             rn.field.commit();
         }
@@ -2986,7 +2998,7 @@ impl BooksApp {
     /// Drain the rename field's latest outcome: on commit, persist the new
     /// name; on commit or cancel, clear the rename. The single place a
     /// rename result is written, so Enter/blur/click-outside all funnel here.
-    fn poll_rename_outcome(&mut self, doc: &mut AutoCommit) {
+    fn poll_rename_outcome(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(rn) = self.renaming.as_mut() else {
             return;
         };
@@ -3005,7 +3017,7 @@ impl BooksApp {
 
     /// Write a committed rename to the CRDT. A blank name is ignored (keeps the
     /// old one).
-    fn apply_rename(&self, target: RenameTarget, name: &str, doc: &mut AutoCommit) {
+    fn apply_rename(&self, target: RenameTarget, name: &str, doc: &mut ui::widget::Edits<'_>) {
         let name = name.trim();
         if name.is_empty() {
             return;
@@ -3129,7 +3141,7 @@ impl BooksApp {
         s
     }
 
-    fn bump_setting(&mut self, doc: &mut AutoCommit, f: impl FnOnce(&mut Settings)) {
+    fn bump_setting(&mut self, doc: &mut ui::widget::Edits<'_>, f: impl FnOnce(&mut Settings)) {
         let before = BooksDoc::read_settings(doc);
         let mut s = before.clone();
         f(&mut s);
@@ -3288,7 +3300,12 @@ impl BooksApp {
     /// the mark's length (clamped to the target paragraph). Only a
     /// single-block highlight re-anchors — a multi-block one has no single
     /// paragraph to land on, so its marker opens comments instead.
-    fn reanchor_highlight(&self, group: Uuid, drop: Point, doc: &mut AutoCommit) -> bool {
+    fn reanchor_highlight(
+        &self,
+        group: Uuid,
+        drop: Point,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         let Some(target) = self.hit_doc_pos(drop) else {
             return false;
         };
@@ -3360,9 +3377,9 @@ impl BooksApp {
     /// through the library's dispatcher: the one door every control, the
     /// palette and agents edit the library through. A refused edit changes
     /// nothing, and the dispatcher says why.
-    fn edit(&self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
+    fn edit(&self, doc: &mut ui::widget::Edits<'_>, action: &crate::actions::EbookAction) {
         let _ = self.dispatch.apply_now_with(
-            &mut ui::widget::Edits::lend(doc),
+            doc,
             action,
             tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
         );
@@ -3851,7 +3868,7 @@ impl BooksApp {
         true
     }
 
-    fn toggle_bookmark(&self, doc: &mut AutoCommit) {
+    fn toggle_bookmark(&self, doc: &mut ui::widget::Edits<'_>) {
         let block = self.page_top_block;
         self.edit(doc, &self.bookmark_plan(block).into_action());
     }
@@ -3901,7 +3918,7 @@ impl BooksApp {
         }
     }
 
-    fn finish_composing(&mut self, doc: &mut AutoCommit) -> bool {
+    fn finish_composing(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let Some(id) = self.composing.take() else {
             return false;
         };
@@ -4398,7 +4415,7 @@ impl Continuable for BooksApp {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        _doc: &mut AutoCommit,
+        _doc: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
         if metadata.schema_version != 1 {
@@ -4438,22 +4455,26 @@ impl Continuable for BooksApp {
 impl Widget for BooksApp {
     ui::provides!(dyn ui::widget::Continuable);
 
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        self.ensure_library_loaded(edits.doc());
+        self.drain_import_worker(edits);
+        self.commit_pending_share(edits);
+        self.open_pending_book(edits);
+        self.deliver_effect_replies();
+    }
+
     #[allow(
         clippy::too_many_lines,
-        reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
+        reason = "sync refreshes document-derived reader and search state"
     )]
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        let (doc, path) = ui::doc::document(doc, path);
+        let (doc, path) = ui::doc::document_ref(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
-        self.drain_import_worker(doc);
-        self.commit_pending_share(doc);
-        self.open_pending_book(doc);
-        self.deliver_effect_replies();
         // Once a book opens, take up its stored position.
         if self.adopt_position && self.view == View::Reader {
             self.adopt_position = false;
@@ -4667,7 +4688,7 @@ impl Widget for BooksApp {
             event,
             scale_factor: ctx.scale_factor,
             modifiers: *ctx.modifiers,
-            state: ctx.state,
+            state: ctx.state.reborrow(),
             root: ctx.path,
             node_id: ctx.node_id,
             taffy: ctx.taffy,
@@ -4676,9 +4697,9 @@ impl Widget for BooksApp {
         // The colour sheet is modal: while open every event is its own.
         if let Some(response) = self.color_picker.handle_event(&mut input_ctx) {
             if let ColorSheetResponse::Confirmed(edit) = response {
-                self.commit_picker(input_ctx.state, edit);
+                self.commit_picker(&mut input_ctx.state, edit);
             }
-            self.refresh_from_doc(input_ctx.state);
+            self.refresh_from_doc(input_ctx.state.doc());
             self.dirty = true;
             return;
         }
@@ -4693,35 +4714,35 @@ impl Widget for BooksApp {
             // Regaining focus is a natural moment to notice books that appeared
             // in a watched folder while the reader was elsewhere — no manual
             // "reload". A no-op when nothing is watched or nothing is new.
-            WindowEvent::Focused(true) => self.rescan_watched(ctx.state),
+            WindowEvent::Focused(true) => self.rescan_watched(ctx.state.doc()),
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.handle_cursor_moved(p, ctx.state, ctx.handled);
+                self.handle_cursor_moved(p, &mut ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(*ctx.modifiers, ctx.state, ctx.handled);
+                self.handle_left_press(*ctx.modifiers, &mut ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_release(ctx.state, ctx.handled);
+                self.handle_left_release(&mut ctx.state, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                if self.handle_key(&ke.logical_key, ctx.modifiers.state(), ctx.state) {
-                    self.refresh_from_doc(ctx.state);
-                    self.persist_progress(ctx.state);
+                if self.handle_key(&ke.logical_key, ctx.modifiers.state(), &mut ctx.state) {
+                    self.refresh_from_doc(ctx.state.doc());
+                    self.persist_progress(&mut ctx.state);
                     self.dirty = true;
                     *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(*delta, ctx.state, ctx.handled);
+                self.handle_mouse_wheel(*delta, &mut ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -4875,10 +4896,10 @@ impl Widget for BooksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        doc: &mut AppModel,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (doc, path) = ui::doc::document(doc, path);
+        let (_, path) = ui::doc::document_ref(doc.doc(), path);
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
@@ -5383,7 +5404,7 @@ impl BooksApp {
             .note_composer
             .handle_event(&mut ctx.reborrow(&mut input_handled))
         {
-            self.finish_composing(ctx.state);
+            self.finish_composing(&mut ctx.state);
             input_handled = true;
         }
 
@@ -5391,7 +5412,7 @@ impl BooksApp {
             .reading_settings
             .handle_event(&mut ctx.reborrow(&mut input_handled));
         for action in settings_actions {
-            self.dispatch_reading_settings(action, ctx.state);
+            self.dispatch_reading_settings(action, &mut ctx.state);
         }
 
         let changes = self
@@ -5400,25 +5421,27 @@ impl BooksApp {
         for (field, value) in changes {
             match field {
                 NumberField::FontScale => {
-                    self.bump_setting(ctx.state, |settings| {
+                    self.bump_setting(&mut ctx.state, |settings| {
                         settings.font_scale = (value / 100.0) as f32;
                     });
                 }
                 NumberField::LineSpacing => {
-                    self.bump_setting(ctx.state, |settings| settings.line_spacing = value as f32);
+                    self.bump_setting(&mut ctx.state, |settings| {
+                        settings.line_spacing = value as f32
+                    });
                 }
                 NumberField::FontMult(id) => {
                     let mut fonts = self.fonts.clone();
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                         font.size_mult = value as f32;
                         let font = font.clone();
-                        self.edit(ctx.state, &crate::actions::upsert_font_action(font));
+                        self.edit(&mut ctx.state, &crate::actions::upsert_font_action(font));
                     }
                 }
             }
         }
         if input_handled {
-            self.refresh_from_doc(ctx.state);
+            self.refresh_from_doc(ctx.state.doc());
             self.dirty = true;
             *ctx.handled = true;
         }
@@ -5442,7 +5465,7 @@ impl BooksApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.root,
                     handled: &mut field_handled,
                     focus_target: &mut field_focus,
@@ -5451,9 +5474,9 @@ impl BooksApp {
                 },
             );
         }
-        self.poll_rename_outcome(ctx.state);
+        self.poll_rename_outcome(&mut ctx.state);
         if field_handled {
-            self.refresh_from_doc(ctx.state);
+            self.refresh_from_doc(ctx.state.doc());
             self.dirty = true;
             *ctx.handled = true;
             return true;
@@ -5461,7 +5484,12 @@ impl BooksApp {
         false
     }
 
-    fn handle_cursor_moved(&mut self, p: Point, doc: &mut AutoCommit, handled: &mut bool) {
+    fn handle_cursor_moved(
+        &mut self,
+        p: Point,
+        doc: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) {
         if p == self.cursor {
             return;
         }
@@ -5536,7 +5564,11 @@ impl BooksApp {
     /// app-wide `self.hits` list and must be asked before it. Returns
     /// whether any of them consumed the press, so the caller can return
     /// immediately without falling through.
-    fn handle_left_press_overlay(&mut self, doc: &mut AutoCommit, handled: &mut bool) -> bool {
+    fn handle_left_press_overlay(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) -> bool {
         if let Some(action) = self.reading_settings.hit_test(self.cursor) {
             self.dispatch_reading_settings(action, doc);
             self.refresh_from_doc(doc);
@@ -5563,7 +5595,7 @@ impl BooksApp {
     fn handle_left_press(
         &mut self,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if self.handle_left_press_overlay(doc, handled) {
@@ -5742,7 +5774,7 @@ impl BooksApp {
         consumed_page
     }
 
-    fn handle_left_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
+    fn handle_left_release(&mut self, doc: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         self.mouse_down = false;
         if self.progress_dragging {
             self.progress_dragging = false;
@@ -5795,7 +5827,7 @@ impl BooksApp {
     fn handle_mouse_wheel(
         &mut self,
         delta: MouseScrollDelta,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // A dominantly horizontal gesture turns pages (scroll-right
@@ -5824,7 +5856,7 @@ impl BooksApp {
     /// Library-shelf keyboard navigation. A directional cursor moves across
     /// the grid (up/down step by a whole row); Enter/Space opens the
     /// focused book.
-    fn handle_library_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_library_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         // Navigation is over the shelf's display order (filtered + sorted),
         // resolved by the last `draw_library`.
         let n = self.shelf_order.len();
@@ -5916,7 +5948,12 @@ impl BooksApp {
 
     /// Keyboard handling. Returns `true` if the key was consumed (so the App's
     /// focus-navigation fallback doesn't also steal the arrows).
-    fn handle_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
+    fn handle_key(
+        &mut self,
+        key: &Key,
+        mods: ModifiersState,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         // An in-progress inline rename owns the keyboard through its embedded
         // field via `handle_event`; no key handling for it belongs here.
 
@@ -5994,7 +6031,7 @@ impl BooksApp {
         self.dirty = true;
     }
 
-    fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         if let Key::Named(NamedKey::Escape) = key {
             if self.color_picker.is_open() {
                 self.color_picker.cancel();
@@ -6012,11 +6049,11 @@ impl BooksApp {
         false
     }
 
-    fn handle_composing_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_composing_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         matches!(key, Key::Named(NamedKey::Escape)) && self.finish_composing(doc)
     }
 
-    fn handle_progress_slider_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_progress_slider_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         if self.semantic_focus.as_deref() != Some("books.reader.progress") {
             return false;
         }
@@ -6040,7 +6077,12 @@ impl BooksApp {
         }
     }
 
-    fn handle_reader_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
+    fn handle_reader_key(
+        &mut self,
+        key: &Key,
+        mods: ModifiersState,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         if self.handle_progress_slider_key(key, doc) {
             return true;
         }
@@ -6154,7 +6196,7 @@ impl BooksApp {
                   if a turn made no progress, so the loop is bounded regardless of float \
                   imprecision"
     )]
-    fn handle_swipe(&mut self, dx: f64, doc: &mut AutoCommit) -> bool {
+    fn handle_swipe(&mut self, dx: f64, doc: &mut ui::widget::Edits<'_>) -> bool {
         if dx == 0.0 || self.view != View::Reader {
             return false;
         }
@@ -6202,7 +6244,7 @@ impl BooksApp {
                   clamp() is testing whether the assignment changed anything, not comparing \
                   two independently-computed values"
     )]
-    fn handle_wheel(&mut self, dy: f64, doc: &mut AutoCommit) -> bool {
+    fn handle_wheel(&mut self, dy: f64, doc: &mut ui::widget::Edits<'_>) -> bool {
         if dy == 0.0 {
             return false;
         }

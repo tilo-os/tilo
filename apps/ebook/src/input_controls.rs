@@ -70,7 +70,7 @@ impl NoteEditor {
 
     /// Read the note from the document, placing the caret at its end the
     /// first time.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         self.host.sync(state, root);
         if !self.placed && self.host.widget().source().revision().is_some() {
             self.placed = true;
@@ -84,16 +84,16 @@ impl NoteEditor {
     /// Route one event to the editor; returns whether the person finished
     /// (Enter) or cancelled (Escape).
     pub(crate) fn handle_event(&mut self, ctx: &mut InputEventCtx<'_>) -> Option<FieldOutcome> {
-        self.sync(ctx.state, ctx.root);
+        self.sync(ctx.state.doc(), ctx.root);
         self.host.handle_event(
             ctx.event,
             ctx.scale_factor,
             &ctx.modifiers,
-            ctx.state,
+            &mut ctx.state,
             ctx.root,
             ctx.handled,
         );
-        self.sync(ctx.state, ctx.root);
+        self.sync(ctx.state.doc(), ctx.root);
         self.host.widget_mut().take_outcome()
     }
 
@@ -129,7 +129,7 @@ impl NoteEditor {
     pub(crate) fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> bool {
         self.sync(state, root);
@@ -145,7 +145,7 @@ pub(crate) struct InputEventCtx<'a> {
     pub event: &'a WindowEvent,
     pub scale_factor: f64,
     pub modifiers: Modifiers,
-    pub state: &'a mut AutoCommit,
+    pub state: ui::widget::Edits<'a>,
     pub root: &'a ObjId,
     pub node_id: NodeId,
     pub taffy: &'a TaffyTree<()>,
@@ -158,7 +158,7 @@ impl InputEventCtx<'_> {
             event: self.event,
             scale_factor: self.scale_factor,
             modifiers: self.modifiers,
-            state: self.state,
+            state: self.state.reborrow(),
             root: self.root,
             node_id: self.node_id,
             taffy: self.taffy,
@@ -268,7 +268,7 @@ impl NumberControls {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<(NumberField, Option<f64>)> {
         let control = self
@@ -338,7 +338,7 @@ impl NumberControls {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.root,
                     handled: &mut local_handled,
                     focus_target: &mut focus_target,
@@ -456,7 +456,7 @@ impl NoteComposer {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<NoteSemanticOutcome> {
         let editor = self.editor.as_mut()?;
@@ -499,7 +499,7 @@ impl NoteComposer {
     }
 
     /// Bring the open note's text up to date with the document.
-    pub(crate) fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    pub(crate) fn sync(&mut self, state: &AutoCommit, root: &ObjId) {
         if let Some(editor) = self.editor.as_mut() {
             editor.sync(state, root);
         }
@@ -726,7 +726,7 @@ mod tests {
             let mut composer = NoteComposer::default();
             composer.open(id, &library);
             let root = automerge::ROOT;
-            composer.sync(&mut doc, &root);
+            composer.sync(&doc, &root);
             let taffy = TaffyTree::new();
             let modifiers = Modifiers::default();
             let press = |composer: &mut NoteComposer, doc: &mut AutoCommit, key: WindowEvent| {
@@ -735,7 +735,7 @@ mod tests {
                     event: &key,
                     scale_factor: 1.0,
                     modifiers,
-                    state: doc,
+                    state: ui::widget::Edits::lend(doc),
                     root: &root,
                     node_id: NodeId::new(0),
                     taffy: &taffy,
@@ -924,7 +924,7 @@ impl SchemeColorSheet {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
+        state: &mut ui::widget::Edits<'_>,
         root: &ObjId,
     ) -> Option<ColorSheetResponse> {
         let (_, picker) = self.open.as_mut()?;
@@ -1021,7 +1021,7 @@ impl SchemeColorSheet {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.root,
                     handled: &mut local_handled,
                     focus_target: &mut focus_target,
