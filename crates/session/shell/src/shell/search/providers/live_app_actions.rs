@@ -435,6 +435,7 @@ impl LiveAppActionsProvider {
             directory_query: RefCell::new(None),
             resource_kinds: vec![
                 ResourceKind::Action,
+                ResourceKind::Custom("action-job".into()),
                 ResourceKind::Custom("Resources".into()),
             ],
             directory_invalidations: Rc::new(RefCell::new(HashSet::new())),
@@ -2531,6 +2532,48 @@ mod tests {
                 .is_none(),
             "a completed job offers no cancellation"
         );
+    }
+
+    #[test]
+    fn action_catalog_routes_receipts_through_the_registered_job_kind() {
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+
+        let chrome = chrome();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+        let actor = chrome.borrow().active_local_user();
+        broker.record_completion_for_test(17, &actor, succeeded(17));
+        broker.record_completion_for_test(18, "someone-else", succeeded(18));
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(LiveAppActionsProvider::new(broker)));
+        let mut doc = AutoCommit::new();
+        for (id, visible) in [(17, true), (18, false), (19, false)] {
+            let resource = ResourceRef::new(PROVIDER_ID, &super::job_status_id(id));
+            let catalog = ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                crate::shell::chrome_state::SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            );
+            let selected = catalog.select(&resource);
+            assert_eq!(selected.is_some(), visible);
+            if let Some(selected) = selected {
+                let disposition = selected
+                    .invoke_nullary(&mut doc, &automerge::ROOT, &chrome)
+                    .unwrap();
+                let crate::shell::search::InvocationDisposition::Accepted(receipt) = disposition
+                else {
+                    panic!("an existing receipt must resolve immediately");
+                };
+                assert_eq!(receipt.broker_invocation_id, Some(id));
+                assert_eq!(receipt.update, succeeded(id));
+            }
+        }
     }
 
     fn exported(label: &str, action: &str) -> tilo_actions::ActionDescriptor {
