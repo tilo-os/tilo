@@ -96,7 +96,7 @@ fn persisted_terminal_and_files_placeholders_resolve_to_live_tiles() {
         assert_eq!(
             resolve_tile_shape_for_test(&tile),
             "App",
-            "FileExplorerWidget::new is infallible; placeholder must resolve to App"
+            "a Files placeholder must resolve to the Files component"
         );
     }
 

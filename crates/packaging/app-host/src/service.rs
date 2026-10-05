@@ -158,6 +158,98 @@ fn app_bin() -> std::path::PathBuf {
     )
 }
 
+fn require_offer_identity(
+    offer: &app_cli::CatalogueApp,
+    expected: &InstallExpectation,
+) -> Result<(), Error> {
+    let same_app = offer.package_id == expected.app_id;
+    if !same_app
+        || offer.version != expected.version
+        || offer.tapp_root_hash_hex != expected.package_root.to_hex()
+        || !offer
+            .publisher_pubkey_hex
+            .eq_ignore_ascii_case(&hex::encode(expected.publisher))
+        || offer.tapp_size_bytes != expected.size_bytes
+    {
+        return Err(Error::failed(
+            "The app catalogue changed; refresh Store before opening this version.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn install_offer_from_catalogue(
+    catalog: &Catalog,
+    registry: &str,
+    expected: &InstallExpectation,
+) -> Result<PackageId, Error> {
+    let offers = app_cli::version_offers(&expected.app_id, registry).map_err(failed)?;
+    let offer = offers
+        .iter()
+        .find(|offer| {
+            offer.version == expected.version
+                && offer.tapp_root_hash_hex == expected.package_root.to_hex()
+        })
+        .ok_or_else(|| {
+            Error::failed(
+                "This app version is no longer offered for this device; refresh Store.".into(),
+            )
+        })?;
+    require_offer_identity(offer, expected)?;
+    // The shared CLI pipeline fetches missing content-addressed blobs, verifies
+    // exact archive/root/publisher identities and provisions the signed runtime
+    // before replacing an app. Store must not implement another installer.
+    let installed = catalog
+        .list()
+        .map_err(failed)?
+        .iter()
+        .any(|package| package.id == expected.app_id);
+    if installed {
+        app_cli::install::update_app_reporting(offer, &mut |_| {}).map_err(failed)?;
+    } else {
+        app_cli::install::install_app(offer).map_err(failed)?;
+    }
+    let package = find(catalog, expected.package_root)?;
+    package
+        .package_id()
+        .ok_or_else(|| Error::failed("installed app has no package identity".into()))
+}
+
+fn flatpak_status_from(binary: &std::path::Path) -> Result<crate::client::FlatpakStatus, Error> {
+    let probe = |args: &[&str]| {
+        let mut command = std::process::Command::new(binary);
+        command.args(args);
+        bounded_command::run_prepared(
+            command,
+            None,
+            1024 * 1024,
+            std::time::Duration::from_secs(5),
+        )
+        .map_err(failed)
+        .and_then(|output| {
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+            } else {
+                Err(Error::failed(format!(
+                    "Flatpak query failed: {}",
+                    safe_host_diagnostic(&output.stderr)
+                )))
+            }
+        })
+    };
+    // Missing Flatpak is a supported host state. Failure to read an existing
+    // installation is an error, rather than pretending it has no apps/remotes.
+    if !binary.exists() {
+        return Ok(crate::client::FlatpakStatus::default());
+    }
+    probe(&["--version"])?;
+    Ok(crate::client::FlatpakStatus {
+        available: true,
+        installed: probe(&["list", "--app", "--columns=application,version"])?,
+        remotes: probe(&["remotes", "--columns=name,url,title,options"])?,
+    })
+}
+
 /// The person's app repositories, as `app repo list --json` prints them.
 /// The Store reads them here because its sandbox has a home of its own: a
 /// copy there would be a second list `app repo` never edits.
@@ -530,6 +622,19 @@ impl app_host::Server for AppHostServer {
                     WireFlatpakAction::Install => {
                         command.args(["install", "--user", "--noninteractive"]);
                         if reference.is_empty() {
+                            // The image may have a system Flathub remote, while
+                            // this operation deliberately installs for this user.
+                            // Establish its official remote on first use; an
+                            // existing user remote is never replaced.
+                            let mut remote = std::process::Command::new("/usr/bin/flatpak");
+                            remote.args([
+                                "remote-add",
+                                "--user",
+                                "--if-not-exists",
+                                "flathub",
+                                "https://dl.flathub.org/repo/flathub.flatpakrepo",
+                            ]);
+                            run_host_command(remote)?;
                             command.args(["flathub", &app_id]);
                         } else {
                             use std::io::Write as _;
@@ -600,6 +705,68 @@ impl app_host::Server for AppHostServer {
         }
     }
 
+    fn install_offer(
+        self: capnp::capability::Rc<Self>,
+        params: app_host::InstallOfferParams,
+        mut results: app_host::InstallOfferResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        let catalog = Arc::clone(&self.catalog);
+        async move {
+            let params = params.get().map_err(failed)?;
+            let registry = params
+                .get_registry()
+                .map_err(failed)?
+                .to_string()
+                .map_err(failed)?;
+            let expected = InstallExpectation {
+                package_root: parse_id(params.get_expected_root().map_err(failed)?)?,
+                publisher: params
+                    .get_expected_publisher()
+                    .map_err(failed)?
+                    .try_into()
+                    .map_err(|_| Error::failed("publisher key must be 32 bytes".into()))?,
+                app_id: params
+                    .get_app_id()
+                    .map_err(failed)?
+                    .to_string()
+                    .map_err(failed)?,
+                version: params
+                    .get_version()
+                    .map_err(failed)?
+                    .to_string()
+                    .map_err(failed)?,
+                size_bytes: params.get_expected_size_bytes(),
+            };
+            let id = blocking(move || install_offer_from_catalogue(&catalog, &registry, &expected))
+                .await?;
+            results.get().set_id(id.as_bytes());
+            Ok(())
+        }
+    }
+
+    #[allow(
+        clippy::manual_async_fn,
+        reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
+    )]
+    fn flatpak_status(
+        self: capnp::capability::Rc<Self>,
+        _params: app_host::FlatpakStatusParams,
+        mut results: app_host::FlatpakStatusResults,
+    ) -> impl core::future::Future<Output = Result<(), Error>> + 'static {
+        async move {
+            let status = tokio::task::spawn_blocking(|| {
+                flatpak_status_from(std::path::Path::new("/usr/bin/flatpak"))
+            })
+            .await
+            .map_err(failed)??;
+            let mut result = results.get();
+            result.set_available(status.available);
+            result.set_installed(&status.installed);
+            result.set_remotes(&status.remotes);
+            Ok(())
+        }
+    }
+
     #[allow(
         clippy::manual_async_fn,
         reason = "the generated Cap'n Proto Server trait requires an opaque Future return type"
@@ -622,6 +789,88 @@ impl app_host::Server for AppHostServer {
 #[cfg(test)]
 mod command_tests {
     use super::{repositories_json_from, safe_host_diagnostic};
+
+    #[test]
+    fn catalogue_install_requires_the_exact_selected_signed_identity() {
+        let expected = crate::install::InstallExpectation {
+            package_root: tilo_app_package::PackageId::from_bytes([7; 32]),
+            publisher: [8; 32],
+            app_id: "so.tilo.notes".into(),
+            version: "1.2.3".into(),
+            size_bytes: 42,
+        };
+        let offer = app_cli::CatalogueApp {
+            package_id: expected.app_id.clone(),
+            display_name: "Notes".into(),
+            description: String::new(),
+            tagline: String::new(),
+            images: Vec::new(),
+            supported_languages: Vec::new(),
+            category: None,
+            version: expected.version.clone(),
+            registry: "Tilo main".into(),
+            download_url: "https://apps.tilo.so/notes.tapp".into(),
+            tapp_root_hash_hex: expected.package_root.to_hex(),
+            tapp_size_bytes: expected.size_bytes,
+            tapp_blake3_hex: "09".repeat(32),
+            architecture: std::env::consts::ARCH.into(),
+            isa: std::env::consts::ARCH.into(),
+            runtime: None,
+            publisher_pubkey_hex: hex::encode(expected.publisher),
+            trust: "verified".into(),
+        };
+        super::require_offer_identity(&offer, &expected).unwrap();
+        let mut replacements = Vec::new();
+        let mut changed = offer.clone();
+        changed.package_id = "so.tilo.settings".into();
+        replacements.push(changed);
+        let mut changed = offer.clone();
+        changed.version = "1.2.4".into();
+        replacements.push(changed);
+        let mut changed = offer.clone();
+        changed.tapp_root_hash_hex = "0a".repeat(32);
+        replacements.push(changed);
+        let mut changed = offer.clone();
+        changed.publisher_pubkey_hex = "0b".repeat(32);
+        replacements.push(changed);
+        let mut changed = offer;
+        changed.tapp_size_bytes += 1;
+        replacements.push(changed);
+        for replacement in replacements {
+            assert!(super::require_offer_identity(&replacement, &expected).is_err());
+        }
+    }
+
+    #[test]
+    fn flatpak_status_reads_host_apps_and_remotes_and_reports_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let flatpak = dir.path().join("flatpak");
+        assert!(!super::flatpak_status_from(&flatpak).unwrap().available);
+        std::fs::write(&flatpak, r#"#!/bin/sh
+case "$*" in
+  --version) echo 'Flatpak 1.16.1';;
+  'list --app --columns=application,version') printf 'org.gnome.Calculator\t48.0\n';;
+  'remotes --columns=name,url,title,options') printf 'flathub\thttps://dl.flathub.org/repo/\tFlathub\tsystem\n';;
+  *) exit 12;;
+esac
+"#).unwrap();
+        let mut permissions = std::fs::metadata(&flatpak).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
+        std::fs::set_permissions(&flatpak, permissions).unwrap();
+        let status = super::flatpak_status_from(&flatpak).unwrap();
+        assert!(status.available);
+        assert!(status.installed.contains("org.gnome.Calculator\t48.0"));
+        assert!(
+            status
+                .remotes
+                .contains("flathub\thttps://dl.flathub.org/repo/")
+        );
+        std::fs::write(&flatpak, "#!/bin/sh\necho unavailable >&2\nexit 3\n").unwrap();
+        let error = super::flatpak_status_from(&flatpak)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unavailable"), "{error}");
+    }
 
     #[test]
     fn repositories_are_what_app_repo_list_prints() {

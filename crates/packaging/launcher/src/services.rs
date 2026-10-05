@@ -56,6 +56,10 @@ pub const EXIT_REQUIRED_SERVICE_MISSING: i32 = 70;
 pub const COLLAB_SERVICE: &str = "collab";
 pub const IDENTITY_SERVICE: &str = "identity";
 pub const SHELL_UI_SERVICE: &str = "shell-ui";
+/// Version of the launcher-written shell-UI authentication envelope.
+/// This names the app before descriptor handoff; it is independent of the
+/// versioned requests the authenticated app subsequently sends.
+pub const SHELL_UI_LAUNCH_PROTOCOL: u16 = 1;
 /// The session shell's own file choosers, for sessions without a desktop
 /// portal (`tilo_dialogs::shell`). Not declared by manifests: every app
 /// launched into a room is handed a connection naming itself and the room.
@@ -259,7 +263,7 @@ pub fn authenticate_shell_ui_bind(
         })?;
     let mut stream = UnixStream::from(owned);
     let mut frame = serde_json::to_vec(&serde_json::json!({
-        "protocol": 1,
+        "protocol": SHELL_UI_LAUNCH_PROTOCOL,
         "app_id": app_id,
     }))
     .map_err(|error| ServiceError::OpenFailed {
@@ -305,18 +309,7 @@ pub fn resolve_identity_bind(
             return Ok(None);
         }
     };
-    let handshake = serde_json::json!({
-        "workspace_id": workspace_id,
-        "app_id": app_id,
-    });
-    let bytes = serde_json::to_vec(&handshake).map_err(|error| ServiceError::OpenFailed {
-        path: path.clone(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-    })?;
-    runtime_identity::wire::HANDSHAKE_FRAMING
-        .write(&mut stream, &bytes)
-        .map_err(std::io::Error::from)
-        .and_then(|()| stream.flush())
+    write_identity_handshake(&mut stream, app_id, workspace_id)
         .map_err(|source| ServiceError::OpenFailed { path, source })?;
     Ok(Some(ResolvedService {
         name: IDENTITY_SERVICE.to_string(),
@@ -325,6 +318,28 @@ pub fn resolve_identity_bind(
         // a reserved slot so it cannot collide as the manifest evolves.
         child_fd: IDENTITY_CHILD_FD,
     }))
+}
+
+/// Name the app and room an identity connection signs for, as the first
+/// thing on it.
+///
+/// # Errors
+/// The stream refuses the write.
+pub fn write_identity_handshake(
+    stream: &mut UnixStream,
+    app_id: &str,
+    workspace_id: &str,
+) -> std::io::Result<()> {
+    let handshake = serde_json::json!({
+        "workspace_id": workspace_id,
+        "app_id": app_id,
+    });
+    let bytes = serde_json::to_vec(&handshake)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    runtime_identity::wire::HANDSHAKE_FRAMING
+        .write(stream, &bytes)
+        .map_err(std::io::Error::from)?;
+    stream.flush()
 }
 
 /// The first line the launcher writes on a chooser connection: the app and
@@ -789,7 +804,12 @@ fn resolve_service_binds_inner(
     Ok(out)
 }
 
-fn write_collab_handoff(
+/// Name the app and room a collaboration connection is for, as the first
+/// thing on it: what the broker attests against the shell's launch record.
+///
+/// # Errors
+/// The stream refuses the write.
+pub fn write_collab_handoff(
     stream: &mut UnixStream,
     app_id: &str,
     workspace_id: &str,
@@ -1210,7 +1230,7 @@ mod tests {
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).unwrap();
             let handshake: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-            assert_eq!(handshake["protocol"], 1);
+            assert_eq!(handshake["protocol"], SHELL_UI_LAUNCH_PROTOCOL);
             assert_eq!(handshake["app_id"], "so.tilo.chat");
         }
     }

@@ -211,13 +211,14 @@ impl Sessions {
     }
 
     /// Ask the shell to put the device's own shell to the person, once.
-    /// Only a shell-hosted tab can ask; elsewhere the reason stays on screen.
+    /// Hosted and native tabs both use the trusted session shell; an unavailable
+    /// shell answers with a refusal.
     pub fn request_allow(&mut self) -> bool {
         #[cfg(test)]
         let scripted = matches!(self.source, Source::Scripted(_));
         #[cfg(not(test))]
         let scripted = false;
-        if scripted || matches!(self.source, Source::Hosted { .. }) {
+        if scripted || matches!(self.source, Source::Hosted { .. } | Source::Standalone) {
             let reply = Rc::new(RefCell::new(ui::widget::HostShellAllow::default()));
             self.intent = Some(ui::widget::AppHostIntent::AllowHostShell {
                 reply: Rc::downgrade(&reply),

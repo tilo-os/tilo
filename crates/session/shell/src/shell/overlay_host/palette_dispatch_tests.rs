@@ -555,7 +555,10 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
         host.pending_palette_action = Some(action);
         host.palette
             .set_query(r#"{"id":"does-not-exist","confirm":false}"#);
-        host.activate_selected_result(&mut document, &automerge::ROOT);
+        host.activate_selected_result(
+            &mut ui::widget::Edits::lend(&mut document),
+            &automerge::ROOT,
+        );
 
         assert!(
             host.pending_palette_action.is_some(),
@@ -607,7 +610,7 @@ fn palette_confirmations_cannot_forge_identity_or_admin_and_wait_for_the_overlay
         )
         .expect("prompt has no arguments");
         let ticket = match action.on_begin_invoke.expect("prompt owns a lifecycle")(
-            &mut document,
+            &mut ui::widget::Edits::lend(&mut document),
             &automerge::ROOT,
             &chrome,
             &args,

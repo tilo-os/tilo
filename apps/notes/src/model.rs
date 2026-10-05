@@ -77,10 +77,15 @@ pub struct WorkspaceData {
 }
 
 /// Convenience wrapper around [`WorkspaceData`] with the runtime ops
-/// the UI / storage layer needs. Pure logic — no IO, no rendering.
+/// the UI needs. Pure logic — no IO, no rendering.
 #[derive(Clone, Debug, Default)]
 pub struct Workspace {
     pub data: WorkspaceData,
+    /// What every note says, when the workspace was read from a notebook.
+    pub bodies: std::sync::Arc<crate::actions::Bodies>,
+    /// Each note's body as the rich text it is, published as the note's
+    /// body resource.
+    pub body_states: std::rc::Rc<std::collections::HashMap<PageId, tilo_document::RichTextState>>,
 }
 
 impl Workspace {
@@ -591,25 +596,6 @@ mod tests {
         assert_eq!(ids(&w, None), vec![a, c]);
         w.check_invariants().unwrap();
 
-        // Deleting removes descendants recursively.
-        let mut w = Workspace::new();
-        let root = w.create_page(None);
-        let mid = w.create_page(Some(root));
-        let leaf = w.create_page(Some(mid));
-        let removed = w.delete_page(root);
-        assert_eq!(removed.len(), 3);
-        assert!(removed.contains(&root));
-        assert!(removed.contains(&mid));
-        assert!(removed.contains(&leaf));
-        assert!(w.pages().is_empty());
-
-        // The selection clears when its page is deleted.
-        let mut w = Workspace::new();
-        let id = w.create_page(None);
-        w.set_selected(Some(id));
-        w.delete_page(id);
-        assert!(w.selected().is_none());
-
         // An orphan is an invariant violation.
         let mut w = Workspace::new();
         w.data.pages.push(PageMeta {
@@ -743,38 +729,6 @@ mod tests {
         assert!(!w.move_to(root, Some(child), None));
         assert!(!w.move_to(root, Some(root), None));
         assert_eq!(w.get(root).unwrap().parent, None);
-        w.check_invariants().unwrap();
-    }
-
-    #[test]
-    fn duplicate_page_deep_copies_subtree_after_source() {
-        let mut w = Workspace::new();
-        let a = w.create_page(None);
-        w.rename(a, "Projects");
-        let child = w.create_page(Some(a));
-        w.rename(child, "Launch");
-        let grand = w.create_page(Some(child));
-        w.rename(grand, "Tasks");
-        let sib = w.create_page(None);
-        w.rename(sib, "Inbox");
-
-        let (new_root, mapping) = w.duplicate_page(a).expect("duplicate");
-        // Fresh ids for every node in the subtree (root + child + grand).
-        assert_eq!(mapping.len(), 3);
-        assert!(mapping.iter().all(|(old, new)| old != new));
-        // The copy sits right after the source among root siblings.
-        let roots: Vec<_> = w.children_of(None).iter().map(|p| p.id).collect();
-        assert_eq!(roots, vec![a, new_root, sib], "copy lands after the source");
-        // Copy carries a " copy" title and an independent subtree.
-        assert_eq!(w.get(new_root).unwrap().title, "Projects copy");
-        let copy_children = w.children_of(Some(new_root));
-        assert_eq!(copy_children.len(), 1);
-        assert_eq!(copy_children[0].title, "Launch");
-        let copy_grand = w.children_of(Some(copy_children[0].id));
-        assert_eq!(copy_grand.len(), 1);
-        assert_eq!(copy_grand[0].title, "Tasks");
-        // Original subtree is untouched (still 3 originals + 3 copies + sib).
-        assert_eq!(w.children_of(Some(a)).len(), 1);
         w.check_invariants().unwrap();
     }
 

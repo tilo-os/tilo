@@ -74,13 +74,11 @@ impl Default for SessionOptions {
     }
 }
 
-/// Printed under `bwrap`'s own one-line reason, which names a mount option
-/// rather than a cause. Short lines: it lands in a terminal of any width.
+/// Printed beneath the actual setup error, including loader failures.
+/// No mount-specific advice is given for unrelated startup failures.
 const SANDBOX_SETUP_FAILED: &str = "\
 ush: the shell's sandbox could not be set up, so no shell started;
-ush: bwrap's reason is above. An overlay mount refused with \"Invalid
-ush: argument\" usually means the images sit on a filesystem overlayfs
-ush: cannot stack on (another overlay): `dmesg` shows why.";
+ush: the setup error is above.";
 
 /// The first line of every reason a session's sandbox was not built.
 const NOT_STARTED: &str = "ush: the shell's sandbox could not be set up, so no shell started";
@@ -289,6 +287,8 @@ impl Session {
         // the real path, and a grant of the home must still find the store
         // under it.
         let canonical = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+        let runtime_bin = runtime_binary()?;
+        let helper_runtime = crate::helper_runtime::HelperRuntime::resolve(&runtime_bin)?;
         Ok(GuestPlan {
             shell: guest_shell(&images),
             images,
@@ -305,7 +305,8 @@ impl Session {
             trusted_dirs: policy.trusted_dirs(now),
             readable_dirs: policy.readable_dirs(now),
             grant_root: self.store.grant_root().map(Path::to_path_buf),
-            runtime_bin: runtime_binary()?,
+            runtime_bin,
+            helper_runtime,
             legacy_commands: crate::legacy_commands(),
             broker_socket,
             seccomp_blob,
@@ -422,11 +423,11 @@ impl Session {
         // inside the namespace — using the paths the guest itself will use.
         let shell = plan.shell.clone();
         let user_command = std::mem::take(&mut plan.command);
-        let mut command = vec![
-            format!("{}/tilo-ush", crate::GUEST_BIN_DIR),
-            "guest-init".into(),
-            "--".into(),
-        ];
+        let mut command = plan.helper_runtime.as_ref().map_or_else(
+            || vec![format!("{}/tilo-ush", crate::GUEST_BIN_DIR)],
+            crate::helper_runtime::HelperRuntime::entry,
+        );
+        command.extend(["guest-init".into(), "--".into()]);
         if user_command.is_empty() {
             command.push(shell.to_string_lossy().into_owned());
             command.push("-i".into());

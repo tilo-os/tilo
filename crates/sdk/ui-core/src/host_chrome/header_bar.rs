@@ -110,7 +110,7 @@ impl HeaderBar {
         }
 
         let open_menu = menu_requested.clone();
-        let history_button = Button::new("host-header-history", "host-menu-history", None)
+        let history_button = Button::new("host-header-history", "host-menu-history")
             .with_icon(Icon::ChevronDown)
             .fit_content(BAR_CONTROL_HEIGHT)
             .with_enabled(!history.is_empty())
@@ -272,7 +272,7 @@ const DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(400);
 
 fn control(id: &str, icon: Icon, key: &str) -> Button {
     let label = I18nManager::lookup_plain(key);
-    Button::new(id, "", None)
+    Button::new(id, "")
         .with_icon(icon)
         .tooltip(label.clone())
         .with_accessible_name(&label)

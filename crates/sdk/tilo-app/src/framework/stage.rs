@@ -12,7 +12,11 @@
 //! laid out: every [`ViewCx::on_stage`](super::ViewCx::on_stage) callback
 //! runs, and every hosted [`ResourceSurface`](super::ResourceSurface) gets
 //! [`stage`](super::ResourceSurface::stage) on its next sync, where it has
-//! its document. Then the capture waits for the frame to settle: a surface
+//! its document. What a person does in the scene — text typed, a drag held
+//! over its target — is input
+//! ([`ResourceApp::scenario_input`](super::ResourceApp::scenario_input)),
+//! driven through the window's event path after that. Then the capture
+//! waits for the frame to settle: a surface
 //! still decoding, rendering a page or reading a fixture says so with the
 //! toolkit's `Widget::has_pending_visual_work`.
 //!
@@ -109,6 +113,15 @@ pub fn stage<A: ResourceApp>(
             true
         });
     }
+    // The surfaces stage on this sync; the input meets the staged scene.
+    harness.relayout();
+    A::scenario_input(scenario, harness).map_err(|error| {
+        LaunchError::Operation(format!(
+            "{} scenario {:?} input failed: {error}",
+            A::TITLE,
+            scenario.unwrap_or("default")
+        ))
+    })?;
     harness
         .wait_for_visuals(SETTLE)
         .map_err(|error| match scenario {
@@ -117,7 +130,15 @@ pub fn stage<A: ResourceApp>(
                 A::TITLE
             )),
             None => LaunchError::Operation(format!("{} did not settle: {error}", A::TITLE)),
-        })
+        })?;
+    // The scenario's edits are saved before the frame is taken, as they would
+    // be by the time anyone looked: a capture shows the record saved, not a
+    // write still in flight.
+    harness
+        .flush_component_records()
+        .map_err(LaunchError::Operation)?;
+    harness.relayout();
+    Ok(())
 }
 
 /// How long a capture waits for its surfaces' asynchronous work (a page
@@ -130,4 +151,37 @@ fn root_instance<A: ResourceApp>(harness: &FrameHarness) -> Result<u64, LaunchEr
     harness
         .component_instance_id()
         .ok_or_else(|| LaunchError::Operation(format!("{} is not hosted here", A::TITLE)))
+}
+
+/// How long each of `frames` frames of `A`'s capture of `scenario` takes to
+/// sync, lay out and draw, after one frame that warms the text caches: what
+/// a `--bench` command reports. Where no native runner is linked (a browser
+/// page) there is no headless capture to time.
+///
+/// # Errors
+/// Returns why the capture could not be built, or that this build has no
+/// headless capture.
+pub fn time_frames<A: ResourceApp>(
+    scenario: Option<&str>,
+    frames: usize,
+) -> Result<Vec<ui_core::time::Duration>, String> {
+    #[cfg(tilo_native_runner)]
+    {
+        let mut app = super::testing::HeadlessApp::<A>::capture(scenario)
+            .map_err(|error| error.to_string())?;
+        let harness = app.harness();
+        harness.relayout();
+        Ok((0..frames)
+            .map(|_| {
+                let start = ui_core::time::now();
+                harness.relayout();
+                start.elapsed()
+            })
+            .collect())
+    }
+    #[cfg(not(tilo_native_runner))]
+    {
+        let _ = (scenario, frames);
+        Err("timing frames needs the native runner's headless capture".into())
+    }
 }

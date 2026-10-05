@@ -687,7 +687,6 @@ package = "tilo-agent-participant"
 # the browser peer's relay test support.
 inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
 readers = [
-  "crates/agent/agent-participant/tests/common/mod.rs",
   "crates/agent/agent-participant/tests/room_actions.rs",
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
@@ -704,7 +703,8 @@ package = "notes"
 inputs = ["crates/sdk/ui-core/assets/fonts/", "apps/settings/shots/settings.png"]
 readers = [
   "apps/notes/src/app.rs", "apps/notes/src/shortcuts_overlay.rs",
-  "apps/notes/src/shots.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/src/scenario.rs", "apps/notes/tests/support/component.rs",
+  "apps/notes/tests/effects.rs",
 ]
 
 [[cargo]]
@@ -724,44 +724,8 @@ readers = [
   "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
-  "crates/session/shell/src/shell/notes_app.rs",
   "crates/session/shell/src/shell/test_support.rs",
 ]
-
-[[cargo]]
-package = "contacts"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/contacts/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "diffmerge"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/diffmerge/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "photos"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/photos/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "slides"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/slides/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "themes"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/themes/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "typst-editor"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/typst-editor/src/framework_history_tests.rs"]
-
-[[cargo]]
-package = "weather"
-inputs = ["crates/sdk/ui-core/tests/support/history_adapter_conformance.rs"]
-readers = ["apps/weather/src/framework_history_tests.rs"]
 
 [[cargo]]
 package = "chat"
@@ -928,6 +892,11 @@ workflow = "build-image.yml"
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
 reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
+workflow = "build-image.yml"
+
+[[unrequired]]
+suite = "os/dev/test-device-admin-reach.sh"
+reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs"
 workflow = "build-image.yml"
 
 [[unrequired]]

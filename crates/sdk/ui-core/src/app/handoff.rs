@@ -87,7 +87,7 @@ impl App {
         clippy::unused_self,
         reason = "a host without native persistence has nothing further to make durable"
     )]
-    fn checkpoint_app_document(&mut self) -> Result<(), String> {
+    fn checkpoint_app_document(&self) -> Result<(), String> {
         Ok(())
     }
 

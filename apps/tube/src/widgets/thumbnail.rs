@@ -322,7 +322,7 @@ impl ThumbChrome {
 }
 
 impl Widget for Thumbnail {
-    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
+    fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         // Lazily resolve the real thumbnail. Once we have it, stop touching the
         // store; a freshly-decoded image flips `dirty` so the next frame repaints
         // it — no structural rebuild.

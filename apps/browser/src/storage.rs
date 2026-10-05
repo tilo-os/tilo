@@ -34,6 +34,35 @@ pub fn configure(root: Option<&str>) -> Result<(), String> {
     }
     Ok(())
 }
+/// Route this process's browser data for the window it opens: a private
+/// window gets an isolated private root, removed when it is done; any other
+/// window the root `TILO_BROWSER_APP_ROOT` names, else the platform's.
+///
+/// # Errors
+/// Returns an error when the private root cannot be allocated or the data
+/// root is invalid.
+pub fn prepare_window(private: bool) -> Result<(), String> {
+    static PREPARED: OnceLock<Result<(), String>> = OnceLock::new();
+    PREPARED
+        .get_or_init(|| {
+            if !private {
+                return configure(None);
+            }
+            let root = allocate_private_root()?;
+            let text = root
+                .to_str()
+                .ok_or_else(|| "Private browser root is not valid UTF-8".to_string())?;
+            configure(Some(text)).inspect_err(|_| {
+                if is_owned_private_root(&root) {
+                    let _ = std::fs::remove_dir_all(&root);
+                }
+            })?;
+            tracing::info!(private_root = %root.display(), "Private browser root allocated");
+            Ok(())
+        })
+        .clone()
+}
+
 pub fn explicit_root() -> Option<&'static Path> {
     ROOT.get().map(PathBuf::as_path)
 }

@@ -125,6 +125,14 @@ impl Subject {
         }
     }
 
+    /// The kind of resource the subject is, when the message carried it.
+    pub fn kind(&self) -> Option<&str> {
+        match self {
+            Subject::Carried(r) => Some(r.kind.as_str()),
+            Subject::Recent { .. } | Subject::Nothing => None,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Subject::Carried(_) => "carried",

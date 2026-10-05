@@ -91,7 +91,7 @@ impl Slider {
             is_dragging: false,
             is_focused: false,
             value: 0.5,
-            binding: Some(crate::doc_binding::number_key(on_change_path)),
+            binding: Some(crate::doc_source::number_key(on_change_path)),
             on_change: None,
             settles: false,
             drag_from: None,
@@ -248,7 +248,7 @@ impl Slider {
     /// Commit a new value to the CRDT iff it differs from the cached
     /// `value` by more than a frame-of-noise epsilon. Returns `true` if
     /// the commit happened so callers can flag the event as handled.
-    fn commit_value(&mut self, new_value: f64, state: &mut AppModel, root: &ModelPath) -> bool {
+    fn commit_value(&mut self, new_value: f64, _state: &AppModel, _root: &ModelPath) -> bool {
         if (new_value - self.value).abs() <= 0.001 {
             return false;
         }
@@ -264,10 +264,10 @@ impl Slider {
                 // The value a drag will settle on, shown to whatever reads
                 // the control's local state (a label, a live preview) before
                 // the action is invoked at release.
-                binding.push(state, root, &self.value);
+                binding.publish(&self.value);
             }
         } else if let Some(binding) = &mut self.binding {
-            binding.push(state, root, &self.value);
+            binding.publish(&self.value);
         }
         if self.action.is_none()
             && let Some(callback) = self.on_change.as_mut()
@@ -500,7 +500,7 @@ impl Widget for Slider {
         self.is_hovered &= environment.supports_hover();
     }
 
-    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(value) = binding.pull(state, root)
         {
@@ -579,7 +579,7 @@ impl Widget for Slider {
                         self.fine_from = None;
                         self.value_from_cursor_x(p.x)
                     };
-                    if self.commit_value(new_value, ctx.state, ctx.path) {
+                    if self.commit_value(new_value, ctx.state.doc(), ctx.path) {
                         *ctx.handled = true;
                     }
                 }
@@ -601,7 +601,7 @@ impl Widget for Slider {
                     *ctx.focus_target = Some(ctx.node_id);
                     *ctx.handled = true;
                     let new_value = self.value_from_cursor_x(self.last_cursor.x);
-                    self.commit_value(new_value, ctx.state, ctx.path);
+                    self.commit_value(new_value, ctx.state.doc(), ctx.path);
                 } else if *element_state == ElementState::Released && self.is_dragging {
                     self.is_dragging = false;
                     self.fine_from = None;
@@ -697,7 +697,7 @@ impl Widget for Slider {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -707,10 +707,10 @@ impl Widget for Slider {
         }
         match action {
             Action::Increment => {
-                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state, path)
+                self.commit_value((self.value + STEP).clamp(0.0, 1.0), state.doc(), path)
             }
             Action::Decrement => {
-                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state, path)
+                self.commit_value((self.value - STEP).clamp(0.0, 1.0), state.doc(), path)
             }
             Action::SetValue(v) => {
                 // `f64::from_str` accepts "nan"/"inf"/"-inf" as valid text,
@@ -725,7 +725,7 @@ impl Widget for Slider {
                 }
                 // Accept either a 0..1 fraction or a 0..100 percentage.
                 let frac = if parsed > 1.0 { parsed / 100.0 } else { parsed };
-                self.commit_value(frac.clamp(0.0, 1.0), state, path)
+                self.commit_value(frac.clamp(0.0, 1.0), state.doc(), path)
             }
             _ => false,
         }
@@ -883,7 +883,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1017,8 +1017,8 @@ mod tests {
             let mut document = AutoCommit::new();
 
             state.set(0.5);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.5);
             assert_eq!(second.value(), 0.5);
             assert!(changes.borrow().is_empty(), "model sync is not user intent");
@@ -1026,17 +1026,17 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut first,
                 &Action::Increment,
-                &mut document,
+                &mut crate::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), 0.55);
             assert_eq!(&*changes.borrow(), &[0.55]);
-            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &document, &automerge::ROOT);
             assert_eq!(second.value(), 0.55);
 
             second.set_value(0.8);
             assert_eq!(state.get(), 0.8);
-            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut first, &document, &automerge::ROOT);
             assert_eq!(first.value(), 0.8);
             assert_eq!(&*changes.borrow(), &[0.55]);
         }
@@ -1099,14 +1099,14 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::Decrement,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
@@ -1115,7 +1115,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("80%".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.80).abs() < 1e-9);
@@ -1124,7 +1124,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut s,
                 &Action::SetValue("0.2".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert!((s.value - 0.20).abs() < 1e-9);
@@ -1140,7 +1140,7 @@ mod tests {
             assert!(!Widget::perform_action(
                 &mut s,
                 &Action::Increment,
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(s.value, before, "a disabled slider must not change value");
@@ -1243,7 +1243,7 @@ mod tests {
             assert!(Widget::perform_action(
                 &mut slider,
                 &crate::a11y::Action::SetValue("80%".into()),
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());

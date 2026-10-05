@@ -30,6 +30,7 @@ fn call(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
 
 /// The window shows the artwork as it is now.
 fn shown(app: &TestApp<App>, renderer: &Rc<RefCell<Renderer>>) {
+    renderer.borrow_mut().pictures.read_from(app.content());
     canvas::author::see(renderer, &Rc::new(app.state()));
 }
 
@@ -96,6 +97,38 @@ fn a_rough_selection_is_refined_onto_the_pictures_edge() {
 }
 
 #[test]
+fn a_refined_edge_finished_off_thread_stays_in_the_authors_content_store() {
+    let mut app = TestApp::<App>::new().unwrap();
+    open_disc(&mut app);
+    call(&mut app, "select", json!({"ellipse": [38, 38, 124, 124]}));
+    let content = app.content();
+    let mut renderer = Renderer::default();
+    renderer.pictures.read_from(content.clone());
+    let scope = ui::rt::wake::WakeScope::new();
+    ui::tilo_resource::content::register(&scope.handle(), content.clone());
+    let prepared = {
+        let _entered = scope.enter();
+        canvas::subject::prepare(
+            &canvas::selection::Select {
+                refine: Some(4.0),
+                ..Default::default()
+            },
+            &mut renderer,
+            &mut ui::TextRenderer::new(),
+            &app.state(),
+        )
+        .unwrap()
+    };
+    let (_, matte, _) = std::thread::spawn(move || prepared.finish().unwrap())
+        .join()
+        .unwrap();
+    let matte = matte.expect("the refined selection keeps its soft edge");
+    assert!(canvas::picture::bytes_of(&content, &matte.src).is_some());
+    let other = TestApp::<App>::new().unwrap();
+    assert!(canvas::picture::bytes_of(&other.content(), &matte.src).is_none());
+}
+
+#[test]
 fn a_mask_of_a_refined_edge_is_soft_and_takes_the_white_out_of_the_edge() {
     let mut app = TestApp::<App>::new().unwrap();
     open_disc(&mut app);
@@ -118,7 +151,13 @@ fn a_mask_of_a_refined_edge_is_soft_and_takes_the_white_out_of_the_edge() {
     let Shape::Image { src, .. } = &photo.shape else {
         panic!("the photo is a picture");
     };
-    let bytes = canvas::picture::bytes_of(src).expect("the cleaned photo is stored");
+    let bytes =
+        canvas::picture::bytes_of(&app.content(), src).expect("the cleaned photo is stored");
+    let other = TestApp::<App>::new().unwrap();
+    assert!(
+        canvas::picture::bytes_of(&other.content(), src).is_none(),
+        "the cleaned photo belongs to the artwork that authored it"
+    );
     let cleaned = image::load_from_memory(&bytes).unwrap().to_rgba8();
     // On the disc's edge, right of centre (x = 160), the colour is red, not pink.
     let edge = cleaned.get_pixel(160, 100).0;
@@ -198,6 +237,7 @@ fn the_wand_finds_a_pictures_colour_and_leaves_the_canvas_renderer_impatient() {
     // The canvas's own renderer shows a placeholder while a picture
     // decodes; the wand waits for the picture instead.
     let mut renderer = Renderer::impatient();
+    renderer.pictures.read_from(app.content());
     let query = canvas::author::ColourQuery {
         at: Some(ui::vello::kurbo::Point::new(100.0, 100.0)),
         tolerance: 0.15,
@@ -256,7 +296,8 @@ fn a_cleaned_jpeg_photograph_stays_a_jpeg_of_about_its_size() {
     let Shape::Image { src, .. } = &art.mark("photo").unwrap().shape else {
         panic!("the photo is a picture");
     };
-    let bytes = canvas::picture::bytes_of(src).expect("the cleaned photo is stored");
+    let bytes =
+        canvas::picture::bytes_of(&app.content(), src).expect("the cleaned photo is stored");
     assert_eq!(
         image::guess_format(&bytes).unwrap(),
         image::ImageFormat::Jpeg

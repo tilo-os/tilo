@@ -78,6 +78,7 @@ pub mod op;
 pub mod ownership_transfer;
 pub mod peer;
 pub mod permission_profile;
+pub mod person_room;
 pub mod recipient_control;
 pub mod redaction;
 pub mod role;
@@ -157,6 +158,7 @@ pub use ownership_transfer::{
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use permission_profile::{PermissionProfile, PermissionProfileError, PermissionProfileRule};
+pub use person_room::{is_person_room, person_room, person_room_of};
 pub use recipient_control::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,
     MAX_RECIPIENT_CONTROL_REQUESTS_PER_CONNECTION, MAX_RECIPIENT_MOUNT_PATH_BYTES,

@@ -1245,6 +1245,23 @@ fn pump_floating_surface_service(
                 app_id,
                 message,
             } => match message {
+                ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
+                    if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
+                        if let Some(writer) = service.reply_writer(connection) {
+                            frame_builder
+                                .host_mut()
+                                .request_native_host_shell_allow(writer);
+                        }
+                    } else {
+                        service.send(
+                            connection,
+                            &ui::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
+                                allowed: false,
+                            },
+                        );
+                    }
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => {
                     let mode = match mode {
                         ui::floating_surface::CaptureStudioProtocolMode::Screenshot => {
@@ -2345,6 +2362,8 @@ struct FrameBuilderControlState<'a> {
     /// the native transport supplies it so an acceptance client can wait for
     /// an asynchronous verifier before entering a retry.
     lock: Option<&'a LockController>,
+    /// The actual Wayland seat; layout-only fixtures cannot observe it.
+    seat: Option<&'a State>,
 }
 
 impl FrameBuilderControlState<'_> {
@@ -2780,6 +2799,7 @@ impl ControlState for FrameBuilderControlState<'_> {
         let peer_sync = self.fb.host().peer_sync_snapshot();
         let (status_sharing, own_status, following) = self.fb.host().presence_snapshot();
         serde_json::json!({
+            "seat_focus": self.seat.map(State::seat_focus_json),
             "overlays": {
                 "overview": overlays.overview,
                 "quick_settings": overlays.quick_settings,
@@ -2798,6 +2818,8 @@ impl ControlState for FrameBuilderControlState<'_> {
             // and where it is painted while it serves the focused field.
             "on_screen_keyboard": {
                 "connected": self.fb.osk_connected(),
+                "requested": self.fb.osk_requested(),
+                "mapped": self.fb.osk_mapped(),
                 "commits": self.fb.osk_commits(),
                 "serves_shell_field": self.fb.osk_serves_shell(),
                 "shown": self.fb.osk_surface_rect().map(|(_, rect)| serde_json::json!({
@@ -3253,7 +3275,7 @@ fn pump_controller_navigation(
                     let _ = frame_builder.dispatch_event(
                         &event,
                         &ctx.modifiers,
-                        &mut ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut ctx.doc),
                         &ctx.root_obj,
                         &mut ctx.focus,
                     );
@@ -3420,7 +3442,7 @@ fn dispatch_synth_event(
     fb.dispatch_event(
         event,
         &ctx.modifiers,
-        &mut ctx.doc,
+        &mut ui::widget::Edits::lend(&mut ctx.doc),
         &ctx.root_obj,
         &mut ctx.focus,
     );
@@ -3585,7 +3607,7 @@ fn dispatch_test_control_touch(
         let handled = fb.dispatch_event(
             &event,
             &ctx.modifiers,
-            &mut ctx.doc,
+            &mut ui::widget::Edits::lend(&mut ctx.doc),
             &ctx.root_obj,
             &mut ctx.focus,
         );
@@ -3709,7 +3731,12 @@ fn execute_invoke_action(
         // Re-bound against *this* resolution's parameters — the catalogue was just
         // rebuilt and may have landed on a different action under the same address.
         let bound = selected
-            .invoke_json_disposition(&mut ctx.doc, &ctx.root_obj, &chrome_handle, args)
+            .invoke_json_disposition(
+                &mut ui::widget::Edits::lend(&mut ctx.doc),
+                &ctx.root_obj,
+                &chrome_handle,
+                args,
+            )
             .map_err(|e| InvokeFailure {
                 code: e.code().to_string(),
                 message: e.to_string(),
@@ -4893,6 +4920,7 @@ fn dispatch_control_command(
                 doc: Some((&ctx.doc, &ctx.root_obj)),
                 shares: Some(&state.share_registry),
                 lock: Some(lock),
+                seat: Some(state),
             };
             test_control::dispatch_command(&cmd, &state)
         }
@@ -8861,7 +8889,7 @@ pub fn run() {
                     ) && frame_builder.dispatch_a11y_action(
                         request.target_node,
                         &action,
-                        &mut test_control_ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                         &test_control_ctx.root_obj,
                         &mut test_control_ctx.focus,
                     ) {
@@ -9249,7 +9277,7 @@ pub fn run() {
                             chrome_handled = frame_builder.dispatch_event(
                                 wev,
                                 &test_control_ctx.modifiers,
-                                &mut test_control_ctx.doc,
+                                &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                                 &test_control_ctx.root_obj,
                                 &mut test_control_ctx.focus,
                             );
@@ -9482,7 +9510,7 @@ pub fn run() {
                     let _ = frame_builder.dispatch_event(
                         &event,
                         &test_control_ctx.modifiers,
-                        &mut test_control_ctx.doc,
+                        &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                         &test_control_ctx.root_obj,
                         &mut test_control_ctx.focus,
                     );
@@ -10175,7 +10203,7 @@ pub fn run() {
                 frame_builder.dispatch_event(
                     event,
                     &test_control_ctx.modifiers,
-                    &mut test_control_ctx.doc,
+                    &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                     &test_control_ctx.root_obj,
                     &mut test_control_ctx.focus,
                 );
@@ -10431,21 +10459,21 @@ pub fn run() {
                 }
             );
             let personal_viewers = crate::shell::device_fabric_runtime::window_viewers();
-            let desired = {
-                let viewer_hosts = if backend_kind == BackendKind::Headless {
-                    let active_room = {
-                        let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
-                        let tree = tree_handle.read();
-                        tree.desktop
-                            .active_workspace()
-                            .map(|workspace| workspace.room)
-                    };
-                    active_room.map_or_else(std::collections::HashSet::new, |room| {
-                        net.viewer_hosts(room)
-                    })
-                } else {
-                    std::collections::HashSet::new()
+            let viewer_hosts = if backend_kind == BackendKind::Headless {
+                let active_room = {
+                    let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                    let tree = tree_handle.read();
+                    tree.desktop
+                        .active_workspace()
+                        .map(|workspace| workspace.room)
                 };
+                active_room.map_or_else(std::collections::HashSet::new, |room| {
+                    net.viewer_hosts(room)
+                })
+            } else {
+                std::collections::HashSet::new()
+            };
+            let desired = {
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
                 // A headless session whose active room has a host shows its
@@ -10465,6 +10493,18 @@ pub fn run() {
                 }
                 desired_legacy_shares(&tree, backend.watched(), &viewer_hosts, &personal_viewers)
             };
+            state.set_headless_host_viewers(
+                desired
+                    .iter()
+                    .flat_map(|(surface, (share, _))| {
+                        share
+                            .viewers
+                            .iter()
+                            .filter(|peer| viewer_hosts.contains(peer))
+                            .map(|peer| (*peer, *surface))
+                    })
+                    .collect(),
+            );
             // A window hidden here is sized for the devices showing it.
             crate::compositor::foreign::store()
                 .set_remote_extents(remote_extents(&desired, &personal_viewers));
@@ -14722,6 +14762,37 @@ mod tests {
     // state_dump
 
     #[test]
+    fn state_dump_reads_the_live_wayland_seat_without_input_content() {
+        let fb = FrameBuilder::new((800, 600));
+        let mut ctx = TestControlCtx::new();
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        let lock = LockController::new(lock_auth::verifier_from_env(), "fixture");
+        let (response, actions) = dispatch_control_command(
+            test_control::Command::StateDump,
+            &fb,
+            &mut ctx,
+            &mut state,
+            &lock,
+        );
+        let test_control::Response::State { chrome, .. } = response else {
+            panic!("state dump must answer with native state");
+        };
+        assert!(actions.is_empty(), "observing focus must not change it");
+        assert_eq!(
+            chrome["seat_focus"],
+            serde_json::json!({
+                "keyboard": null,
+                "routed_keyboard_surface": null,
+                "text_input": null,
+                "text_input_active": false,
+                "on_screen_keyboard_surface": null,
+            })
+        );
+    }
+
+    #[test]
     fn state_dump_chrome_includes_wheel_summon() {
         let fb = FrameBuilder::new((1600, 900));
         let state = FrameBuilderControlState {
@@ -14729,6 +14800,7 @@ mod tests {
             doc: None,
             shares: None,
             lock: None,
+            seat: None,
         };
         assert_eq!(
             state.chrome_state_json().get("wheel_summon"),
@@ -14799,6 +14871,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: None,
+                seat: None,
             }
             .chrome_state_json()["displays"]
                 .clone()
@@ -14844,6 +14917,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: None,
+                seat: None,
             };
             let chrome = state.chrome_state_json();
             let overlays = chrome
@@ -14878,6 +14952,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: None,
+                seat: None,
             };
 
             let scope = &state.chrome_state_json()["search_resource_scope"];
@@ -14956,6 +15031,7 @@ mod tests {
                 doc: Some((&doc, &automerge::ROOT)),
                 shares: None,
                 lock: None,
+                seat: None,
             };
             let answer = state.enumerate_actions("").expect("enumerated actions");
             let row = answer["actions"]
@@ -14984,6 +15060,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: None,
+                seat: None,
             };
             let tree = state.workspace_tree_json();
             let workspaces = tree
@@ -15007,6 +15084,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: None,
+                seat: None,
             };
             let (resp, actions) =
                 test_control::dispatch_command(&test_control::Command::StateDump, &state);
@@ -15063,6 +15141,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: None,
+                seat: None,
             };
             let tree = state.workspace_tree_json();
             let found = tree
@@ -15094,6 +15173,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: Some(&lock),
+                seat: None,
             };
             let chrome = state.chrome_state_json();
             let auth = chrome
@@ -15118,6 +15198,7 @@ mod tests {
                 doc: None,
                 shares: None,
                 lock: None,
+                seat: None,
             };
 
             let presence = &state.chrome_state_json()["presence"];
@@ -15203,6 +15284,7 @@ mod tests {
                 doc: None,
                 shares: Some(&shares),
                 lock: None,
+                seat: None,
             };
             let rows = state
                 .sharing_json()
@@ -15425,6 +15507,7 @@ mod tests {
             doc: None,
             shares: None,
             lock: None,
+            seat: None,
         };
         let icons = state.chrome_state_json()["tab_icons"].clone();
         crate::compositor::toplevel_icon::forget(surface);
