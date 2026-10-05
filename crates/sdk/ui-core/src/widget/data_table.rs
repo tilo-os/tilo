@@ -726,7 +726,7 @@ pub struct DataTable<Row> {
     on_check: Option<Box<dyn FnMut(usize, bool)>>,
 }
 
-impl<Row: 'static> DataTable<Row> {
+impl<Row> DataTable<Row> {
     /// Minimum column width in pixels — dragging below this clamps.
     pub const MIN_COL_WIDTH: f32 = 40.0;
 
@@ -885,7 +885,10 @@ impl<Row: 'static> DataTable<Row> {
     /// from the headers in `state`, so it survives the view being built
     /// again. Rows and their callbacks keep the host's indices.
     #[must_use]
-    pub fn with_sort_state(mut self, state: &crate::LocalState<Option<TableSort>>) -> Self {
+    pub fn with_sort_state(mut self, state: &crate::LocalState<Option<TableSort>>) -> Self
+    where
+        Row: 'static,
+    {
         if let Some(sort) = state.with(Clone::clone) {
             self.sort_by_column(&sort.key, sort.ascending);
         }
@@ -895,7 +898,10 @@ impl<Row: 'static> DataTable<Row> {
 
     /// Sort by the column keyed `key` with its own comparator; `false` when
     /// there is no such sortable column.
-    fn sort_by_column(&mut self, key: &str, ascending: bool) -> bool {
+    fn sort_by_column(&mut self, key: &str, ascending: bool) -> bool
+    where
+        Row: 'static,
+    {
         let Some(compare) = self
             .columns
             .iter()
@@ -2060,7 +2066,10 @@ impl<Row: 'static> DataTable<Row> {
     /// Sort by column `index`, or flip the order when it already sorts by
     /// it; the column's own comparator orders the rows (see
     /// [`ColumnDef::sorted_by`]). `None` if the column does not sort.
-    pub fn toggle_sort(&mut self, index: usize) -> Option<(String, bool)> {
+    pub fn toggle_sort(&mut self, index: usize) -> Option<(String, bool)>
+    where
+        Row: 'static,
+    {
         let col = self.columns.get(index)?;
         if !col.sortable {
             return None;
@@ -2456,7 +2465,9 @@ impl<Row: 'static> DataTable<Row> {
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
-    ) {
+    ) where
+        Row: 'static,
+    {
         self.momentum.stop();
         let Some(pt) = self.last_cursor else { return };
         // 0. Built-in scrollbar wins over the body beneath it.
@@ -3829,8 +3840,8 @@ fn column_floor<Row>(
         ColumnWidth::Auto => auto
             .get(&column.key)
             .copied()
-            .map_or((DataTable::<()>::MIN_COL_WIDTH, None), |px| (px, Some(px))),
-        ColumnWidth::Flex(_) => (DataTable::<()>::MIN_COL_WIDTH, None),
+            .map_or((DataTable::<Row>::MIN_COL_WIDTH, None), |px| (px, Some(px))),
+        ColumnWidth::Flex(_) => (DataTable::<Row>::MIN_COL_WIDTH, None),
     }
 }
 
