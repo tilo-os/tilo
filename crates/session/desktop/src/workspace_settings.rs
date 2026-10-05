@@ -3004,7 +3004,14 @@ fn draw_agent_row(
         Some(service) if !service.purpose.is_empty() => service.purpose.clone(),
         _ => short_id(&row.agent),
     };
-    draw_avatar(scene, transform, avatar, &name, true, text_renderer, theme);
+    ui::agent_identity::draw_agent_identity_mark(
+        scene,
+        transform,
+        avatar,
+        subject_tint(&row.agent, theme),
+        theme,
+        ui::agent_identity::AgentIdentityStyle::Solid,
+    );
     let badge = draw_pill(
         scene,
         transform,
