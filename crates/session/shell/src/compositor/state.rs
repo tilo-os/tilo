@@ -3411,8 +3411,17 @@ impl RemoteInputSink for State {
                     let _ = self.remote_seats.seat_mut(peer).enter(target);
                     return;
                 }
-                let _ = self.remote_seats.seat_mut(peer).leave();
-                self.release_remote_inputs_for_peer(peer);
+                // Streams have independent transport queues. A previous
+                // window's blur may arrive after this peer focused another
+                // window; it must not retire that newer focus or its keys.
+                if self
+                    .remote_seats
+                    .seat(peer)
+                    .is_some_and(|seat| seat.focused_surface == Some(target))
+                {
+                    let _ = self.remote_seats.seat_mut(peer).leave();
+                    self.release_remote_inputs_for_peer(peer);
+                }
             }
             InputEvent::PointerAxis { dx, dy } => {
                 self.restore_remote_pointer(peer, surface, serial, time);
@@ -7081,6 +7090,89 @@ mod tick_hook_tests {
             "a window no longer shared ends its stream"
         );
         frames.forget(SURFACE);
+    }
+
+    #[test]
+    fn delayed_blur_of_previous_stream_preserves_current_remote_focus() {
+        use crate::network::input_firewall::ShellView;
+        use crate::network::streaming::StreamingShare;
+        use vello::kurbo::Rect;
+
+        const PEER: PeerId = 9;
+        const OLD: SurfaceId = 81;
+        const CURRENT: SurfaceId = 82;
+        const SHIFT: u32 = 42;
+        let mut state = make_state();
+        for surface in [OLD, CURRENT] {
+            state
+                .share_registry
+                .insert(PEER, surface, StreamingShare::new());
+        }
+        state.remote_input_firewall.publish_view(ShellView::new(
+            vec![
+                (OLD, Rect::new(0.0, 0.0, 400.0, 600.0)),
+                (CURRENT, Rect::new(400.0, 0.0, 800.0, 600.0)),
+            ],
+            Some(CURRENT),
+            false,
+            false,
+        ));
+        for surface in [OLD, CURRENT] {
+            assert!(state.apply_remote_input(
+                PEER,
+                surface,
+                InputEvent::KeyboardFocus {
+                    surface,
+                    focused: true
+                }
+            ));
+        }
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::Key {
+                keysym: SHIFT,
+                pressed: true,
+                modifiers: 0
+            }
+        ));
+        assert!(state.apply_remote_input(
+            PEER,
+            OLD,
+            InputEvent::KeyboardFocus {
+                surface: OLD,
+                focused: false
+            }
+        ));
+        assert_eq!(
+            state.remote_seats.seat(PEER).unwrap().focused_surface,
+            Some(CURRENT),
+            "the previous stream's late blur cannot cancel the newly focused stream"
+        );
+        assert_eq!(
+            state.remote_seats.key_holder_count(SHIFT),
+            1,
+            "the previous stream's blur cannot release a key held on the current stream"
+        );
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0
+            }
+        ));
+        assert!(state.apply_remote_input(
+            PEER,
+            CURRENT,
+            InputEvent::KeyboardFocus {
+                surface: CURRENT,
+                focused: false
+            }
+        ));
+        assert_eq!(state.remote_seats.seat(PEER).unwrap().focused_surface, None);
+        assert_eq!(state.remote_seats.key_holder_count(SHIFT), 0);
     }
 
     #[test]
