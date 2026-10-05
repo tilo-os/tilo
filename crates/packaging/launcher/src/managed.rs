@@ -446,6 +446,59 @@ pub struct ManagedRuntime {
     pub sandbox_shim: PathBuf,
     pub bwrap: PathBuf,
 }
+impl ManagedRuntime {
+    /// Resolve the normal declared runtime against independent host trust.
+    /// Unlike an ordinary developer launch, a managed agent cannot accept an
+    /// arbitrary signed publisher or run without its declared runtime.
+    /// `sandbox_shim` and `bwrap` are selected by the owning host, not the app.
+    ///
+    /// # Errors
+    /// Refuses missing trust, policy bypasses, or an untrusted/missing runtime.
+    pub fn from_launch_options(
+        manifest: &MinimalManifest,
+        options: &crate::run::RunOptions,
+        sandbox_shim: PathBuf,
+        bwrap: PathBuf,
+    ) -> Result<Self, String> {
+        if options.allow_unsigned_runtime || options.allow_missing_runtime {
+            return Err("managed runtime cannot bypass signature or availability policy".into());
+        }
+        let publishers = crate::run::load_trusted_publisher_list().unwrap_or_default();
+        if options.require_runtime_publisher.is_none() && publishers.is_empty() {
+            return Err("managed runtime requires independently configured publisher trust".into());
+        }
+        let (bundle_root, _) = crate::run::resolve_runtime(manifest, options)
+            .map_err(|error| error.to_string())?
+            .ok_or("managed agent requires a declared runtime")?;
+        let bundle = runtime_bundle::verify_bundle_with(
+            &bundle_root,
+            &runtime_bundle::VerifyOptions {
+                require_publisher: options.require_runtime_publisher.clone(),
+                require_signature: true,
+                require_arch: Some(std::env::consts::ARCH.to_owned()),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let runtime_publisher = bundle.publisher_hex.ok_or("managed runtime is unsigned")?;
+        if options.require_runtime_publisher.is_none()
+            && !publishers
+                .iter()
+                .any(|publisher| publisher.eq_ignore_ascii_case(&runtime_publisher))
+        {
+            return Err("managed runtime publisher is not in host trust configuration".into());
+        }
+        let runtime = Self {
+            bundle_root,
+            runtime_publisher,
+            sandbox_shim,
+            bwrap,
+        };
+        // Also check the app's exact declared runtime name/version. Never use
+        // an explicit root override to bypass that managed launch contract.
+        verify_bundle(manifest, &runtime)?;
+        Ok(runtime)
+    }
+}
 struct RuntimeOwner {
     package: InstalledManagedPackage,
     trust: PackageTrust,

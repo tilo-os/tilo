@@ -1256,7 +1256,7 @@ fn trusted_publisher_pin_from_file() -> Option<String> {
 /// Read the trusted-publisher list from disk, ignoring blank/`#` lines.
 /// `None` when neither the (developer-build) env override nor the default
 /// file exists.
-fn load_trusted_publisher_list() -> Option<Vec<String>> {
+pub(crate) fn load_trusted_publisher_list() -> Option<Vec<String>> {
     let path = trusted_publishers_path_from(crate::dev_env::dev_override(
         crate::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
     ));
