@@ -178,39 +178,75 @@ fn parent_node(taffy: &mut TaffyTree<()>, style: Style, children: &[NodeId]) -> 
     taffy.new_with_children(style, children).unwrap()
 }
 
-/// One value a person set on a control, in the control's own units: a
-/// slider's normalized position, the picked colour, the chosen font. Setting
-/// a control from the theme it shows reports nothing.
+/// A colour a person picked for the edited slot. The sliders and the font
+/// are bound to the theme's own actions; the picker reports its colour here.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ControlEdit {
     Color(model::Rgb),
-    Radius(f64),
-    Spacing(f64),
-    Motion(f64),
-    Material(f64),
-    Icon(f64),
-    Chrome(f64),
-    Character(f64),
-    Tint(f64),
-    Font(String),
 }
 
 type Edits = Rc<RefCell<Vec<ControlEdit>>>;
 
-/// A slider bound to `state` whose every user-set value is reported as
-/// `edit` of it.
-fn edit_slider(
+/// The slider ids and accessible names, in [`crate::actions::CONTROLS`]
+/// order.
+const SLIDERS: [(&str, &str); 8] = [
+    ("radius_slider", "Corner radius"),
+    ("spacing_slider", "Interface spacing"),
+    ("motion_slider", "Motion"),
+    ("material_slider", "Materials"),
+    ("icon_slider", "Icons"),
+    ("chrome_slider", "Chrome weight"),
+    ("character_slider", "Motion character"),
+    ("tint_slider", "Material tint"),
+];
+
+/// A slider over `state` that sets `action` of `theme`, or that is off when
+/// the theme offers no such action (a preset). One drag is one edit.
+fn control_slider(
     state: &LocalState<f64>,
-    edits: &Edits,
-    edit: fn(f64) -> ControlEdit,
-    id: &str,
-    name: &str,
+    theme: Option<&tilo_actions::Resource>,
+    action: &str,
+    (id, name): (&str, &str),
 ) -> Slider {
-    let edits = Rc::clone(edits);
-    Slider::from_state(state)
-        .on_change(move |value| edits.borrow_mut().push(edit(value)))
+    let slider = Slider::from_state(state)
         .with_id(id)
-        .with_accessible_name(name)
+        .with_accessible_name(name);
+    let binding = theme.and_then(|theme| {
+        let spec = theme.actions.iter().find(|spec| spec.id == action)?;
+        tilo_actions::ActionBinding::new(theme, spec, |value: f64| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("value".into(), value.into());
+            arguments
+        })
+        .ok()
+    });
+    match binding {
+        Some(binding) => slider.on_action(binding).commits_on_release(),
+        None => slider.with_enabled(false),
+    }
+}
+
+/// The font dropdown over `state`, setting `theme`'s font, or off for a
+/// preset.
+fn font_dropdown(state: &LocalState<String>, theme: Option<&tilo_actions::Resource>) -> Dropdown {
+    let dropdown = Dropdown::from_state(
+        FONTS.iter().map(std::string::ToString::to_string).collect(),
+        state,
+    )
+    .with_id("font_dropdown");
+    let binding = theme.and_then(|theme| {
+        let spec = theme.actions.iter().find(|spec| spec.id == "set-font")?;
+        tilo_actions::ActionBinding::new(theme, spec, |font: String| {
+            let mut arguments = serde_json::Map::new();
+            arguments.insert("font".into(), font.into());
+            arguments
+        })
+        .ok()
+    });
+    match binding {
+        Some(binding) => dropdown.on_action(binding),
+        None => dropdown.with_enabled(false),
+    }
 }
 
 pub struct Customizer {
@@ -237,6 +273,8 @@ pub struct Customizer {
     font_state: LocalState<String>,
     edits: Edits,
     action_key: Option<String>,
+    /// What the sliders and the font are bound for.
+    controls_key: Option<String>,
     pending_edit_token: Option<TokenId>,
 
     // pushed-in view state
@@ -301,77 +339,22 @@ impl Customizer {
         let font_state = LocalState::new(String::from("Inter"));
         let edits = Edits::default();
         let picked = Rc::clone(&edits);
-        let chosen = Rc::clone(&edits);
+        let [s0, s1, s2, s3, s4, s5, s6, s7] = SLIDERS;
         Self {
             color_picker: ColorPicker::from_state(&color_state).on_change(move |color| {
                 picked
                     .borrow_mut()
                     .push(ControlEdit::Color(model::rgb_of(color)));
             }),
-            radius_slider: edit_slider(
-                &radius_state,
-                &edits,
-                ControlEdit::Radius,
-                "radius_slider",
-                "Corner radius",
-            ),
-            spacing_slider: edit_slider(
-                &spacing_state,
-                &edits,
-                ControlEdit::Spacing,
-                "spacing_slider",
-                "Interface spacing",
-            ),
-            motion_slider: edit_slider(
-                &motion_state,
-                &edits,
-                ControlEdit::Motion,
-                "motion_slider",
-                "Motion",
-            ),
-            material_slider: edit_slider(
-                &material_state,
-                &edits,
-                ControlEdit::Material,
-                "material_slider",
-                "Materials",
-            ),
-            icon_slider: edit_slider(
-                &icon_state,
-                &edits,
-                ControlEdit::Icon,
-                "icon_slider",
-                "Icons",
-            ),
-            chrome_slider: edit_slider(
-                &chrome_state,
-                &edits,
-                ControlEdit::Chrome,
-                "chrome_slider",
-                "Chrome weight",
-            ),
-            character_slider: edit_slider(
-                &character_state,
-                &edits,
-                ControlEdit::Character,
-                "character_slider",
-                "Motion character",
-            ),
-            tint_slider: edit_slider(
-                &tint_state,
-                &edits,
-                ControlEdit::Tint,
-                "tint_slider",
-                "Material tint",
-            ),
-            font_dropdown: Dropdown::from_state(
-                FONTS.iter().map(std::string::ToString::to_string).collect(),
-                &font_state,
-            )
-            .on_change(move |font| {
-                chosen.borrow_mut().push(ControlEdit::Font(font.to_owned()));
-            })
-            .with_id("font_dropdown"),
+            radius_slider: control_slider(&radius_state, None, "", s0),
+            spacing_slider: control_slider(&spacing_state, None, "", s1),
+            motion_slider: control_slider(&motion_state, None, "", s2),
+            material_slider: control_slider(&material_state, None, "", s3),
+            icon_slider: control_slider(&icon_state, None, "", s4),
+            chrome_slider: control_slider(&chrome_state, None, "", s5),
+            character_slider: control_slider(&character_state, None, "", s6),
+            tint_slider: control_slider(&tint_state, None, "", s7),
+            font_dropdown: font_dropdown(&font_state, None),
             buttons: vec![
                 Button::new("themes.duplicate", "Duplicate", None).fit_content(ACTIONS_H),
                 Button::new("themes.reset", "Reset", None).fit_content(ACTIONS_H),
@@ -391,6 +374,7 @@ impl Customizer {
             font_state,
             edits,
             action_key: None,
+            controls_key: None,
             pending_edit_token: None,
             spec: None,
             edit_token: TokenId::Accent,
@@ -557,6 +541,38 @@ impl Customizer {
         });
         self.buttons = buttons;
         self.action_key = Some(key.to_string());
+        self.structure_dirty = true;
+    }
+
+    /// Bind the sliders and the font to the actions `theme` publishes (a
+    /// preset publishes none, so they are off); `key` names what they were
+    /// bound for, so the same bindings are not rebuilt every frame.
+    pub fn bind_controls(&mut self, key: &str, theme: &tilo_actions::Resource) {
+        if self.controls_key.as_deref() == Some(key) {
+            return;
+        }
+        let theme = Some(theme);
+        let [
+            radius,
+            spacing,
+            motion,
+            material,
+            icon,
+            chrome,
+            character,
+            tint,
+        ] = crate::actions::CONTROLS.map(|control| control.id);
+        let [s0, s1, s2, s3, s4, s5, s6, s7] = SLIDERS;
+        self.radius_slider = control_slider(&self.radius_state, theme, radius, s0);
+        self.spacing_slider = control_slider(&self.spacing_state, theme, spacing, s1);
+        self.motion_slider = control_slider(&self.motion_state, theme, motion, s2);
+        self.material_slider = control_slider(&self.material_state, theme, material, s3);
+        self.icon_slider = control_slider(&self.icon_state, theme, icon, s4);
+        self.chrome_slider = control_slider(&self.chrome_state, theme, chrome, s5);
+        self.character_slider = control_slider(&self.character_state, theme, character, s6);
+        self.tint_slider = control_slider(&self.tint_state, theme, tint, s7);
+        self.font_dropdown = font_dropdown(&self.font_state, theme);
+        self.controls_key = Some(key.to_string());
         self.structure_dirty = true;
     }
 

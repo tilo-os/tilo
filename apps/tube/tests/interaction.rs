@@ -26,6 +26,35 @@ use tube::model::Route;
 
 const VIEWPORT: (f32, f32) = (1280.0, 800.0);
 
+/// A live Tube window, wide enough for the docked rail: a capture's controls
+/// start no effects.
+fn live_app() -> ui::framework::testing::TestApp<tube::TubeShell> {
+    let mut app = ui::framework::testing::TestApp::<tube::TubeShell>::new().unwrap();
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a fixed viewport"
+    )]
+    app.harness()
+        .resize((VIEWPORT.0 as u32, VIEWPORT.1 as u32))
+        .unwrap();
+    app.harness().relayout();
+    app
+}
+
+fn click(app: &mut ui::framework::testing::TestApp<tube::TubeShell>, id: &str) {
+    app.harness()
+        .click_named(id)
+        .unwrap_or_else(|error| panic!("{error}"));
+    app.settle();
+    app.harness().relayout();
+}
+
+fn route(app: &mut ui::framework::testing::TestApp<tube::TubeShell>) -> Route {
+    app.with_surface::<TubeApp, _>(|tube| tube.route_for_test().clone())
+        .expect("the window shows Tube")
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -35,42 +64,31 @@ fn navigation_tabs_and_queue_are_real_destinations() {
     // Case `clicking_a_nav_tab_switches_route`.
     {
         // The app boots on Home (never into a fake/placeholder video). Click the
-        // "Trending" rail item and prove the route follows. Seed the viewport so
-        // the wide layout resolves its docked rail on the first frame (as the live
-        // app does once its width lands) rather than the unknown-width overlay.
-        let mut h = Harness::new(
-            TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
-            VIEWPORT,
-        );
-        assert_eq!(
-            h.app.route_for_test(),
-            &Route::Home,
-            "the app boots on Home"
-        );
+        // "Trending" rail item and prove the route follows: the rail item is
+        // bound to the show-screen effect the window's host answers.
+        let mut app = live_app();
+        assert_eq!(route(&mut app), Route::Home, "the app boots on Home");
 
-        h.click_id("nav_trending");
+        click(&mut app, "nav_trending");
         assert_eq!(
-            h.app.route_for_test(),
-            &Route::Trending,
+            route(&mut app),
+            Route::Trending,
             "clicking the Trending tab navigates to Trending"
         );
 
         // And a second tab, to prove it isn't a one-off.
-        h.click_id("nav_settings");
-        assert_eq!(h.app.route_for_test(), &Route::Settings);
+        click(&mut app, "nav_settings");
+        assert_eq!(route(&mut app), Route::Settings);
     }
     // Case `shared_queue_is_a_real_navigation_destination`.
     {
         // The queue has both a visible rail destination and a canonical navigation
         // action, rather than being an agent-only collection hidden behind Ctrl+K.
-        let mut h = Harness::new(
-            TubeApp::new().with_viewport(f64::from(VIEWPORT.0), f64::from(VIEWPORT.1)),
-            VIEWPORT,
-        );
-        h.click_id("nav_queue");
-        assert_eq!(h.app.route_for_test(), &Route::Queue);
+        let mut app = live_app();
+        click(&mut app, "nav_queue");
+        assert_eq!(route(&mut app), Route::Queue);
         assert!(
-            h.has_id("queue_page"),
+            app.harness().targets().contains_key("queue_page"),
             "the shared queue screen is laid out"
         );
     }
@@ -125,11 +143,11 @@ fn navigation_tabs_and_queue_are_real_destinations() {
         // After navigating, the selected tab must still resolve (it's re-rendered
         // with the accent fill, same test_id) — i.e. selection is real, not a
         // rendering dead-end.
-        let mut h = Harness::new(TubeApp::new(), VIEWPORT);
-        h.click_id("nav_home");
-        assert_eq!(h.app.route_for_test(), &Route::Home);
+        let mut app = live_app();
+        click(&mut app, "nav_home");
+        assert_eq!(route(&mut app), Route::Home);
         assert!(
-            h.has_id("nav_home"),
+            app.harness().targets().contains_key("nav_home"),
             "the now-selected Home tab is still in the laid-out tree"
         );
     }
@@ -149,25 +167,23 @@ fn navigation_tabs_and_queue_are_real_destinations() {
         // At a narrow width the rail is a collapsed overlay flap. The top-bar
         // hamburger must summon and dismiss it — via a real click through the menu
         // button's `handle_event`, not app.apply.
-        let narrow = (560.0f32, 800.0f32);
-        let app = TubeApp::new().with_viewport(f64::from(narrow.0), f64::from(narrow.1));
-        let mut h = Harness::new(app, narrow);
+        let mut app = live_app();
+        app.harness().resize((560, 800)).unwrap();
+        app.harness().relayout();
+        let open = |app: &mut ui::framework::testing::TestApp<tube::TubeShell>| {
+            app.with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
+                .expect("the window shows Tube")
+        };
         assert!(
-            !h.app.sidebar_open_for_test(),
+            !open(&mut app),
             "a narrow window starts with the rail collapsed"
         );
 
-        h.click_id("nav_toggle");
-        assert!(
-            h.app.sidebar_open_for_test(),
-            "the hamburger summons the overlay rail"
-        );
+        click(&mut app, "nav_toggle");
+        assert!(open(&mut app), "the hamburger summons the overlay rail");
 
-        h.click_id("nav_toggle");
-        assert!(
-            !h.app.sidebar_open_for_test(),
-            "a second click dismisses it"
-        );
+        click(&mut app, "nav_toggle");
+        assert!(!open(&mut app), "a second click dismisses it");
     }
 }
 
