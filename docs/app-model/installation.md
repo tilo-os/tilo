@@ -196,6 +196,14 @@ Which copy runs (`package_store::runs_over_image`):
   image's version, removes the user copy, which returns to the image's.
   `tilo-install uninstall` does the same; the image's copy itself cannot be
   removed.
+- never a user copy that requires a system interface version this OS does
+  not serve (`[sandbox.services]` `required@N`, against
+  `/usr/share/tilo/system-interfaces.toml`; see
+  [packaging.md](./packaging.md#sandboxservices)). Such a copy is never
+  offered or installed, but one installed for a newer OS that was then
+  rolled back stays in the user store, and the image's copy runs until the
+  system serves it again or the copy is removed (`app remove <name>`). The
+  image's copy is built with the image, so it always fits.
 
 In a developer build (debug, or `--features dev-overrides`),
 `TILO_APPS_SYSTEM_DIR` overrides the system path the same way

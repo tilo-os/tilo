@@ -437,6 +437,7 @@ fn native_binding(
                 .package
                 .native_runtime_binding()
                 .map(str::to_string),
+            interfaces: checked.manifest.required_interface_wire(),
         },
     })
 }
@@ -473,6 +474,7 @@ fn signed_target_binding(
         architecture: target.architecture.clone(),
         isa: target.isa.clone(),
         runtime: Some(target.runtime.clone()),
+        interfaces: Vec::new(),
     };
     if target.platform != platform.wire() {
         bail!(
@@ -587,6 +589,7 @@ mod tests {
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
+                interfaces: Vec::new(),
             },
         }
     }
@@ -717,6 +720,7 @@ module = "{module}"
                 architecture: "aarch64".into(),
                 isa: "aarch64".into(),
                 runtime: Some("tilo-runtime/2026.07".into()),
+                interfaces: Vec::new(),
             }
         );
         assert!(registry_types::verify_entry_signature(&entry));

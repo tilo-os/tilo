@@ -238,6 +238,7 @@ fn entry(package_id: &str, version: &str, url: &str, tapp: &[u8], runtime: &str)
                 architecture: native_target().0.into(),
                 isa: native_target().2.into(),
                 runtime: Some(runtime.into()),
+                interfaces: Vec::new(),
             },
         }],
         updated_at_unix: 2,

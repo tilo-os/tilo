@@ -152,12 +152,38 @@ fn installable_versions(
     entry: &registry_types::RegistryEntry,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> impl Iterator<Item = &registry_types::RegistryVersion> {
+    installable_versions_on(entry, channel, os_interfaces())
+}
+
+/// The system interfaces this OS serves, read once per process.
+fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
+    static PROVIDED: std::sync::OnceLock<Option<registry_types::ProvidedInterfaces>> =
+        std::sync::OnceLock::new();
+    PROVIDED
+        .get_or_init(package_store::interfaces::system_interfaces)
+        .as_ref()
+}
+
+/// Whether this OS serves every system interface `version` requires.
+pub fn serves_interfaces(version: &registry_types::RegistryVersion) -> bool {
+    os_interfaces().is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
+}
+
+/// [`installable_versions`] on an OS serving `provided`: a version that
+/// requires an interface version the OS does not serve is not offered, so
+/// an update never takes an app past what its system can run.
+fn installable_versions_on<'a>(
+    entry: &'a registry_types::RegistryEntry,
+    channel: tilo_app_package::version::ReleaseChannel,
+    provided: Option<&'a registry_types::ProvidedInterfaces>,
+) -> impl Iterator<Item = &'a registry_types::RegistryVersion> {
     let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
     entry.versions.iter().filter(move |version| {
         !version.tapp_url.trim().is_empty()
             && target_supported(version)
             && (runtime_package || runtime_named(version))
             && channel.accepts(&version.version)
+            && provided.is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
     })
 }
 
@@ -614,6 +640,7 @@ mod tests {
                     architecture: std::env::consts::ARCH.into(),
                     isa: native_baseline_isa().into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 7,
@@ -654,6 +681,30 @@ mod tests {
             },
             |mut entries| entries.remove(0),
         )
+    }
+
+    #[test]
+    fn an_os_is_offered_only_the_builds_it_can_serve() {
+        let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
+        let mut newer = e.versions[0].clone();
+        newer.version = "3.0.0".into();
+        newer.target.interfaces = vec!["system@2".into()];
+        e.versions[0].target.interfaces = vec!["system@1".into()];
+        e.versions.push(newer);
+        let stable = tilo_app_package::version::ReleaseChannel::Stable;
+        let offered = |provided: Option<&registry_types::ProvidedInterfaces>| {
+            installable_versions_on(&e, stable, provided)
+                .map(|version| version.version.clone())
+                .collect::<Vec<_>>()
+        };
+        let old_os = registry_types::ProvidedInterfaces::new([("system", &[1][..])]);
+        let new_os = registry_types::ProvidedInterfaces::new([("system", &[1, 2][..])]);
+        let elsewhere = registry_types::ProvidedInterfaces::new([("collab", &[1][..])]);
+        assert_eq!(offered(Some(&old_os)), ["2.0.0"]);
+        assert_eq!(offered(Some(&new_os)), ["2.0.0", "3.0.0"]);
+        assert!(offered(Some(&elsewhere)).is_empty());
+        // A host that declares no interfaces judges none.
+        assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
     }
 
     #[test]
@@ -717,6 +768,7 @@ mod tests {
             architecture: std::env::consts::ARCH.into(),
             isa: std::env::consts::ARCH.into(),
             runtime: Some("tilo-runtime/2026.07".into()),
+            interfaces: Vec::new(),
         };
         assert!(!target_supported(&android));
         e.versions.push(android.clone());
@@ -752,6 +804,7 @@ mod tests {
                         architecture: std::env::consts::ARCH.into(),
                         isa: native_baseline_isa().into(),
                         runtime: None,
+                        interfaces: Vec::new(),
                     },
                 },
                 RegistryVersion {
@@ -766,6 +819,7 @@ mod tests {
                         architecture: std::env::consts::ARCH.into(),
                         isa: native_baseline_isa().into(),
                         runtime: None,
+                        interfaces: Vec::new(),
                     },
                 },
             ];
