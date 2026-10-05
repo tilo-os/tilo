@@ -1245,6 +1245,23 @@ fn pump_floating_surface_service(
                 app_id,
                 message,
             } => match message {
+                ui::floating_surface::FloatingSurfaceClientMessage::AllowHostShell => {
+                    if app_id == crate::shell::host_shell_allow::TERMINAL_APP_ID {
+                        if let Some(writer) = service.reply_writer(connection) {
+                            frame_builder
+                                .host_mut()
+                                .request_native_host_shell_allow(writer);
+                        }
+                    } else {
+                        service.send(
+                            connection,
+                            &ui::floating_surface::FloatingSurfaceHostMessage::HostShellAllowed {
+                                allowed: false,
+                            },
+                        );
+                    }
+                    changed = true;
+                }
                 ui::floating_surface::FloatingSurfaceClientMessage::OpenCaptureStudio { mode } => {
                     let mode = match mode {
                         ui::floating_surface::CaptureStudioProtocolMode::Screenshot => {

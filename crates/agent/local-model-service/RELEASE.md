@@ -40,8 +40,10 @@ uses it. Such a model names no `allowed_runtimes`, has `context_window` 0 (both
 may be omitted), declares an in-process capability such as
 `"segmentation": true`, and cannot claim `vision` or `face_recognition`. It is
 verified and installed like any other object, but never started, and it can
-never be the catalog's `recommendation`. A catalog still needs a runtime-served
-recommendation; in-process models are added beside it.
+never be the catalog's chat `recommendation`. A catalog containing only in-process
+models uses an empty `runtimes` array and `"recommendation": ""`; publishing an
+image model does not require publishing a chat runtime. Catalogs containing
+runtime-served models still require a runtime-served recommendation.
 
 The catalog signature covers:
 
