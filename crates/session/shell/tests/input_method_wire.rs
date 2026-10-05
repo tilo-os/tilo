@@ -586,3 +586,58 @@ fn composer_grabs_keys_shows_preedit_commits_text_and_places_candidates_at_the_c
         "the text field stays connected"
     );
 }
+
+#[test]
+fn chrome_field_activates_the_input_method_and_receives_its_commit() {
+    let mut h = Harness::new();
+    h.state
+        .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));
+    let keyboard = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
+    let input_method = {
+        let client = &h.clients[keyboard];
+        let qh = client.queue.handle();
+        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+        client
+            .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+            .expect("trusted keyboard may bind")
+            .get_input_method(&seat, &qh, ())
+    };
+    h.pump();
+    let mut proxy = shell::compositor::shell_text_input::ShellTextInput::connect(&mut h.state)
+        .expect("chrome stand-in");
+    let field = shell::compositor::shell_text_input::FieldRequest {
+        purpose: winit::window::ImePurpose::Normal,
+        x: 420,
+        y: 100,
+        width: 1,
+        height: 24,
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    while h.clients[keyboard].peer.activated == 0 || !h.state.text_input_active() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "chrome field never activated"
+        );
+        proxy.sync(&mut h.state, Some(field));
+        h.pump();
+    }
+    assert!(proxy.holds_focus(&h.state));
+    input_method.commit_string("q".into());
+    input_method.commit(h.clients[keyboard].peer.im_done);
+    let mut events = Vec::new();
+    while events.is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "chrome commit never arrived"
+        );
+        h.pump();
+        events.extend(proxy.sync(&mut h.state, Some(field)));
+    }
+    assert!(events.iter().any(|event| matches!(event,
+        winit::event::WindowEvent::Ime(winit::event::Ime::Commit(text)) if text == "q"
+    )));
+    proxy.sync(&mut h.state, None);
+    h.pump();
+    assert!(!proxy.holds_focus(&h.state));
+    assert!(!h.state.text_input_active());
+}

@@ -245,6 +245,14 @@ impl TerminalWidget {
     /// Open the tab's session if it has none yet: on the record's target or,
     /// for a new tab, the default — recorded, so reopening returns to it.
     fn ensure_session(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        if matches!(self.sessions.state, OpenState::NoRuntime(_))
+            && std::mem::take(&mut self.sessions.host_requested)
+        {
+            // The explanation stays on screen until a session replaces it;
+            // a refusal of the device's shell is told on the tab as well.
+            let _ = self.switch_target(state, root, &SessionTarget::Host, Requester::Person);
+            return;
+        }
         if self.sessions.state != OpenState::Unopened {
             self.poll_allow(state, root);
             return;
@@ -308,6 +316,19 @@ impl TerminalWidget {
                 self.sessions.state = OpenState::AwaitingAllow;
                 self.show_status(&t("terminal-host-awaiting-allow"));
             }
+            Err(OpenError::NoRuntime(reason)) => {
+                tracing::warn!(
+                    target = %target.encode(),
+                    %reason,
+                    "terminal: the environment cannot be built on this device"
+                );
+                self.explain_no_runtime(state, root, &reason, requested_by);
+                self.sessions.state = if requested_by == Requester::Person {
+                    OpenState::NoRuntime(reason)
+                } else {
+                    OpenState::Failed(reason)
+                };
+            }
             Err(error) => {
                 let reason = error.to_string();
                 self.show_status(&reason);
@@ -315,6 +336,59 @@ impl TerminalWidget {
             }
         }
         request_terminal_wake(&self.waker, &self.wake_pending);
+    }
+
+    /// Say on the tab why its environment cannot start and what to do: the
+    /// device's own shell for the person (behind its allow), another target
+    /// from the picker, or a runtime to install. Never a blank pane.
+    fn explain_no_runtime(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        reason: &str,
+        requested_by: Requester,
+    ) {
+        let mut lines = vec![
+            t("terminal-no-runtime-title"),
+            reason.to_owned(),
+            String::new(),
+        ];
+        if requested_by == Requester::Person {
+            lines.push(t("terminal-no-runtime-host"));
+            lines.push(t("terminal-no-runtime-picker"));
+        }
+        lines.push(t("terminal-no-runtime-install"));
+        let mut text = String::from("\x1b[2J\x1b[H");
+        for line in lines {
+            text.push_str(&line.replace(['\r', '\n'], " "));
+            text.push_str("\r\n");
+        }
+        self.feed(state, root, text.as_bytes());
+        self.show_status(&if requested_by == Requester::Person {
+            t("terminal-no-runtime-status")
+        } else {
+            reason.to_owned()
+        });
+    }
+
+    /// Enter on a tab whose environment cannot start takes its offer of the
+    /// device's own shell. Returns whether the key was taken.
+    fn take_no_runtime_offer(
+        &mut self,
+        key: &Key,
+        modifiers: winit::keyboard::ModifiersState,
+    ) -> bool {
+        if !matches!(self.sessions.state, OpenState::NoRuntime(_))
+            || !matches!(key, Key::Named(NamedKey::Enter))
+            || modifiers.control_key()
+            || modifiers.alt_key()
+            || modifiers.super_key()
+        {
+            return false;
+        }
+        self.sessions.host_requested = true;
+        request_terminal_wake(&self.waker, &self.wake_pending);
+        true
     }
 
     /// The person answered the shell's prompt for the device's own shell.
@@ -358,7 +432,7 @@ impl TerminalWidget {
         self.record_target(state, target);
         self.open_session(state, root, target, requested_by);
         match &self.sessions.state {
-            OpenState::Failed(reason) => Err(reason.clone()),
+            OpenState::Failed(reason) | OpenState::NoRuntime(reason) => Err(reason.clone()),
             _ => Ok(()),
         }
     }

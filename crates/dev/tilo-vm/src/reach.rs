@@ -22,13 +22,14 @@ pub const WAKE_PORT: u16 = 9;
 /// Read, as root, what reaching and waking the device needs: its hostname
 /// and, for the interface that holds `%ADDR%` (the address tilo-vm reached
 /// it at; else, as behind a forwarded port, the default route's), its MAC,
-/// subnet broadcast and magic-packet wake setting.
+/// subnet broadcast and magic-packet wake setting; and its route over the
+/// peer network (`tilo-device-admin id`), on a dev image that serves one.
 pub const NET_PROBE: &str = r#"addr=%ADDR%
 iface=$(ip -o addr show 2>/dev/null | awk -v a="$addr" '{split($4, p, "/"); if (p[1] == a) {print $2; exit}}')
 [ "$iface" != lo ] || iface=
 [ -n "$iface" ] || iface=$(ip -o -4 route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1)
 echo "hostname=$(cat /proc/sys/kernel/hostname)"
-[ -n "$iface" ] || exit 0
+if [ -n "$iface" ]; then
 echo "interface=$iface"
 echo "mac=$(cat "/sys/class/net/$iface/address" 2>/dev/null)"
 echo "broadcast=$(ip -o -4 addr show dev "$iface" 2>/dev/null | sed -n 's/.* brd \([0-9.]*\).*/\1/p' | head -n 1)"
@@ -45,6 +46,10 @@ else
   if command -v ethtool >/dev/null 2>&1; then
     echo @@ethtool; ethtool "$iface" 2>&1 | grep -i 'wake-on'
   fi
+fi
+fi
+if command -v tilo-device-admin >/dev/null 2>&1; then
+  echo @@admin; tilo-device-admin id 2>/dev/null
 fi
 true"#;
 
@@ -67,6 +72,7 @@ pub struct NetFacts {
     pub hostname: Option<String>,
     pub mac: Option<String>,
     pub wake: Option<WakeInfo>,
+    pub peer: Option<crate::config::PeerRoute>,
 }
 
 /// How the device can be woken, as it reported it when last reached.
@@ -138,6 +144,19 @@ impl WakeInfo {
     }
 }
 
+/// What `tilo-device-admin id` prints.
+#[derive(Deserialize)]
+struct AdminId {
+    device: String,
+    endpoint: String,
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default)]
+    relay: Option<String>,
+    #[serde(default)]
+    home_relay: Option<String>,
+}
+
 /// Read [`NET_PROBE`]'s answer.
 pub fn parse_net_probe(output: &str) -> NetFacts {
     let mut sections = output.split("@@");
@@ -169,7 +188,18 @@ pub fn parse_net_probe(output: &str) -> NetFacts {
             phy: field("phy").filter(|_| wifi),
         }
     });
+    let peer = tool
+        .get("admin")
+        .and_then(|body| serde_json::from_str::<AdminId>(body.trim()).ok())
+        .map(|id| crate::config::PeerRoute {
+            device: id.device,
+            endpoint: id.endpoint,
+            identity: id.identity,
+            relay: id.relay,
+            home_relay: id.home_relay,
+        });
     NetFacts {
+        peer,
         hostname: field("hostname"),
         mac: field("mac")
             .filter(|mac| parse_mac(mac).is_some_and(|bytes| bytes != [0; 6]))
@@ -472,6 +502,28 @@ mod tests {
         let line = net_probe("10.0.0.5");
         assert!(line.starts_with("addr=10.0.0.5; iface="), "{line}");
         assert!(!line.contains('\n') && !line.contains("then;"), "{line}");
+        assert!(line.contains("tilo-device-admin id"), "{line}");
+        // The route over the peer network, whatever the interface.
+        let admin = parse_net_probe(concat!(
+            "hostname=yoga\n@@admin\n",
+            r#"{"device":"aa","endpoint":"bb","label":"Yoga","identity":"cc","relay":null,"home_relay":"https://relay.example/","serving":true}"#,
+            "\n"
+        ));
+        assert_eq!(admin.hostname.as_deref(), Some("yoga"));
+        assert_eq!(
+            admin.peer,
+            Some(crate::config::PeerRoute {
+                device: "aa".into(),
+                endpoint: "bb".into(),
+                identity: Some("cc".into()),
+                relay: None,
+                home_relay: Some("https://relay.example/".into()),
+            })
+        );
+        assert_eq!(
+            parse_net_probe("hostname=vm\n@@admin\nnot json\n").peer,
+            None
+        );
     }
 
     /// Answers `getent` and `avahi-resolve` from a script; a missing tool is
