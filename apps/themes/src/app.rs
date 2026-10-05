@@ -46,7 +46,7 @@ use crate::actions::ThemesAction;
 use crate::customizer::{ControlEdit, Customizer};
 use crate::draw;
 use crate::gallery::Gallery;
-use crate::model::{FONTS, ThemeSpec, TokenId, default_catalog};
+use crate::model::{ThemeSpec, TokenId, default_catalog};
 use crate::preview::PreviewPane;
 use crate::resource::{Themes, ThemesEffect, ThemesState, scenario};
 use crate::store;
@@ -466,7 +466,7 @@ impl ThemesApp {
             self.edit_token = token;
         }
         for edit in self.customizer.take_edits() {
-            if let Some(action) = self.edit_action(edit) {
+            if let Some(action) = self.edit_action(&edit) {
                 self.submit(doc.as_deref_mut(), &action);
             }
         }
@@ -485,51 +485,12 @@ impl ThemesApp {
 
     /// The edit a value set on one of the customizer's controls makes to the
     /// selected custom theme, unless it already holds that value.
-    fn edit_action(&self, edit: ControlEdit) -> Option<ThemesAction> {
-        use crate::actions as a;
-        use crate::model as m;
+    fn edit_action(&self, edit: &ControlEdit) -> Option<ThemesAction> {
         let current = self.selected_spec().filter(|spec| !spec.builtin)?;
         let id = current.id.as_str();
-        let changed = |value: f32, stored: f32| (value - stored).abs() > f32::EPSILON;
-        match edit {
+        match *edit {
             ControlEdit::Color(rgb) => (rgb != current.token(self.edit_token))
-                .then(|| a::set_custom_theme_token_action(id, self.edit_token, rgb)),
-            ControlEdit::Radius(v) => changed(v as f32, current.radius_norm)
-                .then(|| a::set_custom_theme_radius_action(id, v as f32)),
-            ControlEdit::Spacing(v) => changed(v as f32, current.spacing_norm)
-                .then(|| a::set_custom_theme_spacing_action(id, v as f32)),
-            ControlEdit::Motion(v) => {
-                let scale = m::motion_scale_from_norm(v as f32);
-                changed(scale, current.motion_scale)
-                    .then(|| a::set_custom_theme_motion_action(id, scale))
-            }
-            ControlEdit::Material(v) => {
-                let scale = m::material_scale_from_norm(v as f32);
-                changed(scale, current.material_scale)
-                    .then(|| a::set_custom_theme_material_action(id, scale))
-            }
-            ControlEdit::Icon(v) => {
-                let scale = m::icon_scale_from_norm(v as f32);
-                changed(scale, current.icon_scale)
-                    .then(|| a::set_custom_theme_icon_action(id, scale))
-            }
-            ControlEdit::Chrome(v) => {
-                let weight = m::chrome_weight_from_norm(v as f32);
-                changed(weight, current.chrome_weight)
-                    .then(|| a::set_custom_theme_chrome_action(id, weight))
-            }
-            ControlEdit::Character(v) => {
-                let character = m::motion_character_from_norm(v as f32);
-                changed(character, current.motion_character)
-                    .then(|| a::set_custom_theme_motion_character_action(id, character))
-            }
-            ControlEdit::Tint(v) => {
-                let tint = m::material_tint_from_norm(v as f32);
-                changed(tint, current.material_tint)
-                    .then(|| a::set_custom_theme_material_tint_action(id, tint))
-            }
-            ControlEdit::Font(font) => (FONTS.contains(&font.as_str()) && font != current.font)
-                .then(|| a::set_custom_theme_font_action(id, font)),
+                .then(|| crate::actions::set_custom_theme_token_action(id, self.edit_token, rgb)),
         }
     }
 
@@ -653,6 +614,10 @@ impl ThemesApp {
         let next_order = crate::actions::max_order(&self.catalog) + 1;
         let theme = crate::actions::theme_resource(&spec, next_order);
         let binding = |id| tilo_actions::ActionBinding::unit_for(&theme, id).ok();
+        // The controls set the shown theme by its own published actions;
+        // a preset publishes none, so they are off.
+        self.customizer
+            .bind_controls(&format!("{}@{next_order}", spec.id), &theme);
         if let Some(duplicate) = binding("duplicate") {
             self.customizer.bind_actions(
                 &format!("{}@{next_order}", spec.id),
