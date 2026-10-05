@@ -143,7 +143,16 @@ impl RouteKeys {
             }
             Wire::Waiting => self.keys = Keys::Pending(ChannelAccessState::WaitingForAccess),
             Wire::Removed => self.keys = Keys::Pending(ChannelAccessState::Removed),
-            Wire::Unavailable => self.keys = Keys::Pending(ChannelAccessState::Unavailable),
+            Wire::Unavailable => {
+                if !matches!(self.keys, Keys::Pending(ChannelAccessState::Unavailable)) {
+                    tracing::warn!(
+                        "collab: this record's channel keys are unavailable on this device \
+                         (no secret store answered, or the room's steward is unknown); \
+                         its edits stay here and reach no other device until they arrive"
+                    );
+                }
+                self.keys = Keys::Pending(ChannelAccessState::Unavailable);
+            }
         }
     }
 

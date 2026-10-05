@@ -66,6 +66,14 @@ pub struct WorkspaceMeta {
     /// invitation pinned it. `None` for the person's own rooms, which any
     /// of their devices governs.
     pub governor: Option<String>,
+    /// The device that stewards the end-to-end encrypted channels of a room
+    /// the person owns: the device that minted the room. Every device of the
+    /// person governs such a room, but each of its record channels has one
+    /// group, so the person's other devices ask this one for the keys
+    /// instead of founding groups of their own. `None` for someone else's
+    /// room, whose governor stewards them, and for an entry no device
+    /// claimed yet.
+    pub steward: Option<[u8; 32]>,
     /// Where the workspace sits in the person's list: entries sort by
     /// `(order, id)`, an entry without one last. Each entry's position is
     /// its own register, so concurrent moves of different workspaces both
@@ -329,6 +337,33 @@ impl WorkspaceDirectory {
                 .map_err(|e| DirectoryError::Automerge(e.to_string())),
             None => Ok(()),
         }
+    }
+
+    /// Name `device` the steward of workspace `id`'s channels unless a
+    /// steward is named already: the first claim stands, so a device that
+    /// later lists the same room never takes its channels over.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DirectoryError::Automerge`] if the underlying
+    /// Automerge document operation fails.
+    pub fn claim_steward(
+        &mut self,
+        id: WorkspaceId,
+        device: [u8; 32],
+    ) -> Result<(), DirectoryError> {
+        let obj = self.ensure_workspace_obj(id)?;
+        if self.read_steward(&obj).is_some() {
+            return Ok(());
+        }
+        self.doc
+            .put(&obj, "steward", hex_key(&device))
+            .map_err(|e| DirectoryError::Automerge(e.to_string()))
+    }
+
+    fn read_steward(&self, workspace_obj: &ObjId) -> Option<[u8; 32]> {
+        let bytes = hex::decode(self.read_text(workspace_obj, "steward")?).ok()?;
+        <[u8; 32]>::try_from(bytes).ok()
     }
 
     fn put_text_if_changed(
@@ -606,6 +641,7 @@ impl WorkspaceDirectory {
                 name,
                 room,
                 governor,
+                steward: self.read_steward(&obj),
                 order,
                 member_devices: self.read_pubkey_list(&obj, "members"),
                 kept_off_devices: self.read_kept_off(&obj),
@@ -1354,5 +1390,44 @@ mod tests {
         assert!(!entry.kept_off_devices.contains(&later_pk));
         laptop.set_kept_off(4, a_pk, false).unwrap();
         assert_eq!(laptop.list_workspaces()[0].kept_off_devices, vec![b_pk]);
+    }
+
+    /// The device that lists a room first stewards its channels; another
+    /// device's later claim leaves it, on both devices.
+    #[test]
+    fn the_first_steward_claim_stands_on_every_device() {
+        let f = fresh_user();
+        let (a_sk, a_pk, a_cert) = enrol_device(
+            &f.user_sk,
+            f.user_pk,
+            "laptop",
+            DeviceCapabilities::primary(),
+        );
+        let (b_sk, b_pk, b_cert) =
+            enrol_device(&f.user_sk, f.user_pk, "board", DeviceCapabilities::member());
+        let mut laptop = WorkspaceDirectory::new(f.user_pk, a_pk);
+        laptop.add_room_workspace(9, "room-9", "Home").unwrap();
+        assert_eq!(laptop.list_workspaces()[0].steward, None);
+        laptop.claim_steward(9, a_pk).unwrap();
+        let mut board = WorkspaceDirectory::new(f.user_pk, b_pk);
+        board
+            .apply_incremental(
+                &laptop.signed_snapshot(&a_sk, 1_000).unwrap(),
+                &a_cert,
+                &RevocationList::new(),
+                1_100,
+            )
+            .unwrap();
+        board.claim_steward(9, b_pk).unwrap();
+        assert_eq!(board.list_workspaces()[0].steward, Some(a_pk));
+        laptop
+            .apply_incremental(
+                &board.signed_snapshot(&b_sk, 1_200).unwrap(),
+                &b_cert,
+                &RevocationList::new(),
+                1_300,
+            )
+            .unwrap();
+        assert_eq!(laptop.list_workspaces()[0].steward, Some(a_pk));
     }
 }

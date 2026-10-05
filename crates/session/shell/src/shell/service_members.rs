@@ -213,6 +213,7 @@ mod tests {
             Box::new(WorkspaceChannelDirectory::new(
                 tree.clone(),
                 Box::new(|_| Vec::new()),
+                key(OWNER).verifying_key().to_bytes(),
             )),
         );
         let mut service = open(

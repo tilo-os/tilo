@@ -391,6 +391,19 @@ pub enum NeighbourMsg {
         user_public_key: [u8; 32],
         update: Box<tilo_user_identity::DirectoryUpdate>,
     },
+    /// A device's app opened `record_id` and holds nothing a peer wrote
+    /// before: a member of the room whose app holds the record answers with
+    /// the record's whole document as an ordinary signed (and, in a sealed
+    /// channel, sealed) document write, so a device catches up on a record
+    /// edited while it was not listening. Travels on `cluster_id`'s room
+    /// topic; `record_id` is the wire record id, as in
+    /// [`Self::AppDocument`]. `peer` is the requester's liveness hash.
+    DocumentSnapshotRequest {
+        peer: PeerId,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+    },
 }
 
 #[cfg(test)]
@@ -448,6 +461,15 @@ mod tests {
         all.extend(fixtures_input_permissions_and_identity());
         all.extend(fixtures_app_crdt_and_scrollback());
         all.extend(fixtures_channel_governance());
+        all.push((
+            "document snapshot request",
+            NeighbourMsg::DocumentSnapshotRequest {
+                peer: 42,
+                app_id: "so.tilo.notes".into(),
+                cluster_id: ROOM.into(),
+                record_id: "derived:default@tab:0000000000000000".into(),
+            },
+        ));
         all
     }
 
@@ -799,10 +821,11 @@ mod tests {
             NeighbourMsg::MlsAccessRequest { .. } => "MlsAccessRequest",
             NeighbourMsg::MlsGovernanceAck { .. } => "MlsGovernanceAck",
             NeighbourMsg::PersonalWorkspaces { .. } => "PersonalWorkspaces",
+            NeighbourMsg::DocumentSnapshotRequest { .. } => "DocumentSnapshotRequest",
         }
     }
 
-    const VARIANT_COUNT: usize = 26;
+    const VARIANT_COUNT: usize = 27;
 
     fn hex(bytes: &[u8]) -> String {
         use std::fmt::Write;
@@ -994,6 +1017,14 @@ mod tests {
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee40efefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
                 "efefefefefefefefefefefefefefefefefefefefefefefefef09",
+            ),
+        ),
+        (
+            "document snapshot request",
+            concat!(
+                "1a2a0d736f2e74696c6f2e6e6f7465732436623366396131302d303030302d34",
+                "3030302d383030302d30303030303030303030306324646572697665643a6465",
+                "6661756c74407461623a30303030303030303030303030303030",
             ),
         ),
     ];

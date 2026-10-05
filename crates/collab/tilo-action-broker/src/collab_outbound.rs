@@ -49,6 +49,10 @@ pub trait PeerPublishSink: Send + Sync {
     /// A local app joined this route, so peers' documents for it must be
     /// routable here, including the history this device dropped before.
     fn local_route(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
+
+    /// Ask the room's other devices for the record's whole document: a
+    /// local app opened it and no app here holds it to answer.
+    fn document_snapshot_request(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
 }
 
 /// The one place a local payload becomes a peer publish. Construct with
@@ -207,6 +211,20 @@ impl PeerPublisher {
         {
             sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
         }
+    }
+
+    /// Ask the room's other devices for `route`'s whole document, for a
+    /// local app that opened it with nobody here to answer. Returns whether
+    /// the request was handed to the network.
+    pub fn document_snapshot_request(&self, route: &CrdtRoute) -> bool {
+        let Some(sink) = self.ready(route, "document snapshot request") else {
+            return false;
+        };
+        if route.record_id.is_empty() {
+            return false;
+        }
+        sink.document_snapshot_request(&route.app_id, &route.cluster_id, &route.record_id);
+        true
     }
 
     /// Routed like any other outbound: a connection that never announced

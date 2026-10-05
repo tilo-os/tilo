@@ -245,6 +245,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         Box::new(WorkspaceChannelDirectory::new(
             tree.clone(),
             Box::new(|_| Vec::new()),
+            session_key.verifying_key().to_bytes(),
         )),
         Arc::new(Mutex::new(BrokerChannels::default())),
     )

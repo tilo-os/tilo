@@ -285,7 +285,26 @@ impl PersonalWorkspaces {
             .filter_map(|(_, entry)| entry.order)
             .fold(0.0_f64, f64::max);
         let mut appended = 0.0;
+        let stewards = self.stewards();
         for (room, entry) in listed {
+            // A room minted here and owned by the person: this device
+            // stewards its channels unless the list already names a steward.
+            if entry.governor.is_none()
+                && tree.room_authority(*room) == RoomAuthority::Local
+                && !stewards.contains_key(room)
+            {
+                match self
+                    .directory
+                    .add_room_workspace(entry_id(*room), &room.to_string(), &entry.name)
+                    .and_then(|()| self.directory.claim_steward(entry_id(*room), self.device))
+                {
+                    Ok(()) => changed = true,
+                    Err(error) => {
+                        complete = false;
+                        tracing::warn!(%error, %room, "channel steward could not be claimed");
+                    }
+                }
+            }
             let fresh = !self.agreed.contains_key(room);
             // Enrollment gives us a room ID before its real name arrives.
             // Do not publish that provisional name as a rename on the owner's
@@ -459,6 +478,15 @@ impl PersonalWorkspaces {
             .collect();
         self.persist();
         changed
+    }
+
+    /// The device the list names as steward of each owned room's channels.
+    pub fn stewards(&self) -> std::collections::HashMap<RoomId, [u8; 32]> {
+        entries_of(&self.directory)
+            .into_iter()
+            .filter(|(_, entry)| entry.governor.is_none())
+            .filter_map(|(room, entry)| Some((room, entry.steward?)))
+            .collect()
     }
 
     /// The person's devices as the menu of `room`'s workspace offers them,

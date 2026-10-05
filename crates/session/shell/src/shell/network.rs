@@ -14,6 +14,8 @@ mod native_enrollment;
 mod native_ingress;
 #[cfg(test)]
 mod node_member_tests;
+#[cfg(test)]
+mod own_device_records_tests;
 mod relay_rooms;
 #[cfg(test)]
 mod same_person_room_tests;
@@ -1094,7 +1096,8 @@ fn governors_before_and_after(
 }
 
 /// Tell the workspace menus which of the person's devices each of their
-/// workspaces shows on.
+/// workspaces shows on, and channel encryption which device stewards each
+/// owned room's channels.
 fn refresh_device_choices(
     tree: &mut crate::shell::state::WorkspaceTree,
     workspaces: &crate::shell::personal_workspaces::PersonalWorkspaces,
@@ -1108,6 +1111,10 @@ fn refresh_device_choices(
     if tree.personal_device_choices != choices {
         tree.personal_device_choices = choices;
         tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
+    }
+    let stewards = workspaces.stewards();
+    if tree.channel_stewards != stewards {
+        tree.channel_stewards = stewards;
     }
 }
 
@@ -1452,6 +1459,13 @@ pub struct ShellNetwork {
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
+    /// Room peers asking for a record's whole document; the broker's drainer
+    /// asks a local app holding the record to publish it.
+    inbound_snapshot_requests: Arc<Mutex<Vec<InboundSnapshotRequest>>>,
+    /// When this device last passed on a peer's snapshot request per
+    /// record, so a peer that keeps asking costs one snapshot per interval.
+    snapshot_answers:
+        Mutex<std::collections::HashMap<(String, String, String), std::time::Instant>>,
     /// Inbound cooperative-scrollback *responses*, forwarded by the
     /// broker's drainer to the local app that asked.
     inbound_scrollback_response: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
@@ -1549,6 +1563,18 @@ pub struct InboundScrollbackRequest {
     pub before_seq: u64,
     pub max: u16,
 }
+
+/// A room peer's request for one record's whole document.
+#[derive(Debug, Clone)]
+pub struct InboundSnapshotRequest {
+    pub app_id: String,
+    pub cluster_id: String,
+    /// The local record id.
+    pub record_id: String,
+}
+
+/// How often one record's snapshot is passed on to a local app for peers.
+const SNAPSHOT_ANSWER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// One received cooperative-scrollback response, translated by the
 /// broker's drainer into a `CollabEvent::ScrollbackBatch`.
@@ -1895,6 +1921,8 @@ impl ShellNetwork {
             live_presence: Mutex::default(),
             live_labels: Mutex::default(),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
+            inbound_snapshot_requests: Arc::new(Mutex::new(Vec::new())),
+            snapshot_answers: Mutex::default(),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
             remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),
@@ -2221,7 +2249,8 @@ impl ShellNetwork {
             | NeighbourMsg::MlsAccessRequest { room, .. }
             | NeighbourMsg::MlsGovernanceAck { room, .. } => Some(room.as_str()),
             NeighbourMsg::AppDocument { cluster_id, .. }
-            | NeighbourMsg::AppPresenceV2 { cluster_id, .. } => Some(cluster_id.as_str()),
+            | NeighbourMsg::AppPresenceV2 { cluster_id, .. }
+            | NeighbourMsg::DocumentSnapshotRequest { cluster_id, .. } => Some(cluster_id.as_str()),
             _ => None,
         };
         room.and_then(RoomId::parse)
@@ -3181,6 +3210,63 @@ impl ShellNetwork {
     /// app's `FetchScrollback` returned `exhausted=true` with an empty
     /// batch — the broker has nothing more in-memory, but the app still
     /// wants the range.
+    /// Ask the room's other devices for `record_id`'s whole document. Only
+    /// in a room this device replicates itself: an enrolled room's governor
+    /// replays what it admitted.
+    pub fn publish_document_snapshot_request(
+        &self,
+        app_id: &str,
+        cluster_id: &str,
+        record_id: &str,
+    ) {
+        let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) else {
+            return;
+        };
+        if self.native_topic_required(room_topic_id(room)) {
+            return;
+        }
+        let record_id = self.register_local_record(app_id, cluster_id, record_id);
+        let _ = self.publish_message(NeighbourMsg::DocumentSnapshotRequest {
+            peer: self.local_peer_id_hash(),
+            app_id: app_id.to_owned(),
+            cluster_id: cluster_id.to_owned(),
+            record_id,
+        });
+    }
+
+    /// Shared handle to room peers' snapshot requests.
+    pub fn inbound_snapshot_requests_handle(&self) -> Arc<Mutex<Vec<InboundSnapshotRequest>>> {
+        Arc::clone(&self.inbound_snapshot_requests)
+    }
+
+    /// Queue a room peer's request for a record this device's apps hold,
+    /// at most once per record per [`SNAPSHOT_ANSWER_INTERVAL`].
+    fn queue_snapshot_request(&self, app_id: String, cluster_id: String, record_id: String) {
+        let key = (app_id, cluster_id, record_id);
+        let now = std::time::Instant::now();
+        let Ok(mut answered) = self.snapshot_answers.lock() else {
+            return;
+        };
+        if answered
+            .get(&key)
+            .is_some_and(|at| now.duration_since(*at) < SNAPSHOT_ANSWER_INTERVAL)
+        {
+            return;
+        }
+        answered.retain(|_, at| now.duration_since(*at) < SNAPSHOT_ANSWER_INTERVAL);
+        answered.insert(key.clone(), now);
+        drop(answered);
+        let (app_id, cluster_id, record_id) = key;
+        if let Ok(mut inbound) = self.inbound_snapshot_requests.lock() {
+            inbound.push(InboundSnapshotRequest {
+                app_id,
+                cluster_id,
+                record_id,
+            });
+        }
+        self.drain_wake.poke();
+    }
+
     pub fn publish_scrollback_request(
         &self,
         artifact: collab_types::ArtifactId,
@@ -3385,6 +3471,7 @@ impl ShellNetwork {
             identity: self.personal_continuity_user.map(hex::encode),
             refreshed_unix_ms: now_unix_seconds().saturating_mul(1000),
             devices: rows.clone(),
+            content_sync_blocked: crate::shell::collab_broker::content_sync_blocked(),
         };
         let path = personal_devices::presence_path(&runtime_dir);
         let Ok(bytes) = serde_json::to_vec_pretty(&snapshot) else {
@@ -6390,6 +6477,23 @@ impl ShellNetwork {
                     );
                 }
             }
+            NeighbourMsg::DocumentSnapshotRequest {
+                peer: peer_hash,
+                app_id,
+                cluster_id,
+                record_id,
+            } => {
+                // The transport authenticated the asker and the room allows
+                // it to read; whatever answers is published to the room like
+                // any edit, sealed where the record's channel is.
+                let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id)
+                else {
+                    return;
+                };
+                if peer_hash != self.local_peer_hash && self.is_in_room(&cluster_id) {
+                    self.queue_snapshot_request(app_id, cluster_id, record_id);
+                }
+            }
             NeighbourMsg::AppPresenceV2 {
                 peer: peer_hash,
                 app_id,
@@ -6660,6 +6764,7 @@ impl ShellNetwork {
             | NeighbourMsg::Heartbeat { peer, .. }
             | NeighbourMsg::MediaCapabilities { peer, .. }
             | NeighbourMsg::AppDocument { peer, .. }
+            | NeighbourMsg::DocumentSnapshotRequest { peer, .. }
             | NeighbourMsg::AppPresenceV2 { peer, .. } => Some(*peer),
             NeighbourMsg::SurfaceStreamStart { source_peer, .. }
             | NeighbourMsg::SurfaceStreamEnd { source_peer, .. }
@@ -7393,6 +7498,8 @@ pub(crate) fn shell_network_for_test(
         live_presence: Mutex::default(),
         live_labels: Mutex::default(),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
+        inbound_snapshot_requests: Arc::new(Mutex::new(Vec::new())),
+        snapshot_answers: Mutex::default(),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
         remote_action_replies: crate::shell::remote_action_link::ReplyWaiters::default(),

@@ -36,11 +36,18 @@ pub type AuthenticatedDevices =
 pub struct WorkspaceChannelDirectory {
     tree: WorkspaceTreeHandle,
     own_devices: OwnDevices,
+    /// This device's key.
+    device: [u8; 32],
 }
 
 impl WorkspaceChannelDirectory {
-    pub fn new(tree: WorkspaceTreeHandle, own_devices: OwnDevices) -> Self {
-        Self { tree, own_devices }
+    /// The directory for this device, `device`.
+    pub fn new(tree: WorkspaceTreeHandle, own_devices: OwnDevices, device: [u8; 32]) -> Self {
+        Self {
+            tree,
+            own_devices,
+            device,
+        }
     }
 
     /// Production source of this machine's own devices: the fleet of the
@@ -106,16 +113,35 @@ pub fn fleet_devices(
 impl ChannelDirectory for WorkspaceChannelDirectory {
     fn governs(&self, room: RoomId) -> bool {
         let tree = self.tree.read();
-        tree.rooms().contains(&room) && tree.governs_room(room)
+        tree.rooms().contains(&room) && tree.stewards_channels(room, &self.device)
     }
 
+    /// Someone else's room: its pinned governor. A room the person owns:
+    /// the device of theirs the workspace list names, while it is a
+    /// certified device of this identity that is not revoked.
     fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey> {
-        let RoomAuthority::Peer(origin) = self.tree.read().room_authority(room) else {
+        let authority = self.tree.read().room_authority(room);
+        if let RoomAuthority::Peer(origin) = authority {
+            let endpoint = origin.as_str().strip_prefix("iroh:")?;
+            let endpoint = endpoint.parse::<iroh::EndpointId>().ok()?;
+            return Some(Ed25519PublicKey::from_bytes(*endpoint.as_bytes()));
+        }
+        let steward = *self.tree.read().channel_stewards.get(&room)?;
+        if steward == self.device {
             return None;
-        };
-        let endpoint = origin.as_str().strip_prefix("iroh:")?;
-        let endpoint = endpoint.parse::<iroh::EndpointId>().ok()?;
-        Some(Ed25519PublicKey::from_bytes(*endpoint.as_bytes()))
+        }
+        let certified = (self.own_devices)(room)
+            .iter()
+            .any(|(cert, revoked)| cert.device_public_key == steward && !revoked);
+        if !certified {
+            tracing::warn!(
+                %room,
+                steward = %hex::encode(steward),
+                "the device stewarding this room's channels is not a certified device of this identity; its records stay closed here"
+            );
+            return None;
+        }
+        Some(Ed25519PublicKey::from_bytes(steward))
     }
 
     fn allowed_devices(&self, room: RoomId, now: u64) -> BTreeSet<Ed25519PublicKey> {
@@ -152,14 +178,22 @@ pub fn allowed_devices(
             && !cert.is_expired_at(now_ns)
             && tilo_user_identity::verify_device_cert(cert).is_ok()
     };
+    // A device this identity's fleet revoked reads nothing, however the
+    // room's governance still lists it.
+    let fleet_revoked: BTreeSet<[u8; 32]> = own_devices
+        .iter()
+        .filter(|(_, revoked)| *revoked)
+        .map(|(cert, _)| cert.device_public_key)
+        .collect();
     let mut allowed = BTreeSet::new();
     if let Some(identities) = tree.room_peer_identities.get(&room) {
         for identity in identities.values() {
             let cert = &identity.device_cert;
-            let revoked = identity
-                .revocations
-                .iter()
-                .any(|entry| entry.revoked_device_public_key == cert.device_public_key);
+            let revoked = fleet_revoked.contains(&cert.device_public_key)
+                || identity
+                    .revocations
+                    .iter()
+                    .any(|entry| entry.revoked_device_public_key == cert.device_public_key);
             if !revoked && reads(cert) {
                 allowed.insert(Ed25519PublicKey::from_bytes(cert.device_public_key));
             }

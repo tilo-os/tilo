@@ -707,6 +707,10 @@ pub struct WorkspaceTree {
     /// for the network to write them into the person's workspace list.
     #[serde(skip)]
     pub personal_device_requests: Vec<(RoomId, [u8; 32], bool)>,
+    /// The device stewarding the encrypted channels of each room the person
+    /// owns, as the person's workspace list names it; set by the network.
+    #[serde(skip)]
+    pub channel_stewards: HashMap<RoomId, [u8; 32]>,
 }
 
 impl Default for WorkspaceTree {
@@ -737,6 +741,7 @@ impl Default for WorkspaceTree {
             window_hosting: None,
             personal_device_choices: HashMap::new(),
             personal_device_requests: Vec::new(),
+            channel_stewards: HashMap::new(),
         }
     }
 }
@@ -1092,6 +1097,20 @@ impl WorkspaceTree {
             RoomAuthority::Local => true,
             RoomAuthority::Person(person) => self.local_person == Some(person),
             RoomAuthority::Peer(_) | RoomAuthority::Unpinned => false,
+        }
+    }
+
+    /// Whether this device, `device`, stewards `room`'s encrypted channels.
+    /// Only a governing device does. In a room every device of the person
+    /// governs, that is the one the person's workspace list names; before
+    /// the list names one, the device that minted the room, which claims it.
+    pub fn stewards_channels(&self, room: RoomId, device: &[u8; 32]) -> bool {
+        if !self.governs_room(room) {
+            return false;
+        }
+        match self.channel_stewards.get(&room) {
+            Some(steward) => steward == device,
+            None => self.room_authority(room) == RoomAuthority::Local,
         }
     }
 

@@ -62,7 +62,12 @@ gid=$("$id_bin" -g "$account")
 # compositor keeps collaboration history in memory only.
 "$install_bin" -d -m 0700 -o "$uid" -g "$gid" \
   "$home/.local/state" "$home/.local/share" "$home/.config"
+# A board session unlocks no keychain, so its secret store (the key that
+# seals end-to-end encrypted collaboration state among them) is the
+# machine's: owner-only files whose key the system credential service seals
+# for this account, under the TPM where the board has one.
 session_env=(
+  --setenv=TILO_SECRETS_SEALED_DIR="$home/.local/state/tilo/secrets"
   --setenv=XDG_STATE_HOME="$home/.local/state"
   --setenv=XDG_DATA_HOME="$home/.local/share"
   --setenv=XDG_CONFIG_HOME="$home/.config"

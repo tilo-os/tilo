@@ -360,6 +360,7 @@ struct DrainQueues {
     presence_inbound: Arc<Mutex<Vec<InboundAppPresence>>>,
     documents: Arc<Mutex<Vec<InboundDocument>>>,
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
+    snapshot_requests: Arc<Mutex<Vec<crate::shell::network::InboundSnapshotRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
     remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
     /// The action host remote requests are answered by, built once the
@@ -393,9 +394,32 @@ impl DrainQueues {
         }
         self.drain_presence(labels, announced)
             && self.drain_documents(labels, announced)
+            && self.drain_snapshot_requests()
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
             && self.drain_remote_actions()
+    }
+
+    /// Pass room peers' requests for a record's whole document to a local
+    /// app holding the record. It answers by publishing the document as an
+    /// ordinary write; with no such app here, a request goes unanswered.
+    fn drain_snapshot_requests(&self) -> bool {
+        let drained: Vec<_> = {
+            let Ok(mut buf) = self.snapshot_requests.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        for request in drained {
+            let route = CrdtRoute::record(request.app_id, request.cluster_id, request.record_id);
+            if !self.table.request_route_snapshot(&route) {
+                tracing::debug!(
+                    app_id = %route.app_id,
+                    "a peer asked for a record no app here holds open"
+                );
+            }
+        }
+        true
     }
 
     /// Answer remote-action requests through the same broker local callers
@@ -627,6 +651,7 @@ fn spawn_inner(
             presence_inbound: net.inbound_app_presence_handle(),
             documents: net.inbound_documents_handle(),
             sb_req_inbound: net.inbound_scrollback_request_handle(),
+            snapshot_requests: net.inbound_snapshot_requests_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
             remote_actions: net.inbound_remote_actions_handle(),
             action_host: std::sync::OnceLock::new(),
@@ -790,6 +815,26 @@ type SessionServices = (
     Option<crate::shell::channel_encryption::ChannelKeyAccess>,
 );
 
+/// Why this session's apps cannot exchange record content with other
+/// devices, when they cannot; shown by status tools through the session's
+/// presence.
+static CONTENT_SYNC_BLOCKED: Mutex<Option<String>> = Mutex::new(None);
+
+/// Why this session's apps cannot sync record content, when they cannot.
+pub(crate) fn content_sync_blocked() -> Option<String> {
+    CONTENT_SYNC_BLOCKED
+        .lock()
+        .ok()
+        .and_then(|reason| reason.clone())
+}
+
+#[cfg_attr(test, allow(dead_code, reason = "tests open no session services"))]
+fn set_content_sync_blocked(reason: Option<String>) {
+    if let Ok(mut blocked) = CONTENT_SYNC_BLOCKED.lock() {
+        *blocked = reason;
+    }
+}
+
 #[cfg(test)]
 fn open_session_services(
     _: Option<&crate::shell::state::WorkspaceTreeHandle>,
@@ -849,8 +894,26 @@ fn open_session_services(
             }
         }
         Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: no system secret store answered");
+            // Records are end-to-end encrypted channels: without the vault
+            // this device can neither seal its apps' edits nor open anyone
+            // else's, so they stay here. Say so where it is seen.
+            tracing::error!(
+                %error,
+                "MLS collaboration unavailable: no system secret store answered; app records \
+                 stay on this device and nothing it edits reaches another device"
+            );
+            set_content_sync_blocked(Some(format!("no system secret store answered ({error})")));
         }
+    }
+    if mls_authority.is_some() && channel_encryption.is_some() {
+        set_content_sync_blocked(None);
+    } else if channel_encryption.is_none()
+        && content_sync_blocked().is_none()
+        && membership.is_some()
+    {
+        set_content_sync_blocked(Some(
+            "channel encryption did not start (see the session log)".into(),
+        ));
     }
     (mls_authority, channel_encryption)
 }
@@ -880,6 +943,7 @@ fn open_channel_encryption(
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
         workspaces,
         crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
+        device_key.verifying_key().to_bytes(),
     );
     match crate::shell::channel_encryption::ChannelEncryption::open(
         crate::shell::channel_encryption::ChannelEncryptionConfig {

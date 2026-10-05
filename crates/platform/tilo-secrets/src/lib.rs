@@ -28,10 +28,14 @@
 //! | macOS | the login Keychain's generic passwords | [`Protection::OsKeychain`] |
 //! | Web | AES-GCM under a non-extractable `CryptoKey`; key and ciphertext in `IndexedDB` | [`Protection::BrowserWrapped`] |
 //! | Linux, macOS with `TILO_SECRETS_DIR` | sealed owner-only files in that directory | [`Protection::LocalFile`] |
+//! | Linux with `TILO_SECRETS_SEALED_DIR` | sealed owner-only files under a key the machine's credential service seals (TPM where present) | [`Protection::MachineSealed`] |
 //!
-//! [`SECRETS_DIR_ENV`] is for machines that have no keychain to unlock: a
-//! headless node or server. Every process given it keeps its secrets in that
-//! directory instead of the system store; see the `files` module.
+//! [`SEALED_DIR_ENV`] is the system store of a session that has no keychain
+//! to unlock, such as a board's: it names the directory, and the machine's
+//! credential service holds the key. [`SECRETS_DIR_ENV`] is for a headless
+//! node or server without that service. Every process given either keeps its
+//! secrets in that directory instead of the system store; see the `files`
+//! module.
 //!
 //! `BrowserWrapped` protects secrets at rest (a copied profile, a disk
 //! image), not against script running in the page's origin.
@@ -96,6 +100,10 @@ pub enum Protection {
     /// Sealed in owner-only files under a key file beside them: as private
     /// as the machine's disk and the Unix account that owns them.
     LocalFile,
+    /// Sealed in owner-only files under a key that only the machine's
+    /// credential service opens, for this account on this machine: under the
+    /// TPM where there is one, else the root-only host key.
+    MachineSealed,
     /// In this process only; gone when it exits.
     Memory,
 }
@@ -554,9 +562,43 @@ async fn off_thread<T: Send + 'static>(
 /// store for every process given it.
 pub const SECRETS_DIR_ENV: &str = "TILO_SECRETS_DIR";
 
-/// The store the machine provides: the file-backed one where
-/// [`SECRETS_DIR_ENV`] names a directory, else the system's.
+/// Names the directory of a file-backed store whose key the machine's
+/// credential service seals: the system store of a session without a
+/// keychain, such as a board's.
+pub const SEALED_DIR_ENV: &str = "TILO_SECRETS_SEALED_DIR";
+
+/// The store the machine provides: the machine-sealed one where
+/// [`SEALED_DIR_ENV`] names a directory, the file-backed one where
+/// [`SECRETS_DIR_ENV`] does, else the system's. A named store that does not
+/// open refuses every call with its reason; nothing falls back to another
+/// store.
 fn machine_backend() -> Backend {
+    #[cfg(target_os = "linux")]
+    if let Some(dir) = std::env::var_os(SEALED_DIR_ENV).filter(|dir| !dir.is_empty()) {
+        // Only an opened store is kept: a credential service that did not
+        // answer yet is asked again by the next store, not refused for the
+        // life of the process.
+        static SEALED: Mutex<Option<Arc<dyn SecretBackend>>> = Mutex::new(None);
+        let Ok(mut opened) = SEALED.lock() else {
+            return Backend::Sync(Arc::new(Refused(
+                SecretError::Failed("secret store lock poisoned".into()),
+                Protection::MachineSealed,
+            )));
+        };
+        if let Some(store) = opened.as_ref() {
+            return Backend::Sync(store.clone());
+        }
+        return Backend::Sync(
+            match files::FileStore::open_machine_sealed(std::path::Path::new(&dir)) {
+                Ok(store) => {
+                    let store: Arc<dyn SecretBackend> = Arc::new(store);
+                    *opened = Some(store.clone());
+                    store
+                }
+                Err(error) => Arc::new(Refused(error, Protection::MachineSealed)),
+            },
+        );
+    }
     #[cfg(unix)]
     if let Some(dir) = std::env::var_os(SECRETS_DIR_ENV).filter(|dir| !dir.is_empty()) {
         static FILES: std::sync::OnceLock<Result<Arc<dyn SecretBackend>, SecretError>> =
@@ -567,7 +609,7 @@ fn machine_backend() -> Backend {
         });
         return Backend::Sync(match opened {
             Ok(store) => store.clone(),
-            Err(error) => Arc::new(Refused(error.clone())),
+            Err(error) => Arc::new(Refused(error.clone(), Protection::LocalFile)),
         });
     }
     system_backend()
@@ -576,12 +618,12 @@ fn machine_backend() -> Backend {
 /// A configured store that could not be opened: every call says why,
 /// rather than falling back to another store.
 #[cfg(unix)]
-struct Refused(SecretError);
+struct Refused(SecretError, Protection);
 
 #[cfg(unix)]
 impl SecretBackend for Refused {
     fn protection(&self) -> Protection {
-        Protection::LocalFile
+        self.1
     }
     fn get(&self, _app: &str, _key: &str) -> Result<Option<Secret>, SecretError> {
         Err(self.0.clone())

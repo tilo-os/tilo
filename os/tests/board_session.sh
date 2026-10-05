@@ -90,6 +90,8 @@ backends="$(awk '$1 == "run" { print $2 }' "$work/seat.log" | tr '\n' ' ')"
 if [ "$backends" = 'headless drm headless ' ] \
    && grep -q 'run drm .*--property=PAMName=greetd.*--setenv=XDG_SEAT=seat0' "$work/seat.log" \
    && grep -q 'run headless .*--machine=you@ --user' "$work/seat.log" \
+   && grep -q 'run headless .*--setenv=TILO_SECRETS_SEALED_DIR=/var/home/you/.local/state/tilo/secrets' "$work/seat.log" \
+   && grep -q 'run drm .*--setenv=TILO_SECRETS_SEALED_DIR=/var/home/you/.local/state/tilo/secrets' "$work/seat.log" \
    && grep -q 'systemctl stop getty@tty1.service' "$work/seat.log" \
    && grep -q 'systemctl start getty@tty1.service' "$work/seat.log"; then
   ok 'the session follows the display: headless, drm, headless'

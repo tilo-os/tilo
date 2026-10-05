@@ -592,6 +592,12 @@ mod unix {
                 restart_hint()
             ));
         }
+        if let Some(reason) = session.and_then(|session| session.content_sync_blocked.as_ref()) {
+            next.push(format!(
+                "app content cannot sync from this device: {reason}; apps keep their edits here \
+                 until it can"
+            ));
+        }
         if cert.is_none() {
             next.push(format!(
                 "this device holds no valid certificate for the identity; {}",
@@ -713,6 +719,7 @@ mod unix {
             })),
             "session_running": running,
             "session_identity": snapshot.as_ref().filter(|_| running).and_then(|snapshot| snapshot.identity.clone()),
+            "content_sync_blocked": snapshot.as_ref().filter(|_| running).and_then(|snapshot| snapshot.content_sync_blocked.clone()),
             "presence_refreshed_unix_ms": snapshot.as_ref().map(|snapshot| snapshot.refreshed_unix_ms),
             "shared_rooms_received": rooms,
             "devices": rows,

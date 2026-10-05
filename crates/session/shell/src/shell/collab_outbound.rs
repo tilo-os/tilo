@@ -31,6 +31,10 @@ impl PeerPublishSink for ShellNetwork {
         self.publish_live_presence(app_id, cluster_id, record_id, presence);
     }
 
+    fn document_snapshot_request(&self, app_id: &str, cluster_id: &str, record_id: &str) {
+        self.publish_document_snapshot_request(app_id, cluster_id, record_id);
+    }
+
     fn local_route(&self, app_id: &str, cluster_id: &str, record_id: &str) {
         let _ = self.register_local_record(app_id, cluster_id, record_id);
         self.request_room_replay(cluster_id);

@@ -684,6 +684,10 @@ pub struct PresenceSnapshot {
     pub refreshed_unix_ms: u64,
     /// One entry per device the session has heard from or dials.
     pub devices: Vec<DevicePresence>,
+    /// Why app content (the records apps edit) cannot leave or reach this
+    /// device, when it cannot: apps keep their edits here until it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_sync_blocked: Option<String>,
 }
 
 impl PresenceSnapshot {
@@ -951,6 +955,7 @@ mod tests {
                 direct_peer: true,
                 shared_rooms: 1,
             }],
+            content_sync_blocked: Some("no secret store".into()),
         };
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();

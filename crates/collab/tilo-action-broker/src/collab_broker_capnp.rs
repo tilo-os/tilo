@@ -5695,6 +5695,12 @@ impl CapnpBrokerState {
         rx
     }
 
+    /// A room peer asked for `route`'s document: direct the request to one
+    /// local app holding that route. Never forwarded to the network again.
+    pub fn request_route_snapshot(&self, route: &CrdtRoute) -> bool {
+        self.request_document_snapshot(&route.channel_key(), u64::MAX)
+    }
+
     /// Direct a late-join snapshot request to one established subscriber on
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
@@ -6308,9 +6314,17 @@ impl channel_handle::Server for CapnpChannelHandle {
         {
             return Promise::err(error);
         }
-        let _ = self
+        // Another app on this device answers; otherwise a device of the
+        // room whose app holds the record does.
+        if !self
             .state
-            .request_document_snapshot(&self.channel_id, self.peer_id);
+            .request_document_snapshot(&self.channel_id, self.peer_id)
+        {
+            let _ = self
+                .state
+                .publisher
+                .document_snapshot_request(&self.route());
+        }
         Promise::ok(())
     }
 

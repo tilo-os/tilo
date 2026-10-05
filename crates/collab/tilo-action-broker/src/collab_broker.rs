@@ -228,6 +228,16 @@ impl FanoutState {
 
     /// Deliver `event` to every typed or in-process subscriber addressed by
     /// `route`, skipping the originating typed peer id.
+    /// A room peer asked for `route`'s whole document: ask one local app
+    /// holding the route to publish it. Returns whether one was asked.
+    pub fn request_route_snapshot(&self, route: &CrdtRoute) -> bool {
+        if self.stopped.load(Ordering::Acquire) {
+            return false;
+        }
+        self.capnp_state()
+            .is_some_and(|capnp| capnp.request_route_snapshot(route))
+    }
+
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
         if self.stopped.load(Ordering::Acquire) {
             return;
