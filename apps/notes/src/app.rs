@@ -4659,12 +4659,30 @@ impl Widget for NotesApp {
                 })
             })
         });
+        let canonical_sync_key = self.canonical_synced.as_ref().map(|key| {
+            let mut heads = blake3::Hasher::new();
+            for head in &key.0 {
+                heads.update(&head.0);
+            }
+            serde_json::json!({
+                "heads_hash": heads.finalize().to_hex().to_string(),
+                "heads_count": key.0.len(),
+                "pending_operations": key.1,
+                "selected_page": key.2,
+                "active_tag": key.3,
+            })
+        });
         let rect = editor.get_rect();
         Some(serde_json::json!({
             "app": "so.tilo.notes",
             "editor_id": "block_editor",
             "selected_page": self.workspace.selected(),
             "bound_page": page,
+            "main_page": page,
+            "editor_binding_page": self.bound_page,
+            "pending_page_events": self.pending_events.len(),
+            "adopted": self.adopted,
+            "canonical_sync_key": canonical_sync_key,
             "hash_algorithm": "blake3",
             "body_hash": body.as_ref().map(|body| blake3::hash(body.as_bytes()).to_hex().to_string()),
             "body_chars": body.as_ref().map(|body| body.chars().count()),
