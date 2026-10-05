@@ -166,3 +166,24 @@ published size and SHA-256, then add the generated
 `local-models.json` (for example
 `jq --slurpfile m u2net-subject.model.json '.models += $m'`) before compiling
 and signing the catalog as above. `contract-test.sh` checks the recipe offline.
+
+### Production delivery
+
+The production model and license now use the immutable Forgejo package URLs in
+`dist/local-models/catalog-source.json`. The signed catalog and public trust key
+are image inputs at `os/usr/share/tilo/system-extensions/local-model-{catalog,keys}.json`.
+The OS copies this directory unchanged; model weights remain an optional download
+through Settings, with explicit license acceptance, outside Canvas's package.
+
+The dedicated key id is `tilo-local-model-release-2026-10`. Its encrypted recovery
+record and public identity are documented in the infra repository at
+`operations/local-model-release-20261005/README.md`. It is independent of the
+development, registry, OS, and runtime signing keys.
+
+Dispatch `release-local-model-catalog.yml` on protected main to reproduce and
+publish the reviewed catalog. The build job receives no model signing key. The
+publication job fetches the public weights and license, checks their pinned
+receipts, signs with `TILO_MODEL_CATALOG_SIGNING_KEY`, compares both outputs with
+the checked-in image inputs, and verifies anonymous downloads after publication.
+It never changes the catalog carried by an already-installed OS; normal image
+releases deliver that trust and catalog update.

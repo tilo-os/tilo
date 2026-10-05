@@ -539,7 +539,7 @@ files = [
 [[component]]
 name = "vm-cli"
 kind = "userspace"
-scope = "session"
+scope = "vm"
 packages = ["tilo-vm"]
 bins = ["tilo-vm"]
 layer = "dev-tools"
