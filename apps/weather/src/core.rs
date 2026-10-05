@@ -156,6 +156,8 @@ pub struct Core {
     search: Autocomplete,
     /// The field's on-screen rect (set each draw).
     search_field_rect: Rect,
+    /// The add-place popover around the field, while a place is added.
+    add_panel: Rect,
     /// The last query text folded into the geocode machinery, for change
     /// detection against the field's live text.
     search_query: String,
@@ -233,6 +235,7 @@ impl Core {
                 .with_id("weather.city_search")
                 .with_placeholder("City name"),
             search_field_rect: Rect::ZERO,
+            add_panel: Rect::ZERO,
             search_query: String::new(),
             search_results: Vec::new(),
             search_seq: 0,
@@ -997,27 +1000,16 @@ impl Core {
         // where the column's title starts; a row's lift bleeds past it.
         let gutter = ui::chrome::column_gutter(theme);
         let edge = gutter - ui::chrome::row_bleed(theme);
-        let mut top = rect.y0 + inset;
+        let top = rect.y0 + inset;
 
-        // While a place is being added, its field heads the list; the
-        // suggestions float over the rows below it (drawn in the overlay).
-        if self.search.is_editing() {
-            let field_h = ButtonFace::height(ControlSize::Regular, theme);
-            let field = Rect::new(rect.x0 + gutter, top, rect.x1 - gutter, top + field_h);
-            self.search_field_rect = field;
-            self.search.apply_layout_external(field);
-            self.search
-                .draw(ctx.scene, t, ctx.text, theme, &PresenceCtx::empty());
-            top = field.y1 + inset;
-        } else {
+        // While a place is being added, its field stands in a popover from
+        // the header's Add button (drawn in the overlay).
+        if !self.search.is_editing() {
             self.search_field_rect = Rect::ZERO;
+            self.add_panel = Rect::ZERO;
         }
 
-        // A typed query opens the suggestions (the matches, the search in
-        // flight, or no match); they replace the saved places while they
-        // show, so they never stand half over a row.
-        let suggesting = self.search.is_editing() && !self.search_query.trim().is_empty();
-        if self.model.locations.is_empty() || suggesting {
+        if self.model.locations.is_empty() {
             self.list_rect = Rect::ZERO;
             self.row_h = 0.0;
             self.empty_action = if self.search.is_editing() || !self.model.locations.is_empty() {
@@ -1176,11 +1168,63 @@ impl Core {
         presence: &PresenceCtx,
     ) {
         if self.search.is_editing() {
-            self.search.draw_overlay(scene, t, tr, theme, presence);
+            self.draw_add_popover(scene, t, tr, theme, presence);
         }
         if self.menu.is_open() {
             self.menu.draw_overlay(scene, t, tr, theme, presence);
         }
+    }
+
+    /// The add-place form: the shared anchored floating Panel, opening below
+    /// the header's Add button on its trailing edge, with its caption over
+    /// the search field. The field's matches float below it.
+    fn draw_add_popover(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        use ui::widget::floating_surface;
+        let over = self.over_rect;
+        let spacing = &theme.tokens.spacing;
+        let pad = f64::from(spacing.s4);
+        let caption_style = theme.text(TextRole::Label);
+        let caption_h = f64::from(caption_style.line_height_px());
+        let field_h = ButtonFace::height(ControlSize::Regular, theme);
+        // It stays over the column it adds to, which routes its input.
+        let window = presence.viewport.get().unwrap_or(over);
+        let room = floating_surface::panel_room(window, theme)
+            .intersect(floating_surface::panel_room(over, theme).inflate(0.0, over.height()));
+        let w = f64::from(theme.tokens.metrics.panel_width_list).min(room.width());
+        let h = pad + caption_h + f64::from(spacing.s2) + field_h + pad;
+        let anchor = Rect::new(room.x1 - field_h, over.y0 - field_h, room.x1, over.y0);
+        let (panel, _) = floating_surface::place_aligned(
+            anchor,
+            (w, h),
+            ui::widget::PopoverSide::Below,
+            ui::widget::PanelAlign::Trailing,
+            f64::from(spacing.s1),
+            room,
+        );
+        self.add_panel = panel;
+        floating_surface::paint(scene, t, panel, theme);
+        let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
+        tr.draw_style(
+            scene,
+            "Add a place",
+            on_panel.text_primary,
+            t * Affine::translate((panel.x0 + pad, panel.y0 + pad)),
+            None,
+            &caption_style,
+        );
+        let top = panel.y0 + pad + caption_h + f64::from(spacing.s2);
+        let field = Rect::new(panel.x0 + pad, top, panel.x1 - pad, top + field_h);
+        self.search_field_rect = field;
+        self.search.apply_layout_external(field);
+        self.search.draw(scene, t, tr, &on_panel, presence);
+        self.search.draw_overlay(scene, t, tr, theme, presence);
     }
 
     /// The open menu's panel, which captures the pointer while it shows.
@@ -1230,6 +1274,18 @@ impl Core {
         }
         // Keep the shared field placed so its overlay hit-tests correctly.
         if self.search.is_editing() {
+            // A press on the popover around the field keeps it open.
+            if matches!(
+                ctx.event,
+                WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed,
+                    ..
+                }
+            ) && self.add_panel.contains(self.last_mouse)
+                && !self.search_field_rect.contains(self.last_mouse)
+            {
+                return true;
+            }
             self.search.apply_layout_external(self.search_field_rect);
             if let Some(consumed) = self.route_search_field(&mut ctx) {
                 return consumed;
