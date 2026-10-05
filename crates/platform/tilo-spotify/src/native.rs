@@ -593,6 +593,47 @@ mod tests {
     }
 
     #[test]
+    fn spotify_interrupted_pcm_sessions_release_output_before_the_next_start() {
+        for _ in 0..3 {
+            let rendered = Arc::new(AtomicU64::new(0));
+            let count = rendered.clone();
+            let frames = Arc::new(AtomicU64::new(0));
+            let capture = CaptureOutput {
+                on_pcm: Arc::new(|_| {}),
+                on_rendered: Arc::new(move || {
+                    count.fetch_add(1, Ordering::Relaxed);
+                }),
+            };
+            let mut sink = PcmSink::new(&Output::Capture(capture), &frames).unwrap();
+            let pipeline = sink.pipeline.clone();
+            sink.start().unwrap();
+            let mut converter = Converter::new(PlayerConfig::default().ditherer);
+            for _ in 0..8 {
+                sink.write(AudioPacket::Samples(vec![0.25; 2048]), &mut converter)
+                    .unwrap();
+            }
+            let deadline = tilo_clock::now() + Duration::from_secs(5);
+            while rendered.load(Ordering::Relaxed) == 0 && tilo_clock::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                rendered.load(Ordering::Relaxed) > 0,
+                "each new output delivers clocked PCM"
+            );
+            // An interruption must not wait for EOS that will never be sent.
+            tilo_rt::block_on(drain_output(&pipeline, &AtomicBool::new(true)))
+                .unwrap()
+                .unwrap();
+            drop(sink);
+            assert_eq!(
+                pipeline.current_state(),
+                gst::State::Null,
+                "the old output releases before another session starts"
+            );
+        }
+    }
+
+    #[test]
     fn spotify_preload_follows_the_latest_valid_local_queue_and_does_not_flood_commands() {
         let (commands, mut receiver) = tokio::sync::mpsc::channel(16);
         let native = NativeAudio {

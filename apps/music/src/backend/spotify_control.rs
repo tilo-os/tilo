@@ -11,6 +11,9 @@ impl SpotifyBackend {
     ) -> Result<SpotifyReply, BackendError> {
         use SpotifyOperation as Op;
         let state = match operation {
+            Op::Queue => self.read_remote_queue()?,
+            Op::LibraryPage { offset } => self.library_page(*offset)?,
+            Op::CreatePlaylist { name } => self.create_private_playlist(name)?,
             Op::Devices => {
                 return Ok(SpotifyReply {
                     devices: self.devices()?,
@@ -47,9 +50,8 @@ impl SpotifyBackend {
             }
             Op::RenamePlaylist { playlist, name } => {
                 let id = raw_id(playlist, "playlist")?;
-                if name.trim().is_empty() || name.chars().count() > 100 {
-                    return Err(BackendError("Playlist names need 1–100 characters".into()));
-                }
+                valid_playlist_name(name)?;
+                self.check_playlist_edit(id, true)?;
                 self.request_for(
                     USE,
                     ACCOUNT,
@@ -69,6 +71,7 @@ impl SpotifyBackend {
             Op::PlaylistAdd { playlist, track } | Op::PlaylistRemove { playlist, track } => {
                 let id = raw_id(playlist, "playlist")?;
                 raw_id(track, "track")?;
+                self.check_playlist_edit(id, false)?;
                 let add = matches!(operation, Op::PlaylistAdd { .. });
                 let body = if add {
                     json!({"uris":[track]})
@@ -104,6 +107,70 @@ impl SpotifyBackend {
         })
     }
 
+    fn read_remote_queue(&self) -> Result<Value, BackendError> {
+        let mut queue = self.get("me/player/queue", &[])?;
+        let entries = queue
+            .get_mut("queue")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| BackendError("Spotify did not provide its remote queue".into()))?;
+        let truncated = entries.len() > 50;
+        entries.truncate(50);
+        Ok(json!({"remote_queue":queue,"truncated":truncated}))
+    }
+
+    fn library_page(&self, offset: u32) -> Result<Value, BackendError> {
+        if offset > 1950 || !offset.is_multiple_of(50) {
+            return Err(BackendError(
+                "Spotify library page is outside the 2,000-item bound".into(),
+            ));
+        }
+        let offset_arg = offset.to_string();
+        let albums = self.get("me/albums", &[("limit", "50"), ("offset", &offset_arg)])?;
+        let playlists = self.get("me/playlists", &[("limit", "50"), ("offset", &offset_arg)])?;
+        for page in [&albums, &playlists] {
+            if page
+                .get("items")
+                .and_then(Value::as_array)
+                .is_none_or(|items| items.len() > 50)
+            {
+                return Err(BackendError(
+                    "Spotify returned an invalid library page".into(),
+                ));
+            }
+        }
+        Ok(
+            json!({"library_page":offset,"home_page":super::library_home(&albums, &playlists),
+                    "has_more":!albums.get("next").unwrap_or(&Value::Null).is_null() || !playlists.get("next").unwrap_or(&Value::Null).is_null()}),
+        )
+    }
+
+    fn create_private_playlist(&self, name: &str) -> Result<Value, BackendError> {
+        valid_playlist_name(name)?;
+        let created = self.request_for(
+            USE,
+            ACCOUNT,
+            &Method::POST,
+            "me/playlists",
+            &[],
+            Some(&json!({"name":name,"public":false})),
+        )?;
+        let uri = created.get("uri").and_then(Value::as_str).ok_or_else(|| {
+            BackendError(
+                "Spotify has not confirmed the created playlist. Refresh before retrying.".into(),
+            )
+        })?;
+        let id = raw_id(uri, "playlist")?;
+        let checked = self.get(&format!("playlists/{id}"), &[])?;
+        if checked.get("name").and_then(Value::as_str) != Some(name)
+            || checked.get("public").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(BackendError(
+                "Spotify has not confirmed the private playlist. Refresh before retrying.".into(),
+            ));
+        }
+        Ok(json!({"playlist":uri,"name":name,"created":true}))
+    }
+
     fn devices(&self) -> Result<Vec<SpotifyDevice>, BackendError> {
         let result = self.get("me/player/devices", &[])?;
         let devices = result
@@ -128,6 +195,31 @@ impl SpotifyBackend {
                 })
             })
             .collect())
+    }
+
+    fn check_playlist_edit(&self, id: &str, rename: bool) -> Result<(), BackendError> {
+        let profile = self.get("me", &[])?;
+        let user = profile
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| BackendError("Spotify account identity is unavailable".into()))?;
+        let playlist = self.get(&format!("playlists/{id}"), &[])?;
+        let owner = playlist
+            .get("owner")
+            .and_then(|owner| owner.get("id"))
+            .and_then(Value::as_str)
+            == Some(user);
+        let collaborator = playlist.get("collaborative").and_then(Value::as_bool) == Some(true)
+            && playlist.get("items").is_some_and(Value::is_object);
+        if owner || (!rename && collaborator) {
+            Ok(())
+        } else {
+            Err(BackendError(if rename {
+                "Only the Spotify playlist owner can rename it. Saving a playlist does not grant editing access."
+            } else {
+                "Spotify playlist editing requires ownership or collaborator access. Saving a playlist does not grant editing access."
+            }.into()))
+        }
     }
 
     fn remote_operation(
@@ -224,6 +316,14 @@ impl SpotifyBackend {
             candidate.active = candidate.id == device;
         }
         Ok(SpotifyReply { devices, state })
+    }
+}
+
+fn valid_playlist_name(name: &str) -> Result<(), BackendError> {
+    if name.trim().is_empty() || name.chars().count() > 100 {
+        Err(BackendError("Playlist names need 1–100 characters".into()))
+    } else {
+        Ok(())
     }
 }
 

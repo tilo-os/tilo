@@ -87,6 +87,9 @@ impl SpotifyBackend {
 
     pub(super) fn playback_account(&self, sign_in: bool) -> Result<String, BackendError> {
         let profile = self.get("me", &[])?;
+        if profile.get("product").and_then(Value::as_str).is_none() {
+            return Err(BackendError("Spotify did not disclose subscription eligibility. Native playback remains unavailable; this does not mean the account is Free.".into()));
+        }
         if profile.get("product").and_then(Value::as_str) != Some("premium") {
             return Err(BackendError(
                 "Spotify Premium is required for native playback; you can still browse your music"
@@ -106,7 +109,19 @@ impl SpotifyBackend {
                 self.sign_in_for(STREAMING_USE, STREAMING_ACCOUNT)?;
             }
             let streaming_profile = self.get_for(STREAMING_USE, STREAMING_ACCOUNT, "me", &[])?;
-            if streaming_profile.get("id").and_then(Value::as_str) != Some(account.as_str()) {
+            let stable_identity = match (
+                profile.get("account_id"),
+                streaming_profile.get("account_id"),
+            ) {
+                (None, None) => true,
+                (Some(a), Some(b)) => a
+                    .as_str()
+                    .is_some_and(|a| !a.is_empty() && b.as_str() == Some(a)),
+                _ => false,
+            };
+            if !stable_identity
+                || streaming_profile.get("id").and_then(Value::as_str) != Some(account.as_str())
+            {
                 return Err(BackendError(
                     "Catalogue and playback are signed in to different Spotify accounts".into(),
                 ));
@@ -458,70 +473,9 @@ impl MusicBackend for SpotifyBackend {
         Err(BackendError("Spotify playback is not connected in Tilo. Spotify's Web API does not supply audio streams. Native playback needs a separate streaming session and Premium.".into()))
     }
     fn home(&self) -> Result<HomeContent, BackendError> {
-        let albums = self.get("me/albums", &[("limit", "20")])?;
-        let playlists = self.get("me/playlists", &[("limit", "20")])?;
-        let album_items = items(&albums)
-            .iter()
-            .filter_map(|item| album(item.get("album").unwrap_or(&Value::Null)))
-            .map(|album| HomeItem {
-                id: album.id,
-                title: album.title,
-                subtitle: album.artist,
-                cover_url: album.cover_url,
-                kind: HomeItemKind::Album,
-                video_id: String::new(),
-                artist_id: String::new(),
-                artist_name: String::new(),
-                album_id: String::new(),
-                album_title: String::new(),
-                duration_s: 0,
-            })
-            .collect();
-        let playlist_items = items(&playlists)
-            .iter()
-            .filter_map(playlist)
-            .map(|playlist| HomeItem {
-                id: playlist.id,
-                title: playlist.title,
-                subtitle: playlist.subtitle,
-                cover_url: playlist.cover_url,
-                kind: HomeItemKind::Playlist,
-                video_id: String::new(),
-                artist_id: String::new(),
-                artist_name: String::new(),
-                album_id: String::new(),
-                album_title: String::new(),
-                duration_s: 0,
-            })
-            .collect();
-        Ok(HomeContent {
-            sections: vec![
-                HomeSection {
-                    title: ui::i18n!("music-spotify-library"),
-                    items: vec![HomeItem {
-                        id: "spotify:collection:liked".into(),
-                        title: ui::i18n!("music-spotify-liked"),
-                        subtitle: ui::i18n!("music-spotify-liked-description"),
-                        cover_url: String::new(),
-                        kind: HomeItemKind::Playlist,
-                        video_id: String::new(),
-                        artist_id: String::new(),
-                        artist_name: String::new(),
-                        album_id: String::new(),
-                        album_title: String::new(),
-                        duration_s: 0,
-                    }],
-                },
-                HomeSection {
-                    title: "Saved Spotify albums".into(),
-                    items: album_items,
-                },
-                HomeSection {
-                    title: "Spotify playlists".into(),
-                    items: playlist_items,
-                },
-            ],
-        })
+        let reply = self.operation(&crate::backend::SpotifyOperation::LibraryPage { offset: 0 })?;
+        serde_json::from_value(reply.state.get("home_page").unwrap_or(&Value::Null).clone())
+            .map_err(|_| BackendError("Spotify library page could not be decoded".into()))
     }
     fn album(&self, id: &str) -> Result<AlbumPage, BackendError> {
         let value = self.get(&format!("albums/{}", raw_id(id, "album")?), &[])?;
@@ -571,7 +525,7 @@ impl MusicBackend for SpotifyBackend {
             id: id.into(),
             title: text(&value, "name"),
             subtitle: text(value.get("owner").unwrap_or(&Value::Null), "display_name"),
-            description: String::new(),
+            description: ui::i18n!("music-spotify-ownership-help"),
             cover_url: cover(&value),
             tracks: entries
                 .iter()
@@ -606,6 +560,71 @@ impl MusicBackend for SpotifyBackend {
             albums,
             ..Default::default()
         })
+    }
+}
+
+fn library_home(albums: &Value, playlists: &Value) -> HomeContent {
+    let album_items = items(albums)
+        .iter()
+        .filter_map(|item| album(item.get("album").unwrap_or(&Value::Null)))
+        .map(|album| HomeItem {
+            id: album.id,
+            title: album.title,
+            subtitle: album.artist,
+            cover_url: album.cover_url,
+            kind: HomeItemKind::Album,
+            video_id: String::new(),
+            artist_id: String::new(),
+            artist_name: String::new(),
+            album_id: String::new(),
+            album_title: String::new(),
+            duration_s: 0,
+        })
+        .collect();
+    let playlist_items = items(playlists)
+        .iter()
+        .filter_map(playlist)
+        .map(|playlist| HomeItem {
+            id: playlist.id,
+            title: playlist.title,
+            subtitle: playlist.subtitle,
+            cover_url: playlist.cover_url,
+            kind: HomeItemKind::Playlist,
+            video_id: String::new(),
+            artist_id: String::new(),
+            artist_name: String::new(),
+            album_id: String::new(),
+            album_title: String::new(),
+            duration_s: 0,
+        })
+        .collect();
+    HomeContent {
+        sections: vec![
+            HomeSection {
+                title: ui::i18n!("music-spotify-library"),
+                items: vec![HomeItem {
+                    id: "spotify:collection:liked".into(),
+                    title: ui::i18n!("music-spotify-liked"),
+                    subtitle: ui::i18n!("music-spotify-liked-description"),
+                    cover_url: String::new(),
+                    kind: HomeItemKind::Playlist,
+                    video_id: String::new(),
+                    artist_id: String::new(),
+                    artist_name: String::new(),
+                    album_id: String::new(),
+                    album_title: String::new(),
+                    duration_s: 0,
+                }],
+            },
+            HomeSection {
+                title: ui::i18n!("music-spotify-albums"),
+                items: album_items,
+            },
+            HomeSection {
+                title: ui::i18n!("music-spotify-playlists"),
+                items: playlist_items,
+            },
+        ],
     }
 }
 
@@ -780,7 +799,11 @@ mod tests {
             Reply::status(200).body(b"[true]".to_vec()),
             Reply::status(200),
             Reply::status(200).body(b"[false]".to_vec()),
+            Reply::status(200).body(br#"{"id":"owner"}"#.to_vec()),
+            Reply::status(200).body(br#"{"owner":{"id":"owner"}}"#.to_vec()),
             Reply::status(201).body(br#"{"snapshot_id":"revision-a"}"#.to_vec()),
+            Reply::status(200).body(br#"{"id":"owner"}"#.to_vec()),
+            Reply::status(200).body(br#"{"owner":{"id":"owner"}}"#.to_vec()),
             Reply::status(200).body(br#"{"snapshot_id":"revision-b"}"#.to_vec()),
         ]);
         let (backend, _root) = fixture(&api.url(), &oauth);
@@ -830,6 +853,8 @@ mod tests {
                 track: track.into(),
             })
             .unwrap();
+        assert_eq!(api.next_request().target, "/me");
+        assert_eq!(api.next_request().method, "GET");
         let added = api.next_request();
         assert_eq!(added.method, "POST");
         assert_eq!(added.target, "/playlists/1234567890123456789012/items");
@@ -843,12 +868,194 @@ mod tests {
                 track: track.into(),
             })
             .unwrap();
+        assert_eq!(api.next_request().target, "/me");
+        assert_eq!(api.next_request().method, "GET");
         let removed = api.next_request();
         assert_eq!(removed.method, "DELETE");
         assert_eq!(
             serde_json::from_slice::<Value>(&removed.body).unwrap(),
             serde_json::json!({"items":[{"uri":track}]})
         );
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_missing_subscription_field_is_unknown_rather_than_free() {
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"id":"catalogue"}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        let error = backend.playback_account(false).unwrap_err().to_string();
+        assert!(error.contains("did not disclose"));
+        assert_eq!(api.next_request().target, "/me");
+        api.assert_untouched();
+    }
+
+    #[test]
+    #[cfg(feature = "spotify-native")]
+    fn spotify_stable_account_identity_must_match_even_when_usernames_match() {
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200)
+                .body(br#"{"id":"same","account_id":"first","product":"premium"}"#.to_vec()),
+            Reply::status(200).body(br#"{"id":"same","account_id":"second"}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        backend
+            .custody
+            .seal_oauth(
+                &AccountId::from(tilo_spotify::STREAMING_ACCOUNT.to_string()),
+                &account_custody::TokenSet {
+                    access_token: "stream-test".into(),
+                    refresh_token: "refresh-test".into(),
+                    expires_in: 3600,
+                    ..Default::default()
+                }
+                .stamp_now(),
+            )
+            .unwrap();
+        assert!(
+            backend
+                .playback_account(false)
+                .unwrap_err()
+                .to_string()
+                .contains("different Spotify accounts")
+        );
+        for _ in 0..2 {
+            assert_eq!(api.next_request().target, "/me");
+        }
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_private_playlist_creation_validates_name_and_readback() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(201)
+                .body(br#"{"uri":"spotify:playlist:1234567890123456789012"}"#.to_vec()),
+            Reply::status(200).body(br#"{"name":"Evening","public":false}"#.to_vec()),
+            Reply::status(201)
+                .body(br#"{"uri":"spotify:playlist:1234567890123456789012"}"#.to_vec()),
+            Reply::status(503),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        assert!(
+            backend
+                .operation(&SpotifyOperation::CreatePlaylist { name: " ".into() })
+                .is_err()
+        );
+        assert!(api.drain_requests().is_empty());
+        let created = backend
+            .operation(&SpotifyOperation::CreatePlaylist {
+                name: "Evening".into(),
+            })
+            .unwrap();
+        assert_eq!(created.state["created"], true);
+        let request = api.next_request();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.target, "/me/playlists");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.body).unwrap(),
+            serde_json::json!({"name":"Evening","public":false})
+        );
+        assert_eq!(api.next_request().method, "GET");
+        assert!(
+            backend
+                .operation(&SpotifyOperation::CreatePlaylist {
+                    name: "Uncertain".into()
+                })
+                .is_err()
+        );
+        assert_eq!(api.next_request().method, "POST");
+        assert_eq!(api.next_request().method, "GET");
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_nonowners_cannot_rename_or_edit_saved_playlists() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let api = Responder::start(vec![
+            Reply::status(200).body(br#"{"id":"me"}"#.to_vec()),
+            Reply::status(200).body(
+                br#"{"owner":{"id":"other"},"collaborative":true,"items":{"items":[]}}"#.to_vec(),
+            ),
+            Reply::status(200).body(br#"{"id":"me"}"#.to_vec()),
+            Reply::status(200).body(br#"{"owner":{"id":"other"},"collaborative":false}"#.to_vec()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        let playlist = "spotify:playlist:1234567890123456789012";
+        assert!(
+            backend
+                .operation(&SpotifyOperation::RenamePlaylist {
+                    playlist: playlist.into(),
+                    name: "Mine".into()
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("owner")
+        );
+        assert!(
+            backend
+                .operation(&SpotifyOperation::PlaylistAdd {
+                    playlist: playlist.into(),
+                    track: "spotify:track:1234567890123456789012".into()
+                })
+                .unwrap_err()
+                .to_string()
+                .contains("collaborator")
+        );
+        for _ in 0..4 {
+            assert_eq!(api.next_request().method, "GET");
+        }
+        api.assert_untouched();
+    }
+
+    #[test]
+    fn spotify_library_pages_and_remote_queue_keep_bounded_independent_requests() {
+        use crate::backend::SpotifyOperation;
+        use test_http::{Reply, Responder};
+        let oauth = tilo_oauth::fake::FakeAuthorizationServer::start();
+        let albums: Vec<_> = (0..50).map(|index| serde_json::json!({"album":{"id":format!("{index:022}"),"name":format!("Album {index}")}})).collect();
+        let api = Responder::start(vec![
+            Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"items":albums,"next":"https://attacker.invalid/?token"})).unwrap()),
+            Reply::status(200).body(br#"{"items":[],"next":null}"#.to_vec()),
+            Reply::status(200).body(serde_json::to_vec(&serde_json::json!({"currently_playing":null,"queue":vec![serde_json::json!({"name":"Remote episode","type":"episode"});70]})).unwrap()),
+        ]);
+        let (backend, _root) = fixture(&api.url(), &oauth);
+        assert!(
+            backend
+                .operation(&SpotifyOperation::LibraryPage { offset: 2000 })
+                .is_err()
+        );
+        assert!(api.drain_requests().is_empty());
+        let reply = backend
+            .operation(&SpotifyOperation::LibraryPage { offset: 50 })
+            .unwrap();
+        let home: HomeContent = serde_json::from_value(reply.state["home_page"].clone()).unwrap();
+        assert_eq!(home.sections[1].items.len(), 50);
+        assert_eq!(reply.state["has_more"], true);
+        for _ in 0..2 {
+            assert!(api.next_request().target.contains("offset=50"));
+        }
+        let queue = backend.operation(&SpotifyOperation::Queue).unwrap();
+        assert_eq!(
+            queue.state["remote_queue"]["queue"]
+                .as_array()
+                .unwrap()
+                .len(),
+            50
+        );
+        assert_eq!(queue.state["truncated"], true);
+        let request = api.next_request();
+        assert_eq!(request.target, "/me/player/queue");
+        assert_eq!(request.method, "GET");
         api.assert_untouched();
     }
 

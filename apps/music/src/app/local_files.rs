@@ -368,9 +368,9 @@ mod tests {
             .unwrap();
             app.settle();
             assert_eq!(
-                app.harness().focus_order().len() + 7,
+                app.harness().focus_order().len() + 8,
                 on_home,
-                "the picker and six source controls leave the focus order with Home"
+                "the picker and seven enabled source controls leave the focus order with Home; Spotify-only paging and creation are disabled"
             );
             app.call_on(
                 &crate::actions::view_resource_id("home"),
@@ -1278,6 +1278,15 @@ impl MusicApp {
                 "music-spotify-playback",
             ),
             (MusicEffect::SpotifyDevices, "music-spotify-devices"),
+            (MusicEffect::SpotifyQueue, "music-spotify-queue-refresh"),
+            (
+                MusicEffect::SpotifyLibraryMore,
+                "music-spotify-library-more",
+            ),
+            (
+                MusicEffect::NewSpotifyPlaylist,
+                "music-spotify-create-playlist",
+            ),
             (MusicEffect::DisconnectSpotify, "music-disconnect-spotify"),
             (MusicEffect::BrowseSpotify, "music-browse-spotify"),
             (MusicEffect::BrowseYouTube, "music-browse-youtube"),
@@ -1385,7 +1394,7 @@ mod spotify_tests {
                     &mut text,
                     &theme,
                 );
-                assert_eq!(app.source_buttons.len(), 6);
+                assert_eq!(app.source_buttons.len(), 9);
                 for (index, button) in app.source_buttons.iter().enumerate() {
                     let rect = button.get_rect();
                     assert!(
