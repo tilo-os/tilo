@@ -570,8 +570,31 @@ impl<T, M: TreeModel> TreeView<T, M> {
         );
     }
 
+    /// The rows fade out toward an edge while more of them can scroll in
+    /// from there, as every scrolled list does.
+    pub(super) fn paint_edge_fades(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        ground: vello::peniko::Color,
+    ) {
+        use crate::surface::ContentEdge;
+        if !self.fill || self.viewport.viewport() <= 0.0 {
+            return;
+        }
+        let body = Rect::new(self.rect.x0, self.body_top(), self.rect.x1, self.rect.y1);
+        let offset = self.viewport.offset();
+        if offset > 0.5 {
+            crate::surface::content_edge_fade(scene, transform, body, ContentEdge::Top, ground);
+        }
+        if self.viewport.max_offset() - offset > 0.5 {
+            crate::surface::content_edge_fade(scene, transform, body, ContentEdge::Bottom, ground);
+        }
+    }
+
     /// A quiet scroll thumb at the trailing edge while the rows overflow a
-    /// [`Self::fill`] viewport.
+    /// [`Self::fill`] viewport. Like every overlay bar it shows while the
+    /// rows scroll and fades out at rest.
     pub(super) fn paint_scroll_thumb(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if !self.fill || self.viewport.viewport() <= 0.0 {
             return;
@@ -584,6 +607,18 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if !metrics.overflows() {
             return;
         }
+        let now = crate::time::now();
+        let offset = self.viewport.offset();
+        if self
+            .bar_offset
+            .get()
+            .is_some_and(|painted| (painted - offset).abs() > 0.5)
+        {
+            let mut fade = self.bar_fade.get();
+            fade.wake(now);
+            self.bar_fade.set(fade);
+        }
+        self.bar_offset.set(Some(offset));
         let s1 = f64::from(theme.tokens.spacing.s1);
         let track = Rect::new(
             self.rect.x1 - s1 * 1.5,
@@ -591,8 +626,34 @@ impl<T, M: TreeModel> TreeView<T, M> {
             self.rect.x1 - s1 / 2.0,
             self.rect.y1 - s1,
         );
-        crate::widget::scrollbar::Scrollbar::vertical()
-            .draw(scene, transform, track, metrics, theme, false);
+        let gutter = f64::from(theme.tokens.metrics.scrollbar_gutter);
+        let near = self.last_cursor.is_some_and(|point| {
+            point.x >= self.rect.x1 - gutter
+                && point.x <= self.rect.x1
+                && point.y >= track.y0
+                && point.y <= track.y1
+        });
+        let held = theme.reduce_motion || near;
+        self.bar_held.set(held);
+        let opacity = self.bar_fade.get().opacity_at(now, held);
+        if opacity <= 0.003 {
+            return;
+        }
+        let bar = crate::widget::scrollbar::Scrollbar::vertical();
+        if let Some(thumb) = bar.thumb_rect(track, metrics) {
+            let radius = thumb.width().min(thumb.height()) / 2.0;
+            let colour = crate::color_compat::ColorCompat::with_alpha_factor(
+                crate::widget::scrollbar::thumb_color(theme, false),
+                opacity,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colour,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(thumb, radius),
+            );
+        }
     }
 
     /// The open context menu, painted in the window's top layer.
