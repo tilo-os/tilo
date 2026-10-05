@@ -19,7 +19,7 @@ use crate::model::{Artwork, Ground, Layer, Mark, Shape, Style};
 use crate::render::{Options, Renderer};
 
 /// The presets a brush lays paint with, in the picker's order.
-pub const PAINTING: [Preset; 7] = [
+pub const PAINTING: [Preset; 8] = [
     Preset::Round,
     Preset::Pen,
     Preset::Pencil,
@@ -27,6 +27,7 @@ pub const PAINTING: [Preset; 7] = [
     Preset::Airbrush,
     Preset::Charcoal,
     Preset::Calligraphy,
+    Preset::Pixel,
 ];
 
 /// A swatch's sample, in its own units.
@@ -42,6 +43,7 @@ fn sample(preset: Preset, colour: &str) -> Artwork {
         Preset::Airbrush => 16.0,
         Preset::Marker => 11.0,
         Preset::Charcoal => 12.0,
+        Preset::Pixel => 3.0,
         _ => 9.0,
     };
     let points = (0..=12)

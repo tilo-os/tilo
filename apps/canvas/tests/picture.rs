@@ -590,3 +590,88 @@ fn a_picture_opened_from_the_desktop_has_an_artwork_of_its_own() {
     assert_eq!(app.record(), &record);
     assert_eq!(app.state().title, "Harbour at dusk");
 }
+
+#[test]
+fn pixel_brush_and_eraser_keep_exact_cells_and_transparency() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "new-artwork",
+        json!({"width":32,"height":32,"texture":"smooth","ground_colour":"#122a3b"}),
+    )
+    .unwrap();
+    app.call("paint", json!({"strokes":[{"id":"pixel-line","brush":"pixel","size":1,"colour":"#dce9d9","points":[[4.2,8.7,0.1],[12.9,8.1,1.0]]}]})).unwrap();
+    app.call("paint", json!({"strokes":[{"id":"pixel-clear","brush":"pixel-eraser","size":1,"points":[[8.1,8.2]]}]})).unwrap();
+    let mut renderer = Renderer::default();
+    let mut text = ui::TextRenderer::new();
+    let (picture, _) = view_ops::export(
+        &mut renderer,
+        &mut text,
+        &app.state(),
+        &Export {
+            transparent: Some(true),
+            ..Export::default()
+        },
+    )
+    .unwrap();
+    let pixels = image::load_from_memory(&picture.bytes).unwrap().to_rgba8();
+    for (x, y, pixel) in pixels.enumerate_pixels() {
+        let filled = y == 8 && (4..=12).contains(&x) && x != 8;
+        assert_eq!(
+            pixel.0,
+            if filled {
+                [220, 233, 217, 255]
+            } else {
+                [0, 0, 0, 0]
+            },
+            "cell {x},{y}"
+        );
+    }
+    let expected = app.state().marks;
+    app.call("undo", json!({})).unwrap();
+    let restored = app.state();
+    assert_eq!(restored.marks.len(), 1);
+    app.call("redo", json!({})).unwrap();
+    assert_eq!(app.state().marks, expected);
+}
+
+#[test]
+fn nearest_image_preview_preserves_every_enlarged_pixel_and_is_editable() {
+    let mut app = TestApp::<App>::new().unwrap();
+    app.call(
+        "new-artwork",
+        json!({"width":32,"height":32,"texture":"smooth"}),
+    )
+    .unwrap();
+    app.call("draw", json!({"marks":[{"id":"sprite","pixelated":true,"shape":{"kind":"image","src":halves(32,32),"x":0,"y":0,"width":32,"height":32}}]})).unwrap();
+    let render = |app: &TestApp<App>| {
+        let mut renderer = Renderer::default();
+        renderer.pictures.read_from(app.content());
+        let (picture, _) = view_ops::look(
+            &mut renderer,
+            &mut ui::TextRenderer::new(),
+            &app.state(),
+            &Look {
+                size: Some(1024),
+                format: Some("png".into()),
+                ..Look::default()
+            },
+        )
+        .unwrap();
+        image::load_from_memory(&picture.bytes).unwrap().to_rgba8()
+    };
+    let crisp = render(&app);
+    for (x, _, pixel) in crisp.enumerate_pixels() {
+        assert_eq!(pixel.0, if x < 512 { RED } else { BLUE });
+    }
+    app.call("edit-marks", json!({"ids":["sprite"],"pixelated":false}))
+        .unwrap();
+    assert!(!app.state().mark("sprite").unwrap().style.pixelated);
+    let smooth = render(&app);
+    assert!(
+        smooth
+            .pixels()
+            .any(|pixel| pixel.0 != RED && pixel.0 != BLUE)
+    );
+    app.call("undo", json!({})).unwrap();
+    assert_eq!(render(&app), crisp);
+}

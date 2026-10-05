@@ -701,7 +701,10 @@ pub fn export(
         art,
         art.bounds(),
         scale,
-        &Options::default(),
+        &Options {
+            bare: export.transparent.unwrap_or(false),
+            ..Options::default()
+        },
     )?;
     let (bytes, format) = match format {
         "png" => (encode_png(&rgba, width, height)?, "png"),

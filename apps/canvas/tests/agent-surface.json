@@ -467,6 +467,13 @@
               "shape"
             ],
             "properties": {
+              "pixelated": {
+                "type": [
+                  "boolean",
+                  "null"
+                ],
+                "description": "Images: preserve hard pixel edges when enlarged."
+              },
               "id": {
                 "type": [
                   "string",
@@ -1231,6 +1238,19 @@
     "operation": "Document",
     "params": [
       {
+        "name": "pixelated",
+        "ty": "boolean",
+        "required": false,
+        "description": "Images: preserve hard pixel edges when enlarged.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
+      {
         "name": "ids",
         "ty": "array",
         "required": true,
@@ -1871,6 +1891,19 @@
     "description": "Render the artwork at full size (or scaled) as a PNG, JPEG or WebP, written to path or kept as content.",
     "operation": "Effect",
     "params": [
+      {
+        "name": "transparent",
+        "ty": "boolean",
+        "required": false,
+        "description": "Omit the artwork ground for a transparent PNG or WebP.",
+        "schema": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nullable": true
+      },
       {
         "name": "scale",
         "ty": "number",
@@ -2763,7 +2796,7 @@
                   "string",
                   "null"
                 ],
-                "description": "Plain layers: `pen` (crisp ink, pressure sets width), `pencil` (grainy, pressure sets darkness), `marker` (flat, overlaps darken), `airbrush` (soft spray that builds up), `charcoal` (picks up the ground's tooth), `calligraphy` (broad nib at `angle`, default 45). Any layer: `eraser` clears paint beneath it on its layer. A round ink brush when absent."
+                "description": "Plain layers: `pen` (crisp ink, pressure sets width), `pencil` (grainy, pressure sets darkness), `marker` (flat, overlaps darken), `airbrush` (soft spray that builds up), `charcoal` (picks up the ground's tooth), `calligraphy` (broad nib at `angle`, default 45). Any layer: `eraser` clears paint beneath it on its layer. A round ink brush when absent. Plain layers: `pixel` and `pixel-eraser` paint or clear whole square cells, ignoring pressure and taper."
               },
               "opacity": {
                 "type": [
