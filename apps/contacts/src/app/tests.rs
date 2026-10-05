@@ -3585,7 +3585,7 @@ fn export_asks_a_format_and_writes_the_chosen_file() {
     {
         let mut app = Live::empty(760, 620);
         assert!(app.store.is_empty());
-        let bounds = named_widget(&app, "No contacts yet", Role::Group)
+        let bounds = named_widget(&*app, "No contacts yet", Role::Group)
             .expect("the actual first-run empty state is mounted")
             .synthetic_accessibility_rect(&[0])
             .expect("the shared empty state measures its virtual action");
