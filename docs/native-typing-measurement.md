@@ -28,11 +28,12 @@ Notes worker into one timeline. Each accepted sample must join:
    timestamp and sampled compositor delivery timestamp, its Wayland serial,
    and the actual focused surface ID. No key code or character is logged.
 2. `tilo-physical-input`: the same Wayland serial and a local input ID, client
-   dispatch clock brackets, actual worker process ID, and strictly content-free
+   dispatch clock brackets, a random app worker lifetime UUID, diagnostic namespace
+   PID, and strictly content-free
    Notes before/after state.
-3. `tilo-physical-frame`: that input ID, the CPU frame ID and the actual Notes
+3. `tilo-physical-frame`: that same worker lifetime UUID, input ID, CPU frame ID and the actual Notes
    editor state observed after drawing the scene queued to the GPU worker.
-4. `tilo-display-frame`: the same CPU frame ID, worker identity and worker frame
+4. `tilo-display-frame`: the same app worker lifetime UUID, CPU frame ID, render worker identity and frame
    index, with positive `wp_presentation` feedback for the exact new-buffer
    commit. CLOCK_MONOTONIC, hardware clock/completion and vsync evidence are
    required. Failed/discarded feedback never qualifies.
@@ -51,7 +52,11 @@ from input_latency import summarize_physical_notes_latency
 report = summarize_physical_notes_latency(lines, scratch_page_uuid)
 ```
 
-Missing/duplicate records, absent kernel timestamps, incompatible clocks,
+Normal application sandboxes isolate PIDs, so namespace PID alone cannot identify
+a producer. Input, drawn-frame and feedback rows must join the same random
+process-lifetime observer UUID. No host PID or sandbox relaxation is needed.
+
+Missing/duplicate records or worker UUIDs, absent kernel timestamps, incompatible clocks,
 wrong page/surface, unchanged body, incorrect caret, canonical/rendered mismatch,
 an after-event body different from the drawn body, missing feedback and
 coalesced inputs all fail. Do not discard these samples to improve percentiles.

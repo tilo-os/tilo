@@ -206,6 +206,7 @@ impl Observer {
         use winit::platform::wayland::{WaylandPresentation, WindowExtWayland};
         let worker_id = self.worker_id;
         let process_id = std::process::id();
+        let observer_session = crate::physical_input_trace::session_id();
         let Some(window) = self.window.as_ref() else {
             eprintln!("tilo-display-error native window missing for Wayland presentation feedback");
             present();
@@ -222,6 +223,7 @@ impl Observer {
                         flags,
                     } => serde_json::json!({
                         "worker_id": worker_id, "worker_frame_ix": worker_frame_ix, "process_id": process_id,
+                        "observer_session": observer_session,
                         "cpu_frame_id": cpu_frame_id, "backend": "wayland",
                         "clock_id": clock_id, "presented_time_ns": timestamp.as_nanos(),
                         "refresh_ns": refresh.as_nanos(), "sequence": sequence, "flags": flags,
@@ -229,6 +231,7 @@ impl Observer {
                     }),
                     WaylandPresentation::Discarded => serde_json::json!({
                         "worker_id": worker_id, "worker_frame_ix": worker_frame_ix, "process_id": process_id,
+                        "observer_session": observer_session,
                         "cpu_frame_id": cpu_frame_id, "backend": "wayland", "discarded": true,
                     }),
                 };

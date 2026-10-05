@@ -83,6 +83,13 @@ fn physical_observer_matches_real_note_dispatch_to_the_drawn_body_without_text_l
         .drawn(Some(71), app.harness().native_input_snapshot())
         .expect("drawn frame");
     assert_eq!(body(&app, page), "é");
+    assert_eq!(effect["observer_session"], frame["observer_session"]);
+    uuid::Uuid::parse_str(
+        frame["observer_session"]
+            .as_str()
+            .expect("app worker lifetime identity"),
+    )
+    .expect("random lifetime UUID, independent of the namespace PID");
     assert_eq!(frame["input_ids"], serde_json::json!([1]));
     assert_eq!(frame["cpu_frame_id"], 71);
     assert_eq!(frame["state"]["body_chars"], 1);

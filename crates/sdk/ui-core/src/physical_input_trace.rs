@@ -4,6 +4,13 @@
 use serde_json::Value;
 use winit::event::{ElementState, Ime, WindowEvent};
 
+// Namespace-local PIDs and render counters can collide across normal sandboxes.
+// This lifetime identity exposes no host PID or host namespace information.
+pub(crate) fn session_id() -> uuid::Uuid {
+    static SESSION: std::sync::OnceLock<uuid::Uuid> = std::sync::OnceLock::new();
+    *SESSION.get_or_init(uuid::Uuid::new_v4)
+}
+
 #[derive(Default)]
 pub struct Trace {
     next_id: u64,
@@ -44,7 +51,7 @@ impl Trace {
         self.pending.push(id);
         let (_, time) = crate::native_scenario::host_clock::sample();
         Some(serde_json::json!({
-            "id": id, "kind": kind, "process_id": std::process::id(),
+            "id": id, "kind": kind, "process_id": std::process::id(), "observer_session": session_id(),
             "wayland_serial": stamp.map(|stamp| stamp.0),
             "wayland_time_ms": stamp.map(|stamp| stamp.1),
             "clock": crate::native_scenario::host_clock::CLOCK_NAME,
@@ -65,7 +72,7 @@ impl Trace {
             return None;
         }
         Some(serde_json::json!({
-            "cpu_frame_id": cpu_frame_id, "process_id": std::process::id(),
+            "cpu_frame_id": cpu_frame_id, "process_id": std::process::id(), "observer_session": session_id(),
             "input_ids": std::mem::take(&mut self.pending),
             "state": safe_snapshot(snapshot),
         }))

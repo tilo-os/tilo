@@ -14,17 +14,18 @@ class PhysicalNotesLatency(unittest.TestCase):
                         body_hash=str(n)*64, rendered_body_hash=str(n)*64,
                         body_chars=n, rendered_body_chars=n, body_bytes=n,
                         caret=dict(byte_offset=n))
+        session = '2bd78136-4c17-4853-9d7c-7442274a7059'
         result = []
         for n in range(1, 4):
             start = n*100_000_000
             result += [
                 ('tilo-physical-delivery ', dict(wayland_serial=n+9, surface_id=42,
                                                 clock_id=1, delivery_time_ns=start+1_000_000, input_time_ns=start)),
-                ('tilo-physical-input ', dict(id=n, kind='key_pressed', wayland_serial=n+9, process_id=123,
+                ('tilo-physical-input ', dict(id=n, kind='key_pressed', wayland_serial=n+9, process_id=123, observer_session=session,
                                              before=state(n-1), after=state(n), clock='clock_monotonic_seconds',
                                              dispatch_lo_s=(start+2_000_000)/1e9, dispatch_hi_s=(start+2_100_000)/1e9)),
-                ('tilo-physical-frame ', dict(cpu_frame_id=n, input_ids=[n], state=state(n), process_id=123)),
-                ('tilo-display-frame ', dict(backend='wayland', cpu_frame_id=n, clock_id=1, process_id=123,
+                ('tilo-physical-frame ', dict(cpu_frame_id=n, input_ids=[n], state=state(n), process_id=123, observer_session=session)),
+                ('tilo-display-frame ', dict(backend='wayland', cpu_frame_id=n, clock_id=1, process_id=123, observer_session=session,
                                             flags=7, discarded=False, presented_time_ns=start+10_000_000)),
             ]
         return result
@@ -38,9 +39,10 @@ class PhysicalNotesLatency(unittest.TestCase):
         self.assertEqual([r['latency_ms'] for r in report['samples']], [10, 10, 10])
         self.assertNotIn('performance_certified', report)
         # An unrelated background worker's same local frame ID is not this
-        # scratch buffer's presentation; actual producer identity disambiguates.
+        # scratch buffer's presentation, even with the same sandbox PID.
+        # The app worker lifetime UUID disambiguates actual producers.
         timeline = self.timeline()+[('tilo-display-frame ', dict(backend='wayland',
-                     cpu_frame_id=1, process_id=999, clock_id=1, flags=7,
+                     cpu_frame_id=1, process_id=123, observer_session='d18a8ac3-c453-437f-b6d6-3fef3f242154', clock_id=1, flags=7,
                      discarded=False, presented_time_ns=1))]
         self.assertTrue(self.report(timeline)['latency_complete'])
 
@@ -51,6 +53,12 @@ class PhysicalNotesLatency(unittest.TestCase):
             ('tilo-physical-delivery ', dict(input_time_ns=999_000_000)),
             ('tilo-physical-input ', dict(dispatch_lo_s=None)),
             ('tilo-physical-input ', dict(wayland_serial=None)),
+            ('tilo-physical-input ', dict(observer_session=None)),
+            ('tilo-physical-input ', dict(observer_session='d18a8ac3-c453-437f-b6d6-3fef3f242154')),
+            ('tilo-physical-frame ', dict(observer_session=None)),
+            ('tilo-physical-frame ', dict(observer_session='d18a8ac3-c453-437f-b6d6-3fef3f242154')),
+            ('tilo-display-frame ', dict(observer_session=None)),
+            ('tilo-display-frame ', dict(observer_session='d18a8ac3-c453-437f-b6d6-3fef3f242154')),
             ('tilo-physical-input ', dict(kind='ime_commit')),
             ('tilo-physical-input ', dict(after={})),
             ('tilo-physical-frame ', dict(input_ids=[1, 2])),
