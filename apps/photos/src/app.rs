@@ -12138,8 +12138,8 @@ impl ui::resources::PublishesResources for PhotosApp {
             self.retained_buttons()
                 .into_iter()
                 .filter(|button| {
-                    !std::ptr::eq(*button, &self.chrome.back)
-                        && !std::ptr::eq(*button, &self.chrome.search)
+                    !std::ptr::eq(*button, &raw const self.chrome.back)
+                        && !std::ptr::eq(*button, &raw const self.chrome.search)
                         && !self
                             .chrome
                             .history

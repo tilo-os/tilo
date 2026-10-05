@@ -511,14 +511,14 @@ fn say(tools: &Tools, art: &Artwork, key: &SizesKey, text: &mut Option<TextRende
         })
         .flatten();
     if let Some(bytes) = bytes {
-        said.push_str("\n");
+        said.push('\n');
         said.push_str(&ui::i18n::I18nManager::format(
             "canvas-export-bytes",
             &[("size", ui::format::bytes_si(bytes).into())],
         ));
     }
     if settings.transparent && !settings.format.transparent() {
-        said.push_str("\n");
+        said.push('\n');
         said.push_str(&ui::i18n::I18nManager::lookup_plain(
             "canvas-export-jpeg-opaque",
         ));
