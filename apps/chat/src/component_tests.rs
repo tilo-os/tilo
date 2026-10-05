@@ -1,4 +1,18 @@
 use crate::{ChatApp, doc::ChatDoc, identity::LocalIdentity};
+
+/// The chat surface over `doc` for `identity`, editing as them, as a host
+/// without native services mounts it, after its first sync.
+fn projection(doc: &AutoCommit, identity: LocalIdentity) -> ChatApp {
+    let me = identity.id.clone();
+    let mut app = ChatApp::new(
+        identity,
+        crate::app::ChatRuntime::Unavailable,
+        tilo_content::ContentStore::memory(),
+    );
+    app.attach_framework(ui::framework::Dispatcher::detached("so.tilo.chat", &me));
+    app.sync(doc, &ROOT);
+    app
+}
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ui::Widget;
 #[test]
@@ -13,13 +27,11 @@ fn component_projection_never_seeds_or_marks_read() {
     ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     doc.commit();
     let before = (doc.base_heads(), doc.pending_ops());
-    let mut app =
-        ChatApp::from_document(&doc, identity, crate::app::ChatRuntime::Unavailable).unwrap();
+    let mut app = projection(&doc, identity);
     for _ in 0..3 {
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!ui::resources::resources(&app, &doc).is_empty());
 }
 #[test]
 fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
@@ -28,13 +40,12 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     let mut doc = AutoCommit::new();
     ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     doc.commit();
-    let mut app =
-        ChatApp::from_document(&doc, identity, crate::app::ChatRuntime::Unavailable).unwrap();
-    app.sync(&mut doc, &ROOT);
+    let mut app = projection(&doc, identity);
+    app.sync(&doc, &ROOT);
     assert!(app.needs_redraw(), "the first sync paints");
     app.mark_drawn();
     for _ in 0..3 {
-        app.sync(&mut doc, &ROOT);
+        app.sync(&doc, &ROOT);
     }
     assert!(
         !app.needs_redraw(),
@@ -53,7 +64,7 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -68,10 +79,10 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
 
     doc.put(ROOT, "remote-change", "newer").unwrap();
     doc.commit();
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     assert!(app.needs_redraw(), "a document change repaints");
     app.mark_drawn();
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     assert!(
         !app.needs_redraw(),
         "the change is absorbed after one paint"
@@ -87,7 +98,7 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
         &mut ui::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: &mut doc,
+            state: ui::widget::Edits::lend(&mut doc),
             path: &ROOT,
             handled: &mut handled,
             focus_target: &mut focus,
@@ -98,27 +109,13 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
     assert!(app.needs_redraw(), "a press repaints");
 }
 #[test]
-fn component_projection_refuses_unseeded_record() {
-    assert!(
-        ChatApp::from_document(
-            &AutoCommit::new(),
-            LocalIdentity::demo(),
-            crate::app::ChatRuntime::Unavailable
-        )
-        .is_err()
-    );
-}
-
-#[test]
 fn component_local_view_restores_presentation_without_reverting_document() {
-    use ui::widget::AppWidget;
+    use ui::application_view::ApplicationViewState;
     let mut doc = AutoCommit::new();
     let identity = LocalIdentity::demo();
     ChatDoc::seed_starter(&mut doc, &identity.id, &identity.name, &identity.initials);
     doc.commit();
-    let mut app =
-        ChatApp::from_document(&doc, identity.clone(), crate::app::ChatRuntime::Unavailable)
-            .unwrap();
+    let mut app = projection(&doc, identity.clone());
     app.scroll = 125.;
     app.inbox_open = true;
     app.left_flap.snap(false);
@@ -129,8 +126,7 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     doc.put(ROOT, "remote-change", "newer").unwrap();
     doc.commit();
     let before = doc.base_heads();
-    let mut restored =
-        ChatApp::from_document(&doc, identity, crate::app::ChatRuntime::Unavailable).unwrap();
+    let mut restored = projection(&doc, identity);
     restored.restore_application_view(&saved, &doc).unwrap();
     assert_eq!(restored.scroll, 125.);
     assert!(restored.inbox_open);
@@ -142,15 +138,11 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     let me = LocalIdentity::demo();
     ChatDoc::seed_starter(&mut doc, &me.id, &me.name, &me.initials);
     doc.commit();
-    let mut app = ChatApp::from_document(&doc, me, crate::app::ChatRuntime::Unavailable).unwrap();
-    app.sync(&mut doc, &ROOT);
-    let _ = app.update(&mut doc, &ROOT);
+    let mut app = projection(&doc, me);
+    app.sync(&doc, &ROOT);
+    let _ = app.update(&doc, &ROOT);
     app.mark_drawn();
-    app.media.latch_bound_for_test();
-    assert!(
-        !app.update(&mut doc, &ROOT),
-        "an already-bound media endpoint is not a change"
-    );
+    assert!(!app.update(&doc, &ROOT), "an idle frame is not a change");
     assert!(
         !app.needs_animation_frame(),
         "idle Chat must not keep requesting frames"
@@ -158,7 +150,7 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     assert!(!app.needs_redraw());
     doc.put(ROOT, "remote-change", "newer").unwrap();
     doc.commit();
-    app.sync(&mut doc, &ROOT);
+    app.sync(&doc, &ROOT);
     assert!(
         app.needs_redraw(),
         "a conversation change still requests one paint"
@@ -170,7 +162,7 @@ fn canonical_composer_exports_ime_purpose_through_app_root() {
     let me = LocalIdentity::demo();
     ChatDoc::seed_starter(&mut doc, &me.id, &me.name, &me.initials);
     doc.commit();
-    let app = ChatApp::from_document(&doc, me, crate::app::ChatRuntime::Unavailable).unwrap();
+    let app = projection(&doc, me);
     assert!(app.is_focusable());
     assert!(app.ime_purpose().is_some());
 }
@@ -757,6 +749,10 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
 /// replies and records its work through the published actions; its reply is
 /// an agent's, by name.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one conversation between a visitor and an agent, asserted end to end"
+)]
 fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     use tilo_actions::ParticipantId;
     let cache = ui::portable_storage::PortableStorage::new("chat-agent-mount", "device").unwrap();
@@ -770,13 +766,14 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
             instance_id: frame.component_instance_id().unwrap(),
             address: tilo_actions::ActionAddress::new(resource, action),
         };
-        match frame
+        let started = frame
             .invoke_bound_action(&address, args.as_object().unwrap())
-            .unwrap()
-        {
-            ui::widget::ResourceOperationStart::Completed(output) => output,
-            ui::widget::ResourceOperationStart::Accepted => panic!("{action} completes"),
-        }
+            .unwrap();
+        // The published tree follows the record on the next frame.
+        frame.relayout();
+        started
+            .completed()
+            .unwrap_or_else(|| panic!("{action} completes"))
     };
     invoke(
         &mut visitor,
@@ -790,6 +787,8 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         &ParticipantId::new("agent-task:reading").unwrap(),
         "Reading agent",
     );
+    // The host names the agent for every member on its next tick.
+    agent.wait_until(ui::time::Duration::ZERO, |_| true);
     let messages = |frame: &ui::headless::FrameHarness| {
         let mut ids = frame
             .bound_resources(Some(channel))
@@ -804,7 +803,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     };
     let listed = messages(&agent);
     let question = listed.last().unwrap().clone();
-    let read = invoke(&mut agent, &question, "read", serde_json::json!({}));
+    let read = invoke(&mut agent, &question, "read-message", serde_json::json!({}));
     let read = read.value.unwrap();
     assert_eq!(read["text"], "Where does Odysseus wake up?");
     assert_eq!(read["author"], "Visitor");
@@ -827,7 +826,7 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
             {"resource": "ebook.book:book:0123", "label": "Add note", "outcome": "applied"}
         ]}),
     );
-    let read = invoke(&mut agent, &reply, "read", serde_json::json!({}))
+    let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
         .value
         .unwrap();
     assert_eq!(read["author"], "agent-task:reading");
@@ -847,14 +846,22 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         agents.get("agent-task:reading").map(String::as_str),
         Some("Reading agent")
     );
-    // Only an agent may record work, and only on its own message.
+    // Only the message's own author records work on it.
+    visitor.wait_until(ui::time::Duration::ZERO, |_| true);
     let visitor_actions = visitor.bound_resources(Some(&reply)).unwrap();
     assert!(visitor_actions[0].label.starts_with("Reading agent: "));
+    let address = ui::bound_dispatch::BoundActionAddress {
+        instance_id: visitor.component_instance_id().unwrap(),
+        address: tilo_actions::ActionAddress::new(reply.as_str(), "set-work"),
+    };
     assert!(
-        visitor_actions[0]
-            .actions
-            .iter()
-            .all(|action| action.id != "set-work")
+        visitor
+            .invoke_bound_action(
+                &address,
+                serde_json::json!({"state": "refused"}).as_object().unwrap()
+            )
+            .is_err(),
+        "a person cannot record an agent's work"
     );
     visitor.close_components();
     agent.close_components();
@@ -872,7 +879,7 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     let before = records.replication_snapshot(&checkout.id).unwrap().0;
     let address = ui::bound_dispatch::BoundActionAddress {
         instance_id: 1,
-        address: tilo_actions::ActionAddress::new("chat.call:c_lounge", "join"),
+        address: tilo_actions::ActionAddress::new("chat.call:c_lounge", "join-call"),
     };
     frame
         .invoke_bound_action(&address, &serde_json::Map::new())
@@ -890,9 +897,13 @@ fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     live.state = State::Live;
     live.issue = None;
     assert!(lane.complete(&mut frame, joining.ticket, Ok(live.clone())));
-    assert_eq!(
-        frame.with_widget_mut::<ChatApp, _>(|app| app.native_voice.snapshot.state),
-        Some(State::Live)
+    // A live call is what a continuation carries.
+    let continuation =
+        ui::widget::capability::capability::<dyn ui::widget::Continuable>(frame.root_widget())
+            .and_then(|app| app.continuation_metadata(&frame.state().doc, &frame.state().root));
+    assert!(
+        continuation.is_some(),
+        "the completed join is live in the app"
     );
     assert!(
         !lane.complete(&mut frame, joining.ticket, Ok(live.clone())),

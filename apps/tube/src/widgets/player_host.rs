@@ -74,7 +74,7 @@ impl FullscreenProvider for PlayerHost {
 impl Widget for PlayerHost {
     ui::provides!(dyn ui::widget::FullscreenProvider);
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // Pumps the engine (pulls the freshest decoded frame + playhead).
         self.player.borrow_mut().sync(state, path);
     }

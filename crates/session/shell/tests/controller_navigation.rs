@@ -104,8 +104,8 @@ fn desk() -> Desk {
 }
 
 fn tick(host: &mut ShellOverlayHost) {
-    let mut doc = automerge::AutoCommit::new();
-    host.update(&mut doc, &automerge::ROOT);
+    let doc = automerge::AutoCommit::new();
+    host.update(&doc, &automerge::ROOT);
 }
 
 /// The `workspace_tree` half of `state-dump`, built the way the compositor

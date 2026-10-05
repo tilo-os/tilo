@@ -370,8 +370,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let narrow = config
             .app()
             .with_category(Category::RegionFormats)
-            .with_width_hint(NARROW.0)
-            .with_deterministic_hardware_for_shot();
+            .with_width_hint(NARROW.0);
         let narrow = lay_out(narrow, NARROW);
         let control = by_test_id(&*narrow, "region.currency");
         assert!(
@@ -398,8 +397,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let app = config
             .app()
             .with_category(Category::RegionFormats)
-            .with_width_hint(phone.0)
-            .with_deterministic_hardware_for_shot();
+            .with_width_hint(phone.0);
         let app = lay_out(app, phone);
         let sp = spacing();
         for (id, label) in rows {
@@ -429,8 +427,7 @@ fn region_form_and_large_text_breakpoint_stay_fluid() {
         let app = config
             .app()
             .with_category(Category::RegionFormats)
-            .with_width_hint(NARROW.0)
-            .with_deterministic_hardware_for_shot();
+            .with_width_hint(NARROW.0);
         let app = lay_out(app, NARROW);
         for (id, label) in rows {
             let control = by_test_id(&*app, id);
@@ -500,14 +497,10 @@ fn pane_cards_stack_on_the_s6_step_and_never_touch() {
         (Category::Users, WIDE),
         (Category::RegionFormats, NARROW),
     ] {
-        let mut app = config
+        let app = config
             .app()
             .with_category(category)
-            .with_width_hint(viewport.0)
-            .with_deterministic_hardware_for_shot();
-        if viewport == NARROW {
-            app = app.with_narrow_content_shot();
-        }
+            .with_width_hint(viewport.0);
         let app = lay_out(app, viewport);
         // Top-level cards only: a card nested inside another card (a hero row
         // inside a section) is that section's own content, not a sibling.

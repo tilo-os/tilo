@@ -15,20 +15,23 @@
 
 use std::rc::Rc;
 
-use automerge::AutoCommit;
-use tilo_actions::{ActionContext, ActionError};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_document::{RichText, RichTextAction, RichTextState};
-use ui::framework::{Dispatcher, Live, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_resource::{ActionDecl, Demand, Doc, ModelError, Reader, Resource};
+use ui::framework::{
+    EffectAnswer, EffectCx, EffectStatus, Effected, LaunchInput, LiveRow, ResourceApp,
+    ResourceSurface, RunMode, SurfaceCx, ViewCx,
+};
+use ui::record::RecordId;
+use ui::tilo_resource::{ActionDecl, Demand, Doc, Invoke, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::WordProcessorWidget;
+use crate::effects::WordProcessorEffect;
 
 /// Rich text plus the images, tables and headings that document already holds.
 ///
 /// The record kind stays `tilo.rich-text`. The editor's chrome (find, open,
-/// save) stays on [`WordProcessorApp::local_operations`]. Structural objects,
+/// save) is the editor's [`crate::effects::WordProcessorEffect`]. Structural objects,
 /// notes, review, paragraph styles, and the page header and footer are
 /// [`Resource::children`], so a hosted palette does not rebuild them beside
 /// the document.
@@ -48,6 +51,10 @@ impl Resource for Document {
 
     fn locate(state: &Self::State, obj: &automerge::ObjId) -> Option<ui::tilo_resource::Path> {
         <RichText as Resource>::locate(state, obj)
+    }
+
+    fn lands(state: &Self::State, action: &Self::Action) -> Option<ui::tilo_resource::Place> {
+        <RichText as Resource>::lands(state, action)
     }
 
     fn initialize(doc: &mut Doc) -> Result<(), ModelError> {
@@ -70,8 +77,12 @@ impl Resource for Document {
         <RichText as Resource>::coalesces(previous, next)
     }
 
-    fn annotates(action: &Self::Action) -> bool {
-        <RichText as Resource>::annotates(action)
+    fn least_permission() -> ui::tilo_resource::PermissionRequirement {
+        <RichText as Resource>::least_permission()
+    }
+
+    fn permission(action: &Self::Action) -> ui::tilo_resource::PermissionRequirement {
+        <RichText as Resource>::permission(action)
     }
 
     fn register(registry: &mut tilo_actions::ActionRegistry) {
@@ -92,7 +103,10 @@ impl Resource for Document {
                 params: decl.params,
                 permission: decl.permission,
                 destructive: decl.destructive,
-                answers: decl.answers,
+                result: decl.result,
+                tags: decl.tags,
+                content: decl.content,
+                refines: decl.refines,
                 build: decl.build,
             })
             .collect();
@@ -147,6 +161,51 @@ impl Resource for Document {
     }
 }
 
+/// The import of the file `input` names, as one action.
+fn import(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
+    let Some(file) = input.file() else {
+        return Vec::new();
+    };
+    let format = crate::WpFormat::from_path(std::path::Path::new(file.name()));
+    let content = input
+        .content()
+        .cloned()
+        .unwrap_or_else(tilo_content::ContentStore::memory);
+    match crate::import_action(file.bytes(), format, &content) {
+        Ok(action) => Invoke::apply(&action).into_iter().collect(),
+        Err(error) => {
+            eprintln!("word-processor: could not open {}: {error}", file.name());
+            Vec::new()
+        }
+    }
+}
+
+/// The media types of the files the word processor opens: every format it
+/// imports (PDF and EPUB are export-only).
+const OPENS: &[&str] = &[
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "text/markdown",
+    "text/x-markdown",
+    "text/plain",
+    "text/html",
+    "application/rtf",
+    "text/rtf",
+];
+
+/// The screenshot scenarios: each stages the document through its actions
+/// and the editor's view state where it lives.
+const SCENARIOS: &[&str] = &[
+    "styles",
+    "comments",
+    "threaded-comments",
+    "template-picker",
+    "toolbar-overflow",
+    "find",
+    "error",
+    "image-object",
+];
+
 /// The word processor on the app framework.
 pub struct WordProcessorApp;
 
@@ -155,6 +214,9 @@ impl ResourceApp for WordProcessorApp {
     const ID: &'static str = "so.tilo.word-processor";
     const TITLE: &'static str = "Word Processor";
     const ICON: Option<&'static str> = Some("word-processor");
+    const OPENS: &'static [&'static str] = OPENS;
+    const ARGUMENTS: usize = 1;
+
     fn shot_viewport(_scenario: Option<&str>) -> (u32, u32) {
         (1000, 700)
     }
@@ -164,15 +226,6 @@ impl ResourceApp for WordProcessorApp {
     }
 
     /// The document's first heading, as the palette and history name it.
-    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
-        // History is the framework's own surface. The editor's version strip
-        // is not offered beside it. Open, save, and save-as are Effects on
-        // this door; a live file continuation is overlaid by the standalone tree.
-        let mut specs = crate::actions::view_operations(false);
-        specs.extend(crate::actions::file_operation_specs(None));
-        specs
-    }
-
     fn label(state: &RichTextState) -> String {
         state
             .headings()
@@ -181,34 +234,180 @@ impl ResourceApp for WordProcessorApp {
             .find(|text| !text.is_empty())
             .unwrap_or_else(|| "Document".to_owned())
     }
+
+    /// A file is a record of its own: reopening it reopens its history.
+    fn launch_record(input: &LaunchInput<'_>) -> Option<RecordId> {
+        input.argument().map(RecordId::for_file)
+    }
+
+    /// A file's record starts as the file imported, in its genesis: every
+    /// device that opens the same file before they have synced writes the
+    /// same document.
+    fn genesis(input: &LaunchInput<'_>) -> Vec<Invoke<Document>> {
+        import(input)
+    }
+
+    /// Reopened, the record is the document and the file is where Save
+    /// writes it, unless the file changed since the record last read or
+    /// wrote it: then it is read again, an edit Undo takes back.
+    fn launch(input: &LaunchInput<'_>, created: bool) -> Vec<Invoke<Document>> {
+        let (Some(file), Some(state)) = (input.file(), input.record::<RichTextState>()) else {
+            return Vec::new();
+        };
+        if created || state.file_digest() == Some(tilo_content::hash_bytes(file.bytes()).as_str()) {
+            return Vec::new();
+        }
+        import(input)
+    }
+
+    fn scenarios() -> &'static [&'static str] {
+        SCENARIOS
+    }
+
+    /// The text each scenario shows; comments, images and the caret are
+    /// staged on the editor, which knows the paragraphs these actions made.
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Document>> {
+        let texts: &[&str] = match name {
+            Some("comments" | "threaded-comments") => &["Quarterly planning summary"],
+            Some("find") => &[
+                "Quarterly report",
+                "The report covers revenue, costs and headcount for the quarter.",
+                "A second report follows in the spring.",
+            ],
+            Some("image-object") => &["Product direction image"],
+            _ => &[],
+        };
+        texts
+            .iter()
+            .filter_map(|text| {
+                Invoke::apply(&RichTextAction::AppendParagraph {
+                    text: (*text).to_owned(),
+                })
+                .ok()
+            })
+            .collect()
+    }
 }
 
-/// Where the editor reads the document from.
-pub(crate) enum StateSource {
-    /// Standalone (its own tests, file-based launches): the editor follows
-    /// the document itself, with the same incremental reader the framework
-    /// uses.
-    Own(Option<Reader<RichText>>),
-    /// Hosted: the framework's live state, shared with History mode, search
-    /// and the palette.
-    Hosted(Live<Document>),
+impl ResourceSurface<Document, WordProcessorEffect> for WordProcessorWidget {
+    /// The editor reads the live state where it needs it; a new state only
+    /// asks for a redraw.
+    fn present(&mut self, state: &Rc<RichTextState>) {
+        // An editor that has not drawn yet still has a caret, at the start
+        // of the body, so edits bound to it (a table at the caret) can be
+        // invoked before the first frame.
+        if self.model().caret().block.is_empty()
+            && let Some(first) = state.body().id_at(0)
+        {
+            self.model_mut().set_caret(crate::word_processor::Caret {
+                block: first.to_owned(),
+                offset: 0,
+            });
+        }
+        self.mark_document_changed();
+    }
+
+    fn attach(&mut self, cx: SurfaceCx<Document>) {
+        // The images are in the store the host lends the window, which
+        // carries them on the document's route; without one they are kept
+        // in memory.
+        let content = cx
+            .content()
+            .unwrap_or_else(tilo_content::ContentStore::memory);
+        self.model_mut().set_content_store(content);
+        if let Some(path) = cx.launch_arguments().first() {
+            self.show_record_of(std::path::PathBuf::from(path));
+        }
+        self.follow_personal_dictionary(cx.settings());
+        // A past version and a capture show the layout they are given.
+        if cx.mode() == RunMode::Live {
+            self.follow_preferences(cx.settings(), cx.settings());
+        }
+        self.attach_framework(cx.live(), cx.dispatcher());
+    }
+
+    fn stage(&mut self, scenario: Option<&str>) {
+        self.stage_scenario(scenario);
+    }
+
+    /// Edits bound to the caret and selection of whoever invokes them.
+    fn bound_declarations(&self) -> Vec<ActionDecl<Document>> {
+        self.bound_edits()
+    }
+
+    /// The Find results of whoever invokes them, beneath the document.
+    fn live_rows(&self) -> Vec<LiveRow> {
+        self.search_rows()
+    }
+
+    fn effect(
+        &mut self,
+        effect: WordProcessorEffect,
+        cx: &mut EffectCx<Document, Self>,
+    ) -> EffectAnswer {
+        if effect == WordProcessorEffect::ShareImage {
+            let hash = self
+                .shared_image()
+                .ok_or("there is no one picture to share: place the caret on one")?;
+            return Effected::content(&hash);
+        }
+        self.answer_effect(effect, cx)
+    }
+
+    fn effects(&self) -> Vec<EffectStatus> {
+        if self.shared_image().is_some() {
+            return Vec::new();
+        }
+        vec![EffectStatus::unavailable(
+            WordProcessorEffect::SHARE_IMAGE,
+            "no_image",
+            "there is no one picture to share: place the caret on one",
+        )]
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::WordProcessorApp;
-    use ui::framework::ResourceApp;
 
     #[test]
-    fn framework_palette_includes_file_effects_and_views() {
-        let specs = WordProcessorApp::local_operations();
-        let ids: Vec<&str> = specs.iter().map(|spec| spec.id.as_str()).collect();
-        for id in ["find", "open", "save", "save-as"] {
-            assert!(ids.contains(&id), "{ids:?}");
+    fn the_document_publishes_file_effects_and_views() {
+        let mut app = ui::framework::testing::TestApp::<WordProcessorApp>::new().unwrap();
+        let surface = app.agent_surface();
+        let ids: Vec<&str> = surface
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["resource"] == "tilo.rich-text")
+            .filter_map(|row| row["action"].as_str())
+            .collect();
+        for id in ["find", "open", "save", "save-as", "zoom-in", "move-caret"] {
+            assert!(ids.contains(&id), "{id}: {ids:?}");
         }
+    }
+
+    #[test]
+    fn sharing_an_image_answers_content_another_app_takes() {
+        use ui::tilo_resource::Effect;
+        let spec = super::WordProcessorEffect::specs()
+            .into_iter()
+            .find(|spec| spec.id == "share-image")
+            .expect("sharing an image is a published effect");
+        assert_eq!(
+            spec.contract.result,
+            tilo_actions::ResultSpec::Resource {
+                resource_kind: tilo_actions::CONTENT_RESOURCE_KIND.to_owned(),
+            },
+            "its result is typed content, so a caller chains it into a content input"
+        );
+        let answer = ui::framework::Effected::content("abc123").expect("a content hash");
         assert!(
-            !ids.contains(&"history"),
-            "framework history is the host surface"
+            matches!(
+                answer,
+                ui::framework::Effected::Done(ref output)
+                    if output.resources == ["tilo.content:abc123"]
+            ),
+            "{answer:?}"
         );
     }
 
@@ -257,131 +456,5 @@ mod tests {
             .find(|action| action.id == "read-text")
             .expect("read-text is on the published document");
         assert_eq!(read.kind, tilo_actions::OperationKind::Effect);
-    }
-}
-
-impl Default for StateSource {
-    fn default() -> Self {
-        Self::Own(None)
-    }
-}
-
-impl StateSource {
-    /// Bring the state up to date with `doc`. Returns whether it changed.
-    pub(crate) fn sync(&mut self, doc: &mut AutoCommit) -> bool {
-        match self {
-            Self::Own(reader) => match reader {
-                Some(reader) => reader.sync(doc).unwrap_or_else(|error| {
-                    eprintln!("word-processor: document unreadable: {error}");
-                    false
-                }),
-                None => match Reader::open(doc) {
-                    Ok(opened) => {
-                        *reader = Some(opened);
-                        true
-                    }
-                    Err(_) => false,
-                },
-            },
-            Self::Hosted(live) => live.sync(doc).unwrap_or_else(|error| {
-                eprintln!("word-processor: document unreadable: {error}");
-                false
-            }),
-        }
-    }
-
-    /// Show the paragraphs `demand` names. Returns whether the state changed.
-    pub(crate) fn demand(&mut self, doc: &AutoCommit, demand: Demand) -> bool {
-        let result = match self {
-            Self::Own(Some(reader)) => reader.demand(doc, demand),
-            Self::Own(None) => Ok(false),
-            Self::Hosted(live) => live.demand(doc, demand),
-        };
-        result.unwrap_or_else(|error| {
-            eprintln!("word-processor: paragraphs unreadable: {error}");
-            false
-        })
-    }
-
-    /// Read the state, once there is one.
-    pub(crate) fn with<T>(&self, read: impl FnOnce(&RichTextState) -> T) -> Option<T> {
-        match self {
-            Self::Own(Some(reader)) => Some(read(reader.state())),
-            Self::Own(None) => None,
-            Self::Hosted(live) => Some(live.with(read)),
-        }
-    }
-
-    pub(crate) fn hosted(&self) -> bool {
-        matches!(self, Self::Hosted(_))
-    }
-}
-
-/// Where the editor's edits go.
-#[derive(Default)]
-pub(crate) struct ActionSink {
-    /// Standalone: the toolkit's local action host.
-    local: ui::ActionHost,
-    /// Hosted: the framework's dispatcher.
-    framework: Option<Dispatcher<Document>>,
-}
-
-impl ActionSink {
-    pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Document>) {
-        self.framework = Some(dispatcher);
-    }
-
-    /// Whether this participant may only view the document.
-    pub(crate) fn read_only(&self) -> bool {
-        self.framework.as_ref().is_some_and(Dispatcher::read_only)
-    }
-
-    /// Apply one edit now. Hosted, the framework checks the participant's
-    /// permission, attributes the edit and groups typing into undo steps;
-    /// standalone it applies through the local executor.
-    pub(crate) fn dispatch(
-        &mut self,
-        doc: &mut AutoCommit,
-        action: &RichTextAction,
-        context: ActionContext,
-    ) -> Result<(), ActionError> {
-        match &self.framework {
-            Some(dispatcher) => dispatcher.apply_now_with(doc, action, context),
-            None => self.local.try_dispatch_with_context(
-                doc,
-                crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-                action,
-                context,
-            ),
-        }
-    }
-
-    /// The standalone undo boundary; hosted edits are bracketed by the host.
-    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.local.take_committed()
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.local.last_dispatched()
-    }
-}
-
-impl ResourceSurface<Document> for WordProcessorWidget {
-    /// The editor reads the live state where it needs it; a new state only
-    /// asks for a redraw.
-    fn present(&mut self, _state: &Rc<RichTextState>) {
-        self.mark_document_changed();
-    }
-
-    fn attach(&mut self, cx: SurfaceCx<Document>) {
-        self.attach_framework(cx.live(), cx.dispatcher());
-    }
-
-    // Edits bound to where the user is publish as hand-built rows of the
-    // widget's own rather than as `bound_declarations`.
-    fn publishes_document_actions(&self) -> bool {
-        true
     }
 }

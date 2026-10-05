@@ -10,7 +10,7 @@ fn fixture(count: usize) -> (App, Rc<RefCell<Vec<usize>>>) {
         .map(|i| {
             let clicks = clicks.clone();
             Box::new(Card::new(Box::new(
-                Button::new(&format!("card-{i}"), &format!("Card {i}"), None)
+                Button::new(&format!("card-{i}"), &format!("Card {i}"))
                     .on_click(move || clicks.borrow_mut().push(i)),
             ))) as Element
         })
@@ -169,13 +169,13 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
                 CardGrid::new(vec![Box::new(Card::new(Box::new(body)))]).with_card_height(180.0),
             ),
         );
-        app.root_widget.update(&mut app.state.doc, &app.state.root);
+        app.root_widget.update(&app.state.doc, &app.state.root);
         app.init_layout();
         layout(&mut app, 300);
         assert_eq!(app.focusable_order.len(), 1);
         app.root_widget.take_structure_dirty();
         requested.set(2);
-        assert!(app.root_widget.update(&mut app.state.doc, &app.state.root));
+        assert!(app.root_widget.update(&app.state.doc, &app.state.root));
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
         let root = app.layout.root_node.unwrap();
@@ -211,8 +211,8 @@ fn card_grid_has_geometry_focus_and_input_before_paint() {
     // Case `card_grid_nested_below_minimum_uses_actual_parent_allocation`.
     {
         let nested = CardGrid::new(vec![
-            Box::new(Button::new("nested-a", "A", None)),
-            Box::new(Button::new("nested-b", "B", None)),
+            Box::new(Button::new("nested-a", "A")),
+            Box::new(Button::new("nested-b", "B")),
         ])
         .with_min_card_width(300.0)
         .with_card_height(60.0)
@@ -285,7 +285,7 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
             .push(Box::new(crate::widget::Text::new(
                 &"Long content wraps across lines. ".repeat(80),
             )))
-            .push(Box::new(Button::new("long-action", "Action", None)));
+            .push(Box::new(Button::new("long-action", "Action")));
         let root = CardGrid::new(vec![Box::new(Card::new(Box::new(body)))])
             .with_card_height(180.0)
             .with_min_card_width(260.0);
@@ -357,7 +357,7 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
                 changed: changed.clone(),
             },
             32.0,
-            |_, _, key| Box::new(Button::new(&format!("row-{key}"), "Row", None)),
+            |_, _, key| Box::new(Button::new(&format!("row-{key}"), "Row")),
         )
         .with_viewport_height(120.0);
         let mut app = App::new_with_controlled_inputs(
@@ -387,8 +387,8 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         app.root_widget.take_structure_dirty();
         keys.borrow_mut().push(3);
         changed.set(true);
-        assert!(app.root_widget.update(&mut app.state.doc, &app.state.root));
-        app.root_widget.sync(&mut app.state.doc, &app.state.root);
+        assert!(app.root_widget.update(&app.state.doc, &app.state.root));
+        app.root_widget.sync(&app.state.doc, &app.state.root);
         assert!(app.root_widget.take_structure_dirty());
         app.rebuild_structure();
         let root = app.layout.root_node.unwrap();
@@ -424,7 +424,7 @@ struct GrowingBody {
     clicks: Rc<RefCell<Vec<usize>>>,
 }
 impl Widget for GrowingBody {
-    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
+    fn update(&mut self, _: &AppModel, _: &ModelPath) -> bool {
         if self.count == self.requested.get() {
             return false;
         }
@@ -436,7 +436,7 @@ impl Widget for GrowingBody {
         for index in 0..self.count {
             let clicks = self.clicks.clone();
             self.column = std::mem::take(&mut self.column).push(Box::new(
-                Button::new(&format!("dynamic-{index}"), "Action", None)
+                Button::new(&format!("dynamic-{index}"), "Action")
                     .on_click(move || clicks.borrow_mut().push(index)),
             ));
         }

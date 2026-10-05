@@ -163,7 +163,13 @@ fn retained_widgets() -> Vec<(&'static str, fn() -> Element, f64)> {
         ),
         (
             "ShortcutRecorder",
-            || Box::new(ShortcutRecorder::new("x1", "shortcut", "Ctrl+K", "Ctrl+K")),
+            || {
+                Box::new(ShortcutRecorder::new(
+                    "x1",
+                    &tilo_ui::LocalState::new("Ctrl+K".to_owned()),
+                    "Ctrl+K",
+                ))
+            },
             2.0,
         ),
         // Initials are 0.4× the disc the app laid out: geometry, not type.

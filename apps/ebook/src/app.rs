@@ -25,7 +25,6 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
 use ui::widget::{AppModel, ModelPath};
 
@@ -50,9 +49,7 @@ use ui::animation::{Animated, Curve};
 use ui::chrome::SelectionState;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
-use ui::portal::{
-    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
-};
+use ui::portal::{FileFilter, PickRequest};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
@@ -142,7 +139,7 @@ struct ImportWorker {
 struct SearchBuild {
     fingerprint: u64,
     generation: u64,
-    provider: crate::search_provider::BookSearchProvider,
+    provider: crate::search_provider::BookSearch,
 }
 
 struct SearchWorker {
@@ -153,7 +150,7 @@ impl SearchWorker {
     /// `prior` is the published provider; its chapter-prose index is reused
     /// when the book set has not changed.
     fn spawn(
-        prior: crate::search_provider::BookSearchProvider,
+        prior: crate::search_provider::BookSearch,
         books: Arc<Vec<Arc<Book>>>,
         annotations: Arc<Vec<Annotation>>,
         registry: Arc<Vec<crate::model::LibraryEntry>>,
@@ -162,7 +159,7 @@ impl SearchWorker {
     ) -> Result<Self, String> {
         let (send, results) = mpsc::sync_channel(1);
         ui::rt::spawn_thread("ebook-search-builder", move || {
-            let provider = crate::search_provider::BookSearchProvider::new_shared_after(
+            let provider = crate::search_provider::BookSearch::new_shared_after(
                 &prior,
                 books,
                 annotations,
@@ -323,7 +320,6 @@ struct PendingShare {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResourceLifecycle {
-    Open,
     Share,
     Hydrate,
 }
@@ -418,12 +414,12 @@ enum SettingsTab {
     Colours,
     /// Library management: the folders watched for new books.
     Library,
-    /// Device-local reader key bindings.
+    /// The reader key bindings the person chose.
     Shortcuts,
 }
 
-/// Reader commands whose single-character bindings can be tailored per
-/// device. Navigation keys (arrows/PageUp/PageDown) always remain available,
+/// Reader commands whose single-character bindings each person can tailor.
+/// Navigation keys (arrows/PageUp/PageDown) always remain available,
 /// so changing a binding can never strand a keyboard reader.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ReaderShortcut {
@@ -790,13 +786,6 @@ impl BooksApp {
         self.library.as_ref()
     }
 
-    pub(crate) fn resolve_search_resource(
-        &self,
-        address: &tilo_actions::ActionAddress,
-    ) -> Option<tilo_actions::Resource> {
-        ui::search::SearchProvider::resolve_action_resource(&self.search_provider, address)
-    }
-
     pub(crate) fn current_book_resource_context(&self) -> Option<crate::actions::BookResourceCtx> {
         let book = self.open_book()?;
         let block = self.page_top_block;
@@ -876,7 +865,7 @@ impl BooksApp {
             return Err("the passage ends before it starts".into());
         }
         // The position is explicit: `persist_progress` records it, where a
-        // cleared `last_persisted` would re-adopt the stored chapter instead.
+        // pending `adopt_position` would take up the stored chapter instead.
         if self.book_idx != index || self.chapter != chapter {
             self.book_idx = index;
             self.chapter = chapter;
@@ -899,7 +888,7 @@ impl BooksApp {
     clippy::struct_excessive_bools,
     reason = "each bool is an independent, unrelated flag spanning unrelated \
               subsystems (library-load state, drag/selection gestures, popover \
-              open/closed toggles, and a handful of --shots-only seams); \
+              open/closed toggles); \
               grouping them into enums would not express any real invariant \
               between them and would touch reader, library and settings call \
               sites across this file"
@@ -915,27 +904,33 @@ pub struct BooksApp {
     /// Whether the persisted library has been hydrated from the document yet
     /// (loads on the first `sync`; shot/test builds pass one explicitly).
     library_loaded: bool,
-    /// A book handed to the app by the OS (file association) to open + import
-    /// on the first `sync`.
-    pending_open_path: Option<PathBuf>,
-    /// A shelf book, by content id, to open on the first `sync`.
+    /// A shelf book, by content id, to open on the next `sync` that holds it.
     pending_open_book: Option<String>,
-    /// A book the host handed over as bytes, to shelve and open on the
-    /// first `sync`.
-    pending_handed: Option<content::HandedBook>,
     /// The host's content store, where rows naming a content hash find
-    /// their bytes on a device without the file.
+    /// their bytes on a device without the file, and where a book opened by
+    /// its contents is kept.
     content: Option<tilo_content::ContentStore>,
+    /// Whether the library is the one compiled into the app (a host without
+    /// files, the browser): it opens on the book last read.
+    bundled_library: bool,
+    /// Whether this is a window someone uses: only a live reader watches
+    /// folders, imports and reads the device's own grants.
+    live: bool,
+    /// The books a screenshot reads in place of files.
+    sample: Option<std::rc::Rc<crate::scenarios::SampleShelf>>,
+    /// Shelf rows whose bytes were looked for, found or not, so a row this
+    /// device cannot read is not looked for again on every change.
+    hydrated: std::collections::HashSet<String>,
+    /// Books put on the shelf ahead of their row, which a state from before
+    /// the row arrives must not take off it again.
+    shelving: std::collections::HashSet<String>,
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
-    portal_rx: Option<PortalChannel>,
-    /// A chooser delivering contents, where files have no path (the web).
-    portal_contents_rx: Option<ContentsChannel>,
-    /// A book chosen by contents, waiting for the document in `sync`.
-    pending_contents: Option<(String, Vec<u8>)>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_lifecycle: Option<ResourceLifecycle>,
     completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
+    /// Callers waiting for a share or fetch to settle.
+    effect_replies: Vec<(tilo_actions::InvocationId, ui::framework::EffectReply)>,
     /// The sole background parser. It owns no document state; completed books
     /// are committed only by [`Self::drain_import_worker`] on the UI thread.
     import_worker: Option<ImportWorker>,
@@ -1112,12 +1107,7 @@ pub struct BooksApp {
     /// the library, so it is refreshed at document/materialisation boundaries
     /// and cloned cheaply into each palette session rather than rebuilt per
     /// keystroke or provider request.
-    search_provider: crate::search_provider::BookSearchProvider,
-    /// Small live action surface (current reader controls plus settings
-    /// resources) merged into the compact immutable action-label provider.
-    action_search_resources: Arc<Vec<tilo_actions::Resource>>,
-    action_search_epoch: Arc<AtomicU64>,
-    action_search_fingerprint: u64,
+    book_search: crate::search_provider::BookSearch,
     /// A single off-UI builder. A newer snapshot supersedes its result before
     /// publication instead of mutating a live provider in place.
     search_worker: Option<SearchWorker>,
@@ -1145,6 +1135,8 @@ pub struct BooksApp {
     watched_sources: HashMap<PathBuf, String>,
     /// Device-local portal grants, persisted outside the collaborative doc.
     local_library: LocalLibrary,
+    /// The person's own reader key bindings.
+    reader_keys: crate::reader_keys::ReaderKeys,
     /// The command currently awaiting a one-key local binding in Settings.
     shortcut_capture: Option<ReaderShortcut>,
     /// A short, local capture error announced through the row's accessible
@@ -1166,36 +1158,14 @@ pub struct BooksApp {
     /// Last-opened timestamp per book (for the "recently opened" shelf sort).
     shelf_opened: HashMap<String, u64>,
     last_persisted: Option<(usize, usize, u16)>,
+    /// The open book's stored position is still to be taken up: set when a
+    /// book opens, cleared once the reader shows it there.
+    adopt_position: bool,
     reading_progress: f32,
     progress_slider_track: Rect,
     progress_dragging: bool,
     pending_seek_fraction: Option<f32>,
     cur_page_count: usize,
-    seeded: bool,
-    /// Sample-content mode: only the hermetic `--shots`/test path sets this.
-    /// A real user is never seeded.
-    demo: bool,
-    /// Reading settings a `--shots` scenario wants applied through the real
-    /// CRDT path on the next sync. Shot-only.
-    shot_settings: Option<Settings>,
-    /// Font/scheme registries a `--shots` scenario seeds. Shot-only.
-    shot_fonts: Option<Vec<FontEntry>>,
-    shot_schemes: Option<Vec<ColorScheme>>,
-    /// Watched folders a `--shots` scenario seeds. Shot-only.
-    shot_watched: Option<Vec<PathBuf>>,
-    /// A `--shots` scenario that wants the on-page note composer open.
-    /// Shot-only.
-    shot_compose: bool,
-    /// A `--shots` scenario that wants a highlight-with-comments overlay
-    /// open. Shot-only.
-    shot_comments: bool,
-    /// A `--shots` scenario with a dense annotation history. Kept as a
-    /// one-frame seed so live readers never receive fabricated annotations.
-    shot_long_annotations: bool,
-    /// A visual-a11y proof can intentionally suppress seeded/persisted
-    /// annotation decoration, leaving a normal readable page at its target
-    /// text scale. This never affects the shared document or live reader.
-    shot_clean_reader: bool,
     /// Last resolved layout mode per rail, so a breakpoint crossing settles
     /// the flap instantly instead of animating on launch/resize.
     settled_toc: Option<SplitLayout>,
@@ -1213,34 +1183,29 @@ pub struct BooksApp {
     /// Framework-owned action dispatch: each on-page affordance dispatches
     /// its [`EbookAction`](crate::actions::EbookAction) through this so it
     /// replays byte-identically on peers, exactly as the Ctrl+K palette does.
-    actions: crate::resource::ActionSink,
+    dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
 }
 
 impl BooksApp {
     /// The live app: starts on an empty shelf and hydrates the reader's
     /// persisted library from the document on the first `sync`.
-    pub fn new() -> Self {
-        let mut app = Self::with_library(Vec::new());
+    pub fn new(
+        dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
+        bundled_library: bool,
+    ) -> Self {
+        let mut app = Self::with_library(dispatch, Vec::new());
         app.library_loaded = false;
         app.view = View::Library;
-        // Where files have no path, the book last opened by contents.
-        if !crate::web_file::native_paths()
-            && let Some(file) = crate::web_file::recall()
-        {
-            app.pending_contents = Some((file.name, file.bytes));
-        }
+        app.bundled_library = bundled_library;
         app
     }
 }
 
-impl Default for BooksApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl BooksApp {
-    pub(crate) fn with_library(library: Vec<Book>) -> Self {
+    pub(crate) fn with_library(
+        dispatch: ui::framework::Dispatcher<crate::resource::Ebook>,
+        library: Vec<Book>,
+    ) -> Self {
         // Open straight into the reader when there's a book; otherwise land
         // on the library so an empty shelf shows its guidance.
         let view = if library.is_empty() {
@@ -1249,7 +1214,7 @@ impl BooksApp {
             View::Reader
         };
         let library: Arc<Vec<Arc<Book>>> = Arc::new(library.into_iter().map(Arc::new).collect());
-        let search_provider = crate::search_provider::BookSearchProvider::new_shared(
+        let book_search = crate::search_provider::BookSearch::new_shared(
             Arc::clone(&library),
             Arc::new(Vec::new()),
             Arc::new(Vec::new()),
@@ -1258,9 +1223,9 @@ impl BooksApp {
         Self {
             library,
             view,
-            search_provider,
+            book_search,
             search_revision: 1,
-            ..Self::blank_view_state()
+            ..Self::blank_view_state(dispatch)
         }
     }
 
@@ -1275,29 +1240,28 @@ impl BooksApp {
                   make it more readable and a struct literal can't be split without the \
                   inner literal setting every field itself"
     )]
-    fn blank_view_state() -> Self {
+    fn blank_view_state(dispatch: ui::framework::Dispatcher<crate::resource::Ebook>) -> Self {
         let (import_worker, import_worker_error) = match ImportWorker::new() {
             Ok(worker) => (Some(worker), None),
             Err(error) => (None, Some(error)),
         };
-        let local_library = LocalLibrary::load();
-        let watched_folders = local_library.watched_folders.clone();
         Self {
             library: Arc::new(Vec::new()),
             library_paths: HashMap::new(),
             // A caller-supplied library (tests / shots) is authoritative; the live
             // `new()` clears this so the document load runs.
             library_loaded: true,
-            pending_open_path: None,
             pending_open_book: None,
-            pending_handed: None,
             content: None,
-            portal_rx: None,
-            portal_contents_rx: None,
-            pending_contents: None,
+            bundled_library: false,
+            live: true,
+            sample: None,
+            hydrated: std::collections::HashSet::new(),
+            shelving: std::collections::HashSet::new(),
             resource_invocation: None,
             resource_lifecycle: None,
             completed_resource_invocation: None,
+            effect_replies: Vec::new(),
             import_worker,
             import_worker_error,
             import_generation: 0,
@@ -1371,10 +1335,7 @@ impl BooksApp {
             schemes: default_schemes(),
             annotations: Vec::new(),
             all_annotations: Arc::new(Vec::new()),
-            search_provider: crate::search_provider::BookSearchProvider::new(&[], &[]),
-            action_search_resources: Arc::new(Vec::new()),
-            action_search_epoch: Arc::new(AtomicU64::new(1)),
-            action_search_fingerprint: 0,
+            book_search: crate::search_provider::BookSearch::new(&[], &[]),
             search_worker: None,
             search_fingerprint: 0,
             search_revision: 0,
@@ -1384,9 +1345,10 @@ impl BooksApp {
             color_picker: SchemeColorSheet::default(),
             default_font_menu: false,
             library_prefs: crate::model::LibraryPrefs::default(),
-            watched_folders,
+            watched_folders: Vec::new(),
             watched_sources: HashMap::new(),
-            local_library,
+            local_library: LocalLibrary::default(),
+            reader_keys: crate::reader_keys::ReaderKeys::default(),
             shortcut_capture: None,
             shortcut_capture_error: None,
             shelf_controls: ShelfControls::default(),
@@ -1400,63 +1362,25 @@ impl BooksApp {
             shelf_annos: HashMap::new(),
             shelf_opened: HashMap::new(),
             last_persisted: None,
+            adopt_position: true,
             reading_progress: 0.0,
             progress_slider_track: Rect::ZERO,
             progress_dragging: false,
             pending_seek_fraction: None,
             cur_page_count: 1,
-            seeded: false,
-            demo: false,
-            shot_settings: None,
-            shot_fonts: None,
-            shot_schemes: None,
-            shot_watched: None,
-            shot_compose: false,
-            shot_comments: false,
-            shot_long_annotations: false,
-            shot_clean_reader: false,
             settled_toc: None,
             settled_notes: None,
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
-            actions: crate::resource::ActionSink::default(),
+            dispatch,
         }
-    }
-
-    /// Build the reader pointed at a single opened `.epub` (OS file
-    /// association). The book is imported into the library and opened on the
-    /// first `sync`; the rest of the reader's shelf loads alongside it.
-    pub fn open_path(path: &std::path::Path) -> Self {
-        let mut app = Self::new();
-        app.pending_open_path = Some(path.to_path_buf());
-        app.view = View::Reader;
-        app
-    }
-
-    /// Open the shelf book with content id `book_id` in the reader, at its
-    /// recorded position, once the library loads. The shelf stays home when
-    /// the library does not hold it.
-    pub fn open_book_on_load(&mut self, book_id: &str) {
-        self.pending_open_book = Some(book_id.into());
-    }
-
-    /// Read library books from the host's content store as well as files.
-    pub fn set_content_store(&mut self, store: tilo_content::ContentStore) {
-        self.content = Some(store);
-    }
-
-    /// Shelve a book the host handed over and open it once the library
-    /// loads, through the same library action an import records.
-    pub fn open_handed_on_load(&mut self, handed: content::HandedBook) {
-        self.pending_handed = Some(handed);
-        self.view = View::Reader;
     }
 
     /// Screenshot-only: force the floating page bubble hover-pinned open so
     /// a single still frame captures the transient indicator. Never armed at
     /// runtime.
-    pub fn arm_reader_bubble_for_shots(&mut self) {
+    fn arm_reader_bubble_for_shots(&mut self) {
         self.reader_bubble.arm_for_shots();
     }
 
@@ -1624,549 +1548,7 @@ impl BooksApp {
             || self.notes_flap.is_animating(self.notes_layout())
     }
 
-    /// Stage a named interaction state for the single-frame `--shots`
-    /// renderer. This is the only place sample content enters the app: it
-    /// swaps in the sample library and marks the app as demo so `sync` seeds
-    /// demo annotations. Flaps are snapped (no animation).
-    /// Stage a named interaction state for the single-frame `--shots`
-    /// renderer. This is the only place sample content enters the app: it
-    /// swaps in the sample library and marks the app as demo so `sync` seeds
-    /// demo annotations. Flaps are snapped (no animation).
-    pub fn seed_shot_scenario(&mut self, scenario: &str) {
-        // Shot builds pass an explicit (sample) library; never let the
-        // document-load path overwrite it.
-        self.library_loaded = true;
-
-        // Onboarding stays genuinely empty so the zero-state can be captured.
-        if scenario == "onboarding" {
-            self.view = View::Library;
-            return;
-        }
-
-        self.stage_shot_library();
-
-        if self.apply_shot_chrome_scenario(scenario)
-            || self.apply_shot_theme_scenario(scenario)
-            || self.apply_shot_settings_panel_scenario(scenario)
-            || self.apply_shot_text_selection_scenario(scenario)
-            || self.apply_shot_reading_mode_scenario(scenario)
-        {
-            return;
-        }
-        // "read" and any unrecognised scenario: the plain reader.
-        self.view = View::Reader;
-    }
-
-    /// Load the sample library into shot-scenario staging: the demo shelf,
-    /// reset to its first book/chapter/page, each book given a plausible
-    /// on-disk path (one on the shared workspace so the "Shared" badge has
-    /// something to show).
-    fn stage_shot_library(&mut self) {
-        self.demo = true;
-        self.library = Arc::new(
-            crate::content::load_sample_library()
-                .into_iter()
-                .map(Arc::new)
-                .collect(),
-        );
-        self.book_idx = 0;
-        self.chapter = 0;
-        self.page = 0;
-        // One book on the shared workspace so the shelf shot proves the
-        // "Shared" badge, the rest local.
-        self.library_paths.clear();
-        for (i, b) in self.library.iter().enumerate() {
-            let path = if i == 1 {
-                content::workspace_books_dir().join("field-notes.epub")
-            } else {
-                PathBuf::from(format!("/home/reader/Books/book-{i}.epub"))
-            };
-            self.library_paths.insert(b.id.clone(), path);
-        }
-    }
-
-    /// Shelf/reader chrome scenarios: which top-level view, and its overlay flaps.
-    fn apply_shot_chrome_scenario(&mut self, scenario: &str) -> bool {
-        match scenario {
-            "shelf" | "library" => self.view = View::Library,
-            "page-bubble" => {
-                // The reader with the floating page-indicator bubble pinned open,
-                // so a still frame shows the transient overlay + its prev/next
-                // stepper (not a permanent bottom strip).
-                self.view = View::Reader;
-                self.arm_reader_bubble_for_shots();
-            }
-            "settings-library" => {
-                // The Library settings pane: the folders books were opened from,
-                // one already being watched for new additions.
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Library;
-                self.shot_watched = Some(vec![PathBuf::from("/home/reader/Books")]);
-                self.library_paths.clear();
-                self.library_paths.insert(
-                    "book:a".into(),
-                    PathBuf::from("/home/reader/Books/one.epub"),
-                );
-                self.library_paths.insert(
-                    "book:b".into(),
-                    PathBuf::from("/home/reader/Downloads/two.epub"),
-                );
-                self.library_paths.insert(
-                    "book:c".into(),
-                    content::workspace_books_dir().join("shared.epub"),
-                );
-            }
-            "narrow" => {
-                self.view = View::Reader;
-                // Contents rail open as an overlay flap; annotations closed so
-                // the scrimmed flap reads clearly against the page.
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(false);
-            }
-            "import-error" => {
-                self.view = View::Reader;
-                // Exercise the same persistent, visible error surface used by
-                // a real failed picker/import without fabricating a book into
-                // the live library.
-                self.load_error = Some(
-                    "Couldn’t open damaged.epub: epub text is too large (maximum 64 MiB)".into(),
-                );
-            }
-            "import-loading" => {
-                self.view = View::Reader;
-                self.import_loading = Some(LoadingImport {
-                    generation: 1,
-                    path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
-                    kind: ImportKind::Open,
-                    expected_book_id: None,
-                });
-            }
-            "type" => {
-                self.view = View::Reader;
-                self.reading_settings.open();
-            }
-            "library-scrolled" => {
-                // The large value clamps to the real max in draw.
-                self.view = View::Library;
-                self.shelf_scroll = 5000.0;
-            }
-            "long-toc" => {
-                self.view = View::Reader;
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(false);
-                let template = self
-                    .library
-                    .first()
-                    .and_then(|book| book.chapters.first())
-                    .cloned();
-                if let Some(template) = template
-                    && let Some(book) = Arc::make_mut(&mut self.library).first_mut()
-                {
-                    Arc::make_mut(book).chapters = (0..32)
-                        .map(|index| crate::model::Chapter {
-                            title: format!("Chapter {} — a longer voyage", index + 1),
-                            href: format!("chapter-{}.xhtml", index + 1),
-                            blocks: template.blocks.clone(),
-                        })
-                        .collect();
-                    self.chapter = 27;
-                    // Keep the staged chapter from being replaced by the
-                    // sample book's persisted position during first sync.
-                    self.last_persisted = Some((self.chapter, self.page, 0));
-                    self.toc_scroll_to_active = true;
-                }
-            }
-            "long-annotations" => {
-                self.demo = false;
-                self.view = View::Reader;
-                self.shot_long_annotations = true;
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Reader typography/theme scenarios, applied through the real settings path.
-    fn apply_shot_theme_scenario(&mut self, scenario: &str) -> bool {
-        match scenario {
-            "serif" => {
-                // Applied through the real settings path so it exercises
-                // serif shaping end to end.
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    font_id: "serif".into(),
-                    ..Settings::default()
-                });
-            }
-            "dark" => {
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    theme: ReadTheme::Dark,
-                    ..Settings::default()
-                });
-            }
-            "light" => {
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    theme: ReadTheme::Light,
-                    ..Settings::default()
-                });
-            }
-            "sepia" => {
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    theme: ReadTheme::Sepia,
-                    ..Settings::default()
-                });
-            }
-            "hicontrast" => {
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    theme: ReadTheme::HighContrast,
-                    ..Settings::default()
-                });
-            }
-            "large-text" => {
-                // A true 200% text scale is a first-class visual/a11y
-                // regression state. It must use the normal settings path so
-                // pagination and all responsive chrome are exercised too. Do
-                // not seed demo annotations here: the proof is a normal,
-                // readable page rather than one giant highlighted range.
-                self.view = View::Reader;
-                self.demo = false;
-                self.sel = None;
-                self.selected_block = None;
-                self.shot_clean_reader = true;
-                self.shot_settings = Some(Settings {
-                    font_scale: Settings::FONT_MAX,
-                    ..Settings::default()
-                });
-            }
-            "reduced-motion" => {
-                // The headless renderer has no preference service, so stage
-                // the same app-owned motion policy the live host supplies.
-                // The still is intentionally calm, but retains the same
-                // desktop reader chrome as the normal and high-contrast
-                // references so it proves equivalent layout rather than an
-                // immersive fallback.
-                self.view = View::Reader;
-                self.reduce_motion = true;
-                self.page_turn = None;
-                self.toc_flap.snap(true);
-                self.notes_flap.snap(true);
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Settings-screen panel scenarios: font/colour-scheme management.
-    fn apply_shot_settings_panel_scenario(&mut self, scenario: &str) -> bool {
-        match scenario {
-            "font-picker" => {
-                // Lists the real installed families (cosmic-text/fontconfig),
-                // each previewed in its own face.
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Fonts;
-                self.font_picker = true;
-            }
-            "settings-colours" => {
-                // The colour-scheme manager with a custom scheme present.
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Colours;
-                let mut sc = default_schemes();
-                if let Some(first) = sc.first_mut() {
-                    first.enabled = false; // a disabled built-in
-                }
-                sc.push(ColorScheme::from_bg(
-                    "scheme1",
-                    "Midnight",
-                    [0x15, 0x1A, 0x24],
-                ));
-                self.shot_schemes = Some(sc);
-            }
-            "settings-fonts" => {
-                // The font manager with an added system face.
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Fonts;
-                let mut f = default_fonts();
-                f.push(FontEntry::new(
-                    "font1",
-                    FontKind::Named("DejaVu Serif".into()),
-                    "DejaVu Serif",
-                    1.08,
-                    true,
-                ));
-                self.shot_fonts = Some(f);
-            }
-            "settings-fonts-rename" => {
-                // Inline rename in progress via the real `ui::EditableLabel`,
-                // typeset in that font's own face.
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Fonts;
-                let mut f = default_fonts();
-                f.push(FontEntry::new(
-                    "font1",
-                    FontKind::Named("DejaVu Serif".into()),
-                    "DejaVu Serif",
-                    1.08,
-                    true,
-                ));
-                self.shot_fonts = Some(f);
-                let mut field = EditableLabel::new("DejaVu Serif")
-                    .with_font_size(16.0)
-                    .with_font_family(FontChoice::Named("DejaVu Serif".into()));
-                field.begin_edit();
-                self.renaming = Some(Rename {
-                    target: RenameTarget::Font("font1".into()),
-                    field,
-                });
-            }
-            "settings-shortcuts" => {
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Shortcuts;
-            }
-            "scheme-editor" => {
-                // The per-colour scheme editor open on a custom scheme.
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Colours;
-                let mut sc = default_schemes();
-                sc.push(ColorScheme::from_bg(
-                    "scheme1",
-                    "Midnight",
-                    [0x15, 0x1A, 0x24],
-                ));
-                self.shot_schemes = Some(sc);
-                self.editing_scheme = Some("scheme1".into());
-            }
-            "picker" => {
-                // The colour picker open on a custom scheme's page colour.
-                self.view = View::Settings;
-                self.settings_tab = SettingsTab::Colours;
-                let mut sc = default_schemes();
-                sc.push(ColorScheme::from_bg(
-                    "scheme1",
-                    "Midnight",
-                    [0x1A, 0x22, 0x33],
-                ));
-                self.shot_schemes = Some(sc);
-                self.color_picker
-                    .open(PickTarget::Slot("scheme1".into(), 0), [0x1A, 0x22, 0x33]);
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Text-selection and annotation-composer scenarios.
-    fn apply_shot_text_selection_scenario(&mut self, scenario: &str) -> bool {
-        match scenario {
-            "word-select" => {
-                // End state of double-click-word then drag-right-by-words:
-                // selection snapped to word boundaries via the real block text.
-                self.demo = false;
-                self.view = View::Reader;
-                let block = 2usize;
-                if let Some(text) = self
-                    .library
-                    .first()
-                    .and_then(|b| b.chapters.first())
-                    .map(|c| c.block_text(block))
-                {
-                    let n = text.chars().count();
-                    if n > 6 {
-                        let (s, _) = ui::word_boundaries_chars(&text, 0);
-                        let target = (n / 3).clamp(6, 48).min(n - 1);
-                        let (_, e) = ui::word_boundaries_chars(&text, target);
-                        self.sel = Some(TextSel {
-                            anchor: DocPos { block, ch: s },
-                            head: DocPos { block, ch: e },
-                        });
-                        self.selected_block = Some(block);
-                    }
-                }
-            }
-            "select" => {
-                self.demo = false;
-                self.view = View::Reader;
-                self.sel = Some(TextSel {
-                    anchor: DocPos { block: 2, ch: 0 },
-                    head: DocPos { block: 2, ch: 64 },
-                });
-                self.selected_block = Some(2);
-            }
-            "highlight" => {
-                self.view = View::Reader;
-                self.sel = Some(TextSel {
-                    anchor: DocPos { block: 1, ch: 4 },
-                    head: DocPos { block: 1, ch: 58 },
-                });
-                self.selected_block = Some(1);
-            }
-            "select-drag" => {
-                // Non-demo so no seeded highlights clutter the bands.
-                self.demo = false;
-                self.view = View::Reader;
-                self.sel = Some(TextSel {
-                    anchor: DocPos { block: 1, ch: 6 },
-                    head: DocPos { block: 2, ch: 60 },
-                });
-                self.selected_block = Some(1);
-            }
-            "note" => {
-                self.demo = false;
-                self.view = View::Reader;
-                self.sel = Some(TextSel {
-                    anchor: DocPos { block: 1, ch: 6 },
-                    head: DocPos { block: 2, ch: 60 },
-                });
-                self.selected_block = Some(1);
-                self.shot_compose = true;
-            }
-            "comments" => {
-                // Anchored to the Tideglass sample's long opening paragraph.
-                self.demo = false;
-                self.view = View::Reader;
-                self.book_idx = 2;
-                self.chapter = 0;
-                self.page = 0;
-                self.shot_comments = true;
-            }
-            _ => return false,
-        }
-        true
-    }
-
-    /// Continuous-scroll and two-up reading-mode scenarios.
-    fn apply_shot_reading_mode_scenario(&mut self, scenario: &str) -> bool {
-        match scenario {
-            "continuous" => {
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    mode: ReadMode::Continuous,
-                    ..Settings::default()
-                });
-                self.scroll_y = 520.0;
-            }
-            "continuous-select" => {
-                self.demo = false;
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    mode: ReadMode::Continuous,
-                    ..Settings::default()
-                });
-                self.scroll_y = 120.0;
-                self.sel = Some(TextSel {
-                    anchor: DocPos { block: 1, ch: 6 },
-                    head: DocPos { block: 2, ch: 54 },
-                });
-                self.selected_block = Some(1);
-            }
-            "two-up" | "spread" => {
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    mode: ReadMode::TwoUp,
-                    ..Settings::default()
-                });
-            }
-            "two-up-select" | "spread-select" => {
-                self.demo = false;
-                self.view = View::Reader;
-                self.shot_settings = Some(Settings {
-                    mode: ReadMode::TwoUp,
-                    ..Settings::default()
-                });
-                self.sel = Some(TextSel {
-                    anchor: DocPos { block: 2, ch: 0 },
-                    head: DocPos { block: 2, ch: 60 },
-                });
-                self.selected_block = Some(2);
-            }
-            _ => return false,
-        }
-        true
-    }
-
     // --- CRDT <-> cache plumbing --------------------------------------------
-
-    /// Seed the demo library's annotations so a `--shots` frame shows a
-    /// lived-in reader. Runs only in demo mode — a real user's document is
-    /// never populated with fabricated content.
-    fn seed_if_needed(&mut self, doc: &mut AutoCommit) {
-        if self.seeded || !self.demo {
-            return;
-        }
-        self.seeded = true;
-
-        // A spread of reading progress across the sample shelf so the
-        // library shot shows real progress bars, a "recently opened" ordering,
-        // and a couple of finished books. Demo-only, like every seed here.
-        let fracs = [0.34_f32, 0.72, 0.08, 0.5, 1.0];
-        let ids: Vec<String> = self.library.iter().map(|b| b.id.clone()).collect();
-        for (i, id) in ids.iter().enumerate() {
-            let f = fracs.get(i % fracs.len()).copied().unwrap_or(0.5);
-            BooksDoc::write_progress(
-                doc,
-                id,
-                &Progress {
-                    chapter: 0,
-                    page: (f * 6.0) as usize,
-                    fraction: f,
-                    opened: unix_now_ms() - (i as u64) * 3_600_000,
-                },
-            );
-        }
-
-        if !BooksDoc::list_annotations(doc).is_empty() {
-            return;
-        }
-        let Some(book) = self.library.first() else {
-            return;
-        };
-        let id = book.id.clone();
-        let Some(ch0) = book.chapters.first() else {
-            return;
-        };
-        let excerpt = |i: usize| -> String {
-            let t = ch0.block_text(i);
-            let mut s: String = t.chars().take(96).collect();
-            if t.chars().count() > 96 {
-                s.push('…');
-            }
-            s
-        };
-        let bm = Annotation::new(&id, AnnoKind::Bookmark, 0, 0).with_excerpt(excerpt(0));
-        BooksDoc::upsert_annotation(doc, &bm);
-        // Ranged highlights snap their end to a word boundary so the band
-        // never cuts mid-word.
-        let snap_end = |i: usize, target: usize| -> usize {
-            let chars: Vec<char> = ch0.block_text(i).chars().collect();
-            let hi = target.min(chars.len());
-            chars
-                .get(..hi)
-                .and_then(|slice| slice.iter().rposition(|&c| c == ' '))
-                .unwrap_or(hi)
-        };
-        let mut h1 = Annotation::new(&id, AnnoKind::Highlight, 0, 1)
-            .with_color(HiColor::Yellow)
-            .with_excerpt(excerpt(1));
-        h1.start = 0;
-        h1.end = snap_end(1, 70);
-        BooksDoc::upsert_annotation(doc, &h1);
-        let mut h2 = Annotation::new(&id, AnnoKind::Highlight, 0, 3)
-            .with_color(HiColor::Green)
-            .with_excerpt(excerpt(3));
-        h2.start = 0;
-        h2.end = snap_end(3, 58);
-        BooksDoc::upsert_annotation(doc, &h2);
-        let mut note = Annotation::new(&id, AnnoKind::Note, 0, 2)
-            .with_color(HiColor::Blue)
-            .with_excerpt(excerpt(2));
-        note.note =
-            "The blue and the amber meeting in the middle — keep this image for the last pane."
-                .into();
-        BooksDoc::upsert_annotation(doc, &note);
-    }
 
     /// Pull settings + annotations + shelf summaries out of the CRDT into the
     /// render caches. Idempotent; called from `sync` and after every handled
@@ -2234,9 +1616,25 @@ impl BooksApp {
 
     /// Persist the live reading position for the open book (deduped so we don't
     /// churn the document when nothing moved).
-    fn persist_progress(&mut self, doc: &mut AutoCommit) {
+    fn persist_progress(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        if let Some(action) = self.progress_to_record() {
+            self.edit(doc, &action);
+        }
+    }
+
+    /// Record where the reader is, from an effect that moved it: through the
+    /// dispatcher, which the host applies like any invocation.
+    fn record_progress(&mut self) {
+        if let Some(action) = self.progress_to_record() {
+            self.dispatch.apply(&action);
+        }
+    }
+
+    /// The progress action for where the reader is now, when it moved since
+    /// it was last recorded.
+    fn progress_to_record(&mut self) -> Option<crate::actions::EbookAction> {
         if self.view != View::Reader {
-            return;
+            return None;
         }
         let fraction = self.current_progress_fraction();
         let key = (
@@ -2245,26 +1643,20 @@ impl BooksApp {
             (fraction * 10_000.0).round() as u16,
         );
         if self.last_persisted == Some(key) {
-            return;
+            return None;
         }
-        let Some(book) = self.library.get(self.book_idx) else {
-            return;
-        };
-        let id = book.id.clone();
-        self.perform_action(
-            doc,
-            &crate::actions::set_progress_action(
-                &id,
-                Progress {
-                    chapter: self.chapter,
-                    page: self.page,
-                    fraction,
-                    // 0 ⇒ the action preserves the recorded open time.
-                    opened: 0,
-                },
-            ),
-        );
+        let id = self.library.get(self.book_idx)?.id.clone();
         self.last_persisted = Some(key);
+        Some(crate::actions::set_progress_action(
+            &id,
+            Progress {
+                chapter: self.chapter,
+                page: self.page,
+                fraction,
+                // 0 ⇒ the action preserves the recorded open time.
+                opened: 0,
+            },
+        ))
     }
 
     fn current_progress_fraction(&self) -> f32 {
@@ -2391,63 +1783,80 @@ impl BooksApp {
     }
 
     /// Hydrate the reader's persisted library from the document on first
-    /// sync. A book handed over by the OS is imported + opened; otherwise
-    /// the shelf is home.
-    fn ensure_library_loaded(&mut self, doc: &mut AutoCommit) {
-        if self.library_loaded || self.demo {
+    /// sync, shelving any new book in a watched folder first. The shelf is
+    /// home; a bundled library opens on the book last read.
+    fn ensure_library_loaded(&mut self, doc: &AutoCommit) {
+        if self.library_loaded {
             return;
         }
         self.library_loaded = true;
 
-        // A handed-over book joins the same bounded worker as a picker result;
-        // startup never parses an arbitrary file on the first UI frame.
-        let pending_open = self.pending_open_path.take();
-
+        let found_paths = HashMap::new();
         Arc::make_mut(&mut self.library).clear();
         self.library_paths.clear();
-        for lb in content::load_library_with_content(
-            doc,
-            &self.watched_folders,
-            &self.local_library.books,
-            self.content.as_ref(),
-        ) {
-            self.library_paths.insert(lb.book.id.clone(), lb.path);
-            Arc::make_mut(&mut self.library).push(Arc::new(lb.book));
-        }
+        self.hydrated.clear();
+        let entries = BooksDoc::read_library_entries(doc);
+        self.hydrate(&entries, &found_paths);
 
-        let pending_book = self
-            .pending_open_book
-            .take()
-            .and_then(|id| self.library.iter().position(|book| book.id == id));
-        if let Some(path) = pending_open {
-            if let Err(error) = self.begin_import(path, ImportKind::Open) {
-                self.settle_import_failure(error, "ebook.importer_unavailable");
-            }
-        } else if let Some(handed) = self.pending_handed.take() {
-            let entry = content::handed_book_entry(&handed);
-            self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
-            let id = handed.book.id.clone();
-            if let Some(hash) = &handed.content {
-                self.library_paths
-                    .insert(id.clone(), content::content_path(hash));
-            }
-            let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
-                index
-            } else {
-                Arc::make_mut(&mut self.library).push(Arc::new(handed.book));
-                self.library.len() - 1
-            };
-            self.open_book_at(doc, index);
-        } else if let Some(index) = pending_book {
-            self.open_book_at(doc, index);
-        } else {
-            self.view = View::Library;
+        if self.pending_open_book.is_none() && self.bundled_library {
+            self.pending_open_book = most_recently_opened(doc);
         }
+        self.view = View::Library;
+    }
+
+    /// Put the shelf rows in `entries` this device can read on the shelf:
+    /// the sample shelf in a screenshot, else the files and content the rows
+    /// name. `found` are watched-folder files not yet remembered.
+    fn hydrate(
+        &mut self,
+        entries: &[crate::model::LibraryEntry],
+        found: &HashMap<String, PathBuf>,
+    ) {
+        self.hydrated
+            .extend(entries.iter().map(|entry| entry.id.clone()));
+        let loaded: Vec<content::LoadedBook> = if let Some(sample) = &self.sample {
+            entries
+                .iter()
+                .filter_map(|entry| sample.book(&entry.id))
+                .map(|(book, path)| content::LoadedBook {
+                    book: book.clone(),
+                    path: path.clone(),
+                })
+                .collect()
+        } else {
+            let mut paths = self.local_library.books.clone();
+            for (id, path) in found {
+                paths.entry(id.clone()).or_insert_with(|| path.clone());
+            }
+            content::hydrate_library(entries, &paths, self.content.as_ref())
+        };
+        for loaded in loaded {
+            if self.library.iter().any(|book| book.id == loaded.book.id) {
+                continue;
+            }
+            self.library_paths
+                .insert(loaded.book.id.clone(), loaded.path);
+            Arc::make_mut(&mut self.library).push(Arc::new(loaded.book));
+        }
+        self.dirty = true;
+    }
+
+    /// Open the book a launch, an effect or a bundled start asked for, once
+    /// the shelf holds it.
+    fn open_pending_book(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        let Some(id) = self.pending_open_book.as_deref() else {
+            return;
+        };
+        let Some(index) = self.library.iter().position(|book| book.id == id) else {
+            return;
+        };
+        self.pending_open_book = None;
+        self.open_book_at(doc, index);
     }
 
     /// Open the book at library index `i` in the reader, restoring where the
     /// reader left off and stamping the open time for the "recently opened" sort.
-    fn open_book_at(&mut self, doc: &mut AutoCommit, i: usize) {
+    fn open_book_at(&mut self, doc: &mut ui::widget::Edits<'_>, i: usize) {
         if self.library.is_empty() {
             return;
         }
@@ -2461,119 +1870,16 @@ impl BooksApp {
         self.chapter = p.chapter.min(nchap);
         self.page = p.page;
         p.opened = unix_now_ms();
-        self.perform_action(doc, &crate::actions::set_progress_action(&id, p));
+        self.edit(doc, &crate::actions::set_progress_action(&id, p));
         self.clear_selection();
         self.composing = None;
         self.note_composer.close();
         self.comment_overlay.close();
         self.layout = None;
         self.last_persisted = None;
+        self.adopt_position = true;
         self.toc_scroll_to_active = true;
         self.notes_scroll_to_annotation = None;
-    }
-
-    /// Ask the host to choose a book to open; the chosen path comes back over
-    /// a channel drained each frame in [`Self::drain_portal`]. A second
-    /// request while one is in flight is ignored.
-    fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() || self.portal_contents_rx.is_some() {
-            return;
-        }
-        if crate::web_file::native_paths() {
-            self.portal_rx = Some(book_open_request().send());
-        } else {
-            self.portal_contents_rx = Some(book_open_request().send_contents());
-        }
-        self.load_error = None;
-        self.dirty = true;
-    }
-
-    /// Drain a completed picker request, if any. Never blocks — a
-    /// still-pending picker stays installed for the next frame.
-    fn drain_portal(&mut self) {
-        if let Some(rx) = self.portal_contents_rx.as_ref() {
-            match rx.try_recv() {
-                Ok(ContentsOutcome::Picked(files)) => {
-                    self.portal_contents_rx = None;
-                    if let Some(file) = files.into_iter().next() {
-                        crate::web_file::remember(&file.name, &file.bytes);
-                        self.pending_contents = Some((file.name, file.bytes));
-                    }
-                }
-                Ok(ContentsOutcome::Cancelled)
-                | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    self.portal_contents_rx = None;
-                }
-                Ok(ContentsOutcome::Failed(reason)) => {
-                    self.portal_contents_rx = None;
-                    self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
-                    self.dirty = true;
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            }
-        }
-        let Some(rx) = self.portal_rx.as_ref() else {
-            return;
-        };
-        match rx.try_recv() {
-            Ok(outcome) => {
-                self.portal_rx = None;
-                match outcome {
-                    PortalOutcome::Opened(path) => {
-                        if let Err(error) = self.begin_import(path, ImportKind::Open) {
-                            self.settle_import_failure(error, "ebook.importer_unavailable");
-                        }
-                    }
-                    // A cancel is not an error — leave the current view intact.
-                    PortalOutcome::Cancelled => {
-                        if let Some(invocation) = self.resource_invocation.take() {
-                            self.completed_resource_invocation =
-                                Some(tilo_actions::InvocationUpdate::Cancelled {
-                                    invocation,
-                                    message: Some("book selection cancelled".into()),
-                                });
-                        }
-                    }
-                    PortalOutcome::Failed(reason) => {
-                        self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
-                        self.dirty = true;
-                        if let Some(invocation) = self.resource_invocation.take() {
-                            self.completed_resource_invocation =
-                                Some(tilo_actions::InvocationUpdate::Failed {
-                                    invocation,
-                                    error: tilo_actions::ActionFailure {
-                                        code: "ebook.portal_failed".into(),
-                                        message: reason,
-                                        details: None,
-                                        retryable: false,
-                                    },
-                                });
-                        }
-                    }
-                }
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-                // A lifecycle operation must settle exactly once. Without
-                // this branch a failed host picker could leave an agent or
-                // palette invocation pending forever.
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.completed_resource_invocation =
-                        Some(tilo_actions::InvocationUpdate::Failed {
-                            invocation,
-                            error: tilo_actions::ActionFailure {
-                                code: "ebook.portal_disconnected".into(),
-                                message: "The book picker stopped before returning a selection."
-                                    .into(),
-                                details: None,
-                                retryable: true,
-                            },
-                        });
-                }
-                self.dirty = true;
-            }
-        }
     }
 
     /// Put one EPUB on the latest-wins worker mailbox. This only changes local
@@ -2645,34 +1951,97 @@ impl BooksApp {
     /// the shelf, reader, or CRDT.
     /// Open a book chosen by contents: parsed here (a page has no importer
     /// thread) and shelved as the importer would.
-    fn adopt_contents(&mut self, doc: &mut AutoCommit) {
-        let Some((name, bytes)) = self.pending_contents.take() else {
-            return;
-        };
-        match crate::epub::parse_epub(&bytes, 0, "") {
-            Ok(book) => {
-                let path = PathBuf::from(format!("browser/{name}"));
-                let (book, entry) = content::prepare_imported_book(&path, book);
-                self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
-                let id = book.id.clone();
-                let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
-                    if let Some(slot) = Arc::make_mut(&mut self.library).get_mut(index) {
-                        *slot = Arc::new(book);
-                    }
-                    index
-                } else {
-                    Arc::make_mut(&mut self.library).push(Arc::new(book));
-                    self.library.len() - 1
-                };
-                self.load_error = None;
-                self.open_book_at(doc, index);
+    /// Put a book on the shelf ahead of its row, read from `path` from now
+    /// on, and return where it is.
+    fn shelve(&mut self, book: Book, path: PathBuf) -> usize {
+        let id = book.id.clone();
+        self.hydrated.insert(id.clone());
+        self.shelving.insert(id.clone());
+        self.library_paths.insert(id.clone(), path);
+        let book = Arc::new(book);
+        if let Some(index) = self.library.iter().position(|b| b.id == id) {
+            if let Some(slot) = Arc::make_mut(&mut self.library).get_mut(index) {
+                *slot = book;
             }
-            Err(error) => self.load_error = Some(format!("Couldn’t open {name}: {error}")),
+            index
+        } else {
+            Arc::make_mut(&mut self.library).push(book);
+            self.library.len() - 1
         }
-        self.dirty = true;
     }
 
-    fn drain_import_worker(&mut self, doc: &mut AutoCommit) {
+    /// Shelve and open a book an effect placed, through the library's
+    /// action, or say why it could not be opened.
+    fn finish_opening(
+        &mut self,
+        name: &str,
+        placed: Result<content::Placed, String>,
+        cx: &ui::framework::EffectCx<crate::resource::Ebook, Self>,
+    ) -> ui::framework::EffectAnswer {
+        self.dirty = true;
+        match placed {
+            Ok(placed) => {
+                cx.apply(&crate::actions::restore_library_book_action(&placed.entry));
+                self.pending_open_book = Some(placed.entry.id);
+                self.shelve(placed.book, placed.path);
+                self.load_error = None;
+                Ok(ui::framework::Effected::done())
+            }
+            Err(error) => {
+                let message = format!("Couldn’t open {name}: {error}");
+                self.load_error = Some(message.clone());
+                Err(message)
+            }
+        }
+    }
+
+    /// Ask the person for a book with the host's chooser, then place it
+    /// where the library reads it again and open it. A cancelled choice
+    /// opens nothing.
+    pub(crate) fn choose_book(
+        cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>,
+    ) -> ui::framework::Effected {
+        cx.choose_file(book_open_request(), |app: &mut Self, chosen, cx| {
+            let Some(file) = chosen else {
+                return Ok(ui::framework::Effected::done());
+            };
+            let store = app.content.clone();
+            let name = file.name;
+            Ok(cx.thread(
+                move |_| content::place_chosen_book(&file.bytes, store.as_ref()),
+                move |app: &mut Self, placed, cx| app.finish_opening(&name, placed, cx),
+            ))
+        })
+    }
+
+    /// Open the book whose bytes the content store holds as `hash`: parsed
+    /// off the UI thread, shelved through the library's action and opened.
+    /// What a launch on a book takes.
+    pub(crate) fn open_stored(
+        &self,
+        hash: String,
+        name: String,
+        cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>,
+    ) -> ui::framework::EffectAnswer {
+        let store = self
+            .content
+            .clone()
+            .ok_or_else(|| "this device keeps no book contents".to_string())?;
+        Ok(cx.thread(
+            move |_| {
+                let bytes = store
+                    .read(&hash)
+                    .ok_or_else(|| "its contents are not on this device".to_string())?;
+                content::open_handed_book(&bytes, None).map(|mut handed| {
+                    handed.content = Some(hash);
+                    content::placed(handed)
+                })
+            },
+            move |app: &mut Self, placed, cx| app.finish_opening(&name, placed, cx),
+        ))
+    }
+
+    fn drain_import_worker(&mut self, doc: &mut ui::widget::Edits<'_>) {
         while let Some(outcome) = self.import_worker.as_ref().map(ImportWorker::try_recv) {
             let completed = match outcome {
                 Ok(completed) => completed,
@@ -2702,7 +2071,7 @@ impl BooksApp {
             match completed.result {
                 Ok(book) => {
                     let (book, entry) = content::prepare_imported_book(&completed.path, book);
-                    self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+                    self.edit(doc, &crate::actions::restore_library_book_action(&entry));
                     let id = book.id.clone();
                     self.local_library.remember_book(&id, &completed.path);
                     self.local_library.save();
@@ -2793,10 +2162,14 @@ impl BooksApp {
     }
 
     #[cfg(test)]
-    fn import_and_open_for_test(&mut self, doc: &mut AutoCommit, path: &std::path::Path) {
+    fn import_and_open_for_test(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        path: &std::path::Path,
+    ) {
         let book = content::parse_path_detailed(path).expect("test EPUB parses");
         let (book, entry) = content::prepare_imported_book(path, book);
-        self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+        self.edit(doc, &crate::actions::restore_library_book_action(&entry));
         let id = book.id.clone();
         self.local_library.remember_book(&id, path);
         self.library_paths.insert(id.clone(), path.to_path_buf());
@@ -2832,7 +2205,7 @@ impl BooksApp {
 
     // --- Action dispatch (event side — has the document) --------------------
 
-    fn dispatch(&mut self, action: Action, doc: &mut AutoCommit) {
+    fn dispatch(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::OpenBook(i) => {
                 self.open_book_at(doc, i);
@@ -2885,7 +2258,9 @@ impl BooksApp {
             Action::AddComment(group) => self.on_add_comment(group, doc),
             Action::EditComment(id) => self.on_edit_comment(id),
             Action::DeleteComment(id) => self.on_delete_comment(id, doc),
-            Action::OpenViaPortal => self.request_open_via_portal(),
+            Action::OpenViaPortal => self
+                .dispatch
+                .effect(&crate::resource::BooksEffect::OpenBook),
             Action::ShareToWorkspace(id) => self.on_share_to_workspace(&id, doc),
             Action::RemoveFromLibrary(id) => self.on_remove_from_library(&id, doc),
             Action::ToggleWatchFolder(folder) => self.on_toggle_watch_folder(&folder, doc),
@@ -2922,7 +2297,11 @@ impl BooksApp {
         }
     }
 
-    fn dispatch_reading_settings(&mut self, action: ReadingSettingsAction, doc: &mut AutoCommit) {
+    fn dispatch_reading_settings(
+        &mut self,
+        action: ReadingSettingsAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         match action {
             ReadingSettingsAction::Swallow => {}
             ReadingSettingsAction::Dismiss => self.reading_settings.close(),
@@ -3002,7 +2381,7 @@ impl BooksApp {
         }
     }
 
-    fn on_set_mode(&mut self, mode: ReadMode, doc: &mut AutoCommit) {
+    fn on_set_mode(&mut self, mode: ReadMode, doc: &mut ui::widget::Edits<'_>) {
         // Preserve the reading position across the switch: entering
         // continuous scroll lands on the current page's flow offset;
         // leaving it snaps back to the nearest page (resolved in draw).
@@ -3051,7 +2430,7 @@ impl BooksApp {
         }
     }
 
-    fn on_cycle_font(&mut self, doc: &mut AutoCommit) {
+    fn on_cycle_font(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Cycle through the fonts offered in quick settings.
         let shown = self.shown_fonts();
         if !shown.is_empty() {
@@ -3063,27 +2442,27 @@ impl BooksApp {
         }
     }
 
-    fn on_set_color(&mut self, c: HiColor, doc: &mut AutoCommit) {
+    fn on_set_color(&mut self, c: HiColor, doc: &mut ui::widget::Edits<'_>) {
         self.hi_color = c;
         // Picking the same colour again clears it; a different colour
         // replaces it. Resolves to the same action the palette's
         // "Highlight selection" dispatches — one source of truth.
         if let Some(sel) = self.sel.filter(|s| !s.is_empty()) {
             if let Some(plan) = self.resolve_highlight_plan(sel, c) {
-                self.perform_action(doc, &plan.into_action());
+                self.edit(doc, &plan.into_action());
             }
             self.clear_selection();
         }
     }
 
-    fn on_add_note(&mut self, doc: &mut AutoCommit) {
+    fn on_add_note(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // A note anchors to the live text selection; the composer
         // floats on-page near the passage rather than a separate screen.
         if let Some(draft) = self.selection_note_draft(String::new()) {
             let id = draft.id;
-            self.perform_action(doc, &draft.into_action());
+            self.edit(doc, &draft.into_action());
             self.composing = Some(id);
-            self.note_composer.open(id, self.actions.framework.as_ref());
+            self.note_composer.open(id, &self.dispatch);
         }
     }
 
@@ -3102,7 +2481,7 @@ impl BooksApp {
             .any(|a| a.id == id && a.kind == AnnoKind::Note)
         {
             self.composing = Some(id);
-            self.note_composer.open(id, self.actions.framework.as_ref());
+            self.note_composer.open(id, &self.dispatch);
             self.notes_flap.open();
             self.notes_scroll_to_annotation = Some(id);
         }
@@ -3119,12 +2498,12 @@ impl BooksApp {
         }
     }
 
-    fn on_delete_annotation(&mut self, id: Uuid, doc: &mut AutoCommit) {
+    fn on_delete_annotation(&mut self, id: Uuid, doc: &mut ui::widget::Edits<'_>) {
         if self.composing == Some(id) {
             self.composing = None;
             self.note_composer.close();
         }
-        self.perform_action(doc, &crate::actions::delete_annotation_action(id));
+        self.edit(doc, &crate::actions::delete_annotation_action(id));
     }
 
     fn on_open_comments(&mut self, group: Uuid) {
@@ -3141,8 +2520,8 @@ impl BooksApp {
         self.comment_overlay.close();
     }
 
-    fn on_delete_highlight(&mut self, group: Uuid, doc: &mut AutoCommit) {
-        self.perform_action(doc, &crate::actions::delete_highlight_action(group));
+    fn on_delete_highlight(&mut self, group: Uuid, doc: &mut ui::widget::Edits<'_>) {
+        self.edit(doc, &crate::actions::delete_highlight_action(group));
         if self.comment_overlay.group() == Some(group) {
             self.comment_overlay.close();
         }
@@ -3150,7 +2529,7 @@ impl BooksApp {
         self.note_composer.close();
     }
 
-    fn on_add_comment(&mut self, group: Uuid, doc: &mut AutoCommit) {
+    fn on_add_comment(&mut self, group: Uuid, doc: &mut ui::widget::Edits<'_>) {
         // Anchor to the highlight's first piece so it sorts with the range.
         self.comment_overlay.finish_editing();
         let anchor = self
@@ -3179,10 +2558,9 @@ impl BooksApp {
                 },
             }
             .into_action();
-            self.perform_action(doc, &action);
+            self.edit(doc, &action);
             self.comment_overlay.open(group);
-            self.comment_overlay
-                .begin_editing(id, self.actions.framework.as_ref());
+            self.comment_overlay.begin_editing(id, &self.dispatch);
         }
     }
 
@@ -3192,16 +2570,15 @@ impl BooksApp {
             .iter()
             .any(|annotation| annotation.id == id && annotation.kind == AnnoKind::Note)
         {
-            self.comment_overlay
-                .begin_editing(id, self.actions.framework.as_ref());
+            self.comment_overlay.begin_editing(id, &self.dispatch);
         }
     }
 
-    fn on_delete_comment(&mut self, id: Uuid, doc: &mut AutoCommit) {
+    fn on_delete_comment(&mut self, id: Uuid, doc: &mut ui::widget::Edits<'_>) {
         if self.comment_overlay.editing_id() == Some(id) {
             self.comment_overlay.finish_editing();
         }
-        self.perform_action(doc, &crate::actions::delete_annotation_action(id));
+        self.edit(doc, &crate::actions::delete_annotation_action(id));
     }
 
     fn begin_share_book(&mut self, id: &str) -> Result<(), String> {
@@ -3232,16 +2609,18 @@ impl BooksApp {
     /// Queue a capability-safe hydrate of a remotely advertised book. The
     /// replicated id determines the sole workspace path; the importer verifies
     /// the parsed content id before it can become a local shelf entry.
-    fn begin_hydrate_shared_book(&mut self, id: &str, doc: &AutoCommit) -> Result<(), String> {
+    fn begin_hydrate_shared_book(
+        &mut self,
+        id: &str,
+        entries: &[crate::model::LibraryEntry],
+    ) -> Result<(), String> {
         if self.pending_share.is_some()
             || self.resource_invocation.is_some()
             || self.import_loading.is_some()
         {
             return Err("another book lifecycle operation is in progress".into());
         }
-        let advertised = BooksDoc::read_library_entries(doc)
-            .iter()
-            .any(|entry| entry.id == id && entry.shared);
+        let advertised = entries.iter().any(|entry| entry.id == id && entry.shared);
         if !advertised {
             return Err("this shared book is no longer available in the workspace".into());
         }
@@ -3252,12 +2631,12 @@ impl BooksApp {
         )
     }
 
-    fn commit_pending_share(&mut self, doc: &mut AutoCommit) {
+    fn commit_pending_share(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(pending) = self.pending_share.take() else {
             return;
         };
         let (book, entry) = content::prepare_imported_book(&pending.path, pending.book);
-        self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+        self.edit(doc, &crate::actions::restore_library_book_action(&entry));
         if book.id == pending.book_id {
             self.local_library
                 .remember_book(&pending.book_id, &pending.path);
@@ -3288,7 +2667,7 @@ impl BooksApp {
         self.dirty = true;
     }
 
-    fn on_share_to_workspace(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_share_to_workspace(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if let Err(error) = self.begin_share_book(id) {
             self.load_error = Some(error);
             return;
@@ -3296,7 +2675,7 @@ impl BooksApp {
         self.commit_pending_share(doc);
     }
 
-    fn on_remove_from_library(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_remove_from_library(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         let Some(i) = self.library.iter().position(|book| book.id == id) else {
             return;
         };
@@ -3310,7 +2689,7 @@ impl BooksApp {
         self.local_library.forget_book(&removed.id);
         self.local_library.save();
         self.cover_cache.remove(&removed.id);
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::remove_library_book_action(&removed.id),
         );
@@ -3346,7 +2725,7 @@ impl BooksApp {
         self.settings_scroll = 0.0;
     }
 
-    fn on_close_settings(&mut self, doc: &mut AutoCommit) {
+    fn on_close_settings(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.font_picker = false;
         self.color_picker.cancel();
@@ -3361,7 +2740,7 @@ impl BooksApp {
         };
     }
 
-    fn on_set_settings_tab(&mut self, tab: SettingsTab, doc: &mut AutoCommit) {
+    fn on_set_settings_tab(&mut self, tab: SettingsTab, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.default_font_menu = false;
         self.color_picker.cancel();
@@ -3371,7 +2750,7 @@ impl BooksApp {
         self.settings_scroll = 0.0;
     }
 
-    fn on_toggle_scheme_enabled(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_toggle_scheme_enabled(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         let mut sc = self.schemes.clone();
         let mut now_disabled = false;
         let changed = if let Some(s) = sc.iter_mut().find(|s| s.id == id) {
@@ -3382,14 +2761,14 @@ impl BooksApp {
             None
         };
         if let Some(scheme) = changed {
-            self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+            self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
         }
         if now_disabled && self.settings.scheme_id == id {
             self.bump_setting(doc, |st| st.scheme_id = String::new());
         }
     }
 
-    fn on_duplicate_scheme(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_duplicate_scheme(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         let mut sc = self.schemes.clone();
         if let Some(src) = sc.iter().find(|s| s.id == id).cloned() {
             let ids: Vec<String> = sc.iter().map(|s| s.id.clone()).collect();
@@ -3404,14 +2783,14 @@ impl BooksApp {
                 .position(|s| s.id == id)
                 .map_or(sc.len(), |p| p + 1);
             sc.insert(pos, dup.clone());
-            self.perform_action(doc, &crate::actions::upsert_color_scheme_action(dup));
+            self.edit(doc, &crate::actions::upsert_color_scheme_action(dup));
             self.editing_scheme = Some(new_id);
         }
     }
 
-    fn on_delete_scheme(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_delete_scheme(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if self.schemes.iter().any(|s| s.id == id && !s.builtin) {
-            self.perform_action(doc, &crate::actions::delete_color_scheme_action(id));
+            self.edit(doc, &crate::actions::delete_color_scheme_action(id));
         }
         if self.editing_scheme.as_deref() == Some(id) {
             self.editing_scheme = None;
@@ -3421,17 +2800,17 @@ impl BooksApp {
         }
     }
 
-    fn on_edit_scheme(&mut self, id: String, doc: &mut AutoCommit) {
+    fn on_edit_scheme(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.editing_scheme = Some(id);
     }
 
-    fn on_close_scheme_editor(&mut self, doc: &mut AutoCommit) {
+    fn on_close_scheme_editor(&mut self, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         self.editing_scheme = None;
     }
 
-    fn on_new_scheme_via_picker(&mut self, doc: &mut AutoCommit) {
+    fn on_new_scheme_via_picker(&mut self, doc: &mut ui::widget::Edits<'_>) {
         // Open the colour picker to choose a background; the scheme is
         // derived + created when the picker is committed.
         self.commit_rename(doc);
@@ -3439,7 +2818,7 @@ impl BooksApp {
             .open(PickTarget::NewScheme, [0x1B, 0x18, 0x16]);
     }
 
-    fn on_pick_scheme_color(&mut self, id: String, slot: usize, doc: &mut AutoCommit) {
+    fn on_pick_scheme_color(&mut self, id: String, slot: usize, doc: &mut ui::widget::Edits<'_>) {
         // Edit any scheme colour through the same picker.
         self.commit_rename(doc);
         let cur = self
@@ -3451,7 +2830,7 @@ impl BooksApp {
         self.color_picker.open(PickTarget::Slot(id, slot), cur);
     }
 
-    fn on_begin_rename_scheme(&mut self, id: String, doc: &mut AutoCommit) {
+    fn on_begin_rename_scheme(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         let name = self
             .schemes
@@ -3474,25 +2853,25 @@ impl BooksApp {
         });
     }
 
-    fn on_set_default_font(&mut self, id: &str, doc: &mut AutoCommit) {
-        self.perform_action(doc, &crate::actions::set_default_font_action(id));
+    fn on_set_default_font(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
+        self.edit(doc, &crate::actions::set_default_font_action(id));
         self.default_font_menu = false;
     }
 
-    fn on_toggle_font_shown(&mut self, id: &str, doc: &mut AutoCommit) {
+    fn on_toggle_font_shown(&self, id: &str, doc: &mut ui::widget::Edits<'_>) {
         if let Some(mut font) = self.fonts.iter().find(|entry| entry.id == id).cloned() {
             font.shown = !font.shown;
-            self.perform_action(doc, &crate::actions::upsert_font_action(font));
+            self.edit(doc, &crate::actions::upsert_font_action(font));
         }
     }
 
-    fn on_remove_font(&mut self, id: &str, doc: &mut AutoCommit) {
-        self.perform_action(doc, &crate::actions::delete_font_action(id));
+    fn on_remove_font(&mut self, id: &str, doc: &mut ui::widget::Edits<'_>) {
+        self.edit(doc, &crate::actions::delete_font_action(id));
         if self.settings.font_id == id {
             self.bump_setting(doc, |s| s.font_id = String::new());
         }
         if self.default_font_id == id {
-            self.perform_action(doc, &crate::actions::set_default_font_action(""));
+            self.edit(doc, &crate::actions::set_default_font_action(""));
         }
     }
 
@@ -3501,7 +2880,7 @@ impl BooksApp {
         self.picker_scroll = 0.0;
     }
 
-    fn on_add_system_font(&mut self, family: &str, doc: &mut AutoCommit) {
+    fn on_add_system_font(&mut self, family: &str, doc: &mut ui::widget::Edits<'_>) {
         let f = self.fonts.clone();
         let dup = f
             .iter()
@@ -3510,12 +2889,12 @@ impl BooksApp {
             let ids: Vec<String> = f.iter().map(|e| e.id.clone()).collect();
             let id = Self::fresh_id("font", &ids);
             let font = FontEntry::new(&id, FontKind::Named(family.to_string()), family, 1.0, true);
-            self.perform_action(doc, &crate::actions::upsert_font_action(font));
+            self.edit(doc, &crate::actions::upsert_font_action(font));
         }
         self.font_picker = false;
     }
 
-    fn on_begin_rename_font(&mut self, id: String, doc: &mut AutoCommit) {
+    fn on_begin_rename_font(&mut self, id: String, doc: &mut ui::widget::Edits<'_>) {
         self.commit_rename(doc);
         let entry = self.fonts.iter().find(|e| e.id == id);
         let name = entry.map(|e| e.name.clone()).unwrap_or_default();
@@ -3532,30 +2911,34 @@ impl BooksApp {
         });
     }
 
-    fn on_set_sort(&mut self, sort: crate::model::LibrarySort, doc: &mut AutoCommit) {
+    fn on_set_sort(&mut self, sort: crate::model::LibrarySort, doc: &mut ui::widget::Edits<'_>) {
         let before = self.library_prefs;
         let mut p = before;
         p.sort = sort;
         self.library_prefs = p;
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::set_library_preferences_action(before, p),
         );
         self.shelf_controls.close_sort_menu();
     }
 
-    fn on_toggle_hide_read(&mut self, doc: &mut AutoCommit) {
+    fn on_toggle_hide_read(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let before = self.library_prefs;
         let mut p = before;
         p.hide_read = !p.hide_read;
         self.library_prefs = p;
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::set_library_preferences_action(before, p),
         );
     }
 
-    fn dispatch_shelf_control(&mut self, action: ShelfControlAction, doc: &mut AutoCommit) {
+    fn dispatch_shelf_control(
+        &mut self,
+        action: ShelfControlAction,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
         match action {
             ShelfControlAction::ToggleSortMenu => self.shelf_controls.toggle_sort_menu(),
             ShelfControlAction::SetSort(sort) => self.on_set_sort(sort, doc),
@@ -3564,7 +2947,7 @@ impl BooksApp {
         }
     }
 
-    fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut AutoCommit) {
+    fn dispatch_comment_action(&mut self, action: CommentAction, doc: &mut ui::widget::Edits<'_>) {
         let action = match action {
             CommentAction::Close => Action::CloseComments,
             CommentAction::Swallow => Action::Swallow,
@@ -3579,7 +2962,7 @@ impl BooksApp {
     /// Apply a confirmed pick: create the new scheme (for a from-background
     /// pick) or write the slot edit. Nothing is written while the picker is
     /// open, so *Cancel* leaves the scheme exactly as it was.
-    fn commit_picker(&mut self, doc: &mut AutoCommit, edit: ColorEdit) {
+    fn commit_picker(&mut self, doc: &mut ui::widget::Edits<'_>, edit: ColorEdit) {
         match edit.target {
             PickTarget::NewScheme => {
                 let sc = self.schemes.clone();
@@ -3587,7 +2970,7 @@ impl BooksApp {
                 let new_id = Self::fresh_id("scheme", &ids);
                 let n = sc.iter().filter(|s| !s.builtin).count() + 1;
                 let scheme = ColorScheme::from_bg(&new_id, &format!("Scheme {n}"), edit.rgb);
-                self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+                self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 self.editing_scheme = Some(new_id.clone());
                 self.bump_setting(doc, |st| st.scheme_id = new_id);
             }
@@ -3596,7 +2979,7 @@ impl BooksApp {
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id && !s.builtin) {
                     s.set_slot(slot, edit.rgb);
                     let scheme = s.clone();
-                    self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+                    self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 }
             }
         }
@@ -3605,7 +2988,7 @@ impl BooksApp {
     /// Force an in-progress inline rename to commit, then persist the
     /// result. Called before an action that would replace or dismiss the
     /// rename. No-op when nothing is being renamed.
-    fn commit_rename(&mut self, doc: &mut AutoCommit) {
+    fn commit_rename(&mut self, doc: &mut ui::widget::Edits<'_>) {
         if let Some(rn) = self.renaming.as_mut() {
             rn.field.commit();
         }
@@ -3615,7 +2998,7 @@ impl BooksApp {
     /// Drain the rename field's latest outcome: on commit, persist the new
     /// name; on commit or cancel, clear the rename. The single place a
     /// rename result is written, so Enter/blur/click-outside all funnel here.
-    fn poll_rename_outcome(&mut self, doc: &mut AutoCommit) {
+    fn poll_rename_outcome(&mut self, doc: &mut ui::widget::Edits<'_>) {
         let Some(rn) = self.renaming.as_mut() else {
             return;
         };
@@ -3634,7 +3017,7 @@ impl BooksApp {
 
     /// Write a committed rename to the CRDT. A blank name is ignored (keeps the
     /// old one).
-    fn apply_rename(&mut self, target: RenameTarget, name: &str, doc: &mut AutoCommit) {
+    fn apply_rename(&self, target: RenameTarget, name: &str, doc: &mut ui::widget::Edits<'_>) {
         let name = name.trim();
         if name.is_empty() {
             return;
@@ -3645,7 +3028,7 @@ impl BooksApp {
                 if let Some(e) = f.iter_mut().find(|e| e.id == id) {
                     e.name = name.to_string();
                     let font = e.clone();
-                    self.perform_action(doc, &crate::actions::upsert_font_action(font));
+                    self.edit(doc, &crate::actions::upsert_font_action(font));
                 }
             }
             RenameTarget::Scheme(id) => {
@@ -3653,7 +3036,7 @@ impl BooksApp {
                 if let Some(s) = sc.iter_mut().find(|s| s.id == id) {
                     s.name = name.to_string();
                     let scheme = s.clone();
-                    self.perform_action(doc, &crate::actions::upsert_color_scheme_action(scheme));
+                    self.edit(doc, &crate::actions::upsert_color_scheme_action(scheme));
                 }
             }
         }
@@ -3758,11 +3141,11 @@ impl BooksApp {
         s
     }
 
-    fn bump_setting(&mut self, doc: &mut AutoCommit, f: impl FnOnce(&mut Settings)) {
+    fn bump_setting(&mut self, doc: &mut ui::widget::Edits<'_>, f: impl FnOnce(&mut Settings)) {
         let before = BooksDoc::read_settings(doc);
         let mut s = before.clone();
         f(&mut s);
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::set_reading_settings_action(before, s.clone()),
         );
@@ -3917,7 +3300,12 @@ impl BooksApp {
     /// the mark's length (clamped to the target paragraph). Only a
     /// single-block highlight re-anchors — a multi-block one has no single
     /// paragraph to land on, so its marker opens comments instead.
-    fn reanchor_highlight(&mut self, group: Uuid, drop: Point, doc: &mut AutoCommit) -> bool {
+    fn reanchor_highlight(
+        &self,
+        group: Uuid,
+        drop: Point,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         let Some(target) = self.hit_doc_pos(drop) else {
             return false;
         };
@@ -3943,7 +3331,7 @@ impl BooksApp {
         }
         let span = (piece.end.saturating_sub(piece.start)).clamp(1, tb.char_len);
         let excerpt: String = tb.text.chars().take(span.min(120)).collect();
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::move_annotation_action(
                 piece.id,
@@ -3985,20 +3373,30 @@ impl BooksApp {
             .map(|a| a.group)
     }
 
-    /// Dispatch one Books [`EbookAction`](crate::actions::EbookAction) — the
-    /// single mutation path shared with the Ctrl+K palette, via the
-    /// framework's [`ActionHost`](ui::ActionHost).
-    fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::EbookAction) {
-        self.actions.dispatch_with_context(
+    /// Apply one Books [`EbookAction`](crate::actions::EbookAction) now,
+    /// through the library's dispatcher: the one door every control, the
+    /// palette and agents edit the library through. A refused edit changes
+    /// nothing, and the dispatcher says why.
+    fn edit(&self, doc: &mut ui::widget::Edits<'_>, action: &crate::actions::EbookAction) {
+        let _ = self.dispatch.apply_now_with(
             doc,
-            crate::actions::EBOOK_ACTION_TYPE,
             action,
             tilo_actions::ActionContext::for_action("so.tilo.ebook", "Ebook", action),
         );
     }
 
-    /// Show the shelf settings and drop books the shared library no longer lists.
-    /// An empty projection does not wipe a shelf that has not been published yet.
+    /// The library's edits bound to where the reader is in the open book.
+    pub(crate) fn reading_declarations(
+        &self,
+    ) -> Vec<ui::tilo_resource::ActionDecl<crate::resource::Ebook>> {
+        self.current_book_resource_context()
+            .map(|ctx| crate::actions::reading_declarations(&ctx))
+            .unwrap_or_default()
+    }
+
+    /// Show the shelf settings, put books the library newly lists on the
+    /// shelf, and drop books it no longer lists. An empty projection does
+    /// not wipe a shelf that has not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::EbookState) {
         if state.settings != self.settings {
             self.settings = state.settings.clone();
@@ -4008,13 +3406,29 @@ impl BooksApp {
         if state.entries.is_empty() {
             return;
         }
+        if self.library_loaded {
+            let new: Vec<crate::model::LibraryEntry> = state
+                .entries
+                .iter()
+                .filter(|entry| !self.hydrated.contains(&entry.id))
+                .cloned()
+                .collect();
+            if !new.is_empty() {
+                self.hydrate(&new, &HashMap::new());
+            }
+        }
         let keep: std::collections::HashSet<&str> = state
             .entries
             .iter()
             .map(|entry| entry.id.as_str())
             .collect();
+        self.shelving.retain(|id| !keep.contains(id.as_str()));
+        let shelving = &self.shelving;
+        self.hydrated
+            .retain(|id| keep.contains(id.as_str()) || shelving.contains(id));
         let before = self.library.len();
-        std::sync::Arc::make_mut(&mut self.library).retain(|book| keep.contains(book.id.as_str()));
+        std::sync::Arc::make_mut(&mut self.library)
+            .retain(|book| keep.contains(book.id.as_str()) || shelving.contains(&book.id));
         if self.library.len() == before {
             return;
         }
@@ -4029,28 +3443,63 @@ impl BooksApp {
         self.layout = None;
     }
 
-    /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
-    pub(crate) fn attach_framework(
+    /// Read what the host gives the reader: whether the window is live, the
+    /// content store, the sample shelf of a screenshot, and this device's
+    /// file grants and watched folders.
+    pub(crate) fn attach_host(&mut self, cx: &ui::framework::SurfaceCx<crate::resource::Ebook>) {
+        self.live = cx.mode().is_live();
+        self.content = cx.content();
+        self.sample = cx.fixture::<crate::scenarios::SampleShelf>();
+        if self.live {
+            self.local_library = LocalLibrary::load(cx.storage().settings());
+            self.reader_keys = crate::reader_keys::ReaderKeys::following(cx.settings());
+            self.watched_folders
+                .clone_from(&self.local_library.watched_folders);
+            self.scan_watched_folders(&cx.jobs());
+        }
+    }
+
+    /// Look through the watched folders off the UI thread, and put the books
+    /// found there that the shelf does not hold yet on it, through the
+    /// library's actions like an import. Their files are this device's
+    /// grants, which open them.
+    fn scan_watched_folders(&self, jobs: &ui::framework::Jobs<crate::resource::Ebook>) {
+        if self.watched_folders.is_empty() {
+            return;
+        }
+        let folders = self.watched_folders.clone();
+        jobs.start(
+            "watched-folders",
+            move |cx: &mut ui::framework::EffectCx<crate::resource::Ebook, Self>| {
+                Ok(cx.thread(
+                    move |_| content::find_watched_books(&folders),
+                    |app: &mut Self, found: Vec<content::FoundBook>, cx| {
+                        app.shelve_found(found, cx);
+                        Ok(ui::framework::Effected::done())
+                    },
+                ))
+            },
+        );
+    }
+
+    /// Put `found` books the shelf does not hold yet on it, remembering
+    /// where each one's file is.
+    fn shelve_found<H: 'static>(
         &mut self,
-        dispatcher: ui::framework::Dispatcher<crate::resource::Ebook>,
+        found: Vec<content::FoundBook>,
+        cx: &ui::framework::EffectCx<crate::resource::Ebook, H>,
     ) {
-        self.note_composer.attach(&dispatcher);
-        self.comment_overlay.attach(&dispatcher);
-        self.actions.attach(dispatcher);
-    }
-
-    #[allow(
-        dead_code,
-        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
-    )]
-    pub(crate) fn is_hosted(&self) -> bool {
-        self.actions.is_hosted()
-    }
-
-    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
-    #[cfg(test)]
-    pub(crate) fn mark_hosted_for_test(&mut self) {
-        self.actions.mark_hosted_for_test();
+        let shelved: std::collections::HashSet<String> = cx
+            .live()
+            .with(|state| state.entries.iter().map(|entry| entry.id.clone()).collect());
+        for book in found {
+            self.local_library.remember_book(&book.entry.id, &book.path);
+            if !shelved.contains(&book.entry.id) {
+                cx.apply(&crate::actions::shelve_found_book_action(&book.entry));
+            }
+        }
+        self.local_library.save();
+        self.dirty = true;
     }
 
     /// Test-only: plant a non-empty text selection so hosted reading extras
@@ -4074,15 +3523,6 @@ impl BooksApp {
             },
         });
         self.selected_block = Some(start_block);
-    }
-
-    /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-page
-    /// affordance dispatched: a control and its Ctrl+K entry must build the
-    /// identical action.
-    #[cfg(test)]
-    #[allow(dead_code, reason = "framework migration test helper")]
-    fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
-        self.actions.last_dispatched()
     }
 
     /// The plain text covered by the current selection, across blocks (truncated
@@ -4428,9 +3868,9 @@ impl BooksApp {
         true
     }
 
-    fn toggle_bookmark(&mut self, doc: &mut AutoCommit) {
+    fn toggle_bookmark(&self, doc: &mut ui::widget::Edits<'_>) {
         let block = self.page_top_block;
-        self.perform_action(doc, &self.bookmark_plan(block).into_action());
+        self.edit(doc, &self.bookmark_plan(block).into_action());
     }
 
     /// Resolve the bookmark's absolute post-action state at authoring time.
@@ -4478,7 +3918,7 @@ impl BooksApp {
         }
     }
 
-    fn finish_composing(&mut self, doc: &mut AutoCommit) -> bool {
+    fn finish_composing(&mut self, doc: &mut ui::widget::Edits<'_>) -> bool {
         let Some(id) = self.composing.take() else {
             return false;
         };
@@ -4494,7 +3934,7 @@ impl BooksApp {
         else {
             return false;
         };
-        self.perform_action(
+        self.edit(
             doc,
             &crate::actions::finalize_annotation_action(id, created.max(unix_now_ms())),
         );
@@ -4665,7 +4105,7 @@ impl BooksApp {
                     format!(
                         "Change {} shortcut, currently {}",
                         shortcut.label(),
-                        self.local_library
+                        self.reader_keys
                             .shortcut(shortcut.id(), shortcut.default_key())
                     )
                 }
@@ -4936,6 +4376,17 @@ impl BooksApp {
     }
 }
 
+/// The shelved book last opened (the latest added when none was), which a
+/// bundled library shows again, so another mount of the library reads the
+/// same book.
+fn most_recently_opened(doc: &AutoCommit) -> Option<String> {
+    BooksDoc::read_library_entries(doc)
+        .into_iter()
+        .enumerate()
+        .max_by_key(|(order, entry)| (BooksDoc::read_progress(doc, &entry.id).opened, *order))
+        .map(|(_, entry)| entry.id)
+}
+
 impl Continuable for BooksApp {
     fn continuation_metadata(
         &self,
@@ -4964,7 +4415,7 @@ impl Continuable for BooksApp {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &ui::collaboration::ContinuationMetadata,
-        _doc: &mut AutoCommit,
+        _doc: &mut ui::widget::Edits<'_>,
         _path: &ObjId,
     ) -> bool {
         if metadata.schema_version != 1 {
@@ -5002,193 +4453,31 @@ impl Continuable for BooksApp {
 }
 
 impl Widget for BooksApp {
-    ui::provides!(
-        dyn ui::widget::Continuable,
-        dyn ui::undo::CommittedActions,
-        dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
-    );
+    ui::provides!(dyn ui::widget::Continuable);
 
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::EBOOK_OPERATION_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &ui::widget::ResourceOperation<'_>,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(request) = op.unscoped() else {
-            return ui::widget::start_in_children(self, op, doc, path);
-        };
-        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
-            return Ok(Some(started));
-        }
-        if let Some(started) = self.admit_resource_operation(
-            request.invocation,
-            request.kind,
-            request.type_id,
-            request.payload,
-            doc,
-            path,
-        )? {
-            return Ok(Some(started));
-        }
-        Ok(self
-            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
-            .then(|| {
-                ui::widget::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput::default(),
-                )
-            }))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.portal_rx = None;
-            self.pending_share = None;
-            let message = match self.resource_lifecycle.take() {
-                Some(ResourceLifecycle::Share) => "book sharing cancelled",
-                Some(ResourceLifecycle::Hydrate) => "shared book download cancelled",
-                Some(ResourceLifecycle::Open) | None => "book open cancelled",
-            };
-            // Parsing cannot be safely interrupted mid-ZIP member, but its
-            // eventual result is no longer authoritative and will be rejected
-            // by the missing loading generation.
-            self.import_loading = None;
-            self.dirty = true;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some(message.into()),
-            });
-        }
-        if self
-            .completed_resource_invocation
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_lifecycle = None;
-            return self.completed_resource_invocation.take();
-        }
-        None
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _path: &ObjId) {
+        self.ensure_library_loaded(edits.doc());
+        self.drain_import_worker(edits);
+        self.commit_pending_share(edits);
+        self.open_pending_book(edits);
+        self.deliver_effect_replies();
     }
 
     #[allow(
         clippy::too_many_lines,
-        reason = "sync owns the ordered UI-thread handoff for document, portal, and lifecycle state"
+        reason = "sync refreshes document-derived reader and search state"
     )]
-    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, path) = ui::doc::document(doc, path);
+    fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
+        let (doc, path) = ui::doc::document_ref(doc, path);
         // Hydrate the persisted library on the first frame (when the document is
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.close_orphaned_editors();
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
-        self.drain_portal();
-        self.adopt_contents(doc);
-        self.drain_import_worker(doc);
-        self.commit_pending_share(doc);
-        if let Some(s) = self.shot_settings.take() {
-            BooksDoc::write_settings(doc, &s);
-        }
-        if let Some(f) = self.shot_fonts.take() {
-            BooksDoc::write_fonts(doc, &f);
-        }
-        if let Some(sc) = self.shot_schemes.take() {
-            BooksDoc::write_schemes(doc, &sc);
-        }
-        if let Some(wf) = self.shot_watched.take() {
-            self.watched_folders = wf;
-        }
-        self.seed_if_needed(doc);
-        if self.shot_compose && self.composing.is_none() {
-            self.shot_compose = false;
-            if let Some(sel) = self.sel {
-                let (start, _) = sel.ordered();
-                let bid = self.book_id();
-                let mut a = Annotation::new(&bid, AnnoKind::Note, self.chapter, start.block)
-                    .with_color(HiColor::Blue)
-                    .with_excerpt(
-                        "the keeper climbed the iron stair and set the great wick alight",
-                    );
-                a.note = "A note, written right here on the page — no separate screen.".into();
-                let aid = a.id;
-                BooksDoc::upsert_annotation(doc, &a);
-                self.composing = Some(aid);
-                self.note_composer
-                    .open(aid, self.actions.framework.as_ref());
-            }
-        }
-        if self.shot_comments && !self.comment_overlay.is_open() {
-            self.shot_comments = false;
-            let bid = self.book_id();
-            let group = Uuid::new_v4();
-            // Partial-paragraph highlight; offsets clamp to the block in draw.
-            let excerpt = "the trick of pouring colour into a pane";
-            let block = 2usize;
-            let mut hl = Annotation::new(&bid, AnnoKind::Highlight, self.chapter, block)
-                .with_color(HiColor::Yellow)
-                .with_excerpt(excerpt)
-                .with_group(group);
-            hl.start = 200;
-            hl.end = 200 + excerpt.chars().count();
-            BooksDoc::upsert_annotation(doc, &hl);
-            for (i, text) in [
-                "Love this image — colour that keeps the time of day.",
-                "Compare with the amber/ebb line later in the letter.",
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let mut cm = Annotation::new(&bid, AnnoKind::Note, self.chapter, block)
-                    .with_color(HiColor::Yellow)
-                    .with_excerpt(excerpt)
-                    .with_group(group);
-                cm.start = hl.start;
-                cm.end = hl.end;
-                cm.note = text.to_string();
-                cm.created = unix_now_ms() + i as u64;
-                BooksDoc::upsert_annotation(doc, &cm);
-            }
-            self.comment_overlay.open(group);
-        }
-        if self.shot_long_annotations {
-            self.shot_long_annotations = false;
-            let book_id = self.book_id();
-            for index in 0..30 {
-                let color = HiColor::ALL
-                    .get(index % HiColor::ALL.len())
-                    .copied()
-                    .unwrap_or(HiColor::Yellow);
-                let mut annotation = Annotation::new(&book_id, AnnoKind::Note, 0, index)
-                    .with_color(color)
-                    .with_excerpt(format!(
-                        "Saved passage {} from the lantern keeper's journal",
-                        index + 1
-                    ));
-                annotation.note = if index == 25 {
-                    "Targeted annotation — revealed here after a jump from search.".into()
-                } else {
-                    format!("Reading note {} — a durable, shared thought.", index + 1)
-                };
-                annotation.created = unix_now_ms().saturating_add(index as u64);
-                if index == 25 {
-                    self.notes_scroll_to_annotation = Some(annotation.id);
-                }
-                BooksDoc::upsert_annotation(doc, &annotation);
-            }
-        }
-        // On the very first sync, adopt any persisted position for the open book.
-        if self.last_persisted.is_none() && self.view == View::Reader {
+        // Once a book opens, take up its stored position.
+        if self.adopt_position && self.view == View::Reader {
+            self.adopt_position = false;
             let id = self.book_id();
             let p = BooksDoc::read_progress(doc, &id);
             let nchap = self.num_chapters().saturating_sub(1);
@@ -5196,82 +4485,6 @@ impl Widget for BooksApp {
             self.page = p.page;
         }
         self.refresh_from_doc(doc);
-        if self.shot_clean_reader {
-            // A captured accessible-type proof should demonstrate reflow, not
-            // a snapshot-specific annotation band. The source document is
-            // untouched; this only changes the one-frame presentation cache.
-            self.annotations.clear();
-            self.all_annotations = Arc::new(Vec::new());
-        }
-        self.persist_progress(doc);
-        let mut live_actions = vec![Self::publish_resource(self, doc, "ebook.settings")];
-        if let Some(book) = self.open_book() {
-            live_actions.push(Self::publish_resource(
-                self,
-                doc,
-                &format!("ebook.book:{}", book.id),
-            ));
-        }
-        live_actions.extend(
-            self.fonts
-                .iter()
-                .map(|font| Self::publish_resource(self, doc, &format!("ebook.font:{}", font.id))),
-        );
-        live_actions.extend(self.schemes.iter().map(|scheme| {
-            Self::publish_resource(self, doc, &format!("ebook.scheme:{}", scheme.id))
-        }));
-        let live_actions = live_actions.into_iter().flatten().collect::<Vec<_>>();
-        let mut action_hasher = std::collections::hash_map::DefaultHasher::new();
-        self.book_id().hash(&mut action_hasher);
-        self.chapter.hash(&mut action_hasher);
-        self.page_top_block.hash(&mut action_hasher);
-        self.sel
-            .map(|selection| {
-                (
-                    selection.anchor.block,
-                    selection.anchor.ch,
-                    selection.head.block,
-                    selection.head.ch,
-                )
-            })
-            .hash(&mut action_hasher);
-        for resource in &live_actions {
-            resource.id.hash(&mut action_hasher);
-            for action in &resource.actions {
-                action.id.hash(&mut action_hasher);
-                action.label.hash(&mut action_hasher);
-                action.description.hash(&mut action_hasher);
-                action.operation_type.hash(&mut action_hasher);
-                match &action.input {
-                    tilo_actions::ActionInput::Immediate(encoded) => {
-                        0_u8.hash(&mut action_hasher);
-                        encoded.type_id.hash(&mut action_hasher);
-                        encoded.payload.hash(&mut action_hasher);
-                    }
-                    tilo_actions::ActionInput::Deferred { type_id, .. } => {
-                        2_u8.hash(&mut action_hasher);
-                        type_id.hash(&mut action_hasher);
-                    }
-                    tilo_actions::ActionInput::Prompted {
-                        prompt,
-                        placeholder,
-                        collects,
-                        ..
-                    } => {
-                        1_u8.hash(&mut action_hasher);
-                        prompt.hash(&mut action_hasher);
-                        placeholder.hash(&mut action_hasher);
-                        (*collects as u8).hash(&mut action_hasher);
-                    }
-                }
-            }
-        }
-        let action_fingerprint = action_hasher.finish();
-        if action_fingerprint != self.action_search_fingerprint {
-            self.action_search_fingerprint = action_fingerprint;
-            self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
-        }
-        self.action_search_resources = Arc::new(live_actions);
         let registry = BooksDoc::read_library_entries(doc);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for book in self.library.iter() {
@@ -5303,28 +4516,26 @@ impl Widget for BooksApp {
                 // Publication is a single UI-thread assignment. Sessions that
                 // already hold the prior Arc remain valid until their own
                 // generation check rejects the continuation.
-                self.search_provider = build.provider;
+                self.book_search = build.provider;
                 self.search_fingerprint = fingerprint;
                 self.search_revision = build.generation;
-                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
             }
         }
         if fingerprint != self.search_fingerprint && self.search_worker.is_none() {
             let Some(generation) = self.search_revision.checked_add(1) else {
                 // Never wrap a generation: a stale palette cursor must not
                 // become valid again after integer exhaustion.
-                self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
+                self.book_search = crate::search_provider::BookSearch::new_shared(
                     Arc::clone(&self.library),
                     Arc::clone(&self.all_annotations),
                     Arc::new(registry),
                     0,
                 );
-                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
                 return;
             };
             let registry = Arc::new(registry);
             if let Ok(worker) = SearchWorker::spawn(
-                self.search_provider.clone(),
+                self.book_search.clone(),
                 Arc::clone(&self.library),
                 Arc::clone(&self.all_annotations),
                 registry,
@@ -5335,13 +4546,12 @@ impl Widget for BooksApp {
             } else {
                 // A worker construction failure withdraws the directory;
                 // publishing stale canonical resources would be worse.
-                self.search_provider = crate::search_provider::BookSearchProvider::new_shared(
+                self.book_search = crate::search_provider::BookSearch::new_shared(
                     Arc::clone(&self.library),
                     Arc::clone(&self.all_annotations),
                     Arc::new(Vec::new()),
                     0,
                 );
-                self.action_search_epoch.fetch_add(1, Ordering::AcqRel);
             }
         }
     }
@@ -5478,7 +4688,7 @@ impl Widget for BooksApp {
             event,
             scale_factor: ctx.scale_factor,
             modifiers: *ctx.modifiers,
-            state: ctx.state,
+            state: ctx.state.reborrow(),
             root: ctx.path,
             node_id: ctx.node_id,
             taffy: ctx.taffy,
@@ -5487,9 +4697,9 @@ impl Widget for BooksApp {
         // The colour sheet is modal: while open every event is its own.
         if let Some(response) = self.color_picker.handle_event(&mut input_ctx) {
             if let ColorSheetResponse::Confirmed(edit) = response {
-                self.commit_picker(input_ctx.state, edit);
+                self.commit_picker(&mut input_ctx.state, edit);
             }
-            self.refresh_from_doc(input_ctx.state);
+            self.refresh_from_doc(input_ctx.state.doc());
             self.dirty = true;
             return;
         }
@@ -5504,35 +4714,35 @@ impl Widget for BooksApp {
             // Regaining focus is a natural moment to notice books that appeared
             // in a watched folder while the reader was elsewhere — no manual
             // "reload". A no-op when nothing is watched or nothing is new.
-            WindowEvent::Focused(true) => self.rescan_watched(ctx.state),
+            WindowEvent::Focused(true) => self.rescan_watched(ctx.state.doc()),
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-                self.handle_cursor_moved(p, ctx.state, ctx.handled);
+                self.handle_cursor_moved(p, &mut ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(*ctx.modifiers, ctx.state, ctx.handled);
+                self.handle_left_press(*ctx.modifiers, &mut ctx.state, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_release(ctx.state, ctx.handled);
+                self.handle_left_release(&mut ctx.state, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                if self.handle_key(&ke.logical_key, ctx.modifiers.state(), ctx.state) {
-                    self.refresh_from_doc(ctx.state);
-                    self.persist_progress(ctx.state);
+                if self.handle_key(&ke.logical_key, ctx.modifiers.state(), &mut ctx.state) {
+                    self.refresh_from_doc(ctx.state.doc());
+                    self.persist_progress(&mut ctx.state);
                     self.dirty = true;
                     *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(*delta, ctx.state, ctx.handled);
+                self.handle_mouse_wheel(*delta, &mut ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -5686,10 +4896,12 @@ impl Widget for BooksApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        doc: &mut AppModel,
+        doc: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (doc, path) = ui::doc::document(doc, path);
+        let Some(path) = path.downcast_ref::<ObjId>() else {
+            return false;
+        };
         if target == "books.reader.progress" {
             self.semantic_focus = Some(target.to_string());
             let value = match action {
@@ -5818,7 +5030,7 @@ impl Widget for BooksApp {
                         if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                             font.size_mult = value as f32;
                             let font = font.clone();
-                            self.perform_action(doc, &crate::actions::upsert_font_action(font));
+                            self.edit(doc, &crate::actions::upsert_font_action(font));
                         }
                     }
                 }
@@ -5896,8 +5108,10 @@ impl Widget for BooksApp {
             .then_some(winit::window::CursorIcon::Pointer)
     }
 
+    /// A book being imported shows once it parses. A screenshot imports
+    /// nothing, so a loading state it stages is the still it shows.
     fn has_pending_visual_work(&self) -> bool {
-        self.import_loading.is_some()
+        self.live && self.import_loading.is_some()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -5934,295 +5148,248 @@ impl Widget for BooksApp {
     }
 }
 
-impl ui::search::capability::SearchSource for BooksApp {
-    /// Make books, chapters and annotations findable through canonical
-    /// resource view actions in the unified Ctrl+K palette.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![
-            Box::new(self.search_provider.clone()),
-            Box::new(
-                self.search_provider
-                    .action_search_provider()
-                    .with_live_resources(
-                        (*self.action_search_resources).clone(),
-                        Arc::clone(&self.action_search_epoch),
-                        self.action_search_epoch.load(Ordering::Acquire),
-                    ),
-            ),
-        ]
+impl BooksApp {
+    /// The books, chapters, annotations and remote books as search entries.
+    pub(crate) fn book_search_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.book_search.entries()
     }
 }
 
 impl BooksApp {
-    fn overlay_open_book_actions(
-        resource: &mut tilo_actions::Resource,
-        book_id: &str,
-        ctx: &crate::actions::BookResourceCtx,
-    ) {
-        if resource.id.as_str() == book_id {
-            *resource = crate::actions::current_book_actions(resource.clone(), ctx);
-            return;
-        }
-        for child in &mut resource.children {
-            Self::overlay_open_book_actions(child, book_id, ctx);
-        }
-    }
-}
-
-impl ui::resources::PublishesResources for BooksApp {
-    /// Standalone / `--shots` / unit tests publish the library roots. When the
-    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
-    /// library Document door — keep only the live reading-selection extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let overlay_open_book = |root: &mut tilo_actions::Resource| {
-            let Some(ctx) = self.current_book_resource_context() else {
-                return;
-            };
-            let book_id = format!("ebook.book:{}", ctx.book_id);
-            Self::overlay_open_book_actions(root, &book_id, &ctx);
-            root.children
-                .extend(crate::actions::live_reading_resources(&ctx));
-        };
-
-        if self.actions.is_hosted() {
-            // Hosted: framework owns the library door; surface only exports
-            // reading-selection extras. Open-book View overlays stay on
-            // `resource()` lookup so DFS can still resolve without republishing
-            // ebook.book beside ResourceRoot.
-            let Some(ctx) = self.current_book_resource_context() else {
-                return Vec::new();
-            };
-            return crate::actions::live_reading_resources(&ctx);
-        }
-        let state =
-            <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
-        let mut root = ui::tilo_resource::publish::<crate::resource::Ebook>(
-            crate::resource::LIBRARY_RESOURCE_ID,
-            "Books library",
-            &state,
-        );
-        overlay_open_book(&mut root);
-        vec![root]
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        let offset = match cursor {
-            [] => 0,
-            [offset] => usize::from(*offset),
-            _ => return None,
-        };
-        if self.actions.is_hosted() {
-            let resources = self.resources(doc);
-            let total = resources.len();
-            if offset > total {
-                return None;
-            }
-            let take = max_results.min(total.saturating_sub(offset));
-            let next_offset = offset.saturating_add(take);
-            return Some(ui::widget::ActionDirectoryResourcePage {
-                resources: resources.into_iter().skip(offset).take(take).collect(),
-                next_cursor: if next_offset < total {
-                    vec![next_offset as u8]
-                } else {
-                    Vec::new()
-                },
-                exhausted: next_offset >= total,
-            });
-        }
-        let resources = self.resources(doc);
-        let total = resources.len();
-        if offset > total {
-            return None;
-        }
-        let take = max_results.min(total.saturating_sub(offset));
-        let next_offset = offset.saturating_add(take);
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: resources.into_iter().skip(offset).take(take).collect(),
-            next_cursor: if next_offset < total {
-                vec![next_offset as u8]
-            } else {
-                Vec::new()
-            },
-            exhausted: next_offset >= total,
-        })
-    }
-    fn action_directory_revision(&self, _doc: &AutoCommit) -> Option<String> {
-        Some(format!("ebook-search:{}", self.search_revision))
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        // The framework root already owns the library door.
-        if self.is_hosted() && id == "ebook.library" {
-            return None;
-        }
-        self.publish_resource(doc, id)
-    }
-}
-
-impl ui::undo::CommittedActions for BooksApp {
-    /// Hand the host the heads captured before an on-page affordance
-    /// dispatched its annotation action. Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-}
-
-impl BooksApp {
-    fn answer_resource_operation(
+    /// Start `effect`, invoked as `invocation`, against the library's
+    /// `entries`. Showing something answers at once; sharing or fetching a
+    /// book answers once its bytes are in place, through
+    /// [`Self::take_effect_result`].
+    ///
+    /// # Errors
+    /// Why the effect does not apply to what this reader holds now: a book,
+    /// chapter or block that is gone, another share or fetch in progress.
+    pub(crate) fn begin_effect(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::EbookOperation;
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
-        }
-        match operation {
-            EbookOperation::PreviousPage => self.on_prev_page(),
-            EbookOperation::NextPage => self.on_next_page(),
-            EbookOperation::ToggleContents => self.on_toggle_toc(),
-            EbookOperation::ToggleNotes => self.on_toggle_notes(),
-            EbookOperation::OpenSettings => self.on_open_settings(),
-            EbookOperation::Reveal {
-                book_id,
+        invocation: tilo_actions::InvocationId,
+        effect: crate::resource::BooksEffect,
+        entries: &[crate::model::LibraryEntry],
+    ) -> Result<ui::framework::Effected, String> {
+        use crate::resource::BooksEffect;
+        match effect {
+            BooksEffect::Share { book } => {
+                self.begin_share_book(&book)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Share);
+                return Ok(ui::framework::Effected::Pending);
+            }
+            BooksEffect::Download { book } => {
+                self.begin_hydrate_shared_book(&book, entries)?;
+                self.resource_invocation = Some(invocation);
+                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
+                return Ok(ui::framework::Effected::Pending);
+            }
+            BooksEffect::PreviousPage => self.on_prev_page(),
+            BooksEffect::NextPage => self.on_next_page(),
+            BooksEffect::Contents => self.on_toggle_toc(),
+            BooksEffect::Notes => self.on_toggle_notes(),
+            BooksEffect::Settings => self.on_open_settings(),
+            BooksEffect::Open {
+                book,
                 chapter,
                 page,
                 block,
+            } => self.reveal(&book, chapter, page, block)?,
+            BooksEffect::GoTo {
+                book,
+                chapter,
+                block,
             } => {
-                let Some(index) = self.library.iter().position(|book| book.id == book_id) else {
-                    return Err("book is no longer in the library".into());
-                };
-                let Some(book) = self.library.get(index) else {
-                    return Err("book is no longer in the library".into());
-                };
-                // A resource address is an authority-bearing snapshot. Do not
-                // silently clamp a chapter or annotation target from an old
-                // search/resource row: a peer may have replaced the EPUB, and
-                // opening a nearby passage would be materially misleading.
-                if book.chapters.is_empty() {
-                    if chapter != 0 || block.is_some() {
-                        return Err("book no longer contains the requested reading target".into());
-                    }
-                } else {
-                    let Some(chapter_item) = book.chapters.get(chapter) else {
-                        return Err("chapter is no longer available in this book".into());
-                    };
-                    if let Some(block) = block
-                        && block >= chapter_item.blocks.len()
-                    {
-                        return Err(
-                            "annotation target is no longer available in this chapter".into()
-                        );
-                    }
-                }
-                self.book_idx = index;
-                self.view = View::Reader;
-                self.chapter = chapter;
-                self.page = page;
-                self.pending_jump_block = block;
-                self.clear_selection();
-                self.composing = None;
-                self.note_composer.close();
-                self.comment_overlay.close();
-                // Explicit, like `select_passage`: persisted, never re-adopted.
-                self.layout = None;
-                self.dirty = true;
+                let chapter = chapter.unwrap_or_else(|| self.open_chapter_of(&book));
+                self.reveal(&book, chapter, 0, Some(block.unwrap_or(0)))?;
             }
-            EbookOperation::SelectPassage {
-                book_id,
+            BooksEffect::SelectPassage {
+                book,
                 chapter,
                 start_block,
                 start_char,
                 end_block,
                 end_char,
-            } => self.select_passage(
-                &book_id,
-                chapter,
-                (start_block, start_char),
-                (end_block, end_char),
-            )?,
-            EbookOperation::OpenBook => {
-                return Err("book open requires the lifecycle-capable operation host".into());
+            } => {
+                let chapter = chapter.unwrap_or_else(|| self.open_chapter_of(&book));
+                self.select_passage(
+                    &book,
+                    chapter,
+                    (start_block, start_char.unwrap_or(0)),
+                    (end_block.unwrap_or(start_block), end_char),
+                )?;
             }
-            EbookOperation::ShareBook { .. } | EbookOperation::HydrateSharedBook { .. } => {
-                return Err("book sharing requires the lifecycle-capable operation host".into());
+            BooksEffect::OpenBook | BooksEffect::OpenStored { .. } => {
+                return Err("opening a book is the surface's".into());
             }
         }
-        Ok(true)
+        self.record_progress();
+        Ok(ui::framework::Effected::done())
     }
 
-    fn admit_resource_operation(
+    /// Start the effect a published operation's `payload` names against
+    /// `doc`'s library, as the host does when it is invoked.
+    #[cfg(test)]
+    pub(crate) fn start_effect(
         &mut self,
         invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
         payload: &[u8],
         doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+    ) -> Result<ui::framework::Effected, String> {
+        let effect =
+            <crate::resource::BooksEffect as ui::tilo_resource::Effect>::from_payload(payload)?;
+        self.begin_effect(invocation, effect, &BooksDoc::read_library_entries(doc))
+    }
+
+    /// The chapter this reader has open in `book`, else its first.
+    fn open_chapter_of(&self, book: &str) -> usize {
+        let open = self.view == View::Reader
+            && self
+                .library
+                .get(self.book_idx)
+                .is_some_and(|open| open.id == book);
+        if open { self.chapter } else { 0 }
+    }
+
+    /// Show `book` at `chapter`, `page` and `block`. A place from an old
+    /// search hit or row is not clamped to something nearby: a peer may have
+    /// replaced the book, and opening a neighbouring passage would mislead.
+    fn reveal(
+        &mut self,
+        book: &str,
+        chapter: usize,
+        page: usize,
+        block: Option<usize>,
+    ) -> Result<(), String> {
+        let Some(index) = self.library.iter().position(|open| open.id == book) else {
+            return Err("book is no longer in the library".into());
         };
-        let expected = crate::actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match ebook operation kind {expected:?}"
-            ));
+        let Some(open) = self.library.get(index) else {
+            return Err("book is no longer in the library".into());
+        };
+        if open.chapters.is_empty() {
+            if chapter != 0 || block.is_some() {
+                return Err("book no longer contains the requested reading target".into());
+            }
+        } else {
+            let Some(chapter_item) = open.chapters.get(chapter) else {
+                return Err("chapter is no longer available in this book".into());
+            };
+            if let Some(block) = block
+                && block >= chapter_item.blocks.len()
+            {
+                return Err("annotation target is no longer available in this chapter".into());
+            }
         }
-        match operation {
-            crate::actions::EbookOperation::OpenBook => {
-                if self.resource_invocation.is_some() {
-                    return Err("another book open is in progress".into());
+        self.book_idx = index;
+        self.view = View::Reader;
+        self.chapter = chapter;
+        self.page = page;
+        self.pending_jump_block = block;
+        self.clear_selection();
+        self.composing = None;
+        self.note_composer.close();
+        self.comment_overlay.close();
+        // Explicit, like `select_passage`: persisted, never re-adopted.
+        self.layout = None;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// The outcome of the share or fetch invoked as `invocation`, once it
+    /// settled; taken once.
+    pub(crate) fn take_effect_result(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if !self
+            .completed_resource_invocation
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            return None;
+        }
+        self.resource_lifecycle = None;
+        self.completed_resource_invocation.take()
+    }
+
+    /// Stop the share or fetch invoked as `invocation`, as its caller asked.
+    /// Parsing cannot be interrupted mid-archive, but its result is no
+    /// longer taken: the loading generation it belongs to is gone.
+    pub(crate) fn cancel_effect(&mut self, invocation: tilo_actions::InvocationId) -> bool {
+        if self.resource_invocation != Some(invocation) {
+            return false;
+        }
+        self.resource_invocation = None;
+        self.pending_share = None;
+        self.resource_lifecycle = None;
+        self.import_loading = None;
+        self.dirty = true;
+        true
+    }
+
+    /// Answer `invocation`'s caller through `reply` once its work settles.
+    pub(crate) fn await_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        reply: ui::framework::EffectReply,
+    ) {
+        self.effect_replies.push((invocation, reply));
+    }
+
+    /// Answer every waiting caller whose share or fetch settled, and stop the
+    /// ones their caller cancelled.
+    fn deliver_effect_replies(&mut self) {
+        for (invocation, reply) in std::mem::take(&mut self.effect_replies) {
+            if reply.is_cancelled() {
+                self.cancel_effect(invocation);
+                continue;
+            }
+            match self.take_effect_result(invocation) {
+                Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+                    reply.answer(Ok(output));
                 }
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Open);
-                self.request_open_via_portal();
-                if self.portal_rx.is_none() {
-                    self.resource_invocation = None;
-                    self.resource_lifecycle = None;
-                    return Err("book picker could not be started".into());
+                Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                    reply.answer(Err(error));
                 }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                Some(_) => reply.answer(Ok(tilo_actions::ActionOutput::default())),
+                None => self.effect_replies.push((invocation, reply)),
             }
-            crate::actions::EbookOperation::ShareBook { book_id } => {
-                self.begin_share_book(&book_id)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Share);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::EbookOperation::HydrateSharedBook { book_id } => {
-                self.begin_hydrate_shared_book(&book_id, doc)?;
-                self.resource_invocation = Some(invocation);
-                self.resource_lifecycle = Some(ResourceLifecycle::Hydrate);
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            _ => self
-                .answer_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
         }
     }
+
+    /// Where the reader is in the open book, as the row it publishes.
+    pub(crate) fn reading_row(&self) -> Option<ui::framework::LiveRow> {
+        self.current_book_resource_context()
+            .map(|ctx| live_row(crate::actions::reading_resource(&ctx)))
+    }
+
+    /// The book, chapter, annotation or location a search hit names, with
+    /// what opens it. Its edits are the library's own, on the published row.
+    pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        self.book_search
+            .resolve(&tilo_actions::ActionAddress::new(id, "open"))
+            .or_else(|| {
+                self.book_search
+                    .resolve(&tilo_actions::ActionAddress::new(id, "download"))
+            })
+            .map(live_row)
+    }
+}
+
+/// `resource`, something the reader shows, as a row: its view and effect
+/// operations, nested as it nests.
+fn live_row(resource: tilo_actions::Resource) -> ui::framework::LiveRow {
+    let mut row = ui::framework::LiveRow::new(resource.id.as_str(), resource.kind, resource.label);
+    for action in resource.actions {
+        if action.kind != tilo_actions::OperationKind::Document {
+            row = row.operation(action);
+        }
+    }
+    for child in resource.children {
+        row = row.row(live_row(child));
+    }
+    row
 }
 
 impl BooksApp {
@@ -6239,7 +5406,7 @@ impl BooksApp {
             .note_composer
             .handle_event(&mut ctx.reborrow(&mut input_handled))
         {
-            self.finish_composing(ctx.state);
+            self.finish_composing(&mut ctx.state);
             input_handled = true;
         }
 
@@ -6247,7 +5414,7 @@ impl BooksApp {
             .reading_settings
             .handle_event(&mut ctx.reborrow(&mut input_handled));
         for action in settings_actions {
-            self.dispatch_reading_settings(action, ctx.state);
+            self.dispatch_reading_settings(action, &mut ctx.state);
         }
 
         let changes = self
@@ -6256,25 +5423,27 @@ impl BooksApp {
         for (field, value) in changes {
             match field {
                 NumberField::FontScale => {
-                    self.bump_setting(ctx.state, |settings| {
+                    self.bump_setting(&mut ctx.state, |settings| {
                         settings.font_scale = (value / 100.0) as f32;
                     });
                 }
                 NumberField::LineSpacing => {
-                    self.bump_setting(ctx.state, |settings| settings.line_spacing = value as f32);
+                    self.bump_setting(&mut ctx.state, |settings| {
+                        settings.line_spacing = value as f32;
+                    });
                 }
                 NumberField::FontMult(id) => {
                     let mut fonts = self.fonts.clone();
                     if let Some(font) = fonts.iter_mut().find(|font| font.id == id) {
                         font.size_mult = value as f32;
                         let font = font.clone();
-                        self.perform_action(ctx.state, &crate::actions::upsert_font_action(font));
+                        self.edit(&mut ctx.state, &crate::actions::upsert_font_action(font));
                     }
                 }
             }
         }
         if input_handled {
-            self.refresh_from_doc(ctx.state);
+            self.refresh_from_doc(ctx.state.doc());
             self.dirty = true;
             *ctx.handled = true;
         }
@@ -6298,7 +5467,7 @@ impl BooksApp {
                 &mut ui::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: &ctx.modifiers,
-                    state: ctx.state,
+                    state: ctx.state.reborrow(),
                     path: ctx.root,
                     handled: &mut field_handled,
                     focus_target: &mut field_focus,
@@ -6307,9 +5476,9 @@ impl BooksApp {
                 },
             );
         }
-        self.poll_rename_outcome(ctx.state);
+        self.poll_rename_outcome(&mut ctx.state);
         if field_handled {
-            self.refresh_from_doc(ctx.state);
+            self.refresh_from_doc(ctx.state.doc());
             self.dirty = true;
             *ctx.handled = true;
             return true;
@@ -6317,7 +5486,12 @@ impl BooksApp {
         false
     }
 
-    fn handle_cursor_moved(&mut self, p: Point, doc: &mut AutoCommit, handled: &mut bool) {
+    fn handle_cursor_moved(
+        &mut self,
+        p: Point,
+        doc: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) {
         if p == self.cursor {
             return;
         }
@@ -6392,7 +5566,11 @@ impl BooksApp {
     /// app-wide `self.hits` list and must be asked before it. Returns
     /// whether any of them consumed the press, so the caller can return
     /// immediately without falling through.
-    fn handle_left_press_overlay(&mut self, doc: &mut AutoCommit, handled: &mut bool) -> bool {
+    fn handle_left_press_overlay(
+        &mut self,
+        doc: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) -> bool {
         if let Some(action) = self.reading_settings.hit_test(self.cursor) {
             self.dispatch_reading_settings(action, doc);
             self.refresh_from_doc(doc);
@@ -6419,7 +5597,7 @@ impl BooksApp {
     fn handle_left_press(
         &mut self,
         modifiers: Modifiers,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         if self.handle_left_press_overlay(doc, handled) {
@@ -6598,7 +5776,7 @@ impl BooksApp {
         consumed_page
     }
 
-    fn handle_left_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
+    fn handle_left_release(&mut self, doc: &mut ui::widget::Edits<'_>, handled: &mut bool) {
         self.mouse_down = false;
         if self.progress_dragging {
             self.progress_dragging = false;
@@ -6651,7 +5829,7 @@ impl BooksApp {
     fn handle_mouse_wheel(
         &mut self,
         delta: MouseScrollDelta,
-        doc: &mut AutoCommit,
+        doc: &mut ui::widget::Edits<'_>,
         handled: &mut bool,
     ) {
         // A dominantly horizontal gesture turns pages (scroll-right
@@ -6680,7 +5858,7 @@ impl BooksApp {
     /// Library-shelf keyboard navigation. A directional cursor moves across
     /// the grid (up/down step by a whole row); Enter/Space opens the
     /// focused book.
-    fn handle_library_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_library_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         // Navigation is over the shelf's display order (filtered + sorted),
         // resolved by the last `draw_library`.
         let n = self.shelf_order.len();
@@ -6731,7 +5909,7 @@ impl BooksApp {
     }
 
     fn reader_shortcut_matches(&self, shortcut: ReaderShortcut, pressed: &str) -> bool {
-        self.local_library
+        self.reader_keys
             .shortcut(shortcut.id(), shortcut.default_key())
             .eq_ignore_ascii_case(pressed)
     }
@@ -6750,13 +5928,12 @@ impl BooksApp {
             }
             Key::Character(character) => {
                 if self
-                    .local_library
+                    .reader_keys
                     .set_shortcut(shortcut.id(), character.as_str())
                 {
-                    self.local_library.save();
                     self.shortcut_capture = None;
                     self.shortcut_capture_error = None;
-                } else if crate::local_library::reserved_reader_key(character.as_str()) {
+                } else if crate::reader_keys::reserved_reader_key(character.as_str()) {
                     self.shortcut_capture_error = Some(format!(
                         "{} is reserved for a built-in reader command. Choose another key.",
                         character.to_uppercase()
@@ -6773,7 +5950,12 @@ impl BooksApp {
 
     /// Keyboard handling. Returns `true` if the key was consumed (so the App's
     /// focus-navigation fallback doesn't also steal the arrows).
-    fn handle_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
+    fn handle_key(
+        &mut self,
+        key: &Key,
+        mods: ModifiersState,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         // An in-progress inline rename owns the keyboard through its embedded
         // field via `handle_event`; no key handling for it belongs here.
 
@@ -6851,7 +6033,7 @@ impl BooksApp {
         self.dirty = true;
     }
 
-    fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_settings_escape_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         if let Key::Named(NamedKey::Escape) = key {
             if self.color_picker.is_open() {
                 self.color_picker.cancel();
@@ -6869,11 +6051,11 @@ impl BooksApp {
         false
     }
 
-    fn handle_composing_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_composing_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         matches!(key, Key::Named(NamedKey::Escape)) && self.finish_composing(doc)
     }
 
-    fn handle_progress_slider_key(&mut self, key: &Key, doc: &mut AutoCommit) -> bool {
+    fn handle_progress_slider_key(&mut self, key: &Key, doc: &mut ui::widget::Edits<'_>) -> bool {
         if self.semantic_focus.as_deref() != Some("books.reader.progress") {
             return false;
         }
@@ -6897,7 +6079,12 @@ impl BooksApp {
         }
     }
 
-    fn handle_reader_key(&mut self, key: &Key, mods: ModifiersState, doc: &mut AutoCommit) -> bool {
+    fn handle_reader_key(
+        &mut self,
+        key: &Key,
+        mods: ModifiersState,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
         if self.handle_progress_slider_key(key, doc) {
             return true;
         }
@@ -7011,7 +6198,7 @@ impl BooksApp {
                   if a turn made no progress, so the loop is bounded regardless of float \
                   imprecision"
     )]
-    fn handle_swipe(&mut self, dx: f64, doc: &mut AutoCommit) -> bool {
+    fn handle_swipe(&mut self, dx: f64, doc: &mut ui::widget::Edits<'_>) -> bool {
         if dx == 0.0 || self.view != View::Reader {
             return false;
         }
@@ -7059,7 +6246,7 @@ impl BooksApp {
                   clamp() is testing whether the assignment changed anything, not comparing \
                   two independently-computed values"
     )]
-    fn handle_wheel(&mut self, dy: f64, doc: &mut AutoCommit) -> bool {
+    fn handle_wheel(&mut self, dy: f64, doc: &mut ui::widget::Edits<'_>) -> bool {
         if dy == 0.0 {
             return false;
         }
@@ -10650,7 +9837,7 @@ impl BooksApp {
         total_h
     }
 
-    /// Device-local keyboard binding editor. Each row records one printable
+    /// The person's keyboard binding editor. Each row records one printable
     /// key directly; bindings are deliberately not part of the Automerge
     /// document because another reader's keyboard layout is not shared book
     /// state. Arrow/Page navigation remains available as a reliable fallback.
@@ -10734,7 +9921,7 @@ impl BooksApp {
             let binding = if capturing {
                 "Press a key…".to_string()
             } else {
-                self.local_library
+                self.reader_keys
                     .shortcut(shortcut.id(), shortcut.default_key())
                     .to_uppercase()
             };
@@ -12124,6 +11311,8 @@ fn cover_colors(theme: &Theme, tint: usize) -> (Color, Color) {
     let ink = theme.on_surface(base).ink;
     (base, ink)
 }
+
+mod stage;
 
 #[cfg(test)]
 #[path = "app/interaction_tests.rs"]

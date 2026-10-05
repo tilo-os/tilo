@@ -6,17 +6,24 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use tilo_actions::{ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation};
-use tilo_resource::{Doc, Effect, Invoke, Resource};
+use tilo_actions::{
+    ActionAddress, ActionContext, ActionError, ActionInvoker, ControlInvocation,
+    PermissionRequirement,
+};
+use tilo_resource::{Effect, Invoke, Resource};
 use ui_core::LocalState;
 use ui_core::automerge::ChangeHash;
+use ui_core::permissions::{LivePermissions, PermissionScope, Verb};
+use ui_core::widget::Edits;
+use ui_core::widget::controls::AttributedControlInvocation;
 
 /// Submits a view's edits. Cloneable; clones share one queue.
 ///
 /// Two doors, one path. [`invoke`](Self::invoke) and [`apply`](Self::apply)
 /// queue an invocation the host resolves after the event, exactly as a
 /// control bound to an action would. [`apply_now`](Self::apply_now) applies
-/// one typed action immediately, inside the event, for an editor that must
+/// one typed action immediately, inside the event or the settle pass
+/// ([`Widget::settle`](ui_core::widget::Widget::settle)), for an editor that must
 /// see the result of its own edit before the next keystroke (the paragraph a
 /// split created, the cell a table insert made). Both check the
 /// participant's permission, apply through the replayable executor with
@@ -39,7 +46,7 @@ use ui_core::automerge::ChangeHash;
 ///
 /// // In the surface's `handle_event`:
 /// WindowEvent::CursorMoved { .. } if self.dragging => {
-///     let _ = self.dispatch.apply_now(ctx.state, &Action::SetLevel(level));
+///     let _ = self.dispatch.apply_now(&mut ctx.edits(), &Action::SetLevel(level));
 /// }
 /// WindowEvent::MouseInput { state: ElementState::Released, .. } => {
 ///     self.dragging = false;
@@ -54,12 +61,22 @@ pub struct Dispatcher<R: Resource> {
     resource_id: Rc<str>,
     /// Who edits through this dispatcher; `None` in a view of a past version.
     me: Option<Rc<str>>,
-    queue: Rc<RefCell<VecDeque<ControlInvocation>>>,
+    /// Each queued invocation with the effect invocation it continues,
+    /// when an effect's handler or completion queued it.
+    queue: Rc<RefCell<VecDeque<AttributedControlInvocation>>>,
     /// The invocations of the open group, and how many groups are open.
     group: Rc<RefCell<(usize, Vec<Invoke<R>>)>>,
     read_only: LocalState<bool>,
+    /// The participant's permissions as the host keeps them, for an action
+    /// that needs less than writing (a reply a commenter may add) or more.
+    /// Absent outside a host: a past version, which nobody edits, or a
+    /// test's detached dispatcher, which may do what writing allows.
+    permissions: Rc<RefCell<Option<LivePermissions>>>,
+    /// What applying an action needs: the resource's own
+    /// [`Resource::permission`], or for a child its parent's action's.
+    permission_of: PermissionOf<R>,
     refused: LocalState<Option<Refused>>,
-    host: Rc<RefCell<ui_core::ActionHost>>,
+    host: Rc<RefCell<ui_core::action_host::ActionHost>>,
     /// Applies one immediate action: the resource's own, or for a child
     /// resource its parent's action carrying it.
     submit_now: SubmitNow<R>,
@@ -77,17 +94,24 @@ pub struct Dispatcher<R: Resource> {
     applied: Rc<Cell<bool>>,
     /// The boundary last taken opened a step that stays open.
     opened: Rc<Cell<bool>>,
+    /// The last immediate action may be continued by a later one
+    /// ([`Resource::continuable`]).
+    continuable: Rc<Cell<bool>>,
     marker: std::marker::PhantomData<fn(R)>,
 }
+
+/// What applying one action needs.
+type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> PermissionRequirement>;
 
 /// An immediate action and the serial it was applied at.
 type Serialed<R> = (u64, <R as Resource>::Action);
 
-/// Applies one typed action to a document through the host.
+/// Applies one typed action to the document a pass may change, through
+/// the host.
 type SubmitNow<R> = Rc<
     dyn Fn(
-        &mut ui_core::ActionHost,
-        &mut Doc,
+        &mut ui_core::action_host::ActionHost,
+        &mut Edits<'_>,
         &<R as Resource>::Action,
         ActionContext,
     ) -> Result<(), ActionError>,
@@ -102,6 +126,8 @@ impl<R: Resource> Clone for Dispatcher<R> {
             queue: Rc::clone(&self.queue),
             group: Rc::clone(&self.group),
             read_only: self.read_only.clone(),
+            permissions: Rc::clone(&self.permissions),
+            permission_of: Rc::clone(&self.permission_of),
             refused: self.refused.clone(),
             host: Rc::clone(&self.host),
             submit_now: Rc::clone(&self.submit_now),
@@ -110,6 +136,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            continuable: Rc::clone(&self.continuable),
             marker: std::marker::PhantomData,
         }
     }
@@ -129,18 +156,33 @@ impl<R: Resource> Dispatcher<R> {
             queue: Rc::default(),
             group: Rc::default(),
             read_only: LocalState::new(read_only),
+            permissions: Rc::default(),
+            permission_of: Rc::new(R::permission),
             refused: LocalState::new(None),
             host: Rc::default(),
-            submit_now: Rc::new(|host, doc, action, context| {
-                host.try_dispatch_with_context(doc, R::ACTION_TYPE, action, context)
+            submit_now: Rc::new(|host, edits, action, context| {
+                edits.apply(host, R::ACTION_TYPE, action, context)
             }),
             serial: Rc::default(),
             last: Rc::default(),
             continuing: Rc::default(),
             applied: Rc::default(),
             opened: Rc::default(),
+            continuable: Rc::default(),
             marker: std::marker::PhantomData,
         }
+    }
+
+    /// A dispatcher for a surface a test builds outside any host, editing as
+    /// `me`: what the surface applies now ([`Self::apply_now`]) goes into the
+    /// document the test hands it, as under a host. Queued edits
+    /// ([`Self::apply`], [`Self::invoke`]) wait for a host that never takes
+    /// them; a test that needs those runs the app
+    /// ([`TestApp`](super::testing::HeadlessApp)).
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn detached(app_id: &'static str, me: &str) -> Self {
+        Self::new(app_id, R::KIND, false, Some(me))
     }
 
     /// Who edits through this dispatcher: the participant this view is
@@ -164,6 +206,61 @@ impl<R: Resource> Dispatcher<R> {
         self.read_only.clone()
     }
 
+    /// Follow the participant's permissions as the host keeps them.
+    pub(crate) fn follow(&self, permissions: LivePermissions) {
+        *self.permissions.borrow_mut() = Some(permissions);
+    }
+
+    /// The same dispatcher deciding by `permissions`, for a test of a
+    /// surface whose participant may only comment, or only view.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn with_permissions(self, permissions: LivePermissions) -> Self {
+        self.follow(permissions);
+        self.refresh_read_only();
+        self
+    }
+
+    /// Whether the participant may, as of now, do what needs `requirement`:
+    /// writing for most edits, commenting for a reply, administering for a
+    /// change of who may do what.
+    pub fn may(&self, requirement: PermissionRequirement) -> bool {
+        let verb = match requirement {
+            PermissionRequirement::None => return true,
+            PermissionRequirement::Read => Verb::Read,
+            PermissionRequirement::Comment => Verb::Comment,
+            PermissionRequirement::Write => Verb::Write,
+            PermissionRequirement::Invite => Verb::Invite,
+            PermissionRequirement::Admin => Verb::Admin,
+        };
+        match self.permissions.borrow().as_ref() {
+            Some(permissions) => permissions.check(&PermissionScope::app(self.app_id, verb)),
+            // A detached dispatcher may what writing allows; a past version
+            // nothing.
+            None => !self.read_only.get(),
+        }
+    }
+
+    /// Whether the participant may apply `action`
+    /// ([`Resource::permission`]).
+    pub fn may_apply(&self, action: &R::Action) -> bool {
+        self.may((self.permission_of)(action))
+    }
+
+    /// Re-read whether the participant may write. Returns whether it
+    /// changed.
+    #[cfg(any(test, feature = "test-support"))]
+    fn refresh_read_only(&self) -> bool {
+        let writes =
+            self.permissions.borrow().as_ref().map(|permissions| {
+                permissions.check(&PermissionScope::app(self.app_id, Verb::Write))
+            });
+        match writes {
+            Some(writes) => self.set_read_only(!writes),
+            None => false,
+        }
+    }
+
     /// Record a change of the participant's permissions. Returns whether
     /// anything changed.
     pub(crate) fn set_read_only(&self, read_only: bool) -> bool {
@@ -185,6 +282,17 @@ impl<R: Resource> Dispatcher<R> {
         format!("this {} is open to view only", R::LABEL.to_lowercase())
     }
 
+    /// Why an edit needing `requirement` was refused.
+    fn not_allowed(requirement: PermissionRequirement) -> String {
+        match requirement {
+            PermissionRequirement::Write => Self::view_only(),
+            PermissionRequirement::Comment => {
+                format!("you may not comment on this {}", R::LABEL.to_lowercase())
+            }
+            _ => format!("you may not do this to this {}", R::LABEL.to_lowercase()),
+        }
+    }
+
     /// Record that the door refused `action`, submitted here.
     pub(crate) fn refuse(&self, action: &str, reason: String) {
         self.refused.set(Some(Refused {
@@ -199,10 +307,13 @@ impl<R: Resource> Dispatcher<R> {
     /// checked, then its handler runs. A participant who may only view still
     /// invokes the effects declared `permission = "read"`.
     pub fn effect<E: Effect>(&self, effect: &E) {
-        self.queue.borrow_mut().push_back(ControlInvocation {
-            address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
-            arguments: effect.arguments(),
-        });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation {
+                address: ActionAddress::new(self.resource_id.as_ref(), effect.id()),
+                arguments: effect.arguments(),
+            },
+            super::effect::acting_for(),
+        ));
     }
 
     /// Invoke `effect` as the live row `row` offers it
@@ -210,10 +321,13 @@ impl<R: Resource> Dispatcher<R> {
     /// contract, so a confirmation the row asks for (typing the name of the
     /// device it erases) is asked here too.
     pub fn effect_on<E: Effect>(&self, row: &str, effect: &E) {
-        self.queue.borrow_mut().push_back(ControlInvocation {
-            address: ActionAddress::new(row, effect.id()),
-            arguments: serde_json::Map::new(),
-        });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation {
+                address: ActionAddress::new(row, effect.id()),
+                arguments: serde_json::Map::new(),
+            },
+            super::effect::acting_for(),
+        ));
     }
 
     /// Invoke a declared action (`dispatcher.invoke(Note::EDIT.with(text))`),
@@ -224,7 +338,7 @@ impl<R: Resource> Dispatcher<R> {
             self.submit(invoke);
             return;
         }
-        if self.read_only() {
+        if !self.may_invoke(&invoke) {
             self.refuse(invoke.id, Self::view_only());
             return;
         }
@@ -239,10 +353,31 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     fn submit(&self, invoke: Invoke<R>) {
-        self.queue.borrow_mut().push_back(ControlInvocation {
-            address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
-            arguments: invoke.arguments,
-        });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation {
+                address: ActionAddress::new(self.resource_id.as_ref(), invoke.id),
+                arguments: invoke.arguments,
+            },
+            super::effect::acting_for(),
+        ));
+    }
+
+    /// Whether the participant may take `invoke`: what its declaration, or
+    /// the typed value it applies, needs. One this resource does not declare
+    /// (an edit bound to a surface's view state) is left to the host, which
+    /// checks what its published action needs.
+    fn may_invoke(&self, invoke: &Invoke<R>) -> bool {
+        if invoke.id == tilo_resource::APPLY {
+            return match invoke.build(0) {
+                Ok(action) => self.may_apply(&action),
+                Err(_) => !self.read_only(),
+            };
+        }
+        match R::declarations().iter().find(|decl| decl.id == invoke.id) {
+            Some(decl) => self.may(decl.permission),
+            None if invoke.is_group() => !self.read_only(),
+            None => self.may(PermissionRequirement::Read),
+        }
     }
 
     /// Invoke an action published on a nested resource, such as one item of
@@ -255,9 +390,10 @@ impl<R: Resource> Dispatcher<R> {
         if self.read_only() {
             return;
         }
-        self.queue
-            .borrow_mut()
-            .push_back(ControlInvocation { address, arguments });
+        self.queue.borrow_mut().push_back((
+            ControlInvocation { address, arguments },
+            super::effect::acting_for(),
+        ));
     }
 
     /// Submit one typed action value — an edit with no named declaration,
@@ -315,8 +451,8 @@ impl<R: Resource> Dispatcher<R> {
         }
     }
 
-    /// Apply one typed action to `doc` — the document the surface's event
-    /// handler received — now, attributed to the participant and labelled
+    /// Apply one typed action to the document `edits` lends — an event's,
+    /// or a settle pass's — now, attributed to the participant and labelled
     /// after the action (its declared label when it names a declared one).
     /// One event's actions are one undo step, and an action that continues
     /// the previous one ([`Resource::coalesces`], the next letter of a word)
@@ -325,12 +461,12 @@ impl<R: Resource> Dispatcher<R> {
     /// # Errors
     /// Returns [`ActionError::Refused`] for a participant who may only view,
     /// and the action's own refusal; nothing is written either way.
-    pub fn apply_now(&self, doc: &mut Doc, action: &R::Action) -> Result<(), ActionError> {
+    pub fn apply_now(&self, edits: &mut Edits<'_>, action: &R::Action) -> Result<(), ActionError> {
         let label = tilo_resource::action_label::<R>(action)
             .unwrap_or_else(|| ActionContext::for_action("", "", action).action_label);
         let context =
             ActionContext::for_resource(label, self.resource_id.as_ref(), R::KIND, R::LABEL);
-        self.apply_now_with(doc, action, context)
+        self.apply_now_with(edits, action, context)
     }
 
     /// [`apply_now`](Self::apply_now) with the history context the surface
@@ -340,12 +476,15 @@ impl<R: Resource> Dispatcher<R> {
     /// As [`apply_now`](Self::apply_now).
     pub fn apply_now_with(
         &self,
-        doc: &mut Doc,
+        edits: &mut Edits<'_>,
         action: &R::Action,
         context: ActionContext,
     ) -> Result<(), ActionError> {
-        if self.read_only() {
-            return Err(ActionError::Refused(Self::view_only()));
+        if !self.may_apply(action) {
+            return Err(ActionError::Refused(Self::not_allowed((self
+                .permission_of)(
+                action
+            ))));
         }
         // History names the resource and who edited it even when the
         // surface's context does not.
@@ -355,10 +494,10 @@ impl<R: Resource> Dispatcher<R> {
             named = named.with_invoker(ActionInvoker::actor(me.as_ref()));
         }
         let context = context.enriched_by(&named);
-        (self.submit_now)(&mut self.host.borrow_mut(), doc, action, context)?;
+        (self.submit_now)(&mut self.host.borrow_mut(), edits, action, context)?;
         // Content from outside is nobody's step: it neither continues the
         // open one nor ends it.
-        if R::annotates(action) || !tilo_actions::Action::change_kind(action).is_step() {
+        if !tilo_actions::Action::change_kind(action).is_step() {
             return Ok(());
         }
         // Only an action right after this dispatcher's last one, with nothing
@@ -372,6 +511,7 @@ impl<R: Resource> Dispatcher<R> {
         let serial = serial.wrapping_add(1);
         self.serial.set(serial);
         *self.last.borrow_mut() = Some((serial, action.clone()));
+        self.continuable.set(R::continuable(action));
         // The event continues the open step only if every action it applied
         // did.
         let first_of_event = !self.applied.replace(true);
@@ -401,6 +541,9 @@ impl<R: Resource> Dispatcher<R> {
         wrap: impl Fn(C::Action) -> R::Action + 'static,
     ) -> Dispatcher<C> {
         let parent = Rc::clone(&self.submit_now);
+        let parent_permission = Rc::clone(&self.permission_of);
+        let wrap = Rc::new(wrap);
+        let wrap_for_permission = Rc::clone(&wrap);
         Dispatcher {
             app_id: self.app_id,
             me: self.me.clone(),
@@ -408,18 +551,23 @@ impl<R: Resource> Dispatcher<R> {
             queue: Rc::clone(&self.queue),
             group: Rc::default(),
             read_only: self.read_only.clone(),
+            permissions: Rc::clone(&self.permissions),
+            permission_of: Rc::new(move |action: &C::Action| {
+                parent_permission(&wrap_for_permission(action.clone()))
+            }),
             refused: self.refused.clone(),
             host: Rc::clone(&self.host),
             // History names the child and its edit; what applies is the
             // parent's action carrying it.
-            submit_now: Rc::new(move |host, doc, action: &C::Action, context| {
-                parent(host, doc, &wrap(action.clone()), context)
+            submit_now: Rc::new(move |host, edits, action: &C::Action, context| {
+                parent(host, edits, &wrap(action.clone()), context)
             }),
             serial: Rc::clone(&self.serial),
             last: Rc::default(),
             continuing: Rc::clone(&self.continuing),
             applied: Rc::clone(&self.applied),
             opened: Rc::clone(&self.opened),
+            continuable: Rc::clone(&self.continuable),
             marker: std::marker::PhantomData,
         }
     }
@@ -433,7 +581,8 @@ impl<R: Resource> Dispatcher<R> {
         self.last.borrow_mut().take();
     }
 
-    pub(crate) fn take(&self) -> Option<ControlInvocation> {
+    /// The next queued invocation, with the effect invocation it continues.
+    pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
         self.queue.borrow_mut().pop_front()
     }
 
@@ -446,7 +595,8 @@ impl<R: Resource> Dispatcher<R> {
     pub(crate) fn take_committed(&self) -> Option<Vec<ChangeHash>> {
         let bracket = self.host.borrow_mut().take_committed();
         let continuing = self.continuing.replace(false);
-        self.opened.set(bracket.is_some() && !continuing);
+        self.opened
+            .set(bracket.is_some() && !continuing && self.continuable.get());
         self.applied.set(false);
         if continuing { None } else { bracket }
     }

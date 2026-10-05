@@ -2,11 +2,9 @@
 //! through delete and reorder, history and restore, permissions, and a
 //! deterministic export that other readers (and pdfium) read back.
 
-use std::collections::HashMap;
-
 use automerge::{AutoCommit, ReadDoc};
 use tilo_automerge::ApplyIncoming;
-use ui::Widget;
+use ui::widget::Edits;
 
 use super::*;
 use crate::actions::{
@@ -146,50 +144,43 @@ fn concurrent_markup_edits_converge_across_replicas() {
     }
 
     {
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
-        let base = state.doc.save();
-        let mut other = AutoCommit::load(&base).expect("collaborator replica");
+        let mut app =
+            ui::framework::testing::TestApp::<crate::PdfViewerShell>::new().expect("the reader");
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&PdfViewerAction::EnsurePagePlan {
+                source_page_count: 3,
+            })
+            .unwrap(),
+        )
+        .expect("the plan");
+        let mut other = app.peer_document();
 
         // This user deletes page 2 as one undoable action…
-        app.perform_action(&mut state.doc, &delete_page_plan_action("source-2"));
-        let author = ui::collaboration::local_user_id();
-        let root: *mut dyn Widget = &mut app;
-        assert!(ui::undo::record_dispatched_action(
-            &mut state,
-            root,
-            &HashMap::new(),
-            &author,
-        ));
+        app.invoke(ui::tilo_resource::Invoke::apply(&delete_page_plan_action("source-2")).unwrap())
+            .expect("the owner deletes a page");
         // …while a collaborator, not yet seeing the delete, annotates it.
         apply(&mut other, &highlight("late", "source-2", 200.0));
-        state
-            .doc
-            .merge_incoming(&mut other)
-            .expect("merge the collaborator");
-        other.merge_incoming(&mut state.doc).expect("and back");
+        app.merge_peer(&mut other).expect("merge the collaborator");
+        let doc = app.read_document(Clone::clone);
 
         // Defined outcome: the page is gone, its annotation is kept, attached to
         // the deleted page, and not shown anywhere else.
-        assert!(ids(&state.doc).iter().all(|(id, _)| id != "late"));
-        let hidden: Vec<_> = PdfDoc::list_annotations_with_hidden(&state.doc)
+        assert!(ids(&doc).iter().all(|(id, _)| id != "late"));
+        let hidden: Vec<_> = PdfDoc::list_annotations_with_hidden(&doc)
             .into_iter()
             .filter(|a| a.id == "late")
             .collect();
         assert_eq!(hidden.len(), 1);
         assert_eq!(hidden[0].page, 0);
         assert_eq!(
-            PdfDoc::annotation_page_id(&state.doc, "late").as_deref(),
+            PdfDoc::annotation_page_id(&doc, "late").as_deref(),
             Some("source-2")
         );
-        assert_eq!(ids(&state.doc), ids(&other), "replicas agree");
 
         // Undoing the delete brings the page back — with the annotation on it.
-        state
-            .undo_as(Some(&author), None, None)
-            .expect("the delete has an undo boundary");
-        let restored: Vec<_> = ids(&state.doc)
+        assert!(app.undo(), "the delete is one undo step");
+        let restored: Vec<_> = app
+            .read_document(ids)
             .into_iter()
             .filter(|(id, _)| id == "late")
             .collect();
@@ -278,28 +269,21 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     );
 
     {
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
+        app.sync_settled(&mut state.doc, &state.root);
         let author = ui::collaboration::local_user_id();
-        let root: *mut dyn Widget = &mut app;
 
-        app.perform_action(&mut state.doc, &highlight("first", "source-1", 100.0));
-        assert!(ui::undo::record_dispatched_action(
-            &mut state,
-            root,
-            &HashMap::new(),
-            &author
-        ));
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &highlight("first", "source-1", 100.0),
+        );
         let history = state.revision_history();
         let after_first = history.heads().to_vec();
-        app.perform_action(&mut state.doc, &highlight("second", "source-1", 300.0));
-        assert!(ui::undo::record_dispatched_action(
-            &mut state,
-            root,
-            &HashMap::new(),
-            &author
-        ));
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &highlight("second", "source-1", 300.0),
+        );
         assert!(ids(&state.doc).iter().any(|(id, _)| id == "second"));
 
         // Every edit is a revision with an author and a time in the document's
@@ -318,7 +302,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         let target = after_first.first().copied().expect("a head");
         assert!(
             state
-                .restore_revision(target, None, None, Some(author.clone()))
+                .restore_revision(target, None, None, Some(author))
                 .expect("known revision")
         );
         let now: Vec<String> = ids(&state.doc).into_iter().map(|(id, _)| id).collect();
@@ -331,16 +315,23 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
     }
 
     {
-        use ui::permissions::{Actor, Role};
-        let mut app = PdfApp::sample();
-        let mut state = ui::State::new();
-        app.sync(&mut state.doc, &state.root);
+        let mut app = crate::scenarios::sample_reader();
+        let mut state = crate::scenarios::sample_state();
+        app.sync_settled(&mut state.doc, &state.root);
         let before = PdfDoc::list_annotations_with_hidden(&state.doc).len();
 
-        app.set_permissions(PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Viewer), "viewer"),
-            Vec::new(),
-        ));
+        // The host says the participant may only view.
+        let as_role = |role| {
+            ui::framework::testing::dispatcher::<crate::PdfViewer>(APP_ID).with_permissions(
+                ui::permissions::LivePermissions::fixed(
+                    ui::permissions::PermissionContext::from_capabilities(
+                        ui::permissions::Actor::person(Some(role), "participant"),
+                        Vec::new(),
+                    ),
+                ),
+            )
+        };
+        app.attach_framework(as_role(ui::permissions::Role::Viewer));
         app.tool = Tool::Highlight;
         app.drag = Some(DragState {
             tool: Tool::Highlight,
@@ -349,11 +340,14 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
             cur: (360.0, 165.0),
             points: vec![],
         });
-        app.commit_drag(&mut state.doc);
-        app.create_note(&mut state.doc, 1, (120.0, 300.0));
-        app.perform_action(&mut state.doc, &rotate_page_action("source-1", 90));
+        app.commit_drag(&mut Edits::lend(&mut state.doc));
+        app.create_note(&mut Edits::lend(&mut state.doc), 1, (120.0, 300.0));
         app.perform_action(
-            &mut state.doc,
+            &mut Edits::lend(&mut state.doc),
+            &rotate_page_action("source-1", 90),
+        );
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
             &set_form_value_action("name", &FormEntry::Text("x".into())),
         );
         assert_eq!(
@@ -371,25 +365,85 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
         );
 
         // A commenter may reply to a thread but still not mark up the page.
+        app.attach_framework(as_role(ui::permissions::Role::Commenter));
         let thread = PdfDoc::list_comments(&state.doc)
             .first()
             .map(|c| c.id.clone())
             .expect("the sample has a thread");
-        app.set_permissions(PermissionContext::from_capabilities(
-            Actor::person(Some(Role::Commenter), "commenter"),
-            Vec::new(),
-        ));
         let replies_before = PdfDoc::list_comments(&state.doc)[0].replies.len();
         app.perform_action(
-            &mut state.doc,
+            &mut Edits::lend(&mut state.doc),
             &crate::actions::add_reply_action(&thread, "commenter", "A reply"),
         );
         assert_eq!(
             PdfDoc::list_comments(&state.doc)[0].replies.len(),
-            replies_before + 1
+            replies_before + 1,
+            "a commenter's reply is added"
         );
-        app.perform_action(&mut state.doc, &highlight("nope", "source-1", 50.0));
-        assert!(ids(&state.doc).iter().all(|(id, _)| id != "nope"));
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &highlight("nope", "source-1", 50.0),
+        );
+        assert!(
+            ids(&state.doc).iter().all(|(id, _)| id != "nope"),
+            "a commenter's markup is refused"
+        );
+    }
+
+    // Through the host door too: the comment's reply action needs only the
+    // right to comment.
+    {
+        use ui::framework::testing::TestApp;
+        let mut app = TestApp::<crate::PdfViewerShell>::new().expect("the reader");
+        let plan = PdfViewerAction::EnsurePagePlan {
+            source_page_count: 3,
+        };
+        for action in std::iter::once(plan).chain(crate::scenarios::sample_review()) {
+            app.invoke(ui::tilo_resource::Invoke::apply(&action).unwrap())
+                .expect("the owner reviews");
+        }
+        let thread = crate::scenarios::NOTE_COMMENT;
+        app.call_on(
+            &format!("pdf.comment:{thread}"),
+            "reply",
+            serde_json::json!({ "value": "First" }),
+        )
+        .expect("the owner replies");
+        app.set_role(ui::permissions::Role::Commenter);
+        app.call_on(
+            &format!("pdf.comment:{thread}"),
+            "reply",
+            serde_json::json!({ "value": "Agreed" }),
+        )
+        .expect("a commenter replies");
+        assert!(
+            app.state()
+                .comments
+                .iter()
+                .any(|c| c.id == thread && c.replies.iter().any(|r| r.body == "Agreed"))
+        );
+        assert!(
+            app.invoke(crate::actions::ADD_NOTE.with(("Mine".into(), 1)))
+                .is_err(),
+            "a commenter may not add a note to the page"
+        );
+        // A typed edit needs what its value needs: a reply commenting, a
+        // highlight writing.
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&crate::actions::add_reply_action(
+                thread, "", "Typed",
+            ))
+            .unwrap(),
+        )
+        .expect("a commenter's typed reply");
+        assert!(
+            app.invoke(
+                ui::tilo_resource::Invoke::apply(&highlight("typed", "source-1", 60.0)).unwrap()
+            )
+            .is_err(),
+            "a commenter's typed highlight is refused"
+        );
+        assert!(app.state().annotations.iter().all(|a| a.id != "typed"));
     }
 }
 
@@ -414,9 +468,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
-        ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -442,30 +494,30 @@ fn exports_are_deterministic_and_carry_page_operations() {
             cur: (120.0, 60.0),
             points: vec![(40.0, 40.0), (80.0, 70.0), (120.0, 40.0)],
         });
-        app.commit_drag(&mut state.doc);
-        app.create_note(&mut state.doc, 1, (250.0, 30.0));
+        app.commit_drag(&mut Edits::lend(&mut state.doc));
+        app.create_note(&mut Edits::lend(&mut state.doc), 1, (250.0, 30.0));
         app.editing.as_mut().unwrap().set_text("Please confirm");
-        app.commit_edit(&mut state.doc);
+        app.commit_edit(&mut Edits::lend(&mut state.doc));
         let name = app
             .field_widgets_on(1)
             .into_iter()
             .find(|w| w.name == "name")
             .expect("the name field is on page 1");
-        app.activate_field(&mut state.doc, &name);
+        app.activate_field(&mut Edits::lend(&mut state.doc), &name);
         app.editing.as_mut().unwrap().set_text("Grace Hopper");
-        app.commit_edit(&mut state.doc);
+        app.commit_edit(&mut Edits::lend(&mut state.doc));
         let agree = app
             .field_widgets_on(1)
             .into_iter()
             .find(|w| w.name == "agree")
             .unwrap();
-        app.activate_field(&mut state.doc, &agree);
+        app.activate_field(&mut Edits::lend(&mut state.doc), &agree);
         let colour = app
             .field_widgets_on(1)
             .into_iter()
             .find(|w| w.name == "colour")
             .unwrap();
-        app.activate_field(&mut state.doc, &colour);
+        app.activate_field(&mut Edits::lend(&mut state.doc), &colour);
         assert_eq!(
             PdfDoc::form_values(&state.doc).get("colour"),
             Some(&FormEntry::Choice("Green".into())),
@@ -528,9 +580,7 @@ fn exports_are_deterministic_and_carry_page_operations() {
             break 'phase;
         }
         let mut state = ui::State::new();
-        let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
-        ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
-        app.sync(&mut state.doc, &state.root);
+        app.sync_settled(&mut state.doc, &state.root);
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.recompute_regions();
         app.sync_viewport_frame();
@@ -557,11 +607,20 @@ fn exports_are_deterministic_and_carry_page_operations() {
                 "Ada",
             )
         };
-        app.author_annotation(&mut state.doc, &a);
-        app.perform_action(&mut state.doc, &rotate_page_action("source-3", 90));
-        app.perform_action(&mut state.doc, &move_page_plan_action("source-3", None));
-        app.perform_action(&mut state.doc, &delete_page_plan_action("source-2"));
-        app.sync(&mut state.doc, &state.root);
+        app.author_annotation(&mut Edits::lend(&mut state.doc), &a);
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &rotate_page_action("source-3", 90),
+        );
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &move_page_plan_action("source-3", None),
+        );
+        app.perform_action(
+            &mut Edits::lend(&mut state.doc),
+            &delete_page_plan_action("source-2"),
+        );
+        app.sync_settled(&mut state.doc, &state.root);
         let stored = PdfDoc::list_annotations(&state.doc);
         assert_eq!(stored.len(), 1);
         assert_eq!(

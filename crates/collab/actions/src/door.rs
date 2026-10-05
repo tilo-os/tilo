@@ -339,6 +339,11 @@ pub fn encode(
     match (&spec.input, argument) {
         (ActionInput::Deferred { type_id, build }, None) => {
             let encoded = build();
+            if encoded.type_id == crate::resource::INVALID_ARGUMENTS_TYPE {
+                return Err(DoorError::InvalidArguments(
+                    String::from_utf8_lossy(&encoded.payload).into_owned(),
+                ));
+            }
             if encoded.type_id != *type_id {
                 return Err(DoorError::InvalidArguments(format!(
                     "builder returned `{}` but declared `{type_id}`",

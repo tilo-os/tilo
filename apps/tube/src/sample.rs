@@ -551,9 +551,8 @@ pub fn model() -> TubeModel {
         // The shared queue starts empty; screenshots should not imply a video
         // was queued by a collaborator.
         queue: Vec::new(),
-        history_owner: "profile:local".into(),
         history: vec!["vid_black_holes".into(), "vid_donut".into()],
-        history_recovery_notice: None,
+        history_notice: None,
         settings,
         route: Route::Home,
         search_query: String::new(),
@@ -565,8 +564,6 @@ pub fn model() -> TubeModel {
         // (auto-skips, share/like acknowledgements, worker status) so it never
         // shows events that didn't happen.
         notices: Vec::new(),
-        palette_open: false,
-        palette_query: String::new(),
         // The bundled catalogue is, by definition, the offline sample.
         data_source: crate::model::DataSource {
             live: false,

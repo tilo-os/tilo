@@ -410,6 +410,7 @@ impl LocalStart {
         self.host.invoke_job(
             &Caller::local_person(&self.actor).in_room(&self.room),
             InvokeRequest {
+                on_behalf_of: None,
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: self.provider.clone(),
@@ -1529,6 +1530,7 @@ impl LiveAppActionsProvider {
                 let admission = host.invoke_job(
                     &Caller::local_person(&actor).in_room(&cluster_id),
                     InvokeRequest {
+                        on_behalf_of: None,
                         invocation: tilo_actions::InvocationId::new(),
                         target: RemoteActionTarget {
                             provider: peer_id.to_string(),
@@ -2596,7 +2598,11 @@ mod tests {
             assert_eq!(selected.is_some(), visible);
             if let Some(selected) = selected {
                 let disposition = selected
-                    .invoke_nullary(&mut doc, &automerge::ROOT, &chrome)
+                    .invoke_nullary(
+                        &mut ui::widget::Edits::lend(&mut doc),
+                        &automerge::ROOT,
+                        &chrome,
+                    )
                     .unwrap();
                 let crate::shell::search::InvocationDisposition::Accepted(receipt) = disposition
                 else {
@@ -3427,7 +3433,7 @@ mod tests {
             );
             assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
             (page.results[0].on_open)(
-                &mut AutoCommit::new(),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
                 &chrome,
                 &crate::shell::search::action_api::ActionArgs::none(),

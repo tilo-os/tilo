@@ -14,7 +14,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui::widget::{AppModel, ModelPath};
+use ui::widget::ModelPath;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -139,7 +139,7 @@ impl Widget for OverviewPane {
                 event,
                 scale_factor: ctx.scale_factor,
                 modifiers: *ctx.modifiers,
-                state: ctx.state,
+                state: ctx.state.reborrow(),
                 path: ctx.path,
                 focus_target: ctx.focus_target,
                 node_id: ctx.node_id,
@@ -170,7 +170,7 @@ impl Widget for OverviewPane {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = ui::doc::document(state, path);
@@ -268,7 +268,7 @@ impl Widget for DetailPane {
         &mut self,
         action: &Action,
         key_path: &[u64],
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(action, Action::Activate) {

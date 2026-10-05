@@ -2,7 +2,9 @@
 //! Inferred words are visibly marked and controlled beside the user's status;
 //! they are never presented as if the participant typed them.
 
+use crate::agent_identity::{AgentIdentityStyle, draw_agent_identity_mark};
 use crate::history_source::{ActivityBrief, ActivityDigest};
+use crate::icons::Icon;
 use crate::live_collaboration::{
     CollaborationExperience, PersonPresence, StatusOrigin, StatusSharing,
 };
@@ -257,32 +259,26 @@ impl CollaborationOverview {
             .into_iter()
             .find(|p| p.is_self)
             .and_then(|p| p.status.as_ref());
-        let (mark, label, ink) = status.map_or(
-            ("○", "Set what you're working toward…", theme.text_dim),
+        let (automatic, label, ink) = status.map_or(
+            (false, "Set what you're working toward…", theme.text_dim),
             |s| {
                 (
-                    if matches!(s.origin, StatusOrigin::Inferred { .. }) {
-                        "✦"
-                    } else {
-                        "●"
-                    },
+                    matches!(s.origin, StatusOrigin::Inferred { .. }),
                     s.text.as_str(),
                     theme.text_primary,
                 )
             },
         );
-        Self::text(
-            tr,
+        if automatic {
+            Icon::Sparkles
+        } else {
+            Icon::Pencil
+        }
+        .draw(
             scene,
             transform,
-            mark,
-            OverviewTextStyle {
-                size: 15.0,
-                color: theme.accent_primary,
-                weight: TextWeight::Semibold,
-            },
-            r.x0 + 12.0,
-            r.y0 + 10.0,
+            Rect::new(r.x0 + 12.0, r.y0 + 11.0, r.x0 + 27.0, r.y0 + 26.0),
+            theme.accent_primary,
         );
         Self::text(
             tr,
@@ -312,7 +308,7 @@ impl CollaborationOverview {
     ) {
         self.sharing_hits.clear();
         for (i, (mode, label)) in [
-            (StatusSharing::Automatic, "✦ Auto"),
+            (StatusSharing::Automatic, "Auto"),
             (StatusSharing::ManualOnly, "Manual"),
             (StatusSharing::Off, "Hidden"),
         ]
@@ -328,6 +324,14 @@ impl CollaborationOverview {
                 r.y1 - 8.0,
             );
             let active = self.experience.sharing() == mode;
+            let ink = if active {
+                theme
+                    .tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+            } else {
+                theme.text_dim
+            };
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -339,6 +343,14 @@ impl CollaborationOverview {
                 None,
                 &RoundedRect::from_rect(chip, 8.0),
             );
+            if mode == StatusSharing::Automatic {
+                Icon::Sparkles.draw(
+                    scene,
+                    transform,
+                    Rect::new(chip.x0 + 7.0, chip.y0 + 6.0, chip.x0 + 18.0, chip.y0 + 17.0),
+                    ink,
+                );
+            }
             Self::text(
                 tr,
                 scene,
@@ -346,17 +358,15 @@ impl CollaborationOverview {
                 label,
                 OverviewTextStyle {
                     size: 11.0,
-                    color: if active {
-                        theme
-                            .tokens
-                            .colors
-                            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
-                    } else {
-                        theme.text_dim
-                    },
+                    color: ink,
                     weight: TextWeight::Semibold,
                 },
-                chip.x0 + 8.0,
+                chip.x0
+                    + if mode == StatusSharing::Automatic {
+                        22.0
+                    } else {
+                        8.0
+                    },
                 chip.y0 + 5.0,
             );
             self.sharing_hits.push((mode, chip));
@@ -410,23 +420,36 @@ impl CollaborationOverview {
         rect: Rect,
     ) {
         Self::card(scene, transform, theme, rect);
-        Self::avatar(
-            scene,
-            transform,
-            tr,
-            theme,
-            AvatarIdentity {
-                name: &person.name,
-                id: &person.id.0,
-            },
-            Rect::new(
-                rect.x0 + 10.0,
-                rect.y0 + 13.0,
-                rect.x0 + 46.0,
-                rect.y0 + 49.0,
-            ),
-            false,
+        let identity_rect = Rect::new(
+            rect.x0 + 10.0,
+            rect.y0 + 13.0,
+            rect.x0 + 46.0,
+            rect.y0 + 49.0,
         );
+        if person.is_agent {
+            let c = user_color(&person.id.0);
+            draw_agent_identity_mark(
+                scene,
+                transform,
+                identity_rect,
+                Color::from_rgb8(c.0, c.1, c.2),
+                theme,
+                AgentIdentityStyle::Solid,
+            );
+        } else {
+            Self::avatar(
+                scene,
+                transform,
+                tr,
+                theme,
+                AvatarIdentity {
+                    name: &person.name,
+                    id: &person.id.0,
+                },
+                identity_rect,
+                false,
+            );
+        }
         scene.fill(
             Fill::NonZero,
             transform,
@@ -434,11 +457,7 @@ impl CollaborationOverview {
             None,
             &Circle::new((rect.x0 + 42.0, rect.y0 + 45.0), 4.0),
         );
-        let name = if person.is_agent {
-            format!("{}  ◇", person.name)
-        } else {
-            person.name.clone()
-        };
+        let name = person.name.clone();
         Self::text(
             tr,
             scene,
@@ -472,22 +491,33 @@ impl CollaborationOverview {
             rect.y0 + 27.0,
         );
         if let Some(status) = &person.status {
-            let mark = if matches!(status.origin, StatusOrigin::Inferred { .. }) {
-                "✦  "
+            let icon = if matches!(status.origin, StatusOrigin::Inferred { .. }) {
+                Icon::Sparkles
             } else {
-                "↳  "
+                Icon::Pencil
             };
+            icon.draw(
+                scene,
+                transform,
+                Rect::new(
+                    rect.x0 + 56.0,
+                    rect.y0 + 45.0,
+                    rect.x0 + 67.0,
+                    rect.y0 + 56.0,
+                ),
+                theme.accent_primary,
+            );
             Self::text(
                 tr,
                 scene,
                 transform,
-                &format!("{mark}{}", status.text),
+                &status.text,
                 OverviewTextStyle {
                     size: 11.0,
                     color: theme.accent_primary,
                     weight: TextWeight::Regular,
                 },
-                rect.x0 + 56.0,
+                rect.x0 + 72.0,
                 rect.y0 + 45.0,
             );
         }
@@ -505,18 +535,16 @@ impl CollaborationOverview {
         let BriefPlacement { index, rect: r } = placement;
         Self::card(scene, transform, theme, r);
         let open = self.expanded.contains(&index);
-        Self::text(
-            tr,
+        (if open {
+            Icon::ChevronDown
+        } else {
+            Icon::ChevronRight
+        })
+        .draw(
             scene,
             transform,
-            if open { "⌄" } else { "›" },
-            OverviewTextStyle {
-                size: 18.0,
-                color: theme.text_dim,
-                weight: TextWeight::Regular,
-            },
-            r.x0 + 10.0,
-            r.y0 + 10.0,
+            Rect::new(r.x0 + 9.0, r.y0 + 10.0, r.x0 + 25.0, r.y0 + 26.0),
+            theme.text_dim,
         );
         let mut x = r.x0 + 32.0;
         for a in brief.authors.iter().take(3) {

@@ -46,10 +46,15 @@ fn shot_dir() -> PathBuf {
     )
 }
 
-fn press(document: &mut AutoCommit, key: &str) {
-    document
-        .put(&automerge::ROOT, key, ScalarValue::Boolean(true))
-        .expect("set visual-review action");
+/// The acknowledgement checkboxes are document-bound; the rest are buttons.
+fn press(view: &OnboardingView, document: &mut AutoCommit, key: &'static str) {
+    if matches!(key, KEY_UNDERSTOOD | KEY_BACKUP_SKIP_ACKNOWLEDGED) {
+        document
+            .put(&automerge::ROOT, key, ScalarValue::Boolean(true))
+            .expect("set visual-review acknowledgement");
+    } else {
+        view.press(key);
+    }
 }
 
 fn identity_view() -> OnboardingView {
@@ -67,13 +72,13 @@ fn state_view(label: &str) -> OnboardingView {
     match label {
         "intro" => {}
         "protect" => {
-            press(&mut document, KEY_BEGIN);
-            view.sync(&mut document, &automerge::ROOT);
+            press(&view, &mut document, KEY_BEGIN);
+            view.sync(&document, &automerge::ROOT);
         }
         "backup" => {
             for key in [KEY_BEGIN, KEY_UNDERSTOOD, KEY_CREATE] {
-                press(&mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                press(&view, &mut document, key);
+                view.sync(&document, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
         }
@@ -85,8 +90,8 @@ fn state_view(label: &str) -> OnboardingView {
                 KEY_BACKUP_SKIP_ACKNOWLEDGED,
                 KEY_BACKUP_CONTINUE,
             ] {
-                press(&mut document, key);
-                view.sync(&mut document, &automerge::ROOT);
+                press(&view, &mut document, key);
+                view.sync(&document, &automerge::ROOT);
             }
             assert_eq!(view.flow().screen(), Screen::Done);
         }

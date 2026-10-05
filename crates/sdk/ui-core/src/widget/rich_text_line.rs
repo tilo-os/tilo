@@ -368,12 +368,6 @@ impl RichTextLine {
         self.inner.bound_obj().cloned()
     }
 
-    /// Retain document reconciliation while routing edits through an owning
-    /// action bridge instead of allowing `TextInput` to splice Automerge.
-    pub fn set_direct_crdt_writes(&mut self, enabled: bool) {
-        self.inner.set_direct_crdt_writes(enabled);
-    }
-
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.inner.set_local_author(author);
     }
@@ -921,8 +915,8 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.inner.is_layout_dirty()
     }
 
-    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document(state, path);
+    fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document_ref(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
@@ -1246,7 +1240,7 @@ impl Widget for RichTextLine {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let (state, path) = crate::doc::document(state, path);
@@ -1600,7 +1594,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: &mut state,
+                state: crate::widget::Edits::lend(&mut state),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1798,7 +1792,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_line_reads_and_splices_the_document() {
+    fn bound_line_reads_the_document_and_keeps_edits_for_its_owner() {
         // Case `bound_line_reads_text_from_doc`.
         {
             use automerge::{ObjType, ROOT, transaction::Transactable};
@@ -1809,11 +1803,11 @@ mod tests {
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
             // The root arg is unused once a Text is bound.
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert_eq!(line.value(), "hello");
         }
 
-        // Case `editing_bound_line_splices_into_doc`.
+        // Case `editing_bound_line_leaves_the_document_to_the_owner`.
         {
             use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
             let mut doc = automerge::AutoCommit::new();
@@ -1834,7 +1828,7 @@ mod tests {
                     &mut crate::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &Modifiers::default(),
-                        state: &mut doc,
+                        state: crate::widget::Edits::lend(&mut doc),
                         path: &ROOT,
                         handled: &mut handled,
                         focus_target: &mut focus_target,
@@ -1845,64 +1839,35 @@ mod tests {
             }
 
             assert_eq!(line.value(), "hi");
-            assert_eq!(
-                doc.text(&tid).unwrap(),
-                "hi",
-                "edits must splice into the bound Text"
-            );
+            assert_eq!(doc.text(&tid).unwrap(), "", "the owner writes the edit");
+            assert_eq!(line.take_dirty().as_deref(), Some("hi"));
         }
 
-        // Case `authored_edit_stamps_mark_caches_run_and_survives_round_trip`.
+        // Case `author_marks_in_the_document_become_author_runs`.
         {
-            use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+            use automerge::{ObjType, ROOT, transaction::Transactable};
             let mut doc = automerge::AutoCommit::new();
             let tid = doc.put_object(&ROOT, "t", ObjType::Text).unwrap();
+            doc.splice_text(&tid, 0, 0, "hi").unwrap();
+            doc.mark(
+                &tid,
+                automerge::marks::Mark::new(
+                    crate::widget::text_input::AUTHOR_MARK.to_string(),
+                    "alice",
+                    0,
+                    2,
+                ),
+                automerge::marks::ExpandMark::None,
+            )
+            .unwrap();
 
             let mut line = RichTextLine::new();
             line.bind_text(tid.clone());
-            line.set_local_author(Some("alice".to_string()));
-            line.set_focus(true);
-
-            let taffy: TaffyTree<()> = TaffyTree::new();
-            for c in ["h", "i"] {
-                let ev = char_press(c);
-                let mut handled = false;
-                let mut focus_target = None;
-                line.handle_event(
-                    &ev,
-                    &mut crate::widget::EventCtx {
-                        scale_factor: 1.0,
-                        modifiers: &Modifiers::default(),
-                        state: &mut doc,
-                        path: &ROOT,
-                        handled: &mut handled,
-                        focus_target: &mut focus_target,
-                        node_id: NodeId::new(0),
-                        taffy: &taffy,
-                    },
-                );
-            }
-            assert_eq!(doc.text(&tid).unwrap(), "hi");
-
-            let marks = doc.marks(&tid).unwrap();
-            assert!(
-                marks.iter().any(|m| m.name.as_str() == "author"),
-                "expected an author mark, got {marks:?}"
-            );
-
-            line.sync(&mut doc, &ROOT);
+            line.sync(&doc, &ROOT);
             assert!(
                 line.author_runs().iter().any(|(_, _, a)| a == "alice"),
                 "expected an alice author run, got {:?}",
                 line.author_runs()
-            );
-
-            // Survives a save/load round-trip, which is how authorship reaches a peer.
-            let reloaded = automerge::AutoCommit::load(&doc.save()).unwrap();
-            let marks2 = reloaded.marks(&tid).unwrap();
-            assert!(
-                marks2.iter().any(|m| m.name.as_str() == "author"),
-                "author mark must survive save/load (CRDT sync)"
             );
         }
 
@@ -2084,7 +2049,7 @@ mod tests {
                     anchor: 0,
                     focus: 4
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let _ = line.take_dirty(); // Selection has its own presentation edge.
@@ -2099,7 +2064,7 @@ mod tests {
                     anchor: 4,
                     focus: 4
                 },
-                &mut doc,
+                &mut crate::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             let _ = line.take_dirty(); // Selection has its own presentation edge.

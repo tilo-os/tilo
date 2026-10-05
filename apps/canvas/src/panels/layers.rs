@@ -182,7 +182,7 @@ fn pictures(cx: &ViewCx<ArtworkResource>, tools: &Tools, row: &LayerRow) -> Row 
         // layer's paint or its mask.
         let chosen = tools.layer.clone();
         let target = layer.to_owned();
-        let choose = Button::new(&format!("canvas-paint-{layer}"), "", None)
+        let choose = Button::new(&format!("canvas-paint-{layer}"), "")
             .ghost()
             .with_accessible_name(name)
             .tooltip(name)

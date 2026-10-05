@@ -20,7 +20,7 @@
 //! The editable path bar in the file manager is the canonical consumer, but
 //! the widget knows nothing about paths.
 
-use crate::widget::{AppModel, ModelPath};
+use crate::widget::ModelPath;
 use std::collections::HashMap;
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -906,7 +906,7 @@ impl Widget for Autocomplete {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
@@ -938,7 +938,7 @@ impl Widget for Autocomplete {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AppModel,
+        state: &mut crate::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
@@ -993,21 +993,31 @@ mod tests {
             let mut state = AutoCommit::new();
             assert!(ac.perform_action(
                 &Action::SetValue("al".into()),
-                &mut state,
+                &mut crate::widget::Edits::lend(&mut state),
                 &automerge::ROOT
             ));
             assert_eq!(ac.suggestions().len(), 2);
             let node = ac.accessibility().unwrap();
             assert_eq!(node.children[1].name.as_deref(), Some("album"));
             let key = hash_key(&("autocomplete-suggestion", "album"));
-            assert!(ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+            assert!(ac.perform_action_at(
+                &Action::Activate,
+                &[key],
+                &mut crate::widget::Edits::lend(&mut state),
+                &automerge::ROOT
+            ));
             assert_eq!(ac.text(), "album");
             assert_eq!(
                 ac.take_outcome(),
                 AutocompleteOutcome::Accepted("album".into())
             );
             assert!(!ac.is_open());
-            assert!(!ac.perform_action_at(&Action::Activate, &[key], &mut state, &automerge::ROOT));
+            assert!(!ac.perform_action_at(
+                &Action::Activate,
+                &[key],
+                &mut crate::widget::Edits::lend(&mut state),
+                &automerge::ROOT
+            ));
         }
 
         fn typing_recomputes_and_opens_the_dropdown() {
@@ -1216,7 +1226,7 @@ mod tests {
             &mut crate::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &Modifiers::default(),
-                state: &mut doc,
+                state: crate::widget::Edits::lend(&mut doc),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

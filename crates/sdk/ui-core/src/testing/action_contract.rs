@@ -107,7 +107,7 @@ pub fn replay_on_two_peers(
     let action = registry
         .decode(encoded)
         .unwrap_or_else(|e| panic!("the registry decodes {what}: {e}"));
-    let envelope = tilo_actions::apply_local(&mut origin, action.as_ref(), encoded.clone())
+    let envelope = apply_signed(&mut origin, action.as_ref(), encoded)
         .unwrap_or_else(|e| panic!("{what} applies on the origin: {e}"));
     tilo_actions::replay(&mut replica, &envelope, registry)
         .unwrap_or_else(|e| panic!("{what} replays on the peer: {e}"));
@@ -138,6 +138,22 @@ pub fn replay_on_two_peers(
     } else {
         Applied::Changed
     }
+}
+
+/// The author every action the contract applies is invoked by, as a
+/// window's dispatcher signs what its person does.
+pub const CONTRACT_AUTHOR: &str = "contract-author";
+
+/// Apply `encoded` as [`CONTRACT_AUTHOR`] invoked it: an action that signs
+/// what it writes with its author reads one, as it does in an app.
+fn apply_signed(
+    doc: &mut AutoCommit,
+    action: &dyn tilo_actions::Action,
+    encoded: &EncodedAction,
+) -> Result<tilo_actions::ActionEnvelope, tilo_actions::ActionError> {
+    let context = tilo_actions::ActionContext::default()
+        .with_invoker(tilo_actions::ActionInvoker::actor(CONTRACT_AUTHOR));
+    tilo_actions::apply_local_with_context(doc, action, encoded.clone(), None, context)
 }
 
 /// Assert `encoded`, applied on one replica of `seed` and replayed on another
@@ -186,7 +202,7 @@ pub fn undo_round_trip(
     let action = registry
         .decode(encoded)
         .unwrap_or_else(|e| panic!("the registry decodes {what}: {e}"));
-    tilo_actions::apply_local(&mut state.doc, action.as_ref(), encoded.clone())
+    apply_signed(&mut state.doc, action.as_ref(), encoded)
         .unwrap_or_else(|e| panic!("{what} applies: {e}"));
     state.record_committed_action(before, None, None);
 
