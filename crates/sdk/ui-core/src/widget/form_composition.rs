@@ -286,9 +286,9 @@ pub struct Field {
     kind: FieldKind,
     has_help: bool,
     label_placement: Option<LabelPlacement>,
-    /// The control keeps its own width and ends on the trailing edge while
-    /// the label is beside it (a settings chooser), instead of filling the
-    /// control column.
+    /// The control keeps its own width while the label is beside it (a
+    /// chooser), instead of filling the control column: on the trailing edge
+    /// of a grouped row, on the column's leading edge in a plain form.
     trailing_control: bool,
     /// The field is a row of a grouped section.
     grouped: bool,
@@ -396,9 +396,11 @@ impl Field {
         self
     }
     /// A compact chooser (dropdown, segmented switch, switch) that keeps its
-    /// own width: it ends on the trailing edge of the control column while
-    /// the label is beside it, and takes the full width under the label
-    /// once the section stacks. The beside/above decision is still the
+    /// own width while the label is beside it: it ends on the trailing edge
+    /// of a grouped row (a settings card), and starts on the control
+    /// column's leading edge in a plain form, where the fields around it
+    /// start too. It takes the full width under the label once the section
+    /// stacks. The beside/above decision is still the
     /// section's measured one, so every row of a settings card switches
     /// together instead of each deciding for itself. Help copy stays under
     /// the label and validation copy with the control.
@@ -992,6 +994,11 @@ impl Field {
         }
         if let Some(&part) = self.parts.nodes.get(1) {
             let trailing = self.trailing_control;
+            let edge = if self.grouped {
+                taffy::AlignItems::End
+            } else {
+                taffy::AlignItems::Start
+            };
             let stacked_row = if self.kind == FieldKind::Row { 1 } else { 2 };
             changed |= restyle(tree, part, |style| {
                 (style.grid_row, style.grid_column) = if beside {
@@ -999,14 +1006,15 @@ impl Field {
                 } else {
                     place(stacked_row, 1, 1)
                 };
-                // A trailing control keeps the shared control need as its
-                // column (so sibling choosers line up) and ends on the
-                // trailing edge beside its label; stacked, it takes the
-                // full width under the label.
+                // A chooser keeps the shared control need as its column (so
+                // sibling choosers line up): beside its label it ends on a
+                // grouped row's trailing edge, or starts on a plain form's
+                // control edge with the fields; stacked, it takes the full
+                // width under the label.
                 if trailing && beside {
                     style.size.width = length(control);
-                    style.justify_self = Some(taffy::AlignItems::End);
-                    style.justify_items = Some(taffy::AlignItems::End);
+                    style.justify_self = Some(edge);
+                    style.justify_items = Some(edge);
                 } else {
                     style.size.width = auto();
                     style.justify_self = None;
