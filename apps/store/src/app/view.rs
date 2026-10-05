@@ -248,11 +248,13 @@ impl StoreApp {
             .as_ref()
             .is_some_and(|(id, active_action)| id == &item.id && *active_action == action);
         let click_key = format!("store.app.{}.{}", item.id, action_code(action));
+        let label = self.package_label(action);
         let select_key = format!("store.detail.{}", item.id);
         crate::widgets::store_card(
             item,
             CardAction {
                 kind: action,
+                label: Some(&label),
                 key: &click_key,
                 binding: bindings::package(item, action),
                 in_progress: operation_active,
@@ -308,6 +310,7 @@ impl StoreApp {
     pub(super) fn build_list(&self, theme: &Theme) -> Element {
         let visible = self.visible_items();
         let mut children = vec![self.catalogue_summary(visible.len())];
+        children.extend(self.flathub_account_button());
         if !self.items.is_empty()
             && let Some(notice) = self.operation_notice()
         {
@@ -435,12 +438,12 @@ impl StoreApp {
         let action = item.action_kind(self.flatpak_available);
         let mut primary = Button::new(
             &format!("store.app.{}.{}", item.id, action_code(action)),
-            action.label(),
+            &self.package_label(action),
         )
         .role(ButtonRole::Primary)
         .with_enabled(item.unavailable_action(action).is_none())
         .tooltip(item.unavailable_action(action).map_or_else(
-            || format!("{} {}", action.label(), item.name),
+            || format!("{} {}", self.package_label(action), item.name),
             |(_, reason)| reason,
         ));
         if let Some(binding) = bindings::package(item, action) {
@@ -449,6 +452,11 @@ impl StoreApp {
         let mut row = Row::new()
             .with_rhythm(ui::tokens::Rhythm::Related)
             .push(Box::new(primary));
+        if !matches!(item.source, StoreSource::Tilo { .. })
+            && let Some(button) = self.flathub_account_button()
+        {
+            row = row.push(button);
+        }
         if let Some(pin_action) = item.pin_action() {
             let mut button = Button::new(
                 &format!("store.app.{}.{}", item.id, action_code(pin_action)),
@@ -803,6 +811,7 @@ impl StoreApp {
         let mut children: Vec<Element> = Vec::new();
         children.extend(self.operation_notice());
         children.push(Self::prose(&ui::i18n!("store-remotes-description")));
+        children.extend(self.flathub_account_button());
         children.push(Box::new(form));
         if !rows.is_empty() {
             let count = rows.len();

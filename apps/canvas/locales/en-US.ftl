@@ -58,6 +58,7 @@ canvas-layer-clip = Clip to the layer below
 canvas-medium-mask = Mask
 canvas-tool-eraser = Eraser
 canvas-colour = Colour
+canvas-artwork-colours = Artwork colours
 canvas-brush = Brush
 canvas-brush-size = Size
 canvas-brush-load = Load

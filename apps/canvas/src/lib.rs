@@ -31,6 +31,7 @@ pub mod locales;
 pub mod media;
 pub mod menu;
 pub mod model;
+pub mod palette;
 pub mod panels;
 pub mod picture;
 pub mod preview;

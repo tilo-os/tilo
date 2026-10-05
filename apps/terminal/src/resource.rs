@@ -181,6 +181,57 @@ impl Resource for Terminal {
         };
         Ok(())
     }
+
+    const READABLE: bool = true;
+
+    /// Read the shared screen, not this participant's local process lifecycle.
+    fn read_content(
+        state: &SessionState,
+        _doc: &Doc,
+        item: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        if item.is_some() {
+            return Err("Terminal has no nested readable resource".into());
+        }
+        let (output, truncated) = readable_output(&state.screen);
+        Ok(serde_json::json!({
+            "kind": Self::KIND,
+            "title": state.title,
+            "target": state.target,
+            "session": state.local_session,
+            "relay_session": state.relay_session,
+            "pane": state.pane_id,
+            "alternate": state.screen.alternate,
+            "cursor": { "column": state.screen.cursor.0, "row": state.screen.cursor.1 },
+            "output": output,
+            "output_truncated": truncated,
+            "retained_lines": state.screen.active().len(),
+        }))
+    }
+}
+
+/// Keep explicit reads bounded even when retained output contains very long
+/// rows. The suffix ends at a Unicode scalar boundary; no terminal content is
+/// logged or copied until the caller requests the canonical Read action.
+fn readable_output(screen: &Screen) -> (String, bool) {
+    const LIMIT: usize = 64 * 1024;
+    let mut reversed = String::new();
+    let mut rows = screen.active().iter().rev().peekable();
+    while let Some(row) = rows.next() {
+        for character in row.text.trim_end().chars().rev() {
+            if reversed.len() + character.len_utf8() > LIMIT {
+                return (reversed.chars().rev().collect(), true);
+            }
+            reversed.push(character);
+        }
+        if rows.peek().is_some() {
+            if reversed.len() == LIMIT {
+                return (reversed.chars().rev().collect(), true);
+            }
+            reversed.push('\n');
+        }
+    }
+    (reversed.chars().rev().collect(), false)
 }
 
 /// What a terminal does that changes no document: drive its process, move
@@ -192,6 +243,12 @@ impl Resource for Terminal {
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "terminal.effects")]
 pub enum TerminalEffect {
+    /// Inspect session
+    ///
+    /// Read this participant's actual process lifecycle and startup cause.
+    /// The shared screen is read separately through the resource's Read action.
+    #[effect(returns, permission = "read")]
+    InspectSession,
     /// Send text
     ///
     /// Writes reviewed text without pressing Enter.
@@ -422,6 +479,9 @@ impl ResourceSurface<Terminal, TerminalEffect> for TerminalWidget {
         effect: TerminalEffect,
         _cx: &mut EffectCx<Terminal, Self>,
     ) -> EffectAnswer {
+        if effect == TerminalEffect::InspectSession {
+            return Ok(Effected::value(self.inspect_session()));
+        }
         self.perform(effect).map(|()| Effected::done())
     }
 
@@ -478,6 +538,51 @@ impl ResourceSurface<Terminal, TerminalEffect> for crate::TerminalView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_read_reports_recorded_screen_target_and_unicode_bound_without_local_claims() {
+        let mut app = ui::framework::testing::TestApp::<TerminalShell>::new().expect("terminal");
+        app.invoke(
+            ui::tilo_resource::Invoke::apply(&TerminalAction::SetTarget {
+                target: crate::target::SessionTarget::default_environment().encode(),
+            })
+            .expect("encode target action"),
+        )
+        .expect("recorded target");
+        app.with_surface(|terminal: &mut TerminalWidget| terminal.feed(b"recorded output\r\n"))
+            .expect("surface");
+        app.settle();
+        let state = app.state();
+        let read = app
+            .call("read", serde_json::json!({}))
+            .expect("published canonical read")
+            .expect("read answers with shared content");
+        assert!(read["output"].as_str().unwrap().contains("recorded output"));
+        assert_eq!(
+            read["target"],
+            serde_json::to_value(crate::target::SessionTarget::default_environment()).unwrap()
+        );
+        assert_eq!(read["cursor"]["row"], state.screen.cursor.1);
+        assert!(
+            read.get("lifecycle").is_none(),
+            "a shared screen cannot assert local process liveness"
+        );
+        assert!(
+            app.call("read", serde_json::json!({"item": "unknown"}))
+                .is_err()
+        );
+        let screen = Screen {
+            main: vec![std::rc::Rc::new(crate::screen::Line {
+                text: "é".repeat(40_000),
+                attrs: Vec::new(),
+            })],
+            ..Screen::default()
+        };
+        let (output, truncated) = readable_output(&screen);
+        assert!(truncated);
+        assert_eq!(output.len(), 64 * 1024);
+        assert!(output.chars().all(|character| character == 'é'));
+    }
 
     #[test]
     fn the_session_publishes_its_effects_and_the_links_on_screen() {
