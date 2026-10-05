@@ -893,6 +893,7 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
             semantics
                 .children
                 .iter()
+                .filter(|node| node.live.is_none())
                 .filter_map(|node| node.name.as_deref())
                 .collect::<Vec<_>>(),
             [
@@ -1836,6 +1837,96 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
 /// `KeyEventExtra` is `pub(crate)`, so a struct literal isn't possible.
 /// Only the pub fields the host reads (`logical_key`, `state`) are
 /// overwritten.
+/// An app's Save that names a file already in the folder: the chooser asks
+/// before anything is chosen, and the question is in the semantic tree with a
+/// Replace an assistive technology or an agent can press.
+#[test]
+fn a_save_over_an_existing_file_asks_and_its_semantic_replace_answers() {
+    use crate::portal::FilePickerSpawner as _;
+
+    fn find<'a>(
+        node: &'a ui::a11y::AccessNode,
+        pred: &dyn Fn(&ui::a11y::AccessNode) -> bool,
+    ) -> Option<&'a ui::a11y::AccessNode> {
+        if pred(node) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, pred))
+    }
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let photo = folder.path().join("labrador.jpg");
+    std::fs::write(&photo, b"original").unwrap();
+
+    let mut h = build_harness();
+    let pickers = crate::portal::FilePickerQueue::new();
+    h.host.set_portal_queues(
+        crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::AutoAllow),
+        pickers.clone(),
+    );
+    let workspace = h
+        .chrome
+        .borrow()
+        .tree()
+        .desktop
+        .active_workspace()
+        .expect("demo desktop has an active workspace")
+        .id;
+    let (reply, mut received) = tokio::sync::oneshot::channel();
+    pickers.spawn(crate::portal::FilePickerRequest {
+        caller: crate::portal::PortalCaller::new(workspace, "so.tilo.canvas"),
+        title: "Export a picture".to_string(),
+        save: true,
+        directory: false,
+        multiple: false,
+        accept_label: Some("Export".to_string()),
+        current_name: Some("labrador.jpg".to_string()),
+        filters: Vec::new(),
+        scope: Some(crate::portal::PickerScope {
+            initial_dir: folder.path().to_path_buf(),
+            roots: vec![folder.path().to_path_buf()],
+        }),
+        reply,
+    });
+    assert!(h.host.pump_file_picker());
+
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::Enter)),
+        Modifiers::default()
+    ));
+    h.host.pump_file_picker();
+    assert!(
+        received.try_recv().is_err(),
+        "nothing is chosen before the answer"
+    );
+
+    let semantics = h.host.accessibility().expect("shell semantics");
+    let prompt = find(&semantics, &|node| {
+        node.name.as_deref()
+            == Some("A file named \u{201c}labrador.jpg\u{201d} already exists here. Replace it?")
+    })
+    .expect("the replace question is published");
+    assert!(prompt.state.modal);
+    let replace = find(prompt, &|node| node.name.as_deref() == Some("Replace"))
+        .and_then(|node| node.action_target.clone())
+        .expect("Replace carries an action target");
+    assert!(h.host.perform_semantic_action(
+        &replace,
+        &ui::a11y::Action::Activate,
+        &mut AutoCommit::new(),
+        &automerge::ROOT,
+    ));
+    assert!(h.host.pump_file_picker());
+    assert_eq!(received.try_recv().unwrap(), Some(vec![photo.clone()]));
+    assert!(h.host.file_picker().is_none());
+    assert_eq!(
+        std::fs::read(&photo).unwrap(),
+        b"original",
+        "the app writes, not the chooser"
+    );
+}
+
 fn key_press(logical_key: Key) -> WindowEvent {
     // SAFETY: all pub fields of `KeyEvent` tolerate the all-zero
     // bit pattern (`logical_key` is overwritten below, `text` is
@@ -1843,12 +1934,18 @@ fn key_press(logical_key: Key) -> WindowEvent {
     // bit pattern, and `KeyEventExtra` is `pub(crate)` and only
     // inspected by winit-internal code that the host never reaches).
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    // A character key carries its text, as a real keyboard's does; text
+    // fields type from it.
+    let text = match &logical_key {
+        Key::Character(text) => Some(text.clone()),
+        _ => None,
+    };
     ev.logical_key = logical_key;
     ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;
-    ev.text = None;
+    ev.text = text;
     WindowEvent::KeyboardInput {
         device_id: unsafe { std::mem::zeroed() },
         event: ev,

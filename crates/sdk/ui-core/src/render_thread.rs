@@ -128,6 +128,26 @@ pub enum RenderRequest {
 
 /// A device and a renderer whose pipelines are compiled for it, with no
 /// surface yet.
+/// Why the drawing surface was lost, kept for the window that stops on it.
+static SURFACE_LOSS: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Record why the drawing surface was lost; the first reason is the cause.
+fn note_surface_loss(reason: String) {
+    let mut slot = SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    slot.get_or_insert(reason);
+}
+
+/// The reason recorded by the render worker when it lost its surface.
+#[cfg(feature = "native")]
+pub(crate) fn take_surface_loss() -> Option<String> {
+    SURFACE_LOSS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+}
+
 #[cfg_attr(
     not(feature = "native"),
     allow(
@@ -153,6 +173,9 @@ impl PreparedRenderer {
 
 #[path = "render_retry.rs"]
 pub(crate) mod retry;
+
+#[path = "render_bump_recovery.rs"]
+mod bump_recovery;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameOutcome {
@@ -184,6 +207,9 @@ pub struct RenderThreadHandle {
     pub(crate) buffers: BufferPool<(Scene, Vec<Rect>)>,
     pub frame_complete: Receiver<FrameOutcome>,
     pub(crate) retry: retry::RenderRetryState,
+    /// Set by the worker when presented pixels lost geometry to a Vello bump
+    /// overflow; the next frame main submits must repaint everything.
+    full_repaint: Arc<AtomicBool>,
     join: Option<JoinHandle<Option<PreparedRenderer>>>,
 }
 
@@ -303,6 +329,14 @@ struct DamageCache {
 }
 
 impl RenderThreadHandle {
+    /// Whether the worker asked for a whole-surface repaint since the last
+    /// call. It wakes the window when it asks, so the request does not wait
+    /// for an unrelated event.
+    #[cfg(feature = "native")]
+    pub(crate) fn take_full_repaint(&self) -> bool {
+        self.full_repaint.swap(false, Ordering::SeqCst)
+    }
+
     /// Idempotent: a second call is a no-op (the `JoinHandle` is taken on
     /// the first). The worker drops its `RenderSurface` before this
     /// returns — it must die before the `Window` it was created against,
@@ -348,6 +382,8 @@ pub fn spawn_render_thread(
     let (pool_tx, pool_rx) = mpsc::sync_channel(2);
     let (outcome_tx, frame_complete) = mpsc::sync_channel::<FrameOutcome>(8);
     let waiting = Arc::new(AtomicBool::new(false));
+    let full_repaint = Arc::new(AtomicBool::new(false));
+    let worker_full_repaint = full_repaint.clone();
     let buffers = BufferPool::new(pool_rx, waiting.clone());
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
     let _ = pool_tx.send((Scene::new(), Vec::with_capacity(8)));
@@ -375,6 +411,7 @@ pub fn spawn_render_thread(
                 ..DamageCache::default()
             };
             let mut target_valid = false;
+            let mut bump_recovery = bump_recovery::BumpRecovery::default();
             let mut handoff = native_timing.map(|_| timing::handoff::Recorder::default());
             let mut keep_renderer = false;
             // Built with the first frame that draws a floating surface over
@@ -382,11 +419,33 @@ pub fn spawn_render_thread(
             let mut backdrop_blur: Option<crate::backdrop::BackdropBlur> = None;
             let mut had_backdrop = false;
             loop {
+                let wait = bump_recovery.wait();
                 let (message, receive_bounds) =
-                    timing::around(native_timing.is_some(), || rx.recv());
+                    timing::around(native_timing.is_some(), || match wait {
+                        Some(timeout) => rx.recv_timeout(timeout),
+                        None => rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+                    });
                 let before_receive = receive_bounds.and_then(|bounds| bounds.before);
                 let received = receive_bounds.and_then(|bounds| bounds.after);
-                let Ok(msg) = message else { break };
+                let msg = match message {
+                    Ok(msg) => msg,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if poll_bump_recovery(
+                            &mut bump_recovery,
+                            &mut renderer,
+                            &render_cx,
+                            &surface,
+                        ) {
+                            request_full_repaint(
+                                &mut target_valid,
+                                &worker_full_repaint,
+                                wake.as_ref(),
+                            );
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 if frame_ix == 0 {
                     tilo_startup_metrics::mark("render-worker-first-frame-received");
                 }
@@ -451,7 +510,10 @@ pub fn spawn_render_thread(
                     {
                         // Re-attempting the same reconfigure on a destroyed
                         // surface fails identically forever.
-                        tracing::info!(%err, "drawing surface is gone; stopping the render thread");
+                        tracing::warn!(%err, "drawing surface is gone; stopping the render thread");
+                        note_surface_loss(format!(
+                            "its drawing surface could not be resized: {err}"
+                        ));
                         log_render_outcome(
                             frame_ix,
                             cpu_frame_id,
@@ -487,6 +549,11 @@ pub fn spawn_render_thread(
                     }
                 }
 
+                let full_redraw = full_redraw || !target_valid;
+                if full_redraw {
+                    // Any whole-surface frame answers a pending overflow repaint.
+                    worker_full_repaint.store(false, Ordering::SeqCst);
+                }
                 let render_start = present_dbg.then(crate::time::now);
                 let render_host_start = native_timing.and_then(|_| timing::capture());
                 let outcome = render_one_frame(
@@ -557,6 +624,9 @@ pub fn spawn_render_thread(
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");
                     tilo_startup_metrics::dump();
+                    if let Some(line) = tilo_startup_metrics::summary_line(&startup_app_name()) {
+                        crate::diag!("{line}");
+                    }
                 }
 
                 // `Scene::reset` clears the encoding without freeing the
@@ -577,7 +647,18 @@ pub fn spawn_render_thread(
                     timing::handoff::Stage::AfterCompletionNotify,
                 );
                 if outcome == FrameOutcome::SurfaceGone {
+                    // The window's surface was destroyed under the app (the
+                    // compositor closed it, or the device was lost): say so,
+                    // since the app exits on it.
+                    tracing::warn!(
+                        "drawing surface is gone after a frame; stopping the render thread"
+                    );
                     break;
+                }
+                // After the outcome is published, so main's per-frame
+                // accounting is untouched: a repaint is a later, ordinary frame.
+                if poll_bump_recovery(&mut bump_recovery, &mut renderer, &render_cx, &surface) {
+                    request_full_repaint(&mut target_valid, &worker_full_repaint, wake.as_ref());
                 }
             }
             // Publish disconnection before waking a deferred redraw, including
@@ -607,8 +688,30 @@ pub fn spawn_render_thread(
         buffers,
         frame_complete,
         retry: retry::RenderRetryState::default(),
+        full_repaint,
         join: Some(join),
     })
+}
+
+/// Collect finished bump counters; `true` when presented pixels lost geometry.
+fn poll_bump_recovery(
+    recovery: &mut bump_recovery::BumpRecovery,
+    renderer: &mut Renderer,
+    render_cx: &RenderContext,
+    surface: &RenderSurface<'static>,
+) -> bool {
+    let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
+        return false;
+    };
+    recovery.poll(renderer, &device_handle.device) == bump_recovery::BumpStep::Repaint
+}
+
+/// The retained target is no longer a faithful frame: the next one repaints
+/// everything, and main is woken to submit it even if nothing else changed.
+fn request_full_repaint(target_valid: &mut bool, full_repaint: &AtomicBool, wake: &dyn Fn()) {
+    *target_valid = false;
+    full_repaint.store(true, Ordering::SeqCst);
+    wake();
 }
 
 /// Opt-in worker timing for every consumed frame, including early exits that
@@ -745,6 +848,15 @@ fn resize_surface_checked(
     }
 }
 
+/// The retained frame the native host rasterizes into and presents from.
+/// Pixels outside a frame's damage are whatever the previous frame left, so
+/// it must only ever be written through [`rasterize_damage`].
+#[derive(Clone, Copy)]
+struct RetainedTarget<'a> {
+    texture: &'a vello::wgpu::Texture,
+    view: &'a vello::wgpu::TextureView,
+}
+
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -753,13 +865,12 @@ fn resize_surface_checked(
     reason = "damage bounds are clamped to the u32 surface before narrowing; one bounded GPU transaction keeps retained-target correctness visible in one place"
 )]
 fn rasterize_damage(
-    gpu: &crate::gpu::DeviceHandle,
-    surface: &RenderSurface<'static>,
+    (device, queue): (&vello::wgpu::Device, &vello::wgpu::Queue),
+    retained: RetainedTarget<'_>,
     renderer: &mut Renderer,
     damage_cache: &mut DamageCache,
     frame: &FrameContent<'_>,
 ) -> Result<u64, vello::Error> {
-    let crate::gpu::DeviceHandle { device, queue, .. } = gpu;
     let FrameContent {
         scene,
         width,
@@ -775,7 +886,7 @@ fn rasterize_damage(
             device,
             queue,
             scene,
-            &surface.target_view,
+            retained.view,
             &RenderParams {
                 base_color,
                 width,
@@ -885,7 +996,7 @@ fn rasterize_damage(
             device,
             queue,
             scene,
-            &surface.target_view,
+            retained.view,
             &RenderParams {
                 base_color,
                 width: prefix_width,
@@ -1015,7 +1126,7 @@ fn rasterize_damage(
                         aspect: vello::wgpu::TextureAspect::All,
                     },
                     vello::wgpu::TexelCopyTextureInfo {
-                        texture: &surface.target_texture,
+                        texture: retained.texture,
                         mip_level: 0,
                         origin: vello::wgpu::Origin3d {
                             x: region.x,
@@ -1088,6 +1199,7 @@ fn render_one_frame(
     } = present;
     let Some(device_handle) = render_cx.devices.get(surface.dev_id) else {
         tracing::info!("render device index out of range; stopping the render thread");
+        note_surface_loss("its render device is gone".to_owned());
         return FrameOutcome::SurfaceGone;
     };
     if frame_ix == 0 {
@@ -1106,6 +1218,9 @@ fn render_one_frame(
             // and ask main to redraw.
             if let Err(err) = configure_surface_checked(render_cx, surface) {
                 tracing::info!(%err, "drawing surface is gone; abandoning the frame");
+                note_surface_loss(format!(
+                    "its drawing surface could not be reconfigured: {err}"
+                ));
                 return FrameOutcome::SurfaceGone;
             }
             if let Some(observer) = presentation.filter(|_| timing::enabled()) {
@@ -1130,6 +1245,7 @@ fn render_one_frame(
             // Same shutdown race as the reconfigure above; panicking here
             // used to abort the process for an ordinary end of session.
             tracing::info!("drawing surface is no longer usable; stopping the render thread");
+            note_surface_loss("its drawing surface was lost".to_owned());
             return FrameOutcome::SurfaceGone;
         }
     };
@@ -1158,11 +1274,15 @@ fn render_one_frame(
             )
     });
     let rasterized = rasterize_damage(
-        device_handle,
-        surface,
+        (&device_handle.device, &device_handle.queue),
+        RetainedTarget {
+            texture: &surface.target_texture,
+            view: &surface.target_view,
+        },
         renderer,
         damage_cache,
         &FrameContent {
+            backdrop: &crate::backdrop::BackdropFrame::default(),
             full_redraw: frame.full_redraw
                 || POST_PROCESSOR_ACTIVE.load(std::sync::atomic::Ordering::Acquire),
             ..frame
@@ -1598,4 +1718,535 @@ mod admission_tests {
             assert!(pool.prepare().is_err());
         }
     }
+}
+
+/// Every frame the native host presents is its retained target after
+/// [`rasterize_damage`]. However frames alternate between partial and full
+/// raster, what is presented must equal a full render of the same scene;
+/// otherwise the screen shows holes or stale content outside the damage.
+#[cfg(test)]
+mod retained_damage_tests {
+    use super::*;
+    use vello::kurbo::{Affine, Circle, RoundedRect, Stroke};
+    use vello::peniko::{Fill, Gradient};
+    use vello::wgpu;
+
+    const WIDTH: u32 = 320;
+    const HEIGHT: u32 = 200;
+
+    /// One moving or recoloured item on a still backdrop, like a field,
+    /// a caret, a hovered button or a spinner.
+    #[derive(Clone, Copy)]
+    struct Item {
+        rect: Rect,
+        color: [u8; 3],
+        round: bool,
+    }
+
+    fn scene_of(items: &[Item]) -> Scene {
+        let mut scene = Scene::new();
+        let bounds = Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT));
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            &Gradient::new_linear((0.0, 0.0), (f64::from(WIDTH), f64::from(HEIGHT))).with_stops(
+                [
+                    Color::from_rgb8(18, 20, 28),
+                    Color::from_rgb8(40, 60, 110),
+                    Color::from_rgb8(20, 22, 30),
+                ]
+                .as_slice(),
+            ),
+            None,
+            &bounds,
+        );
+        for item in items {
+            let [r, g, b] = item.color;
+            let color = Color::from_rgb8(r, g, b);
+            if item.round {
+                let center = item.rect.center();
+                let radius = item.rect.width().min(item.rect.height()) / 2.0;
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    color,
+                    None,
+                    &Circle::new(center, radius),
+                );
+            } else {
+                let shape = RoundedRect::from_rect(item.rect, 6.0);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &shape);
+                scene.stroke(
+                    &Stroke::new(1.5),
+                    Affine::IDENTITY,
+                    Color::from_rgb8(220, 225, 235),
+                    None,
+                    &shape,
+                );
+            }
+        }
+        scene
+    }
+
+    fn target(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+        // The same usage the native surface target carries.
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("retained-damage-test-target"),
+            size: wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> Vec<u8> {
+        let row = (WIDTH * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("retained-damage-test-readback"),
+            size: u64::from(row * HEIGHT),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(row),
+                    rows_per_image: Some(HEIGHT),
+                },
+            },
+            wgpu::Extent3d {
+                width: WIDTH,
+                height: HEIGHT,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+        rx.recv().unwrap().unwrap();
+        let mapped = slice.get_mapped_range();
+        let mut tight = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
+        for y in 0..HEIGHT as usize {
+            let start = y * row as usize;
+            tight.extend_from_slice(&mapped[start..start + (WIDTH * 4) as usize]);
+        }
+        drop(mapped);
+        buffer.unmap();
+        tight
+    }
+
+    /// A small deterministic generator, so a failure names a reproducible
+    /// frame.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+
+        fn below(&mut self, n: u64) -> f64 {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "test coordinates are far below 2^52"
+            )]
+            {
+                (self.next() % n) as f64
+            }
+        }
+    }
+
+    /// Marching ants around a fur selection: thousands of dashes over the
+    /// whole surface, far more than a fresh bump reservation holds.
+    fn marching_ants() -> Scene {
+        let mut scene = scene_of(&[]);
+        let mut rng = Lcg(0xa17);
+        let stroke = Stroke::new(1.0).with_dashes(0.0, [2.0, 2.0]);
+        for _ in 0..160 {
+            let mut path = vello::kurbo::BezPath::new();
+            path.move_to((rng.below(u64::from(WIDTH)), rng.below(u64::from(HEIGHT))));
+            for _ in 0..48 {
+                path.line_to((rng.below(u64::from(WIDTH)), rng.below(u64::from(HEIGHT))));
+            }
+            path.close_path();
+            scene.stroke(&stroke, Affine::IDENTITY, Color::WHITE, None, &path);
+            scene.stroke(
+                &Stroke::new(1.0).with_dashes(2.0, [2.0, 2.0]),
+                Affine::IDENTITY,
+                Color::BLACK,
+                None,
+                &path,
+            );
+        }
+        scene
+    }
+
+    static EMPTY_BACKDROP: std::sync::OnceLock<crate::backdrop::BackdropFrame> =
+        std::sync::OnceLock::new();
+
+    fn content<'a>(
+        scene: &'a Scene,
+        base_color: Color,
+        damage_regions: &'a [Rect],
+        full_redraw: bool,
+    ) -> FrameContent<'a> {
+        FrameContent {
+            backdrop: EMPTY_BACKDROP.get_or_init(crate::backdrop::BackdropFrame::default),
+            scene,
+            width: WIDTH,
+            height: HEIGHT,
+            base_color,
+            damage_regions,
+            full_redraw,
+        }
+    }
+
+    /// A frame that overflowed Vello's bump buffers was presented without
+    /// some of its geometry. The worker must notice from the counters alone
+    /// and repaint the whole surface; later damage-only frames, or none at
+    /// all for an idle window, never touch most of the missing pixels.
+    #[test]
+    fn an_overflowed_frame_is_repainted_whole() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let options = || vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        };
+        let base_color = Color::from_rgb8(10, 10, 12);
+        let scene = marching_ants();
+        let corner = [Rect::new(0.0, 0.0, 24.0, 24.0)];
+
+        // Software rasterization sums a tile's segments in GPU scheduling
+        // order, and this dense scene's dashes then differ by more than
+        // anti-aliasing between two complete renders. Both renderers sum in a
+        // fixed order, so the comparison sees only missing geometry.
+        let renderer_for = || {
+            let mut renderer = Renderer::new(device, options()).unwrap();
+            renderer.enable_canonical_segment_order(device).unwrap();
+            renderer
+        };
+        // What a renderer that already knows this scene presents.
+        let mut oracle = renderer_for();
+        let (oracle_texture, oracle_view) = target(device);
+        let mut oracle_cache = DamageCache::default();
+        let mut fitted = false;
+        for _ in 0..8 {
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &oracle_texture,
+                    view: &oracle_view,
+                },
+                &mut oracle,
+                &mut oracle_cache,
+                &content(&scene, base_color, &[], true),
+            )
+            .unwrap();
+            if !oracle.settle_bump_budget(device) {
+                fitted = true;
+                break;
+            }
+        }
+        assert!(fitted, "the oracle must converge to a complete frame");
+        let expected = read(device, queue, &oracle_texture);
+
+        let mut renderer = renderer_for();
+        let (retained_texture, retained_view) = target(device);
+        let retained = RetainedTarget {
+            texture: &retained_texture,
+            view: &retained_view,
+        };
+        let mut cache = DamageCache::default();
+        let mut recovery = bump_recovery::BumpRecovery::default();
+        // The selection appears: one full frame on a fresh reservation,
+        // then the ants crawl in a small corner, as damage-only frames do.
+        rasterize_damage(
+            (device, queue),
+            retained,
+            &mut renderer,
+            &mut cache,
+            &content(&scene, base_color, &[], true),
+        )
+        .unwrap();
+        rasterize_damage(
+            (device, queue),
+            retained,
+            &mut renderer,
+            &mut cache,
+            &content(&scene, base_color, &corner, false),
+        )
+        .unwrap();
+
+        let garbled = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            &read(device, queue, &retained_texture),
+            &expected,
+        );
+        assert!(
+            garbled > 0,
+            "the overflowed frame must visibly lack geometry, or this test proves nothing"
+        );
+
+        // The idle worker: poll on its receive timeout and repaint whenever
+        // asked, exactly as main answers `take_full_repaint`.
+        let mut repaints = 0;
+        loop {
+            let step = recovery.poll(&mut renderer, device);
+            match step {
+                bump_recovery::BumpStep::Pending => {
+                    assert_eq!(recovery.wait(), Some(bump_recovery::POLL_INTERVAL));
+                    let _ = device.poll(wgpu::PollType::wait_indefinitely());
+                }
+                bump_recovery::BumpStep::Repaint => {
+                    repaints += 1;
+                    assert!(
+                        repaints <= usize::from(bump_recovery::MAX_REPAINTS),
+                        "repaints are bounded"
+                    );
+                    rasterize_damage(
+                        (device, queue),
+                        retained,
+                        &mut renderer,
+                        &mut cache,
+                        &content(&scene, base_color, &[], true),
+                    )
+                    .unwrap();
+                }
+                bump_recovery::BumpStep::Settled => break,
+            }
+        }
+        assert!(
+            repaints > 0,
+            "the scene must overflow a fresh reservation, or this test proves nothing"
+        );
+        let presented = read(device, queue, &retained_texture);
+        let differing =
+            crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&presented, &expected);
+        assert_eq!(
+            differing, 0,
+            "after {repaints} repaint(s) the presented frame still lacks {differing} pixels"
+        );
+    }
+
+    /// A frame whose bump counters report no overflow drew everything. The
+    /// segments reservation is separate from seg_counts and had no overflow
+    /// check: a frame could outgrow it, report `failed=0`, and be presented
+    /// with geometry missing, which the overflow repaint then never fixed.
+    #[test]
+    fn a_frame_reported_complete_is_complete() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let base_color = Color::from_rgb8(10, 10, 12);
+        let scene = marching_ants();
+        let mut renderer = Renderer::new(
+            device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .unwrap();
+        let (texture, view) = target(device);
+        let mut cache = DamageCache::default();
+        let mut render = |renderer: &mut Renderer| {
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &texture,
+                    view: &view,
+                },
+                renderer,
+                &mut cache,
+                &content(&scene, base_color, &[], true),
+            )
+            .unwrap();
+            renderer.settle_bump_budget(device)
+        };
+        let mut overflows = 0;
+        while render(&mut renderer) {
+            overflows += 1;
+            assert!(overflows <= 8, "the reservation must converge");
+        }
+        assert!(
+            overflows > 0,
+            "the scene must overflow a fresh reservation, or this test proves nothing"
+        );
+        let reported_complete = read(device, queue, &texture);
+        assert!(
+            !render(&mut renderer),
+            "a converged reservation keeps fitting"
+        );
+        let again = read(device, queue, &texture);
+        let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            &reported_complete,
+            &again,
+        );
+        assert_eq!(
+            differing, 0,
+            "a frame reported complete after {overflows} overflow(s) lacked {differing} pixels"
+        );
+    }
+
+    #[test]
+    fn every_presented_frame_equals_a_full_render() {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let device = &gpu.device;
+        let queue = &gpu.queue;
+        let options = || vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        };
+        let mut renderer = Renderer::new(device, options()).unwrap();
+        let mut oracle = Renderer::new(device, options()).unwrap();
+        let (retained_texture, retained_view) = target(device);
+        let (oracle_texture, oracle_view) = target(device);
+        let mut cache = DamageCache::default();
+        let mut oracle_cache = DamageCache::default();
+        let base_color = Color::from_rgb8(10, 10, 12);
+
+        let mut items: Vec<Item> = (0..6)
+            .map(|i| Item {
+                rect: Rect::new(
+                    20.0 + f64::from(i) * 45.0,
+                    30.0,
+                    60.0 + f64::from(i) * 45.0,
+                    64.0,
+                ),
+                color: [90, 120, 200],
+                round: i % 2 == 1,
+            })
+            .collect();
+        let mut rng = Lcg(0x5eed);
+
+        for frame in 0..48 {
+            let mut damage = Vec::new();
+            // Frame 0 and every eleventh frame repaint everything, as a
+            // relayout or a rebuilt tree does; the rest change one to three
+            // items, as typing, a caret or hover does.
+            let full_redraw = frame == 0 || frame % 11 == 0;
+            let changes = 1 + rng.below(3) as usize;
+            for _ in 0..changes {
+                let index = rng.below(items.len() as u64) as usize;
+                let before = items[index];
+                let mut after = before;
+                // Small moves keep damage partial; an occasional big one
+                // crosses the half-screen threshold into one full pass.
+                let reach: u64 = if rng.below(9) < 1.0 { 260 } else { 30 };
+                let dx = rng.below(reach) - (reach as f64) / 2.0;
+                let dy = rng.below(reach / 2) - (reach as f64) / 4.0;
+                after.rect = Rect::new(
+                    (before.rect.x0 + dx).clamp(0.0, f64::from(WIDTH) - 40.0),
+                    (before.rect.y0 + dy).clamp(0.0, f64::from(HEIGHT) - 34.0),
+                    0.0,
+                    0.0,
+                );
+                after.rect.x1 = after.rect.x0 + before.rect.width();
+                after.rect.y1 = after.rect.y0 + before.rect.height();
+                after.color = [
+                    rng.below(255) as u8,
+                    rng.below(255) as u8,
+                    rng.below(255) as u8,
+                ];
+                items[index] = after;
+                // What the native host reports: both boxes, with its margin.
+                damage.push(before.rect.union(after.rect).inflate(16.0, 16.0));
+            }
+            let scene = scene_of(&items);
+            let content = FrameContent {
+                backdrop: &crate::backdrop::BackdropFrame::default(),
+                scene: &scene,
+                width: WIDTH,
+                height: HEIGHT,
+                base_color,
+                damage_regions: &damage,
+                full_redraw,
+            };
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &retained_texture,
+                    view: &retained_view,
+                },
+                &mut renderer,
+                &mut cache,
+                &content,
+            )
+            .unwrap();
+            rasterize_damage(
+                (device, queue),
+                RetainedTarget {
+                    texture: &oracle_texture,
+                    view: &oracle_view,
+                },
+                &mut oracle,
+                &mut oracle_cache,
+                &FrameContent {
+                    backdrop: &crate::backdrop::BackdropFrame::default(),
+                    full_redraw: true,
+                    ..content
+                },
+            )
+            .unwrap();
+            let presented = read(device, queue, &retained_texture);
+            let expected = read(device, queue, &oracle_texture);
+            let differing = crate::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+                &presented, &expected,
+            );
+            assert_eq!(
+                differing, 0,
+                "frame {frame} (full redraw: {full_redraw}, damage {damage:?}) presented \
+                 {differing} pixels that a full render does not have"
+            );
+        }
+    }
+}
+
+/// The app a startup summary names: its package, else its executable.
+fn startup_app_name() -> String {
+    std::env::var("TILO_PACKAGE_ID").ok().unwrap_or_else(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "unknown".to_owned())
+    })
 }

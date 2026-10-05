@@ -19,9 +19,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Read as _;
-use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -517,6 +515,10 @@ impl Invalidation {
         *self = Self::StructureAndFocus;
     }
 
+    fn structure_pending(self) -> bool {
+        matches!(self, Self::Structure | Self::StructureAndFocus)
+    }
+
     fn take_structure(&mut self) -> bool {
         let present = matches!(self, Self::Structure | Self::StructureAndFocus);
         if present {
@@ -600,8 +602,11 @@ pub struct OnboardingView {
     backup_passphrase: Arc<Mutex<String>>,
     backup_confirmation: Arc<Mutex<String>>,
     identity_dir: Option<PathBuf>,
-    nearby_child: Option<Child>,
+    nearby: Option<crate::onboarding_nearby::NearbyPairing>,
     nearby_status: Option<String>,
+    /// Why the last pairing attempt ended without joining. The nearby
+    /// screen titles its error with this cause; `error` holds its message.
+    nearby_failure: Option<crate::onboarding_nearby::NearbyFailure>,
     /// The verification code both devices show while pairing waits for
     /// approval.
     nearby_code: Option<String>,
@@ -844,8 +849,9 @@ impl OnboardingView {
             backup_passphrase: Arc::new(Mutex::new(String::new())),
             backup_confirmation: Arc::new(Mutex::new(String::new())),
             identity_dir: None,
-            nearby_child: None,
+            nearby: None,
             nearby_status: None,
+            nearby_failure: None,
             nearby_code: None,
             nearby_active_for_snapshot: false,
             choice_requests: Rc::default(),
@@ -1302,6 +1308,7 @@ impl OnboardingView {
         self.codec_page = false;
         self.codec_error = None;
         self.nearby_status = None;
+        self.nearby_failure = None;
         self.nearby_code = None;
         self.nearby_active_for_snapshot = false;
         let minted = MintedIdentity {
@@ -1670,7 +1677,7 @@ impl OnboardingView {
 
     /// Pairing with a nearby device is under way.
     fn nearby_active(&self) -> bool {
-        self.nearby_child.is_some() || self.nearby_active_for_snapshot
+        self.nearby.is_some() || self.nearby_active_for_snapshot
     }
 
     /// The ways forward from a choice screen, one row per flow.
@@ -2200,10 +2207,13 @@ impl OnboardingView {
             .push(heading(&t("onboarding-nearby-title"), theme))
             .push(paragraph(&t("onboarding-nearby-body"), theme));
         if let Some(error) = &self.error {
-            body = body.push(spaced_banner(
-                Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
-                theme,
-            ));
+            // The banner's title is what went wrong; a screen reader speaks
+            // it first, so it names the cause rather than only the outcome.
+            let banner = match &self.nearby_failure {
+                Some(failure) => Banner::error(failure.title()).with_message(failure.message()),
+                None => Banner::error(t("onboarding-connect-failed")).with_message(error.clone()),
+            };
+            body = body.push(spaced_banner(banner, theme));
         }
         let mut status = Column::new()
             .with_no_padding()
@@ -2956,47 +2966,9 @@ impl OnboardingView {
     }
 }
 
-fn terminate_nearby_pairing(child: &mut Option<Child>) {
-    let Some(mut child) = child.take() else {
-        return;
-    };
-    let Ok(pid) = i32::try_from(child.id()) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        return;
-    };
-    let group = pid.saturating_neg();
-    // SAFETY: the process is spawned with `process_group(0)`, making its
-    // validated PID the process-group ID. A negative target is confined to
-    // that group and cannot signal the compositor's own group.
-    let _ = unsafe { libc::kill(group, libc::SIGTERM) };
-    let deadline = Instant::now()
-        .checked_add(Duration::from_millis(750))
-        .unwrap_or_else(Instant::now);
-    loop {
-        let leader_finished = child.try_wait().ok().flatten().is_some();
-        // Signal 0 only checks whether any descendant still occupies the
-        // dedicated group. Do not return just because pkexec itself exited:
-        // tilo-home-peer-control or tilo-enroll may still be winding down.
-        let group_gone = unsafe { libc::kill(group, 0) } != 0
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        if leader_finished && group_gone {
-            return;
-        }
-        if Instant::now() >= deadline {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // SAFETY: same dedicated process group as above. This is the bounded
-    // fallback for a broker or enrollment worker that ignored SIGTERM.
-    let _ = unsafe { libc::kill(group, libc::SIGKILL) };
-    let _ = child.wait();
-}
-
 impl Drop for OnboardingView {
     fn drop(&mut self) {
-        terminate_nearby_pairing(&mut self.nearby_child);
+        self.nearby = None;
         clear_secret(&self.connect_passphrase);
         clear_secret(&self.backup_passphrase);
         clear_secret(&self.backup_confirmation);
@@ -3106,6 +3078,7 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_CHOOSE_NEARBY, ScalarValue::Boolean(false));
             if self.flow.screen() == Screen::Existing {
                 self.error = None;
+                self.nearby_failure = None;
                 self.nearby_status = None;
                 self.nearby_code = None;
                 self.flow.choose_nearby();
@@ -3138,69 +3111,43 @@ impl Widget for OnboardingView {
         }
         if start_nearby
             && self.flow.screen() == Screen::Nearby
-            && self.nearby_child.is_none()
+            && self.nearby.is_none()
             && self.persist_progress(PersistedStage::AcquiringIdentity)
         {
-            match (&self.identity_dir, &self.nearby_status_path) {
-                (Some(identity_dir), Some(status_path)) => {
-                    let _ = std::fs::remove_file(status_path);
-                    let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
-                    let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
-                        .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
-                    let requester = tilo_relay_protocol::ProcessLease::capture(std::process::id());
-                    let spawn = requester
-                        .map_err(|error| error.to_string())
-                        .and_then(|lease| {
-                            Command::new("pkexec")
-                                .args([
-                                    "/usr/libexec/tilo-home-peer-control",
-                                    "pair-device",
-                                    "--identity-root",
-                                ])
-                                .arg(identity_root)
-                                .arg("--identity-dir")
-                                .arg(identity_dir)
-                                .args(["--label", &label, "--status-file"])
-                                .arg(status_path)
-                                .arg("--requester-pid")
-                                .arg(lease.pid().to_string())
-                                .arg("--requester-start-time")
-                                .arg(lease.start_time().to_string())
-                                .stdin(Stdio::null())
-                                .stdout(Stdio::piped())
-                                .stderr(Stdio::piped())
-                                // pkexec, the privileged broker and tilo-enroll must
-                                // share a revocable lifetime.  A dedicated process
-                                // group lets Cancel, Back and compositor teardown
-                                // stop the whole transaction instead of merely
-                                // orphaning a privileged descendant.
-                                .process_group(0)
-                                .spawn()
-                                .map_err(|error| error.to_string())
-                        });
-                    match spawn {
-                        Ok(child) => {
-                            self.nearby_child = Some(child);
-                            self.nearby_status = Some(t("onboarding-nearby-waiting"));
-                            self.nearby_code = None;
-                            self.error = None;
-                        }
-                        Err(error) => {
-                            self.error = Some(t_args(
-                                "onboarding-nearby-start-failed",
-                                &[("error", error.into())],
-                            ));
-                        }
+            if let (Some(identity_dir), Some(status_path)) =
+                (&self.identity_dir, &self.nearby_status_path)
+            {
+                let label = std::env::var("HOSTNAME").unwrap_or_else(|_| "Tilo device".into());
+                let identity_root = std::env::var_os("TILO_IDENTITY_ROOT")
+                    .map_or_else(|| PathBuf::from("/var/lib/tilo"), PathBuf::from);
+                match crate::onboarding_nearby::NearbyPairing::start(
+                    &identity_root,
+                    identity_dir,
+                    status_path,
+                    &label,
+                ) {
+                    Ok(pairing) => {
+                        self.nearby = Some(pairing);
+                        self.nearby_status = Some(t("onboarding-nearby-waiting"));
+                        self.nearby_code = None;
+                        self.error = None;
+                        self.nearby_failure = None;
+                    }
+                    Err(failure) => {
+                        self.error = Some(failure.message());
+                        self.nearby_failure = Some(failure);
                     }
                 }
-                _ => self.error = Some(t("onboarding-nearby-unavailable")),
+            } else {
+                self.error = Some(t("onboarding-nearby-unavailable"));
+                self.nearby_failure = None;
             }
             self.invalidation.structure();
         }
 
         if read_bool(state, root, KEY_CONNECT_CANCEL) {
             let _ = state.put(root, KEY_CONNECT_CANCEL, ScalarValue::Boolean(false));
-            terminate_nearby_pairing(&mut self.nearby_child);
+            self.nearby = None;
             if let Some(path) = &self.nearby_status_path {
                 let _ = std::fs::remove_file(path);
             }
@@ -3209,82 +3156,35 @@ impl Widget for OnboardingView {
             self.invalidation.structure();
         }
 
-        if self.nearby_child.is_some()
-            && let Some(path) = &self.nearby_status_path
-            && let Ok(bytes) = std::fs::read(path)
-            && let Ok(status) = serde_json::from_slice::<serde_json::Value>(&bytes)
-            && let Some(code) = status
-                .get("verification_code")
-                .and_then(serde_json::Value::as_str)
-            && self.nearby_code.as_deref() != Some(code)
-        {
-            self.nearby_code = Some(code.to_owned());
-            self.nearby_status = Some(t("onboarding-nearby-code"));
-            self.invalidation.structure();
-        }
-        let finished_nearby_child = match self.nearby_child.take() {
-            Some(mut child) => {
-                if let Some(status) = child.try_wait().ok().flatten() {
-                    Some((child, status))
-                } else {
-                    self.nearby_child = Some(child);
-                    None
-                }
+        let nearby = self
+            .nearby
+            .as_mut()
+            .map(|pairing| pairing.poll(Instant::now()));
+        match nearby {
+            None | Some(crate::onboarding_nearby::NearbyEvent::Idle) => {}
+            Some(crate::onboarding_nearby::NearbyEvent::Code(code)) => {
+                self.nearby_code = Some(code);
+                self.nearby_status = Some(t("onboarding-nearby-code"));
+                self.invalidation.structure();
             }
-            None => None,
-        };
-        if let Some((mut child, status)) = finished_nearby_child {
-            // `try_wait` reaps the leader when it has exited. Keep the
-            // explicit wait as a defensive lifecycle guarantee if platform
-            // behavior changes, and never leave a completed broker child in
-            // the compositor.
-            let _ = child.wait();
-            self.nearby_code = None;
-            let mut stdout = String::new();
-            let mut stderr = String::new();
-            if let Some(mut stream) = child.stdout.take() {
-                let _ = stream.read_to_string(&mut stdout);
+            Some(crate::onboarding_nearby::NearbyEvent::Joined(identity)) => {
+                self.nearby = None;
+                self.nearby_code = None;
+                self.flow.complete_connected(identity);
+                self.identity_ready_page = false;
+                let _ = self.persist_progress(PersistedStage::IdentityReady);
+                self.error = None;
+                self.nearby_status = Some(t("onboarding-nearby-connected"));
+                self.invalidation.structure();
             }
-            if let Some(mut stream) = child.stderr.take() {
-                let _ = stream.read_to_string(&mut stderr);
+            Some(crate::onboarding_nearby::NearbyEvent::Failed(failure)) => {
+                self.nearby = None;
+                self.nearby_code = None;
+                self.nearby_status = None;
+                self.error = Some(failure.message());
+                self.nearby_failure = Some(failure);
+                self.invalidation.structure();
             }
-            if status.success() {
-                match serde_json::from_str::<serde_json::Value>(
-                    stdout.lines().last().unwrap_or_default(),
-                ) {
-                    Ok(result) => {
-                        let fingerprint = result
-                            .get("identity")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_owned();
-                        let path = result
-                            .get("record_path")
-                            .and_then(serde_json::Value::as_str)
-                            .map(PathBuf::from);
-                        if let Some(path) = path.filter(|_| fingerprint.len() == 64) {
-                            self.flow
-                                .complete_connected(MintedIdentity { fingerprint, path });
-                            self.identity_ready_page = false;
-                            let _ = self.persist_progress(PersistedStage::IdentityReady);
-                            self.error = None;
-                            self.nearby_status = Some(t("onboarding-nearby-connected"));
-                        } else {
-                            self.error = Some(t("onboarding-nearby-invalid-identity"));
-                        }
-                    }
-                    Err(_) => self.error = Some(t("onboarding-nearby-invalid-identity")),
-                }
-            } else {
-                self.error = Some(match stderr.lines().last() {
-                    Some(detail) => t_args(
-                        "onboarding-nearby-failed-detail",
-                        &[("detail", detail.into())],
-                    ),
-                    None => t("onboarding-nearby-failed"),
-                });
-            }
-            self.invalidation.structure();
         }
 
         if read_bool(state, root, KEY_BACKUP_ANOTHER) {
@@ -3389,7 +3289,8 @@ impl Widget for OnboardingView {
             let _ = state.put(root, KEY_BACK, ScalarValue::Boolean(false));
             self.error = None;
             clear_secret(&self.connect_passphrase);
-            terminate_nearby_pairing(&mut self.nearby_child);
+            self.nearby = None;
+            self.nearby_failure = None;
             self.nearby_status = None;
             self.nearby_code = None;
             if !(self.recovery_only && self.flow.screen() == Screen::Existing) {
@@ -3850,6 +3751,15 @@ impl Widget for OnboardingView {
         self.rect
     }
 
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
+        // Background work (nearby pairing, the codecs worker) changes the
+        // page from `sync` with no input behind it. The compositor presents
+        // only what `update` reports, so a page that is not yet laid out is
+        // a change: otherwise a pairing that fails on the same screen stays
+        // on its code until something unrelated repaints.
+        self.invalidation.structure_pending()
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         self.invalidation.take_focus()
     }
@@ -3867,8 +3777,7 @@ impl Widget for OnboardingView {
         // The codecs worker and status watcher only raise `codec_changed`,
         // and nearby pairing reports through its child and a status file;
         // nothing wakes the compositor for them, so look while they run.
-        let polling =
-            self.codec_running.is_some() || self.codec_watching || self.nearby_child.is_some();
+        let polling = self.codec_running.is_some() || self.codec_watching || self.nearby.is_some();
         let mut earliest = if polling {
             self.synced_at.checked_add(BACKGROUND_POLL)
         } else {
@@ -3980,6 +3889,8 @@ fn onboarding_picker_rect(viewport: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::CommandExt as _;
+    use std::process::{Command, Stdio};
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4012,11 +3923,11 @@ mod tests {
             .expect("spawn pairing-shaped process tree");
         let pgid = i32::try_from(child.id()).expect("test process ID");
         // Give the shell enough time to create the descendant that used to
-        // survive when only the immediate pkexec process was killed.
+        // survive when only the group leader was killed.
         std::thread::sleep(Duration::from_millis(40));
         let mut child = Some(child);
 
-        terminate_nearby_pairing(&mut child);
+        crate::onboarding_nearby::terminate(&mut child);
 
         assert!(child.is_none());
         let deadline = tilo_test_env::hang_deadline();
@@ -4034,6 +3945,109 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn nearby_pairing_news_asks_the_compositor_to_present() {
+        // The helper reports through its status file with no input behind
+        // it. The compositor paints only what `update` reports, so every
+        // change the poll makes must be reported there, or a failure on the
+        // same screen stays hidden behind the code.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let identity_dir = dir.path().join("identity");
+        std::fs::create_dir(&identity_dir).expect("identity dir");
+        let status = identity_dir.join(".nearby-enrollment-status.json");
+        let report_code = dir.path().join("report-code");
+        let report_failure = dir.path().join("report-failure");
+        let mut helper = Command::new("sh");
+        helper
+            .args([
+                "-c",
+                r#"while [ ! -e "$2" ]; do sleep 0.02; done
+                   printf '%s' '{"state":"waiting_for_approval","verification_code":"424242"}' > "$1"
+                   while [ ! -e "$3" ]; do sleep 0.02; done
+                   printf '%s' '{"state":"failed","error":"Permission denied (os error 13)"}' > "$1"
+                   exit 1"#,
+                "helper",
+            ])
+            .arg(&status)
+            .arg(&report_code)
+            .arg(&report_failure);
+        let (mut view, _) = view();
+        view.flow.begin_existing();
+        view.flow.choose_nearby();
+        assert_eq!(view.flow.screen(), Screen::Nearby);
+        view.nearby = Some(
+            crate::onboarding_nearby::NearbyPairing::spawn(
+                helper,
+                &identity_dir,
+                &status,
+                Duration::from_secs(600),
+            )
+            .expect("spawn helper"),
+        );
+        view.nearby_status_path = Some(status);
+        let mut doc = AutoCommit::new();
+        // The page as it was laid out when pairing started.
+        view.sync(&mut doc, &automerge::ROOT);
+        let _ = view.take_structure_dirty();
+        assert!(!view.update(&mut doc, &automerge::ROOT), "nothing new yet");
+
+        std::fs::write(&report_code, b"").expect("let the helper show its code");
+        let deadline = tilo_test_env::hang_deadline();
+        while view.nearby_code.is_none() {
+            assert!(Instant::now() < deadline, "the code never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&mut doc, &automerge::ROOT);
+        }
+        assert!(
+            view.update(&mut doc, &automerge::ROOT),
+            "the verification code is presented"
+        );
+        assert!(view.take_structure_dirty());
+        assert!(
+            !view.update(&mut doc, &automerge::ROOT),
+            "a laid-out page is not presented again"
+        );
+
+        std::fs::write(&report_failure, b"").expect("let the helper fail");
+        while view.nearby.is_some() {
+            assert!(Instant::now() < deadline, "the failure never arrived");
+            std::thread::sleep(Duration::from_millis(20));
+            view.sync(&mut doc, &automerge::ROOT);
+        }
+        assert!(
+            view.error()
+                .is_some_and(|error| error.contains("Permission denied")),
+            "{:?}",
+            view.error()
+        );
+        assert!(
+            view.update(&mut doc, &automerge::ROOT),
+            "the failure and its Try again are presented"
+        );
+        let composition = view.build_composition(&Theme::dark(), PANEL_MAX_HEIGHT);
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.connect.nearby.button").is_some(),
+            "a failed pairing offers Try again"
+        );
+        assert!(
+            accessibility_for_id(&*composition, "onboarding.nearby.code").is_none(),
+            "the stale code is gone"
+        );
+        // What went wrong is the error's accessible name, not only its
+        // description: a screen reader speaks it first, and the generic
+        // outcome alone would hide that the commit was refused.
+        let mut names = Vec::new();
+        accessible_names(&*composition, &mut names);
+        assert!(
+            names.iter().any(|name| name.contains("Permission denied")),
+            "the cause is named: {names:?}"
+        );
+        assert!(
+            !names.contains(&t("onboarding-connect-failed")),
+            "a refused commit is not reported generically: {names:?}"
+        );
     }
 
     fn process_group_has_live_member(pgid: i32) -> bool {
@@ -4124,6 +4138,15 @@ mod tests {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: winit::event::MouseButton::Left,
+        }
+    }
+
+    fn accessible_names(widget: &dyn Widget, names: &mut Vec<String>) {
+        if let Some(name) = widget.accessibility().and_then(|node| node.name) {
+            names.push(name);
+        }
+        for child in widget.children() {
+            accessible_names(child, names);
         }
     }
 

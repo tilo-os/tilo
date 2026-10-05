@@ -80,6 +80,14 @@ include!("app/host.rs");
 mod android_text_input;
 #[cfg(feature = "native")]
 mod native_runner;
+/// How an app's error begins when its window stopped without being closed.
+/// The shell recognises it in a failed launch's output.
+pub const WINDOW_LOST: &str = "the window stopped without being closed";
+
+/// Exit status of an app whose window stopped without being closed: the
+/// launcher reports it as a failed launch rather than a clean exit.
+pub const WINDOW_LOST_EXIT_CODE: i32 = 70;
+
 #[cfg(all(windows, feature = "native"))]
 pub(crate) use native_runner::prepare_native_renderer;
 
@@ -1160,6 +1168,39 @@ impl App {
         }
     }
 
+    /// The desktop's tab chords (Ctrl+T, Ctrl+Shift+T, Ctrl+W; Cmd on macOS)
+    /// when no widget consumed the press: tabs are the shell's, so every app
+    /// answers them the same way through [`crate::shell_tabs`].
+    #[cfg(feature = "native")]
+    fn handle_unconsumed_tab_chord(&self, event: &WindowEvent, handled: &mut bool) {
+        if *handled {
+            return;
+        }
+        let WindowEvent::KeyboardInput {
+            event:
+                winit::event::KeyEvent {
+                    logical_key,
+                    state: winit::event::ElementState::Pressed,
+                    repeat: false,
+                    ..
+                },
+            ..
+        } = event
+        else {
+            return;
+        };
+        let modifiers = self.input.modifiers.state();
+        let command = self.input.platform.command_modifier_down(modifiers);
+        // Ctrl and Super together are a different chord on every platform.
+        let other = modifiers.alt_key() || (modifiers.control_key() && modifiers.super_key());
+        if let Some(request) =
+            crate::shell_tabs::chord_request(logical_key, command, modifiers.shift_key(), other)
+        {
+            crate::shell_tabs::request(request);
+            *handled = true;
+        }
+    }
+
     /// Let the focused widget see directional input first. Only an unconsumed
     /// arrow may move host focus, using the same modal/focus-trap fence as Tab.
     #[cfg(feature = "native")]
@@ -1260,10 +1301,10 @@ impl App {
         registration.validate_root(self.root_widget.as_ref())?;
         #[cfg(any(test, feature = "test-support"))]
         let controlled_definition = registration.definition;
-        self.history = Some(Box::new(crate::history_mode::host::HistoryHost::new(
-            registration,
-            &self.state.doc,
-        )?));
+        let host = tilo_startup_metrics::span("history-install", || {
+            crate::history_mode::host::HistoryHost::new(registration, &self.state.doc)
+        })?;
+        self.history = Some(Box::new(host));
         if let Some(history) = &mut self.history {
             history.set_control_domain(&self.control_domain);
         }
@@ -2102,23 +2143,46 @@ impl App {
     /// beats its enclosing toolbar.
     #[cfg(feature = "native")]
     fn tooltip_target_at(&self, point: Point) -> Option<(vello::kurbo::Rect, String)> {
+        self.tooltip_placed_at(point)
+            .map(|(rect, label, _)| (rect, label))
+    }
+
+    /// [`Self::tooltip_target_at`] with the side of its control the
+    /// tooltip prefers.
+    #[cfg(feature = "native")]
+    pub(crate) fn tooltip_placed_at(
+        &self,
+        point: Point,
+    ) -> Option<(
+        vello::kurbo::Rect,
+        String,
+        crate::widget::tooltip::TooltipSide,
+    )> {
         if !self.input.interaction.supports_hover() {
             return None;
         }
-        let mut best: Option<(f64, vello::kurbo::Rect, String)> = None;
+        let mut best: Option<(
+            f64,
+            vello::kurbo::Rect,
+            String,
+            crate::widget::tooltip::TooltipSide,
+        )> = None;
         for &node in self.layout.node_map.keys() {
-            let Ok(target) = self.inspect_node(node, |widget| widget.tooltip_target_at(point))
-            else {
+            let Ok(target) = self.inspect_node(node, |widget| {
+                widget
+                    .tooltip_target_at(point)
+                    .map(|(rect, tip)| (rect, tip, widget.tooltip_side()))
+            }) else {
                 continue;
             };
-            if let Some((rect, tip)) = target {
+            if let Some((rect, tip, side)) = target {
                 let area = (rect.width() * rect.height()).max(0.0);
-                if best.as_ref().is_none_or(|(a, _, _)| area < *a) {
-                    best = Some((area, rect, tip));
+                if best.as_ref().is_none_or(|(a, _, _, _)| area < *a) {
+                    best = Some((area, rect, tip, side));
                 }
             }
         }
-        best.map(|(_, rect, label)| (rect, label))
+        best.map(|(_, rect, label, side)| (rect, label, side))
     }
 }
 

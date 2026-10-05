@@ -179,9 +179,6 @@ mod window_group_test;
 mod window_group_visual_journey;
 #[path = "workspace_view_test.rs"]
 mod workspace_view_test;
-#[cfg(feature = "webview-wpe")]
-#[path = "wpe_engine.rs"]
-mod wpe_engine;
 
 mod canonical_record_owner;
 

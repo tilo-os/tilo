@@ -30,9 +30,15 @@ bounded-command = { path = "../../system/bounded-command" }
 greetd-client = { path = "../greetd-client" }
 console-control = { path = "../console-control" }
 serde_json.workspace = true
+# The sign-in screen's clock reads local time, as the lock screen's does.
+chrono = { workspace = true, features = ["clock", "std"] }
+# Battery level and charging state for the status corner, read from sysfs.
+tilo-power-mgmt = { path = "../../system/power", default-features = false }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+tempfile.workspace = true
 
 [lints]
 workspace = true

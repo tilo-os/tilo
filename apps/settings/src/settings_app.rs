@@ -41,6 +41,9 @@ use ui::{AppKind, AppWidget, IconDescriptor};
 /// not move when the category changes: the toolkit's form-sheet width.
 const MEASURE: f32 = Metrics::BASE.panel_width_sheet;
 
+/// One scroller's offset, shared with every scroller rebuilt in its place.
+type ScrollOffset = std::rc::Rc<std::cell::Cell<(f32, f32)>>;
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool is an independent presentation flag of the one window: rebuild pending, hosted, shot hardware, stacked choosers"
@@ -67,6 +70,10 @@ pub struct SettingsApp {
     /// Process-local navigation request written by a sidebar row. This keeps
     /// current-pane selection out of collaboration, persistence and undo.
     sidebar_selection: ui::LocalState<Option<Category>>,
+    /// Each pane's scroll offset. The content scroller is rebuilt whenever the
+    /// pane's structure changes (a control applied, a category opened), so the
+    /// offset lives here, per category, rather than in the rebuilt widget.
+    pane_scroll: std::cell::RefCell<std::collections::HashMap<Category, ScrollOffset>>,
     /// Retained, revision-aware catalogue behind Ctrl+K. Cloning its provider
     /// for the host is O(1), so a palette continuation always talks to the
     /// same generation instead of rebuilding an index on every frame.
@@ -138,6 +145,7 @@ impl SettingsApp {
             narrow_front: None,
             width_hint: None,
             sidebar_selection: ui::LocalState::new(None),
+            pane_scroll: std::cell::RefCell::default(),
             search_provider: crate::search_provider::SettingsSearchProvider::new(),
             account_resources: account_root.store().all().to_vec(),
             account_root,
@@ -282,17 +290,47 @@ impl SettingsApp {
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
-    /// content and header, and (on a narrow layout) pushes the selected
-    /// category's content screen.
+    /// nav + content, and (on a narrow layout) navigates from the list screen
+    /// to the selected category's content screen.
+    ///
+    /// Picking the category that is already selected still opens it: on the
+    /// narrow list screen that row is the checked one, and choosing it must
+    /// show its content rather than do nothing.
     pub fn select(&mut self, category: Category) {
         if self.selected != category {
             self.selected = category;
             self.structure_dirty = true;
             self.refresh_shell_children();
-            if let Some(shell) = &mut self.shell {
-                shell.show(NavPane::Content);
+        }
+        if let Some(shell) = &mut self.shell {
+            shell.show(NavPane::Content);
+        }
+    }
+
+    /// Show what a link or another app asked for: a pane, or one local
+    /// model's card in Agent Models. The switch happens at the next sync,
+    /// as a sidebar pick does: an effect arrives while the widget tree is
+    /// being walked, so the panes must not be rebuilt under it.
+    ///
+    /// # Errors
+    /// Returns why the pane does not exist.
+    pub(crate) fn show(&self, effect: crate::resource::SettingsEffect) -> Result<(), String> {
+        match effect {
+            crate::resource::SettingsEffect::ShowPane { pane } => {
+                let category = Category::ALL
+                    .iter()
+                    .copied()
+                    .find(|category| category.slug() == pane)
+                    .ok_or_else(|| "Settings pane is no longer available".to_string())?;
+                self.sidebar_selection.set(Some(category));
+            }
+            crate::resource::SettingsEffect::ShowLocalModel { id } => {
+                self.sidebar_selection.set(Some(Category::AgentModels));
+                self.local_pane_command
+                    .set(Some(crate::actions::LocalPaneCommand::RevealAgentModel(id)));
             }
         }
+        Ok(())
     }
 
     /// Whether the current frame resolves to the narrow (phone) layout.
@@ -353,7 +391,16 @@ impl SettingsApp {
                 .with_centered_max_width(measure)
                 .with_child(Box::new(inner)),
         );
-        Box::new(Scrollable::new_vertical().with_child(content))
+        let offset = std::rc::Rc::clone(
+            self.pane_scroll
+                .borrow_mut()
+                .entry(self.selected)
+                .or_default(),
+        );
+        let scroll = Scrollable::new_vertical()
+            .with_persisted_offset(offset)
+            .with_child(content);
+        Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
 
     /// Remember the dispatcher so preference panes built later submit through it.
@@ -1792,6 +1839,7 @@ impl Widget for SettingsApp {
             crate::actions::USER_OPERATION_TYPE,
             crate::actions::AGENT_MODEL_OPERATION_TYPE,
             crate::actions::DEVICE_MESH_OPERATION_TYPE,
+            crate::actions::SPEAKER_OPERATION_TYPE,
             crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
         ]
     }

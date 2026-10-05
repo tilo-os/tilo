@@ -30,8 +30,32 @@ use ui::i18n::ArgValue;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, item_row, rows, semantic_status_pill,
+    El, StatusTone, caption, card, card_with_action, error_caption, item_row, rows,
+    semantic_status_pill,
 };
+
+/// Which of the last refresh's lists could not be read, and why.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PrinterReadErrors {
+    printers: Option<String>,
+    jobs: Option<String>,
+    scanners: Option<String>,
+}
+
+/// Keep a list that was read; answer why one was not, clearing what was
+/// shown so a stale list is not mistaken for the current one.
+fn adopt<T>(read: Result<Vec<T>, String>, shown: &mut Vec<T>) -> Option<String> {
+    match read {
+        Ok(value) => {
+            *shown = value;
+            None
+        }
+        Err(error) => {
+            shown.clear();
+            Some(error)
+        }
+    }
+}
 
 pub(crate) const REFRESH_KEY: &str = "settings.printers.refresh";
 pub(crate) const SCAN_KEY: &str = "settings.printers.discover";
@@ -153,6 +177,10 @@ pub struct PrintersPane {
     discovering: bool,
     confirm_remove: Option<String>,
     error: Option<String>,
+    /// Why each list could not be read in the last refresh. A list that
+    /// could not be read is shown as that failure, not as empty, and stays
+    /// so until a later refresh reads it, whatever else succeeds meanwhile.
+    read_errors: PrinterReadErrors,
     operation_status: ui::LocalState<crate::actions::LocalOperationStatus>,
     command_state: ui::LocalState<Option<crate::actions::LocalPaneCommand>>,
     local_doc: AutoCommit,
@@ -195,6 +223,7 @@ impl PrintersPane {
             discovering: false,
             confirm_remove: None,
             error: None,
+            read_errors: PrinterReadErrors::default(),
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             command_state: ui::LocalState::new(None),
             local_doc: AutoCommit::new(),
@@ -223,6 +252,7 @@ impl PrintersPane {
             discovering: false,
             confirm_remove: None,
             error: None,
+            read_errors: PrinterReadErrors::default(),
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
             command_state: ui::LocalState::new(None),
             local_doc: AutoCommit::new(),
@@ -293,29 +323,11 @@ impl PrintersPane {
             self.refresh_rx = None;
             self.loading = false;
             self.last_refresh = ui::time::now();
-            let mut errors = Vec::new();
-            match result.printers {
-                Ok(value) => self.printers = value,
-                Err(error) => errors.push(t_args(
-                    "settings-printers-error-printers",
-                    &[("error", error.into())],
-                )),
-            }
-            match result.jobs {
-                Ok(value) => self.jobs = value,
-                Err(error) => errors.push(t_args(
-                    "settings-printers-error-jobs",
-                    &[("error", error.into())],
-                )),
-            }
-            match result.scanners {
-                Ok(value) => self.scanners = value,
-                Err(error) => errors.push(t_args(
-                    "settings-printers-error-scanners",
-                    &[("error", error.into())],
-                )),
-            }
-            self.error = (!errors.is_empty()).then(|| errors.join(" "));
+            self.read_errors = PrinterReadErrors {
+                printers: adopt(result.printers, &mut self.printers),
+                jobs: adopt(result.jobs, &mut self.jobs),
+                scanners: adopt(result.scanners, &mut self.scanners),
+            };
             self.structure_dirty = true;
         }
         if let Some(result) = self.discover_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
@@ -374,7 +386,7 @@ impl PrintersPane {
         if let Some(error) = &self.error {
             cards.push(card(
                 &t("settings-printers-attention"),
-                rows(vec![caption(error)]),
+                rows(vec![error_caption(error)]),
             ));
         }
 
@@ -388,7 +400,12 @@ impl PrintersPane {
             &refresh_label,
             Some(REFRESH_KEY),
         ));
-        let printers = if self.printers.is_empty() {
+        let printers = if let Some(error) = &self.read_errors.printers {
+            rows(vec![error_caption(&t_args(
+                "settings-printers-read-error",
+                &[("error", error.as_str().into())],
+            ))])
+        } else if self.printers.is_empty() {
             rows(vec![caption(&t("settings-printers-empty"))])
         } else {
             rows(self.printers.iter().map(|p| self.printer_row(p)).collect())
@@ -424,14 +441,24 @@ impl PrintersPane {
             discovery,
         ));
 
-        let jobs = if self.jobs.is_empty() {
+        let jobs = if let Some(error) = &self.read_errors.jobs {
+            rows(vec![error_caption(&t_args(
+                "settings-printers-jobs-read-error",
+                &[("error", error.as_str().into())],
+            ))])
+        } else if self.jobs.is_empty() {
             rows(vec![caption(&t("settings-printers-no-jobs"))])
         } else {
             rows(self.jobs.iter().map(job_row).collect())
         };
         cards.push(card(&t("settings-printers-activity"), jobs));
 
-        let scanners = if self.scanners.is_empty() {
+        let scanners = if let Some(error) = &self.read_errors.scanners {
+            rows(vec![error_caption(&t_args(
+                "settings-printers-scanners-read-error",
+                &[("error", error.as_str().into())],
+            ))])
+        } else if self.scanners.is_empty() {
             rows(vec![caption(&t("settings-printers-no-scanners"))])
         } else {
             rows(

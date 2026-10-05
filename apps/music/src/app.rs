@@ -283,6 +283,7 @@ pub struct MusicApp {
     /// The header's two actions, real retained buttons: open an audio file,
     /// and open the platform search for this app.
     open_file_button: ui::widget::Button,
+    open_file_layout_visible: Option<bool>,
     search_button: ui::widget::Button,
     /// Search opened from the app's own painted controls (a Browse tile).
     search_opener: ui::search::SearchOpener,
@@ -719,6 +720,7 @@ impl MusicApp {
                 live
             },
             open_file_button: Self::make_open_file_button(),
+            open_file_layout_visible: None,
             search_button: ui::search::search_button(ui::search::SearchRequest::this_app()),
             search_opener: ui::search::SearchOpener::new(),
             audio: AudioEngine::new(),

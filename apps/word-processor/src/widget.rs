@@ -24,6 +24,7 @@ use tilo_doc::model::Region;
 use tilo_doc::snapshot::{AttrVal, BlockView, NoteView};
 use ui::gesture::{DragSelect, Granularity};
 use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
+use ui::text_edit::EditCore;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 // Provides `.r()/.g()/.b()` accessors on `vello` `Color` (used to derive
@@ -81,6 +82,7 @@ pub(crate) use participants::note_participant_outcome;
 #[cfg(test)]
 mod participant_tests;
 mod proofing;
+mod semantic_geometry;
 mod text_runs;
 mod toolbar;
 
@@ -107,8 +109,8 @@ use proofing::misspelled_spans;
 use text_runs::block_runs;
 use text_runs::{
     block_change_decos, block_change_ranges, block_comment_ranges, block_note_refs,
-    block_runs_markup, char_font_family, char_font_size, char_highlight, note_numbering, note_text,
-    parse_hex_rgb, running_head_runs, running_head_runs_editing,
+    block_runs_markup, char_font_family, char_font_size, char_highlight, composed_block,
+    note_numbering, note_text, parse_hex_rgb, running_head_runs, running_head_runs_editing,
 };
 use toolbar::{HIGHLIGHT_PALETTE, STYLE_PALETTE, ToolAction, ToolEntry};
 
@@ -869,6 +871,55 @@ struct Laid {
     /// The page index this item was laid onto (0-based). Used to assign footnotes
     /// to the page where their reference marker falls.
     page: usize,
+    /// The input method's composition while it is laid out in this block:
+    /// `text` stays the committed text, the shaped layout shows the
+    /// composition at the caret.
+    composition: Option<EditCore>,
+}
+
+impl Laid {
+    /// The shaped layout's byte for committed char `offset`.
+    fn layout_byte(&self, offset: usize) -> usize {
+        shown_byte(
+            self.composition.as_ref(),
+            &self.text,
+            char_to_byte(&self.text, offset),
+        )
+    }
+
+    /// The shaped layout's byte for committed byte `byte`.
+    fn shown(&self, byte: usize) -> usize {
+        shown_byte(self.composition.as_ref(), &self.text, byte)
+    }
+
+    /// The committed char offset of shaped layout byte `byte`.
+    fn offset_at(&self, byte: usize) -> usize {
+        committed_offset(self.composition.as_ref(), &self.text, byte)
+    }
+
+    /// Where the caret at committed char `offset` draws in the shaped layout:
+    /// inside the composition at the input method's cursor while composing.
+    fn caret_byte(&self, offset: usize) -> usize {
+        self.composition.as_ref().map_or_else(
+            || char_to_byte(&self.text, offset),
+            |core| core.display_caret(&self.text),
+        )
+    }
+}
+
+/// Committed byte `byte` of `text` mapped into the text as laid out with
+/// `composition` shown at the caret.
+fn shown_byte(composition: Option<&EditCore>, text: &str, byte: usize) -> usize {
+    composition.map_or(byte, |core| core.to_display(text, byte))
+}
+
+/// Laid-out byte `byte` mapped back to a committed char offset of `text`;
+/// a point inside the composition lands at the caret it is composed at.
+fn committed_offset(composition: Option<&EditCore>, text: &str, byte: usize) -> usize {
+    byte_to_char(
+        text,
+        composition.map_or(byte, |core| core.from_display(text, byte)),
+    )
 }
 
 /// A floated image's reserved column, live while subsequent body blocks lay out
@@ -898,10 +949,12 @@ struct FloatReserve {
 /// across frames). Coordinates are content space (the band draws through `ctf`).
 struct RegionLaid {
     id: String,
+    /// The committed text; `layout` shows `composition` at the caret.
     text: String,
     /// Top-left origin of the run in content space.
     origin: Point,
     layout: RichTextLayout,
+    composition: Option<EditCore>,
 }
 
 /// US-Letter page height in inches (width is 8.5in → `MAX_PAGE_W` px).
@@ -1247,7 +1300,6 @@ pub struct WordProcessorWidget {
     toast: Option<(String, ToastKind)>,
     canonical: bool,
     ime_rect: Option<Rect>,
-    ime_preedit: String,
     /// The style inspector's shared color-picker popover. It owns its lifecycle,
     /// layout, drawing, and modal input routing; this editor applies its result.
     color_picker: StyleColorPicker,
@@ -1473,7 +1525,6 @@ impl WordProcessorWidget {
             toast: None,
             canonical: false,
             ime_rect: None,
-            ime_preedit: String::new(),
             color_picker: StyleColorPicker::default(),
             participants: participants::ParticipantViews::default(),
             participant_host: false,
@@ -3695,7 +3746,10 @@ impl WordProcessorWidget {
                     num::f32_of_f64(p.x - rl.origin.x),
                     num::f32_of_f64(p.y - rl.origin.y),
                 );
-                hit = Some((rl.id.clone(), byte_to_char(&rl.text, byte)));
+                hit = Some((
+                    rl.id.clone(),
+                    committed_offset(rl.composition.as_ref(), &rl.text, byte),
+                ));
                 break;
             }
         }
@@ -3713,7 +3767,10 @@ impl WordProcessorWidget {
                 let byte = rl
                     .layout
                     .hit(num::f32_of_f64(p.x - rl.origin.x), rl.layout.height() - 1.0);
-                hit = Some((rl.id.clone(), byte_to_char(&rl.text, byte)));
+                hit = Some((
+                    rl.id.clone(),
+                    committed_offset(rl.composition.as_ref(), &rl.text, byte),
+                ));
             }
         }
         if let Some((block, offset)) = hit {
@@ -3755,7 +3812,7 @@ impl WordProcessorWidget {
                         num::f32_of_f64(p.y - l.layout_y),
                     )
                 });
-                hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
+                hit = Some((l.id.clone(), l.offset_at(byte)));
                 break;
             }
         }
@@ -3785,7 +3842,7 @@ impl WordProcessorWidget {
                         num::f32_of_f64(y - l.layout_y),
                     )
                 });
-                hit = Some((l.id.clone(), byte_to_char(&l.text, byte)));
+                hit = Some((l.id.clone(), l.offset_at(byte)));
             }
         }
         if let Some((block, offset)) = hit {
@@ -3854,6 +3911,8 @@ struct RunningBand<'a> {
     rect: Rect,
     is_footer: bool,
     editing: bool,
+    /// The block the input method composes in, and its composition.
+    composition: Option<(&'a str, &'a EditCore)>,
 }
 
 struct EditorEventCtx<'a> {
@@ -3875,6 +3934,7 @@ struct UtilityBarsGeometry {
 struct PageSheetInput<'a> {
     header: &'a [BlockView],
     footer: &'a [BlockView],
+    composition: Option<(&'a str, &'a EditCore)>,
     edit_region: Region,
     index: usize,
     scroll_y: f64,
@@ -3945,6 +4005,7 @@ impl WordProcessorWidget {
             rect: band,
             is_footer,
             editing,
+            composition,
         } = *band;
         if blocks.is_empty() || band.height() <= 2.0 {
             return (false, Vec::new());
@@ -3957,11 +4018,20 @@ impl WordProcessorWidget {
         let mut shaped: Vec<RichTextLayout> = Vec::with_capacity(blocks.len());
         let mut total_h = 0.0f64;
         for b in blocks {
-            let runs = if editing {
-                running_head_runs_editing(b)
-            } else {
-                running_head_runs(b, page_no)
+            // The block being composed in shapes the composition inside its
+            // text, underlined.
+            let composing = composition
+                .filter(|(id, _)| *id == b.id)
+                .map(|(_, core)| core);
+            let runs = match composing {
+                Some(core) if editing => running_head_runs_editing(&composed_block(b, core)),
+                _ if editing => running_head_runs_editing(b),
+                _ => running_head_runs(b, page_no),
             };
+            let underlines = composing
+                .and_then(|core| core.preedit_display_range(&b.text))
+                .map(|range| vec![(range.start, range.end)])
+                .unwrap_or_default();
             let align = block_align(b, TextAlign::Left);
             let layout = RichTextLayout::shape_styled(
                 &mut tr.font_system,
@@ -3969,7 +4039,7 @@ impl WordProcessorWidget {
                 &RichTextLayout::block_style(false, size, FontFamily::Sans, 1.0),
                 Some(wrap_w),
                 align,
-                vec![],
+                underlines,
                 vec![],
             );
             total_h += f64::from(layout.height());
@@ -4007,6 +4077,9 @@ impl WordProcessorWidget {
                     text: b.text.clone(),
                     origin,
                     layout,
+                    composition: composition
+                        .filter(|(id, _)| *id == b.id)
+                        .map(|(_, core)| core.clone()),
                 });
             }
             y += h;
@@ -4079,7 +4152,7 @@ impl WordProcessorWidget {
     /// header/footer band, using the laid geometry captured in `region_laid`. The
     /// band caret mirrors the body caret (same `caret_geometry` machinery) so it
     /// blinks-free but lands exactly between glyphs.
-    fn draw_band_caret(&mut self, scene: &mut Scene, ctf: Affine, tr: &mut TextRenderer) {
+    fn draw_band_caret(&mut self, scene: &mut Scene, ctf: Affine) {
         if !self.lifecycle.focused {
             return;
         }
@@ -4088,8 +4161,9 @@ impl WordProcessorWidget {
         if let Some((s, e)) = self.inner.band_selection_range()
             && let Some(rl) = self.region_laid.iter().find(|r| r.id == s.0)
         {
-            let sb = char_to_byte(&rl.text, s.1);
-            let eb = char_to_byte(&rl.text, e.1);
+            let composition = rl.composition.as_ref();
+            let sb = shown_byte(composition, &rl.text, char_to_byte(&rl.text, s.1));
+            let eb = shown_byte(composition, &rl.text, char_to_byte(&rl.text, e.1));
             for (rx0, ry0, rx1, ry1) in rl.layout.selection_rects(sb, eb) {
                 let r = Rect::new(
                     rl.origin.x + f64::from(rx0),
@@ -4101,7 +4175,10 @@ impl WordProcessorWidget {
             }
         }
         if let Some(rl) = self.region_laid.iter().find(|r| r.id == caret.block) {
-            let byte = char_to_byte(&rl.text, caret.offset);
+            let byte = rl.composition.as_ref().map_or_else(
+                || char_to_byte(&rl.text, caret.offset),
+                |core| core.display_caret(&rl.text),
+            );
             let (cx, cy, ch) = rl.layout.caret_geometry(byte);
             let c = Rect::new(
                 rl.origin.x + f64::from(cx),
@@ -4111,16 +4188,6 @@ impl WordProcessorWidget {
             );
             self.ime_rect = Some(ctf.transform_rect_bbox(c));
             scene.fill(Fill::NonZero, ctf, self.chrome.paper_accent, None, &c);
-            if !self.ime_preedit.is_empty() {
-                tr.draw_style(
-                    scene,
-                    &self.ime_preedit,
-                    PAPER_INK,
-                    ctf * Affine::translate((c.x0, c.y0)),
-                    None,
-                    &ui::text_render::TextStyle::content(num::f32_of_f64(c.height() * 0.75)),
-                );
-            }
         }
     }
 
@@ -6422,7 +6489,11 @@ impl WordProcessorWidget {
         fg: &FrameGeometry,
     ) -> PaginationResult {
         let virtualized = self.body_order.len() > VIRTUALIZE_BODY_AFTER;
-        let blocks = std::mem::take(&mut self.blocks);
+        let mut blocks = std::mem::take(&mut self.blocks);
+        // An input-method composition is shaped inside its paragraph, so the
+        // text after the caret moves aside and wraps with it. The block is
+        // swapped for its composed view only while it is laid out.
+        let composing = self.compose_caret_block(&mut blocks);
         let mut laid: Vec<Laid> = Vec::with_capacity(blocks.len());
         // Keep the current layouts separate from a bounded recently visited
         // window. Returning to it can reuse shaping, while the canonical key
@@ -6522,6 +6593,9 @@ impl WordProcessorWidget {
             unused.sort_by_key(|(id, _)| !previous_current.contains(id));
             self.recent_layout_cache = unused.into_iter().take(VIEWPORT_BLOCK_WINDOW).collect();
         }
+        if let Some(composing) = composing {
+            Self::restore_composed_block(&mut laid, &mut blocks, composing);
+        }
         PaginationResult {
             laid,
             cache: new_cache,
@@ -6531,6 +6605,40 @@ impl WordProcessorWidget {
                 .max(estimated_last_page),
             y: cur.y,
             blocks,
+        }
+    }
+
+    /// Swap the caret block in `blocks` for its view with the input method's
+    /// composition laid in, returning its index, the committed block and the
+    /// composition; `None` (and `blocks` untouched) while nothing composes.
+    fn compose_caret_block(
+        &self,
+        blocks: &mut [BlockView],
+    ) -> Option<(usize, BlockView, EditCore)> {
+        if self.inner.in_running_region() {
+            return None;
+        }
+        let index = blocks.iter().position(|b| b.id == self.inner.caret.block)?;
+        let block = blocks.get_mut(index)?;
+        let core = self.inner.composition(&block.text)?;
+        let composed = composed_block(block, &core);
+        Some((index, std::mem::replace(block, composed), core))
+    }
+
+    /// Put the committed block taken by [`Self::compose_caret_block`] back,
+    /// and record on its laid slices the committed text and the composition
+    /// their shaped layout shows.
+    fn restore_composed_block(
+        laid: &mut [Laid],
+        blocks: &mut [BlockView],
+        (index, committed, core): (usize, BlockView, EditCore),
+    ) {
+        for l in laid.iter_mut().filter(|l| l.id == committed.id) {
+            l.text.clone_from(&committed.text);
+            l.composition = Some(core.clone());
+        }
+        if let Some(block) = blocks.get_mut(index) {
+            *block = committed;
         }
     }
 
@@ -6616,6 +6724,7 @@ impl WordProcessorWidget {
                     cell_box: Some(cbox),
                     cell_row: Some(r),
                     page: cur.cur_page,
+                    composition: None,
                 });
             }
             ry += row_h;
@@ -6775,6 +6884,7 @@ impl WordProcessorWidget {
             cell_box: None,
             cell_row: None,
             page: placement.page,
+            composition: None,
         });
     }
 
@@ -7087,6 +7197,7 @@ impl WordProcessorWidget {
                 cell_box: None,
                 cell_row: None,
                 page: cur.cur_page,
+                composition: None,
             });
             cur.y = item_top + block_h + f64::from(pl.space_after);
         } else {
@@ -7187,6 +7298,7 @@ impl WordProcessorWidget {
                 cell_box: None,
                 cell_row: None,
                 page: cur.cur_page,
+                composition: None,
             });
             li = last + 1;
             first_slice = false;
@@ -7280,6 +7392,12 @@ impl WordProcessorWidget {
         // on which page its editable band lives (the first page is the reference —
         // the header/footer content is shared across pages, like Word).
         let edit_region = self.inner.region();
+        let caret_block = self.inner.caret.block.clone();
+        let band_composition = header
+            .iter()
+            .chain(&footer)
+            .find(|b| self.inner.in_running_region() && b.id == caret_block)
+            .and_then(|b| self.inner.composition(&b.text));
         self.region_laid.clear();
         // Drawing every sheet makes a long imported document O(page_count) per
         // frame even though the canvas clips all but a handful. Paint only the
@@ -7307,6 +7425,9 @@ impl WordProcessorWidget {
                 &PageSheetInput {
                     header: &header,
                     footer: &footer,
+                    composition: band_composition
+                        .as_ref()
+                        .map(|core| (caret_block.as_str(), core)),
                     edit_region,
                     index: i,
                     scroll_y: sy,
@@ -7341,6 +7462,7 @@ impl WordProcessorWidget {
         let PageSheetInput {
             header,
             footer,
+            composition,
             edit_region,
             index: i,
             scroll_y: sy,
@@ -7384,6 +7506,7 @@ impl WordProcessorWidget {
                 rect: head_band,
                 is_footer: false,
                 editing: head_editing,
+                composition: composition.filter(|_| head_editing),
             },
         );
         let (drew_footer, foot_laid) = Self::draw_running_band(
@@ -7396,6 +7519,7 @@ impl WordProcessorWidget {
                 rect: foot_band,
                 is_footer: true,
                 editing: foot_editing,
+                composition: composition.filter(|_| foot_editing),
             },
         );
         if head_editing {
@@ -7487,10 +7611,6 @@ impl WordProcessorWidget {
     /// spell-check squiggles, footnote superscripts) and the caret for every
     /// laid item. Collects the footnote/comment/change-card bookkeeping that
     /// the passes after this one render.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one immediate-mode paint pass for a page's content"
-    )]
     fn draw_page_content(
         &mut self,
         scene: &mut Scene,
@@ -7533,24 +7653,7 @@ impl WordProcessorWidget {
                 continue;
             }
 
-            if let Some(bul) = &l.bullet {
-                // The marker column is right-aligned at the same gap for `9.`
-                // and `10.` alike. A fixed start point makes multi-digit
-                // counters grow into the paragraph and visibly collide at
-                // large text. Measure with the exact font/scale used below,
-                // then reserve the same perceived gap for every counter width.
-                let marker = ui::text_render::TextStyle::content(l.size);
-                let (marker_width, _) = text_renderer.measure_style(bul, None, &marker);
-                let marker_x = list_marker_x(l.text_x, f64::from(marker_width));
-                text_renderer.draw_style(
-                    scene,
-                    bul,
-                    l.ink,
-                    fg.ctf * Affine::translate((marker_x, l.y_top)),
-                    None,
-                    &marker,
-                );
-            }
+            Self::draw_laid_bullet(scene, fg, text_renderer, l);
 
             // The shaped text lives in the layout cache (built in pass 1), keyed
             // by block id. Every normal/cell entry was inserted there.
@@ -7602,7 +7705,7 @@ impl WordProcessorWidget {
                 && l.id == self.inner.caret.block
                 && !self.inner.has_selection()
             {
-                let byte = char_to_byte(&l.text, self.inner.caret.offset);
+                let byte = l.caret_byte(self.inner.caret.offset);
                 let (cx, cy, ch) = layout.caret_geometry(byte);
                 let caret = Rect::new(
                     l.text_x + f64::from(cx),
@@ -7618,16 +7721,6 @@ impl WordProcessorWidget {
                     None,
                     &caret,
                 );
-                if !self.ime_preedit.is_empty() {
-                    text_renderer.draw_style(
-                        scene,
-                        &self.ime_preedit,
-                        l.ink,
-                        fg.ctf * Affine::translate((caret.x0, caret.y0)),
-                        None,
-                        &ui::text_render::TextStyle::content(l.size),
-                    );
-                }
             }
             if clipped {
                 scene.pop_layer();
@@ -7638,6 +7731,32 @@ impl WordProcessorWidget {
             page_notes,
             comment_markers,
             change_markers,
+        }
+    }
+
+    fn draw_laid_bullet(
+        scene: &mut Scene,
+        fg: &FrameGeometry,
+        text_renderer: &mut TextRenderer,
+        l: &Laid,
+    ) {
+        if let Some(bul) = &l.bullet {
+            // The marker column is right-aligned at the same gap for `9.`
+            // and `10.` alike. A fixed start point makes multi-digit
+            // counters grow into the paragraph and visibly collide at
+            // large text. Measure with the exact font/scale used below,
+            // then reserve the same perceived gap for every counter width.
+            let marker = ui::text_render::TextStyle::content(l.size);
+            let (marker_width, _) = text_renderer.measure_style(bul, None, &marker);
+            let marker_x = list_marker_x(l.text_x, f64::from(marker_width));
+            text_renderer.draw_style(
+                scene,
+                bul,
+                l.ink,
+                fg.ctf * Affine::translate((marker_x, l.y_top)),
+                None,
+                &marker,
+            );
         }
     }
 
@@ -7854,7 +7973,10 @@ impl WordProcessorWidget {
         comment_markers: &mut Vec<(String, f64, f64)>,
     ) {
         let (l, layout, ly) = (item.l, item.layout, item.ly);
-        if let Some((b0, b1)) = self.selection_bytes_for(&l.id, &l.text) {
+        if let Some((b0, b1)) = self
+            .selection_bytes_for(&l.id, &l.text)
+            .map(|(b0, b1)| (l.shown(b0), l.shown(b1)))
+        {
             if let (Some(bx), true) = (l.cell_box, multi_sel) {
                 // Multi-cell selection: highlight the whole cell (spreadsheet-style).
                 scene.fill(Fill::NonZero, fg.ctf, self.paper_selection(), None, &bx);
@@ -7878,7 +8000,7 @@ impl WordProcessorWidget {
                 .matches()
                 .iter()
                 .filter(|(bid, _, _)| bid == &l.id)
-                .map(|(_, cs, ce)| (char_to_byte(&l.text, *cs), char_to_byte(&l.text, *ce)))
+                .map(|(_, cs, ce)| (l.layout_byte(*cs), l.layout_byte(*ce)))
                 .collect();
             let current = self
                 .find
@@ -7917,12 +8039,10 @@ impl WordProcessorWidget {
             && let Some(b) = self.blocks.iter().find(|b| b.id == l.id)
         {
             for (bs, be, cid) in block_comment_ranges(b) {
-                let rects = layout.selection_rects(bs, be);
-                let wash = ReviewColors::comment_highlight(
-                    &self.paper_theme,
-                    self.chrome.paper,
-                    self.review.comment_author(&cid).unwrap_or_default(),
-                );
+                let author = self.review.comment_author(&cid).unwrap_or("");
+                let wash =
+                    ReviewColors::comment_highlight(&self.paper_theme, self.chrome.paper, author);
+                let rects = layout.selection_rects(l.shown(bs), l.shown(be));
                 for &(rx0, ry0, rx1, ry1) in &rects {
                     let r = Rect::new(
                         l.text_x + f64::from(rx0),
@@ -7974,7 +8094,7 @@ impl WordProcessorWidget {
         {
             let (ins_ranges, del_ranges) = block_change_decos(b);
             for &(b0, b1) in &ins_ranges {
-                for (rx0, _ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                for (rx0, _ry0, rx1, ry1) in layout.selection_rects(l.shown(b0), l.shown(b1)) {
                     let uy = ly + f64::from(ry1) - 2.0;
                     let line = Rect::new(
                         l.text_x + f64::from(rx0),
@@ -7986,7 +8106,7 @@ impl WordProcessorWidget {
                 }
             }
             for &(b0, b1) in &del_ranges {
-                for (rx0, ry0, rx1, ry1) in layout.selection_rects(b0, b1) {
+                for (rx0, ry0, rx1, ry1) in layout.selection_rects(l.shown(b0), l.shown(b1)) {
                     let my = ly + f64::from(f32::midpoint(ry0, ry1));
                     let line = Rect::new(
                         l.text_x + f64::from(rx0),
@@ -8000,7 +8120,7 @@ impl WordProcessorWidget {
             // Collect a review-card marker per change range (carrying the
             // change id so the card's Accept/Reject can act on it).
             for (bs, be, cid) in block_change_ranges(b) {
-                let rects = layout.selection_rects(bs, be);
+                let rects = layout.selection_rects(l.shown(bs), l.shown(be));
                 if let Some(&(_, ry0, _, _)) = rects.first() {
                     let right_x = rects.iter().map(|r| r.2).fold(f32::MIN, f32::max);
                     change_markers.push((cid, ly + f64::from(ry0), l.text_x + f64::from(right_x)));
@@ -8033,6 +8153,16 @@ impl WordProcessorWidget {
             // One pass over the paragraph's runs for all of its spans (a
             // pasted page can carry thousands of squiggles).
             let (top, bottom) = layout_clip_band(fg, ly);
+            let shown: Vec<(usize, usize)>;
+            let spans = if l.composition.is_some() {
+                shown = spans
+                    .iter()
+                    .map(|&(s, e)| (l.shown(s), l.shown(e)))
+                    .collect();
+                &shown
+            } else {
+                spans
+            };
             let ranges = spans_within(spans, layout.source_range_within(top, bottom));
             for rects in layout.selection_rects_many_within(&ranges, top, bottom) {
                 for (rx0, _ry0, rx1, ry1) in rects {
@@ -8062,8 +8192,8 @@ impl WordProcessorWidget {
                 let Some(&num) = note_nums.get(&note_id) else {
                     continue;
                 };
-                let bs = char_to_byte(&l.text, ci);
-                let be = char_to_byte(&l.text, ci + 1);
+                let bs = l.layout_byte(ci);
+                let be = l.layout_byte(ci + 1);
                 // Anchor at the placeholder's left edge; fall back to the
                 // caret geometry if the glyph produced no selection rect.
                 let placeholder_rect = layout.selection_rects(bs, be).into_iter().next();
@@ -8220,7 +8350,6 @@ impl WordProcessorWidget {
         &mut self,
         scene: &mut Scene,
         fg: &FrameGeometry,
-        text_renderer: &mut TextRenderer,
         num_pages: usize,
         sy: f64,
     ) {
@@ -8258,7 +8387,7 @@ impl WordProcessorWidget {
                     &veil,
                 );
             }
-            self.draw_band_caret(scene, fg.ctf, text_renderer);
+            self.draw_band_caret(scene, fg.ctf);
         }
     }
 
@@ -8292,6 +8421,7 @@ impl WordProcessorWidget {
         &self,
         scene: &mut Scene,
         ctf: Affine,
+        canvas_clip: Rect,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
@@ -8314,16 +8444,6 @@ impl WordProcessorWidget {
         let now = ui::time::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
-                tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
-                    .iter()
-                    .map(|range| {
-                        (
-                            range.block.as_str(),
-                            usize::try_from(range.start).unwrap_or(usize::MAX),
-                            usize::try_from(range.end).unwrap_or(usize::MAX),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
                 tilo_actions::InteractionAnchor::Objects { ids } => ids
                     .iter()
                     .filter_map(|id| {
@@ -8335,7 +8455,9 @@ impl WordProcessorWidget {
                     .collect(),
                 _ => Vec::new(),
             };
-            let mut rects = Vec::new();
+            let mut rects = self
+                .semantic_text_rects(&interaction.anchor, ctf, canvas_clip)
+                .unwrap_or_default();
             for (block, start, end) in ranges {
                 let Some(l) = self.laid.iter().find(|laid| laid.id == block) else {
                     continue;
@@ -8343,6 +8465,7 @@ impl WordProcessorWidget {
                 let Some((_, layout)) = self.layout_cache.get(block) else {
                     continue;
                 };
+                let (start, end) = (l.layout_byte(start), l.layout_byte(end));
                 rects.extend(layout.selection_rects(start, end).into_iter().map(
                     |(x0, y0, x1, y1)| {
                         Rect::new(
@@ -8354,15 +8477,25 @@ impl WordProcessorWidget {
                     },
                 ));
             }
+            if rects.is_empty() {
+                continue;
+            }
+            // This pass runs after the page layer was popped. Clip semantic
+            // highlights and their labels explicitly so they cannot reach
+            // the toolbar, other panes, or the surrounding host chrome.
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                Affine::IDENTITY,
+                &canvas_clip,
+            );
             let user = UserId(interaction.actor.id.clone());
             for rect in &rects {
                 presence.draw_peer_selection(scene, theme, ctf, &user, *rect);
             }
-            if let Some(bounds) = rects
-                .iter()
-                .copied()
-                .reduce(|bounds, rect| bounds.union(rect))
-            {
+            // Label an actual visible span, never a union spanning page gaps.
+            if let Some(bounds) = rects.first().copied() {
                 let label = presence.display_name(&user);
                 presence.draw_peer_outline_labeled(
                     &mut ui::paint::PaintCtx::new(scene, ctf, text_renderer, theme),
@@ -8372,6 +8505,7 @@ impl WordProcessorWidget {
                     3.0,
                 );
             }
+            scene.pop_layer();
         }
         for c in &remote_carets {
             presence.draw_peer_caret_labeled(
@@ -10144,7 +10278,7 @@ impl Widget for WordProcessorWidget {
         // Header/footer edit mode: veil the body + draw the band caret (checks
         // `self.inner.in_running_region()` itself). Drawn last so the veil
         // covers the body but the band + its caret stay crisp on top.
-        self.draw_running_region_veil(scene, &fg, text_renderer, num_pages, sy);
+        self.draw_running_region_veil(scene, &fg, num_pages, sy);
 
         self.draw_review_column(
             scene,
@@ -10164,7 +10298,14 @@ impl Widget for WordProcessorWidget {
         // no longer exist) so the next frame can reuse it.
         self.layout_cache = new_cache;
 
-        self.draw_remote_overlays(scene, fg.ctf, text_renderer, theme, presence);
+        self.draw_remote_overlays(
+            scene,
+            fg.ctf,
+            fg.canvas_clip,
+            text_renderer,
+            theme,
+            presence,
+        );
 
         if fg.history_h > 0.0 {
             // Inset from the column's sides by the gutter the status band's
@@ -10452,7 +10593,7 @@ impl Widget for WordProcessorWidget {
                 ..
             } => self.handle_left_release(ctx.state, ctx.handled),
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
-                self.ime_preedit.clear();
+                self.inner.clear_preedit();
                 self.handle_key_press(
                     ctx.state,
                     &Key::Character(text.as_str().into()),
@@ -10462,13 +10603,17 @@ impl Widget for WordProcessorWidget {
                     ctx.handled,
                 );
             }
-            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
-                self.ime_preedit.clone_from(text);
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
+                if text.is_empty() {
+                    self.inner.clear_preedit();
+                } else {
+                    self.inner.set_preedit(text, *cursor);
+                }
                 self.lifecycle.dirty = true;
                 *ctx.handled = true;
             }
             WindowEvent::Ime(winit::event::Ime::Disabled) => {
-                self.ime_preedit.clear();
+                self.inner.clear_preedit();
                 self.lifecycle.dirty = true;
             }
             WindowEvent::KeyboardInput {
@@ -11615,7 +11760,7 @@ impl WordProcessorWidget {
                             continue;
                         }
                         let rects: Vec<Rect> = layout
-                            .selection_rects(range.start, range.end)
+                            .selection_rects(l.shown(range.start), l.shown(range.end))
                             .into_iter()
                             .map(|(rx0, ry0, rx1, ry1)| {
                                 Rect::new(
@@ -11638,7 +11783,7 @@ impl WordProcessorWidget {
                 // Remote carets (drawn over the text, like the local one).
                 if let Some(list) = presence.carets.get(&key) {
                     for (user, byte_pos) in list {
-                        let (cx, cy, ch) = layout.caret_geometry(*byte_pos);
+                        let (cx, cy, ch) = layout.caret_geometry(l.shown(*byte_pos));
                         let rect = Rect::new(
                             l.text_x + f64::from(cx),
                             l.y_top + f64::from(cy),
@@ -11685,7 +11830,7 @@ impl WordProcessorWidget {
                     continue;
                 }
                 let spans: Vec<(Rect, f32)> = layout
-                    .selection_rects(range.start, range.end)
+                    .selection_rects(l.shown(range.start), l.shown(range.end))
                     .into_iter()
                     .map(|(rx0, ry0, rx1, ry1)| {
                         (

@@ -47,6 +47,8 @@ hex.workspace = true
 libc.workspace = true
 zeroize.workspace = true
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
+# Derives the person's secret-sync key from the root.
+blake3.workspace = true
 # Signing secrets in the system secret store: the Secret Service on Linux,
 # the Keychain on macOS.
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }

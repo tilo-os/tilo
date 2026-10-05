@@ -16,7 +16,7 @@ use getrandom::{SysRng, rand_core::TryRng as _};
 use ui::WakeHandle;
 
 use crate::app::ReportEnvelope;
-use crate::config::{RegistryConfig, load_registries};
+use crate::config::{RegistriesFile, RegistryConfig};
 use crate::flathub_client::{Remote, installed_flatpaks};
 use crate::model::{ActionKind, StoreSource};
 use crate::search_provider::StoreSearchIndex;
@@ -56,6 +56,8 @@ pub enum Request {
     /// `Request` (and the channel that carries them) sized to the common
     /// case instead of the rare, heavy one.
     Act(Box<StoreItem>, ActionKind),
+    /// Update each app in turn, reporting progress, then refresh once.
+    UpdateAll(Vec<StoreItem>),
     SubmitReport {
         registry_name: String,
         envelope: ReportEnvelope,
@@ -132,12 +134,16 @@ impl StoreWorker {
         let pending = Arc::new(AtomicUsize::new(1));
         std::thread::Builder::new()
             .name("store-worker".into())
-            .spawn(move || {
-                let snapshots = Snapshots {
-                    sender: snapshot_tx,
-                    wake,
-                };
-                run(&request_rx, &snapshots, search_index);
+            .spawn({
+                let pending = Arc::clone(&pending);
+                move || {
+                    let snapshots = Snapshots {
+                        sender: snapshot_tx,
+                        wake,
+                        pending,
+                    };
+                    run(&request_rx, &snapshots, search_index);
+                }
             })
             .expect("spawn store worker");
         Self {
@@ -187,6 +193,9 @@ impl StoreWorker {
 struct Snapshots {
     sender: mpsc::Sender<Snapshot>,
     wake: WakeHandle,
+    /// The UI's count of snapshots still to come: a request sends one, and
+    /// a progress report adds its own.
+    pending: Arc<AtomicUsize>,
 }
 
 impl Snapshots {
@@ -194,6 +203,12 @@ impl Snapshots {
         let sent = self.sender.send(snapshot).is_ok();
         self.wake.wake();
         sent
+    }
+
+    /// A snapshot beside the one that answers the request.
+    fn progress(&self, snapshot: Snapshot) -> bool {
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        self.send(snapshot)
     }
 }
 
@@ -355,6 +370,7 @@ fn handle(
             state.remotes = crate::flathub_client::list_remotes();
             remote_result(snapshots, state, result)
         }
+        Request::UpdateAll(items) => update_all(&items, state, snapshots, staging),
         Request::Act(item, action) => {
             let outcome =
                 crate::actions::execute_with_host(state.host.as_ref(), &item, action, staging);
@@ -380,7 +396,8 @@ fn handle(
             registry_name,
             envelope,
         } => {
-            let outcome = match submit_report(&registry_name, &envelope) {
+            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
+            let outcome = match submit_report(&registries, &registry_name, &envelope) {
                 Ok(case) => Ok(Finished {
                     status: format!(
                         "Report submitted as {}. Status will appear after the registry owner publishes a signed transparency snapshot.",
@@ -401,7 +418,8 @@ fn handle(
             registry_name,
             case_id,
         } => {
-            let outcome = moderation_registry(&registry_name)
+            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
+            let outcome = moderation_registry(&registries, &registry_name)
                 .and_then(|registry| {
                     crate::moderation_client::fetch_verified_case(&registry, &case_id)
                 })
@@ -428,7 +446,8 @@ fn handle(
             case_id,
             reason,
         } => {
-            let outcome = moderation_registry(&registry_name)
+            let registries = crate::config::repositories(state.host.as_ref()).unwrap_or_default();
+            let outcome = moderation_registry(&registries, &registry_name)
                 .and_then(|registry| {
                     let now = ui::time::wall()
                         .duration_since(ui::time::UNIX_EPOCH)
@@ -638,6 +657,77 @@ fn send(
     send_tracked(snapshots, state, items, status_line, query, detail, None)
 }
 
+/// Update every item in turn without opening any, report each step, and
+/// answer with what happened.
+fn update_all(
+    items: &[StoreItem],
+    state: &mut State,
+    snapshots: &Snapshots,
+    staging: &std::path::Path,
+) -> (bool, Option<Outcome>) {
+    let total = items.len();
+    let mut failures = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let progress = Snapshot {
+            items: state.base_items.clone(),
+            status_line: format!(
+                "Updating {} of {total}: {}…",
+                index.saturating_add(1),
+                item.name
+            ),
+            query: None,
+            detail: None,
+            remotes: state.remotes.clone(),
+            operation_error: None,
+        };
+        if !snapshots.progress(progress) {
+            return (false, None);
+        }
+        let action = match item.source {
+            StoreSource::Flathub => ActionKind::FlatpakUpdate,
+            StoreSource::Tilo { .. } => ActionKind::Update,
+        };
+        let outcome = crate::actions::execute_with_host(state.host.as_ref(), item, action, staging);
+        if !outcome.ok {
+            failures.push(format!("{}: {}", item.name, outcome.status_line));
+        }
+    }
+    refresh(state);
+    let summary = update_all_summary(total, &failures);
+    let operation_error = (!failures.is_empty()).then(|| summary.clone());
+    let alive = send_tracked(
+        snapshots,
+        state,
+        state.base_items.clone(),
+        &summary,
+        None,
+        None,
+        operation_error,
+    );
+    let finished = if failures.is_empty() {
+        Ok(Finished::status(summary))
+    } else {
+        Err(summary)
+    };
+    (alive, Some(finished))
+}
+
+fn update_all_summary(total: usize, failures: &[String]) -> String {
+    let apps = if total == 1 { "app" } else { "apps" };
+    match failures {
+        [] => format!("Updated {total} {apps}."),
+        [first, rest @ ..] => {
+            let updated = total.saturating_sub(failures.len());
+            let more = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(" (and {} more failed)", rest.len())
+            };
+            format!("Updated {updated} of {total} {apps}; {first}{more}")
+        }
+    }
+}
+
 fn send_tracked(
     snapshots: &Snapshots,
     state: &State,
@@ -658,10 +748,11 @@ fn send_tracked(
 }
 
 fn submit_report(
+    registries: &RegistriesFile,
     registry_name: &str,
     envelope: &ReportEnvelope,
 ) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
-    let registry = moderation_registry(registry_name)?;
+    let registry = moderation_registry(registries, registry_name)?;
     let now = ui::time::wall()
         .duration_since(ui::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -692,12 +783,14 @@ fn submit_report(
 }
 
 fn moderation_registry(
+    registries: &RegistriesFile,
     registry_name: &str,
 ) -> Result<RegistryConfig, crate::moderation_client::ModerationClientError> {
-    load_registries()
+    registries
         .registries
-        .into_iter()
+        .iter()
         .find(|registry| registry.enabled && registry.name == registry_name)
+        .cloned()
         .ok_or_else(|| {
             crate::moderation_client::ModerationClientError::Offline(
                 "the app's registry is disabled or no longer configured".into(),
@@ -732,7 +825,13 @@ fn collect_items(
     installed: &[(String, String)],
     host: Option<&app_host::client::BlockingClient>,
 ) -> Vec<StoreItem> {
-    let registries = load_registries().registries;
+    let registries = match crate::config::repositories(host) {
+        Ok(file) => file.registries,
+        Err(error) => {
+            tracing::warn!("could not read the app repositories: {error}");
+            Vec::new()
+        }
+    };
     let installed_tilo = host.and_then(|host| host.list().ok()).unwrap_or_default();
     let mut tilo_items = Vec::new();
     for registry in registries.iter().filter(|registry| registry.enabled) {
@@ -794,6 +893,21 @@ fn registries_summary(registries: &[RegistryConfig]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn update_all_reports_what_it_updated_and_the_first_failure() {
+        use super::update_all_summary;
+        assert_eq!(update_all_summary(1, &[]), "Updated 1 app.");
+        assert_eq!(update_all_summary(3, &[]), "Updated 3 apps.");
+        assert_eq!(
+            update_all_summary(3, &["Notes: install refused".into()]),
+            "Updated 2 of 3 apps; Notes: install refused"
+        );
+        assert_eq!(
+            update_all_summary(3, &["Notes: offline".into(), "Clocks: offline".into()]),
+            "Updated 1 of 3 apps; Notes: offline (and 1 more failed)"
+        );
+    }
+
     use super::*;
     use crate::{InstalledState, StoreItemVersion, StoreTrust};
     use ui::search::SearchProvider;
@@ -870,6 +984,7 @@ mod tests {
             let snapshots = Snapshots {
                 sender,
                 wake: WakeHandle::new(),
+                pending: Arc::new(AtomicUsize::new(0)),
             };
 
             assert!(send_tracked(

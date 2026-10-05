@@ -12,7 +12,8 @@
 //! The browser is deliberately small: it is chrome (address bar,
 //! navigation, progress, filter loading) around the `ui` toolkit's
 //! `WebView` widget. The web engine itself lives behind
-//! `ui::webview::WebViewEngine`; retained tabs share one native runtime.
+//! `ui::webview::WebViewEngine`. A window shows one page; other pages are
+//! other Browser instances in the desktop's tabs.
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -44,14 +45,10 @@ pub mod address_overlay;
 pub mod autofill;
 mod back_hold;
 pub mod blocker;
-pub mod browser_tab_strip;
-pub mod browser_tabs;
 pub mod browser_widget;
+pub mod browser_window;
 pub mod browsing_mode;
 mod capture_page;
-/// Zero-copy WebView compositor — needs the WPE engine's dmabuf import.
-#[cfg(feature = "wpe")]
-pub mod compositor;
 mod credentials;
 mod daily_controls;
 pub mod downloads;
@@ -65,14 +62,12 @@ pub mod private_window;
 pub mod resource;
 mod rows;
 pub mod search_provider;
-pub mod session;
 pub mod settings;
 mod site_controls;
 pub mod storage;
 
-pub use browser_tab_strip::BrowserTabStrip;
-pub use browser_tabs::BrowserTabs;
 pub use browser_widget::BrowserWidget;
+pub use browser_window::BrowserWindow;
 
 mod capabilities;
 /// Production Browser root used by the normal launcher, headless tooling,

@@ -116,15 +116,14 @@ enum CompactPane {
 /// source editor wraps it with the caret at the end of the line. The long line
 /// is last (no trailing newline) so placing the caret at the document end lands
 /// it there.
-const LONG_LINE_DEMO: &str = "= Meeting notes\n\nA paragraph in Typst is just lines of text, so this one is written as a single long line of source that runs well past the right edge of the editor pane. The editor wraps it onto continuation rows and keeps the caret in view as you type toward the end.\n\n- Agenda\n  - A nested point long enough to wrap: its continuation rows hang under the point's own indentation, not at the margin.";
+const SCROLL_DEMO: &str = "= Meeting notes\n\nA paragraph in Typst is just lines of text, so this one is written as a single long line of source that runs well past the right edge of the editor pane. The editor wraps it onto continuation rows and keeps the caret in view as you type toward the end.\n\n- Agenda\n  - A nested point long enough to wrap: its continuation rows hang under the point's own indentation, not at the margin.";
 
-/// A document the picker can switch to: either a bundled sample or a `.typ`
-/// file discovered on disk.
+/// The document this window edits: a bundled sample or a `.typ` file the
+/// person opened. Another document is another editor in a desktop tab.
 #[derive(Clone)]
 struct Document {
     name: String,
     source: String,
-    from_disk: bool,
 }
 
 /// The sizes of the window's own chrome, measured in the theme at paint: the
@@ -174,8 +173,7 @@ pub struct TypstApp {
 
     // --- document / CRDT ---
     source_id: Option<ObjId>,
-    documents: Vec<Document>,
-    current: usize,
+    document: Document,
     /// An in-flight host file dialog: the operation and the channel its chosen
     /// path arrives on, drained once per frame in [`Self::drain_io`]. `None`
     /// when no Open / Save / Export chooser is open.
@@ -281,49 +279,36 @@ pub struct TypstApp {
 }
 
 impl TypstApp {
-    /// The live editor: its document library is the user's real `.typ` files on
-    /// disk. If none exist yet it opens a single blank starter document.
+    /// The live editor: a blank starter document. Open loads a `.typ` file
+    /// into this window; another file side by side is another window.
     pub fn new() -> Self {
-        Self::from_library(Self::save_dir().as_deref())
+        Self::with_document(Document {
+            name: "untitled.typ".into(),
+            source: String::new(),
+        })
     }
 
-    /// A hermetic instance seeded with the bundled example documents. Used by
+    /// A hermetic instance seeded with the bundled example document. Used by
     /// the offscreen `--shots` renderer and tests so the output never depends
     /// on what happens to be on disk.
-    pub fn with_demo_documents() -> Self {
-        Self::with_documents(Self::demo_documents(), DEFAULT_INDEX)
+    pub fn with_demo_document() -> Self {
+        let sample = SAMPLES
+            .get(DEFAULT_INDEX)
+            .or_else(|| SAMPLES.first())
+            .map_or_else(
+                || Document {
+                    name: "untitled.typ".into(),
+                    source: String::new(),
+                },
+                |sample| Document {
+                    name: sample.name.to_string(),
+                    source: sample.source.to_string(),
+                },
+            );
+        Self::with_document(sample)
     }
 
-    fn demo_documents() -> Vec<Document> {
-        SAMPLES
-            .iter()
-            .map(|s| Document {
-                name: s.name.to_string(),
-                source: s.source.to_string(),
-                from_disk: false,
-            })
-            .collect()
-    }
-
-    /// Build the live library from `dir`: every `.typ` file found there, or a
-    /// single blank starter when the directory is empty or absent.
-    pub(crate) fn from_library(dir: Option<&std::path::Path>) -> Self {
-        let mut documents = Vec::new();
-        if let Some(dir) = dir {
-            documents = Self::scan_dir(dir);
-        }
-        if documents.is_empty() {
-            documents.push(Document {
-                name: "untitled.typ".into(),
-                source: String::new(),
-                from_disk: false,
-            });
-        }
-        Self::with_documents(documents, 0)
-    }
-
-    fn with_documents(documents: Vec<Document>, current: usize) -> Self {
-        let current = current.min(documents.len().saturating_sub(1));
+    fn with_document(document: Document) -> Self {
         let theme = Theme::dark();
         Self {
             parts: WorldParts::new(),
@@ -333,8 +318,7 @@ impl TypstApp {
             preview: PreviewPane::new(),
             diagnostics: DiagnosticsPanel::new(),
             source_id: None,
-            documents,
-            current,
+            document,
             io: None,
             background_poll_deadline: Cell::new(None),
             resource_invocation: None,
@@ -478,12 +462,10 @@ impl TypstApp {
     /// Test-only: replace the local document list with unpublished source.
     #[cfg(test)]
     pub(crate) fn seed_unpublished_source_for_test(&mut self, name: &str, source: &str) {
-        self.documents = vec![Document {
+        self.document = Document {
             name: name.into(),
             source: source.into(),
-            from_disk: false,
-        }];
-        self.current = 0;
+        };
         self.initialized = false;
         self.source_id = None;
     }
@@ -491,24 +473,21 @@ impl TypstApp {
     /// Test-only: local document names currently held on the surface.
     #[cfg(test)]
     pub(crate) fn local_document_names_for_test(&self) -> Vec<String> {
-        self.documents.iter().map(|doc| doc.name.clone()).collect()
+        vec![self.document.name.clone()]
     }
 
     /// Test-only: current local source body held on the surface.
     #[cfg(test)]
     pub(crate) fn local_source_for_test(&self) -> String {
-        self.documents
-            .get(self.current)
-            .map(|doc| doc.source.clone())
-            .unwrap_or_default()
+        self.document.source.clone()
     }
 
     /// Stage the capture a `--shots` run asks for: the bundled documents in
     /// place of whatever the library holds, then the named scenario. Never
     /// called by the live event loop.
     pub fn stage_capture(&mut self, scenario: Option<&str>) {
-        self.documents = Self::demo_documents();
-        self.current = DEFAULT_INDEX;
+        let demo = Self::with_demo_document();
+        self.document = demo.document;
         self.demo_reload = true;
         if let Some(name) = scenario {
             self.apply_demo_scenario(name);
@@ -521,24 +500,25 @@ impl TypstApp {
     pub fn apply_demo_scenario(&mut self, scenario: &str) {
         match scenario {
             "preview" => self.compact_view = CompactPane::Preview,
-            "documents" => self.demo_documents = true,
+            "menu" | "documents" => self.demo_documents = true,
             // The report is two pages, so the thumbnail strip shows.
-            "pages" => self.current = 1,
-            "problems" => self.show_diagnostics = true,
-            "long-line" => {
-                if let Some(d) = self.documents.get_mut(self.current) {
-                    d.name = "notes.typ".to_string();
-                    d.source = LONG_LINE_DEMO.to_string();
+            "pages" => {
+                if let Some(sample) = SAMPLES.get(1) {
+                    self.document = Document {
+                        name: sample.name.into(),
+                        source: sample.source.into(),
+                    };
                 }
+            }
+            "problems" => self.show_diagnostics = true,
+            "scrolled" | "long-line" => {
+                SCROLL_DEMO.clone_into(&mut self.document.source);
                 self.editor.focused = true;
                 self.demo_caret_end = true;
             }
             "errors" => {
                 self.show_diagnostics = true;
-                if let Some(d) = self.documents.get_mut(self.current) {
-                    d.name = "draft.typ".to_string();
-                    d.source = crate::samples::ERROR_WARNING.to_string();
-                }
+                crate::samples::ERROR_WARNING.clone_into(&mut self.document.source);
             }
             "editor-select" => {
                 self.editor.focused = true;
@@ -562,11 +542,7 @@ impl TypstApp {
     /// Get-or-create the `root["source"]` Text object, seeding it with the
     /// current sample the first time it's created.
     pub(crate) fn ensure_source_obj(&mut self, doc: &mut AutoCommit) -> ObjId {
-        let seed = self
-            .documents
-            .get(self.current)
-            .map(|d| d.source.clone())
-            .unwrap_or_default();
+        let seed = self.document.source.clone();
         self.apply_source_action(doc, &crate::resource::TypstDocAction::EnsureSource { seed });
         match doc.get(&ROOT, "source") {
             Ok(Some((Value::Object(ObjType::Text), id))) => id,
@@ -581,20 +557,10 @@ impl TypstApp {
             .unwrap_or_default()
     }
 
-    /// Replace the entire CRDT source with `documents[idx]` and reset the
-    /// editor view. The recompile is picked up by the next `sync`.
-    fn load_document(&mut self, doc: &mut AutoCommit, idx: usize) {
-        if self.documents.is_empty() {
-            return;
-        }
-        self.current = idx.min(self.documents.len() - 1);
-        // `self.current` was just clamped to a valid index above; `.get()`
-        // still avoids indexing so a future refactor can't turn this into a
-        // panic.
-        let Some(entry) = self.documents.get(self.current) else {
-            return;
-        };
-        let src = entry.source.clone();
+    /// Replace the entire CRDT source with this window's document and reset
+    /// the editor view. The recompile is picked up by the next `sync`.
+    fn load_document(&mut self, doc: &mut AutoCommit) {
+        let src = self.document.source.clone();
         if self.source_id.is_some() {
             self.apply_source_action(
                 doc,
@@ -683,15 +649,6 @@ impl TypstApp {
 
     // ----- file I/O -------------------------------------------------------
 
-    fn save_dir() -> Option<PathBuf> {
-        if let Some(dir) = std::env::var_os("TILO_TYPST_LIBRARY_DIR") {
-            return Some(PathBuf::from(dir));
-        }
-        tilo_paths::document_dir()
-            .or_else(tilo_paths::data_dir)
-            .map(|d| d.join("typst_editor"))
-    }
-
     /// Open the host Save dialog to choose where to write the current source,
     /// seeded with the document's name (unless a chooser is already in flight).
     /// The chosen path is handled in [`Self::drain_io`].
@@ -699,11 +656,10 @@ impl TypstApp {
         if self.io.is_some() {
             return;
         }
-        let name = self
-            .documents
-            .get(self.current)
-            .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
-        self.io = Some((PendingIo::SaveTyp, typ_save_request(&name).send()));
+        self.io = Some((
+            PendingIo::SaveTyp,
+            typ_save_request(&self.document.name).send(),
+        ));
         self.set_flash("Choose where to save");
     }
 
@@ -718,13 +674,8 @@ impl TypstApp {
                 self.save_status.set(ui::SaveState::Saved, ui::time::now());
                 // Adopt the chosen filename for the current document so a later
                 // Save suggests it again.
-                if let (Some(name), Some(cur)) = (
-                    path.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(std::string::ToString::to_string),
-                    self.documents.get_mut(self.current),
-                ) {
-                    cur.name = name;
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    name.clone_into(&mut self.document.name);
                 }
                 Ok(())
             }
@@ -743,10 +694,7 @@ impl TypstApp {
         if self.io.is_some() {
             return;
         }
-        let stem = self
-            .documents
-            .get(self.current)
-            .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
+        let stem = self.document.name.clone();
         let pdf_name = std::path::Path::new(&stem)
             .with_extension("pdf")
             .to_string_lossy()
@@ -783,10 +731,7 @@ impl TypstApp {
     /// Split out so a test can drive it against a scratch directory.
     #[cfg(test)]
     fn export_pdf_to(&self, doc: &AutoCommit, dir: &std::path::Path) -> Result<PathBuf, String> {
-        let stem = self
-            .documents
-            .get(self.current)
-            .map_or_else(|| "untitled.typ".into(), |d| d.name.clone());
+        let stem = self.document.name.clone();
         let pdf_name = std::path::Path::new(&stem)
             .with_extension("pdf")
             .to_string_lossy()
@@ -826,30 +771,11 @@ impl TypstApp {
             .and_then(|n| n.to_str())
             .unwrap_or("untitled.typ")
             .to_string();
-        // Focus an already-loaded copy of this file, or add it to the document
-        // list, then splice its source into the CRDT via `load_document`.
-        let idx = if let Some(i) = self
-            .documents
-            .iter()
-            .position(|d| d.name == name && d.from_disk)
-        {
-            if let Some(existing) = self.documents.get_mut(i) {
-                existing.source = src;
-            }
-            i
-        } else {
-            self.documents.push(Document {
-                name,
-                source: src,
-                from_disk: true,
-            });
-            self.documents.len() - 1
-        };
-        self.load_document(doc, idx);
-        let opened = self
-            .documents
-            .get(idx)
-            .map_or_else(String::new, |d| d.name.clone());
+        // The opened file becomes this window's document; its source is
+        // spliced into the CRDT via `load_document`.
+        self.document = Document { name, source: src };
+        self.load_document(doc);
+        let opened = self.document.name.clone();
         self.set_flash(&format!("Opened {opened}"));
         Ok(())
     }
@@ -919,64 +845,10 @@ impl TypstApp {
         }
     }
 
-    /// Read every `.typ` file in `dir` into a `Document` list (name-sorted).
-    fn scan_dir(dir: &std::path::Path) -> Vec<Document> {
-        let Ok(folder) = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf()))
-        else {
-            return Vec::new();
-        };
-        let entries =
-            tilo_files::blocking::list(&folder, &tilo_files::VPath::root()).unwrap_or_default();
-        // Listings are sorted by name.
-        entries
-            .into_iter()
-            .filter(|entry| {
-                entry.kind == tilo_files::Kind::File
-                    && std::path::Path::new(&entry.name)
-                        .extension()
-                        .is_some_and(|x| x == "typ")
-            })
-            .filter_map(|entry| {
-                let name = tilo_files::VPath::new(&entry.name).ok()?;
-                let bytes = tilo_files::blocking::read(&folder, &name).ok()?;
-                Some(Document {
-                    name: entry.name,
-                    source: String::from_utf8(bytes).ok()?,
-                    from_disk: true,
-                })
-            })
-            .collect()
-    }
-
-    fn next_doc(&mut self, doc: &mut AutoCommit) {
-        if self.documents.is_empty() {
-            return;
-        }
-        let i = (self.current + 1) % self.documents.len();
-        self.load_document(doc, i);
-    }
-
-    fn prev_doc(&mut self, doc: &mut AutoCommit) {
-        let n = self.documents.len();
-        if n == 0 {
-            return;
-        }
-        let i = (self.current + n - 1) % n;
-        self.load_document(doc, i);
-    }
-
-    /// Carry out what a control asked for. Any control that acts closes the
-    /// document list it may have left open.
-    fn run_command(&mut self, command: Command, doc: &mut AutoCommit) {
+    /// Carry out what a shared control asked for.
+    fn run_command(&mut self, command: Command, doc: &AutoCommit) {
         use crate::actions::TypstOperation;
         match command {
-            Command::PrevDoc => self.prev_doc(doc),
-            Command::NextDoc => self.next_doc(doc),
-            Command::SelectDoc(index) => {
-                if index != self.current && index < self.documents.len() {
-                    self.load_document(doc, index);
-                }
-            }
             Command::Compile => self.perform_resource_operation(TypstOperation::Compile, doc),
             Command::Save => {
                 self.perform_resource_operation(TypstOperation::Save { path: None }, doc);
@@ -1261,10 +1133,10 @@ impl TypstApp {
             self.layout_in(self.rect);
         }
 
-        let names: Vec<&str> = self.documents.iter().map(|d| d.name.as_str()).collect();
+        let names = [self.document.name.as_str()];
         self.chrome.sync(
             &names,
-            self.current,
+            0,
             self.err_count + self.warn_count,
             self.show_diagnostics,
             matches!(self.compact_view, CompactPane::Preview),
@@ -1445,7 +1317,7 @@ impl Widget for TypstApp {
         // A capture swaps in the bundled documents: load the one it shows and
         // compile it before the frame is drawn.
         if std::mem::take(&mut self.demo_reload) {
-            self.load_document(doc, self.current);
+            self.load_document(doc);
             self.initialized = false;
         }
         // Bind the shared editor to the source object and pull its content.
@@ -1874,10 +1746,7 @@ impl ui::undo::UndoPoints for TypstApp {
     }
     fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         self.native_edit_pending.then(|| {
-            let document = self
-                .documents
-                .get(self.current)
-                .map_or("Untitled.typ", |document| document.name.as_str());
+            let document = self.document.name.as_str();
             ui::tilo_actions::ActionContext::for_resource(
                 "Edit source",
                 format!("typst.document:{document}"),
@@ -2068,16 +1937,6 @@ impl TypstApp {
                     }
                     "0" => {
                         self.preview.fit_width();
-                        *handled = true;
-                        return;
-                    }
-                    "]" => {
-                        self.next_doc(doc);
-                        *handled = true;
-                        return;
-                    }
-                    "[" => {
-                        self.prev_doc(doc);
                         *handled = true;
                         return;
                     }

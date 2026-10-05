@@ -31,6 +31,7 @@
 
 pub mod catalog;
 pub mod integrity;
+pub mod interfaces;
 pub mod layout;
 pub mod registry;
 
@@ -42,7 +43,8 @@ mod image;
 mod store;
 
 pub use catalog::{
-    Catalog, CatalogError, SystemStore, display_name_for_package_id, find_installed, list_installed,
+    Catalog, CatalogError, Layers, SystemStore, display_name_for_package_id, find_installed,
+    list_installed, runs_over_image,
 };
 #[cfg(feature = "store")]
 pub use image::{

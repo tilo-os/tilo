@@ -137,7 +137,7 @@ pub fn entry_to_app_for_channel(
     registry_name: &str,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> Option<CatalogueApp> {
-    if !v.trust.is_offerable() {
+    if !v.trust.is_offerable() || registry_types::is_runtime_package_id(&v.entry.package_id) {
         return None;
     }
     // Artifact version orders releases. A later publication timestamp must
@@ -152,11 +152,91 @@ fn installable_versions(
     entry: &registry_types::RegistryEntry,
     channel: tilo_app_package::version::ReleaseChannel,
 ) -> impl Iterator<Item = &registry_types::RegistryVersion> {
+    installable_versions_on(entry, channel, os_interfaces())
+}
+
+/// The system interfaces this OS serves, read once per process.
+fn os_interfaces() -> Option<&'static registry_types::ProvidedInterfaces> {
+    static PROVIDED: std::sync::OnceLock<Option<registry_types::ProvidedInterfaces>> =
+        std::sync::OnceLock::new();
+    PROVIDED
+        .get_or_init(package_store::interfaces::system_interfaces)
+        .as_ref()
+}
+
+/// Whether this OS serves every system interface `version` requires.
+pub fn serves_interfaces(version: &registry_types::RegistryVersion) -> bool {
+    os_interfaces().is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
+}
+
+/// [`installable_versions`] on an OS serving `provided`: a version that
+/// requires an interface version the OS does not serve is not offered, so
+/// an update never takes an app past what its system can run.
+fn installable_versions_on<'a>(
+    entry: &'a registry_types::RegistryEntry,
+    channel: tilo_app_package::version::ReleaseChannel,
+    provided: Option<&'a registry_types::ProvidedInterfaces>,
+) -> impl Iterator<Item = &'a registry_types::RegistryVersion> {
+    let runtime_package = registry_types::is_runtime_package_id(&entry.package_id);
     entry.versions.iter().filter(move |version| {
         !version.tapp_url.trim().is_empty()
             && target_supported(version)
+            && (runtime_package || runtime_named(version))
             && channel.accepts(&version.version)
+            && provided.is_none_or(|provided| provided.meets_wire(&version.target.interfaces))
     })
+}
+
+/// Whether an app version says which runtime build it needs, when it needs
+/// one. A thin app links the runtime's Rust dylibs, which have no stable
+/// ABI, so a version that names only a release (`tilo-runtime/2026.07`)
+/// cannot be matched to a runtime this device can provide; installing it is
+/// how every system app once stopped starting.
+fn runtime_named(version: &registry_types::RegistryVersion) -> bool {
+    version.target.runtime.is_none() || version.target.native_runtime().is_some()
+}
+
+/// Whether the runtime `runtime` (`<name>/<version>`) is installed where the
+/// launcher looks for it: the user's runtime directory or the system image.
+pub fn runtime_installed(runtime: &str) -> bool {
+    runtime
+        .split_once('/')
+        .is_some_and(|(_, version)| runtime_bundle::resolve_bundle_path(version).is_some())
+}
+
+/// The registry `registry_name`'s offer of the runtime `runtime`: a version
+/// of one of its runtime packages that provides exactly that runtime for
+/// this machine.
+///
+/// # Errors
+///
+/// Returns an error when no enabled registry has that name or it cannot be
+/// read or fails a proof.
+pub fn runtime_offer(runtime: &str, registry_name: &str) -> Result<Option<CatalogueApp>, String> {
+    let registries = config::load_registries();
+    let registry = registries
+        .enabled()
+        .find(|registry| registry.name == registry_name)
+        .ok_or_else(|| format!("no enabled repository is named '{registry_name}'"))?;
+    let snapshot = client::fetch_snapshot(registry).map_err(|error| error.to_string())?;
+    let runtime_packages: Vec<String> = snapshot
+        .entries()
+        .into_iter()
+        .map(|listed| listed.entry.package_id.clone())
+        .filter(|id| registry_types::is_runtime_package_id(id))
+        .collect();
+    for package_id in runtime_packages {
+        let verified =
+            client::fetch_all_versions(registry, &package_id).map_err(|error| error.to_string())?;
+        if let Some(offer) = installable_versions(&verified.entry, registry.channel)
+            .filter(|version| version.target.runtime.as_deref() == Some(runtime))
+            .max_by(|a, b| tilo_app_package::version::compare(&a.version, &b.version))
+            .and_then(|version| app_for_version(&verified, version, registry_name))
+        {
+            return Ok(Some(offer));
+        }
+    }
+    Ok(None)
 }
 
 /// The catalogue row offering exactly `version` of a verified entry.
@@ -290,6 +370,59 @@ pub fn installed_ids() -> Vec<String> {
     package_store::list_installed()
         .map(|v| v.into_iter().map(|e| e.id).collect())
         .unwrap_or_default()
+}
+
+/// One installed app as `app list` shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledApp {
+    pub package_id: String,
+    pub version: String,
+    /// Where the running copy came from: `image` (the system image installed
+    /// it), `user` (installed or updated since), or `held` (rolled back
+    /// below the image's version on purpose).
+    pub from: String,
+}
+
+/// Every installed app, the system image's included, as the copy that runs.
+///
+/// # Errors
+///
+/// Returns an error if the installed-app registry cannot be read.
+pub fn installed_apps() -> Result<Vec<InstalledApp>, String> {
+    let entries = package_store::list_installed()
+        .map_err(|error| format!("could not read the installed app registry: {error}"))?;
+    Ok(entries
+        .into_iter()
+        .map(|entry| InstalledApp {
+            version: installed_manifest_version(&entry.manifest_path)
+                .unwrap_or_else(|| entry.version.clone()),
+            from: if entry.system {
+                "image"
+            } else if entry.held {
+                "held"
+            } else {
+                "user"
+            }
+            .into(),
+            package_id: entry.id,
+        })
+        .collect())
+}
+
+/// The version of `package_id` the system image ships, when the user's copy
+/// shadows it — the version removing that copy goes back to.
+///
+/// # Errors
+///
+/// Returns an error if either store's registry cannot be read.
+pub fn image_version_beneath(package_id: &str) -> Result<Option<String>, String> {
+    let layers = package_store::Catalog::from_env()
+        .and_then(|catalog| catalog.layers(package_id))
+        .map_err(|error| format!("could not read the installed app registry: {error}"))?;
+    Ok(match (layers.user, layers.image) {
+        (Some(_), Some(image)) => Some(image.version),
+        _ => None,
+    })
 }
 
 /// Version recorded by an installed app's manifest, when readable.
@@ -507,6 +640,7 @@ mod tests {
                     architecture: std::env::consts::ARCH.into(),
                     isa: native_baseline_isa().into(),
                     runtime: None,
+                    interfaces: Vec::new(),
                 },
             }],
             updated_at_unix: 7,
@@ -547,6 +681,30 @@ mod tests {
             },
             |mut entries| entries.remove(0),
         )
+    }
+
+    #[test]
+    fn an_os_is_offered_only_the_builds_it_can_serve() {
+        let mut e = entry("so.tilo.settings", "Settings", vec!["System"]);
+        let mut newer = e.versions[0].clone();
+        newer.version = "3.0.0".into();
+        newer.target.interfaces = vec!["system@2".into()];
+        e.versions[0].target.interfaces = vec!["system@1".into()];
+        e.versions.push(newer);
+        let stable = tilo_app_package::version::ReleaseChannel::Stable;
+        let offered = |provided: Option<&registry_types::ProvidedInterfaces>| {
+            installable_versions_on(&e, stable, provided)
+                .map(|version| version.version.clone())
+                .collect::<Vec<_>>()
+        };
+        let old_os = registry_types::ProvidedInterfaces::new([("system", &[1][..])]);
+        let new_os = registry_types::ProvidedInterfaces::new([("system", &[1, 2][..])]);
+        let elsewhere = registry_types::ProvidedInterfaces::new([("collab", &[1][..])]);
+        assert_eq!(offered(Some(&old_os)), ["2.0.0"]);
+        assert_eq!(offered(Some(&new_os)), ["2.0.0", "3.0.0"]);
+        assert!(offered(Some(&elsewhere)).is_empty());
+        // A host that declares no interfaces judges none.
+        assert_eq!(offered(None), ["2.0.0", "3.0.0"]);
     }
 
     #[test]
@@ -610,6 +768,7 @@ mod tests {
             architecture: std::env::consts::ARCH.into(),
             isa: std::env::consts::ARCH.into(),
             runtime: Some("tilo-runtime/2026.07".into()),
+            interfaces: Vec::new(),
         };
         assert!(!target_supported(&android));
         e.versions.push(android.clone());
@@ -645,6 +804,7 @@ mod tests {
                         architecture: std::env::consts::ARCH.into(),
                         isa: native_baseline_isa().into(),
                         runtime: None,
+                        interfaces: Vec::new(),
                     },
                 },
                 RegistryVersion {
@@ -659,6 +819,7 @@ mod tests {
                         architecture: std::env::consts::ARCH.into(),
                         isa: native_baseline_isa().into(),
                         runtime: None,
+                        interfaces: Vec::new(),
                     },
                 },
             ];

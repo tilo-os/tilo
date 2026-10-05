@@ -123,6 +123,13 @@ pub enum ChatOperation {
     ReadMessage {
         message: String,
     },
+    /// Start a call in the active workspace, exactly as its header Call
+    /// button does: join its voice channel, creating one when the workspace
+    /// is text-only, or reveal the call already running. `video` is refused:
+    /// the native call path carries microphone audio only.
+    StartCall {
+        video: bool,
+    },
 }
 
 /// Decode a Chat-local view operation addressed through a resource action.
@@ -2378,6 +2385,41 @@ pub(crate) fn voice_operation(
         },
     )
     .expect("native call request is serializable")
+}
+
+/// Why `start-video-call` is unavailable and refused: the native call path
+/// carries microphone audio only.
+pub(crate) const VIDEO_CALL_UNAVAILABLE: &str = "voice_only";
+
+pub(crate) fn video_call_unavailable_reason() -> String {
+    crate::i18n::t("chat-start-video-call-unavailable")
+}
+
+/// The root's `start-call` and `start-video-call` Effects. Both launch Chat
+/// when it is closed; the video variant stays published so a caller learns
+/// why it cannot run instead of finding nothing.
+#[allow(
+    clippy::expect_used,
+    reason = "StartCall carries one bool; ActionSpec requires an immediate value rather than a fallible builder"
+)]
+pub(crate) fn start_call_operations() -> Vec<ActionSpec> {
+    let spec = |id: &str, label: &str, video: bool| {
+        ActionSpec::operation(
+            id,
+            crate::i18n::t(label),
+            OperationKind::Effect,
+            CHAT_OPERATION_TYPE,
+            &ChatOperation::StartCall { video },
+        )
+        .expect("StartCall is serializable")
+        .launchable_when_closed()
+        .retry_policy(tilo_actions::RetryPolicy::Idempotent)
+    };
+    vec![
+        spec("start-call", "chat-start-call", false),
+        spec("start-video-call", "chat-start-video-call", true)
+            .unavailable(VIDEO_CALL_UNAVAILABLE, video_call_unavailable_reason()),
+    ]
 }
 
 /// A message resource: edit/react (prompted), pin-or-unpin, and delete.

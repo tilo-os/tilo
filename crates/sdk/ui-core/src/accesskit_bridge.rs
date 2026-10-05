@@ -61,7 +61,7 @@ use accesskit::{
 };
 use taffy::NodeId as TaffyNodeId;
 
-use crate::a11y::{AccessNode, Action, Role};
+use crate::a11y::{AccessNode, AccessibleTextSelection, Action, Role};
 use crate::text_break::{grapheme_indices, graphemes};
 use crate::widget::Widget;
 
@@ -233,6 +233,29 @@ fn synthetic_text_run_node_id(parent: AkNodeId) -> AkNodeId {
     synthetic_node_id(parent, SYNTHETIC_TEXT_RUN_KEY)
 }
 
+/// What an editable node's text run carries: its value and the caret or
+/// selection in it, or `None` when the node exports no run.
+///
+/// A protected (password) field still gets a run: AccessKit offers AT-SPI
+/// Text and EditableText only on a node with one, and without them a screen
+/// reader cannot treat the field as editable text or type a passphrase into
+/// it. That run is always empty with the caret at its start, so it discloses
+/// neither the value, nor its length, nor whether anything was typed.
+fn text_run_content(access: &AccessNode) -> Option<(&str, AccessibleTextSelection)> {
+    if access.state.protected {
+        let editable = matches!(access.role, Role::TextInput | Role::MultilineTextInput);
+        let start = AccessibleTextSelection {
+            anchor: 0,
+            focus: 0,
+        };
+        return editable.then_some(("", start));
+    }
+    match (&access.value, access.text_selection) {
+        (Some(value), Some(selection)) => Some((value.as_str(), selection)),
+        _ => None,
+    }
+}
+
 /// The text run that gives an editable node its AT-SPI Text and EditableText
 /// interfaces: the value as one run, and the caret/selection as positions in
 /// it. A protected (password) node never carries its value here.
@@ -243,14 +266,9 @@ fn text_run_for(
     bounds: Option<vello::kurbo::Rect>,
     scale: f64,
 ) -> Option<AkNode> {
-    if access.state.protected {
-        return None;
-    }
-    let (Some(value), Some(selection)) = (&access.value, access.text_selection) else {
-        return None;
-    };
+    let (value, selection) = text_run_content(access)?;
     let mut run = AkNode::new(AkRole::TextRun);
-    run.set_value(value.clone());
+    run.set_value(value);
     run.set_character_lengths(accessible_character_lengths(value));
     if let Some(rect) = bounds.filter(|rect| rect.width() > 0.0 || rect.height() > 0.0) {
         run.set_bounds(AkRect::new(
@@ -493,9 +511,7 @@ fn find_synthetic_path(
         keys.push(key);
         ordinals.push(ordinal);
         if id == wanted
-            || (child.value.is_some()
-                && child.text_selection.is_some()
-                && synthetic_text_run_node_id(id) == wanted)
+            || (text_run_content(child).is_some() && synthetic_text_run_node_id(id) == wanted)
         {
             semantic_target.clone_from(&child.action_target);
             return true;
@@ -2287,6 +2303,111 @@ mod tests {
             );
         }
 
+        // Case `protected_field_is_editable_text_with_an_empty_run`.
+        {
+            // AccessKit's AT-SPI adapter offers Text and EditableText only on a
+            // text input with a text run; without them a screen reader cannot
+            // focus a password as text or type into it. The run never carries
+            // the value, its length, or a caret that moved with typing.
+            for (role, secret) in [
+                (Role::TextInput, ""),
+                (Role::TextInput, "hunter2"),
+                (Role::MultilineTextInput, "a much longer password"),
+            ] {
+                let pw = TestWidget::new(Some(
+                    AccessNode::new(role)
+                        .with_name("Passphrase")
+                        .with_value(secret)
+                        .with_text_selection(secret.len(), secret.len())
+                        .with_state(AccessState::new().focusable(true).protected(true)),
+                ));
+                let mut root = TestWidget::new(None).with_child(Box::new(pw));
+                let (_taffy, node_map, _root_node) = lay_out(&mut root);
+                let update = build_tree_update(&root, &node_map, None, 1.0);
+                let (field_id, field) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, n)| n.label() == Some("Passphrase"))
+                    .unwrap();
+                assert_eq!(field.role(), AkRole::PasswordInput);
+                assert!(field.supports_action(AkAction::SetValue));
+                let [run_id] = field.children() else {
+                    panic!("one text run: {:?}", field.children());
+                };
+                let (_, run) = update.nodes.iter().find(|(id, _)| id == run_id).unwrap();
+                assert_eq!(run.role(), AkRole::TextRun);
+                assert_eq!(run.value(), Some(""));
+                assert!(run.character_lengths().is_empty());
+                let selection = field.text_selection().unwrap();
+                assert_eq!(
+                    (selection.anchor, selection.focus),
+                    (
+                        AkTextPosition {
+                            node: *run_id,
+                            character_index: 0
+                        },
+                        AkTextPosition {
+                            node: *run_id,
+                            character_index: 0
+                        }
+                    )
+                );
+                assert_eq!(
+                    resolve_node_id(&root, &node_map, *run_id),
+                    resolve_node_id(&root, &node_map, *field_id),
+                    "a verb aimed at the run reaches the field"
+                );
+            }
+        }
+
+        // Case `protected_synthetic_field_is_editable_text_with_an_empty_run`.
+        {
+            let mut root =
+                TestWidget::new(Some(AccessNode::new(Role::Dialog).with_children(vec![
+                    AccessNode::new(Role::TextInput)
+                        .with_name("Sheet password")
+                        .with_action_target("sheet:password")
+                        .with_state(AccessState::new().protected(true)),
+                ])));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            let field_id = label_id(&update, "Sheet password");
+            let field = &update
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == field_id)
+                .unwrap()
+                .1;
+            assert_eq!(field.role(), AkRole::PasswordInput);
+            let [run_id] = field.children() else {
+                panic!("one text run: {:?}", field.children());
+            };
+            let (_, run) = update.nodes.iter().find(|(id, _)| id == run_id).unwrap();
+            assert_eq!(run.value(), Some(""));
+            assert!(matches!(
+                resolve_node_id(&root, &node_map, *run_id),
+                Some(A11yTarget::Synthetic { ref semantic_target, .. })
+                    if semantic_target.as_deref() == Some("sheet:password")
+            ));
+        }
+
+        // Case `protected_non_text_node_gets_no_run`.
+        {
+            let mut root = TestWidget::new(Some(
+                AccessNode::new(Role::Label)
+                    .with_name("Recovery key")
+                    .with_state(AccessState::new().protected(true)),
+            ));
+            let (_taffy, node_map, _n) = lay_out(&mut root);
+            let update = build_tree_update(&root, &node_map, None, 1.0);
+            assert!(
+                update
+                    .nodes
+                    .iter()
+                    .all(|(_, node)| node.role() != AkRole::TextRun)
+            );
+        }
+
         // Case `editable_text_exposes_grapheme_run_and_directional_selection`.
         {
             let family = "👩‍👩‍👧‍👦";
@@ -2353,7 +2474,12 @@ mod tests {
                 .unwrap();
             assert_eq!(password.value(), Some(""));
             assert!(password.supports_action(AkAction::SetValue));
-            assert!(password.children().is_empty());
+            assert!(password.children().iter().all(|child| {
+                native
+                    .nodes
+                    .iter()
+                    .any(|(id, node)| id == child && node.value() == Some(""))
+            }));
         }
     }
 

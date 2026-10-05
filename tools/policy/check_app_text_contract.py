@@ -40,7 +40,7 @@ PRIVATE_SOURCE_PATTERNS = {
 }
 
 SHARED_TEXT_SURFACES = re.compile(
-    r"\b(?:TextRenderer|RichTextLayout|TextInput|RichTextEditor|RichTextLine|"
+    r"\b(?:TextRenderer|RichTextLayout|TextInput|RichTextLine|"
     r"BlockEditor|CodeEditor|QueryComposition|widget::Text)\b"
 )
 

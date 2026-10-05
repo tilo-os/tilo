@@ -32,8 +32,7 @@ containerfile="$repo/os/Containerfile"
 # into its loader, so the former systemd environment override is absent.
 # Tilo build outputs are installed through os/components.toml, so their rows
 # name the manifest component and build output instead of a builder /out path;
-# every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
-# explicit optional /usr/bin/browser entry it always carried. The VM console
+# every destination is unchanged. The VM console
 # port udev rule and the generated bash/fish/zsh completions for app and tilo
 # (with their store/system aliases) are deliberate additions, as is the
 # sandboxed PDF engine helper at /usr/libexec/tilo-pdf-helper, and the
@@ -91,7 +90,27 @@ containerfile="$repo/os/Containerfile"
 # The extension-manifest public key ships beside the helper.
 # The release gate's greetd session-context check ships beside the other
 # booted-guest checks in /usr/libexec/tilo.
-expected_contract=c3175072d78ebd8d6064309461374ef3a636cf8185a9aad34cbc55229df01d7d
+# The image ships one login session and no peer-sync marker unit.
+# The release gate's input hotplug check and the device admin's action-model
+# check ship beside them.
+# The boot units gate ships with the rollback units whose confirmation it gates.
+# The ush supervisor ships with what it runs: the two relay helpers for
+# Terminal, and the legacy VM service behind app shims. The WPE engine overlay
+# and /usr/bin/browser are deliberate removals: the Browser is a tapp in the
+# app store and its Chromium engine a signed runtime bundle under
+# /usr/lib/tilo-runtime, both already copied.
+# NetworkManager's Wake-on-LAN default ships as a conf.d drop-in.
+# The sibling-unlock client (/usr/bin/tilo-sibling-unlock, through
+# components.toml) and its dracut module ship in the rollback-files overlay
+# beside tilo-rollback, which the initramfs carries the same way.
+# The registry's runtime publisher key (/usr/share/tilo/registry-runtime-
+# publisher.hex), which the launcher trusts for runtimes the Store installs,
+# is a deliberate addition.
+# /usr/bin/terminal, /usr/bin/file-explorer and /usr/bin/settings are
+# deliberate removals: those apps ship only as packages in the app store.
+# The system-interface declaration (/usr/share/tilo/system-interfaces.toml),
+# which says what app builds this OS can run, is a deliberate addition.
+expected_contract=1bc647b84344453fca7941751d821e0998ef390e21528730cb373890a9c08755
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -135,8 +154,9 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # kernel image identity into that layer's cache key adds one ARG (153).
 # Redeclaring RPMS_REF before the first snapshot install, for the same reason,
 # adds one more (154).
-[ "$instructions" -le 154 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 154)" >&2
+# NetworkManager's Wake-on-LAN drop-in adds one COPY (155).
+[ "$instructions" -le 155 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 155)" >&2
   exit 1
 }
 

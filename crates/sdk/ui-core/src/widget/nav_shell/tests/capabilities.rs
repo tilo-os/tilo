@@ -593,6 +593,7 @@ fn typed_access_controls_and_the_filter_reach_the_apps_widgets() {
         query: SharedRc::clone(&query),
         inner: Probe {
             id: "overview",
+            deadline: None,
             rect: Rect::ZERO,
             events: SharedRc::new(Cell::new(0)),
         },

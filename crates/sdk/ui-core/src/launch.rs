@@ -515,6 +515,11 @@ impl LaunchSpec {
         self.runtime_attachment = policy;
         self
     }
+
+    /// Whether a native launch with `args` attaches to the session runtime.
+    pub fn attaches_runtime(&self, args: &LaunchArgs) -> bool {
+        (self.runtime_attachment)(args)
+    }
     /// Adapt one common application definition. A runner must install an explicit host.
     pub fn from_definition(definition: &'static crate::application::ApplicationDefinition) -> Self {
         let mut spec = Self::new_with_args(definition.app_id, |_| {
@@ -1583,11 +1588,13 @@ fn dispatch_definition(
     args: &LaunchArgs,
 ) -> Result<DefinitionDispatch, LaunchError> {
     dispatch_definition_with_native(spec, args, |component, inputs, native_services| {
-        if native_services {
-            App::from_component_with_native_services(component, inputs)
-        } else {
-            App::from_component(component, inputs)
-        }
+        tilo_startup_metrics::span("app-construct", || {
+            if native_services {
+                App::from_component_with_native_services(component, inputs)
+            } else {
+                App::from_component(component, inputs)
+            }
+        })
     })
 }
 
@@ -1647,7 +1654,8 @@ fn dispatch_definition_with_manager(
     let prepare = spec
         .component_host
         .ok_or(LaunchError::MissingComponentHost)?;
-    let mut prepared = match prepare(definition, args) {
+    let mut prepared = match tilo_startup_metrics::span("app-prepare", || prepare(definition, args))
+    {
         Ok(prepared) => prepared,
         Err(LaunchError::Record(error)) if args.headless.is_some() => {
             eprintln!("headless: state open failed: {error}");
@@ -1663,8 +1671,9 @@ fn dispatch_definition_with_manager(
             .bind_component(&prepared.context.callback_binding())
             .map_err(LaunchError::Operation)?;
     }
-    let component =
-        spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)?;
+    let component = tilo_startup_metrics::span("app-component", || {
+        spec.prepare_component(args, prepared.context, prepared.target, prepared.restore)
+    })?;
     if let Some(headless) = &args.headless {
         return Ok(DefinitionDispatch::Headless(headless::run_component(
             headless,

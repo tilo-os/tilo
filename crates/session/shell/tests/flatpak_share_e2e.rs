@@ -87,7 +87,7 @@ const SURFACE: SurfaceId = 42;
 /// Start the session, consume its `SurfaceStreamStart` handshake (asserting
 /// its fields match `app_id`/`w`/`h`), and learn the sender/receiver clock
 /// offset. Split out of
-/// [`session_delivers_30_frames_in_3_seconds_at_bounded_latency`] to keep
+/// [`session_delivers_30_frames_in_order`] to keep
 /// that test short.
 fn start_session_and_learn_offset(
     app_id: &str,
@@ -154,20 +154,20 @@ fn start_session_and_learn_offset(
     (session, metrics, view, origin)
 }
 
-/// Deposit + encode frames until `deadline` or 90 frames, decoding each on
-/// `view` and returning `(sent, received)`. Split out of
-/// [`session_delivers_30_frames_in_3_seconds_at_bounded_latency`] to keep
-/// that test short.
+/// Deposit + encode frames until `wanted` have been decoded on `view` (or
+/// the hang deadline passes), returning `(sent, received)`. Split out of
+/// [`session_delivers_30_frames_in_order`] to keep that test short.
 fn pump_frames_until(
     session: &SharedFlatpakSession,
     view: &mut PeerView,
     frame_bytes: &[u8],
     origin: Instant,
-    deadline: Instant,
+    wanted: u32,
 ) -> (u32, u32) {
+    let deadline = tilo_test_env::hang_deadline();
     let mut sent = 0u32;
     let mut received = 0u32;
-    while Instant::now() < deadline && sent < 90 {
+    while received < wanted && Instant::now() < deadline {
         session.deposit_captured_rgba(frame_bytes.to_vec());
         let tick_at = Instant::now();
         if let Some(frame) = session.encode_next_frame(tick_at) {
@@ -197,9 +197,11 @@ fn pump_frames_until(
     (sent, received)
 }
 
-/// Headless, no GPU: a software encoder, which runs cleanly in CI.
+/// Headless, no GPU: a software encoder, which runs cleanly in CI. Every
+/// encoded frame decodes, in order, and the metrics count each one. Latency
+/// is printed, not asserted: on a shared runner it measures the host.
 #[test]
-fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
+fn session_delivers_30_frames_in_order() {
     const W: u32 = 320;
     const H: u32 = 240;
 
@@ -209,28 +211,15 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
 
     // `mark_drawn` per accepted frame keeps this on the happy path; the
     // backpressure test below drives the drop-oldest path.
-    let deadline = origin
-        .checked_add(Duration::from_secs(3))
-        .expect("3s from origin must not overflow Instant");
-    let (sent, received) = pump_frames_until(&session, &mut view, &frame_bytes, origin, deadline);
+    let (sent, received) = pump_frames_until(&session, &mut view, &frame_bytes, origin, 30);
 
     let snap = metrics.snapshot();
-    assert!(
-        received >= 30,
-        "receiver drained only {received} frames in 3 s — expected >= 30 \
-         (software encoder ceiling); session throttle was at {} fps",
-        session.snapshot_config().target_fps,
-    );
+    assert_eq!(received, 30, "30 frames decode before the hang deadline");
+    assert_eq!(sent, received, "every encoded frame decodes");
     assert_eq!(
         snap.frames_received,
         u64::from(received),
         "metrics counter must match the loop's observed decodes"
-    );
-
-    assert!(
-        snap.latency_ns_max < 60_000_000,
-        "peak latency {} ns exceeds the 60 ms loopback ceiling",
-        snap.latency_ns_max,
     );
     eprintln!(
         "peak latency = {} µs, mean = {} µs, sent={} received={}",

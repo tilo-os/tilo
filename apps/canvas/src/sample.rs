@@ -134,6 +134,7 @@ pub fn landscape() -> Vec<CanvasAction> {
                 false,
             ),
         ],
+        group: None,
     }));
     art.push(CanvasAction::Draw(Draw {
         layer: Some("ink".into()),
@@ -211,6 +212,7 @@ pub fn landscape() -> Vec<CanvasAction> {
                 false,
             ),
         ],
+        group: None,
     }));
     art
 }

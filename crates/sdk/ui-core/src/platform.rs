@@ -311,3 +311,26 @@ mod tests {
         }
     }
 }
+
+impl From<&str> for Shortcut {
+    fn from(label: &str) -> Self {
+        let mut parts = label.split('+').map(str::trim).collect::<Vec<_>>();
+        let key = parts.pop().unwrap_or_default();
+        Self {
+            key: key.to_owned(),
+            command: parts
+                .iter()
+                .any(|part| matches!(*part, "Ctrl" | "Cmd" | "Command" | "⌘")),
+            shift: parts.iter().any(|part| matches!(*part, "Shift" | "⇧")),
+            alt: parts
+                .iter()
+                .any(|part| matches!(*part, "Alt" | "Option" | "⌥")),
+        }
+    }
+}
+
+impl From<String> for Shortcut {
+    fn from(label: String) -> Self {
+        Self::from(label.as_str())
+    }
+}

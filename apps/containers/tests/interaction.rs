@@ -238,10 +238,14 @@ fn create_form_submits_and_cancels() {
         app.state().draft.run_args(),
         Some(vec!["run".into(), "-d".into(), "alpine".into()])
     );
+    // The capture has no live engine: a rejected create must keep its draft.
     app.harness().key("Enter");
+    assert_eq!(draft(&app, CreateField::Image), "alpine");
+    // Successful creation clears through this same resource action.
+    app.call("clear-create", serde_json::json!({})).unwrap();
     assert!(
         app.state().draft.is_empty(),
-        "creating the container empties the draft"
+        "a confirmed creation empties the draft"
     );
     assert!(app.undo(), "emptying the draft is undoable");
     assert_eq!(draft(&app, CreateField::Image), "alpine");
@@ -271,29 +275,29 @@ fn create_draft_assembles_full_podman_run() {
     assert_eq!(args.last().unwrap(), "ghcr.io/acme/app:edge");
 }
 
-/// Entering a distrobox builds its terminal, and the canonical log resource
-/// opens the container's logs.
+// =====================================================================
+// Interaction: enter-distrobox asks for the right terminal
+// =====================================================================
+
+/// Entering a distrobox asks for Terminal and the canonical log resource opens the collaborative detail.
 #[test]
 fn container_resources_open_terminal_and_log_detail() {
-    // --- phase: enter_distrobox_builds_terminal_running_distrobox_enter ---
+    // --- phase: enter_distrobox_asks_for_terminal_running_distrobox_enter ---
     {
-        let inner = terminal::distrobox_enter_command("my-distrobox");
-        assert!(inner.contains("distrobox enter 'my-distrobox'"), "{inner}");
-        let cmd = terminal::terminal_command(&inner, "enter-my-distrobox").expect("build cmd");
-        let prog = cmd.get_program().to_string_lossy().to_string();
-        assert!(
-            prog.ends_with("terminal"),
-            "spawns the terminal binary: {prog}"
+        // Terminal is asked for by intent; the shell runs `distrobox enter`.
+        let intent = terminal::distrobox_enter_intent("my-distrobox");
+        assert_eq!(
+            intent,
+            runtime_portal::tools::ToolIntent::ContainerShell {
+                container: "my-distrobox".into(),
+                engine: runtime_portal::tools::ContainerEngine::Distrobox,
+            }
         );
-        let shell = cmd
-            .get_envs()
-            .find(|(k, _)| *k == std::ffi::OsStr::new("SHELL"))
-            .and_then(|(_, v)| v)
-            .map(|v| v.to_string_lossy().to_string())
-            .expect("SHELL env points at the launcher");
-        assert!(shell.contains("tilo-term-enter-my-distrobox.sh"), "{shell}");
-        let body = std::fs::read_to_string(&shell).expect("launcher written");
-        assert!(body.contains("distrobox enter 'my-distrobox'"), "{body}");
+        assert_eq!(
+            intent.package_id(),
+            Some("so.tilo.terminal"),
+            "opens the Terminal package, not a loose binary"
+        );
     }
 
     // --- phase: canonical_log_resource_opens_the_logs ---

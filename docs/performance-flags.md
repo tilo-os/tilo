@@ -147,13 +147,10 @@ selection. Keep their values identical across steady-state comparisons.
 | `TILO_STARTUP_WARM` | On; trimmed, case-insensitive `off`, `0`, `false`, or `no` disables | Master background warmup switch, cached at first use. Empty/other values enable it. The shell warms a throwaway font system to populate OS/font caches; this is not a persistent GPU pipeline cache. |
 | `TILO_STARTUP_WARM_VELLO` | Off; trimmed empty/`0`/`off`/`false`/`no` disables, case-insensitive | Other supplied values additionally request a 4×4 Vello scratch render in shell and shot-harness startup. Requires master warmup enabled. Can contend with real renderer initialization; do not assume it improves first paint. |
 | `TILO_STARTUP_METRICS_PATH` | Unset: disabled; path | Enables startup event capture at initialization. Explicit dump or scoped shutdown writes/replaces JSON at that path; parent directories are not created and write errors are ignored. Verify the file exists before reporting a result. |
-| `TILO_WEBVIEW_DMABUF` | Present, off | WPE-only EGL/DMA-BUF export path; **`=0` enables the request**. Setup failure falls back to SHM. Requires the compiled WPE/import path and compatible devices; request alone is not proof of zero-copy. |
-| `TILO_WEBVIEW_DRM_NODE` | `/dev/dri/renderD128`; path | DRM node for WPE EGL setup when DMA-BUF export is requested. Empty/unusable paths fail setup and fall back to SHM. Not the wgpu adapter selector. |
 | `TILO_DMABUF_DEVICE` | Unset: automatic probe; path | Selects the render node advertised to compositor clients. Empty explicitly disables DMA-BUF advertisement; an unusable override is rejected. Automatic selection requires an openable, known CPU-mappable driver; an override bypasses that driver allow-list. The compositor's foreign-surface route CPU-maps the buffer, so DMA-BUF advertisement does **not** imply a GPU-only zero-copy import. |
 
 Sources: [warmup.rs](../crates/sdk/ui-core/src/warmup.rs), [shell startup](../crates/session/shell/src/main.rs),
 [startup metrics](../crates/system/tilo-startup-metrics/src/lib.rs),
-[WPE export](../crates/sdk/ui-core/src/webview/wpe/mod.rs), [EGL node](../crates/sdk/ui-core/src/webview/wpe/egl.rs),
 [compositor render node](../crates/session/shell/src/compositor/render_node.rs).
 
 ## UI dashboard benchmark
@@ -265,6 +262,7 @@ separate from headless and nested-window results.
 | `TILO_LOOP_TIMING` | Present (Unicode), off | Logs a phase breakdown for native-loop ticks with more than 100 ms of non-sleeping work. `=0` still enables it; no log does not establish a 16.67 ms deadline. |
 | `TILO_RUN_SECONDS` | Unset: run indefinitely | Positive finite fractional seconds requests clean shutdown; malformed/nonpositive values mean no timeout. |
 | `TILO_REFRESH_HZ` | Backend refresh, or 60 Hz fallback | Diagnostic pacing override, finite 20–1000 Hz including fractional rates (rounded to millihertz). Invalid values warn and are ignored. Does not reconfigure a physical monitor. |
+| `TILO_TEST_FRAME_STALL_MS` | Unset; `80` or `50-130` (ms, at most 2000) | Developer override (debug or `dev-overrides` builds only; release builds ignore it): blocks the loop after every painted frame, a fresh delay from the range each frame, so layout springs, animations and configures run at a slow machine's frame times. Invalid values warn and are ignored. `os/dev/test-slow-frame-launch.sh` opens apps under it. |
 | `TILO_HEADLESS_SIZE` | `1600x900` | Initial headless output `WxH`, positive u32 dimensions; malformed/zero falls back. |
 | `TILO_HEADLESS_WATCH` | Unset: unwatched | `1` rasterizes every headless frame from the start, as a streaming viewer needs; otherwise frames are rasterized only after the control socket's `watch` (snapshots render on demand regardless). |
 | `TILO_WINIT_SIZE` | `1600x900` | Initial nested window `WxH`, positive u32 dimensions; malformed/zero falls back. |
@@ -378,7 +376,6 @@ an application can enable them through dependency feature unification):
 | --- | --- | --- |
 | `ui/dmabuf-import` | Off | Vulkan external-memory import of a compatible DMA-BUF; avoids a CPU pixel round-trip. Requires supported formats/modifiers/device sharing; enabling the feature does not guarantee successful zero-copy import. |
 | `ui/gpu-video` | Off | Enables DMA-BUF import plus NV12/P010-to-RGB GPU conversion. Conversion is still GPU work even when no CPU pixel copy occurs. |
-| `ui/webview-wpe` | Off | WPE WebKit backend, enabling DMA-BUF import; requires the WPE system stack. |
 | `media/realtime` | Off (the shell enables it) | GStreamer real-time encoder/decoder: hardware first (VA-API, NVCODEC, V4L2), then royalty-free software, then Cisco openh264. Which hardware runs is decided at runtime from the registry. |
 | `shell/hosted-test-control` | On | Hosted input-control test socket; remove from production feature selection when that test surface is unwanted. Not a frame-rate optimization. |
 

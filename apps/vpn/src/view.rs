@@ -160,7 +160,17 @@ pub(crate) fn overview(
     let rows: Vec<Element> = model
         .entries
         .iter()
-        .map(|entry| -> Element { Box::new(connection_row(entry, model.selected, intents)) })
+        .map(|entry| -> Element {
+            Box::new(ConnectionRow {
+                row: connection_row(entry, model.selected, intents),
+                label: format!(
+                    "{}, {}, {}",
+                    entry.connection.name,
+                    entry.connection.kind.long_name(),
+                    entry.connection.status.label()
+                ),
+            })
+        })
         .collect();
     let tor = Toggle::from_state(&LocalState::new(model.tor_global))
         .with_id("vpn-tor-global")
@@ -936,6 +946,28 @@ impl ui::widget::Decorator for ThroughputPlot {
             return;
         }
         Widget::handle_event(&mut self.plot, event, ctx);
+    }
+}
+
+/// The shared row retains hit testing and actions; its name announces this
+/// device's observed tunnel state as well as the profile's shared identity.
+struct ConnectionRow {
+    row: ListRow,
+    label: String,
+}
+impl ui::widget::Decorator for ConnectionRow {
+    type Inner = ListRow;
+    fn inner(&self) -> &ListRow {
+        &self.row
+    }
+    fn inner_mut(&mut self) -> &mut ListRow {
+        &mut self.row
+    }
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.row.accessibility().map(|mut node| {
+            node.name = Some(self.label.clone());
+            node
+        })
     }
 }
 

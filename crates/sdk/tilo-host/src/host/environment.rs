@@ -80,6 +80,9 @@ pub struct HostPaths {
     pub home: Option<PathBuf>,
     /// The per-user configuration directory.
     pub config_home: Option<PathBuf>,
+    /// The session's read-only pipeline cache directory
+    /// (`TILO_PIPELINE_SEED_DIR`), bound in by the launcher.
+    pub pipeline_seed: Option<PathBuf>,
 }
 
 impl HostPaths {

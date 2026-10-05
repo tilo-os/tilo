@@ -95,7 +95,7 @@ fn video_result(
     let mut row = SearchRow::media(title).byline(&video.channel_name);
     let thumbnail = model.display_thumbnail_url(video);
     if let Some(images) = images.filter(|_| !thumbnail.is_empty()) {
-        row = row.thumbnail(images.app_image(thumbnail));
+        row = row.thumbnail(ui::icons::AppImage::from_image_store(images, thumbnail));
     }
     if video.duration > 0 && !video.live {
         row = row.duration(clock(f64::from(video.duration)));

@@ -3018,6 +3018,15 @@ impl Widget for ActivityTimeline {
                     self.handle_author_typeahead_key(logical_key, ctx.handled);
                 }
             }
+            // An input method's text types into the author filter as keys do.
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) if self.naming.is_none() => {
+                let text: String = text.chars().filter(|ch| !ch.is_control()).collect();
+                if !text.is_empty() {
+                    self.author_query.push_str(&text);
+                    self.rebuild();
+                    *ctx.handled = true;
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(position, ctx.scale_factor, ctx.handled);
             }
@@ -3540,7 +3549,7 @@ impl ActivityTimeline {
                 *handled = true;
             }
             Key::Named(NamedKey::Backspace) => {
-                if self.author_query.pop().is_some() {
+                if crate::text_edit::delete_last_grapheme(&mut self.author_query) {
                     self.rebuild();
                     *handled = true;
                 }
@@ -4433,6 +4442,19 @@ mod tests {
             );
             assert_eq!(t.author_query(), "");
             assert_eq!(t.visible_len(), 2);
+
+            // An input method's commit types too, and Backspace takes back a
+            // whole accented letter, not half of it.
+            dispatch(
+                &mut t,
+                &WindowEvent::Ime(winit::event::Ime::Commit("bo\u{301}".into())),
+            );
+            assert_eq!(t.author_query(), "bo\u{301}");
+            dispatch(
+                &mut t,
+                &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)),
+            );
+            assert_eq!(t.author_query(), "b");
         }
 
         filter_by_op_class_hides_other_rows();

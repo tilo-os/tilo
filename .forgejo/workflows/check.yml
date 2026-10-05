@@ -27,7 +27,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  CARGO_HOME: /cargo-home
   CARGO_BUILD_JOBS: "4"
   CARGO_INCREMENTAL: "0"
   # Match the test profile below. Cargo keeps dev/test artifacts in the same
@@ -60,8 +59,6 @@ jobs:
     steps:
       - name: Checkout public-trust context fixture
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
       - name: Resolve the CI builder before starting job containers
         id: resolve
         env:
@@ -109,7 +106,6 @@ jobs:
       - name: Checkout head for change selection
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
           filter: ${{ github.event_name != 'pull_request' && 'blob:none' || '' }}
 
@@ -176,8 +172,6 @@ jobs:
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Merge onto the tested main
         uses: ./.forgejo/actions/merge-main
@@ -211,7 +205,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -261,7 +254,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -364,6 +356,50 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci --tests ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
 
+      # The shard's visual goldens, run after its suite has drained so the
+      # software renderer is idle, as nightly does. They compare only on the
+      # image they were rendered on; once the builder has moved on they wait
+      # for a refresh (nightly fails until then) instead of failing every pull
+      # request that touches a rendering package.
+      - name: Visual goldens of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+          TILO_REQUIRE_GPU: "1"
+        run: |
+          # The packages with goldens (.config/nextest-filters.toml).
+          case " ${{ matrix.test_packages }} " in
+            *" -p shell "*|*" -p tilo-ui "*|*" -p ebook "*) ;;
+            *) exit 0 ;;
+          esac
+          if ! bash tools/ci/golden-image.sh check "$BUILDER_IMAGE" 2>goldens-image.txt; then
+            echo "::warning::$(tr '\n' ' ' < goldens-image.txt)"
+            exit 0
+          fi
+          bash tools/ci/measure.sh "visual goldens shard ${{ matrix.shard }}" -- \
+            bash scripts/ci-run.sh "cargo nextest visual goldens (shard ${{ matrix.shard }})" -- \
+            bash tools/test-env.sh cargo nextest run --locked --profile ci --tests \
+            ${{ matrix.test_packages }} --no-tests=pass -E "$GOLDEN_FILTER"
+
+      # The shard's test executables are done with; Certify links the apps'
+      # own binaries from the same rlibs, and a wide shard does not fit both
+      # in a runner's store.
+      - name: Free the test executables of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        run: find target/debug/deps -maxdepth 1 -type f -perm -u+x -delete
+
+      # The shard's affected graphical apps through the same production-root
+      # native audit the nightly runs for every app, so a change that breaks
+      # an app's Tilo-native contract fails here, not overnight.
+      - name: Certify affected apps of shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        env:
+          TILO_REQUIRE_GPU: "1"
+        run: >-
+          bash tools/ci/measure.sh "certify affected apps shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "tilo-app certify (affected shard ${{ matrix.shard }})" --
+          cargo run --locked -p tilo-app-cli --bin tilo-app -- certify --workspace ${{ matrix.test_packages }}
+
       # The saved headless scenarios of each selected example, through the
       # example's own binary with the native audit: what `tilo-app check`
       # runs as its scenario stage.
@@ -405,7 +441,7 @@ jobs:
       - name: Save test results of shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/nextest/ci/junit.xml
@@ -429,7 +465,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -477,7 +512,7 @@ jobs:
       - name: Save observed compiler inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/compiler-inputs.json
@@ -501,7 +536,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -526,8 +560,8 @@ jobs:
       # must remain fast enough to keep their formatting, secret, and
       # staged-diff checks useful. The release-app workflow separately
       # compiles the shipped thin-app feature; `--all-features` is
-      # deliberately invalid here because it also selects ui/webview-wpe,
-      # whose native SDK exists only in the OS image builder.
+      # deliberately invalid here because some features link native SDKs
+      # that exist only in the OS image builder.
       - name: Clippy shard ${{ matrix.shard }}
         if: matrix.arch == 'x86_64'
         env:
@@ -550,7 +584,7 @@ jobs:
       - name: Save observed Clippy inputs
         if: always()
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        uses: actions/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
           name: clippy-inputs-${{ matrix.arch }}-${{ matrix.shard }}
           path: target/ci/clippy-*-inputs.json
@@ -562,10 +596,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
+          path: ${{ steps.rust-build.outputs.cargo-cache-paths }}
           key: cargo-deps-${{ hashFiles('Cargo.lock') }}
 
   # Apps with an Android host example (docs/android.md), linted for both
@@ -594,7 +625,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -642,7 +672,6 @@ jobs:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
       - name: Merge onto the tested main
@@ -694,8 +723,6 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Merge onto the tested main
         uses: ./.forgejo/actions/merge-main
@@ -838,6 +865,9 @@ jobs:
         continue-on-error: true
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # The receipt step pushes a git note with these credentials, so this
+          # checkout keeps the write-capable repository token. Every other
+          # checkout reads this public repository with the job token.
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
           filter: blob:none

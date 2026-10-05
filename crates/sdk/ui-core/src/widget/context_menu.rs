@@ -142,13 +142,13 @@ impl MenuItem {
     /// Show the keyboard shortcut that runs the same command at the row's
     /// trailing edge (`Shortcut::command("S")`, `Shortcut::key("Delete")`).
     #[must_use]
-    pub fn with_shortcut(mut self, shortcut: Shortcut) -> Self {
+    pub fn with_shortcut(mut self, shortcut: impl Into<Shortcut>) -> Self {
         if let MenuItem::Action {
             shortcut: item_shortcut,
             ..
         } = &mut self
         {
-            *item_shortcut = Some(shortcut);
+            *item_shortcut = Some(shortcut.into());
         }
         self
     }
@@ -478,7 +478,12 @@ impl ContextMenu {
                 } else {
                     0.0
                 };
-                width = width.max(f64::from(w) + check_width);
+                // A shortcut sits at the row's end, a gap after the label.
+                let keys = item.shortcut().map_or(0.0, |keys| {
+                    let (k, _) = text.measure_style(&keys.label(self.platform), None, &style);
+                    f64::from(k) + f64::from(theme.tokens.spacing.s6)
+                });
+                width = width.max(f64::from(w) + check_width + keys);
                 height = height.max(f64::from(h));
             }
             if let Some(shortcut) = item.shortcut() {

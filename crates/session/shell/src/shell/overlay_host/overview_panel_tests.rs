@@ -83,8 +83,10 @@ fn overview_rename_selection_is_directional_accessible_and_owned_by_the_palette(
 
     fn workspace_select_all_invalidates_painted_selection() {
         let mut name = "Home".to_string();
-        let (_, bump, selection) = ShellOverlayHost::apply_workspace_rename_ctrl_chord(
-            "a",
+        let (_, bump, selection) = ShellOverlayHost::apply_workspace_rename_key(
+            &Key::Character("a".into()),
+            true,
+            false,
             &mut name,
             ui::text_selection::Selection::collapsed(4),
         );
@@ -144,7 +146,32 @@ fn overview_rename_selection_is_directional_accessible_and_owned_by_the_palette(
         );
     }
 
+    fn an_input_method_types_into_the_rename_field_at_its_caret() {
+        let mut h = host_with(WorkspaceTree::bootstrap_default());
+        {
+            let mut chrome = h.chrome.as_ref().unwrap().borrow_mut();
+            chrome.overlays.ws_settings = true;
+            chrome.editing_workspace_name = Some("Home".into());
+            chrome.editing_workspace_name_selection = ui::text_selection::Selection::collapsed(4);
+        }
+        assert!(h.commit_into_chrome_field(" 家"));
+        let mut handled = false;
+        assert!(h.handle_workspace_rename_key(
+            &Key::Named(NamedKey::Backspace),
+            winit::event::Modifiers::default(),
+            &mut handled
+        ));
+        assert!(h.commit_into_chrome_field("👍🏽"));
+        let chrome = h.chrome.as_ref().unwrap().borrow();
+        assert_eq!(chrome.editing_workspace_name.as_deref(), Some("Home 👍🏽"));
+        assert_eq!(
+            chrome.editing_workspace_name_selection,
+            ui::text_selection::Selection::collapsed("Home 👍🏽".len())
+        );
+    }
+
     rename_arrows_collapse_selection_to_its_directional_edge();
+    an_input_method_types_into_the_rename_field_at_its_caret();
     workspace_select_all_invalidates_painted_selection();
     workspace_name_accessibility_exposes_current_selection();
     desktop_palette_owns_keys_above_an_active_rename_field();

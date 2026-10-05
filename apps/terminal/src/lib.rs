@@ -119,12 +119,13 @@ impl HostedProcessServices {
         first: Option<Self>,
         target: &target::SessionTarget,
         requested_by: Requester,
+        relay_session: Option<&str>,
     ) -> Result<TerminalBackend, OpenError> {
         let stream = first
             .and_then(|services| services.ush)
             .or_else(|| Self::default().ush)
             .ok_or_else(|| OpenError::Unavailable("the shell runtime is not running".into()))?;
-        crate::inner::ush_backend_on(&stream, &[], target, requested_by)
+        crate::inner::ush_backend_on(&stream, &[], target, requested_by, relay_session)
     }
 
     /// One request to the session's supervisor over a fresh connection;
@@ -389,6 +390,7 @@ impl HostedProcessServices {
         _first: Option<Self>,
         _target: &target::SessionTarget,
         _requested_by: Requester,
+        _relay_session: Option<&str>,
     ) -> Result<TerminalBackend, OpenError> {
         Err(OpenError::Unavailable(
             "Tilo hosted terminal service transport is unavailable here".into(),

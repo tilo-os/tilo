@@ -257,7 +257,7 @@ fn destination_icon(kind: DestKind) -> Icon {
 }
 
 /// "Every day at 18:00".
-fn schedule_label(schedule: Schedule) -> String {
+pub(crate) fn schedule_label(schedule: Schedule) -> String {
     match schedule {
         Schedule::OnDemand => "When you back up".into(),
         Schedule::Hourly { minute: 0 } => "Every hour, on the hour".into(),
@@ -386,6 +386,7 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         NavSection::untitled("policy", vec![policy]),
     ])
     .selected(&page.nav_id())
+    .with_id("backups-places")
     .with_accessible_name("Backups")
     .on_select(move |id| {
         if let Some(page) = Page::from_nav_id(&id) {

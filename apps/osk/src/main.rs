@@ -123,6 +123,11 @@ fn launch_spec_with_root(
         .allowed_live_flags(&["--input-method", "--no-input-method", HIT_OVERLAY_FLAG])
         .allowed_live_options(&["--purpose"])
         .disable_headless()
+        // A session service, not a workspace app: the compositor starts it
+        // without a room, so it has no collaboration runtime to attach to.
+        // Attaching would refuse the identity-only service set the launcher
+        // hands a room-less launch, and the keyboard would never appear.
+        .runtime_attachment(|_| false)
         .live_handler(run_live)
 }
 
@@ -520,6 +525,20 @@ fn purpose_from_str(s: &str) -> Option<InputPurpose> {
 #[cfg(test)]
 mod launch_tests {
     use super::*;
+    #[test]
+    fn the_keyboard_service_runs_without_a_workspace_runtime() {
+        assert!(
+            !launch_spec().attaches_runtime(&LaunchArgs::component()),
+            "the compositor starts the keyboard without a room; attaching would refuse it"
+        );
+    }
+
+    #[test]
+    fn framework_history_canonical_launch_declares_preferences() {
+        launch_spec()
+            .validate_history_declaration()
+            .expect("canonical OSK launch must install preferences History");
+    }
     use automerge::{ReadDoc, transaction::Transactable};
     use std::{
         cell::{Cell, RefCell},

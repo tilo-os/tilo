@@ -479,6 +479,18 @@ impl SemanticTree {
     /// nearest currently rendered affordance without replacing direct action
     /// invocation with simulated clicks.
     pub fn control_paths(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
+        let mut paths = self.control_paths_unranked(control_id);
+        paths.sort_by(|left, right| {
+            left.len()
+                .cmp(&right.len())
+                .then_with(|| left.last().cmp(&right.last()))
+        });
+        paths
+    }
+
+    // Exact candidate enumeration shares the public path construction while
+    // leaving shortest-path ranking to callers that need that policy.
+    pub(crate) fn control_paths_unranked(&self, control_id: &str) -> Vec<Vec<SemanticId>> {
         if control_id.is_empty() {
             return Vec::new();
         }
@@ -489,8 +501,7 @@ impl SemanticTree {
             }
         }
         let marker = format!("~k:{control_id}");
-        let mut paths = self
-            .iter()
+        self.iter()
             .filter(|node| !node.id.0.starts_with("r:") && node.id.0.ends_with(&marker))
             .filter_map(|node| {
                 let mut path = vec![node.id.clone()];
@@ -502,13 +513,7 @@ impl SemanticTree {
                 path.reverse();
                 Some(path)
             })
-            .collect::<Vec<_>>();
-        paths.sort_by(|left, right| {
-            left.len()
-                .cmp(&right.len())
-                .then_with(|| left.last().cmp(&right.last()))
-        });
-        paths
+            .collect::<Vec<_>>()
     }
 
     pub fn action(&self, id: &SemanticId, name: &str) -> Option<&SemanticAction> {
@@ -1249,6 +1254,37 @@ mod tests {
                 "a keyed scroll group keeps its controls durable, got {keyed:?}"
             );
         }
+    }
+
+    #[test]
+    fn unranked_control_paths_preserve_public_shortest_path_order() {
+        let mut root = Column::new()
+            .push(Box::new(
+                crate::widget::Scrollable::new_vertical()
+                    .with_semantic_key("advanced")
+                    .with_child(Box::new(Button::new("save", "Deep save", None))),
+            ))
+            .push(Box::new(Button::new("save", "Shallow save", None)));
+        let nodes = layout(&mut root);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&root, &nodes, None, &[]);
+        let unranked = tree.control_paths_unranked("save");
+        assert_eq!(unranked.len(), 2);
+        let deep = tree.find_by_name("Deep save").unwrap().id.clone();
+        let shallow = tree.find_by_name("Shallow save").unwrap().id.clone();
+        assert_eq!(unranked[0].last(), Some(&deep));
+        assert_eq!(unranked[1].last(), Some(&shallow));
+        let ranked = tree.control_paths("save");
+        assert_eq!(ranked.len(), 2);
+        assert_eq!(ranked[0], vec![tree.root.clone(), shallow]);
+        assert_eq!(ranked[1].len(), 3);
+        assert_eq!(ranked[1].last(), Some(&deep));
+        assert!(unranked.contains(&ranked[0]));
+        assert!(unranked.contains(&ranked[1]));
+        assert!(tree.control_paths_unranked("missing").is_empty());
+        assert!(tree.control_paths("missing").is_empty());
+        assert!(tree.control_paths_unranked("").is_empty());
+        assert!(tree.control_paths("").is_empty());
     }
 
     #[test]

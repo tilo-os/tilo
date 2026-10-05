@@ -322,6 +322,17 @@ pub trait Hypervisor {
     fn power_off(&self, _vm: &Vm<'_>) -> Option<CommandLine> {
         None
     }
+    /// Commands that wake the VM from a suspend (ACPI S3) it went into
+    /// itself; `None` when this adapter cannot (a device is woken with its
+    /// magic packet instead).
+    fn wake(&self, _vm: &Vm<'_>) -> Option<Vec<CommandLine>> {
+        None
+    }
+    /// Is the VM suspended, as the hypervisor sees it? `None` when the
+    /// adapter cannot tell.
+    fn suspended(&self, _vm: &Vm<'_>, _runner: &mut dyn Runner) -> Option<bool> {
+        None
+    }
     /// Can tilo-vm power the machine on? A physical device it only reaches
     /// over SSH stays off once off, so it is restarted with a reboot.
     fn powers_on(&self) -> bool {
@@ -705,6 +716,18 @@ impl Hypervisor for Libvirt {
             .ok()
             .filter(|o| o.success)?;
         Some(output.stdout.lines().any(|l| l.trim() == vm.name))
+    }
+
+    fn wake(&self, vm: &Vm<'_>) -> Option<Vec<CommandLine>> {
+        Some(vec![Self::virsh(vm, &["dompmwakeup", vm.name])])
+    }
+
+    fn suspended(&self, vm: &Vm<'_>, runner: &mut dyn Runner) -> Option<bool> {
+        let output = runner
+            .output(&Self::virsh(vm, &["domstate", vm.name]).env("LC_ALL", "C"))
+            .ok()
+            .filter(|o| o.success)?;
+        Some(output.stdout.trim() == "pmsuspended")
     }
 
     fn serial(&self, vm: &Vm<'_>) -> Option<CommandLine> {

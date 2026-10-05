@@ -349,8 +349,7 @@ impl ContainersApp {
                     podman::run_action(Action::Remove, target)?;
                 }
                 "shell" => {
-                    crate::terminal::spawn_exec_attach(target, "/bin/sh")
-                        .map_err(|e| e.to_string())?;
+                    crate::terminal::open(crate::terminal::exec_attach_intent(target))?;
                 }
                 _ => return Ok(false),
             },
@@ -361,7 +360,7 @@ impl ContainersApp {
                 podman::remove_volume(target, false)?;
             }
             "containers.distrobox" if verb == "enter" => {
-                crate::terminal::spawn_distrobox_enter(target).map_err(|e| e.to_string())?;
+                crate::terminal::open(crate::terminal::distrobox_enter_intent(target))?;
             }
             _ => return Ok(false),
         }

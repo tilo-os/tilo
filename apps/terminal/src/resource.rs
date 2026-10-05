@@ -45,6 +45,9 @@ pub enum TerminalAction {
     /// [`SessionTarget`](crate::target::SessionTarget)). The target outlives
     /// every process that runs in it, so reopening goes back to it.
     SetTarget { target: String },
+    /// Record (or, with `None`, forget) the relay session this session
+    /// re-attaches to.
+    SetRelaySession { session: Option<String> },
     /// Record one content-addressed image placement on the shared session.
     PlaceImage {
         hash: String,
@@ -127,6 +130,23 @@ impl Action for TerminalAction {
                     let _ = doc.delete(&parent, key);
                 }
                 doc.put(&parent, "terminal_local_session", session_id.as_str())?;
+            }
+            Self::SetRelaySession { session } => {
+                let parent = session_parent(doc)?;
+                match session {
+                    Some(session)
+                        if session.len() == 32
+                            && session.bytes().all(|b| b.is_ascii_hexdigit()) =>
+                    {
+                        doc.put(&parent, crate::target::RELAY_SESSION_KEY, session.as_str())?;
+                    }
+                    Some(_) => {
+                        return Err(ActionError::Refused("relay session id is invalid".into()));
+                    }
+                    None => {
+                        let _ = doc.delete(&parent, crate::target::RELAY_SESSION_KEY);
+                    }
+                }
             }
             Self::SetTarget { target } => {
                 if crate::target::SessionTarget::decode(target).is_none() {
@@ -551,7 +571,8 @@ fn target_operations() -> Vec<ActionSpec> {
                 "target",
                 ParamType::Text,
                 "Where the session runs: `environment` (the default environment), \
-                     `environment:<record>`, or `legacy:<vm>`. The device's own shell \
+                     `environment:<record>`, or `legacy:<vm>`; append `@<relay endpoint id>` \
+                     to an environment to run it on that relay. The device's own shell \
                      (`host`) can only be chosen by the person.",
             )],
             |args| {

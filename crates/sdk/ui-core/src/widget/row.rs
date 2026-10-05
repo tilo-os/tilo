@@ -93,6 +93,8 @@ pub struct Row {
     /// The cache holds floating surfaces over the blurred material. A reused
     /// cache would show them opaque, so it is redrawn while it does.
     cache_carries_material: bool,
+    /// Whether the cached subtree shows a secret, replayed with the cache.
+    cache_shows_secret: bool,
 }
 
 impl Default for Row {
@@ -128,6 +130,7 @@ impl Row {
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
+            cache_shows_secret: false,
         }
     }
 
@@ -614,6 +617,7 @@ impl Widget for Row {
             let mut local = std::mem::take(&mut self.subtree_cache);
             local.reset();
             crate::backdrop::nest_scene(&local);
+            let secrets = crate::secret_paint::SecretPaint::begin();
             for child in &mut self.children {
                 child.draw_with_presence(
                     &mut local,
@@ -624,6 +628,7 @@ impl Widget for Row {
                     permissions,
                 );
             }
+            self.cache_shows_secret = secrets.finish();
             self.cache_carries_material =
                 crate::backdrop::append_nested(scene, &local, transform) > 0;
             self.subtree_cache = local;
@@ -635,6 +640,9 @@ impl Widget for Row {
             let dx = self.rect.x0 - self.cache_rect.x0;
             let dy = self.rect.y0 - self.cache_rect.y0;
             scene.append(&self.subtree_cache, Some(translated(transform, dx, dy)));
+            if self.cache_shows_secret {
+                crate::secret_paint::note_secret_painted();
+            }
             if !self.descendant_caches_released {
                 for child in &mut self.children {
                     child.release_scene_cache();

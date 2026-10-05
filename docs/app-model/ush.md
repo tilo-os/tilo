@@ -197,6 +197,19 @@ these hold (`crates/runtime/ush/src/host.rs`):
    `{"result":"host-not-allowed",…}`; a shell-hosted Terminal tab then raises
    the shell's permission prompt, which records the answer there.
 
+### Environments on a relay
+
+`{"kind":"environment","record":…,"location":{"kind":"relay","relay":<endpoint id>}}`
+runs the environment on one of the person's relays: those this device
+enrolled as home peers for its user's personal workspace
+(`home-peers.json` beside the identity keys; `{"op":"list-relays"}` lists
+them). The supervisor still hands back a pty, and runs
+`tilo-relay-environment` on its other end to carry it to the session there
+(`crates/runtime/ush/src/relay.rs`). The answer's `relay_session` names the
+session, which outlives the tab; a later request with
+`"relay_session":<hex>` re-attaches to it. Tools the relay builds for the
+session are added to the record as `pkg install` here would.
+
 ### Environments
 
 `{"op":"list-environments"}`, `{"op":"create-environment","name":…}` and
@@ -274,6 +287,23 @@ quarantine list | add PATH | restore PATH
 restart
 tilo …  app …  store …  system …      brokered to the host session
 ```
+
+The brokered host commands are a fixed set (`app update|list|search|repo
+list`, `system status|update`, `tilo update`); the guest names a request, never
+a program. The broker runs the host's own binary and streams its stdout and
+stderr to the guest as they are produced, then its exit status. Each run is
+written to the audit log. The guards:
+
+- Arguments are capped at 4 KiB.
+- At most 1 MiB of output is forwarded. Past that the command keeps running,
+  the guest is told the rest is not shown, and the exit status still follows.
+- Updates may run 30 minutes, queries 5 minutes. A command past its limit is
+  stopped, with its helpers, and the guest gets the reason.
+- Updates run one at a time; a second one says it is waiting.
+- Ctrl-C (any client that hangs up) stops the command and its helpers.
+
+Legacy app launches go the same way but have no time limit: they last as long
+as the app is open.
 
 ## Storage
 

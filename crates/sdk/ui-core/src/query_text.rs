@@ -5,7 +5,6 @@
 //! surface: one shaped layout for ink, selection, caret and candidate geometry,
 //! with IME preedit excluded from application state until commit.
 
-use std::ops::Range;
 use std::sync::Arc;
 
 use vello::kurbo::{Point, Rect};
@@ -15,11 +14,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::paint::PaintCtx;
 use crate::richtext::RichTextLayout;
+use crate::text_edit::{Edit, EditCore, Motion};
 use crate::text_render::TextStyle;
-use crate::text_selection::{
-    Selection, clipboard_copy, clipboard_paste, next_char_boundary, next_word_boundary,
-    prev_char_boundary, prev_word_boundary,
-};
+use crate::text_selection::{Selection, TextPosition, clipboard_copy, clipboard_paste};
 
 /// Whether an IME event changed only the display composition or committed a
 /// new query value. Owners should re-run filtering only for `Committed`.
@@ -75,10 +72,12 @@ impl QueryInk {
     }
 }
 
-/// Retained shaping and IME state for an inline query editor.
+/// Retained shaping and IME state for an inline query editor. Editing goes
+/// through the shared [`EditCore`]: the owner's [`Selection`] is loaded into
+/// it for every event and written back afterwards, so a query keeps the same
+/// grapheme, word, clipboard and composition rules as every other field.
 pub struct QueryComposition {
-    preedit: String,
-    preedit_cursor: Option<(usize, usize)>,
+    core: EditCore,
     layout: Option<RichTextLayout>,
     layout_text: String,
     signature: u64,
@@ -92,11 +91,17 @@ impl Default for QueryComposition {
     }
 }
 
+/// A query is one line: control characters (newlines, tabs) never enter it.
+fn query_char(character: char) -> bool {
+    !character.is_control()
+}
+
 impl QueryComposition {
     pub fn new() -> Self {
+        let mut core = EditCore::new();
+        core.set_filter(Some(query_char));
         Self {
-            preedit: String::new(),
-            preedit_cursor: None,
+            core,
             layout: None,
             layout_text: String::new(),
             signature: u64::MAX,
@@ -106,17 +111,32 @@ impl QueryComposition {
     }
 
     pub fn is_composing(&self) -> bool {
-        !self.preedit.is_empty()
+        self.core.has_preedit()
     }
 
     pub fn clear(&mut self) {
-        self.preedit.clear();
-        self.preedit_cursor = None;
+        self.core.clear_preedit();
         self.layout = None;
         self.layout_text.clear();
         self.caret = None;
         self.signature = u64::MAX;
         self.layout_epoch = None;
+    }
+
+    /// Load the owner's selection into the core, clamped onto `text`.
+    fn load(&mut self, text: &str, selection: &Selection) {
+        self.core.set_selection(selection.anchor, selection.cursor);
+        self.core.clamp_to(text);
+    }
+
+    /// Apply a core edit to the owner's text: `Edited` when it changed the
+    /// text, otherwise `unchanged`.
+    fn apply(text: &mut String, edit: &Edit, unchanged: QueryEventChange) -> QueryEventChange {
+        if !edit.is_noop() && edit.apply(text) {
+            QueryEventChange::Edited
+        } else {
+            unchanged
+        }
     }
 
     /// Apply one platform IME event. Preedit changes only this helper; commit
@@ -127,31 +147,25 @@ impl QueryComposition {
         text: &mut String,
         selection: &mut Selection,
     ) -> QueryImeChange {
-        match ime {
+        self.load(text, selection);
+        let change = match ime {
             Ime::Preedit(preedit, cursor) => {
-                self.preedit.clone_from(preedit);
-                self.preedit_cursor = *cursor;
+                self.core.set_preedit(preedit, *cursor);
                 QueryImeChange::Display
             }
             Ime::Commit(committed) => {
-                let committed: String = committed
-                    .chars()
-                    .filter(|character| !character.is_control())
-                    .collect();
-                let range = selection.range();
-                text.replace_range(range.clone(), &committed);
-                *selection = Selection::collapsed(range.start.saturating_add(committed.len()));
-                self.preedit.clear();
-                self.preedit_cursor = None;
+                let edit = self.core.commit(committed);
+                Self::apply(text, &edit, QueryEventChange::Display);
                 QueryImeChange::Committed
             }
             Ime::Disabled => {
-                self.preedit.clear();
-                self.preedit_cursor = None;
+                self.core.clear_preedit();
                 QueryImeChange::Display
             }
             Ime::Enabled => QueryImeChange::Display,
-        }
+        };
+        *selection = self.core.selection();
+        change
     }
 
     /// Apply the ordinary editing subset of a window event to a transient
@@ -189,132 +203,111 @@ impl QueryComposition {
             return QueryEventChange::Ignored;
         };
 
-        match logical_key {
+        self.load(text, selection);
+        let change = match logical_key {
             Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) => {
                 let right = matches!(logical_key, Key::Named(NamedKey::ArrowRight));
-                self.handle_arrow_key(text, selection, shift, command, right)
-            }
-            Key::Named(NamedKey::Home | NamedKey::End) => {
-                let next = if matches!(logical_key, Key::Named(NamedKey::Home)) {
-                    0
-                } else {
-                    text.len()
-                };
-                if shift {
-                    selection.extend_to(next);
-                } else {
-                    selection.move_to(next);
-                }
+                self.arrow(text, shift, command, right);
                 QueryEventChange::Display
             }
-            Key::Named(NamedKey::Backspace) => handle_backspace(text, selection, command),
-            Key::Named(NamedKey::Delete) => handle_delete_key(text, selection, command),
+            Key::Named(NamedKey::Home) => {
+                self.core.motion(text, Motion::DocStart, shift);
+                QueryEventChange::Display
+            }
+            Key::Named(NamedKey::End) => {
+                self.core.motion(text, Motion::DocEnd, shift);
+                QueryEventChange::Display
+            }
+            Key::Named(NamedKey::Backspace) => {
+                let edit = self.core.delete_backward(text, command);
+                Self::apply(text, &edit, QueryEventChange::Display)
+            }
+            Key::Named(NamedKey::Delete) => {
+                let edit = self.core.delete_forward(text, command);
+                Self::apply(text, &edit, QueryEventChange::Display)
+            }
             Key::Named(NamedKey::Space) if !command => {
-                if replace_selection(text, selection, " ") {
-                    QueryEventChange::Edited
-                } else {
-                    QueryEventChange::Display
-                }
+                let edit = self.core.insert(" ");
+                Self::apply(text, &edit, QueryEventChange::Display)
             }
-            Key::Character(shortcut) if command => {
-                handle_command_shortcut(shortcut.as_str(), text, selection)
-            }
+            Key::Character(shortcut) if command => self.command_shortcut(shortcut.as_str(), text),
             Key::Character(character) if !command => {
                 // `KeyEvent::text` captures composed multi-scalar input when
                 // available. Synthetic events and some platform backends only
                 // populate the logical character, which is still a valid
                 // single-key insertion fallback.
                 let inserted = event_text.as_deref().unwrap_or(character.as_str());
-                if replace_selection(text, selection, inserted) {
-                    QueryEventChange::Edited
-                } else {
-                    QueryEventChange::Ignored
-                }
+                let edit = self.core.insert(inserted);
+                Self::apply(text, &edit, QueryEventChange::Ignored)
             }
+            _ => QueryEventChange::Ignored,
+        };
+        *selection = self.core.selection();
+        change
+    }
+
+    /// `ArrowLeft`/`ArrowRight`: by word with `command`, otherwise to the
+    /// adjacent shaped (visual) caret stop, falling back to the logical
+    /// grapheme step before the first layout. An unshifted arrow over a
+    /// selection collapses it to its edge.
+    fn arrow(&mut self, text: &str, shift: bool, command: bool, right: bool) {
+        let motion = match (command, right) {
+            (true, true) => Motion::WordRight,
+            (true, false) => Motion::WordLeft,
+            (false, true) => Motion::Right,
+            (false, false) => Motion::Left,
+        };
+        let visual = (!command)
+            .then(|| self.visual_motion(text, self.core.caret(), right))
+            .flatten();
+        match visual {
+            Some(target) => self
+                .core
+                .motion_to(motion, TextPosition::new(target), shift),
+            None => self.core.motion(text, motion, shift),
+        }
+    }
+
+    /// Ctrl/Cmd chords: select-all, copy, cut, paste.
+    fn command_shortcut(&mut self, shortcut: &str, text: &mut String) -> QueryEventChange {
+        match shortcut {
+            "a" | "A" => {
+                self.core.select_all(text);
+                QueryEventChange::Display
+            }
+            "c" | "C" => {
+                if let Some(slice) = self.core.selected(text) {
+                    clipboard_copy(slice);
+                }
+                QueryEventChange::Display
+            }
+            "x" | "X" => {
+                let Some(slice) = self.core.selected(text) else {
+                    return QueryEventChange::Display;
+                };
+                clipboard_copy(slice);
+                let edit = self.core.delete_selection();
+                Self::apply(text, &edit, QueryEventChange::Display)
+            }
+            "v" | "V" => match clipboard_paste() {
+                Some(pasted) => {
+                    let edit = self.core.insert(&pasted);
+                    Self::apply(text, &edit, QueryEventChange::Display)
+                }
+                None => QueryEventChange::Display,
+            },
             _ => QueryEventChange::Ignored,
         }
     }
 
-    /// `ArrowLeft`/`ArrowRight` handling for [`handle_event`](Self::handle_event):
-    /// collapse an existing selection to its edge, or otherwise move by shaped
-    /// visual caret stop, word or character boundary.
-    fn handle_arrow_key(
-        &self,
-        text: &str,
-        selection: &mut Selection,
-        shift: bool,
-        command: bool,
-        right: bool,
-    ) -> QueryEventChange {
-        if !shift && !selection.is_collapsed() {
-            let edge = if right {
-                selection.max()
-            } else {
-                selection.min()
-            };
-            selection.move_to(edge);
-            return QueryEventChange::Display;
-        }
-        let cursor = selection.cursor;
-        let next = if command {
-            if right {
-                next_word_boundary(text, cursor)
-            } else {
-                prev_word_boundary(text, cursor)
-            }
-        } else {
-            self.visual_motion(text, cursor, right).unwrap_or_else(|| {
-                if right {
-                    next_char_boundary(text, cursor)
-                } else {
-                    prev_char_boundary(text, cursor)
-                }
-            })
-        };
-        if shift {
-            selection.extend_to(next);
-        } else {
-            selection.move_to(next);
-        }
-        QueryEventChange::Display
+    /// Display text including the composition, shown at the caret. The
+    /// committed `text` is untouched until the IME commits.
+    pub fn display_text(&mut self, text: &str, selection: &Selection) -> String {
+        self.load(text, selection);
+        self.core.display_text(text).into_owned()
     }
 
-    /// Display text including composition. While composing, the committed
-    /// selection is visually replaced but remains untouched in `text`.
-    pub fn display_text(&self, text: &str, selection: &Selection) -> String {
-        if self.preedit.is_empty() {
-            return text.to_string();
-        }
-        let range = selection.range();
-        let mut display = String::with_capacity(
-            text.len()
-                .saturating_sub(range.len())
-                .saturating_add(self.preedit.len()),
-        );
-        display.push_str(text.get(..range.start).unwrap_or(""));
-        display.push_str(&self.preedit);
-        display.push_str(text.get(range.end..).unwrap_or(""));
-        display
-    }
-
-    fn preedit_range(&self, selection: &Selection) -> Range<usize> {
-        let start = selection.range().start;
-        start..start.saturating_add(self.preedit.len())
-    }
-
-    fn display_caret(&self, selection: &Selection) -> usize {
-        if self.preedit.is_empty() {
-            return selection.cursor;
-        }
-        let start = selection.range().start;
-        let offset = self
-            .preedit_cursor
-            .map_or(self.preedit.len(), |(_, end)| end)
-            .min(self.preedit.len());
-        start.saturating_add(self.preedit.floor_char_boundary(offset))
-    }
-
-    fn signature(&self, display: &str, style: &TextStyle, selection: &Selection) -> u64 {
+    fn signature(&self, display: &str, style: &TextStyle, text: &str) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hash = DefaultHasher::new();
@@ -325,11 +318,11 @@ impl QueryComposition {
         style.italic.hash(&mut hash);
         style.family.hash(&mut hash);
         // The same visible string can be produced by committed text or by a
-        // preedit replacing an equal selection. Keep those layouts distinct
+        // composition shown at the caret. Keep those layouts distinct
         // so an IME underline can neither linger nor move to a stale range.
         self.is_composing().hash(&mut hash);
-        if self.is_composing() {
-            self.preedit_range(selection).hash(&mut hash);
+        if let Some(range) = self.core.preedit_display_range(text) {
+            range.hash(&mut hash);
         }
         hash.finish()
     }
@@ -354,14 +347,15 @@ impl QueryComposition {
         let transform = ctx.transform;
         let scene = &mut *ctx.scene;
         let renderer = &mut *ctx.text;
-        let composing = !self.preedit.is_empty();
+        self.load(text, selection);
+        let composing = self.is_composing();
         let shows_placeholder = text.is_empty() && !composing;
         let display = if shows_placeholder {
             placeholder.to_string()
         } else {
-            self.display_text(text, selection)
+            self.core.display_text(text).into_owned()
         };
-        let signature = self.signature(&display, style, selection);
+        let signature = self.signature(&display, style, text);
         let epoch_stale = self
             .layout_epoch
             .as_ref()
@@ -376,8 +370,8 @@ impl QueryComposition {
                 browser_emoji,
             );
             renderer.note_browser_rich_layout(&layout);
-            if composing {
-                layout.add_underline(self.preedit_range(selection));
+            if let Some(range) = self.core.preedit_display_range(text) {
+                layout.add_underline(range);
             }
             self.layout = Some(layout);
             self.layout_text.clone_from(&display);
@@ -388,7 +382,7 @@ impl QueryComposition {
         let caret_byte = if shows_placeholder {
             0
         } else {
-            self.display_caret(selection)
+            self.core.display_caret(text)
         };
         let Some(layout) = self.layout.as_ref() else {
             // Unreachable: the block above always leaves `self.layout`
@@ -476,120 +470,6 @@ impl QueryComposition {
         self.layout
             .as_ref()
             .map(|layout| layout.visual_motion(byte, right))
-    }
-}
-
-/// Replace the current selection with `inserted` (control characters
-/// filtered) and collapse the selection to the end of the inserted text.
-/// Returns `false` (no-op) when there is nothing left to insert.
-fn replace_selection(text: &mut String, selection: &mut Selection, inserted: &str) -> bool {
-    let inserted: String = inserted
-        .chars()
-        .filter(|character| !character.is_control())
-        .collect();
-    if inserted.is_empty() {
-        return false;
-    }
-    let range = selection.range();
-    text.replace_range(range.clone(), &inserted);
-    *selection = Selection::collapsed(range.start.saturating_add(inserted.len()));
-    true
-}
-
-/// Delete the current selection in place. Returns `false` (no-op) when the
-/// selection is already collapsed.
-fn delete_selection(text: &mut String, selection: &mut Selection) -> bool {
-    if selection.is_collapsed() {
-        return false;
-    }
-    let range = selection.range();
-    text.replace_range(range.clone(), "");
-    *selection = Selection::collapsed(range.start);
-    true
-}
-
-/// `Backspace` handling for [`QueryComposition::handle_event`].
-fn handle_backspace(
-    text: &mut String,
-    selection: &mut Selection,
-    command: bool,
-) -> QueryEventChange {
-    if delete_selection(text, selection) {
-        return QueryEventChange::Edited;
-    }
-    let cursor = selection.cursor;
-    if cursor == 0 {
-        return QueryEventChange::Display;
-    }
-    let previous = if command {
-        prev_word_boundary(text, cursor)
-    } else {
-        prev_char_boundary(text, cursor)
-    };
-    text.replace_range(previous..cursor, "");
-    selection.move_to(previous);
-    QueryEventChange::Edited
-}
-
-/// `Delete` handling for [`QueryComposition::handle_event`].
-fn handle_delete_key(
-    text: &mut String,
-    selection: &mut Selection,
-    command: bool,
-) -> QueryEventChange {
-    if delete_selection(text, selection) {
-        return QueryEventChange::Edited;
-    }
-    let cursor = selection.cursor;
-    if cursor == text.len() {
-        return QueryEventChange::Display;
-    }
-    let next = if command {
-        next_word_boundary(text, cursor)
-    } else {
-        next_char_boundary(text, cursor)
-    };
-    text.replace_range(cursor..next, "");
-    QueryEventChange::Edited
-}
-
-/// Ctrl/Cmd-chord handling (select-all, copy, cut, paste) for
-/// [`QueryComposition::handle_event`].
-fn handle_command_shortcut(
-    shortcut: &str,
-    text: &mut String,
-    selection: &mut Selection,
-) -> QueryEventChange {
-    match shortcut {
-        "a" | "A" => {
-            selection.anchor = 0;
-            selection.cursor = text.len();
-            QueryEventChange::Display
-        }
-        "c" | "C" => {
-            let range = selection.range();
-            if let Some(slice) = (!range.is_empty()).then(|| text.get(range)).flatten() {
-                clipboard_copy(slice);
-            }
-            QueryEventChange::Display
-        }
-        "x" | "X" => {
-            let range = selection.range();
-            if range.is_empty() {
-                QueryEventChange::Display
-            } else {
-                if let Some(slice) = text.get(range) {
-                    clipboard_copy(slice);
-                }
-                delete_selection(text, selection);
-                QueryEventChange::Edited
-            }
-        }
-        "v" | "V" => match clipboard_paste() {
-            Some(pasted) if replace_selection(text, selection, &pasted) => QueryEventChange::Edited,
-            _ => QueryEventChange::Display,
-        },
-        _ => QueryEventChange::Ignored,
     }
 }
 
@@ -687,7 +567,7 @@ mod tests {
 
     #[test]
     fn query_preedit_is_display_only_until_commit_with_its_own_caret_and_layout() {
-        // Case `preedit_replaces_selection_only_in_the_display_until_commit`.
+        // Case `preedit_shows_at_the_caret_until_commit_replaces_the_selection`.
         {
             let mut composition = QueryComposition::new();
             let mut text = "search old value".to_string();
@@ -706,7 +586,7 @@ mod tests {
             assert_eq!(text, "search old value");
             assert_eq!(
                 composition.display_text(&text, &selection),
-                "search 新 value"
+                "search old新 value"
             );
             assert_eq!(
                 composition.handle_ime(&Ime::Commit("新".into()), &mut text, &mut selection),
@@ -820,6 +700,201 @@ mod tests {
             );
             assert_ne!(composition.signature, composing_signature);
         }
+    }
+
+    #[test]
+    fn typing_composing_and_backspacing_clusters_edits_the_exact_query() {
+        let mut composition = QueryComposition::new();
+        let mut text = String::new();
+        let mut selection = Selection::collapsed(0);
+        let press = |composition: &mut QueryComposition,
+                     text: &mut String,
+                     selection: &mut Selection,
+                     event: WindowEvent,
+                     shift: bool,
+                     command: bool| {
+            composition.handle_event(&event, text, selection, shift, command)
+        };
+        let typed = |s: &str| key(Key::Character(s.into()), Some(s));
+        let named = |k: NamedKey| key(Key::Named(k), None);
+
+        // A decomposed "é" arrives as two keystrokes; emoji and a flag as one.
+        for s in ["e", "\u{301}", "👍🏽", "🇩🇪"] {
+            assert_eq!(
+                press(
+                    &mut composition,
+                    &mut text,
+                    &mut selection,
+                    typed(s),
+                    false,
+                    false
+                ),
+                QueryEventChange::Edited
+            );
+        }
+        assert_eq!(text, "e\u{301}👍🏽🇩🇪");
+        // A tab is a control character and never enters a one-line query.
+        assert_eq!(
+            press(
+                &mut composition,
+                &mut text,
+                &mut selection,
+                typed("\t"),
+                false,
+                false
+            ),
+            QueryEventChange::Ignored
+        );
+        assert_eq!(text, "e\u{301}👍🏽🇩🇪");
+
+        // Backspace removes whole clusters: the flag, then the toned thumb.
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::Backspace),
+            false,
+            false,
+        );
+        assert_eq!(text, "e\u{301}👍🏽");
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::Backspace),
+            false,
+            false,
+        );
+        assert_eq!(text, "e\u{301}");
+        // Left steps over the whole "é"; Delete removes it as one.
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::ArrowLeft),
+            false,
+            false,
+        );
+        assert_eq!(selection, Selection::collapsed(0));
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::Delete),
+            false,
+            false,
+        );
+        assert_eq!(text, "");
+
+        // IME: the composition is display-only, the commit lands at the caret.
+        for s in ["a", "b"] {
+            press(
+                &mut composition,
+                &mut text,
+                &mut selection,
+                typed(s),
+                false,
+                false,
+            );
+        }
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::ArrowLeft),
+            false,
+            false,
+        );
+        assert_eq!(
+            press(
+                &mut composition,
+                &mut text,
+                &mut selection,
+                WindowEvent::Ime(Ime::Preedit("か".into(), Some((3, 3)))),
+                false,
+                false,
+            ),
+            QueryEventChange::Display
+        );
+        assert_eq!(text, "ab");
+        assert_eq!(composition.display_text(&text, &selection), "aかb");
+        assert_eq!(
+            press(
+                &mut composition,
+                &mut text,
+                &mut selection,
+                WindowEvent::Ime(Ime::Commit("火".into())),
+                false,
+                false,
+            ),
+            QueryEventChange::Edited
+        );
+        assert_eq!(text, "a火b");
+        assert!(!composition.is_composing());
+        assert_eq!(selection, Selection::collapsed("a火".len()));
+
+        // Shift+Home selects back to the start; typing replaces the selection.
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::Home),
+            true,
+            false,
+        );
+        assert_eq!(selection.range(), 0.."a火".len());
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            typed("z"),
+            false,
+            false,
+        );
+        assert_eq!(text, "zb");
+        assert_eq!(selection, Selection::collapsed(1));
+
+        // Ctrl+A then Backspace clears; Ctrl+Backspace removes a word.
+        text = "find these words".to_owned();
+        selection = Selection::collapsed(text.len());
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::Backspace),
+            false,
+            true,
+        );
+        assert_eq!(text, "find these ");
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            typed("a"),
+            false,
+            true,
+        );
+        assert_eq!(selection.range(), 0..text.len());
+        press(
+            &mut composition,
+            &mut text,
+            &mut selection,
+            named(NamedKey::Backspace),
+            false,
+            false,
+        );
+        assert_eq!(text, "");
+        assert_eq!(
+            press(
+                &mut composition,
+                &mut text,
+                &mut selection,
+                named(NamedKey::Backspace),
+                false,
+                false
+            ),
+            QueryEventChange::Display
+        );
     }
 
     #[test]

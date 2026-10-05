@@ -15,7 +15,7 @@ use ui::widget::{
     Spacer, Text, ToggleGroup, Widget,
 };
 
-use super::{BrowserWidget, LibrarySection};
+use super::{BrowserWidget, LibrarySection, library_filter_matches};
 use crate::actions::{
     BOOKMARKS_SCOPE, BrowserAction, DOWNLOADS_SCOPE, HISTORY_SCOPE, bookmark_resource_id,
     history_resource_id,
@@ -44,6 +44,9 @@ impl BrowserWidget {
             .entries()
             .iter()
             .rev()
+            .filter(|entry| {
+                library_filter_matches(&self.library_filter.get(), &[&entry.title, &entry.url])
+            })
             .take(ROW_LIMIT)
             .map(|entry| {
                 let id = history_resource_id(&entry.url);
@@ -67,6 +70,9 @@ impl BrowserWidget {
         self.bookmarks
             .entries()
             .iter()
+            .filter(|entry| {
+                library_filter_matches(&self.library_filter.get(), &[&entry.title, &entry.url])
+            })
             .take(ROW_LIMIT)
             .map(|entry| {
                 // The same normalized identity as the resource surface: legacy
@@ -105,6 +111,16 @@ impl BrowserWidget {
             .entries()
             .iter()
             .rev()
+            .filter(|entry| {
+                library_filter_matches(
+                    &self.library_filter.get(),
+                    &[
+                        entry.display_name(),
+                        &entry.source_url,
+                        &super::download_status_text(entry),
+                    ],
+                )
+            })
             .take(ROW_LIMIT)
             .map(|entry| {
                 let id = entry.resource_id();
@@ -172,7 +188,16 @@ impl BrowserWidget {
             crate::extensions::list_installed()
         };
         let mut rows: Vec<Element> = Vec::new();
-        for extension in installed.into_iter().take(100) {
+        for extension in installed
+            .into_iter()
+            .filter(|entry| {
+                library_filter_matches(
+                    &self.library_filter.get(),
+                    &[&entry.name, &entry.id, &entry.version],
+                )
+            })
+            .take(100)
+        {
             let approved = crate::extensions::is_approved(&extension);
             let loaded = extension
                 .path
@@ -244,6 +269,9 @@ impl BrowserWidget {
 
     /// What the section shows when it has no rows: one sentence.
     fn library_empty_state(&self) -> EmptyState {
+        if !self.library_filter.get().is_empty() {
+            return EmptyState::new("No matching items").with_icon(Icon::Search);
+        }
         match self.library_section {
             LibrarySection::History if self.history_paused() => {
                 EmptyState::new("History is paused in this window").with_icon(Icon::Pause)
@@ -267,7 +295,11 @@ impl BrowserWidget {
         if self.library_section == LibrarySection::Downloads
             && self.capabilities.owns_download_presentation()
         {
-            return self.capabilities.downloads(&self.engine, theme);
+            return self.capabilities.downloads_filtered(
+                &self.engine,
+                theme,
+                &self.library_filter.get(),
+            );
         }
         let list = match self.library_section {
             LibrarySection::History => {
@@ -325,6 +357,17 @@ impl BrowserWidget {
                 Button::new("browser.library.history-pause", label, None),
                 "browser.session",
                 "toggle-history-pause",
+            )));
+        }
+        if !self.library_filter.get().is_empty() {
+            header = header.push(Box::new(self.bind_button(
+                Button::icon_only(
+                    "browser.library.clear-filter",
+                    Icon::X,
+                    "Clear library filter",
+                ),
+                "browser.library",
+                "clear-filter",
             )));
         }
         // Search is the platform's: the button opens it narrowed to the

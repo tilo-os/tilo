@@ -65,6 +65,10 @@ pub struct MinimalManifest {
     /// when present the launcher mounts the bundle so the app doesn't need
     /// `--minimal-libs`.
     pub runtime: Option<String>,
+    /// `[package].optional-runtimes` — further runtime bundles
+    /// (`<name>/<version>`) mounted read-only beside the runtime when they
+    /// are installed and verify. A missing one never stops the launch.
+    pub optional_runtimes: Vec<String>,
     pub entrypoint: Entrypoint,
     pub sandbox: Sandbox,
     /// `[cli].commands` — PATH-visible command names the package declares.
@@ -152,6 +156,8 @@ struct PackageBlock {
     kind: Option<String>,
     #[serde(default)]
     runtime: Option<String>,
+    #[serde(default, rename = "optional-runtimes")]
+    optional_runtimes: Vec<String>,
 }
 
 /// `[package].kind` for something a user opens. Everything else is a
@@ -201,6 +207,11 @@ impl From<RawManifest> for MinimalManifest {
             .filter(|scheme| valid_scheme(scheme))
             .collect();
         let runtime = raw.package.as_ref().and_then(|p| p.runtime.clone());
+        let optional_runtimes = raw
+            .package
+            .as_ref()
+            .map(|p| p.optional_runtimes.clone())
+            .unwrap_or_default();
         let name = raw.package.as_ref().and_then(|p| p.name.clone());
         let localized_names = raw
             .package
@@ -229,6 +240,7 @@ impl From<RawManifest> for MinimalManifest {
             version,
             kind,
             runtime,
+            optional_runtimes,
             entrypoint: raw.entrypoint,
             sandbox: raw.sandbox,
             cli_commands,
@@ -944,6 +956,22 @@ mod tests {
             let (name, ver) = m.runtime_ref().expect("runtime ref");
             assert_eq!(name, "tilo-runtime");
             assert_eq!(ver, "2026.07");
+            assert!(m.optional_runtimes.is_empty());
+        }
+        // Phase `parses_optional_runtimes_from_package_block`.
+        {
+            let toml_text = r#"
+    [package]
+    id                = "so.tilo.browser"
+    version           = "0.1.0"
+    runtime           = "tilo-runtime/2026.07"
+    optional-runtimes = ["tilo-runtime/2026.10.0-chromium"]
+
+    [entrypoint]
+    bin = "bin/browser"
+    "#;
+            let m: MinimalManifest = toml::from_str(toml_text).expect("parse");
+            assert_eq!(m.optional_runtimes, ["tilo-runtime/2026.10.0-chromium"]);
         }
     }
 

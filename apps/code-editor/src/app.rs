@@ -1,11 +1,11 @@
 //! Root widget for the code editor. Owns the [`Session`] (project + open
-//! buffers), the editor pane, the file-tree sidebar, the tab bar, the status
+//! buffers), the editor pane, the file-tree sidebar, the file header, the status
 //! model and the bottom panel — and coordinates the data flow between them.
 //!
 //! Layout:
 //! ```text
 //! +----------+-------------------------------+
-//! | file     |  tab bar                      |
+//! | file     |  file header                      |
 //! | tree     +-------------------------------+
 //! | sidebar  |  find bar (when open)         |
 //! |          +-------------------------------+
@@ -27,7 +27,7 @@
 //! editor when the window is wide, a floating drawer over it (behind a scrim)
 //! when it is narrow. The toolkit draws the sidebar toggle, at the top-leading
 //! corner of the sidebar and, when the sidebar is not docked open, at the
-//! leading edge of the tab strip. The scrim, Escape, or the toggle again
+//! leading edge of the file header. The scrim, Escape, or the toggle again
 //! dismiss the drawer.
 //!
 //! The editor is not a master-detail list, so there is no push navigation —
@@ -36,7 +36,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 mod chrome;
@@ -53,9 +52,7 @@ use ui::presence::PresenceCtx;
 use ui::search::SearchCatalog;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{
-    Button, EmptyState, FindBar, SidebarDrawer, SplitLayout, TabBar, TabDescriptor, Widget,
-};
+use ui::widget::{Button, EmptyState, FindBar, SidebarDrawer, SplitLayout, Text, Widget};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -310,6 +307,23 @@ fn bottom_panel_toggle_binding(
         .expect("Toggle bottom panel is part of the Code command catalogue")
 }
 
+/// The editor header's file-name text, and the label it reads.
+fn file_header(session: &Session) -> (Text, std::rc::Rc<std::cell::RefCell<String>>) {
+    let label = std::rc::Rc::new(std::cell::RefCell::new(
+        session
+            .active_buffer()
+            .map_or_else(String::new, |buffer| buffer.name.clone()),
+    ));
+    let source = label.clone();
+    (
+        Text::dynamic(move || source.borrow().clone())
+            .with_role(ui::tokens::TextRole::Heading)
+            .with_kind(ui::TextKind::Identifier)
+            .with_id("code-editor.file"),
+        label,
+    )
+}
+
 fn language_from_label(label: &str) -> Option<Language> {
     [
         Language::Rust,
@@ -377,12 +391,10 @@ pub struct CodeApp {
     /// expansion signals land in `explorer_events`.
     sidebar: Explorer,
     explorer_events: ExplorerEvents,
-    tabs: TabBar,
-    /// Sweep timer for a pill's close-fade, keyed by tab id (== node id).
-    /// `TabBar::start_closing` runs the fade on its own clock; this is only
-    /// so `reconcile_tabs` knows when to call `finalize_close` and free the
-    /// widget's bookkeeping, the same job `WindowGroup::closing_hosts` does.
-    closing_since: HashMap<u64, Instant>,
+    /// The editor header's file name. A window shows one file; other files
+    /// open beside it as desktop tabs, so there is no file header here.
+    header: Text,
+    header_label: std::rc::Rc<std::cell::RefCell<String>>,
     editor: EditorView,
     /// The caret / language / diagnostics readout, drawn in the status bar
     /// band under the editor.
@@ -424,7 +436,7 @@ pub struct CodeApp {
     /// strip's leading edge), and whether the pointer is over it.
     /// The sidebar's no-project state, with its one "Open folder" action.
     sidebar_empty: EmptyState,
-    /// The header row's height and the width the tab strip gives up to the
+    /// The header row's height and the width the file header gives up to the
     /// sidebar toggle, from the theme at layout time.
     header_h: f64,
     toggle_slot_w: f64,
@@ -434,7 +446,7 @@ pub struct CodeApp {
 
     rect: Rect,
     sidebar_node: Option<NodeId>,
-    tabs_node: Option<NodeId>,
+    header_node: Option<NodeId>,
     editor_header_node: Option<NodeId>,
     panel_toggle_node: Option<NodeId>,
     search_button_node: Option<NodeId>,
@@ -596,6 +608,8 @@ enum ConflictChoice {
 struct ClosePrompt {
     node: TreeId,
     name: String,
+    /// The file to show once this one is saved or discarded.
+    then_open: Option<TreeId>,
 }
 
 /// The three ways out of an unsaved-close prompt.
@@ -767,32 +781,12 @@ impl CodeApp {
         app
     }
 
-    /// The tab strip over the buffers open when the window appears. They are
-    /// its first tabs, not tabs entering: they start in place instead of
-    /// fading in.
-    fn opening_tabs(session: &Session) -> TabBar {
-        let opening: Vec<TabDescriptor> = session
-            .open
-            .iter()
-            .map(|buffer| TabDescriptor::new(buffer.node as u64, buffer.name.clone()))
-            .collect();
-        let active = session
-            .active_buffer()
-            .map_or(0, |buffer| buffer.node as u64);
-        let mut tabs = TabBar::new("code-editor", opening, active);
-        // Tabs here are document buffers, not windows — there is nothing for
-        // a maximize chip to do, and a chip that appears under the pointer
-        // and then does nothing is worse than no chip.
-        tabs.set_show_maximize(false);
-        tabs
-    }
-
     fn from_session(session: Session, default: Option<TreeId>) -> Self {
         let explorer_events = ExplorerEvents::default();
         let mut sidebar = explorer::explorer(&session.project, &explorer_events);
         explorer::set_current(&mut sidebar, default);
 
-        let tabs = Self::opening_tabs(&session);
+        let (header, header_label) = file_header(&session);
 
         let project_id = Uuid::new_v4().to_string();
         let next_new_file_id = Uuid::new_v4().to_string();
@@ -809,8 +803,8 @@ impl CodeApp {
             session,
             sidebar,
             explorer_events,
-            tabs,
-            closing_since: HashMap::new(),
+            header,
+            header_label,
             editor: EditorView::new(),
             status: StatusModel::new(),
             panel: BottomPanel::new(),
@@ -835,7 +829,7 @@ impl CodeApp {
             panel_visible: false,
             rect: Rect::ZERO,
             sidebar_node: None,
-            tabs_node: None,
+            header_node: None,
             editor_header_node: None,
             panel_toggle_node: None,
             search_button_node: None,
@@ -971,7 +965,7 @@ impl CodeApp {
         )
     }
 
-    /// The width the tab strip gives up to the sidebar toggle when the toggle
+    /// The width the file header gives up to the sidebar toggle when the toggle
     /// sits at the strip's leading edge: the toggle and a gap.
     fn toggle_slot_width(theme: &Theme) -> f64 {
         let inset = f64::from(theme.tokens.spacing.s3);
@@ -979,7 +973,7 @@ impl CodeApp {
         inset + side + f64::from(theme.tokens.spacing.s2)
     }
 
-    /// Whether the toggle sits in the tab strip: whenever the sidebar panel
+    /// Whether the toggle sits in the file header: whenever the sidebar panel
     /// is not itself a docked column with a header to hold it.
     fn toggle_in_tab_strip(&self) -> bool {
         self.sidebar_layout() == SplitLayout::Overlay || self.drawer.reveal() <= 0.5
@@ -1054,10 +1048,7 @@ impl CodeApp {
         // opened as a silently empty buffer would be written back empty by the
         // next Ctrl+S.
         let mut failed: Vec<(TreeId, String)> = Vec::new();
-        for i in 0..self.session.open.len() {
-            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
-                continue;
-            };
+        if let Some(node) = self.session.active_buffer().map(|b| b.node) {
             // The document already carrying text for this node is *not* proof
             // that the file has been read. The document is persisted across
             // launches, so on the next run it hands back the buffer while this
@@ -1075,7 +1066,10 @@ impl CodeApp {
             // like any other.
             let key = self.buffer_key(node);
             let has_text = EditorDoc::buffer_text_key(doc, &key).is_some();
-            let reconciled = self.session.open.get(i).is_some_and(|b| b.stamp.is_some());
+            let reconciled = self
+                .session
+                .buffer_of(node)
+                .is_some_and(|b| b.stamp.is_some());
             let disk_backed = self.session.project.disk_path_of(node).is_some();
             if has_text && (reconciled || !disk_backed) {
                 // Sample / scratch tabs are not disk-backed. Import can put text
@@ -1083,47 +1077,46 @@ impl CodeApp {
                 // that text as `saved_text`, dirty stays true forever and clean
                 // closes raise a save prompt.
                 if !reconciled
-                    && let Some(buf) = self.session.open.get_mut(i)
+                    && let Some(buf) = self.session.buffer_of_mut(node)
                     && buf.saved_text.is_empty()
                 {
                     let current = EditorDoc::read_buffer_key(doc, &key).unwrap_or_default();
                     buf.mark_saved(current, None);
                 }
-                continue;
-            }
-            match self.session.project.file_seed(node) {
-                Ok((text, stamp)) => {
-                    if !has_text {
-                        let action = actions::CodeEditorAction::EnsureBuffer {
-                            key: key.clone(),
-                            seed: text.clone(),
-                        };
-                        self.actions.dispatch_with_context(
-                            doc,
-                            actions::CODE_EDITOR_ACTION_TYPE,
-                            &action,
-                            actions::history_context(&action, "File", &self.project_id),
-                        );
+            } else {
+                match self.session.project.file_seed(node) {
+                    Ok((text, stamp)) => {
+                        if !has_text {
+                            let action = actions::CodeEditorAction::EnsureBuffer {
+                                key,
+                                seed: text.clone(),
+                            };
+                            self.actions.dispatch_with_context(
+                                doc,
+                                actions::CODE_EDITOR_ACTION_TYPE,
+                                &action,
+                                actions::history_context(&action, "File", &self.project_id),
+                            );
+                        }
+                        let disk_path = self.session.project.disk_path_of(node);
+                        if let Some(buf) = self.session.buffer_of_mut(node) {
+                            buf.path = disk_path;
+                            buf.mark_saved(text, stamp);
+                        }
                     }
-                    let Some(buf) = self.session.open.get_mut(i) else {
-                        continue;
-                    };
-                    buf.path = self.session.project.disk_path_of(node);
-                    buf.mark_saved(text, stamp);
-                }
-                Err(e) => {
-                    let name = self
-                        .session
-                        .open
-                        .get(i)
-                        .map_or_else(String::new, |b| b.name.clone());
-                    failed.push((node, format!("Could not open {name}: {e}")));
+                    Err(e) => {
+                        let name = self
+                            .session
+                            .buffer_of(node)
+                            .map_or_else(String::new, |b| b.name.clone());
+                        failed.push((node, format!("Could not open {name}: {e}")));
+                    }
                 }
             }
         }
         for (node, message) in failed {
-            if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
-                self.session.close_tab(idx);
+            if self.session.buffer_of(node).is_some() {
+                self.session.close_file(node);
                 self.invalidate_search_projection();
             }
             self.note(message, true);
@@ -1134,16 +1127,12 @@ impl CodeApp {
         // Dirty is a comparison against the bytes on disk, recomputed here, so
         // undoing back to the original clears the indicator rather than leaving
         // it stuck on.
-        for i in 0..self.session.open.len() {
-            let Some(node) = self.session.open.get(i).map(|b| b.node) else {
-                continue;
-            };
+        if let Some(node) = self.session.active_buffer().map(|b| b.node) {
             let current =
                 EditorDoc::read_buffer_key(doc, &self.buffer_key(node)).unwrap_or_default();
-            let Some(buf) = self.session.open.get_mut(i) else {
-                continue;
-            };
-            buf.dirty = buf.is_dirty(&current);
+            if let Some(buf) = self.session.buffer_of_mut(node) {
+                buf.dirty = buf.is_dirty(&current);
+            }
         }
 
         // Bind the editor to the active buffer.
@@ -1312,14 +1301,8 @@ impl CodeApp {
             .collect();
         for file in files {
             if file.deleted {
-                if let Some(node) = self.session.project.remove_collaborative_file(&file.id)
-                    && let Some(tab) = self
-                        .session
-                        .open
-                        .iter()
-                        .position(|buffer| buffer.node == node)
-                {
-                    self.session.close_tab(tab);
+                if let Some(node) = self.session.project.remove_collaborative_file(&file.id) {
+                    self.session.close_file(node);
                 }
                 continue;
             }
@@ -1393,68 +1376,21 @@ impl CodeApp {
         )
     }
 
-    /// Reconcile the shared tab bar's pills against `session.open`, by node
-    /// id: insert what's new, fade out what closed by some path other than
-    /// its own pill (Ctrl+W, the file tree), and keep title + the
-    /// unsaved-changes marker in step. A pill mid close-fade is left alone —
-    /// it reappears once the fade finishes if the buffer is still open (a
-    /// cancelled close). Idempotent: safe to call more than once a frame.
-    fn reconcile_tabs(&mut self) {
-        self.sweep_closing_tabs();
-
-        let live: HashSet<u64> = self.session.open.iter().map(|b| b.node as u64).collect();
-        let stale: Vec<u64> = self
-            .tabs
-            .tabs()
-            .iter()
-            .map(|t| t.id)
-            .filter(|id| !live.contains(id) && !self.tabs.is_closing(*id))
-            .collect();
-        for id in stale {
-            self.tabs.start_closing(id);
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-        }
-
-        for (i, buf) in self.session.open.iter().enumerate() {
-            let id = buf.node as u64;
-            if self.tabs.is_closing(id) || self.tabs.tabs().iter().any(|t| t.id == id) {
-                continue;
-            }
-            let idx = i.min(self.tabs.tabs().len());
-            self.tabs
-                .insert_tab(idx, TabDescriptor::new(id, buf.name.clone()));
-        }
-
-        for buf in &self.session.open {
-            let id = buf.node as u64;
-            self.tabs.set_modified(id, buf.dirty);
-            if let Some(t) = self.tabs.tabs_mut().iter_mut().find(|t| t.id == id)
-                && t.title != buf.name
-            {
-                t.title.clone_from(&buf.name);
-            }
-        }
-
-        if let Some(buf) = self.session.active_buffer() {
-            self.tabs.set_active(buf.node as u64);
-        }
-    }
-
-    /// Frees a faded pill's bookkeeping once `CLOSE_FADE_MS` has actually
-    /// elapsed — `TabBar` stops painting it on its own, but only
-    /// `finalize_close` drops the entry and lets `needs_animation_frame` go
-    /// quiet. Mirrors `WindowGroup`'s own sweep of `closing_hosts`.
-    fn sweep_closing_tabs(&mut self) {
-        let window = Duration::from_millis(ui::widget::tabs::CLOSE_FADE_MS as u64);
-        let expired: Vec<u64> = self
-            .closing_since
-            .iter()
-            .filter(|(_, t)| t.elapsed() >= window)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in expired {
-            self.closing_since.remove(&id);
-            self.tabs.finalize_close(id);
+    /// Keep the header naming the shown file, with a marker while it has
+    /// unsaved edits. Idempotent: safe to call more than once a frame.
+    fn refresh_header(&self) {
+        let label = self
+            .session
+            .active_buffer()
+            .map_or_else(String::new, |buffer| {
+                if buffer.dirty {
+                    format!("{} \u{2022}", buffer.name)
+                } else {
+                    buffer.name.clone()
+                }
+            });
+        if *self.header_label.borrow() != label {
+            *self.header_label.borrow_mut() = label;
         }
     }
 
@@ -1637,7 +1573,12 @@ impl CodeApp {
     }
 
     fn search_file_entries(&self) -> Vec<crate::search_provider::FileEntry> {
-        let open: HashSet<TreeId> = self.session.open.iter().map(|buffer| buffer.node).collect();
+        let open: HashSet<TreeId> = self
+            .session
+            .buffer
+            .iter()
+            .map(|buffer| buffer.node)
+            .collect();
         self.session
             .project
             .nodes
@@ -1766,13 +1707,32 @@ impl CodeApp {
         self.lsp_failed.clear();
     }
 
-    /// Open a file node into a tab and bind the editor.
+    /// Show the file `node` in this window and bind the editor. A shown file
+    /// with unsaved edits is not dropped: the person decides first, and the
+    /// new file opens once it was saved or discarded.
     fn open_node(&mut self, node: TreeId) {
-        self.session.open_file(node);
+        if let Some(shown) = self.session.active_buffer()
+            && shown.node != node
+            && shown.dirty
+        {
+            self.close_prompt = Some(ClosePrompt {
+                node: shown.node,
+                name: shown.name.clone(),
+                then_open: Some(node),
+            });
+            return;
+        }
+        self.show_node(node);
+    }
+
+    fn show_node(&mut self, node: TreeId) {
+        if !self.session.open_file(node) {
+            return;
+        }
         self.invalidate_search_projection();
         explorer::set_current(&mut self.sidebar, Some(node));
         self.bound_node = None; // force re-bind in ensure_buffers
-        self.reconcile_tabs();
+        self.refresh_header();
     }
 
     /// The node of the file in the active tab, if any. Lets a test observe
@@ -1846,99 +1806,19 @@ impl CodeApp {
         }
     }
 
-    /// Close the tab at session index `idx` — immediately if it is clean, or
-    /// by raising the unsaved-changes prompt if it has edits (closing would
-    /// silently discard them). The one entry point every close path funnels
-    /// through — a pill's ×, Ctrl+W, the file tree — so they all read the
-    /// same and none skips the prompt.
-    fn request_close_tab(&mut self, idx: usize) {
-        let Some(buf) = self.session.open.get(idx) else {
-            return;
-        };
-        if buf.dirty {
-            self.close_prompt = Some(ClosePrompt {
-                node: buf.node,
-                name: buf.name.clone(),
-            });
-            return;
-        }
-        let node = buf.node;
-        self.close_node_tab(node);
-    }
-
-    /// Close the tab holding `node`, if it is still open — the low-level
-    /// removal used once a close is actually decided: already clean, a
-    /// discarded prompt, or a save that landed. Starts the pill's fade if
-    /// nothing already did — a pill's own × starts it before the app even
-    /// learns of the close; every other path has to ask here.
-    fn close_node_tab(&mut self, node: TreeId) {
-        if let Some(idx) = self.session.open.iter().position(|b| b.node == node) {
-            self.session.close_tab(idx);
+    /// Stop showing `node` once that is decided — already clean, a discarded
+    /// prompt, or a save that landed — and show the file the person asked
+    /// for next, if any.
+    fn close_node(&mut self, node: TreeId, then_open: Option<TreeId>) {
+        if self.session.buffer_of(node).is_some() {
+            self.session.close_file(node);
             self.invalidate_search_projection();
             self.bound_node = None;
-            let id = node as u64;
-            if !self.tabs.is_closing(id) {
-                self.tabs.start_closing(id);
-            }
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-            explorer::set_current(
-                &mut self.sidebar,
-                self.session.active_buffer().map(|b| b.node),
-            );
-            self.reconcile_tabs();
+            explorer::set_current(&mut self.sidebar, None);
+            self.refresh_header();
         }
-    }
-
-    /// Read back everything the shared tab bar did with the pointer this
-    /// frame: which pill is selected (the bar already moved its own
-    /// `active_id` on press — this mirrors it into the session), a
-    /// drag-reorder, a close, and the per-tab search chip — routed to Find,
-    /// this app's equivalent of "search within this tab".
-    fn drain_tab_bar(&mut self, doc: &mut AutoCommit) {
-        let selected = self.tabs.active_id();
-        if let Some(idx) = self
-            .session
-            .open
-            .iter()
-            .position(|b| b.node as u64 == selected)
-            && self.session.active != Some(idx)
-        {
-            self.session.active = Some(idx);
-            self.bound_node = None;
-            explorer::set_current(
-                &mut self.sidebar,
-                self.session.active_buffer().map(|b| b.node),
-            );
-        }
-
-        if let Some((from, to)) = self.tabs.take_reorder() {
-            self.session.reorder_tab(from, to);
-        }
-
-        if let Some(id) = self.tabs.take_close() {
-            // Always start the sweep, even if this ends up only raising a
-            // prompt: `TabBar::start_closing` has already faded the pill
-            // regardless of what the app decides, so this id must still get
-            // `finalize_close`d once the fade elapses, or a cancelled close
-            // would leave it permanently marked "closing" and never come
-            // back — see `TabBar::is_closing`.
-            self.closing_since.entry(id).or_insert_with(Instant::now);
-            if let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id) {
-                self.request_close_tab(idx);
-            }
-        }
-
-        // The strip's "+" starts a new file, the same command as the palette's.
-        if self.tabs.take_new_tab().is_some() {
-            self.apply_command(Command::NewFile, doc);
-        }
-
-        if let Some(id) = self.tabs.take_search()
-            && let Some(idx) = self.session.open.iter().position(|b| b.node as u64 == id)
-        {
-            self.session.active = Some(idx);
-            self.bound_node = None;
-            self.open_find();
+        if let Some(next) = then_open {
+            self.show_node(next);
         }
     }
 
@@ -1959,7 +1839,7 @@ impl CodeApp {
                     // conflict prompt (now showing) gets answered first.
                     let snapshot = doc.clone();
                     if self.save_buffer(&snapshot, prompt.node, false) {
-                        self.close_node_tab(prompt.node);
+                        self.close_node(prompt.node, prompt.then_open);
                     }
                 } else {
                     // No file yet: the destination has to be chosen first. The
@@ -1969,7 +1849,7 @@ impl CodeApp {
                     self.request_save_as(prompt.node);
                 }
             }
-            CloseChoice::Discard => self.close_node_tab(prompt.node),
+            CloseChoice::Discard => self.close_node(prompt.node, prompt.then_open),
             CloseChoice::Cancel => {}
         }
     }
@@ -2052,11 +1932,6 @@ impl CodeApp {
             Command::MoveLineDown => self.editor.move_lines(doc, false),
             Command::DeleteLine => self.editor.delete_lines(doc),
             Command::ToggleComment => self.editor.toggle_line_comment(doc),
-            Command::CloseTab => {
-                if let Some(i) = self.session.active {
-                    self.request_close_tab(i);
-                }
-            }
             Command::ToggleBottomPanel => {
                 if self.panel_visible {
                     self.close_bottom_panel();
@@ -2093,9 +1968,8 @@ impl CodeApp {
     /// Drain everything the child widgets emitted this frame. `doc` is threaded
     /// through so a chosen palette command that mutates the document (New file)
     /// can dispatch its action.
-    fn drain_child_events(&mut self, doc: &mut AutoCommit) {
+    fn drain_child_events(&mut self) {
         self.drain_explorer_events();
-        self.drain_tab_bar(doc);
         // Closing a tab of the dock closes the dock; choosing the Terminal
         // tab starts the shell it shows.
         if self.panel.take_close_request() {
@@ -2216,16 +2090,13 @@ impl CodeApp {
     /// The prompt only appears for a buffer with unsaved edits, so the file's
     /// saved text is staged one line shorter than the buffer.
     pub fn shots_close_prompt(&mut self) {
-        let Some(buf) = self.session.active_buffer_mut() else {
-            return;
-        };
-        let kept = buf.saved_text.trim_end().rfind('\n').map_or(0, |i| i + 1);
-        buf.saved_text.truncate(kept);
-        buf.dirty = true;
-        self.close_prompt = Some(ClosePrompt {
-            node: buf.node,
-            name: buf.name.clone(),
-        });
+        if let Some(buf) = self.session.active_buffer() {
+            self.close_prompt = Some(ClosePrompt {
+                node: buf.node,
+                name: buf.name.clone(),
+                then_open: None,
+            });
+        }
     }
 
     /// Stage a populated status bar for a screenshot: a live multi-word
@@ -2388,7 +2259,7 @@ impl CodeApp {
         sidebar_node
     }
 
-    /// Lay out the editor column: tab bar and panel toggle, find bar, editor,
+    /// Lay out the editor column: file header and panel toggle, find bar, editor,
     /// (when visible) the bottom panel, and the status bar, stacked into one
     /// flex column.
     ///
@@ -2411,22 +2282,31 @@ impl CodeApp {
         self.header_h = f64::from(theme.tokens.metrics.header_height);
         self.toggle_slot_w = Self::toggle_slot_width(theme);
 
-        let tabs_node = self.tabs.build_layout(taffy, theme, node_map);
-        if let Ok(existing) = taffy.style(tabs_node).cloned() {
+        let header_node = self.header.build_layout(taffy, theme, node_map);
+        if let Ok(existing) = taffy.style(header_node).cloned() {
+            let inset = if self.toggle_in_tab_strip() {
+                self.toggle_slot_w
+            } else {
+                f64::from(spacing.s6)
+            };
             let _ = taffy.set_style(
-                tabs_node,
+                header_node,
                 Style {
-                    size: Size {
-                        width: Dimension::auto(),
-                        height: existing.size.height,
-                    },
                     flex_grow: 1.0,
                     flex_basis: Dimension::length(0.0),
+                    min_size: Size {
+                        width: Dimension::length(0.0),
+                        height: Dimension::auto(),
+                    },
+                    margin: taffy::Rect {
+                        left: taffy::LengthPercentageAuto::length(inset as f32),
+                        ..existing.margin
+                    },
                     ..existing
                 },
             );
         }
-        self.tabs_node = Some(tabs_node);
+        self.header_node = Some(header_node);
 
         self.panel_toggle.set_expanded(self.panel_visible);
         let panel_toggle_node = self.panel_toggle.build_layout(taffy, theme, node_map);
@@ -2479,7 +2359,7 @@ impl CodeApp {
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
-                &[tabs_node, search_button_node, panel_toggle_node],
+                &[header_node, search_button_node, panel_toggle_node],
             )
             .unwrap();
         self.editor_header_node = Some(editor_header_node);
@@ -2647,7 +2527,6 @@ impl CodeApp {
             "f" => Some(Command::Find),
             "h" => Some(Command::Replace),
             "g" => Some(Command::GoToLine),
-            "w" => Some(Command::CloseTab),
             _ => None,
         };
         if let Some(command) = command {
@@ -2724,7 +2603,7 @@ impl CodeApp {
         )
     }
 
-    /// Route the event to the sidebar (when it is on screen), tabs, bottom
+    /// Route the event to the sidebar (when it is on screen), header, bottom
     /// panel, and editor, plus the drawer's own click-capture.
     ///
     /// Sidebar routing depends on the layout:
@@ -2787,12 +2666,6 @@ impl CodeApp {
         }
         if let Some(n) = self.panel_toggle_node {
             self.panel_toggle
-                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
-        }
-        if !*ctx.handled
-            && let Some(n) = self.tabs_node
-        {
-            self.tabs
                 .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         if self.panel_visible
@@ -3050,7 +2923,7 @@ impl Widget for CodeApp {
 
         self.check_disk_staleness();
         self.refresh_find();
-        self.reconcile_tabs();
+        self.refresh_header();
         self.refresh_diagnostics(state);
         self.refresh_status();
     }
@@ -3070,7 +2943,7 @@ impl Widget for CodeApp {
         // painted off-flow, sliding in over the content (see `draw`).
         let sidebar_node = self.build_sidebar(taffy, theme, node_map);
 
-        // --- Editor column: tab bar + editor + (optional) bottom panel ---
+        // --- Editor column: file header + editor + (optional) bottom panel ---
         let editor_col = self.build_editor_column(taffy, theme, node_map);
 
         // --- Content row: sidebar + editor column ---
@@ -3162,14 +3035,8 @@ impl Widget for CodeApp {
                         col_origin.x + f64::from(header_layout.location.x),
                         col_origin.y + f64::from(header_layout.location.y),
                     );
-                    if let Some(n) = self.tabs_node {
-                        self.tabs.apply_layout(taffy, n, header_origin);
-                        // The sidebar toggle sits at the strip's leading edge
-                        // whenever the sidebar panel is not there to hold it,
-                        // so the first tab starts after it.
-                        if self.toggle_in_tab_strip() {
-                            self.tabs.inset_left(self.toggle_slot_w);
-                        }
+                    if let Some(n) = self.header_node {
+                        self.header.apply_layout(taffy, n, header_origin);
                     }
                     if let Some(n) = self.search_button_node {
                         self.search_button.apply_layout(taffy, n, header_origin);
@@ -3229,7 +3096,7 @@ impl Widget for CodeApp {
         }
         if self.toggle_in_tab_strip() {
             // With no docked sidebar column to hold it the toggle leads the
-            // tab strip.
+            // file header.
             self.drawer
                 .paint_toggle(scene, transform, text_renderer, theme);
         }
@@ -3357,7 +3224,7 @@ impl Widget for CodeApp {
         }
 
         // Drain whatever the children produced, then refresh derived views.
-        self.drain_child_events(ctx.state);
+        self.drain_child_events();
         self.refresh_diagnostics(ctx.state);
         self.refresh_status();
     }
@@ -3393,7 +3260,6 @@ impl Widget for CodeApp {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Politeness, Role};
 
-        let tab_count = self.session.open.len();
         let active = self
             .session
             .active_buffer()
@@ -3401,10 +3267,7 @@ impl Widget for CodeApp {
         let mut children = vec![
             AccessNode::new(Role::Heading { level: 1 })
                 .with_name(self.session.project.name.clone()),
-            AccessNode::new(Role::StaticText).with_name(format!(
-                "{active}; {tab_count} open {}",
-                if tab_count == 1 { "file" } else { "files" }
-            )),
+            AccessNode::new(Role::StaticText).with_name(active.to_string()),
         ];
         if let Some(notice) = &self.notice {
             children.push(
@@ -3431,7 +3294,7 @@ impl Widget for CodeApp {
             AccessNode::new(Role::Document)
                 .with_name(format!("Code — {}", self.session.project.name))
                 .with_description(
-                    "Code editor. Use the file tree, tab bar, editor document, and bottom panel to navigate the project.",
+                    "Code editor. Use the file tree, file header, editor document, and bottom panel to navigate the project.",
                 )
                 .with_value(active)
                 .with_state(AccessState::new().focusable(true))
@@ -3445,7 +3308,7 @@ impl Widget for CodeApp {
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = vec![
             self.sidebar_child(),
-            &self.tabs,
+            &self.header,
             &self.search_button,
             &self.panel_toggle,
         ];
@@ -3467,7 +3330,7 @@ impl Widget for CodeApp {
             } else {
                 &mut self.sidebar_empty
             },
-            &mut self.tabs,
+            &mut self.header,
             &mut self.search_button,
             &mut self.panel_toggle,
         ];
@@ -3553,7 +3416,7 @@ impl Widget for CodeApp {
 
     fn needs_redraw(&self) -> bool {
         self.sidebar.needs_redraw()
-            || self.tabs.needs_redraw()
+            || self.header.needs_redraw()
             || self.search_button.needs_redraw()
             || self.panel_toggle.needs_redraw()
             || self.editor.needs_redraw()
@@ -3585,7 +3448,7 @@ impl Widget for CodeApp {
         self.drawer.is_animating()
             || self.sidebar.needs_animation_frame()
             || self.panel.needs_animation_frame()
-            || self.tabs.needs_animation_frame()
+            || self.header.needs_animation_frame()
             || self.terminal_visible()
             || self.text_search.is_running()
             || self.portal.is_some()
@@ -3602,7 +3465,7 @@ impl Widget for CodeApp {
 
     fn mark_drawn(&mut self) {
         self.sidebar.mark_drawn();
-        self.tabs.mark_drawn();
+        self.header.mark_drawn();
         self.search_button.mark_drawn();
         self.panel_toggle.mark_drawn();
         self.editor.mark_drawn();

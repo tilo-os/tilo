@@ -26,6 +26,9 @@ struct Desk {
 
 impl Desk {
     fn open() -> Self {
+        // A double click is two clicks within the session's interval; a
+        // busy test machine takes its time between them.
+        ui::gesture::set_multi_click_interval(std::time::Duration::from_secs(10));
         let mut app = TestApp::<App>::new().expect("the app opens");
         for action in canvas::sample::shapes() {
             app.invoke(Invoke::apply(&action).unwrap())
@@ -831,4 +834,142 @@ fn a_mask_is_painted_from_its_picture_in_the_layers_row() {
         .click_named("canvas-paint-layer")
         .expect("back to the layer from the strip");
     assert_eq!(stroke(&mut desk), layer);
+}
+
+/// Picked marks line up from the strip over the canvas, each step one
+/// edit; a single picked mark lines up on the artwork.
+#[test]
+fn the_strip_lines_picked_marks_up() {
+    let mut desk = Desk::open();
+    desk.click(270.0, 240.0);
+    desk.hold(&["shift"]);
+    desk.click(760.0, 600.0);
+    desk.hold(&[]);
+    desk.app
+        .harness()
+        .click_named("canvas-align-top")
+        .expect("the strip offers lining up their tops");
+    let art = desk.art();
+    let top = |id: &str| art.visible_bounds(art.mark(id).unwrap()).y0;
+    assert!(
+        near(top("card"), top("leaf"), 1e-6),
+        "{} {}",
+        top("card"),
+        top("leaf")
+    );
+    desk.shot("align-strip");
+    // The strip's button has the focus now; the canvas's keys still act
+    // on what is picked.
+    let before = desk.art().marks.len();
+    desk.key("Delete");
+    assert_eq!(
+        desk.art().marks.len(),
+        before - 2,
+        "Delete removes the picked marks"
+    );
+    assert!(desk.app.undo());
+    assert!(desk.app.undo(), "lining up is one step");
+
+    desk.key("Escape");
+    desk.click(270.0, 240.0);
+    desk.app
+        .harness()
+        .click_named("canvas-align-center")
+        .expect("one picked mark lines up on the artwork");
+    let art = desk.art();
+    let card = art.visible_bounds(art.mark("card").unwrap());
+    assert!(
+        near(card.center().x, art.width / 2.0, 1e-6),
+        "{} {}",
+        card.center().x,
+        art.width / 2.0
+    );
+}
+
+/// A click a few pixels off a thin line still picks it, however far out
+/// the artwork is zoomed.
+#[test]
+fn a_click_just_off_a_thin_line_picks_it() {
+    let mut desk = Desk::open();
+    assert!(desk.zoom < 0.8, "the test needs a far zoom: {}", desk.zoom);
+    desk.key("l");
+    desk.drag((100.0, 870.0), (900.0, 870.0));
+    let line = desk.art().marks.last().cloned().expect("a line is drawn");
+    assert!(matches!(line.shape, Shape::Line { .. }), "{:?}", line.shape);
+    desk.key("Escape");
+    desk.key("v");
+    desk.click(40.0, 40.0);
+    // Three and a half screen pixels past the line's edge.
+    let off = line.style.stroke_width / 2.0 + 3.5 / desk.zoom;
+    desk.click(500.0, 870.0 - off);
+    desk.key("Delete");
+    assert!(
+        desk.art().mark(&line.id).is_none(),
+        "the click picked the line"
+    );
+}
+
+/// `[` and `]` make the brush smaller and larger.
+#[test]
+fn brackets_resize_the_brush() {
+    let mut desk = Desk::open();
+    desk.key("b");
+    let laid = |desk: &mut Desk, y: f64| {
+        desk.drag((100.0, y), (300.0, y + 10.0));
+        match desk.art().marks.last().map(|mark| mark.shape.clone()) {
+            Some(Shape::Stroke { size, .. }) => size,
+            other => panic!("a stroke is laid, not {other:?}"),
+        }
+    };
+    let before = laid(&mut desk, 850.0);
+    for _ in 0..6 {
+        desk.key("]");
+    }
+    desk.pointer(500.0, 600.0);
+    desk.shot("brush-footprint");
+    desk.key("]");
+    desk.key("]");
+    let larger = laid(&mut desk, 865.0);
+    desk.key("[");
+    let smaller = laid(&mut desk, 880.0);
+    assert!(
+        larger > before && smaller < larger,
+        "{before} {larger} {smaller}"
+    );
+}
+
+/// The strip grows, shrinks and softens the selection by a step seen at
+/// the zoom it is shown at, one edit each.
+#[test]
+fn the_strip_refines_the_selection() {
+    let mut desk = Desk::open();
+    desk.key("m");
+    desk.drag((100.0, 400.0), (300.0, 500.0));
+    let width = |desk: &Desk| {
+        desk.art()
+            .selection
+            .as_ref()
+            .expect("an area is selected")
+            .region()
+            .bounds()
+            .expect("it has an extent")
+            .width()
+    };
+    let before = width(&desk);
+    desk.app
+        .harness()
+        .click_named("canvas-area-grow")
+        .expect("the strip offers growing it");
+    let grown = width(&desk);
+    // Four screen pixels each side.
+    assert!(
+        near(grown - before, 8.0 / desk.zoom, 0.5),
+        "{before} {grown}"
+    );
+    desk.app
+        .harness()
+        .click_named("canvas-area-feather")
+        .expect("the strip offers softening it");
+    let feather = desk.art().selection.as_ref().unwrap().feather;
+    assert!(near(feather, 8.0 / desk.zoom, 1e-6), "{feather}");
 }

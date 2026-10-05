@@ -3430,7 +3430,7 @@ async fn ensure_sdk_route(
             tracing::warn!(
                 "collab: joining channel {channel_id} failed ({error}); route unavailable"
             );
-            return Err(format!("joining collaboration route failed: {error}"));
+            return Err(format!("{}: {error}", super::ROUTE_JOIN_FAILED));
         }
     };
 

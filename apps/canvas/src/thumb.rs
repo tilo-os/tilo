@@ -19,6 +19,11 @@ use crate::model::Artwork;
 use crate::render::{Options, Renderer};
 use crate::resource::ArtworkResource;
 
+/// The part of an artwork a picture shows, worked out from the artwork
+/// as it is now: the artwork to draw (the same one, or a part cut from
+/// it), the region of it, and whether it is drawn without its ground.
+pub type Framing = Rc<dyn Fn(&Rc<Artwork>) -> Option<(Rc<Artwork>, Rect, bool)>>;
+
 /// The artwork, or one of its layers, fitted into a fixed box.
 pub struct Thumb {
     rect: Rect,
@@ -29,6 +34,8 @@ pub struct Thumb {
     /// The chosen layer, and this picture's: ringed while they agree, so a
     /// layer with a mask shows which of the two is being painted.
     target: Option<(LocalState<String>, String)>,
+    /// A part of the artwork instead of all of it, as an export takes it.
+    framing: Option<Framing>,
 }
 
 impl Thumb {
@@ -47,7 +54,15 @@ impl Thumb {
             layer,
             renderer,
             target: None,
+            framing: None,
         }
+    }
+
+    /// Show the part `framing` takes of the artwork, as it changes.
+    #[must_use]
+    pub fn framed(mut self, framing: Framing) -> Self {
+        self.framing = Some(framing);
+        self
     }
 
     /// Ring the picture while `chosen` holds `id`.
@@ -121,19 +136,45 @@ impl Widget for Thumb {
             None,
             &self.rect,
         );
-        let scale = (self.rect.width() / self.art.width).min(self.rect.height() / self.art.height);
-        let offset = Point::new(
-            self.rect.center().x - self.art.width * scale / 2.0,
-            self.rect.center().y - self.art.height * scale / 2.0,
-        );
-        let to_thumb = transform * Affine::translate(offset.to_vec2()) * Affine::scale(scale);
-        let options = Options {
-            layers: self.layer.clone().map(|layer| vec![layer]),
-            ..Options::default()
+        let (art, region, bare) = match &self.framing {
+            Some(framing) => {
+                framing(&self.art).unwrap_or_else(|| (Rc::clone(&self.art), Rect::ZERO, false))
+            }
+            None => (Rc::clone(&self.art), self.art.bounds(), false),
         };
-        self.renderer
-            .borrow_mut()
-            .draw(&self.art, scene, to_thumb, text_renderer, &options);
+        if region.width() > 0.0 && region.height() > 0.0 {
+            let scale =
+                (self.rect.width() / region.width()).min(self.rect.height() / region.height());
+            let shown = Rect::from_center_size(
+                self.rect.center(),
+                (region.width() * scale, region.height() * scale),
+            );
+            if bare {
+                checker(scene, transform, shown, theme);
+            }
+            // Only the part is shown, however the box's shape differs.
+            scene.push_layer(
+                Fill::NonZero,
+                ui::vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &shown,
+            );
+            let to_thumb = transform
+                * Affine::translate(shown.origin().to_vec2())
+                * Affine::scale(scale)
+                * Affine::translate(-region.origin().to_vec2());
+            let options = Options {
+                layers: self.layer.clone().map(|layer| vec![layer]),
+                bare,
+                live: true,
+                ..Options::default()
+            };
+            self.renderer
+                .borrow_mut()
+                .draw(&art, scene, to_thumb, text_renderer, &options);
+            scene.pop_layer();
+        }
         scene.pop_layer();
         let ringed = self
             .target
@@ -172,6 +213,47 @@ impl Widget for Thumb {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+/// The squares that say "transparent" under a picture without its ground.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "a few squares of float geometry across a small box"
+)]
+fn checker(scene: &mut Scene, transform: Affine, area: Rect, theme: &Theme) {
+    // The checker's square is a step of the theme's spacing.
+    let square_side = f64::from(theme.tokens.spacing.s2);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.content,
+        None,
+        &area,
+    );
+    let columns = (area.width() / square_side).ceil() as usize;
+    let rows = (area.height() / square_side).ceil() as usize;
+    for row in 0..rows {
+        for column in (row % 2..columns).step_by(2) {
+            let x = area.x0 + column as f64 * square_side;
+            let y = area.y0 + row as f64 * square_side;
+            let square = Rect::new(
+                x,
+                y,
+                (x + square_side).min(area.x1),
+                (y + square_side).min(area.y1),
+            );
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &square,
+            );
+        }
     }
 }
 

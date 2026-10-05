@@ -488,6 +488,82 @@ pub(super) fn synth_enter() -> WindowEvent {
 }
 
 #[test]
+fn unconsumed_tab_chords_are_the_desktops_tab_requests() {
+    use crate::shell_tabs::TabRequest;
+    use winit::keyboard::ModifiersState;
+    let chord = |text: &str| {
+        let mut event = synth_enter();
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.logical_key = Key::Character(text.into());
+        }
+        event
+    };
+    let _ = crate::shell_tabs::take_requests();
+    let mut app =
+        App::new_with_controlled_inputs(State::new(), Box::new(Button::new("done", "Done", None)));
+    app.init_layout();
+    let command = if app
+        .input
+        .platform
+        .command_modifier_down(ModifiersState::SUPER)
+    {
+        ModifiersState::SUPER
+    } else {
+        ModifiersState::CONTROL
+    };
+    for (text, modifiers) in [
+        ("t", command),
+        ("T", command | ModifiersState::SHIFT),
+        ("w", command),
+    ] {
+        app.input.modifiers = winit::event::Modifiers::from(modifiers);
+        let mut handled = false;
+        app.handle_unconsumed_tab_chord(&chord(text), &mut handled);
+        assert!(handled, "{text} is the desktop's tab chord");
+    }
+    // A widget that consumed the press keeps it: no request.
+    let mut handled = true;
+    app.handle_unconsumed_tab_chord(&chord("w"), &mut handled);
+    // Plain letters type.
+    app.input.modifiers = winit::event::Modifiers::from(ModifiersState::empty());
+    let mut handled = false;
+    app.handle_unconsumed_tab_chord(&chord("t"), &mut handled);
+    assert!(!handled);
+    let requests = crate::shell_tabs::take_requests();
+    assert_eq!(
+        requests,
+        vec![
+            TabRequest::OpenBeside {
+                target: None,
+                background: false
+            },
+            TabRequest::ReopenClosed,
+            TabRequest::CloseThis,
+        ]
+    );
+
+    // On the wire the shell learns which launch asked.
+    assert_eq!(
+        tab_request_message(
+            TabRequest::OpenBeside {
+                target: Some("https://example.test/".into()),
+                background: true
+            },
+            Some(7)
+        ),
+        crate::floating_surface::FloatingSurfaceClientMessage::OpenTabBeside {
+            target: Some("https://example.test/".into()),
+            background: true,
+            instance: Some(7),
+        }
+    );
+    // Outside a Tilo session, closing the tab closes this window.
+    app.apply_unhosted_tab_request(TabRequest::CloseThis);
+    assert!(app.take_close_window_request());
+    assert!(!app.take_close_window_request(), "consumed once");
+}
+
+#[test]
 fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     use crate::widget::{Column, TextInput};
     use winit::keyboard::ModifiersState;

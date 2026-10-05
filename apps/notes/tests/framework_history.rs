@@ -70,7 +70,7 @@ fn notebook_history_previews_restores_and_refuses_a_second_writer() {
                         .find(|p| p.id == f.child)
                         .unwrap();
                     page.parent = None;
-                    page.order = 2;
+                    page.order = "c".into();
                     NotesDoc::upsert_page_meta(doc, &page);
                     let block = NotesDoc::page_block_snapshots(doc, f.child)[0].0.clone();
                     replace_block_text(doc, f.child, &block, "changed marked block");

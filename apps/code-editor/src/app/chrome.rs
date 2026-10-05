@@ -98,7 +98,7 @@ impl CodeApp {
             self.rect.y1,
         );
         ui::chrome::HeaderRowFace::new(column, theme).paint_rule(scene, transform, theme);
-        self.tabs
+        self.header
             .draw(scene, transform, text_renderer, theme, presence);
         self.search_button
             .draw(scene, transform, text_renderer, theme, presence);

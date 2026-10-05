@@ -333,6 +333,11 @@ impl SearchField {
         self.input.select_all();
     }
 
+    /// Whether the query input owns an unfinished composition.
+    pub fn is_composing(&self) -> bool {
+        self.input.is_composing()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.input.value().is_empty()
     }

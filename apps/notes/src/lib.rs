@@ -44,12 +44,9 @@ pub mod capture;
 mod columns;
 pub mod component;
 mod continuation;
-pub mod framework_history;
-pub mod production;
-pub mod resource;
-pub use component::definition;
 pub mod doc;
 mod files;
+pub mod framework_history;
 pub mod hosting;
 pub mod legacy_import;
 pub mod main_panel;
@@ -58,6 +55,8 @@ pub mod metadata;
 pub mod model;
 pub mod note_header;
 pub mod notebook;
+pub mod production;
+pub mod resource;
 pub use ui::num;
 pub mod search_provider;
 pub mod shortcuts_overlay;
@@ -73,6 +72,11 @@ pub use model::{PageId, PageMeta, Workspace, WorkspaceData};
 pub use resource::{Notebook, NotesShell};
 pub use shortcuts_overlay::ShortcutsOverlay;
 pub use status_bar::{StatusBarState, StatusModel};
+
+/// The application definition mounted by native and browser hosts.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    component::definition()
+}
 
 #[cfg(test)]
 extern crate self as notes;

@@ -286,7 +286,7 @@ fn table_cell_editing_survives_echo_undo_and_reload() {
                 id: page,
                 title: "Table".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             },
         );
         NotesDoc::fill_page_body(
@@ -419,7 +419,7 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
                 id: page,
                 title: "Bound table".into(),
                 parent: None,
-                order: 0,
+                order: "a".into(),
             },
         );
         NotesDoc::fill_page_body(

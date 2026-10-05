@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::{Ime, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::chart_palette::ChartPalette;
@@ -74,6 +74,16 @@ pub enum GridCmd {
     Commit,
 }
 
+/// The formula bar's text and, while editing, the caret, selection and
+/// input-method composition as char indices into it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FormulaBarText {
+    pub text: String,
+    pub caret: Option<usize>,
+    pub selection: Option<(usize, usize)>,
+    pub preedit: Option<(usize, usize)>,
+}
+
 #[derive(Clone)]
 struct EditState {
     addr: Addr,
@@ -122,14 +132,43 @@ impl EditState {
     }
 
     fn apply_edit(&mut self, edit: &ui::text_edit::Edit) {
-        if edit.is_noop() {
-            return;
+        if !edit.is_noop() && edit.apply(&mut self.text) {
+            self.core.clamp_to(&self.text);
         }
-        self.text.replace_range(
-            edit.at..edit.at.saturating_add(edit.removed),
-            &edit.inserted,
-        );
-        self.core.clamp_to(&self.text);
+    }
+
+    /// The text as drawn: the committed text with any input-method
+    /// composition shown at the caret.
+    fn shown(&self) -> std::borrow::Cow<'_, str> {
+        self.core.display_text(&self.text)
+    }
+
+    /// Char index into [`Self::shown`] of display byte `byte`.
+    fn shown_chars(&self, byte: usize) -> usize {
+        self.shown()
+            .get(..byte)
+            .map_or(0, |head| head.chars().count())
+    }
+
+    /// The caret as a char index into [`Self::shown`] — inside the
+    /// composition at the input method's cursor while composing.
+    fn shown_caret(&self) -> usize {
+        self.shown_chars(self.core.display_caret(&self.text))
+    }
+
+    /// The selection as char indices into [`Self::shown`].
+    fn shown_selection(&self) -> Option<(usize, usize)> {
+        let range = self.core.selected_range()?;
+        Some((
+            self.shown_chars(self.core.to_display(&self.text, range.start)),
+            self.shown_chars(self.core.to_display(&self.text, range.end)),
+        ))
+    }
+
+    /// The composition as char indices into [`Self::shown`].
+    fn shown_preedit(&self) -> Option<(usize, usize)> {
+        let range = self.core.preedit_display_range(&self.text)?;
+        Some((self.shown_chars(range.start), self.shown_chars(range.end)))
     }
 }
 
@@ -701,6 +740,32 @@ impl Grid {
             return e.text();
         }
         self.raw.get(&self.active).cloned().unwrap_or_default()
+    }
+
+    /// What the formula bar draws. While the active cell is being edited it
+    /// is the cell editor's display text, so an input-method composition shows
+    /// (and is underlined) in the bar exactly as in the cell.
+    pub fn formula_bar(&self) -> FormulaBarText {
+        let Some(e) = &self.edit else {
+            return FormulaBarText {
+                text: self.active_display_raw(),
+                ..FormulaBarText::default()
+            };
+        };
+        if e.addr != self.active {
+            return FormulaBarText {
+                text: self.active_display_raw(),
+                caret: Some(e.caret()),
+                selection: e.selection(),
+                preedit: None,
+            };
+        }
+        FormulaBarText {
+            text: e.shown().into_owned(),
+            caret: Some(e.shown_caret()),
+            selection: e.shown_selection(),
+            preedit: e.shown_preedit(),
+        }
     }
 
     /// Return the viewport-sized semantic model for screen readers. Unlike a
@@ -1929,6 +1994,43 @@ impl Grid {
         }
     }
 
+    /// An input-method event while a cell is being edited: the composition
+    /// shows at the caret until it is committed into the cell like typing.
+    /// Returns whether the edit took it.
+    pub fn ime(&mut self, ime: &Ime) -> bool {
+        let Some(e) = &mut self.edit else {
+            return false;
+        };
+        match ime {
+            Ime::Preedit(text, _) if text.is_empty() => e.core.clear_preedit(),
+            Ime::Preedit(text, cursor) => e.core.set_preedit(text, *cursor),
+            Ime::Commit(text) => {
+                let edit = e.core.commit(text);
+                e.apply_edit(&edit);
+                self.point_anchor = None;
+            }
+            Ime::Disabled => e.core.clear_preedit(),
+            Ime::Enabled => return false,
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// The edit as drawn — text with any composition, and the caret's char
+    /// index into it.
+    #[cfg(test)]
+    pub(crate) fn edit_shown(&self) -> Option<(String, usize)> {
+        let e = self.edit.as_ref()?;
+        Some((e.shown().into_owned(), e.shown_caret()))
+    }
+
+    /// Where the input method's candidate window should sit: the cell being
+    /// edited.
+    pub fn ime_cell_rect(&self) -> Option<Rect> {
+        let (col, row) = self.edit.as_ref()?.addr;
+        Some(self.cell_screen_rect(col, row))
+    }
+
     fn insert_text(&mut self, s: &str) {
         if let Some(e) = &mut self.edit {
             let edit = e.core.insert(s);
@@ -1977,6 +2079,30 @@ impl Grid {
             self.point_anchor = None;
             self.dirty = true;
         }
+    }
+
+    /// Move the edit caret to char index `idx` of the text the formula bar
+    /// draws ([`Self::formula_bar`]). A click inside a composition lands at
+    /// the caret it is composed at; past it, on the committed text it shows.
+    pub fn set_edit_caret_shown(&mut self, idx: usize, extend: bool) {
+        let Some(e) = &self.edit else {
+            return;
+        };
+        if e.addr != self.active || !e.core.has_preedit() {
+            self.set_edit_caret(idx, extend);
+            return;
+        }
+        let shown = e.shown();
+        let byte = shown
+            .char_indices()
+            .nth(idx)
+            .map_or(shown.len(), |(b, _)| b);
+        let committed = e.core.from_display(&e.text, byte);
+        let idx = e
+            .text
+            .get(..committed)
+            .map_or(0, |head| head.chars().count());
+        self.set_edit_caret(idx, extend);
     }
 
     /// Select the whole edit buffer (Ctrl+A inside the formula bar / cell).
@@ -2734,7 +2860,7 @@ impl Grid {
         }
 
         let style = theme.text(TextRole::Body);
-        let text = e.text();
+        let text = e.shown();
         let desired = self.editor_desired_width(&text, tr, &style);
 
         // Grow rightward across empty neighbours until we have enough room or
@@ -2786,8 +2912,8 @@ impl Grid {
                 text: &text,
                 origin: Point::new(tx, ty),
                 line_h,
-                selection: e.selection(),
-                caret: Some(e.caret()),
+                selection: e.shown_selection(),
+                caret: Some(e.shown_caret()),
             },
         );
         scene.pop_layer();

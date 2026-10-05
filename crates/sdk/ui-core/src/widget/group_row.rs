@@ -161,6 +161,12 @@ struct SnapAnim {
 /// whole-group reorder drag instead of a focus click.
 const GROUP_DRAG_THRESHOLD: f64 = 6.0;
 
+/// How long a finger rests on a tab bar before moving for the drag to carry
+/// the window instead of panning the strip. A quick swipe pans; touch, hold
+/// briefly, then drag moves the window, as on a phone's home screen. Shorter
+/// than the long press that opens a context menu.
+const TOUCH_GRAB_HOLD: crate::time::Duration = crate::time::Duration::from_millis(300);
+
 /// One-finger swipe that is following the strip. Distinct from
 /// [`GroupDrag`]: a horizontal swipe pans; a grab that goes mostly
 /// vertical, or a pointer drag, still reorders.
@@ -2459,10 +2465,13 @@ impl GroupRow {
         {
             return;
         }
+        // A finger may carry the window from anywhere on its tab bar,
+        // tabs included: a tab is too small a target to have to avoid.
+        let at = self.last_cursor;
         if let Some(idx) = self
             .groups
             .iter()
-            .position(|g| g.bar_grab_hit(self.last_cursor))
+            .position(|g| g.bar_grab_hit(at) || (touch.is_some() && g.touch_grab_hit(at)))
             && let Some(group_id) = self.groups.get(idx).map(|g| g.id)
         {
             self.group_drag = Some(GroupDrag {
@@ -2567,7 +2576,13 @@ impl GroupRow {
             return false;
         }
         if !pan.engaged {
-            if self.group_drag.is_some_and(|drag| drag.moved)
+            let held = self.group_drag.is_some_and(|drag| {
+                drag.touch == Some(id)
+                    && crate::time::now().saturating_duration_since(drag.lifted_at)
+                        >= TOUCH_GRAB_HOLD
+            });
+            if held
+                || self.group_drag.is_some_and(|drag| drag.moved)
                 || travel.abs() <= GROUP_DRAG_THRESHOLD
                 || travel.abs() <= dy.abs()
             {
@@ -5386,6 +5401,59 @@ mod tests {
             root,
             &touch_event(1, winit::event::TouchPhase::Ended, mid),
         );
+    }
+
+    #[test]
+    fn touch_hold_then_drag_on_the_tab_bar_moves_the_window() {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let start = group_grab_point(&row, 0);
+        let before = row.scroll_x();
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Started, start),
+        );
+        // The finger rested before moving.
+        let drag = row
+            .group_drag
+            .as_mut()
+            .expect("a finger on the bar lifts the group");
+        drag.lifted_at = drag
+            .lifted_at
+            .checked_sub(TOUCH_GRAB_HOLD)
+            .expect("monotonic clock has room");
+        let to = Point::new(row.groups[2].get_rect().center().x + 60.0, start.y);
+        for step in 1..=8 {
+            let t = f64::from(step) / 8.0;
+            let p = Point::new(start.x + (to.x - start.x) * t, start.y);
+            dispatch_at(
+                &mut row,
+                &taffy,
+                root,
+                &touch_event(1, winit::event::TouchPhase::Moved, p),
+            );
+        }
+        assert!(
+            row.group_drag_active(),
+            "after a hold, a horizontal drag carries the window"
+        );
+        assert!(
+            (row.scroll_x() - before).abs() < f64::EPSILON,
+            "a carried window does not pan the strip"
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Ended, to),
+        );
+        assert_eq!(
+            row.group_ids(),
+            vec![200, 300, 100],
+            "the carried window lands where the finger lifted"
+        );
+        assert_eq!(row.take_pending_group_reorder(), Some((100, 2)));
     }
 
     #[test]

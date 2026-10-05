@@ -925,6 +925,15 @@ impl<Row> DataTable<Row> {
             .any(|column| column.reveal_on_hover && column.widget.is_some())
     }
 
+    /// Move the pointer in the table's logical coordinate space.
+    /// Embedded hosts can stage hover without constructing document state;
+    /// window input uses this same pointer-tracking path.
+    pub fn set_pointer_position(&mut self, point: Point) -> bool {
+        let mut handled = false;
+        self.on_cursor_moved(point, &mut handled);
+        handled
+    }
+
     /// Track the row under `pt`; a change remounts the revealed cells.
     fn track_hover(&mut self, pt: Option<Point>) {
         let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();

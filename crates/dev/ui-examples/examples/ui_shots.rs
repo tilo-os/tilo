@@ -21,7 +21,7 @@ registry::scenario_modules! {
     history_cases, "history_cases.rs", "history and collaboration cases";
     nav_shell_shots, "nav_shell_shots.rs", "navigation shell states";
     perf_hud_shot, "perf_hud_shot.rs", "frame profiler HUD";
-    rich_text_editor_shots, "rich_text_editor_shots.rs", "rich-text editor states";
+    rich_text_editor_shots, "rich_text_editor_shots.rs", "rich text editor states";
     scrollbar_shots, "scrollbar_shots.rs", "scrollbar states";
     search_showcase, "search_showcase.rs", "search-field states and results";
     soft_shadow_shots, "soft_shadow_shots.rs", "soft-shadow rendering";

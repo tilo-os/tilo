@@ -198,6 +198,18 @@ enum Command {
         /// The .tapp to thin.
         file: PathBuf,
     },
+    /// Split a full .tapp for hosting: write its thin form under the same
+    /// file name into `--out`, plus every payload blob as `<blake3>.blob`,
+    /// or, past 16 MiB, as `<blake3>.chunks` naming 16 MiB `<blake3>.blob`
+    /// chunks. Upload every file in `--out` into one directory, then build
+    /// the entry from the thin .tapp with `entry --objects <out>`.
+    Split {
+        /// Directory for the thin .tapp and its payload objects.
+        #[arg(long)]
+        out: PathBuf,
+        /// The full .tapp to split.
+        file: PathBuf,
+    },
     /// Re-sign an existing .tapp with the given identity, writing the result back into the same file.
     Sign {
         #[arg(long)]
@@ -267,36 +279,7 @@ enum Command {
     /// registry's `/entries` serves. For a static-directory self-hosted
     /// registry, collect printed entries into an `entries` file and serve
     /// the directory over HTTP.
-    Entry {
-        /// Public URL the .tapp will be downloadable from.
-        #[arg(long)]
-        url: String,
-        /// Publisher identity JSON that signed the tapp and signs this entry.
-        #[arg(long)]
-        identity: PathBuf,
-        /// Platform family of the tapp: a native Tilo OS build or a web
-        /// build made by `pack-web`.
-        #[arg(long, value_enum, default_value_t)]
-        platform: TargetPlatform,
-        /// Target architecture: `x86_64` or `aarch64` (inferred when the
-        /// package manifest declares exactly one), or `wasm32` for web.
-        #[arg(long)]
-        arch: Option<String>,
-        /// JSON presentation metadata: localized name, product description,
-        /// tagline and images plus the app's supported language tags.
-        #[arg(long)]
-        metadata: Option<PathBuf>,
-        /// Wrap the entry in the signed mutation shape accepted by POST /entries.
-        #[arg(long)]
-        action: Option<RegistryAction>,
-        /// Current signed registry entry JSON. Required for updates so the
-        /// emitted request preserves immutable version history. A retry whose
-        /// artifact is already present reproduces the current entry exactly.
-        #[arg(long, requires = "action")]
-        previous_entry: Option<PathBuf>,
-        /// The .tapp to describe.
-        file: PathBuf,
-    },
+    Entry(EntryArgs),
     /// Print the registry entry this publisher has waiting for review for a
     /// package id, as `--previous-entry` accepts it; prints nothing when none
     /// is waiting. A newer request replaces the waiting one and must keep its
@@ -353,6 +336,48 @@ struct SealImageArgs {
     /// Write the thin form (metadata only).
     #[arg(long)]
     thin: bool,
+}
+
+#[derive(clap::Args)]
+struct EntryArgs {
+    /// Public URL the .tapp will be downloadable from.
+    #[arg(long)]
+    url: String,
+    /// Publisher identity JSON that signed the tapp and signs this entry.
+    #[arg(long)]
+    identity: PathBuf,
+    /// Platform family of the tapp: a native Tilo OS build or a web
+    /// build made by `pack-web`.
+    #[arg(long, value_enum, default_value_t)]
+    platform: TargetPlatform,
+    /// Target architecture: `x86_64` or `aarch64` (inferred when the
+    /// package manifest declares exactly one), or `wasm32` for web.
+    #[arg(long)]
+    arch: Option<String>,
+    /// JSON presentation metadata: localized name, product description,
+    /// tagline and images plus the app's supported language tags.
+    #[arg(long)]
+    metadata: Option<PathBuf>,
+    /// Wrap the entry in the signed mutation shape accepted by POST /entries.
+    #[arg(long)]
+    action: Option<RegistryAction>,
+    /// Current signed registry entry JSON. Required for updates so the
+    /// emitted request preserves immutable version history. A retry whose
+    /// artifact is already present reproduces the current entry exactly.
+    #[arg(long, requires = "action")]
+    previous_entry: Option<PathBuf>,
+    /// Newest releases kept per target; older ones leave the entry.
+    #[arg(long, default_value_t = registry_types::retention::DEFAULT_RETAINED_PER_CHANNEL)]
+    keep_releases: usize,
+    /// Newest pre-releases kept per target; older ones leave the entry.
+    #[arg(long, default_value_t = registry_types::retention::DEFAULT_RETAINED_PER_CHANNEL)]
+    keep_prereleases: usize,
+    /// Payload objects of a thin .tapp, as `split` wrote them; they are
+    /// hosted beside the .tapp at `--url`.
+    #[arg(long)]
+    objects: Option<PathBuf>,
+    /// The .tapp to describe.
+    file: PathBuf,
 }
 
 #[derive(clap::Args)]
@@ -421,6 +446,7 @@ fn main() -> Result<()> {
         }),
         Command::SealImage(args) => cmd_seal_image(&args),
         Command::Thin { output, file } => cmd_thin(&file, &output),
+        Command::Split { out, file } => cmd_split(&file, &out),
         Command::Sign { identity, file } => cmd_sign(&identity, &file),
         Command::Verify { trusted_key, file } => cmd_verify(&trusted_key, &file),
         Command::Inspect { file } => cmd_inspect(&file),
@@ -445,25 +471,7 @@ fn main() -> Result<()> {
             serve,
         ),
         Command::Keygen { out } => cmd_keygen(&out),
-        Command::Entry {
-            url,
-            identity,
-            platform,
-            arch,
-            metadata,
-            action,
-            previous_entry,
-            file,
-        } => cmd_entry(
-            &file,
-            &url,
-            &identity,
-            platform,
-            arch.as_deref(),
-            metadata.as_deref(),
-            action,
-            previous_entry.as_deref(),
-        ),
+        Command::Entry(args) => cmd_entry(&args),
         Command::Pending(args) => cmd_pending(&args),
     }
 }
@@ -743,6 +751,33 @@ fn cmd_thin(file: &Path, output: &Path) -> Result<()> {
     let (tapp, _) = read_tapp(file, false)?;
     write_tapp(output, &tapp.meta, None)?;
     eprintln!("wrote thin {} -> {}", tapp.meta.id, output.display());
+    Ok(())
+}
+
+fn cmd_split(file: &Path, out: &Path) -> Result<()> {
+    let name = file
+        .file_name()
+        .ok_or_else(|| anyhow!("{} has no file name", file.display()))?;
+    std::fs::create_dir_all(out).with_context(|| format!("create {}", out.display()))?;
+    let thin_path = out.join(name);
+    if thin_path.exists() && std::fs::canonicalize(&thin_path)? == std::fs::canonicalize(file)? {
+        bail!("--out must not be the directory holding {}", file.display());
+    }
+    let reader = std::io::BufReader::new(
+        File::open(file).with_context(|| format!("open {}", file.display()))?,
+    );
+    let split = tilo_app_package::chunks::split(reader, out)
+        .with_context(|| format!("split {}", file.display()))?;
+    write_tapp(&thin_path, &split.meta, None)?;
+    eprintln!(
+        "split {} -> {}: {} whole blob(s), {} chunked blob(s) in {} chunk(s), {} payload bytes",
+        split.meta.id,
+        out.display(),
+        split.whole_blobs,
+        split.chunked_blobs,
+        split.chunks,
+        split.payload_bytes,
+    );
     Ok(())
 }
 
@@ -1154,16 +1189,19 @@ fn cmd_pending(args: &PendingArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_entry(
-    file: &Path,
-    url: &str,
-    identity: &Path,
-    platform: TargetPlatform,
-    arch: Option<&str>,
-    metadata: Option<&Path>,
-    action: Option<RegistryAction>,
-    previous_entry: Option<&Path>,
-) -> Result<()> {
+fn cmd_entry(args: &EntryArgs) -> Result<()> {
+    let file = &args.file;
+    let url = args.url.as_str();
+    let identity = &args.identity;
+    let platform = args.platform;
+    let arch = args.arch.as_deref();
+    let metadata = args.metadata.as_deref();
+    let action = args.action;
+    let previous_entry = args.previous_entry.as_deref();
+    let retention = registry_types::retention::RetentionPolicy {
+        releases: args.keep_releases,
+        prereleases: args.keep_prereleases,
+    };
     let tapp_bytes = std::fs::read(file).with_context(|| format!("read {}", file.display()))?;
     let signer = load_signing_key(identity)?;
     if matches!(action, Some(RegistryAction::Update)) && previous_entry.is_none() {
@@ -1189,15 +1227,32 @@ fn cmd_entry(
                 .context("decode entry metadata JSON")
         })
         .transpose()?;
-    let entry = registry_client::build_entry(
-        &tapp_bytes,
-        url,
-        &signer,
-        platform.into(),
-        arch,
-        previous.as_ref(),
-        metadata.as_ref(),
-    )?;
+    let entry = if let Some(objects) = &args.objects {
+        registry_client::build_entry_with_objects(
+            registry_client::ThinPackage {
+                tapp: &tapp_bytes,
+                objects: &tilo_app_package::chunks::ObjectDir::new(objects),
+            },
+            url,
+            &signer,
+            platform.into(),
+            arch,
+            previous.as_ref(),
+            metadata.as_ref(),
+            &retention,
+        )?
+    } else {
+        registry_client::build_entry(
+            &tapp_bytes,
+            url,
+            &signer,
+            platform.into(),
+            arch,
+            previous.as_ref(),
+            metadata.as_ref(),
+            &retention,
+        )?
+    };
     let output = action.map_or_else(
         || serde_json::to_value(&entry),
         |action| {

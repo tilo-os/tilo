@@ -15,7 +15,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use runtime_identity::{IdentitySummary, KeyProtection};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{Button, ButtonRole, Row, Spacer, TextInput, TextInputKind, Widget};
+use ui::widget::{Button, ButtonRole, Column, Row, Spacer, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 
 use crate::i18n::{t, t_args};
 use crate::widgets::{
-    El, StatusTone, caption, card, card_with_action, field_row, item_row, rows,
+    El, StatusTone, caption, card, card_with_action, error_caption, field_row, item_row, rows,
     semantic_status_pill,
 };
 
@@ -42,6 +42,8 @@ pub struct DeviceUser {
     pub admin: bool,
     pub current: bool,
     pub automatic_login: bool,
+    /// Why `automatic_login` could not be read; it is then not offered.
+    pub automatic_login_error: Option<String>,
 }
 
 pub trait UserAdmin: Send + Sync {
@@ -171,23 +173,45 @@ fn read_passwd_users(
                 admin: admins.contains(username),
                 current: current_user == Some(username),
                 automatic_login: false,
+                automatic_login_error: None,
             })
         })
         .collect()
 }
 
-pub(crate) fn users_for_display() -> Vec<DeviceUser> {
+/// The device's login accounts, or why they could not be read.
+pub(crate) fn read_users() -> Result<Vec<DeviceUser>, String> {
     let current = std::env::var("USER").ok();
     let admins = fs::read_to_string("/etc/group")
         .map(|s| admins_from_group(&s))
-        .unwrap_or_default();
+        .map_err(|error| format!("/etc/group: {error}"))?;
     let mut users = fs::read_to_string("/etc/passwd")
         .map(|s| read_passwd_users(&s, current.as_deref(), &admins))
-        .unwrap_or_default();
+        .map_err(|error| format!("/etc/passwd: {error}"))?;
     for user in &mut users {
-        user.automatic_login = os_actions::users::automatic_login(&user.username).unwrap_or(false);
+        match os_actions::users::automatic_login(&user.username) {
+            Ok(enabled) => user.automatic_login = enabled,
+            Err(error) => user.automatic_login_error = Some(error),
+        }
     }
-    users
+    Ok(users)
+}
+
+/// The accounts for an inventory that has no place to show a failure; the
+/// pane itself reads [`read_users`] and shows it.
+pub(crate) fn users_for_display() -> Vec<DeviceUser> {
+    read_users().unwrap_or_else(|error| {
+        tracing::warn!(target: "tilo::settings", %error, "device accounts could not be read");
+        Vec::new()
+    })
+}
+
+/// Split a read into the accounts it found and why it found none.
+fn users_and_error(read: Result<Vec<DeviceUser>, String>) -> (Vec<DeviceUser>, Option<String>) {
+    match read {
+        Ok(users) => (users, None),
+        Err(error) => (Vec::new(), Some(error)),
+    }
 }
 
 fn identities_for_display() -> (Vec<IdentitySummary>, Option<DiskIdentityAdmin>) {
@@ -212,6 +236,8 @@ fn protection_label(protection: KeyProtection) -> String {
 
 pub struct UsersPane {
     users: Vec<DeviceUser>,
+    /// Why the accounts could not be read; the list is then not "empty".
+    users_error: Option<String>,
     identities: Vec<IdentitySummary>,
     user_admin: Arc<dyn UserAdmin>,
     identity_admin: Option<Arc<dyn IdentityAdmin>>,
@@ -266,6 +292,7 @@ impl UsersPane {
     ) -> Self {
         Self {
             users,
+            users_error: None,
             identities,
             user_admin,
             identity_admin,
@@ -300,7 +327,12 @@ impl UsersPane {
             &t("settings-users-add"),
             Some(ADD_KEY),
         ));
-        let people = if self.users.is_empty() {
+        let people = if let Some(error) = &self.users_error {
+            rows(vec![error_caption(&t_args(
+                "settings-users-read-error",
+                &[("error", error.as_str().into())],
+            ))])
+        } else if self.users.is_empty() {
             rows(vec![caption(&t("settings-users-empty-accounts"))])
         } else {
             rows(self.users.iter().map(|u| self.user_row(u)).collect())
@@ -410,7 +442,9 @@ impl UsersPane {
                 t("settings-users-enable-autologin")
             };
             actions.push(Button::new(&role_key, &role_action, Some(&role_key)));
-            actions.push(Button::new(&auto_key, &auto_action, Some(&auto_key)));
+            if user.automatic_login_error.is_none() {
+                actions.push(Button::new(&auto_key, &auto_action, Some(&auto_key)));
+            }
             if self.confirm_remove_user.as_deref() == Some(user.username.as_str()) {
                 actions.push(Button::new(
                     &keep_key,
@@ -449,7 +483,7 @@ impl UsersPane {
         } else {
             user.username.clone()
         };
-        item_row(
+        let row = item_row(
             &user.full_name,
             vec![semantic_status_pill(
                 &role,
@@ -461,7 +495,21 @@ impl UsersPane {
             )],
             &[detail],
             actions,
-        )
+        );
+        if let Some(error) = &user.automatic_login_error {
+            Box::new(
+                Column::new()
+                    .with_no_padding()
+                    .with_intrinsic_height()
+                    .push(row)
+                    .push(error_caption(&t_args(
+                        "settings-users-autologin-error",
+                        &[("error", error.as_str().into())],
+                    ))),
+            )
+        } else {
+            row
+        }
     }
 
     fn identity_row(&self, id: &IdentitySummary) -> El {
@@ -523,7 +571,7 @@ impl UsersPane {
     }
 
     fn reload(&mut self) {
-        self.users = users_for_display();
+        (self.users, self.users_error) = users_and_error(read_users());
         if let Ok(dir) = runtime_identity::identity_dir_from_env() {
             self.identities = runtime_identity::list_identities(&dir).unwrap_or_default();
         }
@@ -904,6 +952,7 @@ mod fixture {
                     admin: true,
                     current: true,
                     automatic_login: true,
+                    automatic_login_error: None,
                 },
                 DeviceUser {
                     username: "grace".into(),
@@ -912,6 +961,7 @@ mod fixture {
                     admin: false,
                     current: false,
                     automatic_login: false,
+                    automatic_login_error: None,
                 },
             ];
             let identities = vec![
@@ -996,8 +1046,47 @@ mod tests {
             admin: current,
             current,
             automatic_login: false,
+            automatic_login_error: None,
         }
     }
+    /// Accounts that could not be read are not "no accounts", and an
+    /// unread automatic-login state is reported rather than offered as off.
+    #[test]
+    fn unreadable_accounts_are_shown_as_errors() {
+        let mut pane = UsersPane::with_data(
+            Vec::new(),
+            Vec::new(),
+            Arc::new(RecordingAdmin::default()),
+            Arc::new(RecordingIds::default()),
+        );
+        pane.users_error = Some("/etc/passwd: No such file or directory (os error 2)".into());
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter().any(|line| line
+                == "Can't read this device's accounts: /etc/passwd: No such file or directory (os error 2)"),
+            "{text:#?}"
+        );
+        assert!(
+            !text.contains(&t("settings-users-empty-accounts")),
+            "{text:#?}"
+        );
+
+        let mut bob = user("bob", false);
+        bob.automatic_login_error = Some("AccountsService is unreachable".into());
+        pane.users_error = None;
+        pane.users = vec![user("ada", true), bob];
+        let text = crate::widgets::announced_text(pane.build_composition().as_ref());
+        assert!(
+            text.iter()
+                .any(|line| line == "Can't read automatic login: AccountsService is unreachable"),
+            "{text:#?}"
+        );
+        assert!(
+            !text.contains(&t("settings-users-enable-autologin")),
+            "{text:#?}"
+        );
+    }
+
     fn identity(id: &str, active: bool) -> IdentitySummary {
         IdentitySummary {
             id: id.into(),

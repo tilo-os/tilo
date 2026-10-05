@@ -3485,6 +3485,12 @@ impl Widget for SheetsApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_mouse_wheel(delta, event_ctx.scale_factor, event_ctx.handled);
             }
+            WindowEvent::Ime(ime) if !self.palette.is_open() => {
+                if self.grid.ime(ime) {
+                    self.pending.redraw = true;
+                    *event_ctx.handled = true;
+                }
+            }
             WindowEvent::KeyboardInput { .. } => {
                 let mut ctx = PaletteRouteCtx {
                     path: event_ctx.path,
@@ -3507,6 +3513,17 @@ impl Widget for SheetsApp {
 
     fn name(&self) -> &'static str {
         "SheetsApp"
+    }
+
+    /// A cell being edited takes input-method composition.
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.grid
+            .is_editing()
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        self.grid.ime_cell_rect()
     }
 
     /// The worksheet is a custom-painted cell canvas, so surface the active
@@ -4302,7 +4319,7 @@ impl SheetsApp {
                 self.grid.begin_edit_in_place();
             }
             let idx = self.formula_caret_at_x(p.x);
-            self.grid.set_edit_caret(idx, shift);
+            self.grid.set_edit_caret_shown(idx, shift);
             self.formula_bar_selecting = true;
             self.pending.redraw = true;
             *handled = true;
@@ -4574,7 +4591,7 @@ impl SheetsApp {
         // selection there, not the grid selection.
         if self.formula_bar_selecting {
             let idx = self.formula_caret_at_x(self.last_mouse.x);
-            self.grid.set_edit_caret(idx, true);
+            self.grid.set_edit_caret_shown(idx, true);
             self.pending.redraw = true;
             *handled = true;
             return;
@@ -7349,6 +7366,121 @@ pub(crate) mod tests {
             },
         );
         handled
+    }
+
+    /// A cell edit takes an input-method composition: shown at the caret,
+    /// typed into the cell only on commit; Backspace removes whole clusters.
+    #[test]
+    fn cell_edit_composes_with_the_input_method_and_deletes_whole_clusters() {
+        use winit::event::Ime;
+        use winit::keyboard::NamedKey;
+        let (mut app, mut doc) = seeded_app();
+        app.grid.select_only((0, 20)); // A21, empty
+        assert!(feed(
+            &mut app,
+            &mut doc,
+            &char_event("a"),
+            Modifiers::default()
+        ));
+        assert!(app.grid.is_editing());
+        assert_eq!(
+            app.ime_purpose(),
+            Some(winit::window::ImePurpose::Normal),
+            "the editing cell asks for the input method"
+        );
+        assert!(app.ime_cursor_rect().is_some());
+
+        let ime = |app: &mut SheetsApp, doc: &mut AutoCommit, ime: Ime| {
+            feed(app, doc, &WindowEvent::Ime(ime), Modifiers::default())
+        };
+        assert!(ime(
+            &mut app,
+            &mut doc,
+            Ime::Preedit("にほ".into(), Some((3, 3)))
+        ));
+        assert_eq!(
+            app.grid.edit_shown(),
+            Some(("aにほ".to_owned(), 2)),
+            "the composition shows at the caret, the caret inside it"
+        );
+        assert_eq!(app.grid.active_display_raw(), "a", "but is not typed yet");
+        assert!(ime(&mut app, &mut doc, Ime::Commit("日本".into())));
+        assert_eq!(app.grid.active_display_raw(), "a日本");
+
+        // A combined letter, an emoji with a skin tone and a flag each go in
+        // as one character and come out with one Backspace.
+        for typed in ["e\u{301}", "👍🏽", "🇩🇪"] {
+            assert!(ime(&mut app, &mut doc, Ime::Commit(typed.into())));
+        }
+        assert_eq!(app.grid.active_display_raw(), "a日本e\u{301}👍🏽🇩🇪");
+        let backspace = named_event(NamedKey::Backspace);
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本e\u{301}👍🏽");
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert!(feed(&mut app, &mut doc, &backspace, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本");
+
+        // A committed composition replaces the selection.
+        app.grid.set_edit_caret(1, false);
+        app.grid.set_edit_caret(3, true);
+        assert!(ime(&mut app, &mut doc, Ime::Commit("x".into())));
+        assert_eq!(app.grid.active_display_raw(), "ax");
+    }
+
+    /// While a cell composes, the formula bar draws the cell editor's display
+    /// text: the composition at the caret, underlined, with the caret inside
+    /// it; the committed text only changes on commit.
+    #[test]
+    fn formula_bar_shows_the_cells_composition() {
+        use winit::event::Ime;
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 720.0);
+        app.relayout();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        app.refresh_chrome_metrics(&mut tr, &theme);
+        app.grid.select_only((0, 20)); // A21, empty
+        for typed in ["a", "b"] {
+            assert!(feed(
+                &mut app,
+                &mut doc,
+                &char_event(typed),
+                Modifiers::default()
+            ));
+        }
+        app.grid.set_edit_caret(1, false);
+        let ime = WindowEvent::Ime(Ime::Preedit("にほ".into(), Some((3, 3))));
+        assert!(feed(&mut app, &mut doc, &ime, Modifiers::default()));
+
+        let bar = app.grid.formula_bar();
+        assert_eq!(bar.text, "aにほb", "the bar shows the composition in place");
+        assert_eq!(bar.preedit, Some((1, 3)), "underlined over the composition");
+        assert_eq!(bar.caret, Some(2), "the caret sits inside it");
+        assert_eq!(app.grid.active_display_raw(), "ab", "nothing is typed yet");
+
+        let mut scene = Scene::new();
+        app.draw_formula_field(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        assert_eq!(
+            app.formula_char_x.len(),
+            "aにほb".chars().count() + 1,
+            "the bar laid out the composed text"
+        );
+        assert!(
+            app.formula_char_x[3] > app.formula_char_x[1] + 1.0,
+            "the committed 'b' draws after the composition"
+        );
+
+        // A click past the composition lands on the committed text it shows.
+        app.grid.set_edit_caret_shown(4, false);
+        assert_eq!(app.grid.edit_caret(), Some(2), "after the 'b' of \"ab\"");
+        app.grid.set_edit_caret(1, false);
+
+        let commit = WindowEvent::Ime(Ime::Commit("日本".into()));
+        assert!(feed(&mut app, &mut doc, &commit, Modifiers::default()));
+        assert_eq!(app.grid.active_display_raw(), "a日本b");
+        let bar = app.grid.formula_bar();
+        assert_eq!(bar.text, "a日本b");
+        assert_eq!((bar.preedit, bar.caret), (None, Some(3)));
     }
 
     /// Ctrl+K opens the palette, which captures arrows and handles go-to-cell.

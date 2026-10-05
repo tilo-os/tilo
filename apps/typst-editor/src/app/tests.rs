@@ -5,7 +5,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, Modifiers, MouseButton};
 
 fn fresh() -> (TypstApp, AutoCommit) {
-    let mut app = TypstApp::with_demo_documents();
+    let mut app = TypstApp::with_demo_document();
     let mut doc = AutoCommit::new();
     // Drive one sync to seed + compile the first demo document.
     app.sync(&mut doc, &ROOT);
@@ -186,7 +186,7 @@ fn render_once(app: &mut TypstApp) {
 }
 
 #[test]
-fn source_sync_edits_and_switches_documents() {
+fn source_sync_edits_and_opens_one_document() {
     // Case `first_sync_seeds_source_and_compiles`.
     {
         let (app, doc) = fresh();
@@ -227,18 +227,22 @@ fn source_sync_edits_and_switches_documents() {
             "commit acknowledgement clears the latch"
         );
     }
-    // Case `switching_documents_replaces_source`.
+    // Opening a different file replaces this window's one document.
     {
         let (mut app, mut doc) = fresh();
-        let first = app.read_source(&doc);
-        app.next_doc(&mut doc);
-        let second = app.read_source(&doc);
-        assert_ne!(first, second, "next_doc swapped the CRDT source");
-        assert_eq!(app.current, 1);
+        let dir = unique_dir("replace-document");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("another.typ");
+        std::fs::write(&path, "= Another\nReplacement text").unwrap();
+        app.open_typ_from(&mut doc, &path).unwrap();
+        assert_eq!(app.local_document_names_for_test(), ["another.typ"]);
+        assert_eq!(app.read_source(&doc), "= Another\nReplacement text");
+        assert_eq!(app.local_source_for_test(), "= Another\nReplacement text");
+        std::fs::remove_dir_all(dir).unwrap();
     }
     // Case `caret_line_col_tracks_newlines`.
     {
-        let mut app = TypstApp::with_demo_documents();
+        let mut app = TypstApp::with_demo_document();
         app.source_cache = "abc\nde\nf".to_string();
         app.editor.set_text("abc\nde\nf");
         app.editor.set_caret(5); // byte 5 → line 2, col 2 (just after 'd')
@@ -356,7 +360,7 @@ fn idle_and_pending_work_schedule_non_animation_deadlines() {
 fn mounted(width: u32, height: u32) -> ui::headless::FrameHarness {
     let mut harness = ui::headless::FrameHarness::for_root(
         ui::State::new(),
-        TypstApp::with_demo_documents(),
+        TypstApp::with_demo_document(),
         (width, height),
         Theme::dark(),
     );
@@ -553,24 +557,22 @@ fn the_problems_toggle_counts_errors_and_warnings() {
 }
 
 #[test]
-fn the_document_commands_switch_documents() {
-    let (mut app, mut doc) = fresh();
-    let count = app.documents.len();
-    assert!(count > 2);
-    app.run_command(Command::SelectDoc(2), &mut doc);
-    assert_eq!(app.current, 2);
-    app.run_command(Command::NextDoc, &mut doc);
-    assert_eq!(app.current, 3);
-    app.run_command(Command::NextDoc, &mut doc);
-    assert_eq!(app.current, 0, "next wraps to the first document");
-    app.run_command(Command::PrevDoc, &mut doc);
-    assert_eq!(app.current, count - 1, "previous wraps to the last");
-    app.run_command(Command::SelectDoc(count + 4), &mut doc);
-    assert_eq!(app.current, count - 1, "an unknown document is ignored");
+fn a_window_exposes_one_document_and_leaves_document_switching_to_the_desktop() {
+    let mut harness = mounted(1280, 720);
+    let targets = harness.targets();
+    assert!(targets.contains_key("typst.document"));
+    assert!(!targets.contains_key("typst.previous-document"));
+    assert!(!targets.contains_key("typst.next-document"));
+    let before = harness.root::<TypstApp>().local_source_for_test();
+    let heading = targets["typst.document"];
+    harness.click_at(heading.center().x, heading.center().y);
+    harness.key("Down");
+    harness.key("Enter");
+    assert_eq!(harness.root::<TypstApp>().local_source_for_test(), before);
 }
 
 #[test]
-fn the_edit_preview_switch_and_the_document_picker_take_real_pointer_input() {
+fn the_edit_preview_switch_takes_real_pointer_input() {
     // Case `edit_preview_switch_via_pointer`:
     // Tapping the compact Edit / Preview control through the host's
     // routing swaps the visible pane.
@@ -599,29 +601,6 @@ fn the_edit_preview_switch_and_the_document_picker_take_real_pointer_input() {
             CompactPane::Editor
         ));
     }
-    // Case `document_picker_via_keyboard_after_a_click`:
-    // Opening the picker and choosing the next document with the keys
-    // loads that document.
-    {
-        let mut harness = mounted(1280, 720);
-        let picker = harness.targets()["typst.document"];
-        harness.click_at(picker.center().x, picker.center().y);
-        harness.key("Down");
-        harness.key("Enter");
-        let _ = harness.render_rgba();
-        assert_eq!(harness.root::<TypstApp>().current, 1);
-    }
-}
-
-#[test]
-fn the_previous_and_next_buttons_switch_documents_in_a_wide_window() {
-    let mut harness = mounted(1280, 720);
-    let next = harness.targets()["typst.next-document"];
-    harness.click_at(next.center().x, next.center().y);
-    assert_eq!(harness.root::<TypstApp>().current, 1);
-    let previous = harness.targets()["typst.previous-document"];
-    harness.click_at(previous.center().x, previous.center().y);
-    assert_eq!(harness.root::<TypstApp>().current, 0);
 }
 
 #[test]
@@ -717,52 +696,13 @@ fn the_status_bar_reads_the_caret_and_the_pages() {
 }
 
 #[test]
-fn live_library_reads_disk_and_starts_empty() {
-    // Case `live_library_reads_typ_files_from_disk`.
-    {
-        let dir = std::env::temp_dir().join(format!(
-            "typst_editor_lib_{}_{}",
-            std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("beta.typ"), "= Beta").unwrap();
-        std::fs::write(dir.join("alpha.typ"), "= Alpha").unwrap();
-        std::fs::write(dir.join("notes.txt"), "ignored").unwrap();
-
-        let app = TypstApp::from_library(Some(&dir));
-        let names: Vec<_> = app.documents.iter().map(|d| d.name.clone()).collect();
-        assert_eq!(names, vec!["alpha.typ", "beta.typ"], "sorted, .txt ignored");
-        assert!(app.documents.iter().all(|d| d.from_disk));
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-    // Case `live_library_starts_with_empty_source`.
-    {
-        let dir = std::env::temp_dir().join(format!(
-            "typst_editor_empty_{}_{}",
-            std::process::id(),
-            ui::time::wall()
-                .duration_since(ui::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        let app = TypstApp::from_library(Some(&dir));
-        assert_eq!(app.documents.len(), 1);
-        assert_eq!(app.documents[0].name, "untitled.typ");
-        assert!(!app.documents[0].from_disk, "starter is not a disk file");
-        assert!(
-            app.documents[0].source.is_empty(),
-            "live documents must not contain sample text"
-        );
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
+fn live_editor_starts_with_one_empty_document() {
+    let app = TypstApp::new();
+    assert_eq!(app.local_document_names_for_test(), ["untitled.typ"]);
+    assert!(
+        app.local_source_for_test().is_empty(),
+        "live documents must not contain sample text"
+    );
 }
 
 // ---- helpers for the preview-interaction + diagnostics tests ----------
@@ -893,7 +833,7 @@ fn preview_zoom_and_diagnostics_respond_to_input() {
     // compiler, and clicking a row jumps the editor caret to that diagnostic's
     // line — proven for both severities through the production pointer path.
     {
-        let mut app = TypstApp::with_demo_documents();
+        let mut app = TypstApp::with_demo_document();
         app.apply_demo_scenario("errors");
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT); // first sync compiles synchronously
@@ -988,7 +928,10 @@ fn preview_zoom_and_diagnostics_respond_to_input() {
         let broken = compile::compile_source(&app.parts, "Body #undefined_var end.\n", PPP);
         app.apply_output(broken);
         assert!(app.err_count >= 1);
-        app.next_doc(&mut doc);
+        let path = unique_dir("another-document").with_extension("typ");
+        std::fs::write(&path, "= New\nA different document").unwrap();
+        app.open_typ_from(&mut doc, &path).unwrap();
+        std::fs::remove_file(path).unwrap();
         assert_eq!(app.preview.page_count(), 0, "the old pages are gone");
         assert!(!app.preview.is_stale(), "nothing stale carries over");
         assert_eq!((app.err_count, app.warn_count), (0, 0));
@@ -1051,7 +994,7 @@ fn accessibility_exposes_editor_state_and_toolbar_controls() {
         // Each problem the panel lists is an accessibility node whose
         // activation moves the caret to the line it names.
         {
-            let mut app = TypstApp::with_demo_documents();
+            let mut app = TypstApp::with_demo_document();
             app.apply_demo_scenario("errors");
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);

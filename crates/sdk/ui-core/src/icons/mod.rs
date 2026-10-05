@@ -357,6 +357,9 @@ pub enum Icon {
     Eraser,
     /// Unlocked. Lucide `lock-open`.
     LockOpen,
+    /// Linked: moves with what it belongs to. Lucide `link`.
+    /// Unlinked: stays put on its own. Lucide `unlink`.
+    Unlink,
     /// An agent. Lucide `bot`.
     Bot,
     /// A rectangle of an area being selected. Lucide `square-dashed`.
@@ -385,11 +388,24 @@ pub enum Icon {
     AppWindow,
     /// One of your own devices. Lucide `monitor-smartphone`.
     MonitorSmartphone,
+    AlignEndVertical,
+    ALargeSmall,
+    AlignCenterVertical,
+    Fingerprint,
+    AlignEndHorizontal,
+    BatteryCharging,
+    Accessibility,
+    AlignStartVertical,
+    AlignHorizontalDistributeCenter,
+    CircleAlert,
+    AlignVerticalDistributeCenter,
+    AlignCenterHorizontal,
+    AlignStartHorizontal,
 }
 
 impl Icon {
     /// Every icon, in declaration order.
-    pub const ALL: [Self; 222] = [
+    pub const ALL: [Self; 236] = [
         Self::LayoutGrid,
         Self::Settings2,
         Self::Mouse,
@@ -598,6 +614,7 @@ impl Icon {
         Self::Pipette,
         Self::Eraser,
         Self::LockOpen,
+        Self::Unlink,
         Self::Bot,
         Self::SquareDashed,
         Self::CircleDashed,
@@ -612,6 +629,19 @@ impl Icon {
         Self::ScreenShare,
         Self::AppWindow,
         Self::MonitorSmartphone,
+        Self::AlignEndVertical,
+        Self::ALargeSmall,
+        Self::AlignCenterVertical,
+        Self::Fingerprint,
+        Self::AlignEndHorizontal,
+        Self::BatteryCharging,
+        Self::Accessibility,
+        Self::AlignStartVertical,
+        Self::AlignHorizontalDistributeCenter,
+        Self::CircleAlert,
+        Self::AlignVerticalDistributeCenter,
+        Self::AlignCenterHorizontal,
+        Self::AlignStartHorizontal,
     ];
 
     /// The icon's lucide kebab name (`Icon::LayoutGrid` → `layout-grid`):
@@ -842,6 +872,20 @@ impl Icon {
             Self::ScreenShare => "screen-share",
             Self::AppWindow => "app-window",
             Self::MonitorSmartphone => "monitor-smartphone",
+            Self::ALargeSmall => "a-large-small",
+            Self::Accessibility => "accessibility",
+            Self::AlignCenterHorizontal => "align-center-horizontal",
+            Self::AlignCenterVertical => "align-center-vertical",
+            Self::AlignEndHorizontal => "align-end-horizontal",
+            Self::AlignEndVertical => "align-end-vertical",
+            Self::AlignHorizontalDistributeCenter => "align-horizontal-distribute-center",
+            Self::AlignStartHorizontal => "align-start-horizontal",
+            Self::AlignStartVertical => "align-start-vertical",
+            Self::AlignVerticalDistributeCenter => "align-vertical-distribute-center",
+            Self::BatteryCharging => "battery-charging",
+            Self::CircleAlert => "circle-alert",
+            Self::Fingerprint => "fingerprint",
+            Self::Unlink => "unlink",
         }
     }
 
@@ -915,6 +959,112 @@ fn circle_path(cx: f64, cy: f64, r: f64) -> BezPath {
 )]
 pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
     match icon {
+        Icon::AlignEndVertical => vec![
+            rect_path(2.0, 4.0, 16.0, 6.0, 2.0),
+            rect_path(9.0, 14.0, 9.0, 6.0, 2.0),
+            path_from_d("M22 22V2"),
+        ],
+        Icon::ALargeSmall => [
+            "m15 16 2.536-7.328a1.02 1.02 1 0 1 1.928 0L22 16",
+            "M15.697 14h5.606",
+            "m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16",
+            "M3.304 13h6.392",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::AlignCenterVertical => [
+            "M12 2v20",
+            "M8 10H4a2 2 0 0 1-2-2V6c0-1.1.9-2 2-2h4",
+            "M16 10h4a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-4",
+            "M8 20H7a2 2 0 0 1-2-2v-2c0-1.1.9-2 2-2h1",
+            "M16 14h1a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2h-1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Fingerprint => [
+            "M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4",
+            "M14 13.12c0 2.38 0 6.38-1 8.88",
+            "M17.29 21.02c.12-.6.43-2.3.5-3.02",
+            "M2 12a10 10 0 0 1 18-6",
+            "M2 16h.01",
+            "M21.8 16c.2-2 .131-5.354 0-6",
+            "M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2",
+            "M8.65 22c.21-.66.45-1.32.57-2",
+            "M9 6.8a6 6 0 0 1 9 5.2v2",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::AlignEndHorizontal => vec![
+            rect_path(4.0, 2.0, 6.0, 16.0, 2.0),
+            rect_path(14.0, 9.0, 6.0, 9.0, 2.0),
+            path_from_d("M22 22H2"),
+        ],
+        Icon::BatteryCharging => [
+            "m11 7-3 5h4l-3 5",
+            "M14.856 6H16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.935",
+            "M22 14v-4",
+            "M5.14 18H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2.936",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::Accessibility => {
+            let mut paths = vec![circle_path(16.0, 4.0, 1.0)];
+            paths.extend(
+                [
+                    "m18 19 1-7-6 1",
+                    "m5 8 3-3 5.5 3-2.36 3.5",
+                    "M4.24 14.5a5 5 0 0 0 6.88 6",
+                    "M13.76 17.5a5 5 0 0 0-6.88-6",
+                ]
+                .into_iter()
+                .map(path_from_d),
+            );
+            paths
+        }
+        Icon::AlignStartVertical => vec![
+            rect_path(6.0, 14.0, 9.0, 6.0, 2.0),
+            rect_path(6.0, 4.0, 16.0, 6.0, 2.0),
+            path_from_d("M2 2v20"),
+        ],
+        Icon::AlignHorizontalDistributeCenter => vec![
+            rect_path(4.0, 5.0, 6.0, 14.0, 2.0),
+            rect_path(14.0, 7.0, 6.0, 10.0, 2.0),
+            path_from_d("M17 22v-5"),
+            path_from_d("M17 7V2"),
+            path_from_d("M7 22v-3"),
+            path_from_d("M7 5V2"),
+        ],
+        Icon::CircleAlert => vec![
+            circle_path(12.0, 12.0, 10.0),
+            line_path(12.0, 8.0, 12.0, 12.0),
+            line_path(12.0, 16.0, 12.01, 16.0),
+        ],
+        Icon::AlignVerticalDistributeCenter => vec![
+            path_from_d("M22 17h-3"),
+            path_from_d("M22 7h-5"),
+            path_from_d("M5 17H2"),
+            path_from_d("M7 7H2"),
+            rect_path(5.0, 14.0, 14.0, 6.0, 2.0),
+            rect_path(7.0, 4.0, 10.0, 6.0, 2.0),
+        ],        Icon::AlignCenterHorizontal => [
+            "M2 12h20",
+            "M10 16v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-4",
+            "M10 8V4a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v4",
+            "M20 16v1a2 2 0 0 1-2 2h-2a2 2 0 0 1-2-2v-1",
+            "M14 8V7c0-1.1.9-2 2-2h2a2 2 0 0 1 2 2v1",
+        ]
+        .into_iter()
+        .map(path_from_d)
+        .collect(),
+        Icon::AlignStartHorizontal => vec![
+            rect_path(4.0, 6.0, 6.0, 16.0, 2.0),
+            rect_path(14.0, 6.0, 6.0, 9.0, 2.0),
+            path_from_d("M22 2H2"),
+        ],
         Icon::LayoutGrid => vec![
             rect_path(3.0, 3.0, 7.0, 7.0, 1.0),
             rect_path(14.0, 3.0, 7.0, 7.0, 1.0),
@@ -2000,6 +2150,18 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::LockOpen => vec![
             rect_path(3.0, 11.0, 18.0, 11.0, 2.0),
             path_from_d("M7 11V7a5 5 0 0 1 9.9-1"),
+        ],
+        Icon::Unlink => vec![
+            path_from_d(
+                "m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71",
+            ),
+            path_from_d(
+                "m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71",
+            ),
+            line_path(8.0, 2.0, 8.0, 5.0),
+            line_path(2.0, 8.0, 5.0, 8.0),
+            line_path(16.0, 19.0, 16.0, 22.0),
+            line_path(19.0, 16.0, 22.0, 16.0),
         ],
         Icon::Bot => vec![
             path_from_d("M12 8V4H8"),

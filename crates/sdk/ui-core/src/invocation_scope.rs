@@ -210,6 +210,74 @@ use std::{
     },
 };
 
+/// Local evidence of the target resolved at dispatch, before encoding/execution.
+///
+/// The SDK captures this from the original caller's scope and actual record
+/// loan. It contains no action arguments, result, anchor or pixels. It is not
+/// a receipt of completion, portable authentication, or permission to execute.
+/// A consumer must separately qualify any anchor and successful presentation
+/// against these committed heads and the current owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationLocusBasis {
+    invocation: tilo_actions::InvocationId,
+    actor: String,
+    participant: Option<tilo_actions::ParticipantId>,
+    publication: tilo_actions::ActionAddress,
+    target: crate::bound_dispatch::BoundActionAddress,
+    owner_lifetime: uuid::Uuid,
+    checkout: RecordId,
+    route: RouteSpec,
+    heads: Vec<ChangeHash>,
+}
+
+impl InvocationLocusBasis {
+    pub fn invocation(&self) -> tilo_actions::InvocationId {
+        self.invocation
+    }
+    pub fn actor(&self) -> &str {
+        &self.actor
+    }
+    pub fn participant(&self) -> Option<&tilo_actions::ParticipantId> {
+        self.participant.as_ref()
+    }
+    /// Original host-admitted address; it may be a publication alias.
+    pub fn publication(&self) -> &tilo_actions::ActionAddress {
+        &self.publication
+    }
+    /// Exact component-local address resolved by the SDK's publication registry.
+    pub fn target(&self) -> &tilo_actions::ActionAddress {
+        &self.target.address
+    }
+    pub fn instance(&self) -> crate::application::InstanceId {
+        self.target.instance_id
+    }
+    pub fn owner_lifetime(&self) -> uuid::Uuid {
+        self.owner_lifetime
+    }
+    /// Actual local checkout identity, not an inferred wire record ID.
+    pub fn checkout(&self) -> &RecordId {
+        &self.checkout
+    }
+    pub fn route(&self) -> &RouteSpec {
+        &self.route
+    }
+    pub fn heads(&self) -> &[ChangeHash] {
+        &self.heads
+    }
+}
+
+#[derive(Default)]
+enum InvocationLocusState {
+    #[default]
+    Unobserved,
+    Unavailable,
+    Captured(Box<InvocationLocusBasis>),
+}
+
+const MAX_LOCUS_HEADS: usize = 128;
+const MAX_LOCUS_FIELD_BYTES: usize = 4096;
+const MAX_LOCUS_BASIS_BYTES: usize = 16 * 1024;
+
 /// Immutable job custody, constructed only from an actual admitted invocation
 /// and the exact mounted record owner. InvocationId alone cannot construct it.
 #[derive(Clone)]
@@ -219,6 +287,8 @@ pub struct ResourceInvocationScope {
     lease: PublishedInvocationLease,
     provenance: Rc<RefCell<InvocationProvenance>>,
     retired: Arc<AtomicBool>,
+    locus_target: Option<crate::bound_dispatch::BoundActionAddress>,
+    locus_basis: Rc<RefCell<InvocationLocusState>>,
 }
 
 impl ResourceInvocationScope {
@@ -252,7 +322,112 @@ impl ResourceInvocationScope {
             lease,
             provenance,
             retired: Arc::new(AtomicBool::new(false)),
+            locus_target: None,
+            locus_basis: Rc::new(RefCell::new(InvocationLocusState::Unobserved)),
         })
+    }
+
+    /// Retain the exact target while the SDK still holds its original alias
+    /// resolution. Later dispatch cannot qualify a different same-owner action.
+    pub(crate) fn for_bound_target(
+        target: crate::bound_dispatch::BoundActionTarget,
+        lease: PublishedInvocationLease,
+    ) -> Result<Self, String> {
+        if target.address.instance_id != target.binding.instance_id {
+            return Err("invocation target instance disagrees with owner".into());
+        }
+        let mut scope = Self::for_owner(HistoryOwner::component(target.binding), lease)?;
+        if target.address.address.resource.len() <= MAX_LOCUS_FIELD_BYTES
+            && target.address.address.action.len() <= MAX_LOCUS_FIELD_BYTES
+        {
+            scope.locus_target = Some(target.address);
+        } else {
+            *scope.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+        }
+        Ok(scope)
+    }
+
+    /// Read the immutable pre-execution observation while original custody is
+    /// live. No basis means this invocation could not be observed truthfully.
+    /// This never commits, borrows a document, refreshes timestamps or executes.
+    pub fn locus_basis(&self) -> Result<Option<InvocationLocusBasis>, String> {
+        self.check()?;
+        Ok(match &*self.locus_basis.borrow() {
+            InvocationLocusState::Captured(basis) => Some(basis.as_ref().clone()),
+            _ => None,
+        })
+    }
+
+    /// Best-effort metadata at actual bound dispatch; failure never changes the
+    /// action result. Once unavailable it cannot be repaired by a later event.
+    pub(crate) fn capture_locus_basis(
+        &self,
+        target: &crate::bound_dispatch::BoundActionTarget,
+        invocation: tilo_actions::InvocationId,
+        actor: &str,
+        document: &AutoCommit,
+    ) {
+        let request = &self.lease.request;
+        let valid = self.locus_target.as_ref() == Some(&target.address)
+            && self
+                .owner
+                .same_owner(&HistoryOwner::component(target.binding.clone()))
+            && self.owner.lifetime_id() == Some(target.binding.lifetime_id)
+            && invocation == request.invocation
+            && actor == request.actor
+            && current_invoker().as_ref() == Some(&request.invoker())
+            && self.check_read_loan(document).is_ok();
+        if !valid {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        if !matches!(*self.locus_basis.borrow(), InvocationLocusState::Unobserved) {
+            return;
+        }
+        // Never call get_heads here: observation must not close an open edit.
+        let mut heads = document.base_heads();
+        if document.pending_ops() != 0 || heads.len() > MAX_LOCUS_HEADS {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        let fields = [
+            request.actor.as_str(),
+            request
+                .participant
+                .as_ref()
+                .map_or("", tilo_actions::ParticipantId::as_str),
+            request.address.resource.as_str(),
+            request.address.action.as_str(),
+            target.address.address.resource.as_str(),
+            target.address.address.action.as_str(),
+            target.binding.checkout.id.as_str(),
+            self.lease.route.app_id.as_str(),
+            self.lease.route.record.as_deref().unwrap_or(""),
+        ];
+        let bytes = fields
+            .iter()
+            .try_fold(128usize + heads.len() * 32, |sum, field| {
+                (field.len() <= MAX_LOCUS_FIELD_BYTES)
+                    .then(|| sum.checked_add(field.len()))
+                    .flatten()
+            });
+        if bytes.is_none_or(|bytes| bytes > MAX_LOCUS_BASIS_BYTES) || self.check().is_err() {
+            *self.locus_basis.borrow_mut() = InvocationLocusState::Unavailable;
+            return;
+        }
+        heads.sort_unstable();
+        *self.locus_basis.borrow_mut() =
+            InvocationLocusState::Captured(Box::new(InvocationLocusBasis {
+                invocation,
+                actor: request.actor.clone(),
+                participant: request.participant.clone(),
+                publication: request.address.clone(),
+                target: target.address.clone(),
+                owner_lifetime: target.binding.lifetime_id,
+                checkout: target.binding.checkout.id.clone(),
+                route: self.lease.route.clone(),
+                heads,
+            }));
     }
 
     /// Compare inert original admission facts with this exact current handler.

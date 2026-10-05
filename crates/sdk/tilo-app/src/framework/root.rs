@@ -62,6 +62,8 @@ pub(crate) struct ResourceRoot<R: Resource> {
     presentation: Vec<tilo_actions::ActionSpec>,
     /// The resource's search entries at one live revision, indexed.
     search: std::cell::RefCell<Option<(u64, Arc<IndexedEntries>)>>,
+    /// The view operation types of the nested resources at one live revision.
+    nested_views: std::cell::RefCell<Option<(u64, Rc<HashSet<String>>)>>,
     /// The palette the view was last drawn in, which `render` draws it in.
     drawn_theme: Option<Theme>,
     /// Shapes text for `render`, which runs outside a frame.
@@ -165,6 +167,67 @@ fn open_spec() -> tilo_actions::ActionSpec {
     .with_description("Open the app at one item: the anchor of a search hit.")
 }
 
+/// The operation type of the framework's `read` view.
+pub(crate) const READ_TYPE: &str = "tilo.resource.read";
+
+/// `read`: what a [readable](Resource::READABLE) resource holds, as typed
+/// data. With no `item` it answers the resource itself; with an `item` id, the
+/// nested resource of that id. It is a view: it changes nothing, needs only
+/// read permission and is checked like every other action.
+fn read_spec() -> tilo_actions::ActionSpec {
+    let mut spec = tilo_actions::ActionSpec::typed_operation(
+        "read",
+        "Read the content",
+        "Read the content",
+        tilo_actions::OperationKind::View,
+        READ_TYPE,
+        vec![
+            tilo_actions::ActionParam::optional(
+                "item",
+                tilo_actions::ParamType::Text,
+                "A nested resource's id, as the first read lists it (default: the whole resource)",
+            )
+            .nullable(),
+        ],
+        |args| {
+            tilo_actions::EncodedAction::encode_operation(
+                READ_TYPE,
+                &serde_json::json!({ "item": args.text("item") }),
+            )
+            .unwrap_or_else(|_| tilo_actions::EncodedAction {
+                type_id: READ_TYPE.into(),
+                payload: Vec::new(),
+            })
+        },
+    )
+    .requiring(tilo_actions::PermissionRequirement::Read)
+    .with_description(
+        "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content.",
+    );
+    spec.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({"type": "object"}),
+    };
+    spec.reads_document()
+}
+
+/// Answer a `read` request against `R`'s committed document.
+fn read<R: Resource>(
+    state: &R::State,
+    doc: &AutoCommit,
+    payload: &[u8],
+) -> Result<tilo_actions::ActionOutput, String> {
+    let args: serde_json::Value = if payload.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(payload).map_err(|error| error.to_string())?
+    };
+    let item = args.get("item").and_then(serde_json::Value::as_str);
+    Ok(tilo_actions::ActionOutput {
+        value: Some(R::read_content(state, doc, item)?),
+        resources: Vec::new(),
+    })
+}
+
 /// The revision a picture shows: the document's heads.
 #[allow(dead_code, reason = "called only by render, which is native-only")]
 fn revision(doc: &mut AutoCommit) -> String {
@@ -209,6 +272,7 @@ impl<R: Resource> ResourceRoot<R> {
             content,
             presentation: Vec::new(),
             search: std::cell::RefCell::new(None),
+            nested_views: std::cell::RefCell::new(None),
             drawn_theme: None,
             render_text: None,
             past: None,
@@ -342,6 +406,14 @@ impl<R: Resource> ResourceRoot<R> {
         {
             resource = resource.with_action(render_spec());
         }
+        if R::READABLE
+            && !resource
+                .actions
+                .iter()
+                .any(|existing| existing.id == "read")
+        {
+            resource = resource.with_action(read_spec());
+        }
         for spec in super::history::specs().into_iter().filter(|_| self.history) {
             if !resource
                 .actions
@@ -364,6 +436,36 @@ impl<R: Resource> ResourceRoot<R> {
             resource = resource.with_action(spec);
         }
         resource
+    }
+
+    /// The operation types of the views the resource's nested resources
+    /// publish (the editor of a note's rich-text body): presentations of the
+    /// resource this root has mounted, answered like its own.
+    fn nested_views(&self) -> Rc<HashSet<String>> {
+        fn collect(resources: &[tilo_actions::Resource], views: &mut HashSet<String>) {
+            for resource in resources {
+                views.extend(
+                    resource
+                        .actions
+                        .iter()
+                        .filter(|spec| spec.kind == tilo_actions::OperationKind::View)
+                        .filter_map(|spec| spec.operation_type.clone()),
+                );
+                collect(&resource.children, views);
+            }
+        }
+        let revision = self.live.revision();
+        let mut cached = self.nested_views.borrow_mut();
+        match cached.as_ref() {
+            Some((at, views)) if *at == revision => Rc::clone(views),
+            _ => {
+                let mut views = HashSet::new();
+                collect(&R::children(&self.live.get()), &mut views);
+                let views = Rc::new(views);
+                *cached = Some((revision, Rc::clone(&views)));
+                views
+            }
+        }
     }
 
     /// The dispatcher the root's views submit through, which the host drains.
@@ -811,6 +913,9 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         }
         handlers.insert(super::history::VIEW_TYPE.to_owned());
         handlers.insert(OPEN_TYPE.to_owned());
+        if R::READABLE {
+            handlers.insert(READ_TYPE.to_owned());
+        }
         handlers.extend(self.effects.operations().into_iter().map(str::to_owned));
         for spec in R::local_operations()
             .into_iter()
@@ -820,6 +925,7 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
                 handlers.insert(type_id);
             }
         }
+        handlers.extend(self.nested_views().iter().cloned());
         handlers
     }
 
@@ -849,6 +955,15 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
             && request.type_id == RENDER_TYPE
         {
             let output = self.render(request.payload, doc)?;
+            return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
+                output,
+            )));
+        }
+        if R::READABLE
+            && let Some(request) = op.unscoped()
+            && request.type_id == READ_TYPE
+        {
+            let output = read::<R>(&self.live.get(), doc, request.payload)?;
             return Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 output,
             )));
@@ -883,9 +998,10 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         if let Some(started) = self.inner_mut().start_operation(op, doc, path)? {
             return Ok(Some(started));
         }
-        // View openers from the resource/presentation catalogue (e.g.
-        // `tilo.rich-text.view` editor/compact) are already mounted; accept
-        // them so agents and Ctrl+K can switch without a missing-handler fault.
+        // View openers from the resource/presentation catalogue and from its
+        // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
+        // editor/compact) are already mounted; accept them so agents and
+        // Ctrl+K can switch without a missing-handler fault.
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
@@ -895,7 +1011,8 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         let known = R::local_operations()
             .into_iter()
             .chain(self.presentation.iter().cloned())
-            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id));
+            .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
+            || self.nested_views().contains(request.type_id);
         if known {
             Ok(Some(ui_core::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
@@ -1019,10 +1136,13 @@ impl<R: Resource> ui_core::resources::PublishesResources for ResourceRoot<R> {
         address: &tilo_actions::ActionAddress,
         changes: &[ui_core::automerge::Patch],
     ) -> Option<serde_json::Value> {
-        if address.resource == self.dispatch.resource_id()
-            && super::history::is_edit(&address.action)
-        {
-            return super::history::result(&address.action, doc, changes);
+        if address.resource == self.dispatch.resource_id() {
+            if super::history::is_edit(&address.action) {
+                return super::history::result(&address.action, doc, changes);
+            }
+            if let Some(answer) = R::answer(doc, &address.action, changes) {
+                return Some(answer);
+            }
         }
         ui_core::resources::document_action_result(self.content.as_ref(), doc, address, changes)
     }

@@ -21,12 +21,14 @@
 //! document and never becomes an action.
 
 use serde::{Deserialize, Serialize};
-use ui::tilo_resource::{ActionDecl, PlainText, TextEdit, declaration_spec, publish_child};
+use ui::tilo_resource::{
+    self, ActionDecl, Effect, PlainText, TextEdit, declaration_spec, publish_child,
+};
 use uuid::Uuid;
 
 use tilo_actions::{
     Action, ActionAddress, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
-    ExecutionLocus, OperationKind, ParamType, Resource, RetryPolicy,
+    ExecutionLocus, ParamType, Resource,
 };
 
 use crate::doc::SnippetsDoc;
@@ -35,7 +37,6 @@ use crate::resource::Snippets;
 
 /// Registry `type_id` for every Snippets action.
 pub const SNIPPETS_ACTION_TYPE: &str = "snippets.action";
-pub const SNIPPETS_OPERATION_TYPE: &str = "snippets.operation";
 
 /// Stable resource id for one snippet. Search and every other caller use this
 /// exact identity instead of maintaining a second navigation namespace.
@@ -64,60 +65,24 @@ pub fn reveal_tag_address(tag: &str) -> ActionAddress {
     ActionAddress::new(tag_resource_id(tag), "reveal")
 }
 
-/// Canonical view action that reveals the snippets filed under `folder`.
-pub fn reveal_folder_address(folder: &str) -> ActionAddress {
-    ActionAddress::new(folder_resource_id(folder), "reveal")
-}
-
-/// What a control that reveals `tag` invokes: the published tag's "reveal".
-pub fn reveal_tag_binding(tag: &str) -> Option<tilo_actions::ActionBinding<()>> {
-    tilo_actions::ActionBinding::unit_for(&provide_tag_resource(tag.to_owned()), "reveal").ok()
-}
-
-/// What a control that reveals `folder` invokes: the published folder's
-/// "reveal".
-pub fn reveal_folder_binding(folder: &str) -> Option<tilo_actions::ActionBinding<()>> {
-    tilo_actions::ActionBinding::unit_for(&provide_folder_resource(folder.to_owned()), "reveal")
-        .ok()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SnippetsOperation {
-    OpenSnippet { id: SnippetId },
-    RevealTag { tag: String },
+/// What the library shows, which changes no document: open a snippet,
+/// reveal a tag's snippets, focus search. Opening and revealing are offered
+/// on the snippet or tag they show.
+#[derive(Debug, Clone, PartialEq, Eq, Effect)]
+#[effect(operation = "snippets.view")]
+pub enum SnippetsView {
+    /// Open snippet
+    #[effect(view, row)]
+    Open { snippet: Uuid },
+    /// Reveal tagged snippets
+    #[effect(view, row)]
+    Reveal { tag: String },
+    /// Reveal snippets in a folder
+    #[effect(view, row)]
     RevealFolder { folder: String },
-}
-
-/// Decode a Snippets view operation when the type matches.
-///
-/// # Errors
-/// Returns an error for malformed operation payloads.
-pub fn decode_operation(
-    type_id: &str,
-    payload: &[u8],
-) -> Result<Option<SnippetsOperation>, String> {
-    if type_id != SNIPPETS_OPERATION_TYPE {
-        return Ok(None);
-    }
-    serde_json::from_slice(payload)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-#[allow(
-    clippy::expect_used,
-    reason = "SnippetsOperation contains only serializable strings and UUIDs"
-)]
-fn view_operation(id: &str, label: &str, operation: &SnippetsOperation) -> ActionSpec {
-    ActionSpec::operation(
-        id,
-        label,
-        OperationKind::View,
-        SNIPPETS_OPERATION_TYPE,
-        operation,
-    )
-    .expect("SnippetsOperation is always serializable")
-    .retry_policy(RetryPolicy::Idempotent)
+    /// Search snippets
+    #[effect(view)]
+    Search,
 }
 
 /// Every collaborative operation Snippets exports on its library.
@@ -327,11 +292,8 @@ pub fn parse_tags(raw: &str) -> Vec<String> {
 /// One-line label for a snippet resource in the palette.
 fn snippet_label(s: &Snippet) -> String {
     let t = s.title.trim();
-    if t.is_empty() {
-        crate::tr("snippets-untitled")
-    } else {
-        t.to_string()
-    }
+    let base = if t.is_empty() { "Untitled snippet" } else { t };
+    format!("{} · {}", base, s.language.label())
 }
 
 /// Document-derived children: folders, tags and snippets.
@@ -377,26 +339,15 @@ pub fn titled_snippet(title: &str, folder: &str) -> Snippet {
     snippet
 }
 
-/// A folder, which reveals its snippets and files a new snippet under
-/// itself.
+/// A folder, which files a new snippet under itself.
 pub fn provide_folder_resource(folder: String) -> Resource {
     let id = folder_resource_id(&folder);
     let label = folder.clone();
-    let reveal = view_operation(
-        "reveal",
-        &crate::tr("snippets-action-reveal-folder"),
-        &SnippetsOperation::RevealFolder {
-            folder: folder.clone(),
-        },
-    );
+    let reveal_folder = folder.clone();
     let create = ActionDecl::<Snippets>::new(
         "new-snippet",
-        crate::tr("snippets-new-snippet"),
-        vec![ActionParam::required_owned(
-            "title",
-            ParamType::Text,
-            crate::tr("snippets-action-title"),
-        )],
+        format!("New snippet in {folder}"),
+        vec![ActionParam::required("title", ParamType::Text, "Title")],
         move |args, _| {
             Ok(create_snippet_action(titled_snippet(
                 args.text("title").unwrap_or_default(),
@@ -406,16 +357,18 @@ pub fn provide_folder_resource(folder: String) -> Resource {
     )
     .describe("Create a new snippet in this folder.");
     Resource::new(id, "snippets.folder", label)
-        .with_action(reveal)
+        .with_action(
+            SnippetsView::RevealFolder {
+                folder: reveal_folder,
+            }
+            .bound(),
+        )
         .with_action(declaration_spec(&create))
 }
 
 pub fn provide_tag_resource(tag: String) -> Resource {
-    Resource::new(tag_resource_id(&tag), "snippets.tag", &tag).with_action(view_operation(
-        "reveal",
-        &crate::tr("snippets-action-reveal-tag"),
-        &SnippetsOperation::RevealTag { tag },
-    ))
+    Resource::new(tag_resource_id(&tag), "snippets.tag", &tag)
+        .with_action(SnippetsView::Reveal { tag }.bound())
 }
 
 /// The id a snippet's body text is published under, as a child of it.
@@ -428,13 +381,13 @@ fn text_decl(
     action: &'static str,
     label: &str,
     param: &'static str,
-    prompt: String,
+    prompt: &'static str,
     build: impl Fn(&str) -> SnippetsAction + Send + Sync + 'static,
 ) -> ActionSpec {
     declaration_spec(&ActionDecl::<Snippets>::new(
         action,
         label,
-        vec![ActionParam::required_owned(param, ParamType::Text, prompt)],
+        vec![ActionParam::required(param, ParamType::Text, prompt)],
         move |args, _| Ok(build(args.text(param).unwrap_or_default())),
     ))
 }
@@ -449,35 +402,26 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
         "snippets.snippet",
         snippet_label(s),
     )
-    .with_action(view_operation(
-        "open",
-        &crate::tr("snippets-action-open"),
-        &SnippetsOperation::OpenSnippet { id },
-    ))
+    .with_action(SnippetsView::Open { snippet: id }.bound())
     .with_action(text_decl(
         "edit-body",
-        &crate::tr("snippets-edit-body"),
+        &ui::i18n!("snippets-edit-body"),
         "body",
-        crate::tr("snippets-body-placeholder"),
+        "The whole new body",
         move |body| set_body_action(id, body),
     ))
     .with_action(text_decl(
         "rename",
-        &crate::tr("snippets-action-rename"),
+        "Rename",
         "title",
-        crate::tr("snippets-action-title"),
+        "New title",
         move |t| rename_action(id, t.trim()),
     ))
     .with_action(declaration_spec(&ActionDecl::<Snippets>::new(
         "set-language",
-        crate::tr("snippets-action-set-language"),
+        "Set language",
         vec![
-            ActionParam::required_owned(
-                "language",
-                ParamType::Text,
-                crate::tr("snippets-language"),
-            )
-            .with_choices(languages),
+            ActionParam::required("language", ParamType::Text, "Language").with_choices(languages),
         ],
         move |args, _| {
             Ok(set_language_action(
@@ -488,42 +432,35 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     )))
     .with_action(text_decl(
         "move-to-folder",
-        &crate::tr("snippets-action-move"),
+        "Move to folder",
         "folder",
-        crate::tr("snippets-action-folder-hint"),
+        "Folder name (blank = All Snippets)",
         move |t| set_folder_action(id, t.trim()),
     ))
     .with_action(text_decl(
         "set-tags",
-        &crate::tr("snippets-action-set-tags"),
+        "Set tags",
         "tags",
-        crate::tr("snippets-action-tags-hint"),
+        "Comma-separated tags",
         move |t| set_tags_action(id, &parse_tags(t)),
     ))
     .with_action(text_decl(
         "edit-description",
-        &crate::tr("snippets-action-describe"),
+        "Edit description",
         "description",
-        crate::tr("snippets-action-description"),
+        "Description",
         move |t| set_description_action(id, t),
     ))
     .with_action(declaration_spec(&ActionDecl::<Snippets>::new(
         "toggle-favorite",
-        crate::tr(if s.favorite {
-            "snippets-remove-favorite"
-        } else {
-            "snippets-add-favorite"
-        }),
+        if s.favorite { "Unstar" } else { "Star" },
         Vec::new(),
         move |_, _| Ok(set_favorite_action(id, favorite)),
     )))
     .with_action(declaration_spec(
-        &ActionDecl::<Snippets>::new(
-            "delete",
-            crate::tr("snippets-action-delete"),
-            Vec::new(),
-            move |_, _| Ok(delete_snippet_action(id)),
-        )
+        &ActionDecl::<Snippets>::new("delete", "Delete snippet", Vec::new(), move |_, _| {
+            Ok(delete_snippet_action(id))
+        })
         .destructive(),
     ));
     resource.with_children(vec![publish_child::<PlainText, Snippets>(
@@ -534,10 +471,25 @@ pub fn provide_snippet_resource(s: &Snippet) -> Resource {
     )])
 }
 
+pub fn reveal_folder_address(folder: &str) -> ActionAddress {
+    ActionAddress::new(folder_resource_id(folder), "reveal-folder")
+}
+pub fn reveal_folder_binding(folder: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(
+        &provide_folder_resource(folder.to_owned()),
+        "reveal-folder",
+    )
+    .ok()
+}
+pub fn reveal_tag_binding(tag: &str) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&provide_tag_resource(tag.to_owned()), "reveal").ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use tilo_actions::OperationKind;
 
     fn seeded() -> AutoCommit {
         let mut doc = AutoCommit::new();
@@ -585,7 +537,17 @@ mod tests {
             .iter()
             .find(|child| child.id.as_str() == snippet_resource_id(target.id))
             .expect("each snippet is a child");
-        assert_eq!(action(snippet, "open").kind, OperationKind::View);
+        let open = action(snippet, "open");
+        assert_eq!(open.kind, OperationKind::View);
+        assert!(
+            open.params().is_empty(),
+            "the snippet is bound, not asked for"
+        );
+        assert_eq!(
+            SnippetsView::from_payload(&open.build_json(&serde_json::Map::new()).unwrap().payload)
+                .unwrap(),
+            SnippetsView::Open { snippet: target.id }
+        );
         for id in [
             "edit-body",
             "rename",
