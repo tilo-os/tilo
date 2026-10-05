@@ -4763,6 +4763,46 @@ mod tests {
         );
     }
 
+    #[test]
+    fn declared_search_finds_categories_publishers_and_configured_repositories() {
+        let mut app = seeded_app();
+        let mut items = app.items().to_vec();
+        let native = items.iter_mut().find(|item| item.name == "Notes").unwrap();
+        native.categories = vec!["Research".into()];
+        native.tagline = "Chalkboard projects".into();
+        native.publisher_pubkey_hex = Some(format!("{}a1b2", "a1b2c3d4e5f6".repeat(5)));
+        let native_id = native.id.clone();
+        let remote = items.iter_mut().find(|item| item.name == "Chess").unwrap();
+        remote.source = StoreSource::FlatpakRemote {
+            name: "community-tools".into(),
+            title: "Community repository".into(),
+            branch: "stable".into(),
+            user_managed: true,
+        };
+        let remote_id = remote.id.clone();
+        app.set_items(items);
+        for (query, expected) in [
+            ("Research", native_id.as_str()),
+            ("Chalkboard", native_id.as_str()),
+            ("a1b2c3d4e5f6", native_id.as_str()),
+            (native_id.as_str(), native_id.as_str()),
+            ("Community repository", remote_id.as_str()),
+            ("community-tools", remote_id.as_str()),
+        ] {
+            app.admit(StoreEffect::SetSearch {
+                query: query.into(),
+            })
+            .unwrap();
+            let hits: Vec<_> = app
+                .visible_items()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect();
+            assert_eq!(hits, vec![expected], "declared search query {query}");
+            assert!(app.live_row(&format!("app:{expected}")).is_some());
+        }
+    }
+
     /// Source, installed and category filters, search ranking and the category list.
     #[test]
     fn catalogue_filters_and_search_rank_visible_items() {
