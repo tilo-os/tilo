@@ -372,3 +372,12 @@ canvas-chooser-gone = the file chooser went away
 canvas-files-failed = Files could not answer: { $why }
 canvas-picture-failed = The picture was not added: { $why }
 canvas-export-edited = { $title } edited
+
+canvas-rendering-artwork = Rendering the artwork…
+canvas-finding-busy = An area is already being found
+canvas-finding-changed = The artwork changed while the area was being found. Try again.
+canvas-finding-read-only = The artwork is read-only now
+
+canvas-brush-pixel = Pixel
+canvas-brush-pixel-eraser = Pixel eraser
+canvas-picture-pixelated = Crisp pixels

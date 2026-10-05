@@ -177,6 +177,15 @@ pub fn report_note_dispatcher(
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
 #[effect(operation = "store.effect", device_only)]
 pub enum StoreEffect {
+    /// Inspect catalogue.
+    ///
+    /// Read this window's current filtered page, repository scopes and worker state.
+    /// An app identity requests its details without changing the selected app.
+    #[effect(returns, permission = "read")]
+    InspectCatalogue {
+        #[param("Optional app identity whose catalogue details to inspect")]
+        app: Option<String>,
+    },
     /// Refresh catalog.
     #[effect(job)]
     Refresh,

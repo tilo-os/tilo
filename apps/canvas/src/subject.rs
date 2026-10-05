@@ -108,6 +108,20 @@ pub fn prepare(
     text: &mut TextRenderer,
     art: &Artwork,
 ) -> Result<Prepared, String> {
+    let content = ui::tilo_resource::content::current()
+        .ok_or("the artwork's content store is unavailable")?;
+    prepare_in(select, renderer, text, art, content)
+}
+
+/// Preparation with the originating window's captured store, including
+/// when its snapshot is rendered on a worker thread.
+pub(crate) fn prepare_in(
+    select: &Select,
+    renderer: &mut Renderer,
+    text: &mut TextRenderer,
+    art: &Artwork,
+    content: tilo_content::ContentStore,
+) -> Result<Prepared, String> {
     let subject = select.subject == Some(true);
     let refine = select.refine.unwrap_or(0.0);
     if !refine.is_finite() || !(0.0..=MOST_REFINE).contains(&refine) {
@@ -164,8 +178,7 @@ pub fn prepare(
         0.0
     };
     Ok(Prepared {
-        content: ui::tilo_resource::content::current()
-            .ok_or("the artwork's content store is unavailable")?,
+        content,
         rgba,
         width,
         height,

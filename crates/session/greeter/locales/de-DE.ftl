@@ -39,3 +39,9 @@ greeter-larger-text = Größere Schrift
 greeter-high-contrast = Hoher Kontrast
 greeter-screen-reader = Bildschirmleser
 greeter-accounts = Konten auf diesem Computer
+
+greeter-auth-response = Antwort zur Anmeldung
+greeter-auth-respond = Anmeldeabfrage beantworten
+greeter-auth-cancel = Anmeldung abbrechen
+greeter-auth-cancelling = Anmeldung wird abgebrochen…
+greeter-auth-cancelled = Anmeldung abgebrochen

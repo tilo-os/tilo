@@ -19,6 +19,17 @@ use serde_json::{Value, json};
 use ui::prelude::TestApp;
 
 fn call(app: &mut TestApp<App>, action: &str, args: Value) -> Value {
+    let effect = args.as_object().and_then(|args| {
+        <canvas::resource::ViewOp as ui::tilo_resource::Effect>::decode(action, args).ok()
+    });
+    if let Some(effect) = effect {
+        return app
+            .effect(&effect)
+            .unwrap_or_else(|error| panic!("{action}: {error}"))
+            .value
+            .unwrap_or(Value::Null);
+    }
+
     app.call(action, args)
         .unwrap_or_else(|error| panic!("{action}: {error}"))
         .unwrap_or(Value::Null)

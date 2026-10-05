@@ -138,6 +138,8 @@ pub struct CanvasSurface {
     moved_by_hand: bool,
     /// Shapes text for looks and exports, which run outside a frame.
     look_text: Option<TextRenderer>,
+    pictures: crate::background::Pictures,
+    finding: bool,
     tools: Tools,
     /// The tool the modes below belong to; a change of tool ends them.
     tool: Tool,
@@ -198,6 +200,8 @@ impl CanvasSurface {
             fitted_to: None,
             moved_by_hand: false,
             look_text: None,
+            pictures: crate::background::Pictures::default(),
+            finding: false,
             tools,
             tool,
             drag: None,
@@ -435,77 +439,6 @@ impl CanvasSurface {
             return true;
         }
         self.start_text_edit(id) || self.start_points(id)
-    }
-
-    /// A subject to find or an edge to refine, asked from a button: what it
-    /// needs is drawn here, the model and the edge filter run off the
-    /// window's thread so it keeps drawing, and the area is applied as one
-    /// step when it is found. Meanwhile the header says it is under way.
-    fn take_finding(&mut self) {
-        let lookup = ui::i18n::I18nManager::lookup_plain;
-        let wanted = {
-            let mut finding = self.tools.finding.borrow_mut();
-            // One at a time: a press while one is under way is dropped.
-            if finding.pending.is_some() {
-                finding.wanted = None;
-            }
-            finding.wanted.take()
-        };
-        if let Some(select) = wanted {
-            let text = self.look_text.get_or_insert_with(TextRenderer::new);
-            let prepared = crate::subject::prepare(
-                &select,
-                &mut self.tools.renderer.borrow_mut(),
-                text,
-                &self.art,
-            );
-            match prepared {
-                Err(why) => self.tools.notice.set(Some(why)),
-                Ok(prepared) => {
-                    let (send, receive) = std::sync::mpsc::channel();
-                    drop(ui::rt::app().spawn_blocking(move || {
-                        let found =
-                            prepared
-                                .finish()
-                                .map(|(area, matte, _)| crate::selection::Select {
-                                    d: Some(crate::model::path_data(&area.to_path())),
-                                    matte,
-                                    ..crate::selection::Select::default()
-                                });
-                        let _ = send.send(found);
-                    }));
-                    self.tools.finding.borrow_mut().pending = Some(receive);
-                    self.tools
-                        .notice
-                        .set(Some(lookup(if select.subject == Some(true) {
-                            "canvas-finding-subject"
-                        } else {
-                            "canvas-refining-edge"
-                        })));
-                }
-            }
-        }
-        let answer = {
-            let finding = self.tools.finding.borrow();
-            let Some(channel) = finding.pending.as_ref() else {
-                return;
-            };
-            match channel.try_recv() {
-                Err(std::sync::mpsc::TryRecvError::Empty) => return,
-                Ok(answer) => answer,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    Err(lookup("canvas-finding-failed"))
-                }
-            }
-        };
-        self.tools.finding.borrow_mut().pending = None;
-        match answer {
-            Ok(select) => {
-                self.tools.notice.set(None);
-                self.dispatch(&CanvasAction::Select(Box::new(select)));
-            }
-            Err(why) => self.tools.notice.set(Some(why)),
-        }
     }
 
     /// A picture the chooser answered with: the artwork, when the sheet is
@@ -1385,7 +1318,14 @@ impl CanvasSurface {
                 id: Some(id),
                 points,
                 size: ink.width,
-                brush: Some("eraser".into()),
+                brush: Some(
+                    if self.tools.preset.with(|preset| preset.pixel()) {
+                        "pixel-eraser"
+                    } else {
+                        "eraser"
+                    }
+                    .into(),
+                ),
                 clip,
                 opacity: (strength < 1.0).then_some((strength * 100.0).round() / 100.0),
                 params: (hardness < 0.995).then(|| {
@@ -1487,6 +1427,14 @@ impl CanvasSurface {
             Some(focal) => self.viewport.zoom_at(factor, focal),
             None => self.viewport.zoom_by(factor),
         }
+        if self.tools.preset.with(|preset| preset.pixel()) {
+            let zoom = self.zoom();
+            self.viewport.set_zoom(if factor > 1.0 {
+                zoom.ceil()
+            } else {
+                zoom.floor().max(1.0)
+            });
+        }
         self.moved_by_hand = true;
     }
 
@@ -1527,6 +1475,10 @@ impl CanvasSurface {
                 ViewRequest::ZoomIn => self.zoom_by(ZOOM_STEP, None),
                 ViewRequest::ZoomOut => self.zoom_by(1.0 / ZOOM_STEP, None),
                 ViewRequest::Fit => self.zoom_to_fit(),
+                ViewRequest::Pixel => {
+                    self.viewport.set_zoom(self.zoom().floor().max(1.0));
+                    self.moved_by_hand = true;
+                }
                 ViewRequest::Actual => {
                     self.viewport.set_zoom(1.0);
                     self.moved_by_hand = true;
@@ -1534,6 +1486,12 @@ impl CanvasSurface {
             }
         }
         self.follow_width();
+        if self.tools.preset.with(|preset| preset.pixel()) {
+            self.viewport.set_zoom(self.zoom().floor().max(1.0));
+            let origin = self.viewport.content_point_to_screen(Point::ORIGIN);
+            self.viewport
+                .pan_by(origin.x - origin.x.round(), origin.y - origin.y.round());
+        }
         let zoom = self.zoom();
         if self.tools.zoom.with(|shown| (*shown - zoom).abs() > 1e-9) {
             // The readout is drawn before the canvas: wake the window so it
@@ -2156,6 +2114,141 @@ impl CanvasSurface {
         }))
     }
 
+    /// The invocation sees one immutable revision, even when the person edits
+    /// while its settled picture is being rendered.
+    fn picture_job(&self, op: ViewOp, cx: &mut Reading) -> ui::framework::EffectAnswer {
+        let version = match &op {
+            ViewOp::Look(look) => look.version.as_deref(),
+            _ => None,
+        };
+        let (art, revision, shown) = Self::at_version(cx, version)?;
+        let path = match &op {
+            ViewOp::Export(export) => export.path.clone(),
+            _ => None,
+        };
+        let pictures = self.pictures.clone();
+        let content = crate::content::store();
+        let output_store = content.clone();
+        let phase = ui::i18n::I18nManager::lookup_plain("canvas-rendering-artwork");
+        Ok(cx.thread(
+            move |progress| {
+                progress.report(phase, None, None);
+                pictures.render(&art, content, &op)
+            },
+            move |_, result, _| {
+                let (picture, mut info) = result?;
+                if let Some(path) = &path {
+                    let extensions: &[&str] = match picture.format {
+                        "jpeg" => &["jpg", "jpeg"],
+                        "webp" => &["webp"],
+                        _ => &["png"],
+                    };
+                    let written = crate::document::export_to(path, extensions, &picture.bytes)?;
+                    if let Value::Object(fields) = &mut info {
+                        fields.insert("path".into(), written.into());
+                    }
+                }
+                Self::picture_output(&picture, info, &revision, shown.as_deref(), &output_store)
+                    .map(ui::framework::Effected::Done)
+            },
+        ))
+    }
+
+    fn picture_output(
+        picture: &view_ops::Picture,
+        mut info: Value,
+        revision: &str,
+        shown: Option<&str>,
+        content: &tilo_content::ContentStore,
+    ) -> Result<ActionOutput, String> {
+        let hash = content
+            .put(&picture.bytes)
+            .map_err(|error| format!("the picture could not be stored: {error}"))?;
+        let address = tilo_actions::content_resource(&hash)
+            .ok_or_else(|| "the picture has no content address".to_owned())?;
+        if let Value::Object(fields) = &mut info {
+            fields.insert("revision".into(), revision.into());
+            fields.insert("content".into(), address.clone().into());
+            if let Some(shown) = shown {
+                fields.insert("version".into(), shown.into());
+            }
+        }
+        Ok(ActionOutput {
+            value: Some(info),
+            resources: vec![address],
+        })
+    }
+
+    /// The model and edge filter share the framework's progress, permission
+    /// checks and attributed completion for buttons and semantic callers.
+    fn area_job(
+        &mut self,
+        select: crate::selection::Select,
+        cx: &mut Reading,
+    ) -> ui::framework::EffectAnswer {
+        if ui::rt::availability(ui::rt::Feature::Threads) != ui::rt::Availability::Available {
+            return Err("image area finding needs background threads on this platform".into());
+        }
+        if self.finding {
+            return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-busy"));
+        }
+        if select.subject != Some(true) && select.refine.is_none() {
+            return Err(
+                "give subject: true or refine: units; use select for geometric areas".into(),
+            );
+        }
+        let (art, _, _) = Self::at_version(cx, None)?;
+        let mut document = cx
+            .document()
+            .ok_or_else(|| "the artwork is not open here".to_owned())?
+            .clone();
+        if let Some(layer) = &select.layer
+            && art.layer(layer).is_none_or(crate::model::Layer::is_mask)
+        {
+            return Err(format!("there is no picture layer {layer:?}"));
+        }
+        let pictures = self.pictures.clone();
+        let content = crate::content::store();
+        let sampled = art.clone();
+        let request = select.clone();
+        let phase = ui::i18n::I18nManager::lookup_plain(if select.subject == Some(true) {
+            "canvas-finding-subject"
+        } else {
+            "canvas-refining-edge"
+        });
+        self.finding = true;
+        self.tools.notice.set(Some(phase.clone()));
+        Ok(cx.thread(
+            move |progress| {
+                progress.report(phase, None, None);
+                pictures.prepare(&sampled, content, &request)?.finish()
+            },
+            move |surface, result, cx| {
+                surface.finding = false;
+                surface.tools.notice.set(None);
+                let (area, matte, found) = result?;
+                if cx.live().with(|current| current != &art) {
+                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-changed"));
+                }
+                if cx.dispatcher().read_only() {
+                    return Err(ui::i18n::I18nManager::lookup_plain("canvas-finding-read-only"));
+                }
+                let subject = select.subject == Some(true);
+                let action = crate::author::found(select, area, matte);
+                ui::tilo_actions::Action::apply(&action, &mut document).map_err(|error| error.to_string())?;
+                let mut answer = json!({"selection": crate::answer::selection(&crate::doc::read(&document))});
+                if subject && let Value::Object(fields) = &mut answer {
+                    fields.insert("found_by".into(), json!({"model": found.model, "load_ms": found.load_ms, "infer_ms": found.infer_ms, "refine_ms": found.refine_ms}));
+                }
+                let CanvasAction::Select(select) = action else {
+                    return Err("the finder did not produce a selection".into());
+                };
+                cx.invoke(ArtworkResource::SELECT_FOUND.with((select.d, select.matte, select.mode, select.feather)));
+                Ok(ui::framework::Effected::value(answer))
+            },
+        ))
+    }
+
     fn answer(&mut self, op: &ViewOp, cx: &Reading) -> Result<ActionOutput, String> {
         let version = match op {
             ViewOp::Look(look) => look.version.as_deref(),
@@ -2255,6 +2348,7 @@ impl CanvasSurface {
                 resources: Vec::new(),
             }),
             ViewOp::SaveArtwork(save) => saved(crate::document::save(&art, save), &stamp),
+            ViewOp::FindArea(_) => Err("area finding is handled as a job".into()),
         }
     }
 
@@ -2947,7 +3041,6 @@ impl Widget for CanvasSurface {
         self.follow_view();
         self.follow_crop();
         self.take_picked();
-        self.take_finding();
         scene.push_layer(
             Fill::NonZero,
             ui::vello::peniko::BlendMode::default(),
@@ -3169,10 +3262,7 @@ impl Widget for CanvasSurface {
         // simulation catches up with a stroke just laid.
         self.wet().is_some()
             || self.tools.picking.borrow().is_some()
-            || {
-                let finding = self.tools.finding.borrow();
-                finding.wanted.is_some() || finding.pending.is_some()
-            }
+            || self.finding
             || self.tools.renderer.borrow().pictures.decoding()
             || self.tools.renderer.borrow().detail_pending()
             || self.tools.renderer.borrow().settling()
@@ -3255,13 +3345,21 @@ impl Widget for CanvasSurface {
 type Reading = ui::framework::EffectCx<ArtworkResource, CanvasSurface>;
 
 impl ResourceSurface<ArtworkResource, ViewOp> for CanvasSurface {
-    /// A view or an export, answered at once from the artwork as it is now
-    /// or at the version the caller named.
+    /// Settled pictures and image areas run as jobs; other views answer
+    /// directly from the current artwork or the version the caller named.
     fn effect(
         &mut self,
         op: ViewOp,
         cx: &mut ui::framework::EffectCx<ArtworkResource, Self>,
     ) -> ui::framework::EffectAnswer {
+        if matches!(op, ViewOp::Look(_) | ViewOp::Export(_))
+            && ui::rt::availability(ui::rt::Feature::Threads) == ui::rt::Availability::Available
+        {
+            return self.picture_job(op, cx);
+        }
+        if let ViewOp::FindArea(select) = op {
+            return self.area_job(select.into(), cx);
+        }
         self.answer(&op, cx).map(ui::framework::Effected::Done)
     }
 
