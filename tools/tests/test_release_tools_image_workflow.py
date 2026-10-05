@@ -86,12 +86,17 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         with self.subTest(phase='isolated publisher uses the verified public compiler free image'):
             self.doCleanups()
             self.setUp()
-            publish = self.release_workflow.split("\n  publish:\n", 1)[1]
+            publish = self.release_workflow.split("\n  publish:\n", 1)[1].split("\n  build-engine-runtime:\n", 1)[0]
             # release-apps.yml is the single owner of the reviewed digest.
             self.assertRegex(
                 publish,
                 r"image: registry\.tilo\.so/tilo/tilo-release-tools@sha256:[0-9a-f]{64}\n",
             )
+            engine_publish = self.release_workflow.split("\n  publish-engine-runtime:\n", 1)[1]
+            self.assertRegex(engine_publish,
+                             r"image: registry\.tilo\.so/tilo/tilo-release-tools@sha256:[0-9a-f]{64}\n")
+            self.assertNotIn("image: ${{ needs.plan.outputs.builder_image }}", engine_publish)
+            self.assertNotRegex(engine_publish, r"(?m)^\s+credentials:")
             self.assertNotIn("image: ${{ needs.plan.outputs.builder_image }}", publish)
             container = publish.split("    container:\n", 1)[1].split(
                 "    timeout-minutes:", 1

@@ -34,8 +34,8 @@ use ui::theme::Theme;
 use ui::tilo_actions::{ActionBinding, ControlInvocation, Resource};
 use ui::webview::test_engine::TestEngine;
 use ui::webview::{
-    MediaElementInfo, NavigationDirection, PageFailure, PageReply, PageRequest, SharedEngine,
-    WebViewCommand, WebViewEvent,
+    MediaElementInfo, NavigationCommand, NavigationDirection, PageFailure, PageReply, PageRequest,
+    SharedEngine, WebViewCommand, WebViewEvent,
 };
 use ui::widget::{
     AppKind, AppWidget, Button, Column, Container, ContextMenu, Continuable, EmptyState,
@@ -439,6 +439,9 @@ pub struct BrowserWidget {
     /// published each layout for the zero-copy compositor to blit into.
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
     resource_navigation_invocation: Option<ui::tilo_actions::InvocationId>,
+    resource_navigation_request: Option<u32>,
+    next_navigation_request: u32,
+    explicit_navigation_requested: bool,
     resource_navigation_result: Option<ui::tilo_actions::InvocationUpdate>,
     resource_navigation_deadline: Option<ui::time::Instant>,
     resource_pip_invocation: Option<ui::tilo_actions::InvocationId>,
@@ -768,6 +771,9 @@ impl BrowserWidget {
             force_suggestions: false,
             content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
             resource_navigation_invocation: None,
+            resource_navigation_request: None,
+            next_navigation_request: 0,
+            explicit_navigation_requested: false,
             resource_navigation_result: None,
             resource_navigation_deadline: None,
             resource_pip_invocation: None,
@@ -1151,11 +1157,52 @@ impl BrowserWidget {
         self.progress = progress;
     }
 
+    fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
+        self.perform_browser_operation_owned(operation, None)
+    }
+
+    fn cancel_owned_navigation(&mut self) {
+        if let Some(request_id) = self.resource_navigation_request.take() {
+            self.engine
+                .send(WebViewCommand::CancelScopedNavigation { request_id });
+        }
+    }
+
+    fn send_navigation(
+        &mut self,
+        command: NavigationCommand,
+        owner: Option<u32>,
+    ) -> Result<(), String> {
+        if let Some(request) = owner {
+            self.engine.navigate_owned(request, command)?;
+        } else {
+            self.engine.send(match command {
+                NavigationCommand::Navigate { url } => WebViewCommand::Navigate(url),
+                NavigationCommand::Back => WebViewCommand::GoBack,
+                NavigationCommand::Forward => WebViewCommand::GoForward,
+                NavigationCommand::Reload => WebViewCommand::Reload,
+                NavigationCommand::HistoryEntry {
+                    history_request_id,
+                    id,
+                } => WebViewCommand::NavigateToHistoryEntry {
+                    request_id: history_request_id,
+                    id,
+                },
+            });
+        }
+        self.explicit_navigation_requested = true;
+        Ok(())
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "browser operations share navigation admission and state transitions"
     )]
-    fn perform_browser_operation(&mut self, operation: BrowserOperation) -> Result<(), String> {
+    fn perform_browser_operation_owned(
+        &mut self,
+        operation: BrowserOperation,
+        owner: Option<u32>,
+    ) -> Result<(), String> {
         if matches!(
             &operation,
             BrowserOperation::Back
@@ -1171,18 +1218,18 @@ impl BrowserWidget {
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
-                self.engine.send(WebViewCommand::GoBack);
+                self.send_navigation(NavigationCommand::Back, owner)?;
             }
             BrowserOperation::Forward => {
                 self.address_navigation_value = Some(self.address.with(Clone::clone));
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
-                self.engine.send(WebViewCommand::GoForward);
+                self.send_navigation(NavigationCommand::Forward, owner)?;
             }
             BrowserOperation::Reload => {
                 self.clear_address_error();
                 self.set_loading_progress(0.0);
-                self.engine.send(WebViewCommand::Reload);
+                self.send_navigation(NavigationCommand::Reload, owner)?;
             }
             BrowserOperation::Stop => {
                 self.loading_stopped = true;
@@ -1190,6 +1237,7 @@ impl BrowserWidget {
                 self.set_loading_progress(1.0);
                 if let Some(invocation) = self.resource_navigation_invocation.take() {
                     self.resource_navigation_deadline = None;
+                    self.cancel_owned_navigation();
                     self.resource_navigation_result =
                         Some(ui::tilo_actions::InvocationUpdate::Failed {
                             invocation,
@@ -1214,7 +1262,7 @@ impl BrowserWidget {
                 self.show_settings = false;
                 self.structure_dirty = true;
                 self.set_loading_progress(0.0);
-                self.engine.send(WebViewCommand::Navigate(target));
+                self.send_navigation(NavigationCommand::Navigate { url: target }, owner)?;
             }
             BrowserOperation::ShowLibrary { section } => {
                 self.library_section = section;
@@ -2447,19 +2495,6 @@ impl BrowserWidget {
                         }
                         self.follow_history();
                     }
-                    if let Some(invocation) = self.resource_navigation_invocation.take() {
-                        self.resource_navigation_deadline = None;
-                        self.resource_navigation_result =
-                            Some(ui::tilo_actions::InvocationUpdate::Succeeded {
-                                invocation,
-                                output: ui::tilo_actions::ActionOutput {
-                                    value: Some(serde_json::Value::String(
-                                        self.current_uri.clone(),
-                                    )),
-                                    resources: Vec::new(),
-                                },
-                            });
-                    }
                     self.page_navigation_settled(None);
                 }
                 WebViewEvent::LoadFailed { uri, error } => {
@@ -2470,18 +2505,35 @@ impl BrowserWidget {
                     self.load_error = Some(error.chars().take(240).collect());
                     self.structure_dirty = true;
                     self.page_navigation_settled(Some(&error));
-                    if let Some(invocation) = self.resource_navigation_invocation.take() {
+                }
+                WebViewEvent::NavigationOutcome {
+                    request_id,
+                    uri,
+                    error,
+                } => {
+                    if self.resource_navigation_request == Some(request_id)
+                        && let Some(invocation) = self.resource_navigation_invocation.take()
+                    {
+                        self.resource_navigation_request = None;
                         self.resource_navigation_deadline = None;
-                        self.resource_navigation_result =
-                            Some(ui::tilo_actions::InvocationUpdate::Failed {
+                        self.resource_navigation_result = Some(match error {
+                            Some(message) => ui::tilo_actions::InvocationUpdate::Failed {
                                 invocation,
                                 error: ui::tilo_actions::ActionFailure {
                                     code: "browser.navigation_failed".into(),
-                                    message: error,
+                                    message,
                                     details: Some(serde_json::json!({ "uri": uri })),
                                     retryable: true,
                                 },
-                            });
+                            },
+                            None => ui::tilo_actions::InvocationUpdate::Succeeded {
+                                invocation,
+                                output: ui::tilo_actions::ActionOutput {
+                                    value: Some(serde_json::Value::String(uri)),
+                                    resources: Vec::new(),
+                                },
+                            },
+                        });
                     }
                 }
                 WebViewEvent::HistoryChanged {
@@ -4483,6 +4535,7 @@ impl BrowserWidget {
         {
             self.resource_navigation_invocation = None;
             self.resource_navigation_deadline = None;
+            self.cancel_owned_navigation();
             return Some(ui::tilo_actions::InvocationUpdate::Failed {
                 invocation,
                 error: ui::tilo_actions::ActionFailure {
@@ -4549,8 +4602,10 @@ impl BrowserWidget {
                 if !self.settings.adblock_enabled {
                     self.set_adblock(false);
                 }
-                self.engine
-                    .send(WebViewCommand::Navigate(self.initial_url.clone()));
+                if !self.explicit_navigation_requested {
+                    self.engine
+                        .send(WebViewCommand::Navigate(self.initial_url.clone()));
+                }
             }
             self.bootstrap_done = true;
         }
@@ -4681,9 +4736,21 @@ impl BrowserWidget {
         {
             return Err("another browser navigation is already running".into());
         }
-        self.perform_browser_operation(operation)?;
+        let request = self
+            .next_navigation_request
+            .checked_add(1)
+            .filter(|id| i32::try_from(*id).is_ok())
+            .ok_or("navigation request IDs exhausted")?;
+        self.next_navigation_request = request;
         self.resource_navigation_invocation = Some(invocation);
+        self.resource_navigation_request = Some(request);
         self.resource_navigation_deadline = Some(std::time::Instant::now() + NAVIGATION_TIMEOUT);
+        if let Err(error) = self.perform_browser_operation_owned(operation, Some(request)) {
+            self.resource_navigation_invocation = None;
+            self.resource_navigation_deadline = None;
+            self.cancel_owned_navigation();
+            return Err(error);
+        }
         Ok(ui::framework::Effected::Pending)
     }
 }
@@ -4998,6 +5065,112 @@ mod architecture_tests {
         }
     }
 
+    #[test]
+    fn owned_navigation_rejects_unrelated_completion_and_preserves_redirect_output() {
+        struct Events(
+            std::sync::Mutex<Vec<WebViewEvent>>,
+            std::sync::Arc<TestEngine>,
+        );
+        impl WebViewEngine for Events {
+            fn send(&self, command: WebViewCommand) {
+                self.1.send(command);
+            }
+            fn navigate_owned(
+                &self,
+                request_id: u32,
+                command: NavigationCommand,
+            ) -> Result<(), String> {
+                self.1.navigate_owned(request_id, command)
+            }
+            fn frames(&self) -> ui::webview::FrameSlot {
+                self.1.frames()
+            }
+            fn drain_events(&self) -> Vec<WebViewEvent> {
+                std::mem::take(&mut *self.0.lock().unwrap())
+            }
+        }
+        let engine =
+            std::sync::Arc::new(Events(std::sync::Mutex::new(Vec::new()), TestEngine::new()));
+        let mut widget = BrowserWidget::with_engine(engine.clone(), false);
+        let invocation = ui::tilo_actions::InvocationId::new();
+        assert!(matches!(
+            widget
+                .admit(
+                    invocation,
+                    BrowserOperation::Navigate {
+                        url: "https://request.test/".into()
+                    }
+                )
+                .unwrap(),
+            ui::framework::Effected::Pending
+        ));
+        engine.0.lock().unwrap().extend([
+            WebViewEvent::UriChanged("about:blank".into()),
+            WebViewEvent::LoadFinished,
+            WebViewEvent::LoadFailed {
+                uri: "about:blank".into(),
+                error: "stale startup".into(),
+            },
+            WebViewEvent::NavigationOutcome {
+                request_id: 999,
+                uri: "about:blank".into(),
+                error: None,
+            },
+        ]);
+        let doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        widget.sync(&doc, &root);
+        assert!(widget.poll_invocation(invocation).is_none());
+        assert!(
+            !engine
+                .1
+                .commands()
+                .iter()
+                .any(|command| matches!(command, WebViewCommand::Navigate(_))),
+            "late default initialization must not supersede owned navigation"
+        );
+        let request_id = widget.resource_navigation_request.unwrap();
+        engine
+            .0
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::NavigationOutcome {
+                request_id,
+                uri: "https://redirect.test/".into(),
+                error: None,
+            });
+        widget.apply_engine_events();
+        let Some(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) =
+            widget.poll_invocation(invocation)
+        else {
+            panic!("matching owned completion must succeed");
+        };
+        assert_eq!(
+            output.value,
+            Some(serde_json::json!("https://redirect.test/"))
+        );
+        let failed = ui::tilo_actions::InvocationId::new();
+        widget.admit(failed, BrowserOperation::Reload).unwrap();
+        let request_id = widget.resource_navigation_request.unwrap();
+        engine
+            .0
+            .lock()
+            .unwrap()
+            .push(WebViewEvent::NavigationOutcome {
+                request_id,
+                uri: "https://redirect.test/".into(),
+                error: Some("ERR_CONNECTION_REFUSED".into()),
+            });
+        widget.apply_engine_events();
+        let Some(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) =
+            widget.poll_invocation(failed)
+        else {
+            panic!("matching owned failure must fail");
+        };
+        assert_eq!(error.code, "browser.navigation_failed");
+        assert_eq!(error.message, "ERR_CONNECTION_REFUSED");
+    }
+
     /// Loading state: stop contract, animation scheduling, and when loading starts and ends.
     #[test]
     #[allow(
@@ -5012,6 +5185,13 @@ mod architecture_tests {
                 capture: std::sync::Arc<TestEngine>,
             }
             impl WebViewEngine for QueuedEngine {
+                fn navigate_owned(
+                    &self,
+                    request_id: u32,
+                    command: NavigationCommand,
+                ) -> Result<(), String> {
+                    self.capture.navigate_owned(request_id, command)
+                }
                 fn send(&self, command: WebViewCommand) {
                     self.capture.send(command);
                 }
@@ -5029,7 +5209,17 @@ mod architecture_tests {
             });
             let mut widget = BrowserWidget::with_engine(engine.clone(), true);
             let invocation = ui::tilo_actions::InvocationId::new();
-            widget.resource_navigation_invocation = Some(invocation);
+            assert!(matches!(
+                widget
+                    .admit(
+                        invocation,
+                        BrowserOperation::Navigate {
+                            url: "https://stop.test/".into()
+                        }
+                    )
+                    .unwrap(),
+                ui::framework::Effected::Pending
+            ));
             widget.set_loading_progress(0.2);
             let resources = [widget.published()];
             let stop = resources[0]
