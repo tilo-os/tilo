@@ -139,6 +139,11 @@ pub struct Toolbar {
     /// Main-axis gap between siblings (`spacing.s3`, HIG §7b).
     gap: f32,
     overflow_rect: Rect,
+    overflow_native: super::activation::NativeControl,
+    overflow_id: String,
+    overflow_action: super::ActionEmitter<()>,
+    overflow_requested: std::rc::Rc<std::cell::Cell<bool>>,
+    overflow_keyboard: bool,
     hovered: Option<Target>,
     pointer: Option<Point>,
     pressed: Option<Target>,
@@ -163,6 +168,15 @@ pub struct Toolbar {
 
 impl Toolbar {
     pub fn new(orientation: Orientation) -> Self {
+        let overflow_requested = std::rc::Rc::new(std::cell::Cell::new(false));
+        let request = std::rc::Rc::clone(&overflow_requested);
+        let overflow_id = format!("toolbar.overflow:{}", uuid::Uuid::new_v4());
+        let (overflow_native, binding) = super::activation::NativeControl::new(
+            &overflow_id,
+            "More",
+            tilo_actions::OperationKind::View,
+            Box::new(move || request.set(true)),
+        );
         Self {
             items: Vec::new(),
             orientation,
@@ -184,6 +198,11 @@ impl Toolbar {
             separator: SEPARATOR_HAIRLINE,
             gap: crate::tokens::Spacing::default().s3,
             overflow_rect: Rect::ZERO,
+            overflow_native,
+            overflow_id,
+            overflow_action: super::ActionEmitter::new(binding),
+            overflow_requested,
+            overflow_keyboard: true,
             hovered: None,
             pointer: None,
             pressed: None,
@@ -1217,7 +1236,12 @@ impl Toolbar {
                 }
             }
             Target::Item(index) => self.invoke(index),
-            Target::Overflow => self.open_menu(true),
+            Target::Overflow => {
+                self.overflow_keyboard = keyboard;
+                if let Err(error) = self.overflow_action.emit(()) {
+                    tracing::warn!(%error, "toolbar overflow view action refused");
+                }
+            }
         }
     }
     fn handle_key(&mut self, key: &Key, handled: &mut bool) {
@@ -1356,6 +1380,7 @@ impl crate::widget::controls::ActionControls for Toolbar {
         domain: &crate::ControlDomain,
         attachment: crate::control_custody::CustodyAttachment,
     ) {
+        let _ = self.overflow_action.install_custody(domain, attachment);
         for item in &mut self.items {
             match item {
                 ToolbarItem::Button(command) => {
@@ -1373,6 +1398,9 @@ impl crate::widget::controls::ActionControls for Toolbar {
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self.overflow_action.take() {
+            return Some(invocation);
+        }
         self.items.iter_mut().find_map(|item| match item {
             ToolbarItem::Button(command) => {
                 command.action.as_mut().and_then(super::ActionEmitter::take)
@@ -1385,10 +1413,16 @@ impl crate::widget::controls::ActionControls for Toolbar {
     }
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         let mut bindings = Vec::new();
+        if self.has_overflow() {
+            bindings.push(self.overflow_action.metadata("toolbar.overflow"));
+        }
         for (index, item) in self.items.iter().enumerate() {
             match item {
                 ToolbarItem::Button(command) => {
-                    if let Some(action) = &command.action {
+                    if (self.is_shown(index)
+                        || (self.menu.is_open() && self.menu_indices.contains(&Some(index))))
+                        && let Some(action) = &command.action
+                    {
                         bindings.push(action.metadata(format!("toolbar.item.{index}")));
                     }
                 }
@@ -1404,6 +1438,7 @@ impl crate::widget::controls::ActionControls for Toolbar {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
+        self.overflow_action.refresh_availability(allowed);
         let mut availability_changed = false;
         for item in &mut self.items {
             match item {
@@ -1434,7 +1469,8 @@ impl crate::widget::controls::ActionControls for Toolbar {
 
 impl crate::resources::PublishesResources for Toolbar {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.items
+        let mut resources: Vec<_> = self
+            .items
             .iter()
             .filter_map(|item| match item {
                 ToolbarItem::Button(command) => {
@@ -1442,7 +1478,11 @@ impl crate::resources::PublishesResources for Toolbar {
                 }
                 _ => None,
             })
-            .collect()
+            .collect();
+        if self.has_overflow() {
+            resources.push(self.overflow_native.resource());
+        }
+        resources
     }
 }
 
@@ -1453,23 +1493,25 @@ impl Widget for Toolbar {
     );
 
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
-        if self
-            .items
-            .iter()
-            .any(|item| matches!(item, ToolbarItem::Button(command) if command.native.is_some()))
-        {
-            std::iter::once(super::activation::NATIVE_INVOKE.to_owned()).collect()
-        } else {
-            std::collections::HashSet::new()
+        let mut handlers: std::collections::HashSet<_> =
+            std::iter::once(super::activation::NATIVE_INVOKE.to_owned()).collect();
+        for child in self.children() {
+            handlers.extend(child.resource_operation_handlers());
         }
+        handlers
     }
 
     fn start_operation(
         &mut self,
         op: &super::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
-        _path: &automerge::ObjId,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
     ) -> Result<Option<super::ResourceOperationStart>, String> {
+        if self.has_overflow()
+            && let Some(started) = self.overflow_native.start(&self.overflow_id, op)?
+        {
+            return Ok(Some(started));
+        }
         for item in &mut self.items {
             if let ToolbarItem::Button(command) = item
                 && let Some((id, native)) = &mut command.native
@@ -1478,7 +1520,7 @@ impl Widget for Toolbar {
                 return Ok(Some(started));
             }
         }
-        Ok(None)
+        crate::widget::start_in_children(self, op, doc, path)
     }
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
         Widget::set_platform_conventions(&mut self.menu, conventions);
@@ -1490,6 +1532,10 @@ impl Widget for Toolbar {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
+        if self.overflow_requested.replace(false) {
+            self.open_menu(self.overflow_keyboard);
+            self.overflow_keyboard = true;
+        }
         for item in &mut self.items {
             if let ToolbarItem::Element(element) = item {
                 element.sync(state, path);
@@ -2301,6 +2347,93 @@ mod tests {
     use vello_encoding::DrawTag;
 
     #[test]
+    fn two_toolbar_overflow_actions_open_only_their_own_menu() {
+        use crate::headless::Framed;
+        let first = Toolbar::new(Orientation::Horizontal)
+            .push_button("First toolbar long command", || {})
+            .with_view("test.first-command");
+        let second = Toolbar::new(Orientation::Horizontal)
+            .push_button("Second toolbar long command", || {})
+            .with_view("test.second-command");
+        let root = crate::widget::Column::new()
+            .push(Box::new(first))
+            .push(Box::new(second));
+        let mut frame = Framed::new(crate::State::new(), root, (100, 300), Theme::dark());
+        let resources = Framed::harness(&frame).resources();
+        let overflow_ids: Vec<_> = resources
+            .iter()
+            .filter(|resource| resource.id.starts_with("tilo.control:toolbar.overflow:"))
+            .map(|resource| resource.id.as_str())
+            .collect();
+        assert_eq!(overflow_ids.len(), 2);
+        assert_ne!(overflow_ids[0], overflow_ids[1]);
+        let mut buttons: Vec<_> = Framed::harness(&frame)
+            .controls()
+            .into_iter()
+            .filter(|control| control.name.as_deref() == Some("More"))
+            .map(|control| control.bounds.expect("actual overflow button bounds"))
+            .collect();
+        buttons.sort_by(|left, right| left.y0.total_cmp(&right.y0));
+        assert_eq!(buttons.len(), 2);
+        for (index, expected, absent) in [
+            (
+                1,
+                "Second toolbar long command",
+                "First toolbar long command",
+            ),
+            (
+                0,
+                "First toolbar long command",
+                "Second toolbar long command",
+            ),
+        ] {
+            let point = buttons[index].center();
+            Framed::harness_mut(&mut frame).click_at(point.x, point.y);
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+            let controls = Framed::harness(&frame).controls();
+            assert!(
+                controls
+                    .iter()
+                    .any(|control| control.name.as_deref() == Some(expected))
+            );
+            assert!(
+                !controls
+                    .iter()
+                    .any(|control| control.name.as_deref() == Some(absent))
+            );
+            Framed::harness_mut(&mut frame).key("Escape");
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
+        }
+    }
+
+    #[test]
+    fn nested_native_controls_keep_their_operation_route() {
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = calls.clone();
+        let toolbar = Toolbar::new(Orientation::Horizontal).push_element(Box::new(
+            crate::widget::Button::new("toolbar.filter", "Filter").on_view(move || {
+                count.set(count.get() + 1);
+            }),
+        ));
+        let mut frame = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            toolbar,
+            (400, 80),
+            Theme::dark(),
+        );
+        let audit = frame.native_app_audit();
+        assert!(audit.is_certified(), "{audit:?}");
+        frame
+            .perform_named("toolbar.filter", &Action::Activate)
+            .unwrap();
+        assert_eq!(
+            calls.get(),
+            1,
+            "the toolbar forwards its child's admitted operation"
+        );
+    }
+
+    #[test]
     fn native_commands_are_admitted_and_operate_in_the_row_and_overflow() {
         use crate::headless::Framed;
         use std::cell::Cell;
@@ -2321,7 +2454,7 @@ mod tests {
                 Framed::harness_mut(&mut frame)
                     .perform_named("toolbar.overflow", &Action::Activate)
                     .unwrap();
-                Framed::harness_mut(&mut frame).poll_frame();
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
             }
             let command = Framed::harness(&frame)
                 .controls()
@@ -2332,18 +2465,18 @@ mod tests {
                 .and_then(|control| control.bounds)
                 .expect("the actual row or overflow command is laid out");
             Framed::harness_mut(&mut frame).click_at(command.center().x, command.center().y);
-            Framed::harness_mut(&mut frame).poll_frame();
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
             assert_eq!(calls.get(), 1, "{width}: physical activation invokes once");
             if width == 100 {
                 Framed::harness_mut(&mut frame)
                     .perform_named("toolbar.overflow", &Action::Activate)
                     .unwrap();
-                Framed::harness_mut(&mut frame).poll_frame();
+                Framed::harness_mut(&mut frame).poll_frame().unwrap();
             }
             Framed::harness_mut(&mut frame)
                 .perform_named("toolbar.item.0", &Action::Activate)
                 .unwrap();
-            Framed::harness_mut(&mut frame).poll_frame();
+            Framed::harness_mut(&mut frame).poll_frame().unwrap();
             assert_eq!(
                 calls.get(),
                 2,
@@ -2405,7 +2538,11 @@ mod tests {
                 "bound commands never run the imperative callback"
             );
             assert!(take_control_invocation(&mut toolbar).is_none());
-            assert_eq!(control_action_bindings(&toolbar).len(), 1);
+            assert_eq!(
+                control_action_bindings(&toolbar).len(),
+                1,
+                "after selecting, only the visible Save or overflow opener is mounted"
+            );
             refresh_control_action_availability(&mut toolbar, &std::collections::HashSet::new());
             toolbar.lay_out_in(rect, &mut text, &theme);
             if toolbar.has_overflow() {
@@ -2841,6 +2978,41 @@ mod lifecycle_tests {
         tb.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
         tb.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
     }
+    /// Complete emitted controls through their actual published operation,
+    /// then sync, for the standalone geometry/event fixtures below.
+    fn drain_native_controls(widget: &mut dyn Widget) {
+        let mut doc = AutoCommit::new();
+        while let Some(invocation) = crate::widget::controls::take_control_invocation(widget) {
+            let resource = crate::resources::resources(widget, &doc)
+                .into_iter()
+                .find(|resource| resource.id == invocation.address.resource)
+                .expect("the emitted operation has a real published resource");
+            let spec = resource
+                .actions
+                .iter()
+                .find(|spec| spec.id == invocation.address.action)
+                .expect("the emitted action is declared");
+            let encoded = spec.build_json(&invocation.arguments).unwrap();
+            let started = crate::widget::ResourceOperation::local(
+                tilo_actions::InvocationId::new(),
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+            )
+            .start(
+                widget,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            )
+            .unwrap();
+            assert!(
+                started.is_some(),
+                "the actual operation handler admits the invocation"
+            );
+        }
+        widget.sync(&doc, &automerge::ROOT);
+    }
+
     fn dispatch(tb: &mut Toolbar, event: WindowEvent) -> bool {
         let mut tree = TaffyTree::new();
         let node = tree.leaf_node(Style::default());
@@ -2858,6 +3030,7 @@ mod lifecycle_tests {
                 taffy: &tree,
             },
         );
+        drain_native_controls(tb);
         handled
     }
     fn cursor(tb: &mut Toolbar, p: Point) {
@@ -3305,6 +3478,7 @@ mod lifecycle_tests {
                     &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT
                 ));
+                drain_native_controls(&mut host);
                 let send = |host: &mut crate::widget::Row, event: WindowEvent| {
                     host.handle_event(
                         &event,

@@ -52,6 +52,7 @@ pub struct PrintCentre {
     defaults: PrintDefaults,
     /// Where changes to the defaults go.
     pub(crate) dispatcher: Option<Dispatcher<PrintDefaults>>,
+    pub(crate) controls: Option<ui::framework::Actions<PrintDefaults>>,
     /// An effect replaced the page since the last layout.
     replaced: bool,
 }
@@ -199,7 +200,10 @@ pub(crate) struct Snapshot {
 /// the person's defaults go through the same door as the palette's and an
 /// agent's.
 #[derive(Clone, Default)]
-struct Door(Option<Dispatcher<PrintDefaults>>);
+struct Door(
+    Option<Dispatcher<PrintDefaults>>,
+    Option<ui::framework::Actions<PrintDefaults>>,
+);
 
 #[derive(Clone)]
 enum UiCommand {
@@ -766,13 +770,14 @@ impl PrintCentre {
             scan_saving: false,
             defaults,
             dispatcher: None,
+            controls: None,
             replaced: false,
         }
     }
 
     /// Where the controls send their effects and the defaults' changes.
     fn door(&self) -> Door {
-        Door(self.dispatcher.clone())
+        Door(self.dispatcher.clone(), self.controls.clone())
     }
 
     /// Ask CUPS and SANE what this machine has.
@@ -1240,7 +1245,7 @@ impl PrintCentre {
                 self.selected_printer.as_deref(),
                 &self.print_copies,
                 &self.print_two_sided,
-                &Door(self.dispatcher.clone()),
+                &Door(self.dispatcher.clone(), self.controls.clone()),
             );
         }
     }
@@ -1254,7 +1259,7 @@ impl PrintCentre {
                 self.selected_scanner.as_deref(),
                 &self.scan,
                 self.notice.as_ref(),
-                &Door(self.dispatcher.clone()),
+                &Door(self.dispatcher.clone(), self.controls.clone()),
             );
         }
     }

@@ -81,7 +81,6 @@ use ui::time::Instant;
 /// accessibility, and swaps the button's icon and name with it.
 struct BottomPanelToggle {
     button: Button,
-    binding: tilo_actions::ActionBinding<()>,
     expanded: bool,
     dirty: bool,
 }
@@ -92,7 +91,6 @@ impl BottomPanelToggle {
     fn new(binding: tilo_actions::ActionBinding<()>) -> Self {
         Self {
             button: Self::button(&binding, false),
-            binding,
             expanded: false,
             dirty: true,
         }
@@ -115,12 +113,21 @@ impl BottomPanelToggle {
         if self.expanded == expanded {
             return;
         }
-        let focused = self.button.is_focused();
         self.expanded = expanded;
-        self.button = Self::button(&self.binding, expanded);
-        if focused {
-            self.button.set_focus(true);
-        }
+        let icon = if expanded {
+            ui::icons::Icon::ChevronDown
+        } else {
+            ui::icons::Icon::ChevronUp
+        };
+        let name = Self::name(expanded);
+        // Keep the retained emitter: rebuilding an action-bound button here
+        // discards the host's custody and availability, reviving a door that
+        // a capture or past version has already refused.
+        let button = std::mem::replace(&mut self.button, Button::icon_only(Self::ID, icon, name));
+        self.button = button
+            .with_icon(icon)
+            .with_accessible_name(name)
+            .tooltip(name);
         self.dirty = true;
     }
 }

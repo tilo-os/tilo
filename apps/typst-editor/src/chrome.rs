@@ -163,7 +163,7 @@ impl Chrome {
         let view_queue = Rc::clone(&queue);
         let view = ToggleGroup::new(vec![Segment::new("Edit"), Segment::new("Preview")], 0)
             .with_id("typst.view")
-            .on_change(move |index| {
+            .on_view("typst.view", move |index| {
                 let command = if index == 0 {
                     Command::ShowEditor
                 } else {
