@@ -49,17 +49,20 @@ pub struct UiComponentRequest<'a> {
     pub values: &'a UiValues,
 }
 
-/// What is typed into a graph's text inputs, by each input's `value_path`.
+/// What is typed into a graph's text inputs, by each input's `value_path`,
+/// and which of its buttons were clicked, by each button's `on_click_path`.
 ///
 /// The values are view state, never written to the document: every input
 /// naming one path shows and edits the same value, and the app reads them
 /// when it acts on them, submitting its own resource actions. A path the app
 /// routes ([`Self::route`]) instead shows the app's own value, and each edit
-/// of it is the app's action.
+/// of it is the app's action. A clicked button is reported the same way: the
+/// app takes the click ([`Self::take_click`]) and acts on it.
 #[derive(Clone, Default)]
 pub struct UiValues {
     texts: Rc<RefCell<HashMap<String, LocalState<String>>>>,
     routes: Rc<RefCell<HashMap<String, tilo_actions::ActionBinding<String>>>>,
+    clicks: Rc<RefCell<HashMap<String, String>>>,
 }
 
 impl UiValues {
@@ -93,6 +96,22 @@ impl UiValues {
         self.routes.borrow_mut().insert(path.to_owned(), action);
     }
 
+    /// Record a click of a button naming `path`, carrying `value`. Only the
+    /// latest click per path is kept until the app takes it.
+    pub fn click(&self, path: &str, value: &str) {
+        self.clicks
+            .borrow_mut()
+            .insert(path.to_owned(), value.to_owned());
+    }
+
+    /// The latest unhandled click of a button naming `path`: its
+    /// `click_value`, or `"true"` when it names none. Taking it clears it,
+    /// so each click is acted on once.
+    #[must_use]
+    pub fn take_click(&self, path: &str) -> Option<String> {
+        self.clicks.borrow_mut().remove(path)
+    }
+
     /// An input over `path`: the app's value edited through its action when
     /// the path is routed, else the shared typed value, which starts as
     /// `initial`.
@@ -115,10 +134,13 @@ impl fmt::Debug for UiValues {
         paths.sort_unstable();
         let mut routes: Vec<String> = self.routes.borrow().keys().cloned().collect();
         routes.sort_unstable();
+        let mut clicks: Vec<String> = self.clicks.borrow().keys().cloned().collect();
+        clicks.sort_unstable();
         formatter
             .debug_struct("UiValues")
             .field("paths", &paths)
             .field("routes", &routes)
+            .field("clicks", &clicks)
             .finish()
     }
 }
@@ -370,7 +392,7 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
                         UiNavigation::Back | UiNavigation::Forward => true,
                     })
             });
-            let mut button = Button::new(id, label, on_click_path.as_deref())
+            let mut button = Button::new(id, label, None)
                 .with_enabled(*enabled && (navigation_bound || on_click_path.is_some()))
                 .with_style((*style).into());
             if let Some(name) = accessible_name {
@@ -379,54 +401,52 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             if let Some(tooltip) = tooltip {
                 button = button.tooltip(tooltip);
             }
-            if let Some(value) = click_value {
-                button = button.with_click_value(value);
-            }
-            if let (Some(navigation), Some(router)) = (navigate, context.router.as_ref()) {
-                let router = router.clone();
-                // A published view action, so the palette, agents and the
-                // native audit reach navigation as they reach any control. A
-                // button that also writes a document path keeps that path.
-                let bind = |button: Button, navigate: Box<dyn Fn() + 'static>| {
-                    if on_click_path.is_some() {
-                        button.on_click(move || navigate())
-                    } else {
-                        button.on_view(move || navigate())
+            // A click path reports the click to the app through its values;
+            // the button never writes the document.
+            let record: Option<Box<dyn Fn()>> = on_click_path.as_ref().map(|path| {
+                let values = context.values.clone();
+                let path = path.clone();
+                let value = click_value.clone().unwrap_or_else(|| "true".to_owned());
+                Box::new(move || values.click(&path, &value)) as Box<dyn Fn()>
+            });
+            let navigation: Option<Box<dyn Fn()>> = match (navigate, context.router.as_ref()) {
+                (Some(UiNavigation::Push { route }), Some(router)) if router.knows(route) => {
+                    let (router, route) = (router.clone(), route.clone());
+                    Some(Box::new(move || {
+                        let _ = router.push(route.clone());
+                    }))
+                }
+                (Some(UiNavigation::Replace { route }), Some(router)) if router.knows(route) => {
+                    let (router, route) = (router.clone(), route.clone());
+                    Some(Box::new(move || {
+                        let _ = router.replace(route.clone());
+                    }))
+                }
+                (Some(UiNavigation::Back), Some(router)) => {
+                    let router = router.clone();
+                    Some(Box::new(move || {
+                        let _ = router.back();
+                    }))
+                }
+                (Some(UiNavigation::Forward), Some(router)) => {
+                    let router = router.clone();
+                    Some(Box::new(move || {
+                        let _ = router.forward();
+                    }))
+                }
+                _ => None,
+            };
+            // A published view action, so the palette, agents and the native
+            // audit reach the button as they reach any control.
+            if record.is_some() || navigation.is_some() {
+                button = button.on_view(move || {
+                    if let Some(record) = &record {
+                        record();
                     }
-                };
-                button = match navigation {
-                    UiNavigation::Push { route } if router.knows(route) => {
-                        let route = route.clone();
-                        bind(
-                            button,
-                            Box::new(move || {
-                                let _ = router.push(route.clone());
-                            }),
-                        )
+                    if let Some(navigate) = &navigation {
+                        navigate();
                     }
-                    UiNavigation::Replace { route } if router.knows(route) => {
-                        let route = route.clone();
-                        bind(
-                            button,
-                            Box::new(move || {
-                                let _ = router.replace(route.clone());
-                            }),
-                        )
-                    }
-                    UiNavigation::Back => bind(
-                        button,
-                        Box::new(move || {
-                            let _ = router.back();
-                        }),
-                    ),
-                    UiNavigation::Forward => bind(
-                        button,
-                        Box::new(move || {
-                            let _ = router.forward();
-                        }),
-                    ),
-                    UiNavigation::Push { .. } | UiNavigation::Replace { .. } => button,
-                };
+                });
             }
             Box::new(button)
         }
@@ -2159,7 +2179,7 @@ fn editable_properties(
                 (
                     EditableProperty::ButtonClickPath,
                     on_click_path.clone().unwrap_or_default(),
-                    "Click document path (optional)",
+                    "Click reported to the app as (optional)",
                     "builder-button-click-path",
                 ),
                 (
@@ -3584,9 +3604,11 @@ mod tests {
         let mut title_doc = AutoCommit::new();
         let text = title_doc.put_object(&ROOT, "title", ObjType::Text).unwrap();
         title_doc.splice_text(&text, 0, 0, "Roadmap").unwrap();
+        let values = UiValues::default();
+        let context = UiBuildContext::default().with_values(values.clone());
         let mut driver = crate::headless::Driver::new(
             crate::State::from_doc(title_doc),
-            reparsed.build(&Theme::dark()).unwrap(),
+            reparsed.build_with(&Theme::dark(), &context).unwrap(),
             (640, 360),
         );
         let inspection = driver.inspection();
@@ -3605,7 +3627,16 @@ mod tests {
         driver
             .perform_named("save", &Action::Activate)
             .expect("serialized button is a real button");
-        assert!(driver.dump_json().contains("save-requested"));
+        assert_eq!(values.take_click("save-requested").as_deref(), Some("yes"));
+        assert_eq!(
+            values.take_click("save-requested"),
+            None,
+            "a click is taken once"
+        );
+        assert!(
+            !driver.dump_json().contains("save-requested"),
+            "the button never writes the document"
+        );
     }
 
     #[test]
@@ -4414,7 +4445,13 @@ mod tests {
     #[test]
     fn live_structural_edits_rebuild_and_save_the_same_graph() {
         let handle = UiGraphHandle::new(sample()).unwrap();
-        let live = handle.widget(&Theme::dark()).unwrap();
+        let values = UiValues::default();
+        let live = handle
+            .widget_with(
+                &Theme::dark(),
+                UiBuildContext::default().with_values(values.clone()),
+            )
+            .unwrap();
         let mut driver =
             crate::headless::Driver::new(crate::State::new(), Box::new(live), (640, 360));
         handle
@@ -4438,7 +4475,10 @@ mod tests {
         driver
             .perform_named("new-project", &Action::Activate)
             .unwrap();
-        assert!(driver.dump_json().contains("new-project"));
+        assert_eq!(
+            values.take_click("new-project").as_deref(),
+            Some("requested")
+        );
 
         let removed = handle.remove_node("new-project").unwrap();
         assert_eq!(removed.id(), "new-project");
