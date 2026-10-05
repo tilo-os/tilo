@@ -23,7 +23,6 @@ getrandom.workspace = true
 hex.workspace = true
 # The peer network: hole-punched QUIC with relay fallback.
 iroh.workspace = true
-iroh-base.workspace = true
 # `relay`: a relay of the owner's own (or a test harness's) to use instead of
 # the public ones.
 iroh-relay = { version = "1.0.3", features = ["server"] }

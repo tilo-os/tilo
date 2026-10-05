@@ -15555,7 +15555,6 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "iroh",
- "iroh-base",
  "iroh-relay",
  "postcard",
  "serde",
