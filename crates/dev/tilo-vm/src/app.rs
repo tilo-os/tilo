@@ -43,6 +43,7 @@ use crate::sshguard;
 use crate::sshkey;
 use crate::vmbuild;
 
+mod admin;
 mod builder;
 mod device;
 mod kernel;
@@ -360,6 +361,9 @@ pub struct App {
     pub receipt: Receipt,
     /// Non-fatal findings surfaced after the main output.
     pub warnings: Vec<String>,
+    /// The peer-network session the last connection took, when the device
+    /// was not on this network.
+    pub peer: Option<remote::PeerSession>,
 }
 
 pub fn human_bytes(bytes: u64) -> String {
@@ -654,8 +658,23 @@ impl App {
 
     /// Open tilo-vmd's RPC. A device is reached where it is now
     /// ([`Self::endpoint`]), and a connection lost to a roam between that
-    /// check and ssh is tried once more.
+    /// check and ssh is tried once more. A device with a recorded peer route
+    /// that is not on this network, at its address or by name, is reached
+    /// over the peer network instead ([`Self::connect_peer`]).
     fn connect(&mut self, vm: &Resolved) -> Result<Remote, CliError> {
+        self.peer = None;
+        if let Some(route) = vm.entry.peer.clone()
+            && vm.entry.hypervisor == hypervisor::DEVICE
+            && std::env::var_os("TILO_VM_SSH").is_none()
+        {
+            // One look on the LAN, at the address and by name: the peer
+            // network rides out roams itself, so no minute of retries here.
+            if let Err(CliError::DeviceAsleep { detail, .. }) =
+                self.reach_device(&vm.name, Duration::ZERO, false)
+            {
+                return self.connect_peer(vm, &route, &detail);
+            }
+        }
         let adapter = Self::adapter(vm)?;
         let debug = Self::debug_commands(adapter.as_ref(), &vm.name);
         let mut retried = false;
@@ -705,6 +724,32 @@ impl App {
             ));
         }
         self.receipt.set("vm", &vm.name);
+        Ok(remote)
+    }
+
+    /// Open tilo-vmd's RPC over the peer network, as this machine's admin
+    /// identity, and say which route it took.
+    fn connect_peer(
+        &mut self,
+        vm: &Resolved,
+        route: &crate::config::PeerRoute,
+        lan: &str,
+    ) -> Result<Remote, CliError> {
+        let identity = config::admin_identity_root(&self.registry_path);
+        let line = remote::peer_dial(route, &identity);
+        let (remote, session) = Remote::over_peer(&vm.name, &line)?;
+        let note = format!(
+            "{} is not on this network ({lan}); reached it over the peer network: {} (session {} in its journal)",
+            vm.name,
+            session.describe(),
+            session.session
+        );
+        if !self.json {
+            eprintln!("tilo-vm: {note}");
+        }
+        self.receipt.set("route", json!({ "peer": &session }));
+        self.receipt.set("vm", &vm.name);
+        self.peer = Some(session);
         Ok(remote)
     }
 
@@ -1220,6 +1265,9 @@ impl App {
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
             VmCommand::Wake { name } => self.vm_wake(name.as_deref()),
             VmCommand::Awake { name, hold, off } => self.vm_awake(name.as_deref(), hold, off),
+            VmCommand::EnrolAdmin { via, cert, label } => {
+                self.vm_enrol_admin(via.as_deref(), cert.as_deref(), label)
+            }
             VmCommand::Restart { name } => {
                 let vm = self.resolve_vm(name.as_deref())?;
                 if !Self::adapter(&vm)?.powers_on() {
@@ -1575,13 +1623,30 @@ impl App {
                 }
                 let hello = remote.hello.clone();
                 drop(remote);
-                if let Some(wake) = self.refresh_net(&vm) {
+                if let Some(session) = self.peer.clone() {
+                    // No SSH beyond the LAN: what it reported when last on it stands.
+                    lines.push(format!(
+                        "  reached over the peer network: {} (session {} in its journal); commands that need SSH (exec, builds on it, vm ssh) wait until it is on this network",
+                        session.describe(),
+                        session.session
+                    ));
+                    insert(&mut data, "route", json!({ "peer": session }));
+                } else if let Some(wake) = self.refresh_net(&vm) {
                     lines.push(format!("  wake: {wake}"));
                     let entry = self.resolve_vm(Some(&vm.name))?.entry;
+                    let enrolled = config::admin_identity_root(&self.registry_path)
+                        .join("device/cert.bin")
+                        .is_file();
+                    lines.push(format!(
+                        "  beyond the LAN: {}",
+                        reach::describe_peer(&entry, enrolled)
+                    ));
+                    insert(&mut data, "route", json!("ssh"));
                     insert(&mut data, "address", json!(entry.ssh));
                     insert(&mut data, "hostname", json!(entry.hostname));
                     insert(&mut data, "mac", json!(entry.mac));
                     insert(&mut data, "wake", json!(entry.wake));
+                    insert(&mut data, "peer", json!(entry.peer));
                 }
                 insert(&mut data, "state", json!("ready"));
                 insert(&mut data, "reachable", json!(true));
@@ -5856,7 +5921,8 @@ fn merge_error(data: &mut Value, error: &CliError) {
 /// Why a VM's daemon could not be reached, for `status` and `vm status`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectFailure {
-    /// `off`, `asleep`, `no-ssh`, `key-refused`, `no-daemon`, `incompatible` or `error`.
+    /// `off`, `asleep`, `no-ssh`, `key-refused`, `peer-refused`, `no-daemon`,
+    /// `incompatible` or `error`.
     pub state: &'static str,
     /// What the VM is doing, in one line.
     pub summary: String,
@@ -5884,6 +5950,33 @@ impl ConnectFailure {
 
 /// Tell apart a VM that is off, one whose SSH does not answer, one without
 /// tilo-vmd and one whose tilo-vmd is incompatible; each has its own fix.
+/// [`connect_failure`] for a device the peer network did not reach.
+fn peer_route_failure(vm: &str, failure: crate::error::PeerFailure) -> ConnectFailure {
+    use crate::error::PeerFailure;
+    ConnectFailure {
+        state: if failure == PeerFailure::Unreachable {
+            "asleep"
+        } else {
+            "peer-refused"
+        },
+        summary: format!("not on this network, and over the peer network {failure}"),
+        ssh: false,
+        next: match failure {
+            PeerFailure::Unreachable => {
+                vec![format!(
+                    "tilo-vm vm awake {vm} --for 2h   (once it answers)"
+                )]
+            }
+            PeerFailure::NotEnrolled | PeerFailure::Refused => {
+                vec!["tilo-vm vm enrol-admin --via <device>".into()]
+            }
+            PeerFailure::OtherDevice | PeerFailure::Failed => {
+                vec![format!("tilo-vm vm status {vm}   (on its LAN)")]
+            }
+        },
+    }
+}
+
 pub fn connect_failure(
     vm: &str,
     running: Option<bool>,
@@ -5914,6 +6007,7 @@ pub fn connect_failure(
                 vec![format!("tilo-vm vm status {vm}   (once woken by hand)")]
             },
         ),
+        CliError::PeerRoute { failure, .. } => peer_route_failure(vm, *failure),
         CliError::RootKeyRefused { .. } => fail(
             "key-refused",
             "running; SSH answers but refuses the root key".into(),
@@ -6950,6 +7044,7 @@ mod tests {
             runner: SystemRunner { cwd: None },
             receipt: Receipt::new(dir, vec![]),
             warnings: Vec::new(),
+            peer: None,
         }
     }
 

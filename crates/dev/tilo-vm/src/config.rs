@@ -138,12 +138,35 @@ pub struct VmEntry {
     /// What can wake a device, as it reported when last reached.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake: Option<crate::reach::WakeInfo>,
+    /// A device's route over the peer network, for when it is not on this
+    /// network: what its `tilo-device-admin id` reported when last reached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub peer: Option<PeerRoute>,
     /// A host-built kernel the VM boots directly instead of its disk's boot
     /// loader (`tilo-vm swap kernel --direct` on libvirt, or a manually
     /// prepared development bundle on WHPX). Cleared by
     /// `tilo-vm rollback --slot vm`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direct_kernel: Option<DirectKernel>,
+}
+
+/// Where a device answers over the peer network (`tilo-vm guide devices`,
+/// "Beyond the LAN").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerRoute {
+    /// The device id (its device key), hex: the answer must prove it.
+    pub device: String,
+    /// The endpoint id its device-admin route answers on.
+    pub endpoint: String,
+    /// The identity it belongs to, hex.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<String>,
+    /// A relay of the owner's own that it uses instead of the public ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    /// The public relay it was last seen on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_relay: Option<String>,
 }
 
 /// Direct kernel boot: files on the host, and the command line.
@@ -174,6 +197,15 @@ pub fn registry_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
         .join("tilo-vm")
         .join("vms.toml")
+}
+
+/// This machine's identity as one of the owner's devices, enrolled to
+/// administer their devices over the peer network: beside the registry.
+pub fn admin_identity_root(registry: &Path) -> PathBuf {
+    registry
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("admin-identity")
 }
 
 impl Registry {
