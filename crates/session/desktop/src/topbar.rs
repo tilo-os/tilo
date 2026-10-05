@@ -5302,7 +5302,7 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AppModel,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(
@@ -6019,7 +6019,7 @@ mod tests {
             &mut ui::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: &mut state,
+                state: ui::widget::Edits::lend(&mut state),
                 path: &automerge::ROOT,
                 handled: &mut handled,
                 focus_target: &mut focus,
@@ -6248,7 +6248,7 @@ mod tests {
         assert!(bar.perform_semantic_action(
             TopBarChrome::CONTROL_CENTER_CALENDAR,
             &ui::a11y::Action::ToggleCheck,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(bar.center_widget, CenterWidget::Calendar);
@@ -6886,7 +6886,7 @@ mod tests {
         assert!(bar.perform_semantic_action(
             &target,
             &ui::a11y::Action::Activate,
-            &mut doc,
+            &mut ui::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert!(
