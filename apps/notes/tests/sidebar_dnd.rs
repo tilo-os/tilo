@@ -95,7 +95,7 @@ fn three_page_app() -> Result<(NotesApp, uuid::Uuid, uuid::Uuid, uuid::Uuid), St
 fn root_order(app: &NotesApp) -> Vec<uuid::Uuid> {
     let mut ps = app.workspace_pages_for_test();
     ps.retain(|p| p.parent.is_none());
-    ps.sort_by_key(|p| p.order);
+    ps.sort_by(notes::model::sibling_order);
     ps.into_iter().map(|p| p.id).collect()
 }
 

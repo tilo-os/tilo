@@ -36,8 +36,16 @@ impl ClipboardBackend for Clipboard {
 fn app() -> (TestApp<notes::NotesShell>, notes::PageId) {
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::new_page_action(page, None, 0, "Clipboard")).unwrap())
-        .unwrap();
+    app.invoke(
+        Invoke::apply(&actions::new_page_action(
+            page,
+            None,
+            "a".into(),
+            "Clipboard",
+        ))
+        .unwrap(),
+    )
+    .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);
     app.harness().type_text("Ä😀");
@@ -497,7 +505,7 @@ fn image_paste_into_a_fresh_empty_note_is_undoable() {
     let _host = ui::host::enter(&services);
     let mut app = TestApp::<notes::NotesShell>::new().unwrap();
     let page = notes::PageId::new_v4();
-    app.invoke(Invoke::apply(&actions::new_page_action(page, None, 0, "Image")).unwrap())
+    app.invoke(Invoke::apply(&actions::new_page_action(page, None, "a".into(), "Image")).unwrap())
         .unwrap();
     let rect = app.harness().targets()["block_editor"];
     app.harness().click_at(rect.x0 + 20.0, rect.y0 + 10.0);

@@ -17,7 +17,7 @@ fn canonical() -> (AutoCommit, NotesApp, [PageId; 3]) {
                 id,
                 title: format!("Page {order}"),
                 parent: None,
-                order: order as u32,
+                order: format!("{}", char::from(b'a' + order as u8)),
             },
         );
     }
